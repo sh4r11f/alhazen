@@ -1199,6 +1199,16 @@ function render() {
   document.querySelectorAll('details.table[open]').forEach((node) => {
     openTables.add(Number(node.dataset.panel));
   });
+  /* Where the reader had scrolled to. Rebuilding the grid empties the
+   * document for an instant, and a browser laying out an empty document
+   * clamps the scroll position to zero — so without this the page jumps back
+   * to the top on every completed trial, which at one trial every few seconds
+   * makes a panel halfway down impossible to read. Captured here and restored
+   * below, in the same synchronous block, so the intermediate state is never
+   * painted. */
+  const scroller = document.scrollingElement || document.documentElement;
+  const scrollTop = scroller.scrollTop;
+
   panels = (state.panels || []).map((panel, index) => buildPanel(panel, index, openTables));
   renderSections(panels);
   const shown = panels.filter((entry) => section === 'all' || entry.section === section);
@@ -1208,6 +1218,11 @@ function render() {
    * chart drawn against that width would be drawn wrong. */
   panels = shown;
   panels.forEach(paintPanel);
+
+  /* After painting, not before: the panels have their real heights only once
+   * they are drawn, and restoring against a half-laid-out document would
+   * clamp to a maximum that is about to grow. */
+  if (scroller.scrollTop !== scrollTop) scroller.scrollTop = scrollTop;
 }
 
 /* Charts are sized in pixels, so a resized window is a redraw — of the plots

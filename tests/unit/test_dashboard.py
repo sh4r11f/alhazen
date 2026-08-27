@@ -262,6 +262,30 @@ class TestPage:
         assert "https://" not in html
         assert "<script src" not in html and "<link" not in html
 
+    def test_the_grid_rebuild_preserves_the_readers_scroll_position(self):
+        """Every completed trial rebuilds the panel grid, and a browser laying
+        out the momentarily-empty document clamps scroll to zero. At one trial
+        every few seconds that makes any panel below the fold unreadable.
+
+        Asserted against the asset rather than in a browser, because there is
+        no JS test harness here and a missing three-line guard is worth
+        catching cheaply. It checks the ORDER too: restoring before the panels
+        are painted would clamp against a height that is about to grow.
+        """
+        from alhazen.dashboard import runtime
+
+        script = (runtime._ASSETS / "dashboard.js").read_text()
+        render = script[script.index("function render()") :]
+        render = render[: render.index("\n}")]
+
+        assert "scrollingElement" in render, "render() does not preserve scroll position"
+        assert render.index("scrollTop") < render.index("replaceChildren"), (
+            "scroll position must be captured before the grid is rebuilt"
+        )
+        assert render.rindex("scrollTop") > render.rindex("paintPanel"), (
+            "scroll position must be restored after the panels are painted"
+        )
+
     def test_missing_assets_fail_loudly_rather_than_serving_a_blank_page(self, monkeypatch):
         from alhazen.dashboard import runtime
 
