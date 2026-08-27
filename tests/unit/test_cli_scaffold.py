@@ -526,26 +526,6 @@ class TestGammaReachesTheDisplay:
         assert display.gamma == 1.8
 
 
-class TestVersionCoherence:
-    def test_the_installed_version_has_a_changelog_section(self):
-        """A release whose number appears nowhere in the CHANGELOG is a
-        release nobody can read the notes for."""
-        from alhazen.version import get_version
-
-        changelog = (Path(__file__).parents[2] / "CHANGELOG.md").read_text()
-        version = get_version()
-        if version == "unknown":
-            pytest.skip("alhazen is not installed in this environment")
-
-        assert f"\n## {version}\n" in changelog, (
-            f"CHANGELOG.md has no '## {version}' section for the installed version"
-        )
-
-    def test_the_changelog_does_not_still_claim_to_be_pre_release(self):
-        changelog = (Path(__file__).parents[2] / "CHANGELOG.md").read_text()
-        assert "pre-1.0" not in changelog
-
-
 class TestTaskDiscovery:
     def test_an_unknown_task_lists_what_is_installed(self):
         # On a rig, "no such task" with nothing else is a dead end, and the

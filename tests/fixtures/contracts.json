@@ -1,0 +1,46 @@
+{
+  "_comment": [
+    "The recorded baseline for alhazen's on-disk compatibility contracts, as",
+    "declared in CHANGELOG.md. tests/unit/test_contracts.py compares the live",
+    "code against this file so that breaking one of the three promises fails",
+    "the suite here, rather than failing a stranger's analysis a year from now.",
+    "",
+    "This file is append-only in the same sense the contracts are. Adding an RNG",
+    "stream, a reserved event, or a bumped schema version means updating it in",
+    "the same commit, with a CHANGELOG entry. Removing anything from it means a",
+    "major version and a documented migration -- see docs/versioning.md."
+  ],
+  "rng_streams": [
+    "scheduler",
+    "session",
+    "task"
+  ],
+  "reserved_events": [
+    "NO_REWARD",
+    "PAUSED",
+    "RESUMED",
+    "REWARD",
+    "REWARD_FAILED",
+    "STAGE_CHANGED",
+    "TRIAL_END",
+    "TRIAL_START"
+  ],
+  "run_layout": {
+    "trials": "{base}_trials.csv",
+    "events": "{base}_events.csv",
+    "frames": "{base}_frames.csv",
+    "paradigm": "{base}_paradigm.csv",
+    "snapshot": "config_snapshot.yaml",
+    "manifest": "manifest.yaml",
+    "log": "session.log",
+    "figures": "figures"
+  },
+  "schema_versions": {
+    "database": 2,
+    "results_bundle": 1,
+    "run_manifest": 1,
+    "recording_pointer": 1,
+    "training_state": 1,
+    "scene_format": 1
+  }
+}

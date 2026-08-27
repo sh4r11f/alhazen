@@ -14,7 +14,20 @@ version:
   snapshot formats) changes only in a major version, with a documented
   migration.
 
-## 1.0.0
+All three are pinned by `tests/unit/test_contracts.py` against a recorded
+baseline, so breaking one fails the suite rather than a stranger's analysis a
+year from now. The full policy — what a bump means, how a release is cut, and
+what every on-disk schema version is — is in
+[docs/versioning.md](docs/versioning.md).
+
+Each section below is `## <version> - <YYYY-MM-DD>`, newest first, and the
+newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
+changes that have landed on `main` but not shipped; cutting a release renames
+it to the new version. `scripts/release_check.py` enforces all of that.
+
+## Unreleased
+
+## 1.0.0 - 2026-08-27
 
 The first release, and the point from which those three contracts hold.
 
