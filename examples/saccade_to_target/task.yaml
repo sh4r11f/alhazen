@@ -1,0 +1,20 @@
+fix_size_dva: 0.3
+fix_window_dva: 2.0
+target_size_dva: 0.5
+target_window_dva: 3.0
+eccentricity_dva: 8.0
+acquire_timeout:
+  ms: 2000
+fixation_hold:
+  ms: 400
+fixation_jitter:
+  ms: 100
+response_timeout:
+  ms: 800
+landing_timeout:
+  ms: 400
+iti:
+  ms: 300
+paradigm:
+  kind: constant          # every side, n_per_condition times each
+  n_per_condition: 5

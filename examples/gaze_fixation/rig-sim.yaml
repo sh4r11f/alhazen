@@ -1,0 +1,33 @@
+# A laptop with nothing attached. There is no eye tracker, so no gaze ever
+# arrives and every trial ends NO_FIXATION — which is the point: the same
+# task, config and data layout run end to end on a machine with no hardware
+# and no renderer, and the rig alone decides what is wired.
+monitor:
+  width_px: 1920
+  height_px: 1080
+  width_cm: 60.0
+  distance_cm: 60.0
+  refresh_rate_hz: 60.0
+  fullscreen: false
+display:
+  backend: simulated
+  frame_qa:
+    policy: warn
+  photodiode:
+    corner: br
+    size_px: 60
+    events: [FIX_ACQUIRED]
+dashboard:
+  enabled: false
+  auto_open: false
+  port: 0
+devices:
+  reward:
+    backend: simulated
+  sync:
+    backend: simulated
+    event_lines:
+      TRIAL_START: Dev1/port0/line0
+      FIX_ON: Dev1/port0/line1
+      FIX_ACQUIRED: Dev1/port0/line2
+data_root: data

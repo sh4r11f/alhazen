@@ -1,0 +1,127 @@
+"""Task: the one object an experiment writes.
+
+Everything a session needs from an experiment — its name, its event
+vocabulary, its outcomes, its params model, its reward policy, how it builds a
+trial and what it schedules — arrives through one subclass instead of six
+loose callables. ``build_session(task=...)`` reads it all from there.
+
+The class attributes are declarations, checked once when the subclass is
+defined rather than at the first trial: a task missing its outcomes is a
+programming error the experimenter should meet while writing the file, not
+with a subject waiting.
+"""
+
+from __future__ import annotations
+
+from typing import Any, ClassVar
+
+import numpy as np
+from pydantic import BaseModel
+
+from alhazen.config.models import Model
+from alhazen.core.events import EventSchema
+from alhazen.core.trial import OutcomeSet
+from alhazen.dashboard.spec import DashboardSpec
+from alhazen.paradigms.base import Condition, TrialSource
+from alhazen.paradigms.config import SchedulerConfig, make_scheduler
+from alhazen.task.plan import TrialPlan, TrialSetup
+from alhazen.task.reward_policy import RewardPolicy
+
+
+class Task:
+    """Subclass per experiment task.
+
+    Required class attributes: ``name``, ``events``, ``outcomes``,
+    ``params_model``. Optional: ``reward``. Required override:
+    ``build_trial``. Everything else has a default that does the obvious
+    thing for a single-condition task.
+    """
+
+    name: ClassVar[str]
+    events: ClassVar[EventSchema]
+    outcomes: ClassVar[OutcomeSet]
+    params_model: ClassVar[type[Model]]
+    reward: ClassVar[RewardPolicy | None] = None
+    dashboard: ClassVar[DashboardSpec | None] = None
+
+    # The params field a default make_source reads its scheduler from. A task
+    # that schedules its own trials never needs one.
+    paradigm_field: ClassVar[str] = "paradigm"
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        # Abstract intermediate subclasses (a shared base for a family of
+        # tasks) declare nothing and are not checked; a task is anything that
+        # declares a name.
+        if not hasattr(cls, "name"):
+            return
+        for attribute in ("events", "outcomes", "params_model"):
+            if not hasattr(cls, attribute):
+                raise TypeError(
+                    f"task {cls.__name__} declares 'name' but not '{attribute}'; a task "
+                    f"must declare name, events, outcomes and params_model"
+                )
+        if not cls.name.islower() or not all(c.isalnum() or c == "-" for c in cls.name):
+            raise ValueError(
+                f"task name {cls.name!r} must be lowercase alphanumeric/hyphen — it becomes "
+                f"a filename segment"
+            )
+
+    def __init__(self, params: Model) -> None:
+        if not isinstance(params, self.params_model):
+            raise TypeError(
+                f"{type(self).__name__} takes {self.params_model.__name__} params, got "
+                f"{type(params).__name__}"
+            )
+        self.params = params
+
+    # ------------------------------------------------------------------
+    # What the session asks a task for
+    # ------------------------------------------------------------------
+
+    def conditions(self, rng: np.random.Generator) -> list[Condition]:
+        """The task's condition cells. The default is one nameless condition —
+        enough for a task whose trials do not vary."""
+        return [Condition({})]
+
+    def make_source(self, params: BaseModel, rng: np.random.Generator) -> TrialSource:
+        """The scheduler for this session.
+
+        The default reads a ``SchedulerConfig`` from the params (field name in
+        ``paradigm_field``) and builds it over ``conditions()``. Override for
+        scheduling a config cannot express.
+        """
+        paradigm = getattr(params, self.paradigm_field, None)
+        if paradigm is None:
+            paradigm = SchedulerConfig()
+        if not isinstance(paradigm, SchedulerConfig):
+            raise TypeError(
+                f"{type(self).__name__}.params.{self.paradigm_field} must be a "
+                f"SchedulerConfig, got {type(paradigm).__name__}"
+            )
+        return make_scheduler(
+            paradigm,
+            self.conditions(rng),
+            rng,
+            score=self.score_trial,
+            # So a config error about the conditions names the task whose
+            # conditions they are: an experimenter reading "not a full
+            # factorial" needs to know which file to open.
+            task_name=self.name,
+        )
+
+    def build_trial(self, setup: TrialSetup) -> TrialPlan:
+        """The phases, stimuli and regions for one trial. The one method every
+        task must write."""
+        raise NotImplementedError(f"{type(self).__name__} must implement build_trial")
+
+    def score(self, record: dict[str, Any]) -> dict[str, Any]:
+        """Derived measures, computed by the experiment after the trial ends.
+        The default adds nothing."""
+        return record
+
+    def score_trial(self, result: Any) -> bool:
+        """Whether an adaptive scheduler should count this trial as a success.
+        The default is the outcome's own ``success`` flag; a task titrating
+        something else (a bias magnitude, a settling error) overrides it."""
+        return bool(result.outcome.success)

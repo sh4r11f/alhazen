@@ -1,0 +1,8 @@
+fix_size_dva: 0.3
+fix_window_dva: 3.0      # the real task's window; stages 1-2 loosen it
+hold_duration: {ms: 300}
+acquire_timeout: {ms: 1500}
+iti: {ms: 100}
+paradigm:
+  kind: sequence
+  n_per_condition: 1000  # the session runs until the experimenter stops it

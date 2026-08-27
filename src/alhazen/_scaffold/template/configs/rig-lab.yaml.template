@@ -1,0 +1,71 @@
+# The rig. Fill in the numbers for YOUR monitor — the geometry here decides
+# what a degree of visual angle is, and every stimulus size depends on it.
+monitor:
+  width_px: 1920
+  height_px: 1080
+  width_cm: 52.0       # the visible width of the panel, not the bezel
+  distance_cm: 57.0    # eye to screen
+  refresh_rate_hz: 120.0
+  fullscreen: true
+display:
+  backend: psychopy
+  frame_qa:
+    # Count dropped frames on the trial record, so analysis can exclude
+    # trials whose timing was not what the config promised.
+    policy: mark_trial
+    max_dropped_per_trial: 3
+  # Uncomment once a photodiode is taped over a corner: it marks the exact
+  # frame each named event was shown on, which is what makes the software
+  # timestamps auditable.
+  # photodiode:
+  #   corner: br
+  #   size_px: 60
+  #   events: [FIX_ON]
+dashboard:
+  # The browser opens before PsychoPy takes focus. It is read-only until the
+  # experimenter pauses with P, so browser clicks cannot affect an active trial.
+  enabled: true
+  auto_open: true
+  port: 0
+# Uncomment the devices this rig has and move each one INSIDE the braces
+# below. Each is checked by `alhazen check-rig` before a session, and each is
+# optional: a rig without one simply leaves that seam unwired.
+#
+# The empty braces matter: `devices:` followed only by comments is YAML for
+# `devices: null`, which is not the same thing as "no devices" and fails to
+# load.
+devices: {}
+  # Pick ONE eyetracker block. The backend name is the only thing that
+  # changes between them: everything above the device layer — phases,
+  # regions, gaze in centered px — behaves identically either way.
+  #
+  # SR Research EyeLink, over the tracker subnet:
+  # eyetracker:
+  #   backend: eyelink
+  #   host_ip: 100.1.1.1
+  #   edf_host_filename: exp.EDF   # 8.3 name; the Host PC's filesystem
+  #   calibration_type: HV9
+  #
+  # VPixx TRACKPixx3, inside the display chassis. It has no Host PC, so
+  # there is no address and no EDF: the run directory gets the samples as
+  # CSV instead. It is binocular, so which eye a gaze sample carries is
+  # stated here rather than guessed.
+  # eyetracker:
+  #   backend: viewpixx
+  #   eye: left               # or right, or average (needs both eyes tracked)
+  #   calibration_type: HV9   # HV5, HV9 or HV13
+  #   # led_intensity: 6      # 1-8; omit to keep what VPixx's own tools set
+  #
+  # No tracker at all — the mouse cursor stands in for gaze:
+  # eyetracker:
+  #   backend: mouse_sim
+  # reward:
+  #   backend: nidaq
+  #   device: Dev1
+  #   channel: ao0
+  # sync:
+  #   backend: nidaq
+  #   event_lines:
+  #     TRIAL_START: Dev1/port0/line0
+  #     FIX_ON: Dev1/port0/line1
+data_root: data

@@ -1,0 +1,11 @@
+# The task's own parameters. Every key here is validated against
+# ${task_class}Params, so a typo fails at load naming this file rather than
+# silently falling back to a default.
+fix_size_dva: 0.3
+fix_window_dva: 2.0
+acquire_timeout: {ms: 2000}
+hold_duration: {ms: 500}
+iti: {ms: 500}
+paradigm:
+  kind: sequence          # or constant, staircase, questplus, adjustment
+  n_per_condition: 10

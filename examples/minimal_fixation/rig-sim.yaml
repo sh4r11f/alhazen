@@ -1,0 +1,18 @@
+# A laptop with nothing attached: the simulated display backend runs the
+# session end to end and writes real data files.
+monitor:
+  width_px: 1920
+  height_px: 1080
+  width_cm: 60.0
+  distance_cm: 60.0
+  refresh_rate_hz: 60.0
+  fullscreen: false
+display:
+  backend: simulated
+  frame_qa:
+    policy: warn
+dashboard:
+  enabled: false
+  auto_open: false
+  port: 0
+data_root: data

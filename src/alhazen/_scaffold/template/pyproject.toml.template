@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "$name"
+version = "0.1.0"
+description = "An alhazen experiment"
+requires-python = ">=3.10"
+dependencies = ["alhazen"]
+
+[project.optional-dependencies]
+# The renderer, needed only on a machine that opens a real window. The
+# simulated backend — and this package's whole test suite — needs none of it.
+psychopy = ["alhazen[psychopy]"]
+dev = ["pytest"]
+
+# How `alhazen run --task $task_name` finds this experiment. The entry point
+# names the Task subclass; installing this package is what registers it.
+[project.entry-points."alhazen.tasks"]
+$task_name = "$package.task:$task_class"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "background": "#808080",
+  "width": 400,
+  "height": 400,
+  "layers": [
+    {
+      "id": "gabor",
+      "element": {
+        "type": "grating",
+        "cx": {
+          "expr": "width/2"
+        },
+        "cy": {
+          "expr": "height/2"
+        },
+        "width": 300,
+        "height": 300,
+        "spatialFreq": {
+          "expr": "params.spatialFreq"
+        },
+        "orientation": {
+          "expr": "params.orientation"
+        },
+        "phase": {
+          "expr": "params.driftHz * time"
+        },
+        "contrast": {
+          "expr": "params.contrast"
+        },
+        "envelopeSigma": 60
+      }
+    }
+  ]
+}

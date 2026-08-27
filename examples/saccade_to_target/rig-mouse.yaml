@@ -1,0 +1,33 @@
+# A development machine: real window, mouse cursor as gaze, simulated pump
+# and sync lines. Needs alhazen's [psychopy] extra.
+monitor:
+  width_px: 1280
+  height_px: 720
+  width_cm: 60.0
+  distance_cm: 60.0
+  refresh_rate_hz: 60.0
+  fullscreen: false
+display:
+  backend: psychopy
+  frame_qa:
+    policy: warn
+  photodiode:
+    corner: br
+    size_px: 60
+    events: [STIM_ON]
+dashboard:
+  enabled: true
+  auto_open: true
+  port: 0
+devices:
+  eyetracker:
+    backend: mouse_sim
+  reward:
+    backend: simulated
+  sync:
+    backend: simulated
+    event_lines:
+      TRIAL_START: Dev1/port0/line0
+      STIM_ON: Dev1/port0/line1
+      SACCADE_ONSET: Dev1/port0/line2
+data_root: data

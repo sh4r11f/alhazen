@@ -1,0 +1,114 @@
+"""Tests for $name, using alhazen's public test doubles.
+
+These run with no display, no tracker and no renderer installed: the point of
+the fakes is that an experiment's logic is testable on a laptop, and that a
+session which passes here is the same session the rig will run.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import pytest
+
+from alhazen import Duration, InputFrame
+from alhazen.core.engine import TrialEngine
+from alhazen.core.events import EventBus
+from alhazen.core.trial import TrialContext
+from alhazen.testing import EventCollector, FakeClock, FakeDisplay, ScriptedCommands, ScriptedInputs
+from alhazen.display.screen import Screen
+
+from $package.task import $task_class, ${task_class}Params
+
+FRAME_S = 1 / 60
+SCREEN = Screen(width_px=1920, height_px=1080, px_per_deg=40.0)
+
+LOOKING = InputFrame(gaze=(0.0, 0.0))
+AWAY = InputFrame(gaze=(900.0, 900.0))
+BLINK = InputFrame(gaze=None)
+
+
+def run_trial(task, inputs):
+    """Run one trial of this task through the real engine, on a fake clock."""
+    clock = FakeClock()
+    display = FakeDisplay(clock, FRAME_S)
+    bus = EventBus()
+    collector = EventCollector()
+    bus.subscribe(collector)
+    engine = TrialEngine(
+        display=display,
+        clock=clock,
+        bus=bus,
+        schema=task.events,
+        commands=ScriptedCommands(),
+        input_provider=ScriptedInputs(inputs),
+    )
+
+    from alhazen.config.loader import build_session_config
+    from alhazen.config.models import (
+        DisplayConfig,
+        MonitorConfig,
+        RigConfig,
+        SessionInfo,
+    )
+    from alhazen.paradigms.base import Condition
+    from alhazen.task.plan import TrialSetup
+
+    monitor = MonitorConfig(
+        width_px=1920, height_px=1080, width_cm=60.0, distance_cm=60.0,
+        refresh_rate_hz=60.0, fullscreen=False,
+    )
+    setup = TrialSetup(
+        cfg=build_session_config(
+            RigConfig(monitor=monitor, display=DisplayConfig(backend="simulated"), data_root="."),
+            SessionInfo(subject="t01", session=1, run=1, task_name=task.name, seed=1),
+            task.params,
+            {},
+        ),
+        screen=SCREEN,
+        display=display,
+        rng=np.random.default_rng(0),
+        refresh_rate_hz=1 / FRAME_S,
+        trial_index=1,
+        attempt=1,
+        condition=Condition(task.conditions(np.random.default_rng(0))[0].params),
+    )
+    plan = task.build_trial(setup)
+    ctx = TrialContext(
+        clock=clock,
+        screen=SCREEN,
+        rng=np.random.default_rng(0),
+        trial_index=1,
+        params=dict(setup.condition.params),
+        stimuli=plan.stimuli,
+        regions=plan.regions,
+        record=dict(plan.record),
+    )
+    return collector, engine.run_trial(ctx, plan.phases)
+
+
+@pytest.fixture
+def task():
+    # Short durations so a trial plays out in a handful of frames.
+    return $task_class(
+        ${task_class}Params(
+            acquire_timeout=Duration(frames=10), hold_duration=Duration(frames=3)
+        )
+    )
+
+
+def test_looking_at_the_point_completes_the_trial(task):
+    collector, result = run_trial(task, [LOOKING])
+    assert result.outcome.name == "FIXATED"
+    assert "FIX_ON" in collector.names()
+
+
+def test_never_looking_times_out(task):
+    collector, result = run_trial(task, [AWAY])
+    assert result.outcome.name == "NO_FIXATION"
+
+
+def test_a_blink_during_the_hold_is_a_break(task):
+    # The blink rule: an unverifiable gaze is outside every region, so it
+    # cannot be credited as continued fixation.
+    collector, result = run_trial(task, [LOOKING, LOOKING, BLINK])
+    assert result.outcome.name == "FIX_BREAK"

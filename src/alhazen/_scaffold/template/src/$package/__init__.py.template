@@ -1,0 +1,5 @@
+"""$name — an alhazen experiment."""
+
+from $package.task import $task_class, ${task_class}Params
+
+__all__ = ["$task_class", "${task_class}Params"]

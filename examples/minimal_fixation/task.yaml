@@ -1,0 +1,8 @@
+fixation_duration:
+  ms: 200
+fix_size_dva: 0.3
+iti:
+  ms: 50
+paradigm:
+  kind: sequence
+  n_per_condition: 3   # presentations of the single condition

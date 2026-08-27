@@ -1,0 +1,52 @@
+# $name
+
+An experiment built on [alhazen](https://github.com/sh4r11f/alhazen).
+
+## Getting started
+
+```bash
+pip install -e ".[dev]"     # no renderer needed for this
+pytest                      # the task's own tests, on a fake clock
+python run.py --rig configs/rig-sim.yaml --sub s01 --ses 1
+```
+
+That last command runs a complete session against the simulated display and
+writes a real run directory under `data/` — trials, events and frame timings,
+a config snapshot, a session log and a manifest.
+
+## What is where
+
+| | |
+|---|---|
+| `src/$package/task.py` | the experiment: parameters, events, outcomes, and what a trial is made of |
+| `configs/task.yaml` | the task's parameters for a session |
+| `configs/rig-sim.yaml` | a laptop: no window, no devices |
+| `configs/rig-lab.yaml` | the rig: fill in your monitor's real geometry and uncomment the devices it has |
+| `tests/` | the task's tests, using `alhazen.testing`'s doubles |
+
+## On the rig
+
+```bash
+alhazen check-rig --rig configs/rig-lab.yaml --pulse   # before the subject arrives
+alhazen run --task $task_name --rig configs/rig-lab.yaml --sub s01 --ses 1
+```
+
+`check-rig` constructs the same device backends a session would, so a clean
+check predicts a working session. `--pulse` fires one reward pulse and one
+pulse per sync line, so you can hear the pump and see the lines.
+
+The lab config enables the live browser dashboard. It updates after each
+trial but remains read-only while the task is running. Press `P` on the
+experimenter keyboard before using Resume, Calibrate, Give reward, Quit, or
+training-stage controls in the browser; this prevents browser focus from
+interfering with an active subject trial.
+
+## Afterwards
+
+```bash
+alhazen report --run data/sub-s01/ses-001/run-01_task-$task_name
+```
+
+Trial counts by outcome, frame-drop statistics, and a manifest check. With
+`--neural <recording dir>` it also aligns the session's clock to the
+recording's and measures the display's latency from the photodiode.

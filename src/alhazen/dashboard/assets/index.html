@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Alhazen live dashboard</title>
+<style>__STYLE__</style>
+</head>
+<body>
+<header>
+  <div>
+    <div class="brand">Alhazen</div>
+    <div id="identity">Connecting…</div>
+  </div>
+  <div class="right">
+    <span id="counts"></span>
+    <span id="status" data-state="starting">starting</span>
+  </div>
+</header>
+
+<div class="shell">
+  <!-- The sidebar scopes what is shown and carries the session controls. The
+       buttons are inert while the session is running: the server refuses a
+       command unless its own state says paused, so this is a courtesy, not
+       the boundary. -->
+  <nav class="sidebar">
+    <h2 class="side-title">Panels</h2>
+    <ul id="sections" class="sections"></ul>
+
+    <h2 class="side-title">Session</h2>
+    <div class="controls">
+      <button class="control" data-command="resume">Resume</button>
+      <button class="control" data-command="calibrate">Calibrate</button>
+      <button class="control" data-command="manual_reward">Give reward</button>
+      <button class="control" data-command="promote_stage">Promote stage</button>
+      <button class="control" data-command="demote_stage">Demote stage</button>
+      <button class="control" data-command="hold_stage">Hold stage</button>
+      <button class="control danger" data-command="quit">Quit</button>
+    </div>
+    <p id="notice">Press P on the experimenter keyboard to pause.</p>
+
+    <h2 class="side-title">View</h2>
+    <div class="controls">
+      <button class="control" id="theme" type="button">Theme: auto</button>
+    </div>
+  </nav>
+
+  <main>
+    <div id="grid" class="grid"></div>
+  </main>
+</div>
+
+<!-- The saved copy in figures/ has its snapshot baked in here; the live page
+     gets `null` and polls the server instead. -->
+<script>const STATIC_STATE = __STATIC_STATE__;</script>
+<script>__SCRIPT__</script>
+</body>
+</html>

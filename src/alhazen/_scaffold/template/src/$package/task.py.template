@@ -1,0 +1,99 @@
+"""The experiment: what a trial is made of.
+
+Everything this file declares is this experiment's own — its parameters, the
+events it marks, the outcomes a trial can have, and how one is built. The
+frame loop, the devices, the data files and the scheduling all come from
+alhazen, and none of them appear here.
+
+Start by changing ``build_trial``: it returns the phases a trial runs
+through, the stimuli they draw, and the regions they test gaze against.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+
+from alhazen import (
+    CircleRegion,
+    Condition,
+    Duration,
+    Model,
+    Task,
+    TrialPlan,
+    TrialSetup,
+    outcomes,
+)
+from alhazen.core.events import EventSchema
+from alhazen.paradigms.config import SchedulerConfig
+from alhazen.stimuli.fixation import make_fixation
+from alhazen.task import phases
+
+
+class ${task_class}Params(Model):
+    """Everything a session of this task needs, beyond the rig config.
+
+    Durations are ``Duration`` values: give them in milliseconds or in
+    display frames, and they resolve once against the measured refresh rate.
+    Unknown keys in the YAML are rejected, so a typo fails at load naming the
+    file.
+    """
+
+    fix_size_dva: float = 0.3
+    fix_window_dva: float = 2.0
+    acquire_timeout: Duration = Duration(ms=2000)
+    hold_duration: Duration = Duration(ms=500)
+    iti: Duration = Duration(ms=500)
+    paradigm: SchedulerConfig = SchedulerConfig(n_per_condition=10)
+
+
+class $task_class(Task):
+    name = "$task_name"
+
+    # The events this task marks. They become tracker messages, sync pulses
+    # and rows in events.csv; declaring them is what lets a rig config's line
+    # map be checked before a session runs.
+    events = EventSchema(("FIX_ON", "FIX_ACQUIRED"))
+
+    # What a trial can end as. `completed` is the flag the framework reads:
+    # a non-completed outcome produced no measurement, so its condition is
+    # served again rather than counted.
+    outcomes = outcomes(
+        FIXATED=dict(completed=True, success=True),
+        FIX_BREAK=dict(completed=False),
+        NO_FIXATION=dict(completed=True, success=False),
+    )
+
+    params_model = ${task_class}Params
+
+    def conditions(self, rng: np.random.Generator) -> list[Condition]:
+        """The cells this session varies over. One nameless condition is a
+        perfectly good answer for a task whose trials do not differ."""
+        return [Condition({"condition": "fixate"})]
+
+    def build_trial(self, setup: TrialSetup) -> TrialPlan:
+        params: ${task_class}Params = self.params  # type: ignore[assignment]
+        hz = setup.refresh_rate_hz
+        return TrialPlan(
+            phases=[
+                phases.AcquireFixation(
+                    timeout_s=params.acquire_timeout.seconds(hz),
+                    on_timeout=self.outcomes["NO_FIXATION"],
+                ),
+                phases.HoldFixation(
+                    duration_s=params.hold_duration.seconds(hz),
+                    on_break=self.outcomes["FIX_BREAK"],
+                ),
+                # HoldFixation advances rather than ending the trial, because
+                # most tasks have something after the hold. A zero-length
+                # Blank supplies the outcome when nothing does.
+                phases.Blank(0.0, then=self.outcomes["FIXATED"]),
+            ],
+            stimuli={
+                "fixation": make_fixation(setup.display, setup.screen, params.fix_size_dva)
+            },
+            regions={
+                "fixation": CircleRegion(
+                    (0.0, 0.0), setup.screen.deg2px(params.fix_window_dva)
+                )
+            },
+        )

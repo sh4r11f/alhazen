@@ -1,0 +1,34 @@
+# A development machine with a real window and no tracker: the mouse cursor
+# stands in for gaze, so the whole gaze-contingent trial can be run and
+# watched by hand. Needs alhazen's [psychopy] extra.
+monitor:
+  width_px: 2560
+  height_px: 1440
+  width_cm: 60.0
+  distance_cm: 60.0
+  refresh_rate_hz: 60.0
+  fullscreen: true
+display:
+  backend: psychopy
+  frame_qa:
+    policy: warn
+  photodiode:
+    corner: br
+    size_px: 60
+    events: [FIX_ACQUIRED]
+dashboard:
+  enabled: true
+  auto_open: true
+  port: 0
+devices:
+  eyetracker:
+    backend: mouse_sim
+  reward:
+    backend: simulated
+  sync:
+    backend: simulated
+    event_lines:
+      TRIAL_START: Dev1/port0/line0
+      FIX_ON: Dev1/port0/line1
+      FIX_ACQUIRED: Dev1/port0/line2
+data_root: data

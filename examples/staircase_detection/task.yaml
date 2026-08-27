@@ -1,0 +1,23 @@
+fix_size_dva: 0.3
+target_size_dva: 1.0
+eccentricity_dva: 6.0
+stimulus_duration:
+  frames: 6
+response_timeout:
+  ms: 2000
+feedback_duration:
+  ms: 300
+iti:
+  ms: 400
+paradigm:
+  kind: staircase
+  staircase:
+    parameter: contrast
+    start: 0.5
+    step: 0.05
+    n_down: 2
+    n_up: 1
+    n_reversals: 8
+    min_value: 0.0
+    max_value: 1.0
+    interleave_by: start

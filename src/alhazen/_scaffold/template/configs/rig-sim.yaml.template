@@ -1,0 +1,15 @@
+# A laptop with nothing attached: no window, no tracker, no DAQ. Sessions run
+# end to end and write real data files, which is what makes it possible to
+# develop and test an experiment away from the rig.
+monitor:
+  width_px: 1920
+  height_px: 1080
+  width_cm: 60.0
+  distance_cm: 60.0
+  refresh_rate_hz: 60.0
+  fullscreen: false
+display:
+  backend: simulated
+  frame_qa:
+    policy: warn
+data_root: data

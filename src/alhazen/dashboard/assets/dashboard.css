@@ -1,0 +1,410 @@
+/* Alhazen live dashboard — chrome, typography and chart tokens.
+ *
+ * Every colour is a token defined once per theme; no chart names a literal.
+ *
+ * The categorical slots are Okabe-Ito — the colour-vision-deficiency-safe set
+ * scientific figures have used for two decades. The same three hexes serve
+ * both themes and clear every gate in both, all-pairs (the harder test, which
+ * scatter and vector plots need): worst CVD ΔE 11.0, worst normal-vision
+ * ΔE 18.7, all three above 3:1 against their surface. Ordered condition
+ * levels take a single-hue blue ramp instead, stepped for each theme so the
+ * end nearest the surface still clears 2:1.
+ *
+ * Typography is a journal's, not an app's: one neutral grotesque, sized so an
+ * axis is readable across a rig rather than from a desk chair, and figures
+ * that line up in columns.
+ */
+
+:root {
+  color-scheme: light;
+
+  --page:        #f4f5f7;   /* the plane the cards sit on */
+  --surface:     #ffffff;   /* the chart surface itself */
+  --ink:         #101418;   /* primary text */
+  --ink-2:       #3f4750;   /* secondary text */
+  --muted:       #6b7480;   /* axis titles, tick labels */
+  --rule:        #d8dce1;   /* spines, borders, dividers */
+  --tick:        #aab2bc;   /* tick marks */
+  --wash:        #eef0f3;   /* selected row, hover */
+
+  --series-1:    #0072b2;   /* Okabe-Ito blue */
+  --series-2:    #d55e00;   /* Okabe-Ito vermillion */
+  --series-3:    #009e73;   /* Okabe-Ito bluish green */
+
+  /* Ordered condition levels: one hue, light to dark. The lightest step still
+   * clears 2:1 against this surface, so the low level never disappears. */
+  --ramp-1:      #7fb3da;
+  --ramp-2:      #4a91c9;
+  --ramp-3:      #1f6fb2;
+  --ramp-4:      #125386;
+  --ramp-5:      #0a3a5c;
+
+  --critical:    #d03b3b;   /* status: a delivery the hardware refused */
+  --good:        #0ca30c;   /* status: running */
+
+  --radius: 8px;
+  --font: "Helvetica Neue", Helvetica, Arial, "Liberation Sans", system-ui, sans-serif;
+  --sidebar: 224px;
+}
+
+/* The OS setting, only where the reader has not chosen for themselves. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page:        #0e1013;
+    --surface:     #17191d;
+    --ink:         #f2f4f7;
+    --ink-2:       #b7bec8;
+    --muted:       #8b939e;
+    --rule:        #2b3038;
+    --tick:        #5c646e;
+    --wash:        #20242a;
+    /* The ramp's anchor flips: more is LIGHTER, because the step nearest the
+     * surface is now the dark one. */
+    --ramp-1:      #1f6fb2;
+    --ramp-2:      #3a86c4;
+    --ramp-3:      #579dd3;
+    --ramp-4:      #79b4e0;
+    --ramp-5:      #9fcbea;
+  }
+}
+
+/* The header toggle, which must beat the OS setting in both directions. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page:        #0e1013;
+  --surface:     #17191d;
+  --ink:         #f2f4f7;
+  --ink-2:       #b7bec8;
+  --muted:       #8b939e;
+  --rule:        #2b3038;
+  --tick:        #5c646e;
+  --wash:        #20242a;
+  --ramp-1:      #1f6fb2;
+  --ramp-2:      #3a86c4;
+  --ramp-3:      #579dd3;
+  --ramp-4:      #79b4e0;
+  --ramp-5:      #9fcbea;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--ink);
+  font: 14px/1.5 var(--font);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* ------------------------------------------------------------------ */
+/* Header                                                              */
+/* ------------------------------------------------------------------ */
+
+header {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 16px 28px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--rule);
+}
+
+.brand {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+#identity { margin-top: 2px; color: var(--ink-2); font-size: 13px; }
+.right { display: flex; align-items: center; gap: 18px; }
+
+#status {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--good);
+}
+#status[data-state="paused"] { color: var(--series-2); }
+#status[data-state="failed"],
+#status[data-state="disconnected"] { color: var(--critical); }
+#counts { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+
+/* ------------------------------------------------------------------ */
+/* Sidebar + content                                                   */
+/* ------------------------------------------------------------------ */
+
+.shell { display: flex; align-items: flex-start; gap: 0; }
+
+.sidebar {
+  position: sticky;
+  top: 61px;
+  flex: 0 0 var(--sidebar);
+  width: var(--sidebar);
+  max-height: calc(100vh - 61px);
+  overflow-y: auto;
+  padding: 22px 18px 28px;
+  border-right: 1px solid var(--rule);
+}
+
+.side-title {
+  margin: 0 0 10px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.side-title:not(:first-child) { margin-top: 26px; }
+
+/* The section filter. One row per group of panels, selection marked by a
+ * weight change and a rule, never by colour alone. */
+.sections { list-style: none; margin: 0; padding: 0; }
+.sections button {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-left: 2px solid transparent;
+  border-radius: 5px;
+  background: none;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.sections button:hover { background: var(--wash); }
+.sections button[aria-current="true"] {
+  background: var(--wash);
+  border-left-color: var(--series-1);
+  color: var(--ink);
+  font-weight: 650;
+}
+.sections .count { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+.controls { display: grid; gap: 6px; }
+
+button.control {
+  padding: 8px 12px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+button.control:hover:not(:disabled) { background: var(--wash); }
+button.control:disabled { opacity: 0.42; cursor: not-allowed; }
+button.control.danger:not(:disabled) { color: var(--critical); }
+
+#notice { margin-top: 14px; color: var(--muted); font-size: 12.5px; }
+
+main { flex: 1 1 auto; min-width: 0; padding: 22px 28px 56px; }
+
+/* ------------------------------------------------------------------ */
+/* Panels                                                              */
+/* ------------------------------------------------------------------ */
+
+.grid {
+  display: grid;
+  /* Two per row. Three on a wide screen makes every axis fight for room, and
+   * a dashboard is read from across a rig. `minmax(0, 1fr)` rather than
+   * `1fr`: a track's default minimum is its content, so one oversized chart
+   * would widen its column instead of being contained. */
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  /* Stretched, not start-aligned: cards in a row share a height, so a page of
+   * panels reads as a grid rather than as a pile. Each card is a column with
+   * its footer pushed to the bottom, which is what keeps the tops of the
+   * plots on one line. */
+  align-items: stretch;
+}
+
+@media (max-width: 1080px) {
+  .grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+.panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 18px 20px 14px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+
+.panel h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.005em;
+}
+
+/* The KPI strip: the numbers a chart should not have to be measured for. */
+.stats { display: flex; flex-wrap: wrap; gap: 22px; margin: 12px 0 2px; min-height: 40px; }
+.stat-label {
+  display: block;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.stat-value {
+  font-size: 19px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+.stat-value[data-status="critical"] { color: var(--critical); }
+
+.plot { position: relative; margin-top: 8px; }
+.plot svg { display: block; }
+
+/* Reserved whether or not this panel has a legend, so a panel that does not
+ * sits at the same height as one that does. */
+.legend-slot { min-height: 26px; margin-top: 10px; }
+.legend { display: flex; flex-wrap: wrap; gap: 16px; }
+.legend span { display: inline-flex; align-items: center; gap: 7px; color: var(--ink-2); font-size: 12.5px; }
+.legend i { display: inline-block; flex: none; }
+.legend i.line { width: 16px; height: 2.5px; border-radius: 2px; }
+.legend i.dot { width: 9px; height: 9px; border-radius: 50%; }
+.legend i.box { width: 11px; height: 11px; border-radius: 2px; opacity: 0.22; }
+.legend i.ring { width: 10px; height: 10px; border: 1.5px solid; border-radius: 50%; }
+.legend i.diamond { width: 9px; height: 9px; transform: rotate(45deg); }
+
+/* Always present, empty or not: a caveat on one panel must not push its
+ * neighbour's footer out of line. */
+.note { margin: 4px 0 0; min-height: 19px; color: var(--muted); font-size: 12.5px; }
+
+.empty {
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 13.5px;
+  border: 1px dashed var(--rule);
+  border-radius: 6px;
+}
+
+/* The table view: every value on every chart is also readable as text. */
+details.table { margin-top: auto; padding-top: 12px; }
+details.table summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12.5px;
+  list-style: none;
+}
+details.table summary::marker { content: ""; }
+details.table summary::before { content: "▸ "; }
+details.table[open] summary::before { content: "▾ "; }
+details.table table {
+  width: 100%;
+  margin-top: 10px;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+details.table th, details.table td {
+  padding: 4px 10px 4px 0;
+  text-align: right;
+  border-bottom: 1px solid var(--rule);
+}
+details.table th:first-child, details.table td:first-child { text-align: left; }
+details.table th { color: var(--muted); font-weight: 600; }
+.table-scroll { max-height: 240px; overflow: auto; }
+
+/* ------------------------------------------------------------------ */
+/* Chart marks                                                         */
+/* ------------------------------------------------------------------ */
+
+/* Spines and outward ticks, no gridlines: the reading conventions of a
+ * printed figure. Values the ticks do not carry are on the marks, in the
+ * hover readout, and in the table. */
+.spine     { stroke: var(--rule); stroke-width: 1.25; }
+.tick-mark { stroke: var(--tick); stroke-width: 1.25; }
+.tick-text { fill: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.axis-text { fill: var(--ink-2); font-size: 12.5px; }
+.value-text { fill: var(--ink-2); font-size: 12px; font-variant-numeric: tabular-nums; }
+.rule      { stroke: var(--muted); stroke-width: 1; }
+.hairline  { stroke: var(--muted); stroke-width: 1; opacity: 0.5; }
+.hit       { fill: transparent; cursor: crosshair; }
+
+/* Chrome never intercepts the pointer. A spine or an axis title sitting on
+ * top of a hit area would put a dead stripe through a chart's hover. */
+.spine, .tick-mark, .rule, .hairline,
+.tick-text, .axis-text, .value-text { pointer-events: none; }
+
+/* ------------------------------------------------------------------ */
+/* Tooltip                                                             */
+/* ------------------------------------------------------------------ */
+
+.tip {
+  position: absolute;
+  z-index: 4;
+  min-width: 96px;
+  padding: 9px 11px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 90ms linear;
+}
+.tip[data-open="1"] { opacity: 1; }
+.tip .tip-head {
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.tip .tip-row { display: flex; align-items: center; gap: 8px; margin-top: 5px; }
+.tip .tip-key { width: 14px; height: 2.5px; border-radius: 2px; flex: none; }
+.tip .tip-val { font-size: 13.5px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.tip .tip-name { color: var(--ink-2); font-size: 12.5px; }
+
+/* The `stat` panel: one number, shown as one number. Proportional figures on
+ * purpose — `tabular-nums` gives every digit the width of a zero, which makes
+ * a large standalone value look loose. */
+.stat-tile { display: grid; align-content: center; padding: 4px 2px; }
+.tile-value { font-size: 44px; font-weight: 650; line-height: 1.05; letter-spacing: -0.02em; }
+.tile-label { margin-top: 8px; color: var(--ink-2); font-size: 13.5px; }
+.tile-secondary { margin-top: 3px; color: var(--muted); font-size: 12.5px; }
+
+@media (max-width: 860px) {
+  .shell { flex-direction: column; }
+  .sidebar {
+    position: static;
+    width: 100%;
+    flex: none;
+    max-height: none;
+    border-right: 0;
+    border-bottom: 1px solid var(--rule);
+  }
+  .sections { display: flex; flex-wrap: wrap; gap: 4px; }
+  .sections li { flex: 0 0 auto; }
+  .controls { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
+  main { padding: 18px; }
+}
+
+@media print {
+  header, .sidebar { display: none; }
+  body { background: #ffffff; }
+  .panel { break-inside: avoid; }
+}

@@ -1,0 +1,172 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "alhazen"
+version = "1.0.0"
+description = "A framework for building and running vision science experiments"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Sharif Saleki", email = "sharif.saleki@gmail.com" }]
+requires-python = ">=3.10"
+# The hardware-free core deliberately stays light: everything a simulated
+# session needs, nothing a laptop can't install. Renderer and vendor SDKs are
+# extras with lazy imports.
+dependencies = [
+  "numpy>=1.24",
+  # Scheduler summaries (adaptive fits, per-cell counts) are tables, and a
+  # table an experimenter will open in a notebook is a DataFrame.
+  "pandas>=2.0",
+  "pyyaml>=6.0",
+  "pydantic>=2.5",
+]
+
+[project.optional-dependencies]
+# The PsychoPy display backend + stimuli. An extra (not a core dependency) so
+# CI and analysis machines never pay for it; alhazen.display.psychopy_backend
+# imports it lazily and raises a DisplayError naming this extra if missing.
+psychopy = ["psychopy>=2024.1.0"]
+# NI-DAQ reward and TTL sync, on the rig only (Windows). Neither eye tracker
+# SDK has an extra, on purpose, because neither is on PyPI: pylink ships with
+# SR Research's EyeLink Developer's Kit (and the PyPI project of that name is
+# unrelated and must never be installed), and pypixxlib ships with VPixx's
+# Software Tools installer. Both backends say so in their connect() errors.
+nidaq = ["nidaqmx"]
+# Analysis-side extras: scipy for the fits some analyses want. The readers
+# and the alignment need only numpy, so a plain install can still read a
+# session and align it to a recording.
+analysis = ["scipy>=1.10"]
+# The documentation site. Not needed to use alhazen, only to build its docs.
+docs = [
+  "mkdocs-material>=9.5",
+  "mkdocstrings[python]>=0.24",
+]
+dev = [
+  "pytest>=8.0",
+  "pytest-cov>=5.0",
+  "ruff>=0.6.0",
+  "mypy>=1.10",
+  "import-linter>=2.0",
+  "types-PyYAML",
+]
+
+[project.scripts]
+alhazen = "alhazen.cli.main:main"
+
+# The scaffold's templates and the dashboard's frontend ship inside the wheel
+# — both are read at runtime, so a package that omitted them would install
+# fine and fail on first use (`alhazen new`, and a blank dashboard page).
+[tool.setuptools.package-data]
+alhazen = ["py.typed", "_scaffold/template/**/*", "dashboard/assets/*"]
+
+[project.urls]
+Repository = "https://github.com/sh4r11f/alhazen"
+Documentation = "https://sh4r11f.github.io/alhazen/"
+Changelog = "https://github.com/sh4r11f/alhazen/blob/main/CHANGELOG.md"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tests"]
+addopts = "-m 'not display'"
+markers = [
+  "display: needs a real window (PsychoPy installed and a screen attached); run manually with -m display",
+  # Slow but not optional: the scaffold acceptance test installs two packages
+  # and runs two subprocess sessions. It is in the default suite, marked so it
+  # can be deselected while iterating (`-m 'not slow'`).
+  "slow: takes tens of seconds (subprocess installs and full sessions)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests", "examples"]
+
+# ruff >=0.13 formats Python blocks inside markdown. The docs' snippets are
+# prose-shaped and their formatting was never part of this gate's contract,
+# so the *formatter* skips markdown. `ruff check` still lints
+# everything, and the docs' Python snippets are compiled by a test
+# (tests/unit/test_docs_snippets.py) — the check that actually matters.
+[tool.ruff.format]
+exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "RET", "SIM"]
+ignore = [
+  "SIM108", # ternary rewrites often hurt readability in frame-loop code
+  "C408",   # outcomes(CORRECT=dict(completed=True)) is the intended API idiom
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B011"]
+
+# No `python_version` pin here. It said 3.10, which made mypy parse every stub
+# it follows as 3.10 as well — and numpy's stubs now use PEP 695 `type`
+# statements, so the check died inside numpy on any 3.12 runner, with a syntax
+# error about a file this project does not own. The CI matrix is the
+# compatibility gate that matters: mypy on the 3.10 job checks this code
+# against 3.10, because that is the interpreter running it.
+[tool.mypy]
+files = ["src"]
+strict_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+check_untyped_defs = true
+no_implicit_optional = true
+
+[[tool.mypy.overrides]]
+module = ["psychopy.*", "PIL.*", "pandas.*", "nidaqmx.*", "pylink.*", "pypixxlib.*"]
+ignore_missing_imports = true
+
+# Layering is enforced, not folklore: imports point only
+# downward. Modules on the same line are independent of each other.
+# alhazen.errors and alhazen.version sit outside the contract on purpose —
+# anything may import them. task/ and training/ join their line when they land
+# (phases 3 and 5).
+#
+# devices sits with paradigms: it needs core (the clock, and Event for the
+# tracker-message subscriber), display (calibration graphics draw into the
+# window) and config — all below it — while nothing below ever imports it.
+# Only session/builder.py wires devices, which is what keeps the engine and
+# every phase hardware-free. devices and paradigms share a line because they
+# are mutually independent.
+#
+# task sits above paradigms because Task.make_source builds schedulers, and
+# below session because the session runner calls a task, never the reverse —
+# which is why TrialSetup/TrialPlan live in task/plan.py.
+#
+# training sits between them: it re-validates parameters through the task's
+# own params model (so it must be above task), and the session runner drives
+# it (so it must be below session). Nothing in task knows a curriculum exists.
+#
+# scenes shares the stimuli line: it is a stimulus provider (SceneStimulus
+# satisfies the Stimulus protocol), and it imports only display and config —
+# the same things stimuli imports, and nothing that would let a scene reach a
+# device or a session.
+#
+# analysis shares the session line: it reads what a session wrote, using the
+# same core/config/data/display.screen the session used, and imports none of
+# session, task, devices or stimuli — so an analysis machine needs no renderer
+# and no device SDK, and an analysis can never quietly re-declare what the rig
+# was doing (it reads the run's own snapshot instead).
+[tool.importlinter]
+root_package = "alhazen"
+
+[[tool.importlinter.contracts]]
+name = "layered architecture"
+type = "layers"
+layers = [
+  "alhazen.cli",
+  "alhazen.session | alhazen.testing | alhazen.analysis",
+  "alhazen.training",
+  "alhazen.task",
+  "alhazen.dashboard",
+  "alhazen.paradigms | alhazen.devices",
+  "alhazen.core",
+  "alhazen.stimuli | alhazen.scenes",
+  "alhazen.display",
+  "alhazen.config | alhazen.data",
+]

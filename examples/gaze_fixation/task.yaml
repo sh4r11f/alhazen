@@ -1,0 +1,11 @@
+fix_size_dva: 0.3
+fix_window_dva: 2.0
+acquire_timeout:
+  ms: 2000
+hold_duration:
+  ms: 500
+iti:
+  ms: 200
+paradigm:
+  kind: sequence
+  n_per_condition: 5

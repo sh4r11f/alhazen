@@ -1,0 +1,477 @@
+{
+  "_note": "Transcribed from illusion-studio src/scene/pixel.test.ts. The PNGs beside this file are that repo's own committed references, rendered by Skia (@napi-rs/canvas). Canvas is 200x150, background #222 unless the scene says otherwise.",
+  "height": 150,
+  "scenes": {
+    "black-under-transform": {
+      "background": "#ffffff",
+      "layers": [
+        {
+          "element": {
+            "fill": "#000000",
+            "height": 40,
+            "type": "rect",
+            "width": 40,
+            "x": 20,
+            "y": 20
+          },
+          "transform": {
+            "translate": [
+              40,
+              0
+            ]
+          }
+        }
+      ]
+    },
+    "circle": {
+      "background": "#222",
+      "layers": [
+        {
+          "element": {
+            "cx": 100,
+            "cy": 75,
+            "fill": "#fff",
+            "radius": 50,
+            "type": "circle"
+          }
+        }
+      ]
+    },
+    "dotfield-coherent": {
+      "__time__": 0.25,
+      "background": "#000",
+      "layers": [
+        {
+          "element": {
+            "coherence": 0.5,
+            "color": "#fff",
+            "count": 24,
+            "cx": 100,
+            "cy": 75,
+            "direction": 0.7,
+            "dotRadius": 3,
+            "height": 100,
+            "seed": 7,
+            "speed": 60,
+            "type": "dotField",
+            "width": 120
+          }
+        }
+      ]
+    },
+    "dotfield-defaults": {
+      "__time__": 0.5,
+      "background": "#000",
+      "layers": [
+        {
+          "element": {
+            "color": "#fff",
+            "count": 16,
+            "cx": 100,
+            "cy": 75,
+            "height": 100,
+            "seed": 5,
+            "type": "dotField",
+            "width": 120
+          }
+        }
+      ]
+    },
+    "dotfield-lifetime": {
+      "__time__": 0.45,
+      "background": "#000",
+      "layers": [
+        {
+          "element": {
+            "coherence": 1.0,
+            "color": "#fff",
+            "count": 24,
+            "cx": 100,
+            "cy": 75,
+            "direction": 1.2,
+            "dotRadius": 3,
+            "height": 100,
+            "lifetime": 0.3,
+            "seed": 11,
+            "speed": 40,
+            "type": "dotField",
+            "width": 120
+          }
+        }
+      ]
+    },
+    "ellipse": {
+      "background": "#222",
+      "layers": [
+        {
+          "element": {
+            "cx": 100,
+            "cy": 75,
+            "fill": "#84cc16",
+            "radiusX": 70,
+            "radiusY": 35,
+            "rotation": 0.5,
+            "stroke": "#000",
+            "strokeWidth": 2,
+            "type": "ellipse"
+          }
+        }
+      ]
+    },
+    "gabor": {
+      "background": "#222",
+      "layers": [
+        {
+          "element": {
+            "cx": 100,
+            "cy": 75,
+            "envelopeSigma": 25,
+            "height": 120,
+            "spatialFreq": 0.08,
+            "type": "grating",
+            "width": 120
+          }
+        }
+      ]
+    },
+    "grating-default-base": {
+      "background": "#222",
+      "layers": [
+        {
+          "element": {
+            "contrast": 0.5,
+            "cx": 100,
+            "cy": 75,
+            "height": 100,
+            "spatialFreq": 0.04,
+            "type": "grating",
+            "width": 100
+          }
+        }
+      ]
+    },
+    "grating-dim": {
+      "background": "#222",
+      "layers": [
+        {
+          "element": {
+            "baseLuminance": 64,
+            "contrast": 1.0,
+            "cx": 100,
+            "cy": 75,
+            "height": 120,
+            "orientation": 0,
+            "phase": 0,
+            "shape": "sine",
+            "spatialFreq": 0.05,
+            "type": "grating",
+            "width": 120
+          }
+        }
+      ]
+    },
+    "grating-sine": {
+      "background": "#222",
+      "layers": [
+        {
+          "element": {
+            "contrast": 0.9,
+            "cx": 100,
+            "cy": 75,
+            "height": 120,
+            "orientation": 0.6,
+            "phase": 0.25,
+            "shape": "sine",
+            "spatialFreq": 0.08,
+            "type": "grating",
+            "width": 120
+          }
+        }
+      ]
+    },
+    "grating-square": {
+      "background": "#222",
+      "layers": [
+        {
+          "element": {
+            "contrast": 1.0,
+            "cx": 100,
+            "cy": 75,
+            "height": 120,
+            "orientation": 0,
+            "phase": 0,
+            "shape": "square",
+            "spatialFreq": 0.06,
+            "type": "grating",
+            "width": 120
+          }
+        }
+      ]
+    },
+    "group-transform": {
+      "background": "#222",
+      "layers": [
+        {
+          "element": {
+            "children": [
+              {
+                "element": {
+                  "fill": "#0284c7",
+                  "height": 60,
+                  "type": "rect",
+                  "width": 80,
+                  "x": -40,
+                  "y": -30
+                }
+              },
+              {
+                "element": {
+                  "cx": 0,
+                  "cy": 0,
+                  "fill": "#f97316",
+                  "radius": 25,
+                  "type": "circle"
+                },
+                "opacity": 0.6
+              }
+            ],
+            "type": "group"
+          },
+          "transform": {
+            "rotate": 0.4,
+            "translate": [
+              100,
+              75
+            ]
+          }
+        }
+      ]
+    },
+    "line-caps": {
+      "background": "#000",
+      "layers": [
+        {
+          "element": {
+            "closed": false,
+            "points": [
+              [
+                40,
+                30
+              ],
+              [
+                160,
+                30
+              ],
+              [
+                100,
+                120
+              ]
+            ],
+            "stroke": "#fff",
+            "strokeWidth": 14,
+            "type": "line"
+          }
+        }
+      ]
+    },
+    "line-dashed": {
+      "background": "#000",
+      "layers": [
+        {
+          "element": {
+            "dash": [
+              12,
+              8
+            ],
+            "points": [
+              [
+                20,
+                40
+              ],
+              [
+                180,
+                40
+              ]
+            ],
+            "stroke": "#fff",
+            "strokeWidth": 6,
+            "type": "line"
+          }
+        }
+      ]
+    },
+    "noise-uniform": {
+      "background": "#000",
+      "layers": [
+        {
+          "element": {
+            "height": 60,
+            "seed": 9,
+            "type": "noise",
+            "width": 80,
+            "x": 40,
+            "y": 30
+          }
+        }
+      ]
+    },
+    "polygon": {
+      "background": "#222",
+      "layers": [
+        {
+          "element": {
+            "fill": "#ec4899",
+            "points": [
+              [
+                100,
+                15
+              ],
+              [
+                180,
+                135
+              ],
+              [
+                20,
+                135
+              ]
+            ],
+            "stroke": "#fff",
+            "strokeWidth": 3,
+            "type": "polygon"
+          }
+        }
+      ]
+    },
+    "polygon-winding": {
+      "background": "#000",
+      "layers": [
+        {
+          "element": {
+            "fill": "#fff",
+            "points": [
+              [
+                100,
+                15
+              ],
+              [
+                40,
+                130
+              ],
+              [
+                175,
+                55
+              ],
+              [
+                25,
+                55
+              ],
+              [
+                160,
+                130
+              ]
+            ],
+            "type": "polygon"
+          }
+        }
+      ]
+    },
+    "rect": {
+      "background": "#222",
+      "layers": [
+        {
+          "element": {
+            "cornerRadius": 12,
+            "fill": "#fef3c7",
+            "height": 100,
+            "stroke": "#dc2626",
+            "strokeWidth": 4,
+            "type": "rect",
+            "width": 140,
+            "x": 30,
+            "y": 25
+          }
+        }
+      ]
+    },
+    "stripes": {
+      "background": "#000",
+      "layers": [
+        {
+          "element": {
+            "color": "#fff",
+            "height": 150,
+            "offset": 6,
+            "orientation": "both",
+            "period": 40,
+            "thickness": 12,
+            "type": "stripes",
+            "width": 200,
+            "x": 0,
+            "y": 0
+          }
+        }
+      ]
+    },
+    "stripes-defaults": {
+      "background": "#000",
+      "layers": [
+        {
+          "element": {
+            "color": "#fff",
+            "height": 40,
+            "type": "stripes",
+            "width": 60,
+            "x": 20,
+            "y": 20
+          }
+        }
+      ]
+    },
+    "stripes-overhang": {
+      "background": "#000",
+      "layers": [
+        {
+          "element": {
+            "color": "#fff",
+            "height": 40,
+            "offset": 7,
+            "orientation": "both",
+            "period": 20,
+            "thickness": 14,
+            "type": "stripes",
+            "width": 61,
+            "x": 20,
+            "y": 20
+          }
+        }
+      ]
+    },
+    "transform-origin-scale": {
+      "background": "#222",
+      "layers": [
+        {
+          "element": {
+            "fill": "#9333ea",
+            "height": 60,
+            "type": "rect",
+            "width": 80,
+            "x": 60,
+            "y": 45
+          },
+          "transform": {
+            "origin": [
+              100,
+              75
+            ],
+            "rotate": 0.3,
+            "scale": [
+              1.4,
+              0.8
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "width": 200
+}

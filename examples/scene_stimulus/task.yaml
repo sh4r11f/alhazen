@@ -1,0 +1,8 @@
+fix_size_dva: 0.3
+fix_window_dva: 3.0
+contrast: 0.8
+drift_hz: 2.0
+spatial_freq: 0.04
+orientations_deg: [0.0, 45.0, 90.0, 135.0]
+stimulus_duration: {ms: 1000}
+iti: {ms: 500}

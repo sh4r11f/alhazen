@@ -1,0 +1,52 @@
+"""Run one session of $name.
+
+    python run.py --rig configs/rig-sim.yaml --sub s01 --ses 1
+
+This exists so the experiment can be started without installing anything.
+Once the package IS installed, `alhazen run --task $task_name` does the same
+job and picks the next free run number for you.
+"""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+from alhazen import build_session
+from alhazen.config.loader import load_model, load_rig
+
+from $package.task import $task_class, ${task_class}Params
+
+HERE = Path(__file__).parent
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--rig", default=str(HERE / "configs" / "rig-sim.yaml"))
+    parser.add_argument("--task-config", default=str(HERE / "configs" / "task.yaml"))
+    parser.add_argument("--sub", required=True, help="subject id (alphanumeric)")
+    parser.add_argument("--ses", required=True, type=int)
+    parser.add_argument("--run", type=int, default=1)
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--windowed", action="store_true")
+    args = parser.parse_args()
+
+    rig = load_rig(args.rig)
+    params = load_model(args.task_config, ${task_class}Params)
+    runner = build_session(
+        rig=rig,
+        subject=args.sub,
+        session=args.ses,
+        run=args.run,
+        task=$task_class(params),
+        seed=args.seed,
+        iti=params.iti,
+        windowed=args.windowed,
+        sources={"rig": args.rig, "task": args.task_config},
+    )
+    runner.run()
+    print(f"session complete — data under {rig.data_root.resolve()}")
+
+
+if __name__ == "__main__":
+    main()

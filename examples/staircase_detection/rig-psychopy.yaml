@@ -1,0 +1,19 @@
+# A machine with a real window: the subject answers with the left and right
+# arrow keys, read from the same window the stimulus is drawn in. Needs
+# alhazen's [psychopy] extra.
+monitor:
+  width_px: 1280
+  height_px: 720
+  width_cm: 60.0
+  distance_cm: 60.0
+  refresh_rate_hz: 60.0
+  fullscreen: false
+display:
+  backend: psychopy
+  frame_qa:
+    policy: warn
+dashboard:
+  enabled: true
+  auto_open: true
+  port: 0
+data_root: data

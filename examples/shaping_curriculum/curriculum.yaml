@@ -1,0 +1,44 @@
+# Three stages of shaping a subject onto a fixation task.
+#
+# Read it top to bottom as the protocol it is: accept almost anything at
+# first and pay well for it, then tighten the window while the subject keeps
+# working, then run the real task.
+stages:
+  - name: any-look
+    # A window this large accepts a glance anywhere near the point, and a
+    # hold this short accepts a glance. The subject is being taught that
+    # looking at the dot is what pays.
+    overrides:
+      fix_window_dva: 8.0
+      hold_duration: {ms: 50}
+    reward_scale: 2.0
+    criteria:
+      window: 20
+      min_trials: 10
+      # Move on once the subject is reliably completing trials — not once it
+      # is accurate, which at this stage means nothing.
+      promote_when: {completed_rate: 0.8}
+
+  - name: tighten
+    # The window shrinks across the stage while the hold stays short: one
+    # thing gets harder at a time.
+    overrides:
+      hold_duration: {ms: 150}
+    reward_scale: 1.5
+    ramps:
+      - param: fix_window_dva
+        start: 8.0
+        end: 3.0
+        over_completed_trials: 40
+    criteria:
+      window: 20
+      min_trials: 10
+      promote_when: {success_rate: 0.75}
+      # And back a stage if the subject falls apart at the tighter window.
+      demote_when: {completed_rate: 0.3}
+
+  - name: real-task
+    # The task's own parameters, unmodified: no overrides at all.
+    criteria:
+      window: 50
+      min_trials: 50
