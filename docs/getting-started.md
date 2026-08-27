@@ -101,10 +101,23 @@ Open `src/saccade_bias/task.py`. Three things to try:
 ## When you get to the rig
 
 ```bash
+alhazen monitor register --rig configs/rig-lab.yaml  # tell PsychoPy about the panel
 alhazen calibrate ruler --rig configs/rig-lab.yaml   # is the geometry right?
 alhazen check-rig --rig configs/rig-lab.yaml --pulse # is everything wired?
 alhazen run --task saccade-bias --rig configs/rig-lab.yaml --sub s01 --ses 1
 ```
+
+`monitor register` writes the rig's monitor into PsychoPy's own monitor
+database — the one Monitor Center edits, under `~/.psychopy3/monitors` — using
+the name in `monitor.name`. Do it once per rig, and again whenever you change
+the geometry or measure a new gamma. From then on the panel is visible to
+every PsychoPy tool on that machine, sessions inherit whatever calibration is
+stored on it, and `check-rig` tells you if the config and the registration
+have drifted apart. `monitor list` shows what PsychoPy knows; `monitor show
+--rig <yaml>` compares one rig against it and exits non-zero if they disagree.
+
+A machine driving two panels needs two names: rigs left on the default share
+one registration and overwrite each other.
 
 `calibrate ruler` opens the rig's own display and draws a bar of the size you
 asked for, with ticks at each end and the length it *should* measure printed

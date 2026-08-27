@@ -103,9 +103,22 @@ class TestThisRepoIsConsistent:
         changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
         assert "pre-1.0" not in changelog
 
-    def test_its_own_tag_would_pass(self):
+    def test_its_own_tag_would_pass_apart_from_folding_in_unreleased(self):
+        """Everything the release-day gate checks except the one thing that is
+        supposed to be true mid-development.
+
+        `Unreleased` is where changes wait between landing and shipping, so it
+        is non-empty most of the time and cutting the release is what empties
+        it — asserting the whole gate here would assert that the repo is never
+        mid-development, and forbid the workflow the changelog documents. That
+        rule is exercised against a synthetic changelog in
+        TestTheGateCatchesDrift, and `release_check.py --tag` still enforces it
+        on the day. What is worth checking on every commit is all the rest:
+        that a tag naming the declared version would trip nothing else.
+        """
         version = release_check.declared_version(REPO_ROOT)
-        assert release_check.check(tag=f"v{version}", root=REPO_ROOT) == []
+        problems = release_check.check(tag=f"v{version}", root=REPO_ROOT)
+        assert [p for p in problems if "'Unreleased' still has entries" not in p] == []
 
 
 class TestTheGateCatchesDrift:

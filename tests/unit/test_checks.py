@@ -44,6 +44,7 @@ class TestSimulatedRig:
         assert all(r.ok for r in results)
         assert [r.name for r in results] == [
             "config",
+            "monitor",
             "data_root",
             "eyetracker",
             "reward",

@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from alhazen.config.models import MonitorConfig
+from alhazen.display.monitors import resolve as resolve_monitor
 from alhazen.errors import DisplayError
 
 
@@ -27,16 +28,22 @@ class PsychoPyDisplay:
 
     def open(self) -> None:
         try:
-            from psychopy import monitors, visual
+            from psychopy import visual
         except ImportError as e:
             raise DisplayError(
                 "the PsychoPy display backend needs psychopy installed — "
                 "pip install 'alhazen[psychopy]'"
             ) from e
 
-        mon = monitors.Monitor("alhazen", distance=self._monitor.distance_cm)
-        mon.setWidth(self._monitor.width_cm)
-        mon.setSizePix((self._monitor.width_px, self._monitor.height_px))
+        # The rig's monitor as PsychoPy knows it: the registered record when
+        # `alhazen monitor register` has written one (so the window inherits
+        # whatever calibration it carries), the config's geometry alone when
+        # it has not, and a loud error when the two disagree — see
+        # display.monitors. Passing no `gamma=` to the Window is deliberate:
+        # PsychoPy then applies the gamma stored on this monitor, and the
+        # session builder applies alhazen's own measured fit on top of it as
+        # the same absolute value, never a second correction.
+        mon = resolve_monitor(self._monitor)
         # Units are pixels on purpose: alhazen owns all deg<->px conversion in
         # display.screen.Screen, exactly once per value, so recorded positions
         # invert back to configured ones bit-for-bit. Letting the renderer

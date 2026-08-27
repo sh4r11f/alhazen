@@ -22,8 +22,9 @@ from alhazen.devices.eyetracker import make_tracker
 from alhazen.devices.recording import make_recording
 from alhazen.devices.reward import make_reward
 from alhazen.devices.sync import SyncOutput, make_sync
+from alhazen.display import monitors as monitor_registry
 from alhazen.display.screen import Screen
-from alhazen.errors import AlhazenError
+from alhazen.errors import AlhazenError, DisplayError
 
 log = logging.getLogger(__name__)
 
@@ -53,6 +54,7 @@ def check_rig(rig: RigConfig, pulse: bool = False) -> list[CheckResult]:
     """
     return [
         _check_config(rig),
+        _check_monitor(rig),
         _check_data_root(rig),
         _check_eyetracker(rig),
         _check_reward(rig, pulse),
@@ -78,6 +80,51 @@ def _check_config(rig: RigConfig) -> CheckResult:
         True,
         f"valid — {rig.display.backend} display, devices: "
         f"{', '.join(configured) if configured else 'none configured'}",
+    )
+
+
+def _check_monitor(rig: RigConfig) -> CheckResult:
+    """Does PsychoPy know this rig's monitor, and does it still agree with it?
+
+    The window itself cannot be checked without becoming a session, but its
+    monitor registration can — and a registration that has drifted from the
+    rig config is exactly what stops the window from opening at all, half an
+    hour later, with a subject already in the chair.
+    """
+    if rig.display.backend != "psychopy":
+        return CheckResult(
+            "monitor", True, f"no psychopy registration needed ({rig.display.backend} display)"
+        )
+    try:
+        registration = monitor_registry.lookup(rig.monitor.name)
+    except DisplayError as e:
+        # A rig config that asks for the psychopy backend on a machine without
+        # psychopy cannot run a session at all, so this is a rig fault, not a
+        # missing niceness.
+        return CheckResult("monitor", False, str(e))
+
+    if not registration.registered:
+        # Not a failure: sessions run unregistered, using the config's own
+        # geometry. They just have no stored calibration to inherit, which is
+        # worth saying rather than passing silently.
+        return CheckResult(
+            "monitor",
+            True,
+            f"{rig.monitor.name!r} is not registered with psychopy — sessions will use this "
+            f"config's geometry and no stored calibration "
+            f"(alhazen monitor register --rig <yaml> to add it)",
+        )
+    drift = monitor_registry.differences(rig.monitor, registration)
+    if drift:
+        return CheckResult(
+            "monitor",
+            False,
+            f"{rig.monitor.name!r} disagrees with this config ({'; '.join(drift)}) — "
+            f"re-register it with `alhazen monitor register --rig <yaml>`",
+        )
+    gamma = monitor_registry.format_gamma(registration.gamma)
+    return CheckResult(
+        "monitor", True, f"{rig.monitor.name!r} registered with psychopy, gamma {gamma}"
     )
 
 

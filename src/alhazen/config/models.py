@@ -78,12 +78,27 @@ class MonitorConfig(Model):
     refresh_rate_hz: float
     screen_index: int = 0
     fullscreen: bool = True
+    # The name this panel is registered under in PsychoPy's per-machine
+    # monitor database (`alhazen monitor register`), which is also the name
+    # Monitor Center and any other PsychoPy script on this machine look it up
+    # by. A machine that drives more than one panel must give each rig config
+    # its own name: two rigs left on the default would share one registration
+    # and overwrite each other's geometry.
+    name: str = "alhazen"
 
     @model_validator(mode="after")
     def _positive(self) -> MonitorConfig:
-        for name in ("width_px", "height_px", "width_cm", "distance_cm", "refresh_rate_hz"):
-            if getattr(self, name) <= 0:
-                raise ValueError(f"{name} must be > 0")
+        for field in ("width_px", "height_px", "width_cm", "distance_cm", "refresh_rate_hz"):
+            if getattr(self, field) <= 0:
+                raise ValueError(f"{field} must be > 0")
+        # The name becomes a file inside PsychoPy's monitor folder, so a path
+        # separator in it would write somewhere else entirely, and surrounding
+        # whitespace makes two names that look identical in a config file
+        # resolve to two different monitors.
+        if not self.name or self.name != self.name.strip():
+            raise ValueError("monitor name must be non-empty and free of surrounding whitespace")
+        if any(bad in self.name for bad in ("/", "\\")) or self.name in (".", ".."):
+            raise ValueError(f"monitor name must be a plain name, not a path: {self.name!r}")
         return self
 
 

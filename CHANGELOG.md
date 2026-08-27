@@ -27,6 +27,23 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ## Unreleased
 
+### Added
+
+- **`alhazen monitor`** — register a rig's monitor with PsychoPy. `monitor
+  register --rig <yaml>` writes the config's geometry, and any gamma from
+  `alhazen calibrate gamma`, into PsychoPy's own monitor database under the
+  new `monitor.name` field; `monitor list` shows what PsychoPy knows on this
+  machine; `monitor show --rig <yaml>` compares one rig against it and exits
+  non-zero when they disagree. Sessions open their window against the
+  registered monitor, so a calibration measured in PsychoPy's Monitor Center
+  is inherited rather than ignored, and a registration that has drifted from
+  the rig config is a loud error instead of a window whose deg/px model
+  differs from the one placing the stimuli. `check-rig` grew a `monitor`
+  check for the same comparison.
+- **`MonitorConfig.name`** (default `"alhazen"`) — the name the panel is
+  registered under. A machine driving more than one panel needs one name per
+  rig config.
+
 ## 1.0.0 - 2026-08-27
 
 The first release, and the point from which those three contracts hold.
