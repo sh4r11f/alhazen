@@ -18,24 +18,17 @@ from __future__ import annotations
 
 import argparse
 import sys
-from importlib import metadata
 from pathlib import Path
 
 from alhazen.config.loader import load_rig
 from alhazen.errors import AlhazenError, ConfigError
 from alhazen.session.checks import check_rig, format_result
-
-
-def _version() -> str:
-    try:
-        return metadata.version("alhazen")
-    except metadata.PackageNotFoundError:
-        return "unknown"
+from alhazen.version import get_version
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="alhazen", description="Vision science experiments.")
-    parser.add_argument("--version", action="version", version=f"alhazen {_version()}")
+    parser.add_argument("--version", action="version", version=f"alhazen {get_version()}")
     sub = parser.add_subparsers(dest="command")
 
     validate = sub.add_parser("validate", help="validate a config file")

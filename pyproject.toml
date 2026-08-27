@@ -49,6 +49,9 @@ dev = [
   "mypy>=1.10",
   "import-linter>=2.0",
   "types-PyYAML",
+  # scripts/release_check.py reads pyproject.toml. tomllib is stdlib from
+  # 3.11; this is the backport for the 3.10 job.
+  "tomli>=2.0; python_version < '3.11'",
 ]
 
 [project.scripts]

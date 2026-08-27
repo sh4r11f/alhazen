@@ -13,7 +13,34 @@ on:
   workflow_dispatch:
 
 jobs:
+  check:
+    # The gate, and it runs before anything is built. The tag, the version in
+    # pyproject.toml and the newest CHANGELOG section must name the same
+    # release. A mismatch caught here costs one re-tag; the same mismatch
+    # caught after publishing costs that version number forever, because PyPI
+    # never lets a number be reused.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: The version agrees everywhere
+        # A tag push checks the tag as well. A manual run has no tag to check,
+        # so it verifies only that pyproject and the changelog agree — which is
+        # all that can be known before a release is named.
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$REF_TYPE" = "tag" ]; then
+            python scripts/release_check.py --tag "$REF_NAME"
+          else
+            python scripts/release_check.py
+          fi
+
   build:
+    needs: check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

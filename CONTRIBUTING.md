@@ -13,6 +13,17 @@ mypy                            # zero errors, src/ only
 lint-imports                    # the layering contract must stay KEPT
 ```
 
+Two of those live inside `pytest` and are worth knowing about before one
+fails on you:
+
+- `tests/unit/test_contracts.py` pins the on-disk compatibility contracts
+  (RNG streams, reserved events, the run-directory layout, the schema version
+  numbers) against `tests/fixtures/contracts.json`. Adding to any of them is
+  normal — update the baseline in the same commit. A failure on a *removal* is
+  the contract working.
+- `tests/unit/test_versioning.py` checks that `pyproject.toml` and
+  `CHANGELOG.md` name the same version.
+
 **Definition of done:** all five green, the new behavior has tests, and
 `docs/architecture.md` is updated in the same change.
 
@@ -76,3 +87,30 @@ These are what the tests pin. Do not "simplify" one away without a discussion:
 
 One commit per coherent unit. An imperative subject line, and a body saying
 what changed and why. No model names in commits, PRs or code.
+
+Anything user-visible gets an entry under `## Unreleased` in `CHANGELOG.md`, in
+the same commit. That section is what becomes the next release's notes.
+
+## Releasing
+
+The version number lives in exactly one place — `version` in `pyproject.toml` —
+and `CHANGELOG.md` and the git tag must agree with it. A published number is
+spent forever, so `scripts/release_check.py` refuses to let CI build anything
+until all three match. [docs/versioning.md](docs/versioning.md) has the full
+policy; the steps are:
+
+```bash
+# 1. In one commit: rename `## Unreleased` to `## X.Y.Z - YYYY-MM-DD`
+#    and set version = "X.Y.Z" in pyproject.toml.
+# 2. Run the same gate CI will run. A mismatch here costs an edit;
+#    the same mismatch after tagging costs a deleted tag.
+python scripts/release_check.py --tag vX.Y.Z
+
+# 3. Land that commit on main, then tag it.
+git tag vX.Y.Z
+git push origin vX.Y.Z
+```
+
+The tag triggers `.github/workflows/release.yml`: gate, build, publish to
+TestPyPI, install and import it on all three operating systems, and only then
+publish to PyPI.

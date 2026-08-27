@@ -49,4 +49,5 @@ nav:
   - Scenes: scenes.md
   - Experiment database: database.md
   - Live dashboard: dashboard.md
+  - Versioning and releases: versioning.md
   - API reference: reference.md
