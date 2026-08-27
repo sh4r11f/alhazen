@@ -14,6 +14,13 @@ from typing import Any
 from alhazen.config.models import MonitorConfig
 from alhazen.errors import DisplayError
 
+# What on-screen messages look like. A humanist sans at slightly-off-white:
+# pure white on the mid-grey background is a harsher edge than a subject
+# reading a paragraph needs. PsychoPy ships Open Sans, so no rig has to
+# install anything, and it falls back to the system sans if it is missing.
+MESSAGE_FONT = "Open Sans"
+MESSAGE_COLOR = (0.82, 0.82, 0.86)
+
 
 class PsychoPyDisplay:
     kind = "psychopy"
@@ -80,8 +87,34 @@ class PsychoPyDisplay:
 
         # A fresh TextStim per call: messages appear a handful of times per
         # session, nowhere near the per-frame hot path.
+        #
+        # Three departures from TextStim's defaults, because the defaults were
+        # chosen for a much smaller screen than a modern rig has:
+        #
+        # - **Size scales with the panel.** The default height in pixel units
+        #   is 20 px — a legible paragraph on a 768-line CRT, an unreadable
+        #   smear on a 2160-line display. As a fraction of the panel's height
+        #   instead, instructions are the same physical size on every rig.
+        # - **Lines are left-aligned; the block stays centred.** Centred prose
+        #   has a ragged LEFT edge, so the eye hunts for the start of each
+        #   line. Fine for one word, bad for instructions a subject is asked
+        #   to read and follow.
+        # - **Line length is bounded by the text, not the monitor.** A
+        #   wrapWidth of 80% of the window is 6000 px on an ultrawide, i.e.
+        #   one enormous line. The readable measure is ~60 characters, which
+        #   is a multiple of the text height.
+        height = max(18.0, self._monitor.height_px * 0.022)
         msg = visual.TextStim(
-            self.window, text=text, color=(1, 1, 1), wrapWidth=self._monitor.width_px * 0.8
+            self.window,
+            text=text,
+            font=MESSAGE_FONT,
+            height=height,
+            color=MESSAGE_COLOR,
+            alignText="left",
+            anchorHoriz="center",
+            pos=(0, 0),
+            wrapWidth=min(self._monitor.width_px * 0.8, height * 34),
+            units="pix",
         )
         msg.draw()
         self.window.flip()
