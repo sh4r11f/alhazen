@@ -102,6 +102,8 @@ The names an experiment imports directly.
 
 ::: alhazen.display.screen
 
+::: alhazen.display.monitors
+
 ::: alhazen.display.frames
 
 ::: alhazen.display.simulated

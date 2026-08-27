@@ -5,6 +5,7 @@
     alhazen validate --rig    is this config file well-formed?
     alhazen check-rig --rig   is this rig actually wired? (before the subject)
     alhazen calibrate ...     verify the monitor's geometry and gamma
+    alhazen monitor ...       tell PsychoPy about this rig's monitor
     alhazen report --run      what happened, and does the data check out?
 
 Each command does one thing an experimenter needs, and each does it through
@@ -82,6 +83,18 @@ def main(argv: list[str] | None = None) -> int:
         "--measurements", required=True, help="CSV with 'level' and 'luminance' columns"
     )
 
+    monitor = sub.add_parser("monitor", help="register this rig's monitor with PsychoPy")
+    monitor_sub = monitor.add_subparsers(dest="monitor_command")
+    monitor_register = monitor_sub.add_parser(
+        "register", help="write the rig's monitor into PsychoPy's monitor database"
+    )
+    monitor_register.add_argument("--rig", required=True, help="path to a rig YAML file")
+    monitor_show = monitor_sub.add_parser(
+        "show", help="compare a rig's monitor with what PsychoPy has stored"
+    )
+    monitor_show.add_argument("--rig", required=True, help="path to a rig YAML file")
+    monitor_sub.add_parser("list", help="every monitor PsychoPy knows on this machine")
+
     report = sub.add_parser("report", help="summarise a finished run, and align it to a recording")
     report.add_argument("--run", required=True, help="path to a run directory")
     report.add_argument(
@@ -141,6 +154,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "calibrate":
         return _calibrate(args, parser)
+
+    if args.command == "monitor":
+        return _monitor(args, parser)
 
     if args.command == "report":
         from alhazen.analysis.report import build_report
@@ -294,6 +310,99 @@ def _calibrate(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
     )
     print(f"written: {written}")
     return 0
+
+
+def _monitor(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    """Tell PsychoPy about this rig's monitor, and say whether it still agrees.
+
+    PsychoPy looks monitors up by name in a database of its own (Monitor
+    Center's), which is where a window finds a stored calibration and where
+    PsychoPy's own tools write one. A rig config that has never been
+    registered is invisible to all of that; a registration that no longer
+    matches its config is worse, because the two then describe the same panel
+    differently. Hence three commands: write one, list them, compare one.
+    """
+    from alhazen.config.gamma import gamma_path, load_gamma
+    from alhazen.config.loader import load_rig
+    from alhazen.display import monitors as registry
+    from alhazen.errors import DisplayError
+
+    if args.monitor_command is None:
+        parser.parse_args(["monitor", "--help"])
+        return 2
+
+    try:
+        if args.monitor_command == "list":
+            names = registry.registered_names()
+            print(f"psychopy monitors on this machine ({registry.monitor_folder()}):")
+            if not names:
+                print("  none registered yet")
+            for name in names:
+                print(f"  {registry.lookup(name).summary()}")
+            return 0
+
+        rig = load_rig(args.rig)
+        if args.monitor_command == "register":
+            # The gamma alhazen measured belongs on the monitor too: once it
+            # is there, PsychoPy applies it to every window opened against
+            # this monitor — including ones opened by other scripts on this
+            # machine, which know nothing about alhazen's own gamma file.
+            fit = load_gamma(args.rig)
+            gamma = fit["gamma"] if fit else None
+            notes = f"{registry.NOTES_PREFIX} {get_version()} from {Path(args.rig).name}"
+            written = registry.register(rig.monitor, gamma=gamma, notes=notes)
+            print(f"registered {rig.monitor.name!r} with psychopy")
+            print(f"  {registry.lookup(rig.monitor.name).summary()}")
+            if gamma is None:
+                print(
+                    f"  no measured gamma yet — {gamma_path(args.rig).name} does not exist "
+                    f"(alhazen calibrate gamma --rig {args.rig} --measurements <csv>)"
+                )
+            print(f"  written: {written}")
+            if rig.display.backend != "psychopy":
+                # Registered anyway (a rig config is often written before the
+                # panel is switched on), but said out loud: no session run
+                # from THIS config will ever open a psychopy window.
+                print(
+                    f"  note: this rig's display backend is '{rig.display.backend}', "
+                    f"so its own sessions will not use the registration"
+                )
+            return 0
+
+        # show
+        registration = registry.lookup(rig.monitor.name)
+        print(
+            f"rig config: {rig.monitor.width_px}x{rig.monitor.height_px}, "
+            f"{rig.monitor.width_cm:g} cm wide, {rig.monitor.distance_cm:g} cm away "
+            f"(monitor name: {rig.monitor.name!r})"
+        )
+        print(f"psychopy:   {registration.summary()}")
+        if not registration.registered:
+            print(f"\nregister it with: alhazen monitor register --rig {args.rig}")
+            return 1
+        if registration.calibrated:
+            print(f"            calibrated {registration.calibrated}")
+        if registration.path:
+            print(f"            {registration.path}")
+        drift = registry.differences(rig.monitor, registration)
+        if drift:
+            print("\nMISMATCH — a session on this rig would refuse to open:")
+            for difference in drift:
+                print(f"  {difference}")
+            print(
+                "\nOne of them has been edited since the monitor was registered. Fix the "
+                f"rig config if the panel has not changed, then:\n"
+                f"  alhazen monitor register --rig {args.rig}"
+            )
+            return 1
+        print("\nOK — the rig config and psychopy agree")
+        return 0
+    except ConfigError as e:
+        print(f"INVALID: {e}", file=sys.stderr)
+        return 1
+    except DisplayError as e:
+        print(f"CANNOT REGISTER: {e}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

@@ -861,6 +861,24 @@ sits below the CLI and must not import upward. A measurement made and never
 applied leaves every "50% contrast" at 50% of code value rather than of
 luminance — an afternoon with a photometer, wasted.
 
+**The monitor is registered, not just described.** A rig config describes a
+panel in alhazen's terms; PsychoPy keeps its own per-machine database of
+monitors, and that is where Monitor Center writes, where a window looks up a
+stored calibration, and what every other PsychoPy script on the rig reads.
+`alhazen monitor register` writes one into the other (`display/monitors.py`),
+under `monitor.name`, carrying the measured gamma if there is one.
+
+The two then have one rule each. **The config owns the geometry**: every
+degree goes through `Screen`, which reads the config, so a registration that
+disagrees about width, distance or pixel size is stale and
+`display.monitors.resolve` refuses to open a window against it — the
+alternative is a session whose deg/px model differs from the one that placed
+its stimuli, which nothing downstream could detect. **The registration owns
+the calibration**: gamma, luminance grids and colour matrices stay on it, and
+re-registering geometry never overwrites them. `check-rig` reports the
+comparison, which makes it the one part of the display that can be verified
+without opening a window.
+
 **Documentation is checked, not just written.** Every ` ```python ` block
 under `docs/` is compiled by a test — the landing page's own example carried
 a `SyntaxError` for a whole release, because the docs were prose to every
