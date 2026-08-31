@@ -87,7 +87,13 @@ class DashboardPanel(Model):
     value: str | None = None
     x: str | None = None
     y: str | None = None
-    group: str | None = None
+    # ``grouped_mean`` and ``grouped_rate``: which condition to split by. Name
+    # SEVERAL and a ``grouped_mean`` draws them all on one axis, one colour per
+    # factor, instead of one panel each. That is worth doing when the panels
+    # would share a y axis anyway — four proportions on four axes cannot be
+    # compared by eye, and the same four on one axis can. ``grouped_rate``
+    # takes one factor only.
+    group: str | tuple[str, ...] | None = None
     target_x: str | None = None
     target_y: str | None = None
     # ``vectors`` only: the columns holding the point each trial is measured
@@ -108,6 +114,13 @@ class DashboardPanel(Model):
     # from the kind; name your own to file a task's panels together.
     section: str | None = None
     completed_only: bool = False
+    # Show only the trials whose columns match these values, compared as text
+    # so a level reads the same here as it does in the record. Use it to split
+    # one measurement across a condition — a landing plot per separation, say —
+    # where one pooled panel would hide the very difference being looked for.
+    # A column a task never writes matches nothing, and the panel says so
+    # rather than quietly showing everything.
+    where: dict[str, str] | None = None
     rolling_window: int | None = None
     # Unit shown on the value axis (or after a ``stat``'s number). Left unset,
     # it is read off the column name's suffix — ``rt_ms`` is milliseconds,
@@ -119,6 +132,13 @@ class DashboardPanel(Model):
     agg: StatAgg = "mean"
 
     @property
+    def group_fields(self) -> tuple[str, ...]:
+        """The grouping columns, however many were named."""
+        if self.group is None:
+            return ()
+        return (self.group,) if isinstance(self.group, str) else tuple(self.group)
+
+    @property
     def resolved_section(self) -> str:
         """The sidebar group this panel appears under."""
         return self.section or DEFAULT_SECTIONS[self.kind]
@@ -127,8 +147,14 @@ class DashboardPanel(Model):
     def _fields_for_kind(self) -> DashboardPanel:
         if self.kind in {"histogram", "series", "grouped_mean", "stat"} and not self.value:
             raise ValueError(f"{self.kind} panels require value")
-        if self.kind in {"grouped_mean", "grouped_rate"} and not self.group:
+        if self.kind in {"grouped_mean", "grouped_rate"} and not self.group_fields:
             raise ValueError(f"{self.kind} panels require group")
+        if self.kind == "grouped_rate" and len(self.group_fields) > 1:
+            raise ValueError(
+                "grouped_rate takes one group. Its bars are proportions of the "
+                "same trials split one way; several factors at once would put "
+                "every trial in several bars and the panel would not add up."
+            )
         if self.kind in {"scatter", "vectors"} and (not self.x or not self.y):
             raise ValueError(f"{self.kind} panels require x and y")
         if self.rolling_window is not None and self.rolling_window < 1:
