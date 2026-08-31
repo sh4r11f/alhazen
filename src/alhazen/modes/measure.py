@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 import math
 import statistics
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -284,6 +285,7 @@ def measure_key_latency(
     wait_for_key: Callable[[], tuple[str, float, float]],
     n_presses: int = DEFAULT_PRESSES,
     show: Callable[[str], None] | None = None,
+    now: Callable[[], float] = time.perf_counter,
 ) -> Measurement:
     """Flip a marker, wait for a key, and time the gap — ``n_presses`` times.
 
@@ -291,6 +293,13 @@ def measure_key_latency(
     windowing toolkit stamped the key, and when this loop saw it. Injected so
     the procedure can be tested without a keyboard, and so a rig with an
     exotic input device can supply its own.
+
+    ``now`` stamps the flip, and **must be the same clock ``wait_for_key``
+    stamps against** — the latency is one minus the other, so two clocks give
+    a difference between epochs rather than a latency. It is a parameter
+    rather than a hardcoded ``perf_counter`` precisely to make that coupling
+    visible: ``_psychopy_key_waiter`` pins psychopy's clock to perf_counter's
+    epoch for the same reason, and a test that injects one must inject both.
 
     Two numbers come out, and they answer different questions:
 
@@ -303,14 +312,12 @@ def measure_key_latency(
       distribution because it is dominated by the person, and a single
       number would be read as if it were not.
     """
-    import time
-
     lags, latencies = [], []
     for index in range(n_presses):
         if show is not None:
             show(f"press any key   ({index + 1} of {n_presses})")
         display.flip()
-        flipped = time.perf_counter()
+        flipped = now()
         _, arrived, noticed = wait_for_key()
         latencies.append(arrived - flipped)
         lags.append(noticed - arrived)
@@ -379,3 +386,185 @@ def measure_tracker_accuracy(
             ),
         },
     )
+
+
+# ----------------------------------------------------------------------
+# The driver: open the rig's real display and run the procedures against it.
+# ----------------------------------------------------------------------
+
+# The measurements, in the order they run. Ordered by what an experimenter
+# should stop for: a display that drops frames makes every later number
+# meaningless, so it goes first, and the tracker — the slowest, and the one
+# needing a person in the chair — goes last.
+MEASUREMENTS = ("display", "geometry", "keys", "tracker")
+
+
+def run_measurements(
+    rig: RigConfig,
+    rig_path: str,
+    *,
+    windowed: bool = False,
+    n_flips: int = DEFAULT_FLIPS,
+    n_presses: int = DEFAULT_PRESSES,
+    skip: Sequence[str] = (),
+    echo: Callable[[str], None] = print,
+) -> MeasurementReport:
+    """Measure this rig, through the display a session would open.
+
+    The window comes from ``PsychoPyDisplay`` rather than from
+    ``visual.Window``, so what is measured is what a session gets — including
+    the framebuffer check. A measurement mode that opened its own window
+    would be measuring a different display from the one the experiment uses,
+    which is precisely the failure it exists to catch.
+
+    Every measurement runs even after one fails: whoever came to check a rig
+    wants the whole picture from one visit, not to fix one thing, re-run, and
+    only then discover the second.
+    """
+    unknown = sorted(set(skip) - set(MEASUREMENTS))
+    if unknown:
+        raise ValueError(
+            f"nothing to skip called {', '.join(unknown)}; "
+            f"the measurements are {', '.join(MEASUREMENTS)}"
+        )
+
+    from alhazen.display.psychopy_backend import PsychoPyDisplay
+
+    report = MeasurementReport(rig_path=rig_path)
+    screen = Screen.from_monitor(rig.monitor)
+    display = PsychoPyDisplay(rig.monitor, windowed=windowed)
+    display.open()
+    try:
+        if "display" not in skip:
+            echo(f"timing {n_flips} flips...")
+            report.measurements.append(measure_display(rig, display, n_flips))
+
+        if "geometry" not in skip:
+            report.measurements.append(measure_geometry(rig))
+
+        if "keys" not in skip:
+            echo(f"press any key {n_presses} times, when asked...")
+            report.measurements.append(
+                measure_key_latency(
+                    display,
+                    _psychopy_key_waiter(),
+                    n_presses,
+                    show=display.show_message,
+                )
+            )
+
+        if "tracker" not in skip:
+            if rig.devices.eyetracker is None:
+                # Said out loud rather than skipped silently: "no tracker
+                # measurement" and "no tracker on this rig" look identical in
+                # a report, and only one of them is fine.
+                report.measurements.append(
+                    Measurement(
+                        "eye tracker accuracy",
+                        "no eye tracker configured on this rig — nothing to measure",
+                        None,
+                    )
+                )
+            else:
+                report.measurements.append(_measure_tracker_on_rig(rig, display, screen, echo))
+    finally:
+        display.close()
+    return report
+
+
+def _psychopy_key_waiter() -> Callable[[], tuple[str, float, float]]:
+    """A ``wait_for_key`` for the real keyboard.
+
+    Returns ``(key, arrived_at, noticed_at)``. The two times are what let the
+    caller separate alhazen's own polling lag from everything else: psychopy
+    stamps the key when the toolkit received it, and ``perf_counter`` here is
+    when this loop got round to looking.
+
+    Both clocks must be the same one, so the stamp comes from a psychopy
+    ``Clock`` constructed against ``perf_counter``'s epoch — psychopy's
+    ``getKeys(timeStamped=clock)`` reports seconds on whatever clock it is
+    handed, and mixing two epochs would produce a "lag" of however far apart
+    they happened to start.
+    """
+    import time
+
+    from psychopy import core, event
+
+    clock = core.Clock()
+    # Pin the psychopy clock's zero to a perf_counter reading, so the two
+    # timelines can be added rather than compared blindly.
+    origin = time.perf_counter() - clock.getTime()
+
+    def wait() -> tuple[str, float, float]:
+        event.clearEvents()
+        while True:
+            pressed = event.getKeys(timeStamped=clock)
+            if pressed:
+                key, stamp = pressed[0]
+                return key, origin + stamp, time.perf_counter()
+            time.sleep(0.001)
+
+    return wait
+
+
+def _measure_tracker_on_rig(
+    rig: RigConfig, display: Any, screen: Screen, echo: Callable[[str], None]
+) -> Measurement:
+    """Connect the rig's tracker, show the targets, and read the gaze back.
+
+    The operator advances each target by pressing a key once the subject is
+    steady on it, because "steady" is a judgement a person makes and a timer
+    does not: a fixed dwell would sample a blink or a mid-saccade as readily
+    as a fixation, and report the tracker as bad when the timing was.
+    """
+    from psychopy import event, visual
+
+    from alhazen.core.clock import MonotonicClock
+    from alhazen.devices.eyetracker import make_tracker
+
+    assert rig.devices.eyetracker is not None  # the caller checked; this narrows the type
+    clock = MonotonicClock()
+    # make_tracker builds the same backend a session would, and needs the same
+    # four things a session hands it — the display included, because a real
+    # tracker draws its calibration through the session's own window.
+    tracker = make_tracker(rig.devices.eyetracker, display, screen, clock)
+    tracker.connect()
+    tracker.configure(screen, clock)
+    try:
+        tracker.start_trial(0, "accuracy check")
+        dot = visual.Circle(
+            display.window,
+            radius=max(4.0, screen.deg2px(0.2) / 2.0),
+            fillColor="white",
+            lineColor="white",
+            units="pix",
+        )
+
+        def present(position: tuple[float, float]) -> tuple[float, float]:
+            """Draw one target, wait for the operator, return where gaze was.
+
+            ``get_gaze`` returns None when the tracker has no eye — a blink,
+            or the subject looking away — and asking again is the only sane
+            answer: substituting a default would report perfect accuracy at a
+            point that was never measured, and raising would throw away the
+            targets already collected. So it says what happened and waits.
+            """
+            while True:
+                dot.pos = position
+                dot.draw()
+                display.flip()
+                event.clearEvents()
+                # Blocks until the operator says the eye is on the target.
+                event.waitKeys()
+                sample = tracker.get_gaze()
+                if sample is not None:
+                    return screen.screen_to_centered(sample.gx, sample.gy)
+                echo("  no eye at that moment — look at the dot and press again")
+
+        echo("look at each dot; press a key when the eye is steady on it")
+        return measure_tracker_accuracy(tracker, screen, present)
+    finally:
+        tracker.stop_trial()
+        # shutdown(), not close(): it is what the EyeTracker protocol declares,
+        # and None says this measurement keeps no native eye recording.
+        tracker.shutdown(None)

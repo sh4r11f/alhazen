@@ -24,7 +24,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
@@ -37,6 +37,11 @@ from alhazen.paradigms.config import SchedulerConfig
 # sibling is also obvious in a file listing, and a directory nobody can see is
 # a directory somebody eventually analyses by accident.
 REHEARSAL_SUFFIX = "-rehearsal"
+
+# Generic over the params model, so a reduced AmodalAveragingParams is still
+# an AmodalAveragingParams to the type checker and can go straight back into
+# the Task constructor that demands one.
+M = TypeVar("M", bound=BaseModel)
 
 
 @dataclass(frozen=True)
@@ -92,11 +97,11 @@ def _dig(data: Any, path: str) -> Any:
 
 
 def shrink_params(
-    params: BaseModel,
+    params: M,
     *,
     n_per_condition: int = 1,
     max_adaptive_trials: int = 10,
-) -> tuple[BaseModel, list[Reduction]]:
+) -> tuple[M, list[Reduction]]:
     """A params model with its trial counts turned down, and what changed.
 
     What it reduces, and only this:

@@ -26,8 +26,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel
-
 from alhazen.config.models import RigConfig
 from alhazen.errors import ConfigError
 from alhazen.modes import Mode
@@ -141,9 +139,11 @@ def build_mode_session(
     if not mode.runs_trials:
         raise ValueError(f"{mode.value} does not run trials — see alhazen.modes.{mode.value}")
     if build_session is None:
-        from alhazen.session.builder import build_session as build_session
+        from alhazen.session.builder import build_session as _real_build_session
 
-    params: BaseModel = task.params
+        build_session = _real_build_session
+
+    params = task.params
     reductions: list[Reduction] = []
     simulation: Simulation | None = None
     notes: list[str] = []
