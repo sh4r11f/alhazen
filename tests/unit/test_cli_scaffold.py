@@ -75,6 +75,10 @@ class TestScaffold:
             "src/saccade_bias/__init__.py",
             "src/saccade_bias/task.py",
             "configs/rig-sim.yaml",
+            "configs/rig-view.yaml",
+            "configs/rig-auto.yaml",
+            "configs/rig-mouse.yaml",
+            "configs/rig-mac.yaml",
             "configs/rig-lab.yaml",
             "configs/task.yaml",
             "tests/test_task.py",
@@ -84,13 +88,17 @@ class TestScaffold:
         written = {path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file()}
         assert expected <= written
 
-    def test_the_placeholders_are_all_filled(self, tmp_path):
+    def test_the_placeholders_are_all_filled_and_the_files_are_python(self, tmp_path):
         root = scaffold("saccade_bias", tmp_path)
         for path in root.rglob("*.py"):
             text = path.read_text()
             # A leftover $placeholder would be a syntax error a user meets
             # instead of a working example.
             assert "$" not in text, f"{path.name} still holds a placeholder"
+            # And what renders must at least parse — run.py is only executed
+            # by the slow acceptance test, which is deselected while
+            # iterating, so a syntax error would otherwise hide there.
+            compile(text, str(path), "exec")
 
     def test_every_rendered_config_loads_through_its_real_loader(self, tmp_path):
         """Not "the file exists" — "the file works". The scaffolded
@@ -106,10 +114,33 @@ class TestScaffold:
         module = import_scaffolded_task(root, "saccade_bias")
         params_model = getattr(module, task_class_name("saccade_bias")).params_model
 
-        for name in ("rig-sim.yaml", "rig-lab.yaml"):
+        for name in (
+            "rig-sim.yaml",
+            "rig-view.yaml",
+            "rig-auto.yaml",
+            "rig-mouse.yaml",
+            "rig-mac.yaml",
+            "rig-lab.yaml",
+        ):
             rig = load_rig(root / "configs" / name)
             assert rig.monitor.width_px > 0, name
         load_params(root / "configs" / "task.yaml", params_model)
+
+    def test_the_dev_rigs_keep_their_data_out_of_the_subject_tree(self, tmp_path):
+        """One rig file per purpose, and the purposes that rehearse — view,
+        auto, mouse, mac — all write under data/dev. A dev rig pointing at
+        the rig's own data root is how a simulated subject ends up in the
+        same table as a real one."""
+        from pathlib import PurePath
+
+        from alhazen.config.loader import load_rig
+
+        root = scaffold("saccade_bias", tmp_path)
+        for name in ("rig-view.yaml", "rig-auto.yaml", "rig-mouse.yaml", "rig-mac.yaml"):
+            rig = load_rig(root / "configs" / name)
+            assert rig.data_root == PurePath("data/dev"), name
+        for name in ("rig-sim.yaml", "rig-lab.yaml"):
+            assert load_rig(root / "configs" / name).data_root == PurePath("data"), name
 
     def test_the_generated_task_is_importable_and_declares_itself(self, tmp_path):
         root = scaffold("saccade_bias", tmp_path)

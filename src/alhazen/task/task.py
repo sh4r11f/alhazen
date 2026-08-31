@@ -116,10 +116,11 @@ class Task:
         raise NotImplementedError(f"{type(self).__name__} must implement build_trial")
 
     # ------------------------------------------------------------------
-    # What the other modes ask a task for. Both are optional: an experiment
-    # that never demos its stimulus or never rehearses without a subject
-    # simply does not answer, and the mode says so plainly rather than
-    # improvising something that is not the experiment.
+    # What the other modes ask a task for. All of these are optional: an
+    # experiment that never demos its stimulus, never writes a movie of it,
+    # or never rehearses without a subject simply does not answer, and the
+    # mode says so plainly rather than improvising something that is not the
+    # experiment.
     # ------------------------------------------------------------------
 
     def demo_views(self, setup: Any) -> list[Any]:
@@ -148,6 +149,22 @@ class Task:
         faster rotation, showing and hiding the target.
         """
         return []
+
+    def movie_clips(self, setup: Any) -> list[Any]:
+        """The files ``alhazen run --mode movie`` writes.
+
+        Takes a ``modes.movie.MovieSetup`` — the screen geometry and refresh
+        rate of the rig the movie previews, plus the params and an rng — and
+        returns a list of ``modes.movie.MovieClip``, each naming one file and
+        yielding its frames as numpy arrays, one per screen flip. The task
+        composites the pixels because they are the experiment's own; the
+        encoder, the scaling and the contact sheet are the mode's.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} declares no movie clips. Implement "
+            f"movie_clips(setup) returning a list of alhazen.modes.movie.MovieClip "
+            f"to use --mode movie."
+        )
 
     def simulation(self, seed: int) -> Any:
         """The stand-ins for a subject in ``--mode simulate``, or None.

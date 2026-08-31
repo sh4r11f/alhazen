@@ -1,52 +1,39 @@
-"""Run one session of $name.
+"""Run $name, in any of alhazen's six modes.
 
-    python run.py --rig configs/rig-sim.yaml --sub s01 --ses 1
+    python run.py --mode demo      --rig configs/rig-view.yaml
+    python run.py --mode movie     --rig configs/rig-lab.yaml --out movies
+    python run.py --mode measure   --rig configs/rig-lab.yaml
+    python run.py --mode simulate  --rig configs/rig-sim.yaml --seed 1
+    python run.py --mode test      --rig configs/rig-mouse.yaml --sub dev --ses 1
+    python run.py                  --rig configs/rig-lab.yaml --sub s01 --ses 1
 
 This exists so the experiment can be started without installing anything.
-Once the package IS installed, `alhazen run --task $task_name` does the same
-job and picks the next free run number for you.
+Once the package IS installed, ``alhazen run --task $task_name --mode ...``
+does the same job through the same code.
+
+The argument parser, the run-number counter, the rehearsal path — everything
+every experiment needs — is alhazen's ``run_experiment``. What belongs here
+is only what is about THIS experiment: its task class, and (once you write
+them) where its subject-facing instructions come from.
 """
 
 from __future__ import annotations
 
-import argparse
+import sys
 from pathlib import Path
 
-from alhazen import build_session
-from alhazen.config.loader import load_model, load_rig
+from alhazen.cli.modes import run_experiment
 
-from $package.task import $task_class, ${task_class}Params
+from $package.task import $task_class
 
 HERE = Path(__file__).parent
 
-
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--rig", default=str(HERE / "configs" / "rig-sim.yaml"))
-    parser.add_argument("--task-config", default=str(HERE / "configs" / "task.yaml"))
-    parser.add_argument("--sub", required=True, help="subject id (alphanumeric)")
-    parser.add_argument("--ses", required=True, type=int)
-    parser.add_argument("--run", type=int, default=1)
-    parser.add_argument("--seed", type=int, default=None)
-    parser.add_argument("--windowed", action="store_true")
-    args = parser.parse_args()
-
-    rig = load_rig(args.rig)
-    params = load_model(args.task_config, ${task_class}Params)
-    runner = build_session(
-        rig=rig,
-        subject=args.sub,
-        session=args.ses,
-        run=args.run,
-        task=$task_class(params),
-        seed=args.seed,
-        iti=params.iti,
-        windowed=args.windowed,
-        sources={"rig": args.rig, "task": args.task_config},
-    )
-    runner.run()
-    print(f"session complete — data under {rig.data_root.resolve()}")
-
-
 if __name__ == "__main__":
-    main()
+    raise SystemExit(
+        run_experiment(
+            task_class=$task_class,
+            default_rig=HERE / "configs" / "rig-sim.yaml",
+            default_params=HERE / "configs" / "task.yaml",
+            argv=sys.argv[1:],
+        )
+    )

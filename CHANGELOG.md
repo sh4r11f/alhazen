@@ -27,6 +27,38 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ## Unreleased
 
+### Added
+
+- **Movie mode** (`--mode movie`), the sixth way to start an experiment: write
+  the conditions to `.mp4` files, for a distributable demo of a stimulus a
+  figure in a paper cannot carry. The task implements one hook —
+  `Task.movie_clips(setup)`, returning `alhazen.modes.movie.MovieClip`s that
+  yield numpy frames, one per screen flip — and the mode owns everything after
+  the pixels: the encoder, `--scale`, `--clip` selection, and `--sheet`, which
+  tiles every clip into one labelled movie on a common clock. Frames are cut
+  against the geometry and refresh rate of the rig `--rig` names, and float
+  frames outside 0..1 are refused by name rather than clipped, so a
+  compositing bug cannot ship as a movie that looks merely "a bit off". The
+  encoder is the new `[movie]` extra; the mode names it if it is missing.
+  Because `--mode` choices come from the `Mode` enum, every experiment's
+  `run.py` gains the flag by upgrading alhazen — implementing the hook is the
+  experiment's only part. Grew out of `amodal-averaging`'s own movie writer,
+  which carried four hundred lines of encoder plumbing no experiment should
+  have to write twice.
+
+- **One rig file per purpose.** `alhazen new` now scaffolds the full set of
+  dev rigs both existing experiments had grown by hand — `rig-view.yaml`
+  (demo/movie), `rig-auto.yaml` (simulate, dashboard up), `rig-mouse.yaml`
+  (test, mouse cursor as gaze), `rig-mac.yaml` (a Mac dev machine, with the
+  Retina device-pixels-versus-points notes) — beside the existing
+  `rig-sim.yaml` and `rig-lab.yaml`. Every dev rig points `data_root` at
+  `data/dev`, so a rehearsal can never land where the analysis looks for
+  subjects, and each file states that its monitor numbers are a starting
+  point to be measured, not a measurement. The scaffold's `run.py` is also
+  rewritten onto `alhazen.cli.modes.run_experiment`, so a new experiment
+  starts in any mode from day one instead of only `run`. Documented in
+  [docs/modes.md](docs/modes.md#one-rig-file-per-purpose).
+
 ### Changed
 
 - **The distribution is now `alhazen-vision`** (`pip install alhazen-vision`).
