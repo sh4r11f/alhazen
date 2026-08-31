@@ -175,6 +175,21 @@ class TestRecordingOneClip:
             movie.record_clip(
                 clip_of([grey(0.5), grey(2.0)], name="broken"), HZ, tmp_path / "b.mp4"
             )
+        # And no truncated file beside the error: half a movie in the listing
+        # reads as an encoder problem, not as the message just shown.
+        assert not (tmp_path / "b.mp4").exists()
+
+    def test_a_frame_shape_change_mid_stream_is_refused_by_name(self, tmp_path):
+        """Left to the encoder this dies as 'all images in a movie should
+        have same size', which names neither the clip nor the frames."""
+        clips = clip_of([grey(0.5), grey(0.5, (10, 10))], name="shifty")
+        with pytest.raises(ConfigError, match="'shifty'.*mid-stream"):
+            movie.record_clip(clips, HZ, tmp_path / "s.mp4")
+        assert not (tmp_path / "s.mp4").exists()
+
+    def test_scale_reaches_the_file(self, tmp_path):
+        movie.record_clip(clip_of([grey(0.5)] * 2), HZ, tmp_path / "half.mp4", scale=0.5)
+        assert read_back(tmp_path / "half.mp4")[0].shape[:2] == (12, 16)
 
 
 class TestTheSheet:
@@ -192,9 +207,8 @@ class TestTheSheet:
         frames = read_back(path)
         assert written == len(frames) == 4
         # Three clips in two columns is two rows, each a panel plus its
-        # label strip; even_dims may add one more pixel each way. The strip
-        # is sized from the longest caption, which for a/b/c is the first.
-        _, label_h = movie._fit_font("a", 32)
+        # label strip; even_dims may add one more pixel each way.
+        _, label_h, _ = movie._fit_font(["a", "b", "c"], 32)
         expected_w, expected_h = 2 * 32, 2 * (24 + label_h)
         height, width = frames[0].shape[:2]
         assert width == expected_w + expected_w % 2
@@ -214,7 +228,7 @@ class TestTheSheet:
         assert written == 6
 
         last = read_back(path)[-1]
-        _, label_h = movie._fit_font("short", 32)
+        _, label_h, _ = movie._fit_font(["short", "long"], 32)
         # The short clip's panel (left column, under its label) is still
         # white on the final frame. Lossy encoding, so "white-ish".
         panel = last[label_h : label_h + 24, 0:32]
@@ -233,7 +247,54 @@ class TestTheSheet:
             clip_of([grey(0.5)], name="grey"),
         ]
         movie.record_sheet(clips, HZ, tmp_path / "s.mp4", columns=2)
-        assert read_back(tmp_path / "s.mp4")[0].ndim == 3
+        frame = read_back(tmp_path / "s.mp4")[0]
+        assert frame.ndim == 3
+        # And the captions stay grey ink on it. Pillow reads an integer fill
+        # on an RGB image as a packed colour — 220 came out (220, 0, 0),
+        # bright red — so the strip's lit pixels must have all channels lit.
+        _, label_h, _ = movie._fit_font(["colour", "grey"], 32)
+        strip = frame[:label_h].astype(int)
+        lit = strip[:, :, 0] > 100
+        assert lit.any(), "no caption ink found in the label strip"
+        assert (strip[lit][:, 1] > 100).all() and (strip[lit][:, 2] > 100).all(), (
+            "caption ink is coloured, not grey"
+        )
+
+    def test_a_clip_that_changes_channels_mid_stream_is_refused_by_name(self, tmp_path):
+        """rgb is fixed from each clip's first frame; unchecked, a mid-stream
+        switch died in a raw numpy broadcast error halfway into the file."""
+        clips = [
+            clip_of([grey(0.2), np.zeros((24, 32, 3), np.float32)], name="turncoat"),
+            clip_of([grey(0.8)] * 2, name="steady"),
+        ]
+        with pytest.raises(ConfigError, match="'turncoat'.*channels"):
+            movie.record_sheet(clips, HZ, tmp_path / "s.mp4", columns=2)
+        assert not (tmp_path / "s.mp4").exists()
+
+    def test_a_nonsense_column_count_is_refused(self, tmp_path):
+        with pytest.raises(ConfigError, match="columns"):
+            movie.record_sheet([clip_of([grey(0.5)])], HZ, tmp_path / "s.mp4", columns=0)
+
+    def test_scale_reaches_the_sheet(self, tmp_path):
+        movie.record_sheet(
+            [clip_of([grey(0.5)] * 2, "a"), clip_of([grey(0.6)] * 2, "b")],
+            HZ,
+            tmp_path / "s.mp4",
+            columns=2,
+            scale=0.5,
+        )
+        width = read_back(tmp_path / "s.mp4")[0].shape[1]
+        assert width == 2 * 16  # two half-scale panels, already even
+
+    def test_a_caption_that_cannot_fit_is_elided_not_overflowed(self):
+        """A caption drawn across the panel boundary makes two conditions
+        read as one — the exact misreading the labels exist to prevent — so
+        one that cannot fit is truncated to a visible ellipsis instead."""
+        font, _, fitted = movie._fit_font(["ok", "WWWWWWWWWWWWWWWWWWWW"], 40)
+        assert fitted[0] == "ok"
+        assert fitted[1].endswith("…") and fitted[1] != "WWWWWWWWWWWWWWWWWWWW…"
+        box = font.getbbox(fitted[1])
+        assert box[2] - box[0] <= 40 - 12  # inside the panel, margin included
 
     def test_the_caption_is_the_label_when_one_is_given(self):
         assert clip_of([], name="x", label="the x condition").caption == "the x condition"
@@ -431,9 +492,63 @@ class TestTheModeEndToEnd:
         assert code == 1
         assert "CANNOT RECORD" in capsys.readouterr().err
 
+    def test_scale_flows_from_the_flag_to_the_file(self, tmp_path):
+        from alhazen.cli.modes import run_experiment
+
+        out = tmp_path / "movies"
+        run_experiment(
+            task_class=RecordableTask,
+            default_rig=self.rig_yaml(tmp_path),
+            argv=["--mode", "movie", "--out", str(out), "--scale", "0.5"],
+        )
+        assert read_back(out / "main.mp4")[0].shape[:2] == (12, 16)
+
+    def test_an_experiments_own_not_implemented_error_is_not_swallowed(self, tmp_path):
+        """A NotImplementedError raised from a frames generator halfway into
+        a file is the experiment's bug and must surface with its traceback —
+        not be misread as 'declares no movie clips' and exit 2."""
+        from alhazen.cli.modes import run_experiment
+
+        class HalfBuiltTask(Task):
+            name = "half-built"
+            events = EventSchema(())
+            outcomes = outcomes(DONE=dict(completed=True, success=True))
+            params_model = MovieParams
+
+            def movie_clips(self, setup):
+                def frames():
+                    yield grey(0.5)
+                    raise NotImplementedError("no annulus mask on this backend yet")
+
+                return [MovieClip(name="half", frames=frames)]
+
+        with pytest.raises(NotImplementedError, match="annulus"):
+            run_experiment(
+                task_class=HalfBuiltTask,
+                default_rig=self.rig_yaml(tmp_path),
+                argv=["--mode", "movie", "--out", str(tmp_path / "movies")],
+            )
+        # And the truncated file went with the error.
+        assert not (tmp_path / "movies" / "half.mp4").exists()
+
     def test_the_default_task_hook_raises_with_instructions(self):
         with pytest.raises(NotImplementedError, match="movie_clips"):
             SilentTask(MovieParams()).movie_clips(None)
+
+
+class TestThePartialInstall:
+    def test_imageio_without_its_ffmpeg_backend_names_the_extra(self, tmp_path, monkeypatch):
+        """imageio rides in with other scientific packages, so a rig can have
+        it without imageio-ffmpeg; get_writer then raises a backend ValueError
+        that says nothing about what to install."""
+        import imageio.v2 as imageio
+
+        def no_backend(*args, **kwargs):
+            raise ValueError("Could not find a backend to open the requested file")
+
+        monkeypatch.setattr(imageio, "get_writer", no_backend)
+        with pytest.raises(ConfigError, match=r"alhazen-vision\[movie\]"):
+            movie.record_clip(clip_of([grey(0.5)]), HZ, tmp_path / "x.mp4")
 
 
 class TestTheModeContract:

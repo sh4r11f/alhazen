@@ -97,3 +97,71 @@ class $task_class(Task):
                 )
             },
         )
+
+    # ------------------------------------------------------------------
+    # The other modes (alhazen.modes). Each hook is optional — a task that
+    # does not answer one is told plainly what to implement — but every rig
+    # config this scaffold ships advertises them, so the smallest honest
+    # version of each is here to build on.
+    # ------------------------------------------------------------------
+
+    def demo_views(self, setup):
+        """What ``--mode demo`` shows: the fixation point, at session size.
+
+        ``setup`` carries the real display and pixel scale, so what you
+        judge on screen is the literal stimulus a session would draw. Add
+        one view per display worth looking at.
+        """
+        from alhazen.modes.demo import DemoView
+
+        params: ${task_class}Params = self.params  # type: ignore[assignment]
+        fixation = make_fixation(setup.display, setup.screen, params.fix_size_dva)
+        return [
+            DemoView(
+                name="fixation",
+                caption="the fixation point, at the size a session draws it",
+                draw=lambda elapsed: fixation.draw(),
+            )
+        ]
+
+    def movie_clips(self, setup):
+        """What ``--mode movie`` records: the trial as the subject sees it.
+
+        One numpy frame per screen flip, in 0..1 — here the fixation point
+        holding for its configured duration. The encoder, ``--scale`` and
+        the contact sheet are alhazen's; only the pixels are this task's.
+        (The encoder is the ``movie`` extra: ``pip install -e ".[movie]"``.)
+        """
+        from alhazen.modes.movie import MovieClip
+
+        params: ${task_class}Params = self.params  # type: ignore[assignment]
+
+        def frames():
+            screen = setup.screen
+            radius = screen.deg2px(params.fix_size_dva) / 2.0
+            rows, cols = np.mgrid[0 : screen.height_px, 0 : screen.width_px]
+            centre_r = (screen.height_px - 1) / 2.0
+            centre_c = (screen.width_px - 1) / 2.0
+            frame = np.full((screen.height_px, screen.width_px), 0.5, dtype=np.float32)
+            frame[(cols - centre_c) ** 2 + (rows - centre_r) ** 2 <= radius**2] = 1.0
+            for _ in range(round(params.hold_duration.seconds(setup.hz) * setup.hz)):
+                yield frame
+
+        return [MovieClip(name="fixation-hold", frames=frames)]
+
+    def simulation(self, seed: int):
+        """Who sits in the chair for ``--mode simulate``: a gaze that fixates.
+
+        This task's one condition needs nothing subtler than a subject who
+        looks at the point, which is what ``AutomatedGazeTracker`` is.
+        Replace it with an imperfect subject of your own once there are
+        outcome branches worth exercising — a rehearsal whose subject never
+        blinks or misses exercises none of the exclusion rules.
+        """
+        from alhazen.devices.automated import AutomatedGazeTracker
+        from alhazen.modes.simulation import Simulation
+
+        return Simulation(
+            tracker=AutomatedGazeTracker(),
+            describe={"seed": seed, "source": "alhazen.devices.automated"},
+        )

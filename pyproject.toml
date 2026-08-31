@@ -36,8 +36,10 @@ nidaq = ["nidaqmx"]
 # The movie mode's encoder. An extra rather than a core dependency because
 # imageio-ffmpeg ships an ffmpeg binary, which is a lot to install on a rig
 # that will never write a movie; alhazen.modes.movie imports it lazily and
-# raises a ConfigError naming this extra if it is missing.
-movie = ["imageio>=2.31", "imageio-ffmpeg>=0.4"]
+# raises a ConfigError naming this extra if it is missing. Pillow is pinned
+# here explicitly rather than inherited through imageio, whose floor (8.3) is
+# far below the APIs the sheet's captions use (load_default(size=...), 10.1).
+movie = ["imageio>=2.31", "imageio-ffmpeg>=0.4", "pillow>=10.1"]
 # Analysis-side extras: scipy for the fits some analyses want. The readers
 # and the alignment need only numpy, so a plain install can still read a
 # session and align it to a recording.
