@@ -406,6 +406,21 @@ def _demo_task(args: argparse.Namespace, rig: Any, task: Any, params: Any) -> in
 def _movie_task(args: argparse.Namespace, rig: Any, task: Any, params: Any) -> int:
     """Write the task's clips to files, with no window and no data."""
     from alhazen.modes.movie import DEFAULT_SHEET_NAME, run_movie
+    from alhazen.task.task import Task
+
+    # A task that never implemented the hook is told apart by identity, not by
+    # catching NotImplementedError around the whole recording: an experiment's
+    # own NotImplementedError, raised from a frames generator halfway into a
+    # file, is the experiment's bug and must surface with its traceback — not
+    # be misreported as "declares no movie clips" and exit 2.
+    if type(task).movie_clips is Task.movie_clips:
+        try:
+            task.movie_clips(None)
+        except NotImplementedError as e:
+            # The default hook's own message names the method to implement,
+            # which is more useful than anything this layer could say.
+            print(f"CANNOT RECORD: {e}", file=sys.stderr)
+            return 2
 
     # `--sheet` with no path means "the default file under --out"; argparse
     # stores that as the empty-string const, resolved here where --out is known.
@@ -425,11 +440,6 @@ def _movie_task(args: argparse.Namespace, rig: Any, task: Any, params: Any) -> i
             scale=args.scale,
             seed=args.seed if args.seed is not None else 0,
         )
-    except NotImplementedError as e:
-        # The task declares no clips. Its own message names the method to
-        # implement, which is more useful than anything this layer could say.
-        print(f"CANNOT RECORD: {e}", file=sys.stderr)
-        return 2
     except ConfigError as e:
         print(f"CANNOT RECORD: {e}", file=sys.stderr)
         return 1
@@ -446,6 +456,18 @@ def _trial_session(args: argparse.Namespace, rig: Any, task: Any, params: Any, m
         subject = args.sub if args.sub is not None else "sim"
         session = args.ses if args.ses is not None else 1
     else:
+        # ...but only where a person can answer. With stdin not a terminal —
+        # nohup, CI, a batch script — input() blocks forever or dies in a raw
+        # EOFError after the rig config has already loaded, so the missing
+        # flags are refused up front instead.
+        missing = [f for f, v in (("--sub", args.sub), ("--ses", args.ses)) if v is None]
+        if missing and not (sys.stdin and sys.stdin.isatty()):
+            print(
+                f"{' and '.join(missing)} required: stdin is not a terminal, so "
+                f"{mode.value} mode cannot prompt for them",
+                file=sys.stderr,
+            )
+            return 2
         subject = args.sub if args.sub is not None else input("subject id: ").strip()
         session = args.ses if args.ses is not None else int(input("session number: ").strip())
 

@@ -3,6 +3,8 @@
 #   python run.py --mode demo  --rig configs/rig-view.yaml
 #   python run.py --mode movie --rig configs/rig-view.yaml --out movies
 #
+# (Movie mode's encoder is the `movie` extra: pip install -e ".[movie]".)
+#
 # A window and nothing else: no tracker, no trials, no data. Demo mode opens
 # its own window from the monitor block below, so `devices` is empty on
 # purpose rather than by omission. Movie mode opens no window at all — it

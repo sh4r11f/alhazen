@@ -142,6 +142,43 @@ class TestScaffold:
         for name in ("rig-sim.yaml", "rig-lab.yaml"):
             assert load_rig(root / "configs" / name).data_root == PurePath("data"), name
 
+    def test_the_template_task_answers_every_advertised_mode(self, tmp_path):
+        """`alhazen new`'s closing message, run.py's docstring and the rig
+        headers all print `--mode demo`, `--mode movie` and `--mode simulate`
+        commands verbatim. The template task must answer them: a scaffold
+        whose own printed commands exit with 'implement X to use this' is a
+        worse first impression than one that prints fewer commands."""
+        import numpy as np
+
+        from alhazen.display.screen import Screen
+        from alhazen.modes.movie import MovieSetup
+        from alhazen.task.task import Task as BaseTask
+
+        root = scaffold("saccade_bias", tmp_path)
+        module = import_scaffolded_task(root, "saccade_bias")
+        task_class = getattr(module, task_class_name("saccade_bias"))
+        task = task_class(task_class.params_model())
+
+        # simulate: a subject in the chair, not the base class's None.
+        simulation = task.simulation(seed=0)
+        assert simulation is not None and not simulation.is_empty()
+
+        # movie: real frames of the rig's screen, one per flip of the hold.
+        setup = MovieSetup(
+            screen=Screen(width_px=32, height_px=24, px_per_deg=8.0),
+            hz=30.0,
+            params=task.params,
+            rng=np.random.default_rng(0),
+        )
+        clips = task.movie_clips(setup)
+        frames = list(clips[0].frames())
+        assert frames and frames[0].shape == (24, 32)
+        assert len(frames) == round(task.params.hold_duration.seconds(30.0) * 30.0)
+
+        # demo: needs a real window to build its stimulus, so what can be
+        # checked headless is that the hook is genuinely overridden.
+        assert type(task).demo_views is not BaseTask.demo_views
+
     def test_the_generated_task_is_importable_and_declares_itself(self, tmp_path):
         root = scaffold("saccade_bias", tmp_path)
         namespace: dict = {}
@@ -320,6 +357,50 @@ class TestScaffoldedPackageWorks:
         assert session.returncode == 0, session.stdout + session.stderr
         assert next((root / "data").glob("sub-s01/ses-001/run-*")).is_dir()
 
+        # The OTHER advertised headless modes work from the same tree — the
+        # scaffold's own printed commands must not be the first thing a new
+        # user sees fail. Simulate names its subject and reduces its own
+        # trial counts; movie needs no window at all.
+        simulate = subprocess.run(
+            [
+                sys.executable,
+                str(root / "run.py"),
+                "--mode",
+                "simulate",
+                "--rig",
+                str(root / "configs" / "rig-sim.yaml"),
+                "--seed",
+                "1",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=root,
+            env=environment,
+            timeout=600,
+        )
+        assert simulate.returncode == 0, simulate.stdout + simulate.stderr
+        assert next((root / "data-rehearsal").glob("sub-sim/**/run-*"), None) is not None
+
+        recorded = subprocess.run(
+            [
+                sys.executable,
+                str(root / "run.py"),
+                "--mode",
+                "movie",
+                "--rig",
+                str(root / "configs" / "rig-sim.yaml"),
+                "--out",
+                str(root / "movies"),
+            ],
+            capture_output=True,
+            text=True,
+            cwd=root,
+            env=environment,
+            timeout=600,
+        )
+        assert recorded.returncode == 0, recorded.stdout + recorded.stderr
+        assert (root / "movies" / "fixation-hold.mp4").exists()
+
 
 class TestNextRunNumber:
     """`_next_run` decides where a session's data goes. Nothing tested it."""
@@ -424,6 +505,8 @@ class TestRunCommand:
         rig = self.registered(monkeypatch, tmp_path)
         answers = iter(["s02", "3"])
         monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+        # The prompt only fires at a terminal; this test stands in for one.
+        monkeypatch.setattr("sys.stdin", type("Tty", (), {"isatty": lambda self: True})())
 
         assert main(self.run_args(rig)) == 0
 

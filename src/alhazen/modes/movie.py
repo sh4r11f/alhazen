@@ -137,6 +137,26 @@ def to_uint8(frame: np.ndarray, clip_name: str) -> np.ndarray:
     return (array * 255.0).round().astype(np.uint8)
 
 
+def _pil() -> Any:
+    """Pillow, or a message naming the extra that installs it.
+
+    Pillow serves ``--scale`` and the sheet's captions. It arrives with the
+    ``[movie]`` extra (which pins the version these calls need); a plain
+    install that reaches for it should hear what to type, not a
+    ModuleNotFoundError three stack frames deep.
+    """
+    try:
+        import PIL.Image
+        import PIL.ImageDraw
+        import PIL.ImageFont
+    except ImportError as exc:
+        raise ConfigError(
+            "--scale and --sheet need Pillow, which arrives with the movie "
+            'extra. Install it with:\n    pip install "alhazen-vision[movie]"'
+        ) from exc
+    return PIL
+
+
 def scale_frame(frame: np.ndarray, scale: float) -> np.ndarray:
     """Shrink one 8-bit frame by ``scale``, by area averaging.
 
@@ -148,7 +168,7 @@ def scale_frame(frame: np.ndarray, scale: float) -> np.ndarray:
         return frame
     if not 0.0 < scale <= 1.0:
         raise ConfigError(f"--scale must be in (0, 1], got {scale:g} — movies only shrink")
-    from PIL import Image
+    Image = _pil().Image
 
     height = max(1, round(frame.shape[0] * scale))
     width = max(1, round(frame.shape[1] * scale))
@@ -191,9 +211,21 @@ def _writer(path: Path, hz: float) -> Any:
             '    pip install "alhazen-vision[movie]"'
         ) from exc
     path.parent.mkdir(parents=True, exist_ok=True)
-    # macro_block_size=None: the frames are already padded to even dimensions
-    # by even_dims, and ffmpeg's own resize-to-16 would silently rescale them.
-    return imageio.get_writer(path, fps=hz, macro_block_size=None)
+    try:
+        # macro_block_size=None: the frames are already padded to even
+        # dimensions by even_dims, and ffmpeg's own resize-to-16 would
+        # silently rescale them.
+        return imageio.get_writer(path, fps=hz, macro_block_size=None)
+    except (ImportError, ValueError) as exc:
+        # imageio without imageio-ffmpeg — the exact partial install the
+        # extra exists to prevent, common because imageio rides in with other
+        # scientific packages. It surfaces as a backend-resolution ValueError,
+        # not as the ImportError above, and deserves the same answer.
+        raise ConfigError(
+            "movie mode needs imageio's ffmpeg backend (imageio-ffmpeg), which "
+            "is an optional extra because it ships an ffmpeg binary. Install "
+            'it with:\n    pip install "alhazen-vision[movie]"'
+        ) from exc
 
 
 # ----------------------------------------------------------------------
@@ -209,17 +241,35 @@ def record_clip(clip: MovieClip, hz: float, path: Path, scale: float = 1.0) -> i
     memory scales with the rig, not with this module.
     """
     written = 0
+    shape: tuple[int, ...] | None = None
     writer = _writer(path, hz)
+    completed = False
     try:
         for frame in clip.frames():
-            writer.append_data(even_dims(scale_frame(to_uint8(frame, clip.name), scale)))
+            converted = to_uint8(frame, clip.name)
+            if shape is None:
+                shape = converted.shape
+            elif converted.shape != shape:
+                # Checked here rather than left to the encoder, whose own
+                # complaint ("all images in a movie should have same size")
+                # names neither the clip nor the frames.
+                raise ConfigError(
+                    f"clip {clip.name!r} changed frame shape mid-stream "
+                    f"(was {shape}, now {converted.shape}); a movie's frames must all match"
+                )
+            writer.append_data(even_dims(scale_frame(converted, scale)))
             written += 1
+        completed = True
     finally:
         writer.close()
+        if not completed:
+            # A truncated file left beside the error reads as an encoder
+            # problem and sends someone debugging ffmpeg instead of the
+            # message they were just shown.
+            path.unlink(missing_ok=True)
     if written == 0:
-        # The zero-frame file is deleted so a directory listing cannot show a
-        # movie that plays nothing — that reads as an encoder problem and
-        # sends someone debugging ffmpeg instead of their own generator.
+        # Likewise the zero-frame file: a movie that plays nothing looks like
+        # a broken encoder, not like an empty generator.
         path.unlink(missing_ok=True)
         raise ConfigError(f"clip {clip.name!r} yielded no frames — nothing to record")
     return written
@@ -248,7 +298,8 @@ def record_sheet(
 
     Returns how many sheet frames were written.
     """
-    from PIL import Image, ImageDraw
+    pil = _pil()
+    Image, ImageDraw = pil.Image, pil.ImageDraw
 
     if not clips:
         raise ConfigError("a sheet needs at least one clip")
@@ -280,19 +331,28 @@ def record_sheet(
                 f"{frame.shape[1]}x{frame.shape[0]} (width x height, after --scale). "
                 f"Yield same-shaped frames, or record per-clip files instead."
             )
+    # Each clip must also keep ITS OWN full shape — channels included — for
+    # the whole stream: a clip that switches from luminance to RGB mid-way is
+    # a compositing bug, and left unchecked it would die in a raw numpy
+    # broadcast error halfway into the file.
+    clip_shapes = [frame.shape for frame in current]
     # One grey panel promotes the whole sheet to RGB rather than being
     # broadcast wrongly into it; an all-grey sheet stays grey, which encodes
     # smaller.
     rgb = any(frame.ndim == 3 for frame in current)
+    # Pillow reads an integer ink on an RGB image as a packed colour — 220
+    # comes out (220, 0, 0), bright red — so the ink matches the canvas mode.
+    ink = (SHEET_INK,) * 3 if rgb else SHEET_INK
 
     panel_h, panel_w = shape
-    font, label_h = _fit_font(max((clip.caption for clip in clips), key=len), panel_w)
+    font, label_h, captions = _fit_font([clip.caption for clip in clips], panel_w)
     sheet_w = panel_w * columns
     sheet_h = (panel_h + label_h) * rows
 
     alive = [True] * len(clips)
     written = 0
     writer = _writer(path, hz)
+    completed = False
     try:
         while True:
             canvas = np.full(
@@ -308,12 +368,12 @@ def record_sheet(
                 )
             image = Image.fromarray(canvas)
             draw = ImageDraw.Draw(image)
-            for index, clip in enumerate(clips):
+            for index, caption in enumerate(captions):
                 # Centred over its panel, anchored to the strip's top, so a
                 # caption never overlaps the frame below it.
                 centre = ((index % columns) + 0.5) * panel_w
                 top = (index // columns) * (panel_h + label_h) + label_h * 0.15
-                draw.text((centre, top), clip.caption, fill=SHEET_INK, font=font, anchor="ma")
+                draw.text((centre, top), caption, fill=ink, font=font, anchor="ma")
             writer.append_data(even_dims(np.asarray(image)))
             written += 1
 
@@ -327,16 +387,20 @@ def record_sheet(
                     alive[index] = False
                 else:
                     current[index] = scale_frame(to_uint8(step, clips[index].name), scale)
-                    if current[index].shape[:2] != shape:
+                    if current[index].shape != clip_shapes[index]:
                         raise ConfigError(
-                            f"clip {clips[index].name!r} changed frame size mid-stream "
-                            f"(was {shape[1]}x{shape[0]}, now "
-                            f"{current[index].shape[1]}x{current[index].shape[0]})"
+                            f"clip {clips[index].name!r} changed frame shape mid-stream "
+                            f"(was {clip_shapes[index]}, now {current[index].shape}); "
+                            f"a clip's frames must all match, channels included"
                         )
             if not any(alive):
                 break
+        completed = True
     finally:
         writer.close()
+        if not completed:
+            # Same policy as record_clip: no truncated file beside the error.
+            path.unlink(missing_ok=True)
     return written
 
 
@@ -345,23 +409,43 @@ def _promote(frame: np.ndarray) -> np.ndarray:
     return frame if frame.ndim == 3 else np.repeat(frame[:, :, None], 3, axis=2)
 
 
-def _fit_font(longest: str, panel_width: int) -> tuple[Any, int]:
-    """The largest default font whose longest caption still fits its panel.
+def _fit_font(captions: list[str], panel_width: int) -> tuple[Any, int, list[str]]:
+    """The largest default font at which every caption fits its panel — and
+    the captions as they will be drawn.
 
-    Fitted by measuring rather than guessed from the panel height — a caption
-    that runs into the next column makes two conditions read as one. Returns
-    the font and the height of the label strip it needs.
+    Every caption is measured, not just the one with the most characters:
+    character count is not rendered width, and a caption that overflows into
+    the next column makes two conditions read as one. One that cannot fit
+    even at the smallest size is truncated to a visible ellipsis rather than
+    drawn overflowing — an elided label says it was elided; an overflowing
+    one silently relabels the neighbouring panel. Returns the font, the
+    height of the label strip, and the fitted captions.
     """
-    from PIL import ImageFont
+    ImageFont = _pil().ImageFont
 
     room = max(8, panel_width - 12)
+
+    def width(font: Any, text: str) -> int:
+        box = font.getbbox(text)
+        return box[2] - box[0]
+
     for size in range(22, 7, -1):
         font = ImageFont.load_default(size=size)
-        box = font.getbbox(longest)
-        if box[2] - box[0] <= room:
+        if all(width(font, caption) <= room for caption in captions):
             break
+
+    fitted = []
+    for caption in captions:
+        if width(font, caption) <= room:
+            fitted.append(caption)
+            continue
+        stub = caption
+        while stub and width(font, stub + "…") > room:
+            stub = stub[:-1]
+        fitted.append(stub + "…")
     # The strip is taller than the glyphs so descenders clear the frame below.
-    return font, round((box[3] - box[1]) * 1.9)
+    boxes = [font.getbbox(caption) for caption in fitted]
+    return font, round(max(box[3] - box[1] for box in boxes) * 1.9), fitted
 
 
 # ----------------------------------------------------------------------

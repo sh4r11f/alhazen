@@ -83,11 +83,24 @@ class TestSubjectKeyboard:
         # Lazy vendor imports (invariant 7): psychopy is touched only when a
         # real read happens, so `import alhazen` and the default suite work
         # with none of it installed.
+        #
+        # Checked in a subprocess, because the invariant is about a fresh
+        # import state: asserted in-process it fails whenever an earlier test
+        # in the suite's ordering has already loaded psychopy — which is the
+        # ordering, not the device, and made this the suite's one flaky test.
+        import subprocess
         import sys
 
-        SubjectKeyboard(keys=("left", "right"), window=object())
-
-        assert "psychopy" not in sys.modules
+        probe = (
+            "import sys\n"
+            "from alhazen.devices.response import SubjectKeyboard\n"
+            "SubjectKeyboard(keys=('left', 'right'), window=object())\n"
+            "assert 'psychopy' not in sys.modules, 'constructing it imported psychopy'\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", probe], capture_output=True, text=True, timeout=120
+        )
+        assert result.returncode == 0, result.stderr
 
 
 class FakeTracker:

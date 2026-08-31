@@ -59,6 +59,42 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   starts in any mode from day one instead of only `run`. Documented in
   [docs/modes.md](docs/modes.md#one-rig-file-per-purpose).
 
+### Fixed
+
+Findings of a post-merge adversarial review of the movie-mode PR, all
+verified before fixing:
+
+- **A fresh scaffold now answers every command it prints.** The template task
+  implements `demo_views`, `movie_clips` and `simulation` (the smallest
+  honest version of each, to build on) — previously `alhazen new`'s own
+  closing message and the rig headers printed `--mode demo/movie/simulate`
+  commands that all exited with "implement X to use this". The slow
+  acceptance test now runs simulate and movie on a scaffolded package.
+- **Movie mode's failure modes got loud and clean.** imageio-without-ffmpeg
+  (the exact partial install the extra exists to prevent) and a missing
+  Pillow now raise the ConfigError naming `alhazen-vision[movie]` instead of
+  raw backend tracebacks, and Pillow is pinned in the extra (`>=10.1`, which
+  the caption APIs need). A clip that changes frame shape — or switches
+  luminance/RGB — mid-stream is refused naming the clip instead of dying in
+  the encoder or a numpy broadcast. Every error path now deletes the
+  truncated `.mp4` it would otherwise leave looking like an encoder problem.
+- **Sheet captions render honestly.** Ink on an RGB sheet is grey, not the
+  red that Pillow makes of an integer fill on a multi-band image; fonts are
+  fitted to every caption's rendered width (not the longest character
+  count); a caption that cannot fit even at the smallest size is elided with
+  a visible ellipsis instead of overflowing into the neighbouring panel.
+- **An experiment's own `NotImplementedError`, raised from a frames
+  generator mid-recording, surfaces with its traceback** instead of being
+  misreported as "declares no movie clips" (exit 2) — the missing-hook case
+  is now told apart by identity.
+- **Prompting for `--sub`/`--ses` requires a terminal.** With stdin not a TTY
+  (nohup, CI, a batch script) the missing flags are refused up front with
+  exit 2, where `input()` previously blocked forever or died in a raw
+  EOFError after the rig config had already loaded.
+- **The one order-dependent test in the suite** (the lazy-import invariant on
+  `SubjectKeyboard`) now checks its invariant in a subprocess, so it can no
+  longer fail when an earlier test has legitimately loaded psychopy.
+
 ### Changed
 
 - **The distribution is now `alhazen-vision`** (`pip install alhazen-vision`).

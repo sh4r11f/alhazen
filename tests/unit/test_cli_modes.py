@@ -82,6 +82,38 @@ class TestTheDefault:
         assert "--task" in capsys.readouterr().err
 
 
+class TestPromptsNeedATerminal:
+    def test_missing_sub_and_ses_with_no_tty_exit_rather_than_hang(self, tmp_path, capsys):
+        """Prompting is for a person at a rig. Under nohup or CI, input()
+        blocks forever or dies in a raw EOFError after the rig config has
+        already loaded — so with stdin not a terminal (which is what pytest's
+        capture provides here) the missing flags are refused up front."""
+        from alhazen.cli.modes import run_experiment
+        from alhazen.config.models import Model
+        from alhazen.core.events import EventSchema
+
+        # Aliased because the class attribute is itself named `outcomes`, and
+        # a class body's own assignment shadows the enclosing function's name.
+        from alhazen.core.trial import outcomes as make_outcomes
+        from alhazen.task.task import Task
+
+        class PromptParams(Model):
+            pass
+
+        class PromptTask(Task):
+            name = "prompt-check"
+            events = EventSchema(())
+            outcomes = make_outcomes(DONE=dict(completed=True, success=True))
+            params_model = PromptParams
+
+        code = run_experiment(
+            task_class=PromptTask, default_rig=rig_file(tmp_path), argv=["--mode", "test"]
+        )
+        assert code == 2
+        err = capsys.readouterr().err
+        assert "--sub" in err and "--ses" in err and "terminal" in err
+
+
 class TestMeasureRejectsAnUnknownSkip:
     def test_a_misspelled_measurement_is_refused(self, tmp_path, capsys):
         """An experimenter who thinks they skipped the tracker and did not
