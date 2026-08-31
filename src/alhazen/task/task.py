@@ -122,19 +122,32 @@ class Task:
     # improvising something that is not the experiment.
     # ------------------------------------------------------------------
 
-    def demo_views(self, screen: Any) -> list[Any]:
+    def demo_views(self, setup: Any) -> list[Any]:
         """The displays ``alhazen run --mode demo`` pages through.
 
-        A list of ``modes.demo.DemoView``. The stimulus is the one thing in an
-        experiment that no test can check — a test can assert that dot k is
-        where the formula says, not that a human sees a transparent cylinder —
-        so this is how that judgement gets made, against the same geometry a
-        session draws at the rig's own pixel scale.
+        Takes a ``modes.demo.DemoSetup`` — the display, the screen, the params
+        and an rng — and returns a list of ``modes.demo.DemoView``. It gets
+        the real display and the real pixel scale because the stimulus is the
+        one thing in an experiment no test can check: a test can assert that
+        dot k is where the formula says, not that a human sees a transparent
+        cylinder, and that judgement is only worth anything if what is on
+        screen is the literal stimulus rather than a redrawing of it.
         """
         raise NotImplementedError(
-            f"{type(self).__name__} declares no demo views. Implement demo_views(screen) "
-            f"returning a list of alhazen.modes.demo.DemoView to use --mode demo."
+            f"{type(self).__name__} declares no demo views. Implement "
+            f"demo_views(setup) returning a list of alhazen.modes.demo.DemoView "
+            f"to use --mode demo."
         )
+
+    def demo_controls(self, setup: Any) -> list[Any]:
+        """Experiment-specific keys for the demo, as ``modes.demo.DemoControl``.
+
+        The default is none: paging through the views and quitting are the
+        viewer's own keys and are always there. This is for the toggles that
+        only mean something to one experiment — a new random cloud of dots, a
+        faster rotation, showing and hiding the target.
+        """
+        return []
 
     def simulation(self, seed: int) -> Any:
         """The stand-ins for a subject in ``--mode simulate``, or None.
