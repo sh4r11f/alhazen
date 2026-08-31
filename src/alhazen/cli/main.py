@@ -44,65 +44,9 @@ def main(argv: list[str] | None = None) -> int:
     new.add_argument("--force", action="store_true", help="write into a non-empty directory")
 
     run = sub.add_parser("run", help="run one session of an installed task")
-    run.add_argument(
-        "--mode",
-        default="run",
-        choices=[m.value for m in Mode],
-        help="; ".join(f"{m.value}: {m.summary}" for m in Mode) + " (default: run)",
-    )
     run.add_argument("--task", default=None, help="the task's registered name")
-    run.add_argument("--rig", default=None, help="path to a rig YAML file")
-    run.add_argument("--params", default=None, help="path to the task's params YAML")
-    run.add_argument("--sub", default=None, help="subject id (prompted if omitted)")
-    run.add_argument("--ses", type=int, default=None, help="session number (prompted)")
-    run.add_argument(
-        "--run", type=int, default=None, help="run number (default: the next free one)"
-    )
-    run.add_argument("--seed", type=int, default=None, help="session seed")
-    run.add_argument("--windowed", action="store_true", help="bordered window, for dev")
-    dashboard_group = run.add_mutually_exclusive_group()
-    dashboard_group.add_argument(
-        "--dashboard", action="store_true", default=None, help="enable the live dashboard"
-    )
-    dashboard_group.add_argument(
-        "--no-dashboard", action="store_false", dest="dashboard", help="disable the dashboard"
-    )
-    run.set_defaults(dashboard=None)
-    run.add_argument(
-        "--no-dashboard-browser",
-        action="store_true",
-        help="serve the dashboard without opening a browser window",
-    )
-    run.add_argument("--curriculum", default=None, help="path to a curriculum YAML")
     run.add_argument("--list", action="store_true", help="list installed tasks and exit")
-    # test / simulate
-    run.add_argument(
-        "--trials-per-condition",
-        type=int,
-        default=1,
-        help="test and simulate modes: repetitions of each condition (default: %(default)s)",
-    )
-    # demo
-    run.add_argument(
-        "--screenshots",
-        default=None,
-        help="demo mode: directory for screenshots (default: the working directory)",
-    )
-    # measure
-    run.add_argument(
-        "--skip",
-        action="append",
-        default=[],
-        metavar="MEASUREMENT",
-        help="measure mode: a measurement to skip; repeatable",
-    )
-    run.add_argument(
-        "--presses",
-        type=int,
-        default=None,
-        help="measure mode: how many keypresses to time (default: the mode's own)",
-    )
-
+    add_mode_arguments(run)
     calibrate = sub.add_parser("calibrate", help="check a monitor's geometry and gamma")
     calibrate_sub = calibrate.add_subparsers(dest="calibration")
     ruler = calibrate_sub.add_parser(
@@ -230,7 +174,73 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _run_session(args: argparse.Namespace) -> int:
+def add_mode_arguments(parser: argparse.ArgumentParser) -> None:
+    """The options every mode-aware entry point takes.
+
+    Shared with ``alhazen.cli.modes.run_experiment`` so an experiment's own
+    run.py offers exactly the flags this command does. Two entry points
+    that drifted apart would mean a flag that works one way at the rig and
+    another way in a script.
+    """
+    parser.add_argument(
+        "--mode",
+        default="run",
+        choices=[m.value for m in Mode],
+        help="; ".join(f"{m.value}: {m.summary}" for m in Mode) + " (default: run)",
+    )
+    parser.add_argument("--rig", default=None, help="path to a rig YAML file")
+    parser.add_argument("--params", default=None, help="path to the task's params YAML")
+    parser.add_argument("--sub", default=None, help="subject id (prompted if omitted)")
+    parser.add_argument("--ses", type=int, default=None, help="session number (prompted)")
+    parser.add_argument(
+        "--run", type=int, default=None, help="run number (default: the next free one)"
+    )
+    parser.add_argument("--seed", type=int, default=None, help="session seed")
+    parser.add_argument("--windowed", action="store_true", help="bordered window, for dev")
+    dashboard_group = parser.add_mutually_exclusive_group()
+    dashboard_group.add_argument(
+        "--dashboard", action="store_true", default=None, help="enable the live dashboard"
+    )
+    dashboard_group.add_argument(
+        "--no-dashboard", action="store_false", dest="dashboard", help="disable the dashboard"
+    )
+    parser.set_defaults(dashboard=None)
+    parser.add_argument(
+        "--no-dashboard-browser",
+        action="store_true",
+        help="serve the dashboard without opening a browser window",
+    )
+    parser.add_argument("--curriculum", default=None, help="path to a curriculum YAML")
+    # test / simulate
+    parser.add_argument(
+        "--trials-per-condition",
+        type=int,
+        default=1,
+        help="test and simulate modes: repetitions of each condition (default: %(default)s)",
+    )
+    # demo
+    parser.add_argument(
+        "--screenshots",
+        default=None,
+        help="demo mode: directory for screenshots (default: the working directory)",
+    )
+    # measure
+    parser.add_argument(
+        "--skip",
+        action="append",
+        default=[],
+        metavar="MEASUREMENT",
+        help="measure mode: a measurement to skip; repeatable",
+    )
+    parser.add_argument(
+        "--presses",
+        type=int,
+        default=None,
+        help="measure mode: how many keypresses to time (default: the mode's own)",
+    )
+
+
+def _run_session(args: argparse.Namespace, task_class: Any = None) -> int:
     """Dispatch one of the five modes.
 
     All five arrive through the same command because they are five ways of
@@ -242,7 +252,7 @@ def _run_session(args: argparse.Namespace) -> int:
 
     mode = Mode(args.mode)
 
-    if args.list:
+    if getattr(args, "list", False):
         tasks = installed_tasks()
         if not tasks:
             print("no tasks installed — install an experiment package first")
@@ -253,7 +263,7 @@ def _run_session(args: argparse.Namespace) -> int:
 
     # Measure mode asks nothing of the experiment — it is about the machine —
     # so it is the one mode that runs without a task installed.
-    needed = ["rig"] if mode is Mode.MEASURE else ["task", "rig"]
+    needed = ["rig"] if mode is Mode.MEASURE or task_class is not None else ["task", "rig"]
     missing = [name for name in needed if getattr(args, name) is None]
     if missing:
         print(
@@ -277,7 +287,8 @@ def _run_session(args: argparse.Namespace) -> int:
     from alhazen.config.loader import load_model
 
     try:
-        task_class = load_task_class(args.task)
+        if task_class is None:
+            task_class = load_task_class(args.task)
         params = (
             load_model(args.params, task_class.params_model)
             if args.params
@@ -388,6 +399,7 @@ def _trial_session(args: argparse.Namespace, rig: Any, task: Any, params: Any, m
             curriculum=curriculum,
             dashboard=args.dashboard,
             open_dashboard=False if args.no_dashboard_browser else None,
+            instructions=getattr(args, "instructions", None),
             sources={"rig": str(args.rig), "task": str(args.params or "<defaults>")},
         )
     except ConfigError as e:
@@ -399,7 +411,9 @@ def _trial_session(args: argparse.Namespace, rig: Any, task: Any, params: Any, m
     # quietly redesigns the experiment would put numbers in the snapshot that
     # are not the numbers that ran, and the snapshot is the record.
     print(built.describe())
-    print(f"running {args.task}: sub-{subject} ses-{session:03d} run-{built.run:02d}")
+    # The task's own name, not args.task: an experiment's run.py has no
+    # --task flag, because it already knows which experiment it is.
+    print(f"running {task.name}: sub-{subject} ses-{session:03d} run-{built.run:02d}")
     built.runner.run()
     print(f"session complete — data under {built.data_root.resolve()}")
     return 0

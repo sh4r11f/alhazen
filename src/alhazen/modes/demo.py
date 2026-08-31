@@ -57,7 +57,20 @@ KEYS_COLOR = (0.55, 0.55, 0.60)
 # The caption goes under the stimulus (what you are looking at sits below the
 # thing you are judging) and the key table at the top, out of the way.
 CAPTION_Y_FRACTION = -0.32
-KEYS_Y_FRACTION = 0.38
+# The key table goes in the TOP-LEFT corner, not stacked above the stimulus.
+# Stacked, it competes with the stimulus for vertical space and loses: a
+# cylinder 8 degrees tall on a dense panel is 858 px of a 1500 px window,
+# leaving 321 px above it, and a table of a dozen rows needs more than that.
+# In the corner it uses the horizontal room a centred stimulus does not, and
+# the layout stops depending on how many keys an experiment happens to bind.
+KEYS_X_FRACTION = -0.47
+KEYS_Y_FRACTION = 0.47
+# The key table is set smaller than the caption. They are read at different
+# moments and for different reasons: the caption is what you read WHILE
+# judging the stimulus, so it matches the caption's own size; the key table is
+# looked up once and then ignored. Smaller also keeps a dozen rows clear of a
+# stimulus that fills the middle of the window.
+KEYS_HEIGHT_SCALE = 0.85
 
 
 @dataclass(frozen=True)
@@ -105,6 +118,13 @@ class DemoControl:
 # The keys every demo has, whatever it is showing. Spelled out rather than
 # drawn with arrow glyphs: Open Sans renders a missing glyph as a hollow box,
 # and a key table with tofu in it is worse than one with a few extra words.
+# The key names the viewer itself consumes, as the keyboard reports them.
+# `press` checks these BEFORE the experiment's own bindings, so an experiment
+# that bound one would be silently shadowed — the key table would advertise it
+# and something else would happen. That is refused at construction instead;
+# see DemoState.__post_init__.
+RESERVED_KEYS = frozenset({"right", "space", "left", "s", "escape", "q"})
+
 BUILT_IN_KEYS = (
     ("RIGHT or SPACE", "next display"),
     ("LEFT", "previous display"),
@@ -124,6 +144,10 @@ class DemoState:
     views: Sequence[DemoView]
     controls: Sequence[DemoControl] = ()
     index: int = 0
+    # Whether S can actually write a file. Listed in the key table only when
+    # it can: a viewer that advertises a key which does nothing leaves the
+    # reader unable to tell a dead key from a failed save.
+    can_screenshot: bool = True
     # Set by a control that wants to say what it just did.
     suffix: str | None = field(default=None)
 
@@ -137,6 +161,20 @@ class DemoState:
             raise ValueError(
                 f"demo keys are bound twice: {sorted(clashes)}. One key, one thing — "
                 f"a viewer whose key does two things cannot be used to judge either."
+            )
+        # Against the viewer's own keys as well. press() checks those first,
+        # so a binding here would never fire while the key table went on
+        # advertising it — a viewer that documents a key it does not have is
+        # worse than one with fewer keys, because the table is the only
+        # documentation anybody reads.
+        taken = {key.lower() for key in keys if key}
+        taken |= {control.key.lower() for control in self.controls}
+        reserved = sorted(taken & RESERVED_KEYS)
+        if reserved:
+            raise ValueError(
+                f"demo binds key(s) the viewer already owns: {reserved}. "
+                f"The viewer keeps {sorted(RESERVED_KEYS)} for paging, screenshots "
+                f"and quitting, and checks them first, so these would never fire."
             )
 
     @property
@@ -157,7 +195,7 @@ class DemoState:
         """
         rows = [(view.key.upper(), view.name) for view in self.views if view.key]
         rows += [(control.key.upper(), control.label) for control in self.controls]
-        rows += list(BUILT_IN_KEYS)
+        rows += [row for row in BUILT_IN_KEYS if self.can_screenshot or row[0] != "S"]
         width = max(len(key) for key, _ in rows)
         return "\n".join(f"{key:<{width}}   {label}" for key, label in rows)
 
@@ -172,7 +210,7 @@ class DemoState:
         if key in ("escape", "q"):
             return "quit"
         if key == "s":
-            return "screenshot"
+            return "screenshot" if self.can_screenshot else "continue"
         if key in ("right", "space"):
             self.select((self.index + 1) % len(self.views))
         elif key == "left":
@@ -193,7 +231,18 @@ class DemoState:
         self.suffix = None
 
 
-def _text(visual: Any, window: Any, *, height: float, color: Any, align: str, y: float, font: str):
+def _text(
+    visual: Any,
+    window: Any,
+    *,
+    height: float,
+    color: Any,
+    align: str,
+    y: float,
+    font: str,
+    x: float = 0.0,
+    anchor_h: str = "center",
+):
     """One furniture block.
 
     ``wrapWidth`` is set explicitly because TextStim's default in pixel units
@@ -209,9 +258,9 @@ def _text(visual: Any, window: Any, *, height: float, color: Any, align: str, y:
         color=color,
         colorSpace="rgb",
         alignText=align,
-        anchorHoriz="center",
+        anchorHoriz=anchor_h,
         anchorVert="top",
-        pos=(0.0, y),
+        pos=(x, y),
         wrapWidth=height * 60,
         units="pix",
     )
@@ -253,6 +302,7 @@ def run_demo(
         state = DemoState(
             views=setup_views(setup),
             controls=controls(setup) if controls is not None else (),
+            can_screenshot=screenshot_dir is not None,
         )
 
         window = display.window
@@ -271,10 +321,12 @@ def run_demo(
         keys = _text(
             visual,
             window,
-            height=height,
+            height=height * KEYS_HEIGHT_SCALE,
             color=KEYS_COLOR,
             align="left",
+            x=rig.monitor.width_px * KEYS_X_FRACTION,
             y=rig.monitor.height_px * KEYS_Y_FRACTION,
+            anchor_h="left",
             font=KEYS_FONT,
         )
         keys.text = state.key_table()
