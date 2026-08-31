@@ -43,6 +43,22 @@ class DisplayBackend(Protocol):
         no visible surface log it instead."""
         ...
 
+    def show_menu(self, title: str, body: str, *, color: tuple[float, float, float]) -> None:
+        """Present a modal menu — a heading over a block of key/action rows —
+        and flip.
+
+        Separate from ``show_message`` because it is a different thing on
+        screen and must look like one: a message is the session talking to the
+        subject, a menu is the session stopped and waiting for the
+        experimenter. ``color`` is what carries that distinction across a
+        room, so it is required rather than defaulted.
+
+        The body's key column is aligned with spaces, so a backend that draws
+        it must use a monospace face or the alignment is lost. Backends with
+        no visible surface record it instead.
+        """
+        ...
+
     def set_gamma(self, gamma: float) -> None:
         """Apply a measured gamma correction (`alhazen calibrate gamma`).
 

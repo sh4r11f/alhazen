@@ -171,8 +171,9 @@ class SessionHarness:
     ) -> None:
         from alhazen.data.paths import SessionPaths
         from alhazen.paradigms.base import Condition, SimpleSequence
+        from alhazen.session.pause import run_pause_menu
         from alhazen.session.recorder import DataRecorder
-        from alhazen.session.runner import SessionRunner, pause_menu
+        from alhazen.session.runner import SessionRunner
         from alhazen.task.plan import TrialPlan
 
         # Accepting a clock lets a test build a device (a scripted tracker)
@@ -248,8 +249,9 @@ class SessionHarness:
             # only path that exercises poll_raw_keys end to end.
             on_pause=(
                 (
-                    lambda: pause_menu(
-                        self.display.show_message,
+                    lambda menu: run_pause_menu(
+                        menu,
+                        lambda m: self.display.show_menu(m.title, m.render(), color=m.color),
                         self.commands.poll_raw_keys,
                         lambda s: self.clock.advance(s),
                     )

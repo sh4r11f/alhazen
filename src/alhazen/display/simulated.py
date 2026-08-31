@@ -35,6 +35,10 @@ class SimulatedDisplay:
         self.window = _RecordingWindow()
         self.flip_count = 0
         self.messages: list[str] = []
+        # (title, body) per menu shown. Kept apart from `messages` so a test
+        # or a log reader can ask "did this session ever stop?" without
+        # pattern-matching message text.
+        self.menus: list[tuple[str, str]] = []
         self._opened = False
         self._last_flip: float | None = None
         # None until a calibration is applied, so "no gamma" and "gamma 1.0"
@@ -81,6 +85,18 @@ class SimulatedDisplay:
     def show_message(self, text: str) -> None:
         self.messages.append(text)
         log.info("display message: %s", text)
+
+    def show_menu(self, title: str, body: str, *, color: tuple[float, float, float]) -> None:
+        """Log the menu and keep it, headline first.
+
+        Logged in full rather than summarised: an unattended simulated session
+        that pauses does so for a reason (a reward failure is the usual one),
+        and the session log is the only place that reason can be read
+        afterwards.
+        """
+        self.menus.append((title, body))
+        self.messages.append(title)
+        log.info("display menu: %s\n%s", title, body)
 
     def set_gamma(self, gamma: float) -> None:
         # Recorded rather than ignored: a simulated session should still be

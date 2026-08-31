@@ -50,6 +50,7 @@ class FakeDisplay:
         self.window: Any = _RecordingWindow()
         self.flip_count = 0
         self.messages: list[str] = []
+        self.menus: list[tuple[str, str, tuple[float, float, float]]] = []
         self.closed = False
         self.gamma: float | None = None
 
@@ -69,6 +70,13 @@ class FakeDisplay:
 
     def show_message(self, text: str) -> None:
         self.messages.append(text)
+
+    def show_menu(self, title: str, body: str, *, color: tuple[float, float, float]) -> None:
+        # Recorded whole, including the colour: the colour is the part of the
+        # pause screen that carries its meaning, so a test that pins the
+        # menu's behaviour must be able to see it.
+        self.menus.append((title, body, color))
+        self.messages.append(title)
 
     def set_gamma(self, gamma: float) -> None:
         # Recorded, not ignored: this fake must satisfy the whole

@@ -49,6 +49,11 @@ from alhazen.display.frames import FrameMonitor
 from alhazen.display.screen import Screen
 from alhazen.paradigms.base import Condition, TrialSource
 from alhazen.session.database import ExperimentDatabase, FrameInputBuffer
+from alhazen.session.pause import (
+    PauseMenu,
+    build_pause_menu,
+    pause_menu,  # noqa: F401 - re-exported: it lived here until 1.1
+)
 from alhazen.session.recorder import DataRecorder
 
 # Re-exported through this module as well as its own: experiment code and
@@ -89,23 +94,32 @@ def host_overlay_shapes(screen: Screen, regions: dict[str, CircleRegion]) -> lis
     return shapes
 
 
-def pause_menu(
-    show_message: Callable[[str], None],
-    raw_keys: Callable[[], list[str]],
-    wait: Callable[[float], None],
-) -> str:
-    """Block until the experimenter chooses; returns "resume" | "calibrate" |
-    "quit". The short wait keeps this from spinning a core while idle."""
-    show_message("PAUSED — space: resume | c: calibrate | q/escape: quit")
-    while True:
-        for key in raw_keys():
-            if key == "space":
-                return "resume"
-            if key == "c":
-                return "calibrate"
-            if key in ("q", "escape"):
-                return "quit"
-        wait(0.01)
+# Menu action -> the session command it issues. Shared by the keyboard and
+# dashboard pause paths so a stage moved from the browser and one moved from
+# the keyboard go through exactly the same code.
+def _menu_action(actions: dict[str, str], key: str) -> str | None:
+    """The action a raw key name selects on the menu, or None.
+
+    The menu prints one row for "Q or ESC", so its key text is not a key name;
+    the two real names are mapped here. Everything else matches a row's key
+    case-insensitively, which is what lets a rebound key work without the
+    pause screen and the keyboard drifting apart.
+    """
+    if key.lower() in ("q", "escape"):
+        return actions.get("Q or ESC")
+    if key.lower() == "space":
+        return actions.get("SPACE")
+    for row_key, action in actions.items():
+        if row_key.lower() == key.lower():
+            return action
+    return None
+
+
+PAUSE_STAGE_COMMANDS = {
+    "promote_stage": Command.PROMOTE_STAGE,
+    "demote_stage": Command.DEMOTE_STAGE,
+    "hold_stage": Command.HOLD_STAGE,
+}
 
 
 class SessionRunner:
@@ -127,7 +141,7 @@ class SessionRunner:
         task_rng: np.random.Generator,
         iti_s: float = 0.0,
         score: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
-        on_pause: Callable[[], str] | None = None,
+        on_pause: Callable[[PauseMenu], str] | None = None,
         on_calibrate: Callable[[], None] | None = None,
         wait: Callable[[float], None] | None = None,
         tracker: EyeTracker | None = None,
@@ -307,7 +321,7 @@ class SessionRunner:
                     # measurement is already recorded above — a hardware fault
                     # after the fact must never discard a trial the subject
                     # actually completed.
-                    if not self._handle_pause(result.record):
+                    if not self._handle_pause(result.record, reward_failed=reward_failed):
                         break
                     continue  # the pause menu already gave all the time needed; skip ITI
 
@@ -460,26 +474,80 @@ class SessionRunner:
         self._tracker.start_trial(ctx.trial_index, f"attempt {attempt}")
         self._tracker.draw_host_overlay(host_overlay_shapes(self._screen, ctx.regions))
 
-    def _handle_pause(self, record: dict[str, Any]) -> bool:
+    def _pause_menu(self, fault: str | None = None) -> PauseMenu:
+        """The menu for this session, built from what is actually wired.
+
+        Built fresh at each pause rather than once at construction, because
+        what is available can change during a session: a curriculum's stage
+        keys are meaningless until a curriculum is running, and a fault
+        heading belongs only to the pause it describes.
+        """
+        return build_pause_menu(
+            has_tracker=self._tracker is not None and self._on_calibrate is not None,
+            has_reward=self._manual_reward is not None,
+            has_training=self._training is not None,
+            has_dashboard=self._dashboard is not None,
+            fault=fault,
+        )
+
+    def _show_pause_menu(self, menu: PauseMenu) -> None:
+        self._display.show_menu(menu.title, menu.render(), color=menu.color)
+
+    def _handle_pause(self, record: dict[str, Any], reward_failed: bool = False) -> bool:
         """Resolve a PAUSED trial; returns False when the experimenter chose
         to quit. With no pause strategy wired (unattended runs), resume
         immediately — blocking forever with nobody at the keyboard would
-        hang a simulated session."""
+        hang a simulated session.
+
+        The menu stays up across everything except resume and quit. Pressing
+        the calibrate key used to calibrate and then resume in one press,
+        which meant an experimenter who wanted to calibrate AND give a reward
+        had to pause twice; and after a recalibration the natural thing to
+        want is a look at the menu again, not the next trial.
+        """
         if record.get("pause_action") == "calibrate" and self._on_calibrate is not None:
             self._on_calibrate()
+        # A reward failure is not a pause anybody asked for, so the screen
+        # leads with what went wrong rather than with the word PAUSED.
+        menu = self._pause_menu(fault="REWARD FAILURE — check the pump" if reward_failed else None)
         if self._dashboard is not None:
-            return self._handle_dashboard_pause()
-        choice = self._on_pause() if self._on_pause is not None else "resume"
-        if choice == "quit":
-            return False
-        if choice == "calibrate" and self._on_calibrate is not None:
-            self._on_calibrate()
+            return self._handle_dashboard_pause(menu)
+        if self._on_pause is None:
+            # Unattended. Still shown, so a simulated session's log records
+            # that it stopped and why.
+            self._show_pause_menu(menu)
+            return self._resumed()
+        while True:
+            action = self._on_pause(menu)
+            if action == "quit":
+                return False
+            if action == "resume":
+                return self._resumed()
+            self._apply_pause_action(action)
+
+    def _apply_pause_action(self, action: str) -> None:
+        """One non-terminal menu choice. Anything unrecognised is logged
+        rather than ignored: a key that silently does nothing is the fault
+        this menu exists to prevent."""
+        if action == "calibrate":
+            if self._on_calibrate is None:
+                log.warning("calibrate requested while paused, but no eye tracker is wired")
+            else:
+                self._on_calibrate()
+        elif action == "manual_reward":
+            self._manual_reward_while_paused()
+        elif action in {"promote_stage", "demote_stage", "hold_stage"}:
+            self.on_session_command(PAUSE_STAGE_COMMANDS[action])
+        else:
+            log.warning("unhandled pause action %r", action)
+
+    def _resumed(self) -> bool:
         self._bus.emit(
             Event(name="RESUMED", t=self._clock.now(), trial_index=self._trial_index, payload={})
         )
         return True
 
-    def _handle_dashboard_pause(self) -> bool:
+    def _handle_dashboard_pause(self, menu: PauseMenu) -> bool:
         """Drive the local browser controls only after a keyboard pause.
 
         The browser is server-enforced read-only before this state is
@@ -496,48 +564,36 @@ class SessionRunner:
         stale = dashboard.poll_commands()
         if stale:
             log.info("discarding %d command(s) queued before this pause", len(stale))
+        # The menu goes on the subject display here too. It did not used to,
+        # so turning the dashboard on silently removed the only thing the
+        # person standing at the rig could see — and the rig is where a pause
+        # is usually resolved, browser or no browser.
+        self._show_pause_menu(menu)
         self._publish_dashboard("paused", "Paused — browser controls are enabled.")
+        keys = menu.actions()
         while True:
             actions = [command.name for command in dashboard.poll_commands()]
-            for key in self._commands.poll_raw_keys():
-                if key == "space":
-                    actions.append("resume")
-                elif key == "c":
-                    actions.append("calibrate")
-                elif key in ("q", "escape"):
-                    actions.append("quit")
-                elif key == "r":
-                    actions.append("manual_reward")
+            actions += [
+                action
+                for key in self._commands.poll_raw_keys()
+                if (action := _menu_action(keys, key)) is not None
+            ]
             for action in actions:
                 if action == "resume":
-                    self._bus.emit(
-                        Event(
-                            name="RESUMED",
-                            t=self._clock.now(),
-                            trial_index=self._trial_index,
-                            payload={},
-                        )
-                    )
                     self._publish_dashboard("running", "Resumed.")
-                    return True
+                    return self._resumed()
                 if action == "quit":
                     self._publish_dashboard("stopping", "Quit requested.")
                     return False
-                if action == "calibrate":
-                    if self._on_calibrate is None:
-                        self._publish_dashboard("paused", "No eye tracker is configured.")
-                    else:
-                        self._on_calibrate()
-                        self._publish_dashboard("paused", "Calibration complete.")
-                elif action == "manual_reward":
-                    self._manual_reward_while_paused()
-                elif action in {"promote_stage", "demote_stage", "hold_stage"}:
-                    mapping = {
-                        "promote_stage": Command.PROMOTE_STAGE,
-                        "demote_stage": Command.DEMOTE_STAGE,
-                        "hold_stage": Command.HOLD_STAGE,
-                    }
-                    self.on_session_command(mapping[action])
+                self._apply_pause_action(action)
+                # Every non-terminal action redraws the menu, because
+                # _apply_pause_action may have put a calibration screen over
+                # it, and a menu that vanishes after one keypress looks like
+                # a session that has crashed.
+                self._show_pause_menu(menu)
+                if action != "manual_reward":
+                    # _manual_reward_while_paused publishes its own outcome,
+                    # which is more specific than this.
                     self._publish_dashboard("paused", f"{action.replace('_', ' ')} requested.")
             self._wait(0.01)
 
