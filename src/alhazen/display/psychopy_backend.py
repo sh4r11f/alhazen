@@ -9,6 +9,7 @@ everywhere in this package.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from alhazen.config.models import MonitorConfig
@@ -19,6 +20,8 @@ from alhazen.errors import DisplayError
 # pure white on the mid-grey background is a harsher edge than a subject
 # reading a paragraph needs. PsychoPy ships Open Sans, so no rig has to
 # install anything, and it falls back to the system sans if it is missing.
+log = logging.getLogger(__name__)
+
 MESSAGE_FONT = "Open Sans"
 MESSAGE_COLOR = (0.82, 0.82, 0.86)
 
@@ -64,6 +67,94 @@ class PsychoPyDisplay:
             color=(0, 0, 0),
             allowGUI=self._windowed,
         )
+        self._check_pixels_are_what_the_config_says()
+
+    def _check_pixels_are_what_the_config_says(self) -> None:
+        """Refuse to run if the drawing surface is not the size the rig claims.
+
+        Everything downstream is degrees of visual angle computed from
+        ``width_px / width_cm`` (display.screen.Screen), and stimuli are drawn
+        in ``units="pix"``. Those pixels are the **framebuffer's**, so if the
+        framebuffer is not the size the config describes, every stimulus is
+        the wrong physical size and every recorded position is wrong by the
+        same factor — with nothing at runtime to say so.
+
+        The case this exists for is a **Retina Mac**, where the framebuffer is
+        two device pixels per point in each direction. PsychoPy is explicit
+        that ``units="pix"`` then refers to the small Retina pixels and that
+        ``frameBufferSize`` is where to read them, and pyglet has forced
+        Retina on Retina-capable screens since 1.3, so it cannot be opted out
+        of. A config carrying a Mac's *logical* resolution silently halves
+        every size on that machine. But the check is general: a fullscreen
+        window that landed on the wrong monitor, or an OS display-scaling
+        setting, fail it the same way and for the same reason.
+
+        Only enforced fullscreen, because that is the only case where the
+        framebuffer is supposed to be the whole panel. A deliberately windowed
+        run is smaller by definition; it gets a warning if the window cannot
+        hold what the config describes, since a clipped stimulus is worth
+        hearing about even in a dev session.
+        """
+        buffer_size = self._frame_buffer_size()
+        if buffer_size is None:
+            log.warning(
+                "this PsychoPy backend does not report a framebuffer size, so the "
+                "drawing surface could not be checked against the rig config"
+            )
+            return
+
+        configured = (self._monitor.width_px, self._monitor.height_px)
+        client = tuple(int(v) for v in self.window.clientSize)
+        scale = buffer_size[0] / client[0] if client[0] else 1.0
+        if scale != 1.0:
+            log.info(
+                "display is scaled %.3gx: %dx%d framebuffer pixels over a %dx%d point "
+                "window (a Retina or HiDPI screen)",
+                scale,
+                *buffer_size,
+                *client,
+            )
+
+        fullscreen = self._monitor.fullscreen and not self._windowed
+        if not fullscreen:
+            if buffer_size[0] < configured[0] or buffer_size[1] < configured[1]:
+                log.warning(
+                    "windowed run: the %dx%d framebuffer is smaller than the %dx%d the rig "
+                    "config describes, so a stimulus near the edge of the screen will be "
+                    "clipped. Sizes in degrees are still correct.",
+                    *buffer_size,
+                    *configured,
+                )
+            return
+
+        if buffer_size != configured:
+            raise DisplayError(
+                f"the fullscreen drawing surface is {buffer_size[0]}x{buffer_size[1]} pixels "
+                f"but the rig config says the monitor is {configured[0]}x{configured[1]}. "
+                f"Every stimulus size is computed from that number, so running would make "
+                f"each one wrong by {buffer_size[0] / configured[0]:.3g}x.\n"
+                f"  - On a Retina/HiDPI screen, width_px and height_px must be the panel's "
+                f"NATIVE pixel count, not its logical resolution — here, "
+                f"{buffer_size[0]} and {buffer_size[1]} — with width_cm the physical width "
+                f"of that same panel.\n"
+                f"  - Otherwise check screen_index ({self._monitor.screen_index}) and the "
+                f"desktop's display-scaling setting."
+            )
+
+    def _frame_buffer_size(self) -> tuple[int, int] | None:
+        """The drawing surface in device pixels, or None if unreported.
+
+        ``frameBufferSize`` is the attribute that differs from the window size
+        on a Retina screen; ``size`` is the viewport and agrees with it in
+        every case alhazen opens a window for. Reading the first and falling
+        back to the second keeps this working on a backend that does not
+        implement it.
+        """
+        for attribute in ("frameBufferSize", "size"):
+            value = getattr(self.window, attribute, None)
+            if value is not None and len(value) >= 2:
+                return (int(value[0]), int(value[1]))
+        return None
 
     def close(self) -> None:
         if self.window is not None:

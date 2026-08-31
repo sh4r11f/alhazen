@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import logging
+import types
+
 import pytest
 
 from alhazen.config.models import FrameQAConfig, MonitorConfig
 from alhazen.display.frames import FrameMonitor
 from alhazen.display.screen import Screen, within_radius
 from alhazen.display.simulated import SimulatedDisplay
-from alhazen.errors import FrameQAError
+from alhazen.errors import DisplayError, FrameQAError
 
 
 class TestScreen:
@@ -115,3 +118,71 @@ class TestSimulatedDisplay:
         display = SimulatedDisplay(nominal_refresh_hz=60.0, frame_period_s=0.0)
         display.show_message("hello")
         assert display.messages == ["hello"]
+
+
+class TestFramebufferMatchesTheRigConfig:
+    """Everything downstream is degrees computed from `width_px`, and stimuli
+    are drawn in framebuffer pixels. A framebuffer that is not the size the
+    config claims makes every stimulus the wrong physical size, silently — a
+    Retina Mac halves them. These pin the check that refuses to run.
+    """
+
+    def _display(self, monkeypatch, *, buffer, client, fullscreen=True, windowed=False):
+        from alhazen.config.models import MonitorConfig
+        from alhazen.display import psychopy_backend
+
+        class FakeWindow:
+            frameBufferSize = buffer
+            clientSize = client
+            size = buffer
+
+        class FakeVisual:
+            Window = staticmethod(lambda **kwargs: FakeWindow())
+
+        monkeypatch.setattr(psychopy_backend, "resolve_monitor", lambda monitor: None)
+        monkeypatch.setitem(
+            __import__("sys").modules, "psychopy", types.SimpleNamespace(visual=FakeVisual)
+        )
+        monkeypatch.setitem(__import__("sys").modules, "psychopy.visual", FakeVisual)
+        monitor = MonitorConfig(
+            width_px=1920,
+            height_px=1080,
+            width_cm=52.0,
+            distance_cm=57.0,
+            refresh_rate_hz=120.0,
+            fullscreen=fullscreen,
+        )
+        return psychopy_backend.PsychoPyDisplay(monitor, windowed=windowed)
+
+    def test_a_matching_framebuffer_opens(self, monkeypatch):
+        display = self._display(monkeypatch, buffer=(1920, 1080), client=(1920, 1080))
+        display.open()
+        assert display.window is not None
+
+    def test_a_retina_framebuffer_refuses_and_says_what_to_put_in_the_config(self, monkeypatch):
+        """The Mac case: 1920x1080 points, 3840x2160 device pixels. PsychoPy's
+        `units="pix"` then means the small pixels, so every size is doubled."""
+        display = self._display(monkeypatch, buffer=(3840, 2160), client=(1920, 1080))
+        with pytest.raises(DisplayError) as caught:
+            display.open()
+        message = str(caught.value)
+        assert "3840x2160" in message and "1920x1080" in message
+        assert "2x" in message  # names the factor everything would be wrong by
+        assert "NATIVE pixel count" in message
+
+    def test_a_windowed_run_is_not_refused_only_warned(self, monkeypatch, caplog):
+        """A dev window is smaller than the panel by definition. Sizes in
+        degrees are still right; only the edges are clipped."""
+        display = self._display(monkeypatch, buffer=(1200, 800), client=(1200, 800), windowed=True)
+        with caplog.at_level(logging.WARNING):
+            display.open()
+        assert display.window is not None
+        assert "clipped" in caplog.text
+
+    def test_a_backend_that_reports_no_framebuffer_warns_rather_than_crashing(
+        self, monkeypatch, caplog
+    ):
+        display = self._display(monkeypatch, buffer=None, client=(1920, 1080))
+        with caplog.at_level(logging.WARNING):
+            display.open()
+        assert "could not be checked" in caplog.text
