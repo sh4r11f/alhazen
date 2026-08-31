@@ -29,6 +29,73 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Added
 
+- **The five modes** (`alhazen.modes`, `alhazen run --mode`) — `measure`,
+  `demo`, `simulate`, `test` and `run`. Every experiment needs the same five
+  ways of being started, and before this each one wrote them again: two of
+  alhazen's own had independently grown a stimulus viewer, an autopilot, a
+  ruler check and a hand-edited config for short runs. `run`, `test` and
+  `simulate` are one code path with different arguments — a rehearsal that
+  went through different wiring would rehearse the wrong thing — differing
+  only in the trial counts, who supplies the gaze and keypresses, and which
+  directory the data lands in. See [docs/modes.md](docs/modes.md).
+- **`test` mode** runs the whole experiment with the trial counts turned
+  down, so it can be sat through once before a subject does. It finds every
+  `SchedulerConfig` by type rather than by field name, because experiments do
+  not agree on the name and a reduction that silently did nothing would run
+  the full session when a short one was asked for. It prints every number it
+  changed, and leaves block structure alone. Data goes to a sibling
+  `<data_root>-rehearsal` directory: rehearsals write real files in real
+  formats, which is the point, and is exactly why they must not land where an
+  analysis looks for subjects.
+- **`measure` mode** measures what a rig actually does — refresh rate and
+  frame timing, geometry, response-key latency and poll lag, eye-tracker
+  accuracy — and writes a timestamped report beside the rig config. It is the
+  one mode that needs no task: requiring one would mean a rig could not be
+  checked until an experiment was installed on it.
+- **`demo` mode** shows the stimulus with no trials and no data, through the
+  window a session opens rather than a hand-rolled one — so it inherits the
+  framebuffer check, the registered monitor and the measured gamma. Both
+  experiment packages had the hand-rolled version, which on a Retina Mac
+  meant judging the stimulus at half its designed size.
+- **`Task.demo_views`, `Task.demo_controls`, `Task.simulation`** — the hooks
+  the new modes ask an experiment for. All optional; a mode that has no answer
+  says so plainly rather than improvising something that is not the
+  experiment.
+- **`alhazen.cli.modes.run_experiment`** — one entry point for an experiment
+  package's own `run.py`, which drops to naming its task class and where its
+  subject wording comes from. It shares its flags with `alhazen run` through
+  the same code.
+
+### Changed
+
+- **The pause screen is a menu.** It was one line naming three keys, written
+  when three keys were all a session had; a session now also has a reward
+  pump, a curriculum whose stage can be moved and a tracker that can be
+  recalibrated, and none of them appeared on it. It is now built at each pause
+  from what the session actually has wired — a rig with no pump lists no
+  reward key — and the live keys are read out of the real keymap, so a rebound
+  key shows its own binding. It is orange on a bordered panel, because a
+  stopped session has to be distinguishable from a running one across a room;
+  an involuntary pause (so far only a reward failure) is a different colour
+  and leads with what went wrong.
+- **The pause menu stays up until resume or quit.** Calibrating used to
+  calibrate and then resume in one press, so calibrating *and* rewarding took
+  two pauses.
+- **The dashboard pause path draws the menu too.** It drew nothing before, so
+  turning the dashboard on silently removed the only thing the person standing
+  at the rig could see.
+- **`DisplayBackend.show_menu`** joins the display protocol. A message is the
+  session talking to the subject; a menu is the session stopped and waiting
+  for the experimenter, and the colour that carries that distinction is
+  required rather than defaulted.
+
+### Deprecated
+
+- **`session.pause_menu`** — use `build_pause_menu` with `run_pause_menu`.
+  It still works and warns; removed in 1.2. The old seam cannot express the
+  colour or the controls that depend on what a session has wired, because a
+  `show_message` callable expresses neither.
+
 - **`alhazen monitor`** — register a rig's monitor with PsychoPy. `monitor
   register --rig <yaml>` writes the config's geometry, and any gamma from
   `alhazen calibrate gamma`, into PsychoPy's own monitor database under the

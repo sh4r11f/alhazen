@@ -44,6 +44,7 @@ nav:
   - Home: index.md
   - Getting started: getting-started.md
   - Concepts: architecture.md
+  - The five modes: modes.md
   - How-to:
       - Add a stimulus, phase or paradigm: how-to.md
   - Scenes: scenes.md
