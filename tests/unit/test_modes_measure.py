@@ -323,3 +323,64 @@ class TestSamplingOneValidationTarget:
         )
 
         assert result.detail["n"] == 2
+
+
+class TestItSaysWhenTheDisplayIsCrawling:
+    """A compositor throttling an unfocused window gives about 1 fps. At that
+    rate the default run is two minutes of a command that has printed one line
+    and looks hung — and what it would eventually report is what it already
+    knows after eight flips."""
+
+    def _rig(self, hz=60.0):
+        from alhazen.config.models import MonitorConfig, RigConfig
+
+        return RigConfig(
+            monitor=MonitorConfig(
+                width_px=1920,
+                height_px=1080,
+                width_cm=52.0,
+                distance_cm=57.0,
+                refresh_rate_hz=hz,
+            ),
+            data_root="data",
+        )
+
+    class _SlowDisplay:
+        """Flips that take `period` of simulated time, via a patched clock."""
+
+        def __init__(self, period):
+            self.period = period
+            self.t = 0.0
+
+        def flip(self):
+            self.t += self.period
+
+    def _run(self, monkeypatch, period_s, n_flips=16):
+        from alhazen.modes import measure
+
+        display = self._SlowDisplay(period_s)
+        monkeypatch.setattr(measure.time, "perf_counter", lambda: display.t)
+        said = []
+        result = measure.measure_display(self._rig(), display, n_flips=n_flips, echo=said.append)
+        return result, said
+
+    def test_a_crawling_display_is_called_out_before_the_run_ends(self, monkeypatch):
+        # 1 fps against a configured 60 Hz.
+        _result, said = self._run(monkeypatch, 1.0)
+
+        assert said, "a display running 60x slow said nothing"
+        assert "1 Hz" in said[0] and "60 Hz" in said[0]
+        # And it says how long the wait will be, which is the actionable part.
+        assert "s." in said[0]
+
+    def test_a_healthy_display_says_nothing(self, monkeypatch):
+        _result, said = self._run(monkeypatch, 1 / 60)
+
+        assert said == []
+
+    def test_it_still_returns_the_measurement(self, monkeypatch):
+        """The warning is a courtesy; the report is the job."""
+        result, _said = self._run(monkeypatch, 1.0)
+
+        assert result.name == "display timing"
+        assert result.ok is False  # 1 Hz is not 60 Hz

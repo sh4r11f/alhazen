@@ -224,24 +224,55 @@ def judge_refresh(timing: dict, tolerance_hz: float = 1.0) -> tuple[bool, str]:
 # ----------------------------------------------------------------------
 
 
-def measure_display(rig: RigConfig, display: Any, n_flips: int = DEFAULT_FLIPS) -> Measurement:
+# How far below the configured rate the first few flips may run before this
+# says something. A factor of four is not a marginal call: it is a compositor
+# throttling an unfocused window, a software renderer, or the wrong screen —
+# none of which get better by waiting.
+CRAWLING_FACTOR = 4.0
+
+# How many flips to look at before deciding that.
+CRAWL_SAMPLE = 8
+
+
+def measure_display(
+    rig: RigConfig,
+    display: Any,
+    n_flips: int = DEFAULT_FLIPS,
+    echo: Callable[[str], None] = print,
+) -> Measurement:
     """Time a run of flips on the real display.
 
     Timed here rather than taken from ``measure_refresh_rate`` because that
     reports a rate and this needs the intervals: a panel that averages 60 Hz
     while dropping one frame in twenty is a panel an experiment must know
     about, and an average hides it.
+
+    If the first few flips come back far slower than the config claims, it
+    says so immediately rather than at the end. At one frame per second — what
+    a Wayland compositor gives an unfocused window — 120 flips is two minutes
+    of a command that has printed one line and looks hung, and the thing it
+    would eventually report is the thing it already knows.
     """
     import time
 
+    expected = 1.0 / rig.monitor.refresh_rate_hz
     intervals = []
     display.flip()
     last = time.perf_counter()
-    for _ in range(n_flips):
+    for index in range(n_flips):
         display.flip()
         now = time.perf_counter()
         intervals.append(now - last)
         last = now
+        if index == CRAWL_SAMPLE - 1:
+            median = statistics.median(intervals)
+            if median > expected * CRAWLING_FACTOR:
+                echo(
+                    f"  the display is running at about {1.0 / median:.0f} Hz against a "
+                    f"configured {rig.monitor.refresh_rate_hz:g} Hz — this will take "
+                    f"{n_flips * median:.0f}s. A compositor throttling an unfocused "
+                    f"window is the usual cause: click the window and leave it in front."
+                )
 
     timing = frame_timing(intervals, rig.monitor.refresh_rate_hz)
     ok, summary = judge_refresh(timing)
@@ -437,7 +468,7 @@ def run_measurements(
     try:
         if "display" not in skip:
             echo(f"timing {n_flips} flips...")
-            report.measurements.append(measure_display(rig, display, n_flips))
+            report.measurements.append(measure_display(rig, display, n_flips, echo=echo))
 
         if "geometry" not in skip:
             report.measurements.append(measure_geometry(rig))
