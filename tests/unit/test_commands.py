@@ -99,9 +99,14 @@ class TestKeyFilter:
 
 
 class TestPauseMenuThroughTheRealSource:
-    """``pause_menu`` is the runner's default pause strategy; wire it to a
-    KeyboardCommands the way the builder does and check a keypress gets out."""
+    """The deprecated ``pause_menu`` seam, wired to a KeyboardCommands the way
+    the builder used to. Kept because the function is public API until 1.2:
+    an experiment package still calling it must keep getting its keys back.
 
+    The live path is tested in test_pause_menu.py and test_pause_flow.py.
+    """
+
+    @pytest.mark.filterwarnings("ignore::DeprecationWarning")
     @pytest.mark.parametrize(
         ("key", "choice"),
         [("space", "resume"), ("c", "calibrate"), ("q", "quit"), ("escape", "quit")],

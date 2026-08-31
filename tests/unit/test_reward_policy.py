@@ -142,10 +142,10 @@ class TestDeliveryFailure:
     def test_failure_opens_the_pause_flow(self, tmp_path):
         # A human has to look at the pump before the session carries on
         # rewarding nothing.
-        paused = {"n": 0}
+        paused: list = []
 
-        def on_pause():
-            paused["n"] += 1
+        def on_pause(menu):
+            paused.append(menu)
             return "resume"
 
         reward = BrokenReward(fail_on=1)
@@ -158,7 +158,11 @@ class TestDeliveryFailure:
         )
         harness.runner._on_pause = on_pause
         harness.runner.run()
-        assert paused["n"] == 1
+        assert len(paused) == 1
+        # The pause screen leads with the fault, not with the word PAUSED: a
+        # pause nobody asked for has to say why it happened before it says
+        # which key resumes it.
+        assert "REWARD FAILURE" in paused[0].title
         # And the session went on afterwards: the second trial was rewarded.
         assert reward.deliveries == [PAID]
 
@@ -171,7 +175,7 @@ class TestDeliveryFailure:
             reward_policy=RewardPolicy(by_outcome={"COMPLETED": PAID}),
             build_trial=lambda setup: TrialPlan(phases=[RunForFrames(1, COMPLETED)]),
         )
-        harness.runner._on_pause = lambda: "quit"
+        harness.runner._on_pause = lambda menu: "quit"
         harness.runner.run()
         with harness.paths.trials_path.open() as f:
             assert len(list(csv.DictReader(f))) == 1

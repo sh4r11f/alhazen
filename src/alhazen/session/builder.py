@@ -56,8 +56,9 @@ from alhazen.display.simulated import SimulatedDisplay
 from alhazen.errors import ConfigError
 from alhazen.paradigms.base import TrialSource
 from alhazen.session.database import ExperimentDatabase, FrameInputBuffer
+from alhazen.session.pause import PauseMenu, run_pause_menu
 from alhazen.session.recorder import DataRecorder
-from alhazen.session.runner import SessionRunner, pause_menu
+from alhazen.session.runner import SessionRunner
 from alhazen.stimuli.photodiode import make_photodiode
 from alhazen.task.plan import BuildTrial
 from alhazen.task.task import Task
@@ -278,7 +279,7 @@ def build_session(
 
     display: DisplayBackend
     commands: CommandSource
-    on_pause: Callable[[], str] | None
+    on_pause: Callable[[PauseMenu], str] | None
     if rig_cfg.display.backend == "simulated":
         display = SimulatedDisplay(
             rig_cfg.monitor.refresh_rate_hz, frame_period_s=simulated_frame_period_s
@@ -288,9 +289,18 @@ def build_session(
     else:
         display = PsychoPyDisplay(rig_cfg.monitor, windowed=windowed)
         commands = KeyboardCommands()
-        on_pause = lambda: pause_menu(  # noqa: E731 - trivially a closure over locals
-            display.show_message, commands.poll_raw_keys, time.sleep
-        )
+
+        # The runner builds the menu (only it knows what is wired); the
+        # builder supplies the two ends the runner has no business owning —
+        # where the menu is drawn and where the keys come from.
+        def on_pause(menu: PauseMenu) -> str:
+            return run_pause_menu(
+                menu,
+                lambda m: display.show_menu(m.title, m.render(), color=m.color),
+                commands.poll_raw_keys,
+                time.sleep,
+            )
+
     # Everything from here to the end of the build runs inside this guard, not
     # just `display.open()`. The dashboard is a CHILD PROCESS: a tracker that
     # fails to connect, a refresh rate that disagrees with the config, an

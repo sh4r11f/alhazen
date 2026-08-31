@@ -25,6 +25,17 @@ log = logging.getLogger(__name__)
 MESSAGE_FONT = "Open Sans"
 MESSAGE_COLOR = (0.82, 0.82, 0.86)
 
+# The pause menu's key column is aligned with spaces, so it needs a monospace
+# face or the alignment it depends on is lost. DejaVu Sans Mono is on every
+# desktop Linux and ships with matplotlib, so no rig has to install it; the
+# fallback is whatever the system calls monospace.
+MENU_FONT = "DejaVu Sans Mono"
+# How much of the panel the menu's dark backing covers, and how far inside it
+# the text sits. The backing exists so the menu reads as a panel laid over a
+# stopped session rather than as text that happens to be orange.
+MENU_PANEL_FRACTION = (0.62, 0.72)
+MENU_PANEL_FILL = (-0.55, -0.55, -0.55)
+
 
 class PsychoPyDisplay:
     kind = "psychopy"
@@ -216,6 +227,73 @@ class PsychoPyDisplay:
         )
         msg.draw()
         self.window.flip()
+
+    def show_menu(self, title: str, body: str, *, color: tuple[float, float, float]) -> None:
+        """Draw the menu over whatever is on screen, and flip.
+
+        Three parts, in one flip: a dark panel with a border in the menu's
+        colour, the heading, and the rows. The panel is what makes this read
+        as a modal state rather than as a caption — a session's own background
+        is mid-grey, and coloured text alone on mid-grey does not say "stopped"
+        from across the room the way a bordered panel does.
+
+        Sizes come off the panel's height, exactly as ``show_message`` does, so
+        the menu is the same physical size on a 768-line CRT and a 2160-line
+        display instead of shrinking to nothing on the second.
+        """
+        self._require_open()
+        from psychopy import visual
+
+        width, height = self._monitor.width_px, self._monitor.height_px
+        text_height = max(16.0, height * 0.019)
+
+        panel = visual.Rect(
+            self.window,
+            width=width * MENU_PANEL_FRACTION[0],
+            height=height * MENU_PANEL_FRACTION[1],
+            fillColor=MENU_PANEL_FILL,
+            lineColor=color,
+            lineWidth=max(2.0, height * 0.003),
+            units="pix",
+        )
+        # Anchored to the panel's top rather than centred: the heading has to
+        # stay put as the body grows and shrinks with the rig's wiring, or the
+        # one word an experimenter looks for moves every session.
+        panel_top = height * MENU_PANEL_FRACTION[1] / 2.0
+        heading = visual.TextStim(
+            self.window,
+            text=title,
+            font=MESSAGE_FONT,
+            height=text_height * 1.6,
+            color=color,
+            colorSpace="rgb",
+            alignText="center",
+            anchorHoriz="center",
+            anchorVert="top",
+            pos=(0, panel_top - text_height * 1.2),
+            wrapWidth=width * MENU_PANEL_FRACTION[0] * 0.9,
+            units="pix",
+        )
+        rows = visual.TextStim(
+            self.window,
+            text=body,
+            font=MENU_FONT,
+            height=text_height,
+            color=color,
+            colorSpace="rgb",
+            alignText="left",
+            anchorHoriz="center",
+            anchorVert="top",
+            pos=(0, panel_top - text_height * 4.2),
+            # Wide enough for the longest row this ever draws. Not a fraction
+            # of the window: on an ultrawide that is one enormous line.
+            wrapWidth=text_height * 46,
+            units="pix",
+        )
+        panel.draw()
+        heading.draw()
+        rows.draw()
+        self.flip()
 
     def set_gamma(self, gamma: float) -> None:
         """Apply a measured gamma correction to the open window.

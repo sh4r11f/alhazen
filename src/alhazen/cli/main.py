@@ -19,10 +19,13 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from alhazen.config.loader import load_rig
 from alhazen.errors import AlhazenError, ConfigError
+from alhazen.modes import Mode
 from alhazen.session.checks import check_rig, format_result
 from alhazen.version import get_version
 
@@ -42,31 +45,8 @@ def main(argv: list[str] | None = None) -> int:
 
     run = sub.add_parser("run", help="run one session of an installed task")
     run.add_argument("--task", default=None, help="the task's registered name")
-    run.add_argument("--rig", default=None, help="path to a rig YAML file")
-    run.add_argument("--params", default=None, help="path to the task's params YAML")
-    run.add_argument("--sub", default=None, help="subject id (prompted if omitted)")
-    run.add_argument("--ses", type=int, default=None, help="session number (prompted)")
-    run.add_argument(
-        "--run", type=int, default=None, help="run number (default: the next free one)"
-    )
-    run.add_argument("--seed", type=int, default=None, help="session seed")
-    run.add_argument("--windowed", action="store_true", help="bordered window, for dev")
-    dashboard_group = run.add_mutually_exclusive_group()
-    dashboard_group.add_argument(
-        "--dashboard", action="store_true", default=None, help="enable the live dashboard"
-    )
-    dashboard_group.add_argument(
-        "--no-dashboard", action="store_false", dest="dashboard", help="disable the dashboard"
-    )
-    run.set_defaults(dashboard=None)
-    run.add_argument(
-        "--no-dashboard-browser",
-        action="store_true",
-        help="serve the dashboard without opening a browser window",
-    )
-    run.add_argument("--curriculum", default=None, help="path to a curriculum YAML")
     run.add_argument("--list", action="store_true", help="list installed tasks and exit")
-
+    add_mode_arguments(run)
     calibrate = sub.add_parser("calibrate", help="check a monitor's geometry and gamma")
     calibrate_sub = calibrate.add_subparsers(dest="calibration")
     ruler = calibrate_sub.add_parser(
@@ -194,11 +174,85 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _run_session(args: argparse.Namespace) -> int:
-    """Resolve an installed task, load its configs, and run one session."""
+def add_mode_arguments(parser: argparse.ArgumentParser) -> None:
+    """The options every mode-aware entry point takes.
+
+    Shared with ``alhazen.cli.modes.run_experiment`` so an experiment's own
+    run.py offers exactly the flags this command does. Two entry points
+    that drifted apart would mean a flag that works one way at the rig and
+    another way in a script.
+    """
+    parser.add_argument(
+        "--mode",
+        default="run",
+        choices=[m.value for m in Mode],
+        help="; ".join(f"{m.value}: {m.summary}" for m in Mode) + " (default: run)",
+    )
+    parser.add_argument("--rig", default=None, help="path to a rig YAML file")
+    parser.add_argument("--params", default=None, help="path to the task's params YAML")
+    parser.add_argument("--sub", default=None, help="subject id (prompted if omitted)")
+    parser.add_argument("--ses", type=int, default=None, help="session number (prompted)")
+    parser.add_argument(
+        "--run", type=int, default=None, help="run number (default: the next free one)"
+    )
+    parser.add_argument("--seed", type=int, default=None, help="session seed")
+    parser.add_argument("--windowed", action="store_true", help="bordered window, for dev")
+    dashboard_group = parser.add_mutually_exclusive_group()
+    dashboard_group.add_argument(
+        "--dashboard", action="store_true", default=None, help="enable the live dashboard"
+    )
+    dashboard_group.add_argument(
+        "--no-dashboard", action="store_false", dest="dashboard", help="disable the dashboard"
+    )
+    parser.set_defaults(dashboard=None)
+    parser.add_argument(
+        "--no-dashboard-browser",
+        action="store_true",
+        help="serve the dashboard without opening a browser window",
+    )
+    parser.add_argument("--curriculum", default=None, help="path to a curriculum YAML")
+    # test / simulate
+    parser.add_argument(
+        "--trials-per-condition",
+        type=int,
+        default=1,
+        help="test and simulate modes: repetitions of each condition (default: %(default)s)",
+    )
+    # demo
+    parser.add_argument(
+        "--screenshots",
+        default=None,
+        help="demo mode: directory for screenshots (default: the working directory)",
+    )
+    # measure
+    parser.add_argument(
+        "--skip",
+        action="append",
+        default=[],
+        metavar="MEASUREMENT",
+        help="measure mode: a measurement to skip; repeatable",
+    )
+    parser.add_argument(
+        "--presses",
+        type=int,
+        default=None,
+        help="measure mode: how many keypresses to time (default: the mode's own)",
+    )
+
+
+def _run_session(args: argparse.Namespace, task_class: Any = None) -> int:
+    """Dispatch one of the five modes.
+
+    All five arrive through the same command because they are five ways of
+    starting the same experiment, and an experimenter who has to remember a
+    different command per mode will use one of them and forget the rest. What
+    they share is the task and the rig; what differs is what happens next.
+    """
     from alhazen.cli.tasks import installed_tasks, load_task_class
 
-    if args.list:
+    mode = Mode(args.mode)
+
+    if getattr(args, "list", False):
         tasks = installed_tasks()
         if not tasks:
             print("no tasks installed — install an experiment package first")
@@ -207,20 +261,34 @@ def _run_session(args: argparse.Namespace) -> int:
             print(f"{name}\t{point.value}")
         return 0
 
-    missing = [name for name in ("task", "rig") if getattr(args, name) is None]
+    # Measure mode asks nothing of the experiment — it is about the machine —
+    # so it is the one mode that runs without a task installed.
+    needed = ["rig"] if mode is Mode.MEASURE or task_class is not None else ["task", "rig"]
+    missing = [name for name in needed if getattr(args, name) is None]
     if missing:
         print(
-            f"alhazen run needs --{' and --'.join(missing)} (or --list to see what is installed)",
+            f"alhazen run --mode {mode.value} needs --{' and --'.join(missing)}"
+            f" (or --list to see what is installed)",
             file=sys.stderr,
         )
         return 2
 
-    from alhazen.config.loader import load_model, load_rig
-    from alhazen.session.builder import build_session
+    from alhazen.config.loader import load_rig
 
     try:
-        task_class = load_task_class(args.task)
         rig = load_rig(args.rig)
+    except ConfigError as e:
+        print(f"INVALID: {e}", file=sys.stderr)
+        return 1
+
+    if mode is Mode.MEASURE:
+        return _measure_rig(args, rig)
+
+    from alhazen.config.loader import load_model
+
+    try:
+        if task_class is None:
+            task_class = load_task_class(args.task)
         params = (
             load_model(args.params, task_class.params_model)
             if args.params
@@ -230,36 +298,124 @@ def _run_session(args: argparse.Namespace) -> int:
         print(f"INVALID: {e}", file=sys.stderr)
         return 1
 
+    if mode is Mode.DEMO:
+        return _demo_task(args, rig, task_class(params), params)
+    return _trial_session(args, rig, task_class(params), params, mode)
+
+
+def _measure_rig(args: argparse.Namespace, rig: Any) -> int:
+    """Measure the rig and write the report beside its data."""
+    from alhazen.modes.measure import run_measurements
+
+    extra = {} if args.presses is None else {"n_presses": args.presses}
+    try:
+        report = run_measurements(
+            rig, str(args.rig), windowed=args.windowed, skip=tuple(args.skip), **extra
+        )
+    except ValueError as e:
+        # A --skip naming a measurement that does not exist. Rejected rather
+        # than ignored: an experimenter who thinks they skipped the tracker
+        # and did not will sit through it wondering why.
+        print(f"CANNOT MEASURE: {e}", file=sys.stderr)
+        return 2
+    print(report.render())
+    written = report.save(_measurement_path(args.rig))
+    print(f"written: {written}")
+    # Non-zero when something disagrees with the config, so this is usable in
+    # a pre-session script that must not carry on past a bad rig.
+    return 0 if report.ok else 1
+
+
+def _measurement_path(rig_path: str) -> Path:
+    """Where one measurement run is written: beside the rig config it measured.
+
+    Beside the CONFIG rather than beside the data, because these describe the
+    machine and not any subject — they stay relevant across the reinstall that
+    eventually clears the data, and they belong with the file whose claims
+    they are checking.
+
+    Stamped with the time, and never overwritten: a rig that has drifted is
+    only visible by comparing two of these, so the second one must not replace
+    the first.
+    """
+    rig = Path(rig_path)
+    stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+    return rig.parent / "measurements" / f"{rig.stem}_{stamp}.json"
+
+
+def _demo_task(args: argparse.Namespace, rig: Any, task: Any, params: Any) -> int:
+    """Show the task's stimulus, with no trials and no data."""
+    from alhazen.modes.demo import run_demo
+
+    try:
+        return run_demo(
+            task.demo_views,
+            rig=rig,
+            params=params,
+            controls=task.demo_controls,
+            seed=args.seed if args.seed is not None else 0,
+            windowed=args.windowed,
+            screenshot_dir=args.screenshots,
+        )
+    except NotImplementedError as e:
+        # The task declares no views. Its own message names the method to
+        # implement, which is more useful than anything this layer could say.
+        print(f"CANNOT DEMO: {e}", file=sys.stderr)
+        return 2
+
+
+def _trial_session(args: argparse.Namespace, rig: Any, task: Any, params: Any, mode: Mode) -> int:
+    """run, test and simulate: the three modes that put trials on screen."""
+    from alhazen.modes.session import build_mode_session
+
     # Prompted rather than required, because an experimenter at a rig types
-    # this command with an animal already waiting and should not have to
-    # remember the flag names.
-    subject = args.sub if args.sub is not None else input("subject id: ").strip()
-    session = args.ses if args.ses is not None else int(input("session number: ").strip())
-    run_number = args.run if args.run is not None else _next_run(rig.data_root, subject, session)
+    # this with an animal already waiting and should not have to remember the
+    # flag names. A simulated session has nobody to prompt, so it names itself.
+    if mode is Mode.SIMULATE:
+        subject = args.sub if args.sub is not None else "sim"
+        session = args.ses if args.ses is not None else 1
+    else:
+        subject = args.sub if args.sub is not None else input("subject id: ").strip()
+        session = args.ses if args.ses is not None else int(input("session number: ").strip())
 
     curriculum = None
     if args.curriculum:
+        from alhazen.config.loader import load_model
         from alhazen.training import Curriculum
 
         curriculum = load_model(args.curriculum, Curriculum)
 
-    runner = build_session(
-        rig=rig,
-        subject=subject,
-        session=session,
-        run=run_number,
-        task=task_class(params),
-        curriculum=curriculum,
-        seed=args.seed,
-        iti=getattr(params, "iti", None),
-        windowed=args.windowed,
-        dashboard=args.dashboard,
-        open_dashboard=False if args.no_dashboard_browser else None,
-        sources={"rig": str(args.rig), "task": str(args.params or "<defaults>")},
-    )
-    print(f"running {args.task}: sub-{subject} ses-{session:03d} run-{run_number:02d}")
-    runner.run()
-    print(f"session complete — data under {rig.data_root.resolve()}")
+    try:
+        built = build_mode_session(
+            mode,
+            rig=rig,
+            task=task,
+            subject=subject,
+            session=session,
+            run=args.run,
+            seed=args.seed,
+            n_per_condition=args.trials_per_condition,
+            windowed=args.windowed,
+            curriculum=curriculum,
+            dashboard=args.dashboard,
+            open_dashboard=False if args.no_dashboard_browser else None,
+            instructions=getattr(args, "instructions", None),
+            sources={"rig": str(args.rig), "task": str(args.params or "<defaults>")},
+        )
+    except ConfigError as e:
+        print(f"CANNOT RUN: {e}", file=sys.stderr)
+        return 1
+
+    # Printed BEFORE the session starts, and it lists every trial count the
+    # mode turned down and the directory the data is going to. A mode that
+    # quietly redesigns the experiment would put numbers in the snapshot that
+    # are not the numbers that ran, and the snapshot is the record.
+    print(built.describe())
+    # The task's own name, not args.task: an experiment's run.py has no
+    # --task flag, because it already knows which experiment it is.
+    print(f"running {task.name}: sub-{subject} ses-{session:03d} run-{built.run:02d}")
+    built.runner.run()
+    print(f"session complete — data under {built.data_root.resolve()}")
     return 0
 
 

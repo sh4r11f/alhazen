@@ -26,7 +26,8 @@ src/alhazen/
 ├── task/           # Task, RewardPolicy, TrialSetup/TrialPlan, phases/ (the phase library)
 ├── training/       # curricula: stages, ramps, criteria, per-subject state
 ├── analysis/       # reading a run back: io/ readers, TTL alignment, photodiode, report
-├── session/        # SessionRunner, build_session, DataRecorder, pause_menu, check_rig
+├── modes/          # the five ways to start an experiment (docs/modes.md)
+├── session/        # SessionRunner, build_session, DataRecorder, the pause menu, check_rig
 ├── config/         # pydantic models (extra=forbid, frozen), YAML loader, snapshot writer
 ├── data/           # naming, SessionPaths, manifest, participants registry
 ├── dashboard/      # isolated local HTTP process, panel statistics, and the browser page
