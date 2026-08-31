@@ -472,6 +472,35 @@ def run_measurements(
     return report
 
 
+def sample_target(
+    position: tuple[float, float],
+    show_and_wait: Callable[[tuple[float, float]], None],
+    get_gaze: Callable[[], Any],
+    screen: Screen,
+    echo: Callable[[str], None] = print,
+) -> tuple[float, float]:
+    """Show one validation target and return the gaze it was looking at.
+
+    Split out of the rig loop and given its two hardware ends as callables,
+    because this is where the judgement lives and the loop around it is
+    plumbing. It is also where three bugs sat undetected: the tracker path was
+    the only part of this module reaching for the device layer directly, so it
+    was the only part no test could reach.
+
+    ``get_gaze`` returns None when the tracker has no eye — a blink, or the
+    subject looking away — and asking again is the only sane answer.
+    Substituting a default would report perfect accuracy at a point that was
+    never measured; raising would throw away the targets already collected.
+    So it says what happened and waits for another press.
+    """
+    while True:
+        show_and_wait(position)
+        sample = get_gaze()
+        if sample is not None:
+            return screen.screen_to_centered(sample.gx, sample.gy)
+        echo("  no eye at that moment — look at the dot and press again")
+
+
 def _psychopy_key_waiter() -> Callable[[], tuple[str, float, float]]:
     """A ``wait_for_key`` for the real keyboard.
 
@@ -540,26 +569,16 @@ def _measure_tracker_on_rig(
             units="pix",
         )
 
-        def present(position: tuple[float, float]) -> tuple[float, float]:
-            """Draw one target, wait for the operator, return where gaze was.
+        def show_and_wait(position: tuple[float, float]) -> None:
+            dot.pos = position
+            dot.draw()
+            display.flip()
+            event.clearEvents()
+            # Blocks until the operator says the eye is on the target.
+            event.waitKeys()
 
-            ``get_gaze`` returns None when the tracker has no eye — a blink,
-            or the subject looking away — and asking again is the only sane
-            answer: substituting a default would report perfect accuracy at a
-            point that was never measured, and raising would throw away the
-            targets already collected. So it says what happened and waits.
-            """
-            while True:
-                dot.pos = position
-                dot.draw()
-                display.flip()
-                event.clearEvents()
-                # Blocks until the operator says the eye is on the target.
-                event.waitKeys()
-                sample = tracker.get_gaze()
-                if sample is not None:
-                    return screen.screen_to_centered(sample.gx, sample.gy)
-                echo("  no eye at that moment — look at the dot and press again")
+        def present(position: tuple[float, float]) -> tuple[float, float]:
+            return sample_target(position, show_and_wait, tracker.get_gaze, screen, echo)
 
         echo("look at each dot; press a key when the eye is steady on it")
         return measure_tracker_accuracy(tracker, screen, present)

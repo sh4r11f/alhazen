@@ -237,3 +237,89 @@ class TestTheDriverRefusesNonsense:
             with pytest.raises(Exception) as caught:
                 run_measurements(None, "rig.yaml", skip=[name])
             assert "nothing to skip" not in str(caught.value)
+
+
+class TestSamplingOneValidationTarget:
+    """The tracker path had three defects that no test could reach, because
+    it was the only part of this module that went at the device layer
+    directly. This is that part, with its two hardware ends injected."""
+
+    def _screen(self):
+        from alhazen.config.models import MonitorConfig
+        from alhazen.display.screen import Screen
+
+        return Screen.from_monitor(
+            MonitorConfig(
+                width_px=1920,
+                height_px=1080,
+                width_cm=52.0,
+                distance_cm=57.0,
+                refresh_rate_hz=120.0,
+            )
+        )
+
+    def test_it_returns_the_gaze_in_centred_pixels(self):
+        from types import SimpleNamespace
+
+        from alhazen.modes.measure import sample_target
+
+        screen = self._screen()
+        # Screen px, origin top-left: the centre of a 1920x1080 panel.
+        gaze = SimpleNamespace(gx=960.0, gy=540.0)
+
+        result = sample_target((0.0, 0.0), lambda _p: None, lambda: gaze, screen)
+
+        assert result == pytest.approx((0.0, 0.0), abs=1e-6)
+
+    def test_a_blink_asks_again_rather_than_inventing_a_sample(self):
+        """Substituting a default would report perfect accuracy at a point
+        that was never measured — the worst of the three options."""
+        from types import SimpleNamespace
+
+        from alhazen.modes.measure import sample_target
+
+        samples = iter([None, None, SimpleNamespace(gx=960.0, gy=540.0)])
+        shown, said = [], []
+
+        result = sample_target(
+            (10.0, 20.0),
+            shown.append,
+            lambda: next(samples),
+            self._screen(),
+            echo=said.append,
+        )
+
+        assert result == pytest.approx((0.0, 0.0), abs=1e-6)
+        # Re-presented each time, so the operator has something to look at.
+        assert shown == [(10.0, 20.0)] * 3
+        assert len(said) == 2 and "no eye" in said[0]
+
+    def test_it_does_not_throw_away_the_targets_already_collected(self):
+        """A blink raising would lose every point measured before it, which
+        on the ninth target of nine is the whole validation."""
+        from types import SimpleNamespace
+
+        from alhazen.modes.measure import measure_tracker_accuracy
+
+        screen = self._screen()
+        blinked = {"once": False}
+
+        def present(position):
+            if not blinked["once"]:
+                blinked["once"] = True
+                # One blink, then a clean sample: exercises the retry inside
+                # the accuracy loop rather than around it.
+                return sample_target_with_one_blink(position, screen)
+            return position
+
+        def sample_target_with_one_blink(position, screen):
+            from alhazen.modes.measure import sample_target
+
+            samples = iter([None, SimpleNamespace(gx=960.0, gy=540.0)])
+            return sample_target(position, lambda _p: None, lambda: next(samples), screen)
+
+        result = measure_tracker_accuracy(
+            tracker=None, screen=screen, present_target=present, targets=((0.0, 0.0), (4.0, 0.0))
+        )
+
+        assert result.detail["n"] == 2
