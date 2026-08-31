@@ -1,0 +1,47 @@
+# PURPOSE: look at the stimulus — and cut movies of it.
+#
+#   python run.py --mode demo  --rig configs/rig-view.yaml
+#   python run.py --mode movie --rig configs/rig-view.yaml --out movies
+#
+# A window and nothing else: no tracker, no trials, no data. Demo mode opens
+# its own window from the monitor block below, so `devices` is empty on
+# purpose rather than by omission. Movie mode opens no window at all — it
+# reads the geometry and refresh rate off this file — so movies meant to show
+# the real experiment should be cut against rig-lab.yaml instead, where the
+# pixels-per-degree are the rig's own.
+#
+# THE NUMBERS BELOW ARE A STARTING POINT, NOT A MEASUREMENT. This opens a
+# window, and a window is a slice of the panel: width_cm must be the width
+# those width_px pixels really occupy on the glass, which keeps px/cm — and
+# therefore what a degree is — exactly right. Read your panel's px/cm from
+# its resolution and physical width (xrandr prints both on Linux), or check
+# it empirically with a tape measure:
+#
+#   alhazen calibrate ruler --rig configs/rig-view.yaml --windowed
+monitor:
+  width_px: 1600
+  height_px: 1200
+  width_cm: 30.0        # what 1600 of YOUR panel's pixels measure on the glass
+  distance_cm: 57.0     # MEASURE eye to screen — it sets what a degree is
+  refresh_rate_hz: 60.0
+  screen_index: 0
+  fullscreen: false
+
+display:
+  backend: psychopy
+  # PsychoPy accepts a refresh rate only after seeing 10 identical frame
+  # intervals, and its default budget of 30 warm-up flips is thin on any
+  # desktop with a compositor (Wayland, macOS). More frames to look in, not a
+  # looser standard: if it still refuses with "could not measure a stable
+  # refresh rate", close other applications, keep the window focused, and
+  # try again.
+  warmup_flips: 240
+  frame_qa:
+    policy: warn
+
+devices: {}
+
+# Nothing is written in demo mode; movies go where --out points. The key is
+# here because a rig config needs one, and it points at the dev tree rather
+# than at subject data.
+data_root: data/dev

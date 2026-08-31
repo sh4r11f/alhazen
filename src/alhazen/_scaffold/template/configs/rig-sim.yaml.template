@@ -1,3 +1,7 @@
+# PURPOSE: run headless — in tests, in CI, over ssh.
+#
+#   python run.py --mode simulate --rig configs/rig-sim.yaml --seed 1
+#
 # A laptop with nothing attached: no window, no tracker, no DAQ. Sessions run
 # end to end and write real data files, which is what makes it possible to
 # develop and test an experiment away from the rig.

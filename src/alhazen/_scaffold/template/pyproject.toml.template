@@ -15,6 +15,10 @@ dependencies = ["alhazen-vision"]
 # The renderer, needed only on a machine that opens a real window. The
 # simulated backend — and this package's whole test suite — needs none of it.
 psychopy = ["alhazen-vision[psychopy]"]
+# The movie mode's encoder (`python run.py --mode movie`), for cutting
+# distributable demos of the conditions. Separate because it ships an ffmpeg
+# binary, which a rig that never writes a movie should not have to install.
+movie = ["alhazen-vision[movie]"]
 dev = ["pytest"]
 
 # How `alhazen run --task $task_name` finds this experiment. The entry point

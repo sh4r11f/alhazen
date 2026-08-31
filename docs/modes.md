@@ -1,27 +1,75 @@
-# The five modes
+# The six modes
 
-Every experiment needs the same five ways of being started, and before this
+Every experiment needs the same six ways of being started, and before this
 package each one wrote them again. Two of alhazen's own experiments had
-independently grown a stimulus viewer, an autopilot, a ruler check and a
-hand-edited config for short runs — the same four things, written twice,
-including the same off-by-one in the run-number counter.
+independently grown a stimulus viewer, an autopilot, a ruler check, a
+hand-edited config for short runs and a movie writer — the same things,
+written twice, including the same off-by-one in the run-number counter.
 
 | mode | what it does | needs a task? | writes data? |
 |---|---|---|---|
 | `measure` | is this rig telling the truth? display, response keys, eye tracker | no | a report |
 | `demo` | look at the stimulus, with nothing else running | yes | no |
+| `movie` | write the stimulus to movie files, for a demo you can send | yes | movie files |
 | `simulate` | the whole session, driven by a simulated subject | yes | to the rehearsal root |
 | `test` | the whole session with fewer trials, for a person to sit through once | yes | to the rehearsal root |
 | `run` | the experiment | yes | to the rig's data root |
 
 ```
 alhazen run --mode demo --task kde-vergence --rig configs/rig-view.yaml
+alhazen run --mode movie --task kde-vergence --rig configs/rig-lab.yaml --out movies
 alhazen run --mode measure --rig configs/rig-lab.yaml
 alhazen run --mode test --task kde-vergence --rig configs/rig-lab.yaml --sub s01 --ses 1
 ```
 
 An experiment's own `run.py` takes the same flags, through the same code —
 see [Starting an experiment](#starting-an-experiment).
+
+## One rig file per purpose
+
+Every mode takes `--rig`, and the temptation is one rig file per machine.
+It does not survive contact: the dev modes want different things from the
+same machine — a bare window to look at, a dashboard for a dry run, a mouse
+standing in for gaze, nothing at all for a headless test — and one file
+serving them all accumulates flags nobody remembers. So the convention, and
+what `alhazen new` scaffolds, is one file per **machine and purpose**:
+
+| rig file | built for | display | devices | data |
+|---|---|---|---|---|
+| `rig-sim.yaml` | tests, CI, ssh — any mode, headless | simulated | none | `data/` |
+| `rig-view.yaml` | `demo`, `movie` | a window | none | `data/dev/` |
+| `rig-auto.yaml` | `simulate`, watched live with the dashboard | a window | none | `data/dev/` |
+| `rig-mouse.yaml` | `test`, played by hand | a window | `mouse_sim` gaze | `data/dev/` |
+| `rig-mac.yaml` | any dev mode on a Mac | a window | `mouse_sim` gaze | `data/dev/` |
+| `rig-lab.yaml` | `run` — and `measure`, `test` and `movie` against the real geometry | fullscreen | the rig's own | `data/` |
+
+```mermaid
+flowchart LR
+    subgraph dev["development machine"]
+        V["rig-view"] --> DM["demo · movie"]
+        A["rig-auto"] --> SI["simulate"]
+        MO["rig-mouse"] --> TE["test"]
+    end
+    subgraph anywhere["no display at all"]
+        SM["rig-sim"] --> HL["simulate · test · run, headless"]
+    end
+    subgraph rig["the rig"]
+        L["rig-lab"] --> RN["measure · test · run · movie"]
+    end
+```
+
+Two properties make the set safe rather than merely tidy. First, every dev
+rig points `data_root` at `data/dev`, a tree apart from subject data, so a
+rehearsal can never land where the analysis looks for subjects — and
+`rm -rf data/dev*` resets the development state without touching a session.
+Second, the monitor numbers in each file are that machine's own. They decide
+what a degree of visual angle is, so they are measured per machine
+(`alhazen calibrate ruler` checks them with a tape measure), and a rig file
+is never copied between machines with its numbers left as they were.
+
+The scaffolded dev rigs ship with starting-point numbers and say so loudly;
+`rig-mac.yaml` also carries the Retina notes — device pixels versus points is
+worth exactly one 2x error, once.
 
 ## Why three of them are one program
 
@@ -40,6 +88,7 @@ flowchart TB
     BS --> RUN[SessionRunner]
 
     D["demo<br/><i>no trials, no data</i>"] --> RD["run_demo()"]
+    MV["movie<br/><i>no window at all</i>"] --> RMV["run_movie()"]
     M["measure<br/><i>no task at all</i>"] --> RM["run_measurements()"]
 ```
 
@@ -53,7 +102,8 @@ built its session differently would be a second implementation of the
 experiment, and the day it drifted from the first is the day it stopped
 rehearsing anything.
 
-`demo` and `measure` are separate programs because neither runs a trial.
+`demo`, `movie` and `measure` are separate programs because none of them runs
+a trial — and `movie` never even opens a window.
 
 ## `test` — the whole experiment, shorter
 
@@ -172,6 +222,56 @@ meant judging it at half its designed size.
 The viewer keeps `RIGHT`, `SPACE`, `LEFT`, `S`, `ESC` and `Q` for itself and
 refuses a binding that would shadow one, because it checks its own keys first
 and the on-screen table is the only documentation anybody reads.
+
+## `movie` — a demo you can send
+
+A moving stimulus is the one part of an experiment a figure in a paper cannot
+carry, and `demo` only helps the person in the room. Movie mode writes the
+conditions to `.mp4` files for everyone else — collaborators, a lab meeting,
+reviewers.
+
+```python
+from alhazen.modes.movie import MovieClip, MovieSetup
+
+class MyTask(Task):
+    def movie_clips(self, setup: MovieSetup) -> list[MovieClip]:
+        return [
+            MovieClip(
+                name="occluder-near",
+                label="occluder motion · near",
+                frames=lambda: self.trial_frames(setup, "occluder", "near"),
+            ),
+            # ... one clip per condition worth showing
+        ]
+```
+
+The task composites the pixels — each clip yields numpy frames, `(h, w)`
+luminance or `(h, w, 3)` RGB, in 0..1 floats or uint8, **one frame per screen
+flip** — because the pixels are the experiment's own. Everything after the
+frames is the mode's: the encoder, `--scale`, `--clip <name>` selection, and
+`--sheet`, which tiles every clip into one movie with a caption over each
+panel, all running on one clock.
+
+**What a movie is, exactly.** Every frame is built by the experiment's own
+geometry on the screen of the rig `--rig` names, at that rig's resolution,
+pixels-per-degree and refresh rate — the stream's length in frames divided by
+the refresh rate *is* the clip's duration. Cut movies against the lab rig's
+config, not a laptop's: the movie previews the rig, and the rig is where the
+sizes are true.
+
+**What it is not.** It does not open a window and does not capture one, so it
+can say nothing about frame timing, tearing, or what a monitor actually
+emitted — that is `measure`'s job, and the frame-QA log's during a session.
+And it is not the renderer's own output: whether the stimulus *looks right*
+on a real display is `demo`'s question.
+
+Frames outside 0..1 are refused by name rather than clipped: clipped quietly,
+a compositing bug ships in a movie that looks merely "a bit off", which is
+the worst possible place to discover a rendering error.
+
+The encoder is an extra (`pip install "alhazen-vision[movie]"`), because
+imageio-ffmpeg ships an ffmpeg binary a rig that never writes a movie should
+not have to install. The mode says so, naming that command, if it is missing.
 
 ## `measure` — is the rig telling the truth?
 

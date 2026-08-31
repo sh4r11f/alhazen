@@ -33,6 +33,11 @@ psychopy = ["psychopy>=2024.1.0"]
 # unrelated and must never be installed), and pypixxlib ships with VPixx's
 # Software Tools installer. Both backends say so in their connect() errors.
 nidaq = ["nidaqmx"]
+# The movie mode's encoder. An extra rather than a core dependency because
+# imageio-ffmpeg ships an ffmpeg binary, which is a lot to install on a rig
+# that will never write a movie; alhazen.modes.movie imports it lazily and
+# raises a ConfigError naming this extra if it is missing.
+movie = ["imageio>=2.31", "imageio-ffmpeg>=0.4"]
 # Analysis-side extras: scipy for the fits some analyses want. The readers
 # and the alignment need only numpy, so a plain install can still read a
 # session and align it to a recording.
@@ -49,6 +54,11 @@ dev = [
   "mypy>=1.10",
   "import-linter>=2.0",
   "types-PyYAML",
+  # The movie recorder needs no screen — it composites frames with numpy and
+  # writes a file — so there is nothing to stop the test suite from
+  # exercising the real encoder, and a writer whose only test skips itself is
+  # a writer nobody is testing.
+  "alhazen-vision[movie]",
   # scripts/release_check.py reads pyproject.toml. tomllib is stdlib from
   # 3.11; this is the backport for the 3.10 job.
   "tomli>=2.0; python_version < '3.11'",
@@ -121,7 +131,7 @@ check_untyped_defs = true
 no_implicit_optional = true
 
 [[tool.mypy.overrides]]
-module = ["psychopy.*", "PIL.*", "pandas.*", "nidaqmx.*", "pylink.*", "pypixxlib.*"]
+module = ["psychopy.*", "PIL.*", "pandas.*", "nidaqmx.*", "pylink.*", "pypixxlib.*", "imageio.*"]
 ignore_missing_imports = true
 
 # Layering is enforced, not folklore: imports point only

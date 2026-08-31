@@ -38,11 +38,19 @@ You now have a working experiment package:
 saccade_bias/
 ├── src/saccade_bias/task.py   the experiment: params, events, outcomes, one trial
 ├── configs/task.yaml          the task's parameters
-├── configs/rig-sim.yaml       a laptop: no window, no devices
+├── configs/rig-sim.yaml       run headless: no window, no devices
+├── configs/rig-view.yaml      look at the stimulus (--mode demo)
+├── configs/rig-auto.yaml      watch it run itself (--mode simulate), dashboard up
+├── configs/rig-mouse.yaml     play it yourself (--mode test), mouse as gaze
+├── configs/rig-mac.yaml       a Mac as the dev machine (read its Retina notes)
 ├── configs/rig-lab.yaml       the rig: fill in your monitor, uncomment your devices
 ├── tests/test_task.py         tests on a fake clock, no display needed
-└── run.py
+└── run.py                     starts any of the six modes without installing
 ```
+
+One rig file per machine and purpose, because the monitor numbers in each one
+decide what a degree of visual angle is — [the modes page](modes.md#one-rig-file-per-purpose)
+explains the set.
 
 ## Run its tests
 

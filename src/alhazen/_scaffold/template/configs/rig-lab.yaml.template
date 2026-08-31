@@ -1,5 +1,12 @@
-# The rig. Fill in the numbers for YOUR monitor — the geometry here decides
-# what a degree of visual angle is, and every stimulus size depends on it.
+# PURPOSE: the rig — the machine that collects the data.
+#
+#   python run.py --mode test --rig configs/rig-lab.yaml --sub s01 --ses 1
+#   python run.py             --rig configs/rig-lab.yaml --sub s01 --ses 1
+#
+# Fill in the numbers for YOUR monitor — the geometry here decides what a
+# degree of visual angle is, and every stimulus size depends on it. This is
+# also the config to cut movies against (--mode movie): the movie previews
+# the rig, and the rig is where the sizes are true.
 monitor:
   width_px: 1920
   height_px: 1080

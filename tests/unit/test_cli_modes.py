@@ -59,7 +59,7 @@ class TestWhatEachModeAsksFor:
         # And the report landed beside the rig config, not beside the data.
         assert (tmp_path / "measurements").is_dir()
 
-    @pytest.mark.parametrize("mode", ["run", "test", "simulate", "demo"])
+    @pytest.mark.parametrize("mode", ["run", "test", "simulate", "demo", "movie"])
     def test_every_other_mode_needs_a_task(self, tmp_path, mode, capsys):
         assert main(["run", "--mode", mode, "--rig", str(rig_file(tmp_path))]) == 2
 

@@ -1,12 +1,14 @@
-"""The five ways to start an experiment.
+"""The six ways to start an experiment.
 
-Every experiment needs the same five, and before this package each one wrote
+Every experiment needs the same six, and before this package each one wrote
 them again: a viewer for the stimulus, an autopilot for the session, a ruler
-check for the display, a hand-edited copy of the config for a short run, and
-the session itself. The five below are the same five, written once.
+check for the display, a hand-edited copy of the config for a short run, a
+movie writer for the lab meeting, and the session itself. The six below are
+the same six, written once.
 
     measure   is this rig telling the truth? (display, keys, tracker)
     demo      look at the stimulus, with nothing else running
+    movie     write the stimulus to files, for a demo you can send
     simulate  the whole session, with nobody in the chair
     test      the whole session, with a person in it and fewer trials
     run       the experiment
@@ -18,7 +20,8 @@ would rehearse the wrong thing. What differs between them is the trial
 counts, who supplies the gaze and the keypresses, and which directory the
 data lands in. Nothing else.
 
-The other two are their own programs, because neither runs trials at all.
+The other three are their own programs, because none of them runs trials at
+all — and one of them, movie, never even opens a window.
 """
 
 from __future__ import annotations
@@ -32,6 +35,7 @@ class Mode(str, Enum):
 
     MEASURE = "measure"
     DEMO = "demo"
+    MOVIE = "movie"
     SIMULATE = "simulate"
     TEST = "test"
     RUN = "run"
@@ -59,6 +63,7 @@ class Mode(str, Enum):
 MODE_SUMMARIES = {
     Mode.MEASURE: "measure what this rig actually does: display, response keys, eye tracker",
     Mode.DEMO: "look at the stimulus, with no trials and no data",
+    Mode.MOVIE: "write the stimulus to movie files, for a demo you can send",
     Mode.SIMULATE: "the whole session, driven by a simulated subject",
     Mode.TEST: "the whole session with fewer trials, for a person to sit through once",
     Mode.RUN: "the experiment",

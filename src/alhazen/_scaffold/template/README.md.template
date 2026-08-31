@@ -14,15 +14,29 @@ That last command runs a complete session against the simulated display and
 writes a real run directory under `data/` — trials, events and frame timings,
 a config snapshot, a session log and a manifest.
 
+`run.py` starts the experiment in any of alhazen's six modes (`--mode demo`,
+`movie`, `measure`, `simulate`, `test`, `run`); each ships with a rig config
+built for it, below.
+
 ## What is where
 
 | | |
 |---|---|
 | `src/$package/task.py` | the experiment: parameters, events, outcomes, and what a trial is made of |
 | `configs/task.yaml` | the task's parameters for a session |
-| `configs/rig-sim.yaml` | a laptop: no window, no devices |
+| `configs/rig-sim.yaml` | run headless: no window, no devices — tests, CI, ssh |
+| `configs/rig-view.yaml` | look at the stimulus (`--mode demo`) on this machine's own panel |
+| `configs/rig-auto.yaml` | watch the task run itself (`--mode simulate`), dashboard up |
+| `configs/rig-mouse.yaml` | play the task yourself (`--mode test`), mouse cursor as gaze |
+| `configs/rig-mac.yaml` | any dev mode on a Mac — read its Retina notes before judging a stimulus |
 | `configs/rig-lab.yaml` | the rig: fill in your monitor's real geometry and uncomment the devices it has |
 | `tests/` | the task's tests, using `alhazen.testing`'s doubles |
+
+Every rig file that opens a window carries starting-point monitor numbers,
+not measurements. The numbers decide what a degree of visual angle is, so
+measure them for each machine (`alhazen calibrate ruler` checks them with a
+tape measure) — that is why there is one rig file per machine and purpose
+rather than one shared one.
 
 ## On the rig
 

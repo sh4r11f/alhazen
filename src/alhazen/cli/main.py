@@ -127,6 +127,8 @@ def main(argv: list[str] | None = None) -> int:
         print('  pip install -e ".[dev]"')
         print("  pytest")
         print("  python run.py --rig configs/rig-sim.yaml --sub s01 --ses 1")
+        print("\nthen, with a display attached:")
+        print("  python run.py --mode demo --rig configs/rig-view.yaml")
         return 0
 
     if args.command == "run":
@@ -224,6 +226,41 @@ def add_mode_arguments(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="demo mode: directory for screenshots (default: the working directory)",
     )
+    # movie
+    parser.add_argument(
+        "--out",
+        default="movies",
+        help="movie mode: directory for the files (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--clip",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="movie mode: record only the clip with this name; repeatable (default: all)",
+    )
+    parser.add_argument(
+        "--sheet",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="PATH",
+        help="movie mode: one tiled movie of every clip, each labelled, instead of a "
+        "file per clip (default path: <out>/all-clips.mp4)",
+    )
+    parser.add_argument(
+        "--columns",
+        type=int,
+        default=None,
+        help="movie mode: how many sheet columns (default: near-square)",
+    )
+    parser.add_argument(
+        "--scale",
+        type=float,
+        default=1.0,
+        help="movie mode: shrink each frame by this factor — 0.5 quarters the file "
+        "of a full-resolution rig (default: %(default)s)",
+    )
     # measure
     parser.add_argument(
         "--skip",
@@ -241,9 +278,9 @@ def add_mode_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def _run_session(args: argparse.Namespace, task_class: Any = None) -> int:
-    """Dispatch one of the five modes.
+    """Dispatch one of the six modes.
 
-    All five arrive through the same command because they are five ways of
+    All six arrive through the same command because they are six ways of
     starting the same experiment, and an experimenter who has to remember a
     different command per mode will use one of them and forget the rest. What
     they share is the task and the rig; what differs is what happens next.
@@ -300,6 +337,8 @@ def _run_session(args: argparse.Namespace, task_class: Any = None) -> int:
 
     if mode is Mode.DEMO:
         return _demo_task(args, rig, task_class(params), params)
+    if mode is Mode.MOVIE:
+        return _movie_task(args, rig, task_class(params), params)
     return _trial_session(args, rig, task_class(params), params, mode)
 
 
@@ -362,6 +401,38 @@ def _demo_task(args: argparse.Namespace, rig: Any, task: Any, params: Any) -> in
         # implement, which is more useful than anything this layer could say.
         print(f"CANNOT DEMO: {e}", file=sys.stderr)
         return 2
+
+
+def _movie_task(args: argparse.Namespace, rig: Any, task: Any, params: Any) -> int:
+    """Write the task's clips to files, with no window and no data."""
+    from alhazen.modes.movie import DEFAULT_SHEET_NAME, run_movie
+
+    # `--sheet` with no path means "the default file under --out"; argparse
+    # stores that as the empty-string const, resolved here where --out is known.
+    sheet = None
+    if args.sheet is not None:
+        sheet = args.sheet if args.sheet else str(Path(args.out) / DEFAULT_SHEET_NAME)
+
+    try:
+        return run_movie(
+            task.movie_clips,
+            rig=rig,
+            params=params,
+            out=args.out,
+            clip_names=tuple(args.clip),
+            sheet=sheet,
+            columns=args.columns,
+            scale=args.scale,
+            seed=args.seed if args.seed is not None else 0,
+        )
+    except NotImplementedError as e:
+        # The task declares no clips. Its own message names the method to
+        # implement, which is more useful than anything this layer could say.
+        print(f"CANNOT RECORD: {e}", file=sys.stderr)
+        return 2
+    except ConfigError as e:
+        print(f"CANNOT RECORD: {e}", file=sys.stderr)
+        return 1
 
 
 def _trial_session(args: argparse.Namespace, rig: Any, task: Any, params: Any, mode: Mode) -> int:

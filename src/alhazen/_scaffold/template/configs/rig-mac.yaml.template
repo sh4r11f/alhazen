@@ -1,0 +1,73 @@
+# PURPOSE: a Mac (Apple Silicon, Retina display) as the dev machine — the
+# same purposes as rig-view / rig-auto / rig-mouse, in one file.
+#
+#   python run.py --mode demo     --rig configs/rig-mac.yaml
+#   python run.py --mode test     --rig configs/rig-mac.yaml --sub dev --ses 1
+#   python run.py --mode simulate --rig configs/rig-mac.yaml --seed 1
+#
+# (Simulate accepts this rig as it stands: mouse_sim is not real hardware,
+# and the injected subject's gaze wins over the cursor.)
+#
+# ---------------------------------------------------------------------------
+# TWO NUMBERS TO GET RIGHT, AND NEITHER IS THE ONE MACOS SHOWS YOU
+# ---------------------------------------------------------------------------
+#
+# 1. width_px is in the units PsychoPy addresses, and Retina makes that
+#    ambiguous. A Retina panel draws two device pixels per point in each
+#    direction: a 14" MacBook Pro reports 1512x982 in System Settings and
+#    draws into 3024x1964 — and which of the two `units="pix"` addresses has
+#    changed between PsychoPy versions. If it resolves the wrong way, every
+#    stimulus is out by exactly 2x and nothing warns you. Settle it
+#    empirically before judging anything you see:
+#
+#        alhazen calibrate ruler --rig configs/rig-mac.yaml --windowed
+#
+#    It draws a bar of a known visual angle and tells you what it should
+#    measure with a ruler. If the ruler disagrees by 2x, halve or double
+#    width_px; if it disagrees by a little, fix width_cm.
+#
+#    For reference, physical panels (device pixels / visible glass width):
+#      MacBook Air 13"   2560x1664   29.0 cm
+#      MacBook Air 15"   2880x1864   32.4 cm
+#      MacBook Pro 14"   3024x1964   30.4 cm
+#      MacBook Pro 16"   3456x2234   34.7 cm
+#
+# 2. distance_cm: MEASURE it, eye to glass. Every degree converts through
+#    width_px / width_cm scaled by this, and a laptop on a desk is rarely at
+#    the 57 cm a rig's chin rest is set to. Sitting closer is fine — update
+#    the number; leaving 57 in the config while sitting at 45 makes every
+#    degree wrong by a quarter.
+# ---------------------------------------------------------------------------
+monitor:
+  width_px: 1400        # a window, in the units PsychoPy takes (points on a Mac)
+  height_px: 1050
+  width_cm: 13.0        # what those pixels measure on the glass — the ruler check settles it
+  distance_cm: 57.0     # MEASURE eye to screen
+  refresh_rate_hz: 60.0
+  screen_index: 0
+  fullscreen: false
+
+display:
+  backend: psychopy
+  # macOS composites every frame, and PsychoPy accepts a refresh rate only
+  # after 10 identical frame intervals; the default 30-flip budget is thin
+  # under a compositor. More frames to look in, not a looser standard.
+  warmup_flips: 240
+  frame_qa:
+    policy: mark_trial
+    max_dropped_per_trial: 3
+
+dashboard:
+  # Opens in a browser BEFORE PsychoPy takes focus. On macOS a fullscreen
+  # PsychoPy window gets its own Space, so switch back with Mission Control —
+  # or stay windowed (fullscreen: false above) to keep both in view.
+  enabled: true
+  auto_open: true
+  port: 0
+
+devices:
+  eyetracker:
+    backend: mouse_sim   # no tracker on a laptop; the cursor stands in for gaze
+
+# Dry-run data lives apart from subject data (see rig-auto.yaml).
+data_root: data/dev
