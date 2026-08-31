@@ -115,6 +115,36 @@ class Task:
         task must write."""
         raise NotImplementedError(f"{type(self).__name__} must implement build_trial")
 
+    # ------------------------------------------------------------------
+    # What the other modes ask a task for. Both are optional: an experiment
+    # that never demos its stimulus or never rehearses without a subject
+    # simply does not answer, and the mode says so plainly rather than
+    # improvising something that is not the experiment.
+    # ------------------------------------------------------------------
+
+    def demo_views(self, screen: Any) -> list[Any]:
+        """The displays ``alhazen run --mode demo`` pages through.
+
+        A list of ``modes.demo.DemoView``. The stimulus is the one thing in an
+        experiment that no test can check — a test can assert that dot k is
+        where the formula says, not that a human sees a transparent cylinder —
+        so this is how that judgement gets made, against the same geometry a
+        session draws at the rig's own pixel scale.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} declares no demo views. Implement demo_views(screen) "
+            f"returning a list of alhazen.modes.demo.DemoView to use --mode demo."
+        )
+
+    def simulation(self, seed: int) -> Any:
+        """The stand-ins for a subject in ``--mode simulate``, or None.
+
+        Returns a ``modes.simulation.Simulation``. Seeded, so a whole
+        simulated session replays exactly from the same number — which is
+        what makes a rehearsal something you can debug.
+        """
+        return None
+
     def score(self, record: dict[str, Any]) -> dict[str, Any]:
         """Derived measures, computed by the experiment after the trial ends.
         The default adds nothing."""
