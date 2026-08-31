@@ -175,6 +175,19 @@ class Task:
         """
         return None
 
+    def live_analysis(self, wiring: Any) -> Any:
+        """The task's between-trials live analysis, or None (the default).
+
+        Takes a ``task.live.LiveWiring`` — the spike source the rig config
+        built (or None when it configures none), the screen and the session
+        clock — and returns a ``task.live.LiveAnalysis``. The builder calls
+        this once, after the devices are wired, and the runner then drives
+        the returned object between trials: never inside the frame loop, so
+        it can afford real computation (a receptive-field map, a PSTH) and
+        contribute its own panels to the live dashboard.
+        """
+        return None
+
     def score(self, record: dict[str, Any]) -> dict[str, Any]:
         """Derived measures, computed by the experiment after the trial ends.
         The default adds nothing."""

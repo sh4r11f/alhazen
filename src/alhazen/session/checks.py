@@ -21,6 +21,7 @@ from alhazen.core.clock import MonotonicClock
 from alhazen.devices.eyetracker import make_tracker
 from alhazen.devices.recording import make_recording
 from alhazen.devices.reward import make_reward
+from alhazen.devices.spikes import make_spikes
 from alhazen.devices.sync import SyncOutput, make_sync
 from alhazen.display import monitors as monitor_registry
 from alhazen.display.screen import Screen
@@ -60,6 +61,7 @@ def check_rig(rig: RigConfig, pulse: bool = False) -> list[CheckResult]:
         _check_reward(rig, pulse),
         _check_sync(rig, pulse),
         _check_recording(rig),
+        _check_spikes(rig),
     ]
 
 
@@ -72,6 +74,7 @@ def _check_config(rig: RigConfig) -> CheckResult:
             ("reward", rig.devices.reward),
             ("sync", rig.devices.sync),
             ("recording", rig.devices.recording),
+            ("spikes", rig.devices.spikes),
         )
         if cfg is not None
     ]
@@ -236,6 +239,32 @@ def _check_recording(rig: RigConfig) -> CheckResult:
     if problem is not None:
         return CheckResult("recording", False, problem)
     return CheckResult("recording", True, f"{cfg.backend} at {cfg.data_dir}{simulated}")
+
+
+def _check_spikes(rig: RigConfig) -> CheckResult:
+    """Can the live spike stream actually be opened?
+
+    Connects the same way a session would — server reachable, an
+    acquisition running, the stream present, the channel list valid — and
+    closes again without starting the fetch thread. The failure this
+    catches is SpikeGLX left un-started (or its command server disabled),
+    discovered here rather than with the subject in the chair.
+    """
+    cfg = rig.devices.spikes
+    if cfg is None:
+        return CheckResult("spikes", True, "not configured on this rig")
+    source = make_spikes(cfg)
+    try:
+        source.connect()
+        detail = source.describe()
+    except AlhazenError as e:
+        return CheckResult("spikes", False, str(e))
+    finally:
+        # Nothing must be left holding the command-server connection: the
+        # session that is about to start needs it.
+        source.close()
+    simulated = " (simulated)" if cfg.backend == "simulated" else ""
+    return CheckResult("spikes", True, f"{detail}{simulated}")
 
 
 def format_result(result: CheckResult) -> str:

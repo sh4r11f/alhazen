@@ -19,11 +19,17 @@ src/alhazen/
 ├── stimuli/        # Stimulus protocol, NullStimulus, FixationPoint, PhotodiodePatch
 ├── scenes/         # illusion-studio scenes: expressions, loader, headless renderer
 ├── devices/        # EyeTracker (eyelink/viewpixx/mouse_sim/scripted), RewardDispenser,
-│                   #   SyncOutput, SubjectKeyboard; eyetracker/calibration.py is our own
-│                   #   cal graphics for the EyeLink, and viewpixx.py draws its own
+│                   #   SyncOutput, SubjectKeyboard, SpikeSource (spikeglx/simulated);
+│                   #   eyetracker/calibration.py is our own cal graphics for the
+│                   #   EyeLink, and viewpixx.py draws its own
+├── neural/         # pure-numpy neural arithmetic: threshold spike detection, the live
+│                   #   stream→session timebase, probe grids and RF accumulation — shared
+│                   #   by the live device path and the offline analysis
 ├── paradigms/      # Condition, TrialSource, SimpleSequence, ConstantStimuli, staircases,
 │                   #   QUEST+, adjustment, BlockPlan, SchedulerConfig + make_scheduler
-├── task/           # Task, RewardPolicy, TrialSetup/TrialPlan, phases/ (the phase library)
+├── task/           # Task, RewardPolicy, TrialSetup/TrialPlan, phases/ (the phase library),
+│                   #   live.py (the between-trials live-analysis seam), templates/ (whole
+│                   #   ready-made tasks: RF mapping for V1/V2/V4/MT)
 ├── training/       # curricula: stages, ramps, criteria, per-subject state
 ├── analysis/       # reading a run back: io/ readers, TTL alignment, photodiode, report
 ├── modes/          # the six ways to start an experiment (docs/modes.md)
@@ -38,9 +44,12 @@ src/alhazen/
 
 Layering is enforced by import-linter (pyproject `[tool.importlinter]`),
 top to bottom: `cli` → `session | testing | analysis` → `training` → `task` →
-`data | dashboard` → `paradigms | devices` → `core` → `stimuli | scenes` →
-`display` → `config`. Imports point only downward; `errors` sits outside the
-contract.
+`data | dashboard` → `paradigms | devices` → `core | neural` →
+`stimuli | scenes` → `display` → `config`. Imports point only downward;
+`errors` sits outside the contract. `neural` shares core's line so that
+both the device layer (live, during a session) and the analysis layer
+(offline, over the files) can run the same spike detection and the same
+map arithmetic without either importing the other.
 
 Three placements carry the weight:
 
@@ -159,6 +168,7 @@ the whole default test suite work with none of them installed.
 | `EyeTracker` | `eyelink`, `viewpixx`, `mouse_sim`, `scripted` | screen-px gaze on the session clock; Host-PC overlay where one exists; the native recording landed in the run directory at teardown |
 | `RewardDispenser` | `nidaq`, `simulated` | pulse train (n, width, gap); the waveform always ends at 0 V |
 | `SyncOutput` | `nidaq`, `simulated`, `none` | one digital line per configured event name |
+| `SpikeSource` | `spikeglx`, `simulated` | live threshold-crossing spikes on the session clock, drained between trials; a background fetch thread whose faults re-raise on the session's own thread. The simulated backend fires to a configured stimulus event from ground-truth receptive fields, so the whole live pipeline runs — and is asserted on — with no probe in any brain ([rf-mapping.md](rf-mapping.md)) |
 
 `scripted` is test-only and is rejected by *both* `build_session` and
 `check-rig` with a `ConfigError`: a rig YAML has no way to supply a gaze
@@ -450,6 +460,43 @@ Two composition rules fall out of blocks and are worth stating:
   retry inside the same block. A second queue in the wrapper could
   double-serve a condition.
 
+### 5.5 Live analysis (`task/live.py`)
+
+Some tasks need computation that watches the session as it runs and could
+never fit a dashboard panel's trial-record columns — a receptive-field map
+accumulating over a spike stream, a running PSTH. The seam is one optional
+hook, `Task.live_analysis(wiring)`, returning a `LiveAnalysis`, with three
+rules that keep it safe:
+
+- **the builder wires it like a device**: the hook receives the spike
+  source the *rig config* built (or None), so task code never constructs
+  hardware and the same task runs on a rig with no `spikes:` entry —
+  saying so on its panel rather than crashing or staying quiet;
+- **never inside the frame loop**: the optional `on_event` bus subscriber
+  may only take notes; the work happens in `on_trial`, which the runner
+  calls between trials, after the scored row is written and before the
+  dashboard publish — so the panels in that publish already include the
+  trial;
+- **`finish(run_dir)` runs in teardown before the manifest is written**
+  (and before the spike source closes, so it can drain one last time), so
+  whatever it saves is hashed with everything else the run produced.
+
+Its `panels()` return finished payloads in the dashboard's own wire shapes
+(§9), appended after the spec's panels under their own sidebar section.
+
+### 5.6 Template tasks (`task/templates/`)
+
+Whole tasks alhazen ships — the procedures every lab runs before its
+experiment can begin — registered under the same `alhazen.tasks` entry
+point group an experiment package uses, so `alhazen run --task rf-map-v1`
+works with nothing else installed and the templates exercise the discovery
+path every downstream task depends on. The first family is receptive-field
+mapping for V1/V2/V4/MT ([rf-mapping.md](rf-mapping.md)): one base task,
+four presets differing only in parameter defaults, every mode hook
+implemented, and a live map wired through §5.5. A downstream experiment
+runs a preset as-is, subclasses it to pin its own site's geometry, or
+imports the pieces.
+
 ## 6. Training
 
 Shaping an animal means running the same task at a difficulty it can actually
@@ -697,6 +744,12 @@ row hands back `row["success"] == "False"`, and `"False"` is truthy). All are
 tested against synthetic files written by `tests/fixtures_neural.py`, so each
 test can say what should come out rather than only that nothing crashed.
 
+`analysis/rf.py` composes them for the RF-mapping templates: the probe grid
+and counting window rebuilt from the run's **own snapshot**, flash onsets
+from the flip-stamped events, spikes from Kilosort, clocks through the TTL
+alignment — the offline recomputation of the live map, documented in
+[rf-mapping.md](rf-mapping.md#offline-the-maps-properly).
+
 ## 8. Scenes
 
 Stimuli designed in
@@ -757,7 +810,10 @@ of the page is described in [`dashboard.md`](dashboard.md):
 - **The browser draws; it does not analyse.** `dashboard/panels.py` computes
   every mark in Python, over the whole session and thinned to a bounded
   number of points — so each snapshot costs the same on trial 4000 as on
-  trial 40, and no statistic lives in untested page JavaScript.
+  trial 40, and no statistic lives in untested page JavaScript. A live
+  analysis (§5.5) obeys the same division: its `panels()` are finished
+  payloads (the receptive-field maps travel as a `heatmap` form the page
+  only renders), appended after the spec's own panels.
 
 The child starts before the display opens, so the whole remainder of
 `build_session` runs inside a guard that stops it on any failure — otherwise

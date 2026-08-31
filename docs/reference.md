@@ -48,6 +48,12 @@ The names an experiment imports directly.
 
 ::: alhazen.task.phases
 
+::: alhazen.task.live
+
+## Template tasks
+
+::: alhazen.task.templates.rf_mapping
+
 ## The trial engine
 
 ::: alhazen.core.engine
@@ -142,7 +148,17 @@ The names an experiment imports directly.
 
 ::: alhazen.devices.recording
 
+::: alhazen.devices.spikes
+
 ::: alhazen.devices.automated
+
+## Neural arithmetic
+
+::: alhazen.neural.detect
+
+::: alhazen.neural.rfmap
+
+::: alhazen.neural.timebase
 
 ## Data on disk
 
@@ -161,6 +177,8 @@ The names an experiment imports directly.
 ::: alhazen.analysis.sync
 
 ::: alhazen.analysis.photodiode
+
+::: alhazen.analysis.rf
 
 ::: alhazen.analysis.report
 

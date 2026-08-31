@@ -63,10 +63,14 @@ class ModeSession:
             lines.append(f"reduced: {reduction}")
         if self.mode is Mode.TEST and not self.reductions:
             # Said out loud: otherwise an experimenter who asked for a short
-            # run and got a full-length one has no way to know why.
+            # run and got a full-length one has no way to know why. Worded
+            # for both ways this happens — a design already at one repetition
+            # per cell, and a task that schedules its own trials (the RF
+            # templates schedule per probe) with no SchedulerConfig to find.
             lines.append(
-                "reduced: nothing — this experiment already specifies one "
-                "repetition per condition, so a test run is a full-length one"
+                "reduced: nothing — these parameters carry no reducible trial "
+                "counts, so this run is full-length (pass --params with a "
+                "smaller design to rehearse less)"
             )
         if self.simulation is not None and self.simulation.describe:
             for key, value in self.simulation.describe.items():
@@ -104,7 +108,7 @@ def _real_devices(rig: RigConfig) -> list[str]:
     """
     simulated = {"simulated", "mouse_sim", "scripted", "none"}
     found = []
-    for name in ("eyetracker", "reward", "sync", "recording"):
+    for name in ("eyetracker", "reward", "sync", "recording", "spikes"):
         device = getattr(rig.devices, name)
         if device is not None and device.backend not in simulated:
             found.append(f"{name} ({device.backend})")

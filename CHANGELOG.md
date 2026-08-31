@@ -29,6 +29,47 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Added
 
+- **RF-mapping template tasks** (`rf-map-v1/-v2/-v4/-mt`), the first entries
+  in `alhazen.task.templates`: whole ready-made tasks, registered under the
+  same `alhazen.tasks` entry-point group an experiment uses, so
+  `alhazen run --task rf-map-v1` works with nothing else installed. The
+  subject holds fixation while bright/dark squares flash at random cells of
+  a grid; scheduling is per *probe*, so a fixation break re-queues only the
+  unshown flashes and coverage is never lost. One base task, four presets
+  differing only in defaults scaled to each area's receptive fields, every
+  mode hook implemented (demo, movie, simulate, test, run), and the probe
+  log recorded flip-honestly three ways: `PROBE_ON` events with cell and
+  position in the payload, a JSON log on every trial row, and the live
+  map's own `rf_live_maps.npz`. Documented in
+  [docs/rf-mapping.md](docs/rf-mapping.md).
+
+- **A live spike source behind the device seam** (`devices.spikes`): the
+  `SpikeSource` protocol with a `spikeglx` backend — SpikeGLX's remote
+  command server through the official SpikeGLX-CPP-SDK bindings, imported
+  lazily and named in the error when absent — and a `simulated` sibling
+  whose configured ground-truth receptive fields fire to the session's own
+  stimulus events, so the whole live pipeline runs and is *asserted on*
+  (known field in, same field out) with no hardware. A background thread
+  fetches the stream, `alhazen.neural.detect` turns it into threshold
+  crossings (median CAR, moving-average high-pass, −kσ against a robust
+  noise estimate, chunk-boundary-safe), and `alhazen.neural.timebase`
+  places them on the session clock with the estimator's error budget
+  stated. Thread faults re-raise on the session's own thread at the next
+  drain — a silently dead stream would read as "no receptive field", which
+  is a scientific claim, not a connection status. `check-rig` covers it;
+  simulate mode counts a real one as hardware and refuses it.
+
+- **A live-analysis seam on Task** (`Task.live_analysis(wiring)` →
+  `task/live.py`): between-trials computation that consumes a device,
+  contributes its own dashboard panels, and saves an artifact in teardown
+  before the manifest is written — never inside the frame loop. The
+  dashboard gained the matching `heatmap` wire form (small multiples on one
+  shared colourbar, unmeasured cells drawn as unknown rather than zero,
+  theme-following via the ordinal ramp). The RF templates' `LiveRFMap` is
+  the first user; `analysis/rf.py` recomputes the same maps offline from
+  Kilosort spikes and the TTL alignment, with the grid and window read from
+  the run's own snapshot.
+
 - **Movie mode** (`--mode movie`), the sixth way to start an experiment: write
   the conditions to `.mp4` files, for a distributable demo of a stimulus a
   figure in a paper cannot carry. The task implements one hook —

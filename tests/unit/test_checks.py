@@ -50,6 +50,7 @@ class TestSimulatedRig:
             "reward",
             "sync",
             "recording",
+            "spikes",
         ]
         assert "(simulated)" in by_name(results)["reward"].detail
         assert "(simulated)" in by_name(results)["sync"].detail
