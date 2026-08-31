@@ -110,7 +110,9 @@ class PsychoPyDisplay:
             log.info(
                 "display is scaled %.3gx: %dx%d framebuffer pixels over a %dx%d point "
                 "window (a Retina or HiDPI screen)",
-                scale, *buffer_size, *client,
+                scale,
+                *buffer_size,
+                *client,
             )
 
         fullscreen = self._monitor.fullscreen and not self._windowed
@@ -120,7 +122,8 @@ class PsychoPyDisplay:
                     "windowed run: the %dx%d framebuffer is smaller than the %dx%d the rig "
                     "config describes, so a stimulus near the edge of the screen will be "
                     "clipped. Sizes in degrees are still correct.",
-                    *buffer_size, *configured,
+                    *buffer_size,
+                    *configured,
                 )
             return
 

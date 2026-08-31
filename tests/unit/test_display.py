@@ -145,8 +145,12 @@ class TestFramebufferMatchesTheRigConfig:
         )
         monkeypatch.setitem(__import__("sys").modules, "psychopy.visual", FakeVisual)
         monitor = MonitorConfig(
-            width_px=1920, height_px=1080, width_cm=52.0, distance_cm=57.0,
-            refresh_rate_hz=120.0, fullscreen=fullscreen,
+            width_px=1920,
+            height_px=1080,
+            width_cm=52.0,
+            distance_cm=57.0,
+            refresh_rate_hz=120.0,
+            fullscreen=fullscreen,
         )
         return psychopy_backend.PsychoPyDisplay(monitor, windowed=windowed)
 
@@ -169,9 +173,7 @@ class TestFramebufferMatchesTheRigConfig:
     def test_a_windowed_run_is_not_refused_only_warned(self, monkeypatch, caplog):
         """A dev window is smaller than the panel by definition. Sizes in
         degrees are still right; only the edges are clipped."""
-        display = self._display(
-            monkeypatch, buffer=(1200, 800), client=(1200, 800), windowed=True
-        )
+        display = self._display(monkeypatch, buffer=(1200, 800), client=(1200, 800), windowed=True)
         with caplog.at_level(logging.WARNING):
             display.open()
         assert display.window is not None
