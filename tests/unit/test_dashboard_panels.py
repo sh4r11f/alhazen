@@ -767,9 +767,7 @@ def test_two_factors_sharing_a_level_name_are_not_merged():
         trial(0, completed=True, hit=1.0, size="near", distance="near"),
         trial(1, completed=True, hit=0.0, size="far", distance="near"),
     ]
-    panel = DashboardPanel(
-        kind="grouped_mean", title="P", value="hit", group=("size", "distance")
-    )
+    panel = DashboardPanel(kind="grouped_mean", title="P", value="hit", group=("size", "distance"))
     data = panel_payload(panel, rows, [])
     assert [(g["series"], g["label"], g["mean"], g["n"]) for g in data["groups"]] == [
         ("size", "far", 0.0, 1),
@@ -802,9 +800,7 @@ def test_where_shows_only_the_trials_it_names():
 def test_where_compares_as_text_so_numeric_levels_match():
     """A level written as 8.25 in the record is named "8.25" in a config."""
     rows = [trial(0, separation_dva=3.75), trial(1, separation_dva=8.25)]
-    panel = DashboardPanel(
-        kind="histogram", title="h", value="x", where={"separation_dva": "8.25"}
-    )
+    panel = DashboardPanel(kind="histogram", title="h", value="x", where={"separation_dva": "8.25"})
     assert [row["trial_index"] for row in select_rows(panel, rows)] == [1]
 
 

@@ -740,9 +740,7 @@ def _grouped_mean(panel: DashboardPanel, rows: list[dict[str, Any]]) -> dict[str
     # Factors in the order they were declared, levels ordered within each, so
     # the bars of one factor stay together and the reader compares within a
     # colour before comparing across.
-    ordered = sorted(
-        buckets, key=lambda k: (fields.index(k[0]), _group_order(k[1]))
-    )
+    ordered = sorted(buckets, key=lambda k: (fields.index(k[0]), _group_order(k[1])))
     for group_field, label in ordered:
         values = buckets[(group_field, label)]
         trials_shown += len(values)
