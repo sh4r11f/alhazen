@@ -223,10 +223,17 @@ def select_rows(panel: DashboardPanel, trials: list[dict[str, Any]]) -> list[dic
     ``completed_only`` uses the row's own ``completed`` column — the engine
     stamps it from the outcome — so an experiment's own incomplete outcome is
     excluded whatever the experiment happens to call it.
+
+    ``where`` compares as text, so a level written as ``"far"`` and one written
+    as ``8.25`` are both matched by what the record shows. A missing column
+    matches nothing, which leaves the panel empty and captioned rather than
+    silently showing every trial.
     """
     rows = list(trials)
     if panel.completed_only:
         rows = [row for row in rows if row.get("completed") is True]
+    for column, wanted in (panel.where or {}).items():
+        rows = [row for row in rows if str(row.get(column)) == wanted]
     if panel.rolling_window:
         rows = rows[-panel.rolling_window :]
     return rows
@@ -710,25 +717,38 @@ def _group_order(label: str) -> tuple[int, float, str]:
 
 def _grouped_mean(panel: DashboardPanel, rows: list[dict[str, Any]]) -> dict[str, Any]:
     field = _required(panel, "value")
-    group_field = _required(panel, "group")
-    buckets: dict[str, list[float]] = {}
+    fields = panel.group_fields
+    if not fields:
+        raise ValueError("grouped_mean panels require group")
+
+    # Keyed by (factor, level) rather than by level alone. Two factors can name
+    # the same level — `near` under separation and `near` under anything else —
+    # and merging them would silently average unrelated trials together.
+    buckets: dict[tuple[str, str], list[float]] = {}
     for row in rows:
-        key = row.get(group_field)
-        if key is None or not _num(row.get(field)):
+        if not _num(row.get(field)):
             continue
-        buckets.setdefault(str(key), []).append(float(row[field]))
+        for group_field in fields:
+            key = row.get(group_field)
+            if key is not None:
+                buckets.setdefault((group_field, str(key)), []).append(float(row[field]))
     if not buckets:
-        return _empty(f"No {field} by {group_field} yet")
+        return _empty(f"No {field} by {' / '.join(fields)} yet")
 
     groups: list[dict[str, Any]] = []
     trials_shown = 0
-    for label in sorted(buckets, key=_group_order):
-        values = buckets[label]
+    # Factors in the order they were declared, levels ordered within each, so
+    # the bars of one factor stay together and the reader compares within a
+    # colour before comparing across.
+    ordered = sorted(buckets, key=lambda k: (fields.index(k[0]), _group_order(k[1])))
+    for group_field, label in ordered:
+        values = buckets[(group_field, label)]
         trials_shown += len(values)
         sd = _sd(values)
         groups.append(
             {
                 "label": label,
+                "series": group_field.replace("_", " "),
                 "mean": _mean(values),
                 # Standard error of the mean: the error bar answers "how well
                 # is this mean pinned down", which is the question a group
@@ -739,15 +759,20 @@ def _grouped_mean(panel: DashboardPanel, rows: list[dict[str, Any]]) -> dict[str
                 "n": len(values),
             }
         )
+    # One factor is a plain grouped panel and keeps its own axis label; several
+    # share one axis, and the label that matters is then on the legend.
     return {
         "form": "dots",
         "groups": groups,
         "style": panel.style or "dots",
-        "x_label": axis_label(group_field),
+        "x_label": axis_label(fields[0]) if len(fields) == 1 else "condition",
         "y_label": axis_label(field, panel.unit),
         "error_label": "± SEM",
         "stats": [
             {"label": "groups", "value": str(len(groups))},
+            # `n` counts placements, not trials: with several factors every
+            # trial appears once per factor, and saying "trials" would overcount
+            # the session by exactly that multiple.
             {"label": "n", "value": f"{trials_shown:,}"},
         ],
     }
@@ -783,7 +808,9 @@ def _grouped_rate(panel: DashboardPanel, rows: list[dict[str, Any]]) -> dict[str
     near 0 and 1 — which is exactly where a handful of trials in one level
     puts it, and where a symmetric bar would overstate what is known.
     """
-    group_field = _required(panel, "group")
+    # `group_fields` rather than `panel.group`: the field accepts a sequence
+    # now, and the spec already refuses more than one of them here.
+    group_field = panel.group_fields[0]
     grouped = [row for row in rows if row.get(group_field) is not None]
     source, hits, y_label, _ = _score(grouped)
     if not source:

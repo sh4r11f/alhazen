@@ -900,7 +900,14 @@ function drawDots(legendHost, host, data) {
     }, svg);
   }
 
-  const color = slotColor(1);
+  /* One colour per factor. A panel that groups by a single factor keeps the
+   * one colour it always had; a panel showing several on a shared axis needs
+   * them told apart, and the legend is the only thing that says which is
+   * which — the x labels are level names and several factors can share one. */
+  const series = [];
+  groups.forEach((g) => { if (g.series && !series.includes(g.series)) series.push(g.series); });
+  const colorOf = (g) => (series.length > 1 ? slotColor(series.indexOf(g.series)) : slotColor(1));
+  drawLegend(legendHost, series.map((name) => ({ name: name, color: slotColor(series.indexOf(name)) })));
   const zero = yScale(Math.min(Math.max(0, yLo), yHi));
   const thickness = Math.min(24, Math.max(6, step - 26));
   groups.forEach((group, index) => {
@@ -926,7 +933,7 @@ function drawDots(legendHost, host, data) {
             'H' + (x + thickness / 2 - radius) +
             'Q' + (x + thickness / 2) + ',' + y + ' ' + (x + thickness / 2) + ',' + (y - radius) +
             'V' + zero + 'Z',
-        style: 'fill:' + color,
+        style: 'fill:' + colorOf(group),
       }, svg);
     }
     const top = yScale(highOf(group));
@@ -935,10 +942,10 @@ function drawDots(legendHost, host, data) {
       svgEl('path', {
         d: 'M' + x + ',' + top + 'V' + bottom + 'M' + (x - 4) + ',' + top + 'H' + (x + 4) +
            'M' + (x - 4) + ',' + bottom + 'H' + (x + 4),
-        style: 'stroke:' + (bars ? 'var(--ink-2)' : color) + ';stroke-width:1.5',
+        style: 'stroke:' + (bars ? 'var(--ink-2)' : colorOf(group)) + ';stroke-width:1.5',
       }, svg);
     }
-    if (!bars) marker(svg, x, y, color, 4.5);
+    if (!bars) marker(svg, x, y, colorOf(group), 4.5);
     svgEl('text', {
       x: x, y: box.y1 + 15, class: 'tick-text', 'text-anchor': 'middle',
     }, svg).textContent = group.label;
@@ -949,13 +956,14 @@ function drawDots(legendHost, host, data) {
     const hit = svgEl('rect', { x: x - step / 2, y: box.y0, width: step, height: box.y1 - box.y0, class: 'hit' }, svg);
     hit.addEventListener('pointermove', (event) => {
       const rect = svg.getBoundingClientRect();
-      const rows = [{ name: 'mean', value: fmt(group.mean), color: color }];
+      const rows = [{ name: 'mean', value: fmt(group.mean), color: colorOf(group) }];
       rows.push({
         name: data.error_label || 'interval',
         value: fmt(lowOf(group)) + ' – ' + fmt(highOf(group)),
       });
       rows.push({ name: 'trials', value: String(group.n) });
-      showTip(host, event.clientX - rect.left, event.clientY - rect.top, group.label, rows);
+      const title = series.length > 1 ? group.series + ': ' + group.label : group.label;
+      showTip(host, event.clientX - rect.left, event.clientY - rect.top, title, rows);
     });
     hit.addEventListener('pointerleave', () => hideTip(host));
   });

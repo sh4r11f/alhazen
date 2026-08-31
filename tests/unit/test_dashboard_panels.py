@@ -706,3 +706,126 @@ class TestDefaults:
     def test_every_default_panel_survives_an_empty_session(self):
         for panel in DEFAULT_PANELS:
             assert panel_payload(panel, [], [])["form"] == "empty"
+
+
+# ----------------------------------------------------------------------
+# Several factors on one axis, and panels that show part of the session
+# ----------------------------------------------------------------------
+
+
+def _cells():
+    """Four trials covering two factors, with a value that differs by both."""
+    return [
+        trial(0, completed=True, hit=1.0, alignment="aligned", separation="near"),
+        trial(1, completed=True, hit=1.0, alignment="aligned", separation="far"),
+        trial(2, completed=True, hit=0.0, alignment="rotated", separation="near"),
+        trial(3, completed=True, hit=0.0, alignment="rotated", separation="far"),
+    ]
+
+
+def test_grouped_mean_over_several_factors_puts_them_on_one_axis():
+    """Four proportions on four axes cannot be compared by eye; the same four
+    on one axis can. Each bar keeps the name of the factor it came from, which
+    is what the colours and the legend are drawn from."""
+    panel = DashboardPanel(
+        kind="grouped_mean",
+        title="P(occluder)",
+        value="hit",
+        group=("alignment", "separation"),
+        style="bars",
+    )
+    data = panel_payload(panel, _cells(), [])
+
+    assert [(g["series"], g["label"], g["mean"]) for g in data["groups"]] == [
+        ("alignment", "aligned", 1.0),
+        ("alignment", "rotated", 0.0),
+        ("separation", "far", 0.5),
+        ("separation", "near", 0.5),
+    ]
+    # Declared order is kept, so a factor's own bars stay side by side.
+    assert [g["series"] for g in data["groups"]] == ["alignment"] * 2 + ["separation"] * 2
+    # The x axis is no longer one factor's name, so it does not claim to be.
+    assert data["x_label"] == "condition"
+
+
+def test_one_factor_still_labels_its_own_axis():
+    """The common case is unchanged — a single factor keeps its axis label and
+    needs no legend to say what the bars are."""
+    panel = DashboardPanel(
+        kind="grouped_mean", title="P", value="hit", group="alignment", style="bars"
+    )
+    data = panel_payload(panel, _cells(), [])
+    assert data["x_label"] == "alignment"
+    assert [g["label"] for g in data["groups"]] == ["aligned", "rotated"]
+
+
+def test_two_factors_sharing_a_level_name_are_not_merged():
+    """`near` under one factor and `near` under another are different bars.
+    Bucketing by level alone would average unrelated trials into one number
+    and nothing about the panel would look wrong."""
+    rows = [
+        trial(0, completed=True, hit=1.0, size="near", distance="near"),
+        trial(1, completed=True, hit=0.0, size="far", distance="near"),
+    ]
+    panel = DashboardPanel(kind="grouped_mean", title="P", value="hit", group=("size", "distance"))
+    data = panel_payload(panel, rows, [])
+    assert [(g["series"], g["label"], g["mean"], g["n"]) for g in data["groups"]] == [
+        ("size", "far", 0.0, 1),
+        ("size", "near", 1.0, 1),
+        ("distance", "near", 0.5, 2),
+    ]
+
+
+def test_grouped_rate_refuses_several_factors():
+    """Its bars are proportions of the same trials split one way. Several
+    factors at once would put every trial in several bars."""
+    with pytest.raises(ValueError, match="grouped_rate takes one group"):
+        DashboardPanel(kind="grouped_rate", title="Accuracy", group=("a", "b"))
+
+
+def test_where_shows_only_the_trials_it_names():
+    """A landing plot per separation, rather than one pooled panel that hides
+    the difference being looked for."""
+    panel = DashboardPanel(
+        kind="grouped_mean",
+        title="P, far only",
+        value="hit",
+        group="alignment",
+        where={"separation": "far"},
+    )
+    rows = select_rows(panel, _cells())
+    assert [row["trial_index"] for row in rows] == [1, 3]
+
+
+def test_where_compares_as_text_so_numeric_levels_match():
+    """A level written as 8.25 in the record is named "8.25" in a config."""
+    rows = [trial(0, separation_dva=3.75), trial(1, separation_dva=8.25)]
+    panel = DashboardPanel(kind="histogram", title="h", value="x", where={"separation_dva": "8.25"})
+    assert [row["trial_index"] for row in select_rows(panel, rows)] == [1]
+
+
+def test_where_on_a_column_the_task_never_writes_matches_nothing():
+    """Empty and captioned, rather than quietly showing every trial — a filter
+    that silently does nothing is worse than one that fails."""
+    panel = DashboardPanel(
+        kind="grouped_mean",
+        title="P",
+        value="hit",
+        group="alignment",
+        where={"nonexistent": "far"},
+    )
+    assert select_rows(panel, _cells()) == []
+    assert panel_payload(panel, _cells(), [])["form"] == "empty"
+
+
+def test_where_combines_with_completed_only():
+    panel = DashboardPanel(
+        kind="grouped_mean",
+        title="P",
+        value="hit",
+        group="alignment",
+        completed_only=True,
+        where={"separation": "near"},
+    )
+    rows = _cells() + [trial(4, completed=False, hit=1.0, alignment="aligned", separation="near")]
+    assert [row["trial_index"] for row in select_rows(panel, rows)] == [0, 2]
