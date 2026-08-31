@@ -95,7 +95,7 @@ class MyTracker:
             import theirsdk
         except ImportError as e:
             raise TrackerError(
-                "theirsdk is not installed — pip install alhazen[theirs], or use "
+                "theirsdk is not installed — pip install alhazen-vision[theirs], or use "
                 "backend 'mouse_sim' for development"
             ) from e
 ```

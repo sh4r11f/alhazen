@@ -7,12 +7,14 @@ name = "$name"
 version = "0.1.0"
 description = "An alhazen experiment"
 requires-python = ">=3.10"
-dependencies = ["alhazen"]
+# alhazen-vision, not alhazen: the bare name on PyPI belongs to an
+# unrelated project. The import stays `import alhazen`.
+dependencies = ["alhazen-vision"]
 
 [project.optional-dependencies]
 # The renderer, needed only on a machine that opens a real window. The
 # simulated backend — and this package's whole test suite — needs none of it.
-psychopy = ["alhazen[psychopy]"]
+psychopy = ["alhazen-vision[psychopy]"]
 dev = ["pytest"]
 
 # How `alhazen run --task $task_name` finds this experiment. The entry point

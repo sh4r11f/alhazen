@@ -90,7 +90,7 @@ jobs:
       - name: Install from TestPyPI and import
         run: |
           python -m pip install --index-url https://test.pypi.org/simple/ \
-            --extra-index-url https://pypi.org/simple/ alhazen
+            --extra-index-url https://pypi.org/simple/ alhazen-vision
           python -c "import alhazen; print(alhazen.__version__)"
           alhazen --version
 

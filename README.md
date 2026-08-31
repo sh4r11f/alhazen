@@ -8,7 +8,7 @@ Each experiment is a thin package supplying its own stimuli, phases, configs
 and analysis.
 
 ```bash
-pip install alhazen
+pip install alhazen-vision
 alhazen new my_experiment && cd my_experiment
 pip install -e ".[dev]"
 pytest                                                    # no display needed
