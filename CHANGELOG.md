@@ -27,6 +27,39 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ## Unreleased
 
+### Changed
+
+- **The distribution is now `alhazen-vision`** (`pip install alhazen-vision`).
+  The import is unchanged — still `import alhazen`, still the `alhazen`
+  command — and only the name pip resolves has moved.
+
+  `alhazen` on PyPI is an unrelated project: a cognitive-modelling framework
+  from CMU, currently 1.4.1, which has held the name far longer than this one
+  has existed. That was not a latent risk, it was a live bug in three places.
+  `pip install alhazen` in the README and getting-started guide installed
+  their package. Both experiment packages declared `dependencies =
+  ["alhazen"]`, so a clean install fetched it — reproduced in a fresh venv,
+  which resolved 1.4.1 and a single-module `site-packages/alhazen.py`. And
+  `get_version()` looks the *distribution* up by name, so with theirs
+  installed it returned **their** version number, which is then stamped into
+  the manifest of every run.
+
+  A developer machine never saw any of it, because the right package is
+  already installed editable and pip leaves a satisfied requirement alone.
+  Which is exactly why it survived: the only environments that meet it are
+  clean ones, and until now nothing built one.
+
+  `version.DISTRIBUTION` now names it in one place, `alhazen new` writes the
+  correct dependency into every experiment it scaffolds, and the release
+  workflow's post-publish smoke test installs the right package.
+
+  Four cases in `tests/unit/test_distribution_identity.py` pin it: that
+  `import alhazen` is provided by this distribution and no other, that the
+  reported version is this distribution's own and not `unknown`, that no
+  document tells a reader to install the bare name, and that the scaffold
+  hands new experiments the right dependency — the one that propagates, since
+  every future experiment inherits that line.
+
 ### Added
 
 - **The five modes** (`alhazen.modes`, `alhazen run --mode`) — `measure`,

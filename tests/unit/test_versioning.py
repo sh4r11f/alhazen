@@ -22,7 +22,7 @@ import pytest
 
 import alhazen
 from alhazen.cli.main import main
-from alhazen.version import get_version
+from alhazen.version import DISTRIBUTION, get_version
 
 REPO_ROOT = Path(__file__).parents[2]
 
@@ -57,7 +57,13 @@ class TestTheRunningVersion:
     def test_one_source_of_truth(self):
         # `alhazen.__version__`, `get_version()` and the installed metadata are
         # the same lookup, so they cannot report different numbers.
-        assert alhazen.__version__ == get_version() == metadata.version("alhazen")
+        #
+        # DISTRIBUTION rather than the literal "alhazen": the distribution is
+        # `alhazen-vision`, because PyPI's `alhazen` is an unrelated project.
+        # Naming it here again is how the two drift apart — and looking up the
+        # wrong one does not raise, it silently returns the other project's
+        # version (see test_distribution_identity.py).
+        assert alhazen.__version__ == get_version() == metadata.version(DISTRIBUTION)
 
     def test_the_cli_reports_it_too(self, capsys):
         # argparse's version action exits; that is the success path.

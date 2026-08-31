@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "alhazen"
+name = "alhazen-vision"
 version = "1.0.0"
 description = "A framework for building and running vision science experiments"
 readme = "README.md"

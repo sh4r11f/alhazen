@@ -10,10 +10,18 @@ from __future__ import annotations
 
 from importlib import metadata
 
+# The DISTRIBUTION name, which is not the import name. `pip install alhazen`
+# installs an unrelated cognitive-modelling framework from CMU that has held
+# that name on PyPI since long before this project; this one is published and
+# depended on as `alhazen-vision` and imported as `alhazen`. Looking the wrong
+# one up here does not fail — it silently returns the other project's version,
+# which then gets stamped into the manifest of every run.
+DISTRIBUTION = "alhazen-vision"
+
 
 def get_version() -> str:
     try:
-        return metadata.version("alhazen")
+        return metadata.version(DISTRIBUTION)
     except metadata.PackageNotFoundError:
         # Running from a source tree with nothing installed: honest about
         # not knowing, rather than inventing a number that would end up

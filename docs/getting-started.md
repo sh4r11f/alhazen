@@ -6,7 +6,7 @@ needed — everything here works on a laptop.
 ## Install
 
 ```bash
-pip install alhazen
+pip install alhazen-vision
 ```
 
 That is the hardware-free core: enough to build an experiment, run complete
@@ -14,8 +14,8 @@ simulated sessions, and analyse what they produce. Two extras exist for when
 you need them:
 
 ```bash
-pip install "alhazen[psychopy]"   # a real window, on the rig or for development
-pip install "alhazen[nidaq]"      # reward and TTL sync hardware (Windows rigs)
+pip install "alhazen-vision[psychopy]"   # a real window, on the rig or for development
+pip install "alhazen-vision[nidaq]"      # reward and TTL sync hardware (Windows rigs)
 ```
 
 Neither eye tracker's SDK is on PyPI. `pylink` ships with SR Research's
