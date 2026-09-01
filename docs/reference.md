@@ -50,10 +50,6 @@ The names an experiment imports directly.
 
 ::: alhazen.task.live
 
-## Template tasks
-
-::: alhazen.task.templates.rf_mapping
-
 ## The trial engine
 
 ::: alhazen.core.engine
@@ -177,8 +173,6 @@ The names an experiment imports directly.
 ::: alhazen.analysis.sync
 
 ::: alhazen.analysis.photodiode
-
-::: alhazen.analysis.rf
 
 ::: alhazen.analysis.report
 

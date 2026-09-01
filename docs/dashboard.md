@@ -329,10 +329,11 @@ something to leave to a hue.
 
 ## Live-analysis panels
 
-A task's live analysis (`Task.live_analysis`, architecture §5.5) can add
-panels whose data does not come from the trial records at all — the
-RF-mapping templates' receptive-field maps are the first
-([rf-mapping.md](rf-mapping.md)). They obey the same division of labour:
+A task's live analysis (`Task.live_analysis`, architecture §5.5 and
+[live-spikes.md](live-spikes.md)) can add panels whose data does not come
+from the trial records at all — the
+[rf-mapping](https://github.com/sh4r11f/rf-mapping) experiment's
+receptive-field maps are the first. They obey the same division of labour:
 computed in Python between trials, delivered as finished payloads, appended
 after the spec's panels under their own sidebar section.
 
