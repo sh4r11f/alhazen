@@ -52,3 +52,11 @@ class SyncError(AlhazenError):
     """A sync (TTL) line could not be opened or pulsed. Loud by design: sync
     pulses are the only thing aligning behavior to an external recording, and
     a missing pulse cannot be recovered after the session."""
+
+
+class SpikeSourceError(AlhazenError):
+    """A live spike stream could not be opened, read, or kept up with — a
+    SpikeGLX host that is not running, a missing SDK (the message names where
+    it ships), or a fetch thread that died. Loud by design: a live map fed by
+    a silently dead stream would flatten out and read as "no receptive
+    field", which is a scientific claim, not a connection status."""

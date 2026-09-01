@@ -338,6 +338,7 @@ def dashboard_state(
     training: dict[str, Any] | None = None,
     message: str | None = None,
     max_rows: int | None = None,
+    extra_panels: Sequence[dict[str, Any]] = (),
 ) -> dict[str, Any]:
     """Construct the stable wire shape consumed by the bundled frontend.
 
@@ -357,7 +358,22 @@ def dashboard_state(
     square of its length. The totals travel alongside as ``n_trials``/
     ``n_events``, and the state written at teardown is produced with no cap at
     all, so the saved copy is the complete record.
+
+    ``extra_panels`` are panels whose data does not come from the trial
+    records at all — a live analysis's receptive-field map, computed by the
+    session process between trials (task/live.py). Each entry arrives as a
+    finished ``{"title", "section", "data"}`` payload in the same wire shapes
+    panels.py produces, so the page draws them exactly like every other
+    panel. Validated here, loudly: a malformed entry would otherwise render
+    as a permanently and inexplicably blank card.
     """
+    for panel in extra_panels:
+        missing = [key for key in ("title", "data") if key not in panel]
+        if missing:
+            raise SessionError(
+                f"a live-analysis dashboard panel is missing {missing}; each entry of "
+                f"panels() must carry title and data (got keys {sorted(panel)})"
+            )
     return {
         "revision": revision,
         "status": status,
@@ -367,12 +383,19 @@ def dashboard_state(
         "n_trials": len(trials),
         "n_events": len(events),
         "panels": [
-            {
-                **panel.model_dump(mode="json"),
-                "section": panel.resolved_section,
-                "data": panel_payload(panel, trials, events),
-            }
-            for panel in spec.resolved_panels(condition_fields)
+            *(
+                {
+                    **panel.model_dump(mode="json"),
+                    "section": panel.resolved_section,
+                    "data": panel_payload(panel, trials, events),
+                }
+                for panel in spec.resolved_panels(condition_fields)
+            ),
+            # Live-analysis panels last: the trial-record panels are the ones
+            # every session has, and a reader scanning top-to-bottom meets
+            # the familiar ones first. Defaulted section: the sidebar groups
+            # by it, and an unfiled panel would vanish from every group.
+            *({"section": "Live analysis", **panel} for panel in extra_panels),
         ],
         "training": training,
         "message": message,

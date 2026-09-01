@@ -45,6 +45,7 @@ nav:
   - Getting started: getting-started.md
   - Concepts: architecture.md
   - The six modes: modes.md
+  - RF mapping: rf-mapping.md
   - How-to:
       - Add a stimulus, phase or paradigm: how-to.md
   - Scenes: scenes.md

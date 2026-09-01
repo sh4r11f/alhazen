@@ -43,6 +43,7 @@ from alhazen.data.participants import ensure_participant
 from alhazen.data.paths import SessionPaths
 from alhazen.devices.eyetracker import EyeTracker, HostShape
 from alhazen.devices.reward import RewardDispenser
+from alhazen.devices.spikes import SpikeSource
 from alhazen.devices.sync import SyncOutput
 from alhazen.display.backend import DisplayBackend
 from alhazen.display.frames import FrameMonitor
@@ -55,6 +56,7 @@ from alhazen.session.pause import (
     pause_menu,  # noqa: F401 - re-exported: it lived here until 1.1
 )
 from alhazen.session.recorder import DataRecorder
+from alhazen.task.live import LiveAnalysis
 
 # Re-exported through this module as well as its own: experiment code and
 # tests written before the task layer existed import them from here.
@@ -157,6 +159,8 @@ class SessionRunner:
         dashboard_spec: DashboardSpec | None = None,
         manual_reward: Callable[[], None] | None = None,
         manual_reward_payload: dict[str, Any] | None = None,
+        spikes: SpikeSource | None = None,
+        live: LiveAnalysis | None = None,
     ) -> None:
         self._cfg = cfg
         self._paths = paths
@@ -201,6 +205,12 @@ class SessionRunner:
         self._frame_inputs = frame_inputs or FrameInputBuffer()
         self._dashboard = dashboard
         self._dashboard_spec = dashboard_spec or DashboardSpec()
+        # The live spike stream and the analysis consuming it. The runner
+        # owns their *lifecycle* only — the analysis is driven between
+        # trials, and both are released in teardown — exactly as it owns the
+        # tracker's; what they compute is the experiment's business.
+        self._spikes = spikes
+        self._live = live
         # Insertion-ordered, so the first factor a task names is the one the
         # spatial panels take their colours from.
         self._condition_fields: list[str] = []
@@ -301,6 +311,12 @@ class SessionRunner:
                     if self._score is not None:
                         record = self._score(record)
                     self._recorder.add_trial(record)
+                    # The live analysis runs between trials, after the row is
+                    # written and before the dashboard publish — so the
+                    # panels it contributes to that publish already include
+                    # this trial. It sees the SCORED record, like training.
+                    if self._live is not None:
+                        self._live.on_trial(record)
                     self._publish_dashboard("running")
 
                 # Training hears about the trial after the row is written,
@@ -642,6 +658,7 @@ class SessionRunner:
             training=self._training.stamp() if self._training is not None else None,
             message=message,
             max_rows=None if full else self._cfg.rig.dashboard.max_rows,
+            extra_panels=self._live.panels() if self._live is not None else (),
         )
         self._dashboard_message = message
         self._dashboard.publish(state)
@@ -688,6 +705,13 @@ class SessionRunner:
             step("training.restore_base", training.restore_base)
         step("paradigm.summary", self._write_paradigm_summary)
         step("frames.save", lambda: self._frame_monitor.save(self._paths.frames_path))
+        # The live analysis finishes BEFORE the final dashboard publish (so
+        # the saved dashboard shows the flushed, final maps), before the
+        # spike source closes (finishing drains it one last time), and
+        # before the manifest is written (so what it saves is hashed).
+        if self._live is not None:
+            live = self._live
+            step("live.finish", lambda: live.finish(self._paths.run_dir))
         if self._dashboard is not None:
             terminal = self._terminal_status(errors)
             # Complete state, not the capped one: what lands in figures/ is
@@ -701,6 +725,8 @@ class SessionRunner:
         # and a manifest written first would not cover the very file the
         # session exists to produce.
         tracker, sync, reward = self._tracker, self._sync, self._reward
+        if self._spikes is not None:
+            step("spikes.close", self._spikes.close)
         if tracker is not None:
             # This run's directory and base name, carrying the EyeLink's
             # historical .edf suffix. Only the directory and the stem are a

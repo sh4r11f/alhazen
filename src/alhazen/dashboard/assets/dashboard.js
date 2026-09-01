@@ -975,6 +975,191 @@ function drawDots(legendHost, host, data) {
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* Heatmap — receptive-field maps and any other cell-gridded quantity  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The sequential scale, built from the theme's own ordinal ramp so it obeys
+ * the theme like every other mark: --ramp-1 is "least" and --ramp-5 "most"
+ * in both light and dark. Interpolated here because a heatmap needs a
+ * continuous scale and CSS custom properties cannot be mixed in SVG fills.
+ * Resolved per draw, and the theme toggle repaints the panels, so a flipped
+ * theme never leaves stale colours behind.
+ */
+function heatStops() {
+  const style = getComputedStyle(document.documentElement);
+  return [1, 2, 3, 4, 5].map((i) => {
+    const hex = style.getPropertyValue('--ramp-' + i).trim().replace('#', '');
+    return [0, 2, 4].map((at) => parseInt(hex.slice(at, at + 2), 16));
+  });
+}
+
+function heatColor(stops, v) {
+  const x = Math.max(0, Math.min(1, v)) * (stops.length - 1);
+  const i = Math.min(stops.length - 2, Math.floor(x));
+  const f = x - i;
+  const c = stops[i].map((a, k) => Math.round(a + (stops[i + 1][k] - a) * f));
+  return 'rgb(' + c.join(',') + ')';
+}
+
+/**
+ * One or many cell maps on a shared colour scale — a receptive-field panel.
+ *
+ * `data.maps` is [{name, matrix, centroid?}] with matrix[row][col], row 0
+ * the BOTTOM row (y ascending, matching y_edges — the same y-up convention
+ * every spatial panel keeps); a null cell means "not measured yet" and is
+ * drawn muted, never as zero. All maps share x_edges/y_edges (data units,
+ * e.g. dva), `vmax`, and one colourbar. Cells keep the data's aspect ratio:
+ * a degree up must be the same length as a degree across, or the map's
+ * shape lies about the field's.
+ */
+function drawHeatmap(legendHost, host, data) {
+  const maps = (data.maps || []).filter((m) => m.matrix && m.matrix.length);
+  if (!maps.length) return drawEmpty(host, 'No map yet');
+  const xEdges = data.x_edges || [];
+  const yEdges = data.y_edges || [];
+  const rows = maps[0].matrix.length;
+  const cols = maps[0].matrix[0].length;
+  if (xEdges.length !== cols + 1 || yEdges.length !== rows + 1) {
+    return drawEmpty(host, 'Malformed map: edges do not match the matrix');
+  }
+
+  const width = host.clientWidth || 380;
+  const height = chartHeight(width);
+  const svg = svgEl('svg', { width: width, height: height }, host);
+  const stops = heatStops();
+  const vmax = Math.max(data.vmax || 0, 1e-9);
+
+  /* The colourbar takes a fixed strip at the bottom; the maps tile the rest
+   * in a near-square grid, each with a small title above it. */
+  const barH = 34;
+  const tileCols = maps.length === 1 ? 1 : (width >= 560 && maps.length > 4 ? 3 : 2);
+  const tileRows = Math.ceil(maps.length / tileCols);
+  const tileW = (width - 8) / tileCols;
+  const tileH = (height - barH - 6) / tileRows;
+  const titleH = 15;
+
+  const spanX = xEdges[cols] - xEdges[0];
+  const spanY = yEdges[rows] - yEdges[0];
+
+  maps.forEach((one, index) => {
+    const tx = 4 + (index % tileCols) * tileW;
+    const ty = (Math.floor(index / tileCols)) * tileH;
+    /* Fit the map into the tile at the data's own aspect, centred. */
+    const availW = tileW - 10;
+    const availH = tileH - titleH - 8;
+    const scale = Math.min(availW / spanX, availH / spanY);
+    const mapW = spanX * scale;
+    const mapH = spanY * scale;
+    const x0 = tx + (tileW - mapW) / 2;
+    const y1 = ty + titleH + (availH - mapH) / 2 + mapH;
+    const xScale = (v) => x0 + (v - xEdges[0]) * scale;
+    const yScale = (v) => y1 - (v - yEdges[0]) * scale;
+
+    svgEl('text', {
+      x: tx + tileW / 2, y: ty + 11, class: 'tick-text', 'text-anchor': 'middle',
+    }, svg).textContent = one.name || '';
+
+    for (let r = 0; r < rows; r += 1) {
+      for (let c = 0; c < cols; c += 1) {
+        const value = one.matrix[r][c];
+        const cellX = xScale(xEdges[c]);
+        const cellY = yScale(yEdges[r + 1]);
+        const cell = svgEl('rect', {
+          x: cellX,
+          y: cellY,
+          width: Math.max(0.5, xScale(xEdges[c + 1]) - cellX),
+          height: Math.max(0.5, yScale(yEdges[r]) - cellY),
+          style: value === null
+            ? 'fill:var(--muted);fill-opacity:0.12'
+            : 'fill:' + heatColor(stops, value / vmax),
+        }, svg);
+        cell.classList.add('hit');
+        const head = fmt((xEdges[c] + xEdges[c + 1]) / 2) + ', ' +
+                     fmt((yEdges[r] + yEdges[r + 1]) / 2) + ' ' + (data.x_label ? 'dva' : '');
+        cell.addEventListener('pointermove', (event) => {
+          const rect = svg.getBoundingClientRect();
+          const readout = [{
+            name: data.value_label || 'value',
+            value: value === null ? 'not probed yet' : fmt(value),
+            color: value === null ? 'var(--muted)' : heatColor(stops, value / vmax),
+          }];
+          if (data.flashes && data.flashes[r]) {
+            readout.push({ name: 'flashes', value: String(data.flashes[r][c]) });
+          }
+          if (one.name) readout.push({ name: 'map', value: one.name });
+          showTip(host, event.clientX - rect.left, event.clientY - rect.top, head, readout);
+        });
+        cell.addEventListener('pointerleave', () => hideTip(host));
+      }
+    }
+
+    /* The origin, when it is inside the mapped extent: a spatial map with
+     * its fixation point unmarked makes the reader count cells. */
+    if (xEdges[0] < 0 && xEdges[cols] > 0) {
+      svgEl('line', {
+        x1: xScale(0), x2: xScale(0), y1: yScale(yEdges[rows]), y2: yScale(yEdges[0]),
+        class: 'rule',
+      }, svg);
+    }
+    if (yEdges[0] < 0 && yEdges[rows] > 0) {
+      svgEl('line', {
+        x1: xScale(xEdges[0]), x2: xScale(xEdges[cols]), y1: yScale(0), y2: yScale(0),
+        class: 'rule',
+      }, svg);
+    }
+
+    /* The map's estimated centre, same summary mark as the scatter's mean. */
+    if (one.centroid && isFinite(one.centroid[0])) {
+      const mx = xScale(one.centroid[0]);
+      const my = yScale(one.centroid[1]);
+      const diamond = 'M' + mx + ',' + (my - 5) + 'L' + (mx + 5) + ',' + my +
+                      'L' + mx + ',' + (my + 5) + 'L' + (mx - 5) + ',' + my + 'Z';
+      svgEl('path', {
+        d: diamond,
+        style: 'fill:var(--surface);stroke:var(--ink);stroke-width:1.4',
+      }, svg);
+    }
+  });
+
+  /* One colourbar for every map — a shared scale is the whole point of
+   * small multiples, and each map carrying its own would quietly break it. */
+  const gradientId = 'heat-' + Math.random().toString(36).slice(2, 8);
+  const defs = svgEl('defs', {}, svg);
+  const gradient = svgEl('linearGradient', { id: gradientId, x1: 0, x2: 1, y1: 0, y2: 0 }, defs);
+  stops.forEach((stop, index) => {
+    svgEl('stop', {
+      offset: (100 * index / (stops.length - 1)) + '%',
+      'stop-color': 'rgb(' + stop.join(',') + ')',
+    }, gradient);
+  });
+  const barY = height - barH + 6;
+  const barX0 = Math.max(60, width * 0.25);
+  const barX1 = width - Math.max(60, width * 0.25);
+  svgEl('rect', {
+    x: barX0, y: barY, width: Math.max(10, barX1 - barX0), height: 8, rx: 3,
+    style: 'fill:url(#' + gradientId + ')',
+  }, svg);
+  svgEl('text', {
+    x: barX0 - 6, y: barY + 8, class: 'tick-text', 'text-anchor': 'end',
+  }, svg).textContent = '0';
+  svgEl('text', {
+    x: barX1 + 6, y: barY + 8, class: 'tick-text',
+  }, svg).textContent = fmt(data.vmax || 0);
+  svgEl('text', {
+    x: (barX0 + barX1) / 2, y: barY + 22, class: 'axis-text', 'text-anchor': 'middle',
+  }, svg).textContent = (data.value_label || '') +
+    (data.x_label ? ' · ' + data.x_label + ' / ' + (data.y_label || '') : '');
+
+  if (maps.some((one) => one.centroid)) {
+    drawLegend(legendHost, [
+      { name: 'unprobed cell', color: 'var(--muted)', shape: 'box' },
+      { name: 'estimated centre', color: 'var(--ink-2)', shape: 'diamond' },
+    ]);
+  }
+}
+
 /** One number is one number. A single scalar drawn as a one-bar bar chart
  *  tells the reader nothing the digits don't, and spends a panel doing it. */
 function drawStat(legendHost, host, data) {
@@ -1043,6 +1228,27 @@ function tableRows(data) {
         ]) };
     case 'stat':
       return { head: [data.label || 'value', ''], rows: [[data.value + (data.unit ? ' ' + data.unit : ''), data.secondary || '']] };
+    case 'heatmap': {
+      /* One row per cell, top row first (the reading order of the drawn
+       * map), a column per map — every plotted rate readable as text. */
+      const maps = data.maps || [];
+      if (!maps.length) return null;
+      const rows = [];
+      for (let r = maps[0].matrix.length - 1; r >= 0; r -= 1) {
+        for (let c = 0; c < maps[0].matrix[r].length; c += 1) {
+          rows.push([
+            fmt((data.x_edges[c] + data.x_edges[c + 1]) / 2),
+            fmt((data.y_edges[r] + data.y_edges[r + 1]) / 2),
+            data.flashes && data.flashes[r] ? String(data.flashes[r][c]) : '',
+            ...maps.map((m) => (m.matrix[r][c] === null ? '' : fmt(m.matrix[r][c]))),
+          ]);
+        }
+      }
+      return {
+        head: [data.x_label || 'x', data.y_label || 'y', 'flashes', ...maps.map((m) => m.name)],
+        rows: rows,
+      };
+    }
     default:
       return null;
   }
@@ -1087,6 +1293,7 @@ const DRAW = {
   vectors: drawVectors,
   dots: drawDots,
   stat: drawStat,
+  heatmap: drawHeatmap,
 };
 
 /**
@@ -1252,6 +1459,11 @@ function applyTheme(name) {
   else document.documentElement.setAttribute('data-theme', name);
   byId('theme').textContent = 'Theme: ' + name;
   try { localStorage.setItem('alhazen-theme', name); } catch (e) { /* private mode */ }
+  /* Most marks follow the theme through CSS variables and need nothing;
+   * the heatmap interpolates its scale from resolved colours, so a theme
+   * flip is a repaint. Empty before the first render, so this is safe at
+   * startup. */
+  panels.forEach(paintPanel);
 }
 let theme = 'auto';
 try { theme = localStorage.getItem('alhazen-theme') || 'auto'; } catch (e) { /* private mode */ }
@@ -1260,6 +1472,10 @@ byId('theme').onclick = () => {
   theme = THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length];
   applyTheme(theme);
 };
+/* In "auto" the OS can flip the scheme underneath the page; the heatmap's
+ * interpolated colours need the same repaint the toggle gets. */
+window.matchMedia('(prefers-color-scheme: dark)')
+  .addEventListener('change', () => panels.forEach(paintPanel));
 
 /* ------------------------------------------------------------------ */
 /* Commands and polling                                                */

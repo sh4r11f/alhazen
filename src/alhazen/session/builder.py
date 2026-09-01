@@ -47,6 +47,7 @@ from alhazen.devices.eyetracker.messages import MessageMap
 from alhazen.devices.recording import make_recording
 from alhazen.devices.response import ResponseDevice, SubjectKeyboard
 from alhazen.devices.reward import RewardDispenser, make_reward
+from alhazen.devices.spikes import SpikeSource, make_spikes
 from alhazen.devices.sync import SyncOutput, make_sync, make_sync_subscriber
 from alhazen.display.backend import DisplayBackend
 from alhazen.display.frames import FrameMonitor
@@ -60,6 +61,7 @@ from alhazen.session.pause import PauseMenu, run_pause_menu
 from alhazen.session.recorder import DataRecorder
 from alhazen.session.runner import SessionRunner
 from alhazen.stimuli.photodiode import make_photodiode
+from alhazen.task.live import LiveAnalysis, LiveWiring
 from alhazen.task.plan import BuildTrial
 from alhazen.task.task import Task
 from alhazen.training.stages import Curriculum
@@ -165,6 +167,7 @@ def build_session(
     response: ResponseDevice | None = None,
     reward: RewardDispenser | None = None,
     sync: SyncOutput | None = None,
+    spikes: SpikeSource | None = None,
     curriculum: Curriculum | None = None,
     windowed: bool = False,
     sources: dict[str, str] | None = None,
@@ -344,6 +347,14 @@ def build_session(
             validate_event_names(
                 photodiode_cfg.events, event_schema, "the rig's display.photodiode.events"
             )
+        spikes_cfg = rig_cfg.devices.spikes
+        if spikes_cfg is not None and spikes_cfg.backend == "simulated":
+            # The simulated spike source fires to a stimulus event; a name
+            # this experiment never declares would mean a simulation that
+            # silently never spikes above baseline.
+            validate_event_names(
+                [spikes_cfg.sim_respond_to], event_schema, "the rig's spikes.sim_respond_to"
+            )
 
         # Devices come from the rig config unless the caller hands one in. The
         # override exists for sessions a rig config cannot describe: a scripted
@@ -370,6 +381,10 @@ def build_session(
         tracker = tracker if tracker is not None else config_tracker
         reward = reward if reward is not None else config_reward
         sync = sync if sync is not None else config_sync
+        config_spikes = (
+            make_spikes(devices.spikes) if spikes is None and devices.spikes is not None else None
+        )
+        spikes = spikes if spikes is not None else config_spikes
         # The subject's own keyboard and wheel exist only where there is a real
         # window to focus. A simulated session has nobody at the keys, and a
         # scripted test supplies its inputs directly.
@@ -384,6 +399,14 @@ def build_session(
             # Calibration is deliberately NOT automatic. It blocks on an
             # experimenter at the Host PC, so it stays an explicit action — the
             # calibrate key, or the pause menu — wired below as on_calibrate.
+        if spikes is not None:
+            # Same rule as the tracker: a SpikeGLX host that is unreachable,
+            # or reachable but not acquiring, must refuse the session now.
+            # The clock arrives through configure() so the source stamps its
+            # spikes on the ONE session clock, like every other device.
+            spikes.connect()
+            spikes.configure(clock)
+            spikes.start()
 
         bus = EventBus()
         # Subscription order: tracker messages, then sync pulses, then the
@@ -401,6 +424,19 @@ def build_session(
             bus.subscribe(make_sync_subscriber(sync, sync_cfg.event_lines))
         recorder = DataRecorder(paths.trials_path, paths.events_path)
         bus.subscribe(recorder.on_event)
+        # After the recorder, deliberately: these two only take notes (the
+        # simulated spike source reacting to a stimulus event, a live
+        # analysis logging a flash), and the hardware paths and the record
+        # must already have seen the event they annotate.
+        if spikes is not None and hasattr(spikes, "on_event"):
+            bus.subscribe(spikes.on_event)
+        live: LiveAnalysis | None = (
+            task.live_analysis(LiveWiring(spikes=spikes, screen=screen, clock=clock))
+            if task is not None
+            else None
+        )
+        if live is not None and hasattr(live, "on_event"):
+            bus.subscribe(live.on_event)
 
         frame_monitor = FrameMonitor(rig_cfg.display.frame_qa, refresh_hz)
         frame_inputs = FrameInputBuffer()
@@ -488,10 +524,21 @@ def build_session(
             dashboard_spec=dashboard_spec,
             manual_reward=on_manual_reward,
             manual_reward_payload={"pulses": manual_pulses.model_dump(mode="json")},
+            spikes=spikes,
+            live=live,
         )
     except Exception:
         if dashboard_controller is not None:
             dashboard_controller.stop()
+        # The spike source may already hold a connection and a background
+        # thread; a build that fails after starting it must not leak either.
+        # Logged rather than raised: the build failure propagating below is
+        # the error that matters, and close() must not mask it.
+        if spikes is not None:
+            try:
+                spikes.close()
+            except Exception:
+                log.exception("could not close the spike source while aborting the build")
         raise
     return runner
 

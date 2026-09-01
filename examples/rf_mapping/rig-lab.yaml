@@ -1,0 +1,48 @@
+# The recording rig: a real display, the real devices, SpikeGLX live.
+# STARTING-POINT NUMBERS THROUGHOUT — the monitor geometry decides what a
+# degree is (alhazen calibrate ruler checks it), the tracker and DAQ lines
+# are this rig's own, and the SpikeGLX host below must be the machine the
+# probes are plugged into, with its command server enabled
+# (SpikeGLX: Options > Command Server Settings).
+monitor:
+  width_px: 1920
+  height_px: 1080
+  width_cm: 52.7
+  distance_cm: 57.0
+  refresh_rate_hz: 120.0
+  name: rf-rig
+display:
+  backend: psychopy
+  photodiode:
+    corner: br
+    size_px: 60
+    events: [PROBE_ON]
+dashboard:
+  enabled: true
+devices:
+  eyetracker:
+    backend: eyelink
+    host_ip: 100.1.1.1
+  reward:
+    backend: nidaq
+    device: Dev1
+    channel: ao0
+  sync:
+    backend: nidaq
+    event_lines:
+      TRIAL_START: Dev1/port0/line0
+      PROBE_ON: Dev1/port0/line1
+  # Where the SpikeGLX files land afterwards (the run pointer)...
+  recording:
+    backend: spikeglx
+    data_dir: /mnt/acq/data
+    run_glob: "*_g0"
+  # ...and the live stream out of the same acquisition, for the map.
+  spikes:
+    backend: spikeglx
+    host: 192.168.1.50
+    port: 4142
+    stream: imec0
+    channels: all
+    threshold_sigmas: 4.5
+data_root: data

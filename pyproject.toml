@@ -69,6 +69,16 @@ dev = [
 [project.scripts]
 alhazen = "alhazen.cli.main:main"
 
+# The template tasks alhazen itself ships, registered exactly the way an
+# experiment package registers its own — so `alhazen run --task rf-map-v1`
+# works with nothing installed but alhazen, and the templates exercise the
+# same discovery path every downstream task depends on.
+[project.entry-points."alhazen.tasks"]
+rf-map-v1 = "alhazen.task.templates.rf_mapping:V1RFMapTask"
+rf-map-v2 = "alhazen.task.templates.rf_mapping:V2RFMapTask"
+rf-map-v4 = "alhazen.task.templates.rf_mapping:V4RFMapTask"
+rf-map-mt = "alhazen.task.templates.rf_mapping:MTRFMapTask"
+
 # The scaffold's templates and the dashboard's frontend ship inside the wheel
 # — both are read at runtime, so a package that omitted them would install
 # fine and fail on first use (`alhazen new`, and a blank dashboard page).
@@ -133,7 +143,19 @@ check_untyped_defs = true
 no_implicit_optional = true
 
 [[tool.mypy.overrides]]
-module = ["psychopy.*", "PIL.*", "pandas.*", "nidaqmx.*", "pylink.*", "pypixxlib.*", "imageio.*"]
+module = [
+  "psychopy.*",
+  "PIL.*",
+  "pandas.*",
+  "nidaqmx.*",
+  "pylink.*",
+  "pypixxlib.*",
+  "imageio.*",
+  # The SpikeGLX remote API bindings ship with the SpikeGLX-CPP-SDK, not on
+  # PyPI, and carry no stubs; both import spellings the backend tries.
+  "sglx_pkg.*",
+  "sglx",
+]
 ignore_missing_imports = true
 
 # Layering is enforced, not folklore: imports point only
@@ -173,6 +195,10 @@ root_package = "alhazen"
 [[tool.importlinter.contracts]]
 name = "layered architecture"
 type = "layers"
+# neural shares core's line: pure numpy arithmetic (spike detection, RF
+# accumulation, the live timebase) that devices runs during a session and
+# analysis runs again over the files — so it must sit below both, import
+# nothing above config, and stay mutually independent of core.
 layers = [
   "alhazen.cli",
   "alhazen.session | alhazen.testing | alhazen.analysis",
@@ -180,7 +206,7 @@ layers = [
   "alhazen.task",
   "alhazen.dashboard",
   "alhazen.paradigms | alhazen.devices",
-  "alhazen.core",
+  "alhazen.core | alhazen.neural",
   "alhazen.stimuli | alhazen.scenes",
   "alhazen.display",
   "alhazen.config | alhazen.data",

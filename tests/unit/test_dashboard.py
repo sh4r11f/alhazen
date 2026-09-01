@@ -31,6 +31,52 @@ def _state(revision: int, status: str) -> dict:
     )
 
 
+class TestExtraPanels:
+    """Live-analysis panels: precomputed payloads appended to the state."""
+
+    def make(self, extra):
+        return dashboard_state(
+            revision=1,
+            status="running",
+            identity={"task_name": "t", "subject": "s1", "session": 1, "run": 1},
+            trials=[],
+            events=[],
+            spec=DashboardSpec(include_defaults=False),
+            extra_panels=extra,
+        )
+
+    def test_extra_panels_land_after_the_spec_panels(self):
+        payload = {"form": "heatmap", "maps": [], "x_edges": [], "y_edges": []}
+        state = self.make([{"title": "Receptive fields", "data": payload}])
+        assert state["panels"][-1]["title"] == "Receptive fields"
+        assert state["panels"][-1]["data"] == payload
+        # Unfiled panels take the default section, so the sidebar can group
+        # them; a filed one keeps its own.
+        assert state["panels"][-1]["section"] == "Live analysis"
+        filed = self.make([{"title": "RF", "section": "RF map", "data": payload}])
+        assert filed["panels"][-1]["section"] == "RF map"
+
+    def test_a_malformed_extra_panel_is_refused_loudly(self):
+        with pytest.raises(SessionError, match="missing"):
+            self.make([{"title": "no data key"}])
+
+    def test_the_state_stays_serialisable(self):
+        state = self.make(
+            [
+                {
+                    "title": "RF",
+                    "data": {
+                        "form": "heatmap",
+                        "maps": [{"name": "population", "matrix": [[1.0, None]]}],
+                        "x_edges": [0, 1, 2],
+                        "y_edges": [0, 1],
+                    },
+                }
+            ]
+        )
+        json.dumps(state, allow_nan=False)
+
+
 class TestSpecification:
     def test_defaults_and_custom_panels_resolve_in_order(self):
         custom = DashboardPanel(

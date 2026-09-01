@@ -327,6 +327,24 @@ cross on the reward curve, with "delivery failed" in the legend and the count
 in the panel's header — colour, shape and words, because a pump failure is not
 something to leave to a hue.
 
+## Live-analysis panels
+
+A task's live analysis (`Task.live_analysis`, architecture §5.5) can add
+panels whose data does not come from the trial records at all — the
+RF-mapping templates' receptive-field maps are the first
+([rf-mapping.md](rf-mapping.md)). They obey the same division of labour:
+computed in Python between trials, delivered as finished payloads, appended
+after the spec's panels under their own sidebar section.
+
+They introduce one wire form of their own, `heatmap`: one or many cell
+matrices on a shared colour scale (small multiples with one colourbar,
+because per-map scales would quietly break the comparison), cells at the
+data's own aspect ratio, `null` cells drawn muted as *not measured yet* —
+never as zero. The scale interpolates the theme's own ordinal ramp, so it
+follows light and dark like every other mark; the theme toggle repaints it.
+Hover reads out the cell's position, value and flash count, and the table
+view lists every cell.
+
 ## Saved output
 
 At shutdown, the final state is saved as `figures/dashboard_state.json` and a

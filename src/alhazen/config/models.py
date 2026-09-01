@@ -14,6 +14,7 @@ arithmetic inside task code.
 from __future__ import annotations
 
 import math
+import re
 from pathlib import Path
 from typing import Literal
 
@@ -389,6 +390,149 @@ class RecordingConfig(Model):
         return self
 
 
+# Which fields on SpikeSourceConfig belong to which backend, enforced the
+# same way EyeTrackerConfig enforces its split: a field set on the wrong
+# backend is a config error, because the experimenter who wrote it believes
+# they configured something and nothing at runtime would say otherwise.
+SPIKEGLX_ONLY_FIELDS = (
+    "host",
+    "port",
+    "stream",
+    "channels",
+    "fetch_interval_ms",
+    "threshold_sigmas",
+    "hp_window_ms",
+    "refractory_ms",
+    "car",
+)
+SIMULATED_SPIKES_ONLY_FIELDS = (
+    "sim_channels",
+    "sim_rf_centers_dva",
+    "sim_rf_sigma_dva",
+    "sim_baseline_hz",
+    "sim_peak_hz",
+    "sim_latency_ms",
+    "sim_duration_ms",
+    "sim_respond_to",
+    "sim_seed",
+)
+
+# "all", or comma-separated entries of "N" / "N:M" (inclusive), e.g.
+# "0:383", "0:127,256:383", "5,9,12". Validated at load time so a malformed
+# list fails with the file open, not mid-session.
+_CHANNELS_RE = r"^(all|\d+(:\d+)?(,\d+(:\d+)?)*)$"
+
+
+class SpikeSourceConfig(Model):
+    """A live spike stream read *during* the session, for online analysis.
+
+    Distinct from ``RecordingConfig`` on purpose: that one records where the
+    acquisition host's files land so a run can be found and aligned
+    afterwards; this one opens a network connection to the running
+    acquisition and streams samples back live. A rig doing chronic
+    recordings typically configures both.
+
+    Two backends:
+
+    - ``spikeglx`` connects to SpikeGLX's remote command server (Options →
+      Command Server in SpikeGLX; default port 4142) through the official
+      SpikeGLX-CPP-SDK Python bindings, fetches the stream in the
+      background, and turns it into threshold-crossing spikes
+      (:mod:`alhazen.neural.detect`);
+    - ``simulated`` invents spikes from configured ground-truth receptive
+      fields, driven by the session's own stimulus events — which is what
+      lets the whole live pipeline run, and be tested, with no probe in any
+      brain.
+    """
+
+    backend: Literal["spikeglx", "simulated"]
+
+    # --- spikeglx ------------------------------------------------------
+    host: str = "127.0.0.1"  # the machine SpikeGLX runs on
+    port: int = 4142  # SpikeGLX's command-server port
+    # Which stream to read: "imec0", "imec1", ... for Neuropixels probes,
+    # "nidq" for the NI-DAQ stream, "obx0", ... for a OneBox.
+    stream: str = "imec0"
+    # Which channels to monitor: "all" (every AP channel of an imec stream),
+    # or an explicit list of entries "N" / "N:M" (inclusive), e.g. "0:383".
+    channels: str = "all"
+    fetch_interval_ms: float = 200.0
+    # Detection: threshold at -threshold_sigmas x the robust noise estimate,
+    # after a moving-average high-pass and (optionally) a common-average
+    # reference across channels (alhazen.neural.detect).
+    threshold_sigmas: float = 4.5
+    hp_window_ms: float = 5.0
+    refractory_ms: float = 1.0
+    car: bool = True
+
+    # --- simulated -----------------------------------------------------
+    sim_channels: int = 8
+    # Ground-truth receptive-field centres, one (x, y) in centered dva per
+    # channel. None lays the channels out deterministically on a spiral, so
+    # a quick simulation needs no hand-placed geometry.
+    sim_rf_centers_dva: tuple[tuple[float, float], ...] | None = None
+    sim_rf_sigma_dva: float = 1.5
+    sim_baseline_hz: float = 3.0
+    sim_peak_hz: float = 60.0
+    sim_latency_ms: float = 40.0
+    sim_duration_ms: float = 80.0
+    # The stimulus event a simulated channel responds to. Its payload must
+    # carry the flash position as ``x_dva``/``y_dva`` (the RF-mapping
+    # template's PROBE_ON does). Validated against the experiment's own
+    # event schema at session build, like every config key that names one.
+    sim_respond_to: str = "PROBE_ON"
+    sim_seed: int = 0
+
+    @model_validator(mode="after")
+    def _valid(self) -> SpikeSourceConfig:
+        self._reject_other_backend_fields()
+        if not 1024 <= self.port <= 65535:
+            raise ValueError("spikes port must be between 1024 and 65535")
+        if not re.match(_CHANNELS_RE, self.channels):
+            raise ValueError(
+                f"spikes channels {self.channels!r} must be 'all' or comma-separated "
+                f"'N' / 'N:M' entries, e.g. '0:383' or '0,5,9'"
+            )
+        if not re.match(r"^(imec\d+|nidq|obx\d+)$", self.stream):
+            raise ValueError(f"spikes stream {self.stream!r} must be 'imec<N>', 'obx<N>' or 'nidq'")
+        for name in ("fetch_interval_ms", "threshold_sigmas", "hp_window_ms"):
+            if getattr(self, name) <= 0:
+                raise ValueError(f"spikes {name} must be > 0")
+        if self.refractory_ms < 0:
+            raise ValueError("spikes refractory_ms must be >= 0")
+        if self.sim_channels < 1:
+            raise ValueError("spikes sim_channels must be >= 1")
+        if self.sim_rf_centers_dva is not None and len(self.sim_rf_centers_dva) != (
+            self.sim_channels
+        ):
+            raise ValueError(
+                f"spikes sim_rf_centers_dva lists {len(self.sim_rf_centers_dva)} centres for "
+                f"sim_channels={self.sim_channels} — one (x, y) per simulated channel"
+            )
+        for name in ("sim_rf_sigma_dva", "sim_peak_hz", "sim_duration_ms"):
+            if getattr(self, name) <= 0:
+                raise ValueError(f"spikes {name} must be > 0")
+        for name in ("sim_baseline_hz", "sim_latency_ms"):
+            if getattr(self, name) < 0:
+                raise ValueError(f"spikes {name} must be >= 0")
+        return self
+
+    def _reject_other_backend_fields(self) -> None:
+        # model_fields_set holds only the keys the YAML actually supplied,
+        # so untouched defaults for the other backend stay silent while a
+        # value someone typed on purpose is refused by name.
+        wrong = {
+            "spikeglx": SIMULATED_SPIKES_ONLY_FIELDS,
+            "simulated": SPIKEGLX_ONLY_FIELDS,
+        }[self.backend]
+        named = sorted(set(wrong) & self.model_fields_set)
+        if named:
+            raise ValueError(
+                f"spikes backend {self.backend!r} ignores {', '.join(named)} — "
+                f"remove {'them' if len(named) > 1 else 'it'}, or change the backend"
+            )
+
+
 class DevicesConfig(Model):
     """Which device classes this rig has. ``None`` means "absent on this
     rig" — a display-only rig (a laptop, a psychophysics booth with no
@@ -398,6 +542,7 @@ class DevicesConfig(Model):
     reward: RewardHwConfig | None = None
     sync: SyncHwConfig | None = None
     recording: RecordingConfig | None = None
+    spikes: SpikeSourceConfig | None = None
 
 
 class RigConfig(Model):

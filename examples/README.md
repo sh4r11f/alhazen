@@ -14,6 +14,17 @@ python examples/staircase_detection/run.py --auto
 python examples/shaping_curriculum/run.py --auto
 ```
 
+`rf_mapping` is mode-driven rather than `--auto`-driven — it adopts the
+RF-mapping template (docs/rf-mapping.md), and its most instructive run is
+
+```bash
+python examples/rf_mapping/run.py --mode simulate --rig rig-demo.yaml
+```
+
+which opens the live dashboard and shows receptive-field heat maps being
+recovered from a simulated spike source's ground-truth fields, with no
+hardware and no renderer anywhere.
+
 Use `--data-root DIR` to choose where the data is written. Automated mode
 shows the instructions for two seconds and then starts by itself. The usual
 experimenter controls remain active, so Ctrl+C still ends a run cleanly.
