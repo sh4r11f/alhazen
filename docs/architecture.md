@@ -28,8 +28,7 @@ src/alhazen/
 ├── paradigms/      # Condition, TrialSource, SimpleSequence, ConstantStimuli, staircases,
 │                   #   QUEST+, adjustment, BlockPlan, SchedulerConfig + make_scheduler
 ├── task/           # Task, RewardPolicy, TrialSetup/TrialPlan, phases/ (the phase library),
-│                   #   live.py (the between-trials live-analysis seam), templates/ (whole
-│                   #   ready-made tasks: RF mapping for V1/V2/V4/MT)
+│                   #   live.py (the between-trials live-analysis seam)
 ├── training/       # curricula: stages, ramps, criteria, per-subject state
 ├── analysis/       # reading a run back: io/ readers, TTL alignment, photodiode, report
 ├── modes/          # the six ways to start an experiment (docs/modes.md)
@@ -168,7 +167,7 @@ the whole default test suite work with none of them installed.
 | `EyeTracker` | `eyelink`, `viewpixx`, `mouse_sim`, `scripted` | screen-px gaze on the session clock; Host-PC overlay where one exists; the native recording landed in the run directory at teardown |
 | `RewardDispenser` | `nidaq`, `simulated` | pulse train (n, width, gap); the waveform always ends at 0 V |
 | `SyncOutput` | `nidaq`, `simulated`, `none` | one digital line per configured event name |
-| `SpikeSource` | `spikeglx`, `simulated` | live threshold-crossing spikes on the session clock, drained between trials; a background fetch thread whose faults re-raise on the session's own thread. The simulated backend fires to a configured stimulus event from ground-truth receptive fields, so the whole live pipeline runs — and is asserted on — with no probe in any brain ([rf-mapping.md](rf-mapping.md)) |
+| `SpikeSource` | `spikeglx`, `simulated` | live threshold-crossing spikes on the session clock, drained between trials; a background fetch thread whose faults re-raise on the session's own thread. The simulated backend fires to a configured stimulus event from ground-truth receptive fields, so a live analysis runs — and is asserted on — with no probe in any brain ([live-spikes.md](live-spikes.md)) |
 
 `scripted` is test-only and is rejected by *both* `build_session` and
 `check-rig` with a `ConfigError`: a rig YAML has no way to supply a gaze
@@ -483,19 +482,11 @@ rules that keep it safe:
 
 Its `panels()` return finished payloads in the dashboard's own wire shapes
 (§9), appended after the spec's panels under their own sidebar section.
-
-### 5.6 Template tasks (`task/templates/`)
-
-Whole tasks alhazen ships — the procedures every lab runs before its
-experiment can begin — registered under the same `alhazen.tasks` entry
-point group an experiment package uses, so `alhazen run --task rf-map-v1`
-works with nothing else installed and the templates exercise the discovery
-path every downstream task depends on. The first family is receptive-field
-mapping for V1/V2/V4/MT ([rf-mapping.md](rf-mapping.md)): one base task,
-four presets differing only in parameter defaults, every mode hook
-implemented, and a live map wired through §5.5. A downstream experiment
-runs a preset as-is, subclasses it to pin its own site's geometry, or
-imports the pieces.
+The worked example is the
+[rf-mapping](https://github.com/sh4r11f/rf-mapping) experiment, whose
+`LiveRFMap` turns the spike stream into receptive-field heat maps between
+trials; [live-spikes.md](live-spikes.md) documents the seam and the spike
+source together.
 
 ## 6. Training
 
@@ -744,11 +735,12 @@ row hands back `row["success"] == "False"`, and `"False"` is truthy). All are
 tested against synthetic files written by `tests/fixtures_neural.py`, so each
 test can say what should come out rather than only that nothing crashed.
 
-`analysis/rf.py` composes them for the RF-mapping templates: the probe grid
-and counting window rebuilt from the run's **own snapshot**, flash onsets
-from the flip-stamped events, spikes from Kilosort, clocks through the TTL
-alignment — the offline recomputation of the live map, documented in
-[rf-mapping.md](rf-mapping.md#offline-the-maps-properly).
+An experiment's own analysis composes them: the
+[rf-mapping](https://github.com/sh4r11f/rf-mapping) experiment, for one,
+rebuilds its probe grid from the run's **own snapshot**, takes flash
+onsets from the flip-stamped events, spikes from `io/kilosort`, and the
+clock map from `sync` — recomputing offline what its live map estimated
+during the session.
 
 ## 8. Scenes
 
@@ -812,7 +804,7 @@ of the page is described in [`dashboard.md`](dashboard.md):
   number of points — so each snapshot costs the same on trial 4000 as on
   trial 40, and no statistic lives in untested page JavaScript. A live
   analysis (§5.5) obeys the same division: its `panels()` are finished
-  payloads (the receptive-field maps travel as a `heatmap` form the page
+  payloads (a receptive-field map travels as a `heatmap` form the page
   only renders), appended after the spec's own panels.
 
 The child starts before the display opens, so the whole remainder of

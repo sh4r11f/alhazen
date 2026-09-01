@@ -48,13 +48,15 @@ device channels can be queried together.
 - **Analysis that reads a session's own configuration.** TTL clock alignment
   with a stored artifact, photodiode-measured display latency, and
   `alhazen report`.
-- **Ready-made RF mapping, with a live map.** `alhazen run --task rf-map-v1`
-  (and `-v2`, `-v4`, `-mt`): flashed probes on a grid while the subject
-  fixates, spikes read live from SpikeGLX, thresholded, and drawn as
-  per-channel receptive-field heat maps in the dashboard between trials —
-  with a simulated spike source whose ground-truth fields let the whole
-  pipeline run, and be tested, with no hardware
-  ([docs/rf-mapping.md](docs/rf-mapping.md)).
+- **Live spikes, behind a device seam.** A `SpikeSource` device reads the
+  running SpikeGLX acquisition and turns it into threshold-crossing spikes
+  on the session clock, and a `Task.live_analysis` hook lets an experiment
+  compute on them between trials and put its own panels on the dashboard —
+  with a simulated backend whose ground-truth receptive fields let the
+  whole pipeline run, and be tested, with no hardware
+  ([docs/live-spikes.md](docs/live-spikes.md)). The
+  [rf-mapping](https://github.com/sh4r11f/rf-mapping) experiment is built
+  on exactly this.
 - **A live browser dashboard between trials.** Outcome, response, reaction-time,
   landing and reward plots update after every measurement; controls unlock only
   after a keyboard pause so the browser cannot steal focus during an active trial.
