@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import logging
+import math
 import types
 
 import pytest
 
 from alhazen.config.models import FrameQAConfig, MonitorConfig
+from alhazen.display import simulated
 from alhazen.display.frames import FrameMonitor
 from alhazen.display.screen import Screen, within_radius
-from alhazen.display.simulated import SimulatedDisplay
+from alhazen.display.simulated import _SPIN_MARGIN_S, SimulatedDisplay, _wait_until
 from alhazen.errors import DisplayError, FrameQAError
 
 
@@ -118,6 +120,110 @@ class TestSimulatedDisplay:
         display = SimulatedDisplay(nominal_refresh_hz=60.0, frame_period_s=0.0)
         display.show_message("hello")
         assert display.messages == ["hello"]
+
+
+class _Host:
+    """A clock that moves only when something sleeps on it or polls it.
+
+    A sleep returns at the next scheduler tick at or after the time asked
+    for, which is what ``time.sleep`` really does; ``tick_s`` is the tick.
+    A poll costs 10 us, so a spin makes progress rather than looping forever.
+    """
+
+    def __init__(self, tick_s: float) -> None:
+        self.t = 0.0
+        self.tick_s = tick_s
+        self.slept: list[float] = []
+
+    def now(self) -> float:
+        self.t += 1e-5
+        return self.t
+
+    def sleep(self, seconds: float) -> None:
+        self.slept.append(seconds)
+        self.t = math.ceil((self.t + seconds) / self.tick_s) * self.tick_s
+
+
+class TestSimulatedDisplayPacing:
+    """A paced flip lands on its deadline whatever the host's sleep costs.
+
+    Sleeping the whole remainder returned one scheduler tick late on every
+    frame, and on Windows that tick is 15.6 ms: a 60 Hz simulation ran at
+    31 ms a frame and the frame monitor flagged every flip as dropped. These
+    drive the wait with a fake clock, so they pin the fix without timing.
+    """
+
+    FRAME = 1.0 / 60.0
+
+    def test_sleeps_all_but_the_margin_then_spins_to_the_deadline(self):
+        host = _Host(tick_s=0.001)
+        _wait_until(self.FRAME, now=host.now, sleep=host.sleep)
+        # One clock poll (10 us) happens before the sleep is sized.
+        assert host.slept == [pytest.approx(self.FRAME - _SPIN_MARGIN_S, abs=2e-5)]
+        # Returned on the deadline, not on the tick after it.
+        assert host.t == pytest.approx(self.FRAME, abs=2e-5)
+
+    def test_a_wait_shorter_than_the_margin_only_spins(self):
+        host = _Host(tick_s=0.001)
+        _wait_until(0.001, now=host.now, sleep=host.sleep)
+        assert host.slept == []
+        assert host.t == pytest.approx(0.001, abs=2e-5)
+
+    def test_a_deadline_already_passed_returns_at_once(self):
+        host = _Host(tick_s=0.001)
+        host.t = 0.5
+        _wait_until(0.1, now=host.now, sleep=host.sleep)
+        assert host.slept == []
+        assert host.t == pytest.approx(0.5, abs=2e-5)
+
+    def test_flips_land_one_period_apart(self):
+        host = _Host(tick_s=0.001)
+        display = SimulatedDisplay(nominal_refresh_hz=60.0, now=host.now, sleep=host.sleep)
+        display.flip()
+        first = host.t
+        for _ in range(3):
+            display.flip()
+        assert display.flip_count == 4
+        assert host.t - first == pytest.approx(3 * self.FRAME, abs=1e-4)
+        assert len(host.slept) == 3
+
+    def test_unpaced_never_sleeps(self):
+        host = _Host(tick_s=0.001)
+        display = SimulatedDisplay(
+            nominal_refresh_hz=60.0, frame_period_s=0.0, now=host.now, sleep=host.sleep
+        )
+        for _ in range(5):
+            display.flip()
+        assert host.slept == []
+
+    def test_open_requests_fine_ticks_and_close_releases_them(self, monkeypatch):
+        calls: list[str] = []
+
+        def request() -> object:
+            calls.append("begin")
+            return lambda: calls.append("end")
+
+        monkeypatch.setattr(simulated, "_request_fine_timer", request)
+        display = SimulatedDisplay(nominal_refresh_hz=60.0)
+        display.open()
+        display.open()  # idempotent: one request, one release
+        assert calls == ["begin"]
+        display.close()
+        display.close()
+        assert calls == ["begin", "end"]
+
+    def test_unpaced_display_leaves_the_timer_alone(self, monkeypatch):
+        monkeypatch.setattr(
+            simulated, "_request_fine_timer", lambda: pytest.fail("should not be asked")
+        )
+        display = SimulatedDisplay(nominal_refresh_hz=60.0, frame_period_s=0.0)
+        display.open()
+        display.close()
+
+    def test_only_windows_is_asked(self, monkeypatch):
+        monkeypatch.setattr(simulated.sys, "platform", "linux")
+        release = simulated._request_fine_timer()
+        release()  # a no-op, not an error
 
 
 class TestFramebufferMatchesTheRigConfig:

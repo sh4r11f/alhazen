@@ -91,6 +91,15 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Fixed
 
+- **A simulated display now paces its frames on time.** `SimulatedDisplay`
+  slept the whole remainder of each frame, and a sleep returns one scheduler
+  tick late; on Windows that tick is 15.6 ms, so a 60 Hz simulation ran at
+  31 ms a frame, every flip was flagged as dropped, and a ten-minute
+  rehearsal wrote a megabyte of warnings. It now sleeps to within 2 ms of
+  the deadline and polls the clock for the rest, and asks Windows for 1 ms
+  ticks while it is open (`timeBeginPeriod`, released on `close()`), which
+  is what Python 3.10's `time.sleep` needs to be finer than a frame.
+
 Findings of a post-merge adversarial review of the movie-mode PR, all
 verified before fixing:
 
