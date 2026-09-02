@@ -18,6 +18,7 @@ behaviour, and neither should first run on a rig with a subject in it.
 from __future__ import annotations
 
 import ctypes
+import logging
 import math
 import sys
 import threading
@@ -615,6 +616,11 @@ class FakeWindow:
         self.color = (0.0, 0.0, 0.0)
         self.flips = 0
         self._closed = False
+        # What was put on this window, in order: "guide" for each guide
+        # panel, "target" for each calibration target. The panel comes from
+        # the display and the target from a Circle, so the one thing they
+        # share — this window — is where the order can be read back.
+        self.timeline: list[str] = []
 
     def flip(self) -> None:
         self.flips += 1
@@ -624,11 +630,13 @@ class FakeCircle:
     """A visual.Circle that only remembers where it was told to be."""
 
     def __init__(self, window, **kwargs) -> None:
+        self.window = window
         self.pos: tuple[float, float] = (0.0, 0.0)
         self.drawn_at: list[tuple[float, float]] = []
 
     def draw(self) -> None:
         self.drawn_at.append(self.pos)
+        self.window.timeline.append("target")
 
 
 @pytest.fixture
@@ -716,6 +724,7 @@ class FakeDisplay:
 
     def show_menu(self, title: str, body: str, *, color: tuple[float, float, float]) -> None:
         self.menus.append((title, body, color))
+        self.window.timeline.append("guide")
 
 
 def calibrating(fake_pypixxlib, fake_psychopy=None, **cfg_kwargs) -> ViewPixxTracker:
@@ -765,9 +774,12 @@ class TestCalibrationGuide:
         assert "HV9 — 9 targets" in body
         assert "MANUAL" in body and "press SPACE" in body
         assert "BACKSPACE" in body and "ESC" in body
-        # Shown before any target was drawn.
-        assert fake_psychopy.circles[0].drawn_at
-        assert tracker._display.menus  # type: ignore[union-attr]
+        # And it came first: every guide panel went on the window before the
+        # first target did, so a subject never sees a target they were not
+        # told about.
+        timeline = tracker._display.window.timeline  # type: ignore[union-attr]
+        assert "target" in timeline and timeline[0] == "guide"
+        assert all(entry == "guide" for entry in timeline[: timeline.index("target")])
 
     def test_the_guide_shows_the_live_eye_line(self, fake_pypixxlib, fake_psychopy):
         tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
@@ -1123,17 +1135,65 @@ class TestCalibrationRecording:
         tracker.stop_trial()
         assert fake_pypixxlib.drains == 2
 
-    def test_accept_is_refused_while_no_eye_is_in_the_image(self, fake_pypixxlib, fake_psychopy):
+    def test_the_dashboards_camera_read_leaves_the_ring_alone_mid_walk(
+        self, fake_pypixxlib, fake_psychopy, caplog
+    ):
+        """The session's monitor reads the camera image on every progress
+        report it publishes, and the device's per-target call has un-armed
+        the ring by the second target. A read that "put it back" would blame
+        itself for the move, warn twice a second for the whole walk, and
+        toggle the device's ring between its own calibration calls. The one
+        re-arm is calibrate()'s, when the walk is over."""
+        tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
+        libdpx = fake_pypixxlib.libdpx
+
+        def calib_point(x, y, eye):
+            fake_pypixxlib.calibration_points.append((x, y, eye))
+            libdpx.freerun = False
+            libdpx.buffer_base = 0
+
+        fake_pypixxlib.getEyePositionDuringCalib = calib_point  # type: ignore[method-assign]
+        arms_before = libdpx.arms
+        reads = 0
+
+        def dashboard_refresh(stage: str, detail: str) -> None:
+            nonlocal reads
+            tracker.camera_frame()
+            reads += 1
+            assert libdpx.arms == arms_before, "the camera read re-armed the ring mid-walk"
+
+        tracker.set_progress_hook(dashboard_refresh)
+        fake_psychopy.keys.extend([START] + ["space"] * 5)
+        with caplog.at_level(logging.WARNING, logger="alhazen.devices.eyetracker.viewpixx"):
+            tracker.calibrate()
+        assert reads >= 5  # the hook did run, once per target at least
+        assert not any("re-pointed" in record.message for record in caplog.records)
+        # The walk's own re-arm, once, at the end.
+        assert libdpx.arms == arms_before + 1
+        assert libdpx.freerun and libdpx.buffer_base == fake_pypixxlib.buffer_base_addr
+        # And a read after the walk protects the ring again.
+        libdpx.freerun = False
+        tracker.camera_frame()
+        assert libdpx.arms == arms_before + 2
+
+    def test_accept_is_refused_while_no_eye_is_in_the_image(
+        self, fake_pypixxlib, fake_psychopy, caplog
+    ):
         tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
         fake_pypixxlib.libdpx.pupils = (0.0, 0.0, 0.0, 0.0)
         fake_psychopy.keys.extend([START, "space", "space", "escape"])
-        result = tracker.calibrate()
+        with caplog.at_level(logging.WARNING, logger="alhazen.devices.eyetracker.viewpixx"):
+            result = tracker.calibrate()
         assert fake_pypixxlib.calibration_points == []
         assert not fake_pypixxlib.finished_calibration
         assert any("NO EYE" in shown for text in fake_psychopy.texts for shown in text.shown)
         # The guide said so as well, before the walk started.
         assert "NO EYE" in guide_body(tracker)
         assert result.aborted
+        # And each refused SPACE is in the log, naming the target, so a
+        # session log alone explains why the walk did not move.
+        refusals = [r.message for r in caplog.records if "not accepted" in r.message]
+        assert refusals == ["target 1 of 5 not accepted: no eye in the camera image"] * 2
 
     def test_the_status_line_names_the_tracked_eyes(self, fake_pypixxlib, fake_psychopy):
         tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")

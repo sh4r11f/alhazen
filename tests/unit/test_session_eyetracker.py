@@ -86,6 +86,7 @@ class CameraTracker(FollowingTracker):
         super().__init__(clock)
         self.pixels = np.arange(12, dtype=np.uint8).reshape(3, 4)
         self.camera_error: TrackerError | None = None
+        self.eye_error: TrackerError | None = None
         self.eyes = (True, True)
         self.reads = 0
 
@@ -96,6 +97,8 @@ class CameraTracker(FollowingTracker):
         return CameraFrame(self.pixels, t=self._clock.now())
 
     def eye_status(self) -> str:
+        if self.eye_error is not None:
+            raise self.eye_error
         return eye_status_text(*self.eyes)
 
 
@@ -116,13 +119,24 @@ class Session:
     """A monitor with its collaborators, and lists where the runner's
     publisher and event bus would be."""
 
-    def __init__(self, tracker_cls: type = FollowingTracker, **cfg_kwargs: Any) -> None:
+    def __init__(
+        self,
+        tracker_cls: type = FollowingTracker,
+        poll_keys: Any = None,
+        **cfg_kwargs: Any,
+    ) -> None:
         self.clock = FakeClock()
         self.display = FakeDisplay(self.clock, FRAME_S)
         self.tracker = tracker_cls(self.clock)
         self.cfg = EyeTrackerConfig(backend="scripted", **cfg_kwargs)
+        # Nobody at the keyboard unless the test says otherwise.
         self.monitor = EyeTrackerMonitor(
-            self.tracker, self.display, SCREEN, self.clock, self.cfg, poll_keys=lambda: []
+            self.tracker,
+            self.display,
+            SCREEN,
+            self.clock,
+            self.cfg,
+            poll_keys=poll_keys if poll_keys is not None else lambda: [],
         )
         self.published: list[tuple[str, str]] = []
         self.events: list[tuple[str, dict[str, Any]]] = []
@@ -147,12 +161,27 @@ def session(monkeypatch):
     no position, so the fixation factory is replaced with one that tells
     the tracker where to look."""
 
-    def make(tracker_cls: type = FollowingTracker, **cfg_kwargs: Any) -> Session:
-        s = Session(tracker_cls, **cfg_kwargs)
+    def make(
+        tracker_cls: type = FollowingTracker, poll_keys: Any = None, **cfg_kwargs: Any
+    ) -> Session:
+        s = Session(tracker_cls, poll_keys, **cfg_kwargs)
         monkeypatch.setattr(procedures, "make_fixation", s.make_target)
         return s
 
     return make
+
+
+class SpaceEverySecond:
+    """An experimenter who presses SPACE about once a second of session time:
+    the walk polls once per frame, so once per 60 polls — once per target,
+    well after each one's settle, which is what a manual walk needs to end."""
+
+    def __init__(self) -> None:
+        self.polls = 0
+
+    def __call__(self) -> list[str]:
+        self.polls += 1
+        return ["space"] if self.polls % round(1.0 / FRAME_S) == 0 else []
 
 
 # ----------------------------------------------------------------------
@@ -285,6 +314,22 @@ class TestProcedures:
         assert got.accepted and got.n_missed == 0 and len(got.targets) == 5
         assert s.monitor.validation is got
         assert s.events[-1] == ("VALIDATION", got.payload())
+
+    def test_a_real_display_keeps_the_rigs_advance_mode(self, session, monkeypatch) -> None:
+        """On a rig the experimenter IS at the keyboard, and a rig set to
+        manual must wait for their key: a monitor that asked for auto
+        everywhere would accept targets nobody looked at."""
+        presser = SpaceEverySecond()
+        s = session(poll_keys=presser, calibration_advance="manual")
+        monkeypatch.setattr(s.display, "kind", "psychopy")
+        got = s.monitor.validate()
+        assert got.advance == "manual"
+        assert got.accepted and len(got.targets) == 5
+        assert presser.polls > 0  # it was the keys, not a timer, that moved the walk
+        # ...and a rig set to auto is left in auto.
+        auto = session(calibration_advance="auto")
+        monkeypatch.setattr(auto.display, "kind", "psychopy")
+        assert auto.monitor.validate().advance == "auto"
 
     def test_validation_uses_the_corrections_in_force(self, session) -> None:
         s = session()
@@ -426,6 +471,17 @@ class TestCameraPanel:
         s.tracker.eyes = (False, True)
         eyes = s.panel("Camera", camera=True)["data"]["stats"][1]
         assert eyes == {"label": "eyes", "value": "right only"}
+
+    def test_an_eye_status_the_tracker_cannot_read_is_shown_as_the_fault(self, session) -> None:
+        """A status read that fails is not a reason to lose the frame, nor
+        to hide the failure: it goes on the eyes line, marked critical."""
+        s = session(CameraTracker)
+        s.tracker.eye_error = TrackerError("TPxGetEyePositionDuringCalib returned nothing")
+        data = s.panel("Camera", camera=True)["data"]
+        assert data["form"] == "image"
+        eyes = data["stats"][1]
+        assert eyes["label"] == "eyes" and eyes["status"] == "critical"
+        assert "TPxGetEyePositionDuringCalib" in eyes["value"]
 
     def test_last_frame_is_shown_when_not_reading(self, session) -> None:
         s = session(CameraTracker)

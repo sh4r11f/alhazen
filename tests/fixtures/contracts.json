@@ -16,6 +16,8 @@
     "task"
   ],
   "reserved_events": [
+    "CALIBRATION",
+    "DRIFT_CORRECTION",
     "NO_REWARD",
     "PAUSED",
     "RESUMED",
@@ -23,7 +25,8 @@
     "REWARD_FAILED",
     "STAGE_CHANGED",
     "TRIAL_END",
-    "TRIAL_START"
+    "TRIAL_START",
+    "VALIDATION"
   ],
   "run_layout": {
     "trials": "{base}_trials.csv",

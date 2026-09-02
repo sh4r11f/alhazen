@@ -9,8 +9,10 @@ everywhere in this package.
 
 from __future__ import annotations
 
+import importlib
 import logging
 import time
+from pathlib import Path
 from typing import Any
 
 from alhazen.config.models import MonitorConfig
@@ -20,16 +22,25 @@ from alhazen.errors import DisplayError
 
 log = logging.getLogger(__name__)
 
-# The pause menu's heading face. PsychoPy ships Open Sans, so no rig has to
-# install anything, and it falls back to the system sans if it is missing.
-HEADING_FONT = "Open Sans"
+# The pause menu's heading face: a humanist sans.
+HEADING_FONT = "Noto Sans"
 
 # The face for anything laid out in columns or meant to look like a terminal:
 # the pause menu's rows (its key column is aligned with spaces) and every
-# message box. DejaVu Sans Mono is on every desktop Linux and ships with
-# matplotlib, so no rig has to install it; the fallback is whatever the
-# system calls monospace.
+# message box.
 MONO_FONT = "DejaVu Sans Mono"
+
+# Neither face is assumed to be installed. A rig is a fresh Windows box more
+# often than a desktop Linux, and pyglet draws a face it cannot find in the
+# system default WITHOUT A WORD — the key column then drifts and nothing says
+# why. So open() registers each missing face from a TTF that every PsychoPy
+# install carries (Noto Sans in PsychoPy's own assets, DejaVu Sans Mono in
+# matplotlib's, which PsychoPy depends on), and warns, naming the face, when
+# even that fails. _bundled_font_files says where the files are.
+BUNDLED_FONT_FILES = {
+    HEADING_FONT: ("psychopy", "assets/fonts/NotoSans-Regular.ttf"),
+    MONO_FONT: ("matplotlib", "fonts/ttf/DejaVuSansMono.ttf"),
+}
 
 # What a message box looks like: a terminal. Monospace text in a pale green
 # on a near-black panel with a green outline, sized to what it says — a
@@ -51,6 +62,32 @@ MESSAGE_PADDING = (2.0, 1.5)
 MENU_FONT = MONO_FONT
 MENU_PANEL_FRACTION = (0.62, 0.72)
 MENU_PANEL_FILL = (-0.55, -0.55, -0.55)
+
+
+def _bundled_font_files() -> dict[str, Path]:
+    """The TTF each face can be registered from, for the packages importable
+    here. Resolved at open() rather than at import: neither package is a
+    dependency of alhazen itself, only of its psychopy extra, so a headless
+    machine has neither and must still import this module."""
+    files: dict[str, Path] = {}
+    for face, (package, relative) in BUNDLED_FONT_FILES.items():
+        try:
+            module = importlib.import_module(package)
+            # matplotlib keeps its data (fonts included) outside the package
+            # and says where; PsychoPy's assets live inside its own.
+            if package == "matplotlib":
+                base = Path(module.get_data_path())
+            elif module.__file__ is not None:
+                base = Path(module.__file__).parent
+            else:
+                # A namespace package has no file of its own, and so no
+                # directory to look for assets under.
+                raise ImportError(f"{package} has no file on disk")
+        except (ImportError, AttributeError) as e:
+            log.debug("no bundled copy of the %r face: %s is not importable (%s)", face, package, e)
+            continue
+        files[face] = base / relative
+    return files
 
 
 class PsychoPyDisplay:
@@ -81,6 +118,7 @@ class PsychoPyDisplay:
         # session builder applies alhazen's own measured fit on top of it as
         # the same absolute value, never a second correction.
         mon = resolve_monitor(self._monitor)
+        self._register_fonts()
         # Units are pixels on purpose: alhazen owns all deg<->px conversion in
         # display.screen.Screen, exactly once per value, so recorded positions
         # invert back to configured ones bit-for-bit. Letting the renderer
@@ -95,6 +133,45 @@ class PsychoPyDisplay:
             allowGUI=self._windowed,
         )
         self._check_pixels_are_what_the_config_says()
+
+    def _register_fonts(self) -> None:
+        """Make the faces the panels draw with available — loudly when one is not.
+
+        pyglet, which draws PsychoPy's text, substitutes a face it cannot find
+        with the system default and logs nothing, so a rig without DejaVu Sans
+        Mono would draw the pause menu's key column in a proportional face
+        and it would silently stop lining up. Each face the machine lacks is
+        registered from the copy a PsychoPy install carries (BUNDLED_FONT_FILES);
+        a face that cannot be had even that way gets a warning naming it. Not
+        an error: a menu in the wrong face is still a menu, and no session
+        should refuse to run over typography.
+        """
+        import pyglet.font
+
+        bundled: dict[str, Path] | None = None
+        for face in (HEADING_FONT, MONO_FONT):
+            if pyglet.font.have_font(face):
+                continue
+            # Looked up once, and only when a face is missing: importing the
+            # packages it lives in is not free.
+            if bundled is None:
+                bundled = _bundled_font_files()
+            path = bundled.get(face)
+            if path is not None and path.is_file():
+                try:
+                    pyglet.font.add_file(str(path))
+                except Exception:  # a file pyglet cannot parse; the warning below says so
+                    log.debug("pyglet refused the font file %s", path, exc_info=True)
+                if pyglet.font.have_font(face):
+                    log.info("the %r face is not installed; registered it from %s", face, path)
+                    continue
+            log.warning(
+                "the %r face is not installed and no bundled copy could be registered "
+                "(looked for %s); the panels will be drawn in the system default face, "
+                "so columns aligned with spaces may not line up",
+                face,
+                path if path is not None else "one in a package that is not importable",
+            )
 
     def _check_pixels_are_what_the_config_says(self) -> None:
         """Refuse to run if the drawing surface is not the size the rig claims.
@@ -236,6 +313,12 @@ class PsychoPyDisplay:
         #   wrapWidth of 80% of the window is 6000 px on an ultrawide, i.e.
         #   one enormous line. The readable measure is ~60 characters, which
         #   is a multiple of the text height (a monospace glyph is ~0.6 of it).
+        # - **Anchored at its left edge, then moved left by half its width.**
+        #   Not anchored at the centre: pyglet centres a wrapped text's WRAP
+        #   width, not the text, so a centre-anchored "stage: 2" starts half
+        #   a wrap width (hundreds of pixels) left of the middle — and of a
+        #   box that hugs the text. With the left edge as the anchor and the
+        #   text's own measured width, the text and the box share a centre.
         height = max(18.0, self._monitor.height_px * 0.022)
         wrap_width = min(self._monitor.width_px * 0.8, height * 34)
         msg = visual.TextStim(
@@ -246,7 +329,7 @@ class PsychoPyDisplay:
             color=MESSAGE_COLOR,
             colorSpace="rgb",
             alignText="left",
-            anchorHoriz="center",
+            anchorHoriz="left",
             pos=(0, 0),
             wrapWidth=wrap_width,
             units="pix",
@@ -255,6 +338,7 @@ class PsychoPyDisplay:
         # bounding box plus a margin, so a short notice and a page of
         # instructions each get a box of their own size.
         text_w, text_h = self._text_extent(msg, wrap_width=wrap_width, line_height=height)
+        msg.pos = (-text_w / 2.0, 0.0)
         panel = self._panel(
             width=text_w + 2 * MESSAGE_PADDING[0] * height,
             height=text_h + 2 * MESSAGE_PADDING[1] * height,
@@ -387,9 +471,13 @@ class PsychoPyDisplay:
             anchorHoriz="center",
             anchorVert="top",
             pos=(0, panel_top - text_height * 4.2),
-            # Wide enough for the longest row this ever draws. Not a fraction
-            # of the window: on an ultrawide that is one enormous line.
-            wrapWidth=text_height * 46,
+            # Wide enough for the longest row this ever draws, but never wider
+            # than the panel: pyglet centres the wrap width, so the rows start
+            # half of it left of centre, and on a 4:3 or 5:4 display 46 text
+            # heights is wider than the panel — the rows would begin outside
+            # it. Not a fraction of the window alone, either: on an ultrawide
+            # that is one enormous line.
+            wrapWidth=min(text_height * 46, width * MENU_PANEL_FRACTION[0] * 0.9),
             units="pix",
         )
         panel.draw()

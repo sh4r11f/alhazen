@@ -543,15 +543,18 @@ class SessionRunner:
         had to pause twice; and after a recalibration the natural thing to
         want is a look at the menu again, not the next trial.
         """
+        notice = "Paused — browser controls are enabled."
         if record.get("pause_action") == "calibrate":
             # The in-trial calibrate key: a pause that arrives with the
-            # procedure already chosen.
-            self._apply_pause_action("calibrate")
+            # procedure already chosen. Its verdict becomes the pause notice,
+            # so the browser says "calibrated …" or "NOT calibrated …" rather
+            # than only that the session is paused.
+            notice = self._apply_pause_action("calibrate") or notice
         # A reward failure is not a pause anybody asked for, so the screen
         # leads with what went wrong rather than with the word PAUSED.
         menu = self._pause_menu(fault="REWARD FAILURE — check the pump" if reward_failed else None)
         if self._dashboard is not None:
-            return self._handle_dashboard_pause(menu)
+            return self._handle_dashboard_pause(menu, notice)
         if self._on_pause is None:
             # Unattended. Still shown, so a simulated session's log records
             # that it stopped and why.
@@ -611,12 +614,13 @@ class SessionRunner:
         )
         return True
 
-    def _handle_dashboard_pause(self, menu: PauseMenu) -> bool:
+    def _handle_dashboard_pause(self, menu: PauseMenu, notice: str) -> bool:
         """Drive the local browser controls only after a keyboard pause.
 
         The browser is server-enforced read-only before this state is
         published. Keyboard polling remains available so closing the browser
-        can never strand an experimenter in the pause screen.
+        can never strand an experimenter in the pause screen. `notice` is the
+        line the browser shows as the pause begins.
         """
         assert self._dashboard is not None
         dashboard = self._dashboard
@@ -633,7 +637,7 @@ class SessionRunner:
         # person standing at the rig could see — and the rig is where a pause
         # is usually resolved, browser or no browser.
         self._show_pause_menu(menu)
-        self._publish_dashboard("paused", "Paused — browser controls are enabled.")
+        self._publish_dashboard("paused", notice)
         keys = menu.actions()
         # A tracker with a camera gets its image refreshed through the pause,
         # so the Eye tracker tab shows the eye as it is now, not as it was
@@ -647,7 +651,7 @@ class SessionRunner:
                 for key in self._commands.poll_raw_keys()
                 if (action := _menu_action(keys, key)) is not None
             ]
-            for action in actions:
+            for index, action in enumerate(actions):
                 if action == "resume":
                     self._publish_dashboard("running", "Resumed.")
                     return self._resumed()
@@ -660,11 +664,31 @@ class SessionRunner:
                 # it, and a menu that vanishes after one keypress looks like
                 # a session that has crashed.
                 self._show_pause_menu(menu)
+                if action in PROCEDURE_ACTIONS:
+                    # A procedure runs for seconds to minutes, and the browser
+                    # keeps accepting clicks until it learns of the
+                    # "calibrating" status — about 0.2 s after the first
+                    # click. A double-click on Calibrate, or Validate pressed
+                    # right after it, would otherwise sit in the queue and run
+                    # NOW, after the procedure, with nobody expecting a second
+                    # walk. Discard it, and the rest of this batch, before the
+                    # buttons come back; the keys a walk polls are already
+                    # consumed by the walk itself.
+                    dropped = actions[index + 1 :] + [c.name for c in dashboard.poll_commands()]
+                    if dropped:
+                        log.info(
+                            "discarding %d command(s) queued while %s ran: %s",
+                            len(dropped),
+                            action,
+                            ", ".join(dropped),
+                        )
                 if message is not None:
                     # Back to "paused" whatever the action published while it
                     # ran: the buttons are live again.
                     self._publish_dashboard("paused", message)
                 published_at = self._clock.now()
+                if action in PROCEDURE_ACTIONS:
+                    break
             if live_camera and self._clock.now() - published_at >= CAMERA_REFRESH_S:
                 self._publish_dashboard("paused", self._dashboard_message)
                 published_at = self._clock.now()

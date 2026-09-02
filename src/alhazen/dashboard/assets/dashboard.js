@@ -1186,7 +1186,9 @@ function drawStat(legendHost, host, data) {
  * figures/), and says so in place of the picture.
  */
 function drawImage(legendHost, host, data) {
-  if (!data.pixels) return drawEmpty(host, data.note || 'No image');
+  /* The reason there is no picture is the panel's note, which buildPanel
+   * already prints under the plot; the placeholder does not repeat it. */
+  if (!data.pixels) return drawEmpty(host, 'No image');
   const width = data.width | 0;
   const height = data.height | 0;
   let bytes;

@@ -5,10 +5,12 @@ the pause menu, a fault — is a bordered panel, and the border's colour is how
 an experimenter reads the panel's meaning from across the room. Three colours,
 three meanings, and nothing else uses them:
 
-- **terminal green** — the session talking: instructions to the subject and
-  the eye tracker's calibration guide. It reads as a terminal on purpose:
-  monospace text on a near-black panel with a green outline, which is what
-  "information, nothing is wrong" looks like on every rig.
+- **terminal green** — the session talking: a message box, whatever it says.
+  Instructions to the subject, the eye tracker's calibration guide, a stage
+  change — and the one-line notices, ``REWARD FAILURE — check the pump`` or
+  ``Calibration FAILED`` included, because the box is the same box and the
+  words carry the alarm. It reads as a terminal on purpose: monospace text
+  on a near-black panel with a green outline.
 - **pause orange** — the session is stopped and waiting for the experimenter
   (``session.pause``).
 - **fault red** — the session is stopped because something broke

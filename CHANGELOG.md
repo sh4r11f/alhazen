@@ -44,7 +44,8 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   unless it exceeds `drift_max_deg`) are new, generic over the `EyeTracker`
   protocol (`devices/eyetracker/procedures.py`), so they run the same way
   on every backend and are tested on the scripted one. A validation runs by
-  itself after every calibration (`validate_after_calibration`). The pause
+  itself after every calibration that was not aborted and that the tracker
+  did not itself call bad (`validate_after_calibration`). The pause
   screen offers them as `V` and `D` beside `C`, the dashboard as *Validate*
   and *Drift correct* buttons; while one runs the dashboard's status reads
   *calibrating* and follows the walk target by target, and a new *Eye
@@ -61,9 +62,15 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 - **Instruction screens look like a terminal.** Every message the session
   puts on the subject display — the instructions, `stage: 2`, the
   calibration guide — is drawn as monospace text in pale green on a
-  near-black panel with a green outline, sized to what it says, the way the
-  pause menu is drawn in orange and a fault in red (`display/palette.py`):
-  the border colour alone says which of the three a screen is.
+  near-black panel with a green outline, sized to what it says and centred
+  on the screen, the way the pause menu is drawn in orange and a fault in
+  red (the green is `display/palette.py`, the orange and red stay with the
+  menu in `session/pause.py`): the border colour alone says which of the
+  three a screen is. The two faces the panels use (Noto Sans for headings,
+  DejaVu Sans Mono for everything laid out in columns) are registered from
+  the copies PsychoPy and matplotlib ship when the display opens, and the
+  session log warns by name when a face could not be found at all — pyglet
+  would otherwise substitute the system default without a word.
 
 - **A live spike source behind the device seam** (`devices.spikes`): the
   `SpikeSource` protocol with a `spikeglx` backend — SpikeGLX's remote

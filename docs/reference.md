@@ -38,6 +38,8 @@ The names an experiment imports directly.
 
 ::: alhazen.session.database
 
+::: alhazen.session.eyetracker
+
 ## Writing a task
 
 ::: alhazen.task.task
@@ -110,6 +112,8 @@ The names an experiment imports directly.
 
 ::: alhazen.display.simulated
 
+::: alhazen.display.palette
+
 ::: alhazen.stimuli.base
 
 ::: alhazen.stimuli.fixation
@@ -135,6 +139,10 @@ The names an experiment imports directly.
 ::: alhazen.devices.eyetracker.viewpixx
 
 ::: alhazen.devices.eyetracker.messages
+
+::: alhazen.devices.eyetracker.procedures
+
+::: alhazen.devices.eyetracker.guide
 
 ::: alhazen.devices.reward
 

@@ -209,6 +209,45 @@ class TestManualValidation:
         assert "FAILED" in result.summary()
         assert "FAILED" in caplog.text  # loud, not just returned
 
+    def test_the_verdict_is_the_worst_target_not_the_mean(self):
+        """Four targets at 0.2° and one corner at 1.5° average to 0.46°,
+        under a 1° limit — and the validation still FAILS, because the corner
+        that target stands for is not calibrated to the limit."""
+        rig = Rig(calibration_type="HV5", accuracy_max_deg=1.0)
+
+        def off_on_the_last(position: tuple[float, float]) -> FakeStimulus:
+            fifth = len(rig.subject.shown) == 4
+            rig.subject.offset_px = (SCREEN.deg2px(1.5 if fifth else 0.2), 0.0)
+            return rig.subject.make_target(position)
+
+        rig.accept_each_target(5)
+        result = rig.validate(make_target=off_on_the_last)
+        assert result.n_missed == 0
+        assert result.mean_error_deg == pytest.approx(0.46)
+        assert result.max_error_deg == pytest.approx(1.5)
+        assert result.mean_error_deg < result.threshold_deg < result.max_error_deg
+        assert not result.accepted
+        assert "FAILED" in result.summary() and "worst 1.50°" in result.summary()
+
+    def test_a_second_space_restarts_the_window(self):
+        """SPACE pressed again before the window closes starts it over: the
+        experimenter saw the subject move and wants the fixation after it,
+        not a window with the move averaged in."""
+        rig = Rig(calibration_type="HV5")
+
+        def move_late(t: float) -> tuple[float, float]:
+            # 5° off until 0.35 s, on target from then on.
+            return (SCREEN.deg2px(5.0), 0.0) if t < 0.35 else (0.0, 0.0)
+
+        rig.subject.perturb = move_late
+        rig.experimenter.press(0.3, "space")
+        rig.experimenter.press(0.35, "space")
+        result = rig.validate(targets=[(0.0, 0.0)])
+        # Every sample came after the second press: none of the 5° in it.
+        assert result.targets[0].error_deg == pytest.approx(0.0)
+        # ...and the window ran a full sample_s from the second press.
+        assert rig.clock.now() == pytest.approx(0.35 + FAST.sample_s, abs=2 * FRAME_S)
+
     def test_the_window_is_the_sample_after_the_accept(self):
         # The subject moves onto the target only after the experimenter
         # accepts: what is measured must be the gaze *after* SPACE, not the
@@ -380,14 +419,37 @@ class TestAutoValidation:
         assert rig.clock.now() >= FAST.settle_s + FAST.sample_s * 0.9
 
     def test_space_takes_the_window_as_it_stands(self):
-        # A subject who is steady but 2° off: auto would still accept the
-        # window (steady is steady), so what SPACE changes is *when*: the
-        # first full window rather than waiting.
+        """A subject who is usable but never still enough for auto (±1.5° of
+        jitter, over the 1° stability rule) would time out as missed at 1 s;
+        SPACE at 0.5 s takes the full window that is there, jitter and all."""
         rig = Rig(calibration_type="HV5", calibration_advance="auto")
         rig.subject.offset_px = (SCREEN.deg2px(2.0), 0.0)
-        rig.experimenter.press(0.0, "space")  # too early: no window yet, ignored
+        flip = {"sign": 1.0}
+
+        def jitter(t: float) -> tuple[float, float]:
+            flip["sign"] = -flip["sign"]
+            return (0.0, flip["sign"] * SCREEN.deg2px(1.5))
+
+        rig.subject.perturb = jitter
+        rig.experimenter.press(0.5, "space")
         result = rig.validate(targets=[(0.0, 0.0)])
-        assert result.targets[0].error_deg == pytest.approx(2.0)
+        assert result.n_missed == 0
+        # Accepted when SPACE was pressed, not at the timeout.
+        assert rig.clock.now() == pytest.approx(0.5, abs=2 * FRAME_S)
+        # The mean of the window: the 2° offset, with the jitter averaged out
+        # to within a sample's worth.
+        assert result.targets[0].error_deg == pytest.approx(2.0, abs=0.4)
+        assert result.targets[0].n_samples >= round(FAST.sample_s / FRAME_S)
+
+    def test_an_accept_before_a_full_window_is_ignored_and_says_so(self, caplog):
+        rig = Rig(calibration_type="HV5", calibration_advance="auto")
+        rig.experimenter.press(0.0, "space")  # too early: no window yet
+        with caplog.at_level(logging.INFO):
+            result = rig.validate(targets=[(0.0, 0.0)])
+        assert "accept ignored: no full window" in caplog.text
+        # The steady subject was then measured by auto mode as usual.
+        assert result.accepted
+        assert rig.clock.now() >= FAST.settle_s + FAST.sample_s * 0.9
 
     def test_a_blink_restarts_the_rolling_window(self):
         rig = Rig(calibration_type="HV5", calibration_advance="auto")

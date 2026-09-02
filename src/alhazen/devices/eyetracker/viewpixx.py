@@ -540,6 +540,12 @@ class ViewPixxTracker:
         # Where the calibration walk reports its progress (set_progress_hook);
         # None until the session's eye-tracker monitor installs one.
         self._progress: ProgressHook | None = None
+        # True while calibrate() is walking the targets. The device's own
+        # per-target call un-arms the sample ring for the whole walk
+        # (recording_armed), and calibrate() re-arms it once at the end;
+        # anything that reads the device meanwhile (the camera image the
+        # dashboard shows) must leave the ring alone.
+        self._calibrating = False
 
     # ------------------------------------------------------------------
     # Setup
@@ -654,12 +660,14 @@ class ViewPixxTracker:
         reader = self._reader
         if reader is not None:
             reader.pause()
+        self._calibrating = True
         try:
             return self._walk_targets(event, visual)
         finally:
             # Whether the walk finished or aborted, the device is left
             # recording into this backend's ring again — a calibration that
             # got as far as one target has already switched it off.
+            self._calibrating = False
             with self._device_lock:
                 if not recording_armed(self._libdpx, self._tracker):
                     arm_recording(self._libdpx, self._tracker)
@@ -886,8 +894,19 @@ class ViewPixxTracker:
             # A register-level read on this device has re-pointed the sample
             # ring before (recording_armed); if this one did, the ring is put
             # back now rather than at the next drain, so fewer samples are
-            # lost. Only once there is a recording to protect (configure()).
-            if self._samples_path is not None and not recording_armed(self._libdpx, self._tracker):
+            # lost. Only once there is a recording to protect (configure()),
+            # and never during a calibration walk: there the ring is un-armed
+            # by the device's own per-target call, from the first accepted
+            # target to the end, and calibrate() re-arms it once when the
+            # walk is over. Re-arming here — which the dashboard's camera
+            # refresh would do every half second of the walk — would blame
+            # this read for it and toggle the device's ring between its own
+            # calibration calls.
+            if (
+                self._samples_path is not None
+                and not self._calibrating
+                and not recording_armed(self._libdpx, self._tracker)
+            ):
                 log.warning(
                     "reading the TRACKPixx3 camera image re-pointed the sample ring; re-arming"
                 )

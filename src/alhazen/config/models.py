@@ -268,9 +268,11 @@ class EyeTrackerConfig(Model):
     # subject who cannot be waited on — an animal that will not hold a
     # fixation long enough for a hand on the keyboard to catch it.
     calibration_advance: Literal["manual", "auto"] = "manual"
-    # Run a validation right after every calibration: the same targets shown
-    # again, gaze measured against them, and the errors reported on the
-    # dashboard. Off only for a rig that validates some other way.
+    # Run a validation right after every calibration that took — not one the
+    # experimenter aborted, nor one the tracker itself called bad, since there
+    # is nothing to measure against then: the same targets shown again, gaze
+    # measured against them, and the errors reported on the dashboard. Off
+    # only for a rig that validates some other way.
     validate_after_calibration: bool = True
     # A validation passes when its WORST target error is at most this many
     # degrees of visual angle. The worst, not the mean: one corner the model

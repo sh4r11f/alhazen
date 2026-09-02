@@ -93,7 +93,7 @@ backend from `devices/eyetracker/guide.py`:
   calibration, alhazen's walk for the TRACKPixx3). Manual is the default
   because a target accepted while the subject looked elsewhere fits the
   model to the wrong point and every sample in the session inherits it.
-- **eyes: …** — the live line, redrawn twice a second on the TRACKPixx3:
+- **eyes: …** — the live line, redrawn ten times a second on the TRACKPixx3:
   *both tracked*, *left only*, *right only*, or *NO EYE IN THE CAMERA
   IMAGE — check position, focus and LED (accept is refused)*. The EyeLink's
   camera is on its Host PC's own screen, so its guide has no live line.
@@ -125,7 +125,9 @@ advances automatically.
 *passes* when the **worst** target error is at most `accuracy_max_deg`
 (1.0° by default) and no target was missed — the worst, not the mean,
 because one corner the model gets wrong is one region of the screen the
-whole session gets wrong. It runs by itself after every calibration unless
+whole session gets wrong. It runs by itself after every calibration that was
+not aborted and that the tracker did not itself call bad — there is nothing
+to measure against a calibration that did not take — unless
 `validate_after_calibration: false`.
 
 **Drift correction** shows one target at the centre and measures the offset
@@ -172,8 +174,10 @@ The **Eye tracker** section of the panels holds:
   panel says so rather than showing nothing. The copy saved to `figures/`
   at teardown leaves the pixels out: a photograph of the subject does not
   belong in the run directory.
-- **Calibration** — the verdict (calibrated / NOT calibrated / aborted),
-  layout, target count, advance mode, eye, time, and the backend's note.
+- **Calibration** — the verdict (calibrated / NOT calibrated / aborted, or
+  *result unknown* when the tracker reported nothing either way — an EyeLink
+  Host PC that never ran one, or the scripted tracker in tests), layout,
+  target count, advance mode, eye, time, and the backend's note.
 - **Validation** — targets and measured gaze positions on a degree grid at
   equal aspect, with mean and worst error, misses, and the verdict; the
   per-target errors under the plot.
@@ -211,10 +215,11 @@ on purpose, and the three panel colours alone say what kind of screen is up:
 
 | Colour | Screen |
 |---|---|
-| green (`display.palette.TERMINAL_GREEN`) | information: instructions, the calibration guide, stage changes |
-| orange (`session.pause.PAUSE_COLOR`) | the pause screen |
-| red (`session.pause.FAULT_COLOR`) | a pause nobody asked for — a reward failure |
+| green (`display.palette.TERMINAL_GREEN`) | a message: instructions, the calibration guide, stage changes — and the one-line notices too, `REWARD FAILURE — check the pump` or `Calibration FAILED` included, since a message box is a message box whatever it says |
+| orange (`session.pause.PAUSE_COLOR`) | the pause menu |
+| red (`session.pause.FAULT_COLOR`) | the pause menu when nobody asked for the pause — the one a reward failure opens |
 
-A simulated display records every panel it is asked to draw (`FakeDisplay.menus`
-as `(title, body, colour)`), which is how the tests assert what a subject
-would have seen.
+A simulated display records every panel it is asked to draw — the message
+box in `FakeDisplay.messages` (the text), the pause menu in
+`FakeDisplay.menus` as `(title, body)` — which is how the tests assert what a
+subject would have seen.

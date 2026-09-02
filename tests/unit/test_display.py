@@ -226,6 +226,42 @@ class TestSimulatedDisplayPacing:
         release()  # a no-op, not an error
 
 
+class _FakePygletFont:
+    """Stands in for `pyglet.font` on a machine with a given set of faces:
+    answers `have_font` from that set and records `add_file`, learning the
+    face a registered file carries (or refusing a file that is not a font),
+    so a test can play a rig with or without a face installed."""
+
+    def __init__(self, installed=(), *, files_carry=None):
+        self.installed = set(installed)
+        # Registered path -> the face it provides. A path not listed here is
+        # "not a font file" and refused, as pyglet refuses one.
+        self.files_carry = dict(files_carry or {})
+        self.added: list[str] = []
+
+    def have_font(self, name):
+        return name in self.installed
+
+    def add_file(self, path):
+        self.added.append(path)
+        face = self.files_carry.get(path)
+        if face is None:
+            raise ValueError(f"not a font file: {path}")
+        self.installed.add(face)
+
+
+def _fake_pyglet(monkeypatch, fonts=None):
+    """Put a fake `pyglet.font` in sys.modules — by default one with every
+    face the backend asks for, so opening a display registers nothing."""
+    from alhazen.display import psychopy_backend
+
+    if fonts is None:
+        fonts = _FakePygletFont([psychopy_backend.HEADING_FONT, psychopy_backend.MONO_FONT])
+    monkeypatch.setitem(__import__("sys").modules, "pyglet", types.SimpleNamespace(font=fonts))
+    monkeypatch.setitem(__import__("sys").modules, "pyglet.font", fonts)
+    return fonts
+
+
 class TestFramebufferMatchesTheRigConfig:
     """Everything downstream is degrees computed from `width_px`, and stimuli
     are drawn in framebuffer pixels. A framebuffer that is not the size the
@@ -250,6 +286,7 @@ class TestFramebufferMatchesTheRigConfig:
             __import__("sys").modules, "psychopy", types.SimpleNamespace(visual=FakeVisual)
         )
         monkeypatch.setitem(__import__("sys").modules, "psychopy.visual", FakeVisual)
+        _fake_pyglet(monkeypatch)
         monitor = MonitorConfig(
             width_px=1920,
             height_px=1080,
@@ -350,9 +387,11 @@ class _FakeWindow:
         self.flips += 1
 
 
-def _open_psychopy_display(monkeypatch):
-    """A PsychoPyDisplay opened against fake `psychopy.visual` classes, with
-    the presentation sleep removed so the test does not wait on it."""
+def _open_psychopy_display(monkeypatch, *, fonts=None, width_px=1920, height_px=1080):
+    """A PsychoPyDisplay opened against fake `psychopy.visual` classes and a
+    fake `pyglet.font`, with the presentation sleep removed so the test does
+    not wait on it. The window is `fonts`-agnostic: pass a _FakePygletFont to
+    play a rig that lacks a face."""
     from alhazen.config.models import MonitorConfig
     from alhazen.display import psychopy_backend
 
@@ -364,9 +403,17 @@ def _open_psychopy_display(monkeypatch):
         __import__("sys").modules, "psychopy", types.SimpleNamespace(visual=fake_visual)
     )
     monkeypatch.setitem(__import__("sys").modules, "psychopy.visual", fake_visual)
+    _fake_pyglet(monkeypatch, fonts)
     monkeypatch.setattr(psychopy_backend.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(_FakeWindow, "frameBufferSize", (width_px, height_px))
+    monkeypatch.setattr(_FakeWindow, "clientSize", (width_px, height_px))
+    monkeypatch.setattr(_FakeWindow, "size", (width_px, height_px))
     monitor = MonitorConfig(
-        width_px=1920, height_px=1080, width_cm=52.0, distance_cm=57.0, refresh_rate_hz=120.0
+        width_px=width_px,
+        height_px=height_px,
+        width_cm=52.0,
+        distance_cm=57.0,
+        refresh_rate_hz=120.0,
     )
     display = psychopy_backend.PsychoPyDisplay(monitor)
     display.open()
@@ -404,8 +451,32 @@ class TestMessageBox:
         text = texts[0].kwargs
         assert text["font"] == pb.MESSAGE_FONT == pb.MONO_FONT
         assert text["color"] == pb.MESSAGE_COLOR == pb.TERMINAL_TEXT
-        assert text["alignText"] == "left" and text["anchorHoriz"] == "center"
+        assert text["alignText"] == "left" and text["anchorHoriz"] == "left"
         assert text["height"] == pytest.approx(text_height)
+
+    def test_the_text_and_its_box_share_a_centre(self, monkeypatch):
+        """pyglet centres a wrapped text's WRAP width, not the text, so a
+        centre-anchored short message starts half a wrap width left of the
+        middle — hundreds of pixels outside a box that hugs it. The text is
+        anchored at its left edge instead and moved left by half its own
+        measured width, which puts its centre on the box's."""
+        from alhazen.display import psychopy_backend as pb
+
+        monkeypatch.setattr(_FakeTextStim, "bounding_box", (140.0, 30.0))
+        display = _open_psychopy_display(monkeypatch)
+        display.show_message("stage: 2")
+        text = next(d for d in display.window.drawn if isinstance(d, _FakeTextStim))
+        rect = next(d for d in display.window.drawn if isinstance(d, _FakeRect))
+        # The box is centred on the screen (a Rect's pos defaults to 0,0) and
+        # the text's left edge sits half its width to the left of that.
+        assert "pos" not in rect.kwargs
+        assert text.pos == (-70.0, 0.0)
+        # So the text lies inside the box, with the padding on each side.
+        text_height = max(18.0, 1080 * 0.022)
+        half_box = rect.kwargs["width"] / 2
+        assert -half_box < text.pos[0] < 0
+        right_margin = half_box - (text.pos[0] + 140.0)
+        assert right_margin == pytest.approx(pb.MESSAGE_PADDING[0] * text_height)
 
     def test_the_message_is_presented_twice_from_the_foreground(self, monkeypatch):
         """The instructions are the first frame after the build, when the
@@ -416,21 +487,49 @@ class TestMessageBox:
         assert display.window.flips == 2
         assert display.window.activations == 1
 
-    def test_a_text_with_no_layout_still_gets_a_box_and_says_so(self, monkeypatch, caplog):
-        """A renderer that cannot report the text's extent is not a reason to
-        draw no box: the box is estimated from the wrap width and the line
-        count, and the estimate is logged as one."""
-        monkeypatch.setattr(_FakeTextStim, "bounding_box", None)
+    @pytest.mark.parametrize("bounding_box", [None, (0.0, 0.0)], ids=["no layout", "empty"])
+    def test_a_text_with_no_layout_still_gets_a_box_and_says_so(
+        self, monkeypatch, caplog, bounding_box
+    ):
+        """A renderer that cannot report the text's extent (no bounding box,
+        or an empty one) is not a reason to draw no box: the box is estimated
+        from the wrap width and the line count, the text is centred on the
+        same estimate, and the estimate is logged as one."""
+        from alhazen.display import psychopy_backend as pb
+
+        monkeypatch.setattr(_FakeTextStim, "bounding_box", bounding_box)
         display = _open_psychopy_display(monkeypatch)
         with caplog.at_level(logging.WARNING):
             display.show_message("one\ntwo\nthree")
         rect = next(d for d in display.window.drawn if isinstance(d, _FakeRect))
+        text = next(d for d in display.window.drawn if isinstance(d, _FakeTextStim))
         text_height = max(18.0, 1080 * 0.022)
         wrap_width = min(1920 * 0.8, text_height * 34)
         assert rect.kwargs["width"] == pytest.approx(wrap_width + 4 * text_height)
-        assert rect.kwargs["height"] > 3 * text_height * 1.2
+        # Three lines at 1.2 line heights each, plus the padding above and below.
+        assert rect.kwargs["height"] == pytest.approx(
+            3 * text_height * 1.2 + 2 * pb.MESSAGE_PADDING[1] * text_height
+        )
+        assert text.pos == (-wrap_width / 2, 0.0)
         assert "could not measure the message text" in caplog.text
         assert "3 line(s)" in caplog.text
+
+    def test_the_menu_rows_stay_inside_the_panel_on_a_narrow_display(self, monkeypatch):
+        """The rows' wrap width is what pyglet centres, so on a 4:3 display
+        the 46-text-height measure would start the rows outside the panel."""
+        from alhazen.display import psychopy_backend as pb
+
+        display = _open_psychopy_display(monkeypatch, width_px=1024, height_px=768)
+        display.show_menu("PAUSED", "SPACE  resume", color=(1.0, 0.16, -0.70))
+        panel = next(d for d in display.window.drawn if isinstance(d, _FakeRect))
+        _, rows = (d for d in display.window.drawn if isinstance(d, _FakeTextStim))
+        assert rows.kwargs["wrapWidth"] < panel.kwargs["width"]
+        assert rows.kwargs["wrapWidth"] == pytest.approx(1024 * pb.MENU_PANEL_FRACTION[0] * 0.9)
+        # A widescreen display keeps the measure that fits the longest row.
+        wide = _open_psychopy_display(monkeypatch)
+        wide.show_menu("PAUSED", "SPACE  resume", color=(1.0, 0.16, -0.70))
+        _, wide_rows = (d for d in wide.window.drawn if isinstance(d, _FakeTextStim))
+        assert wide_rows.kwargs["wrapWidth"] == pytest.approx(max(16.0, 1080 * 0.019) * 46)
 
     def test_the_menu_keeps_its_own_colour_and_size(self, monkeypatch):
         """The pause menu is the other panel: same backing, its own colour,
@@ -448,3 +547,100 @@ class TestMessageBox:
         assert heading.kwargs["font"] == pb.HEADING_FONT
         assert rows.kwargs["font"] == pb.MENU_FONT == pb.MONO_FONT
         assert display.window.flips == 1
+
+
+class TestFonts:
+    """pyglet draws a face it cannot find in the system default and says
+    nothing, so the pause menu's key column would silently stop lining up on
+    a rig without DejaVu Sans Mono. Opening the display registers a missing
+    face from the copy a PsychoPy install carries, and warns when it cannot."""
+
+    def _bundled(self, monkeypatch, tmp_path, faces):
+        """Point the backend's bundled-file lookup at files under tmp_path,
+        creating the ones in `faces` (face -> exists)."""
+        from alhazen.display import psychopy_backend as pb
+
+        paths = {face: tmp_path / f"{face.replace(' ', '')}.ttf" for face in faces}
+        for face, exists in faces.items():
+            if exists:
+                paths[face].write_bytes(b"\x00\x01\x00\x00 fake ttf")
+        monkeypatch.setattr(pb, "_bundled_font_files", lambda: paths)
+        return {str(path): face for face, path in paths.items()}
+
+    def test_installed_faces_are_left_alone(self, monkeypatch, caplog):
+        fonts = _FakePygletFont(["Noto Sans", "DejaVu Sans Mono"])
+        with caplog.at_level(logging.INFO):
+            _open_psychopy_display(monkeypatch, fonts=fonts)
+        assert fonts.added == []
+        assert "face" not in caplog.text
+
+    def test_a_missing_face_is_registered_from_the_bundled_copy(
+        self, monkeypatch, tmp_path, caplog
+    ):
+        from alhazen.display import psychopy_backend as pb
+
+        carry = self._bundled(monkeypatch, tmp_path, {pb.HEADING_FONT: True, pb.MONO_FONT: True})
+        fonts = _FakePygletFont([], files_carry=carry)  # a fresh rig: neither face
+        with caplog.at_level(logging.INFO):
+            _open_psychopy_display(monkeypatch, fonts=fonts)
+        assert sorted(fonts.added) == sorted(carry)
+        assert fonts.have_font(pb.MONO_FONT) and fonts.have_font(pb.HEADING_FONT)
+        assert caplog.text.count("registered it from") == 2
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+    def test_only_the_missing_face_is_registered(self, monkeypatch, tmp_path):
+        from alhazen.display import psychopy_backend as pb
+
+        carry = self._bundled(monkeypatch, tmp_path, {pb.HEADING_FONT: True, pb.MONO_FONT: True})
+        fonts = _FakePygletFont([pb.HEADING_FONT], files_carry=carry)
+        _open_psychopy_display(monkeypatch, fonts=fonts)
+        assert [carry[p] for p in fonts.added] == [pb.MONO_FONT]
+
+    @pytest.mark.parametrize(
+        "bundled",
+        [
+            pytest.param({}, id="package not importable"),
+            pytest.param({"DejaVu Sans Mono": False}, id="file missing"),
+            pytest.param({"DejaVu Sans Mono": True}, id="pyglet refuses the file"),
+        ],
+    )
+    def test_a_face_that_cannot_be_had_is_warned_about(
+        self, monkeypatch, tmp_path, caplog, bundled
+    ):
+        """Every way the bundled copy can fail ends in the same warning
+        naming the face, and the display still opens: a menu in the wrong
+        face is still a menu."""
+        from alhazen.display import psychopy_backend as pb
+
+        self._bundled(monkeypatch, tmp_path, bundled)
+        # files_carry is empty, so a file that exists is "not a font file".
+        fonts = _FakePygletFont([pb.HEADING_FONT])
+        with caplog.at_level(logging.WARNING):
+            display = _open_psychopy_display(monkeypatch, fonts=fonts)
+        assert display.window is not None
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "'DejaVu Sans Mono' face is not installed" in warnings[0]
+        assert "system default face" in warnings[0]
+
+    def test_the_bundled_files_come_from_the_packages_a_psychopy_install_carries(
+        self, monkeypatch, tmp_path
+    ):
+        """PsychoPy's own assets for the sans, matplotlib's data directory
+        (PsychoPy depends on it) for the mono; a package that is not
+        importable leaves its face out rather than failing the lookup."""
+        from alhazen.display import psychopy_backend as pb
+
+        sys_modules = __import__("sys").modules
+        fake_psychopy = types.SimpleNamespace(__file__=str(tmp_path / "psychopy" / "__init__.py"))
+        fake_matplotlib = types.SimpleNamespace(get_data_path=lambda: str(tmp_path / "mpl-data"))
+        monkeypatch.setitem(sys_modules, "psychopy", fake_psychopy)
+        monkeypatch.setitem(sys_modules, "matplotlib", fake_matplotlib)
+        files = pb._bundled_font_files()
+        assert files == {
+            pb.HEADING_FONT: tmp_path / "psychopy" / "assets" / "fonts" / "NotoSans-Regular.ttf",
+            pb.MONO_FONT: tmp_path / "mpl-data" / "fonts" / "ttf" / "DejaVuSansMono.ttf",
+        }
+        # None in sys.modules is how Python says "this import fails".
+        monkeypatch.setitem(sys_modules, "matplotlib", None)
+        assert list(pb._bundled_font_files()) == [pb.HEADING_FONT]
