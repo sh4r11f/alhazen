@@ -71,6 +71,54 @@ ACCEPT_KEYS = ("space", "return", "num_enter")
 REDO_KEY = "backspace"
 ABORT_KEY = "escape"
 
+# libdpx addresses one device at a time (``DPxSelectDevice``). The TRACKPixx3's
+# registers — overlay, wake/sleep, LED, the sample ring buffer, the gaze
+# polynomial — live on the DATAPixx3 that hosts the camera, so that is the
+# device every call in this backend must find selected.
+HOST_DEVICE = "DATAPIXX3"
+
+_OPEN_FAILED = (
+    "TRACKPixx3 could not be opened: {reason}. Check that the DATAPixx3 is powered "
+    "and connected, that no other VPixx application holds the device, or use "
+    "eyetracker backend 'mouse_sim'."
+)
+
+
+def wake_tracker(libdpx: Any) -> None:
+    """Bring the tracker up the way VPixx's own TRACKPixx3 demos do.
+
+    Not ``TRACKPixx3.open()``. In pypixxlib 1.9.2 the constructor and
+    ``open()`` both leave libdpx addressing the camera controller — a USB
+    device of its own, part number 13328 — and ``open()`` then writes the
+    overlay register, which is on the DATAPixx3. The write is out of range
+    for the controller, so ``open()`` fails with DPX_ERR_SETREG16_ADDR_RANGE
+    on a perfectly healthy rig, every time. VPixx's demos never call it: they
+    DPxOpen, hide the overlay, wake the tracker and flush the register cache
+    with the DATAPixx3 selected. The constructor has already done the open,
+    so this puts the selection back and does the rest.
+    """
+    libdpx.DPxSelectDevice(HOST_DEVICE)
+    libdpx.TPxHideOverlay()
+    libdpx.DPxSetTPxAwake()
+    libdpx.DPxUpdateRegCache()
+
+
+def dpx_fault(libdpx: Any) -> str | None:
+    """The fault libdpx's free functions left behind, cleared — or None.
+
+    libdpx does not raise: a failed register access sets a sticky error code
+    and later calls carry on. pypixxlib's device classes check the flag after
+    each method (their ``DpxExceptionDecorate``); its free functions do not,
+    so a caller of those has to. Clearing it here is what keeps one fault
+    from being reported again by the next unrelated check.
+    """
+    error = libdpx.DPxGetError()
+    if error == "DPX_SUCCESS":
+        return None
+    detail = libdpx.DPxGetErrorString()
+    libdpx.DPxClearError()
+    return f"{error} ({detail})"
+
 
 def is_tracking_lost(x: float, y: float) -> bool:
     """True when a reported coordinate is the device's "no eye" report.
@@ -214,31 +262,33 @@ class ViewPixxTracker:
     # ------------------------------------------------------------------
 
     def connect(self) -> None:
-        """Open the link to the DATAPixx3 and its tracker."""
+        """Open the link to the DATAPixx3 and wake its tracker."""
         try:
+            from pypixxlib import _libdpx as libdpx
             from pypixxlib.tracker import TRACKPixx3
         except ImportError as e:
             raise TrackerError(
-                "pypixxlib is not installed. It ships with VPixx's Software Tools "
-                "installer (vpixx.com/software-tools), which is installed on the rig from "
-                "VPixx's own installer — it is NOT on PyPI. Install the Software Tools on "
-                "the rig, or use eyetracker backend 'mouse_sim' for development."
+                "pypixxlib is not installed in this Python environment. It is NOT on PyPI: "
+                "VPixx's Software Tools installer (vpixx.com/software-tools) leaves it on "
+                "the rig as a source archive — on Windows, "
+                "C:\\Program Files\\VPixx Technologies\\Software Tools\\pypixxlib\\"
+                "pypixxlib-<version>.tar.gz — and that file is what to pip install into "
+                "this environment. Or use eyetracker backend 'mouse_sim' for development."
             ) from e
 
         try:
             self._tracker = TRACKPixx3()
-            self._tracker.open()
+            wake_tracker(libdpx)
+            fault = dpx_fault(libdpx)
         except Exception as e:
             # Deliberately broad: pypixxlib signals device faults with its own
             # DpxException, which cannot be imported here to name in an
             # `except` clause — this module must import on machines with no
             # VPixx software at all. `from e` keeps the original traceback, so
             # nothing is hidden by the widening.
-            raise TrackerError(
-                f"TRACKPixx3 could not be opened: {e}. Check that the DATAPixx3 is powered "
-                f"and connected, that no other VPixx application holds the device, or use "
-                f"eyetracker backend 'mouse_sim'."
-            ) from e
+            raise TrackerError(_OPEN_FAILED.format(reason=e)) from e
+        if fault is not None:
+            raise TrackerError(_OPEN_FAILED.format(reason=fault))
 
     def configure(self, screen: Screen, clock: Clock) -> None:
         """Apply the rig's tracker settings and start the device recording.

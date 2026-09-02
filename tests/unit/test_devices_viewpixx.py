@@ -27,6 +27,7 @@ import pytest
 from alhazen.config.models import EyeTrackerConfig
 from alhazen.devices.eyetracker import EyeTracker, ViewPixxTracker, make_tracker
 from alhazen.devices.eyetracker.viewpixx import (
+    HOST_DEVICE,
     TRACKING_LOST_PX,
     calibration_targets,
     is_tracking_lost,
@@ -37,6 +38,41 @@ from alhazen.testing import FakeClock
 from support import SCREEN
 
 
+class FakeLibdpx:
+    """Stand-in for pypixxlib's ``_libdpx``: the free functions connect() uses
+    to bring the tracker up, and libdpx's sticky error flag.
+    """
+
+    def __init__(self) -> None:
+        self.selected: str | None = None
+        self.overlay_hidden = False
+        self.awake = False
+        self.cache_updates = 0
+        self.error = "DPX_SUCCESS"
+        self.error_string = "Function executed successfully"
+
+    def DPxSelectDevice(self, name: str) -> None:  # noqa: N802 - vendor's name
+        self.selected = name
+
+    def TPxHideOverlay(self) -> None:  # noqa: N802 - vendor's name
+        self.overlay_hidden = True
+
+    def DPxSetTPxAwake(self) -> None:  # noqa: N802 - vendor's name
+        self.awake = True
+
+    def DPxUpdateRegCache(self) -> None:  # noqa: N802 - vendor's name
+        self.cache_updates += 1
+
+    def DPxGetError(self) -> str:  # noqa: N802 - vendor's name
+        return self.error
+
+    def DPxGetErrorString(self) -> str:  # noqa: N802 - vendor's name
+        return self.error_string
+
+    def DPxClearError(self) -> None:  # noqa: N802 - vendor's name
+        self.error = "DPX_SUCCESS"
+
+
 class FakeTrackPixx:
     """Stand-in for pypixxlib's TRACKPixx3, recording what it was asked to do.
 
@@ -45,6 +81,9 @@ class FakeTrackPixx:
     """
 
     def __init__(self) -> None:
+        # The free functions the backend calls around this object. Owned by
+        # the device so a test reaches both through the one fixture value.
+        self.libdpx = FakeLibdpx()
         self.opened = False
         self.closed = False
         self.led_intensity: int | None = None
@@ -109,6 +148,7 @@ def fake_pypixxlib(monkeypatch):
     tracker_module.TRACKPixx3 = lambda: device  # type: ignore[attr-defined]
     package = types.ModuleType("pypixxlib")
     package.tracker = tracker_module  # type: ignore[attr-defined]
+    package._libdpx = device.libdpx  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "pypixxlib", package)
     monkeypatch.setitem(sys.modules, "pypixxlib.tracker", tracker_module)
     return device
@@ -227,15 +267,19 @@ class TestCalibrationTargets:
 
 
 class TestConnect:
-    def test_missing_pypixxlib_names_the_vpixx_installer(self):
-        if "pypixxlib" in sys.modules:  # pragma: no cover - rig only
-            pytest.skip("pypixxlib is installed on this machine")
+    def test_missing_pypixxlib_names_the_vpixx_archive(self, monkeypatch):
+        # None in sys.modules makes the import fail wherever this runs — on
+        # the rig too, where the real package is installed and connect()
+        # would otherwise open the real device from inside a unit test.
+        monkeypatch.setitem(sys.modules, "pypixxlib", None)
         tracker = make_viewpixx()
         with pytest.raises(TrackerError) as excinfo:
             tracker.connect()
         message = str(excinfo.value)
         assert "Software Tools" in message
         assert "NOT on PyPI" in message
+        assert "pypixxlib-<version>.tar.gz" in message
+        assert "pip install" in message
         assert "mouse_sim" in message
 
     def test_a_device_fault_becomes_a_tracker_error(self, fake_pypixxlib, monkeypatch):
@@ -245,9 +289,35 @@ class TestConnect:
         def explode() -> None:
             raise OSError("USB device not found")
 
-        monkeypatch.setattr(fake_pypixxlib, "open", explode)
+        monkeypatch.setattr(sys.modules["pypixxlib.tracker"], "TRACKPixx3", explode)
         with pytest.raises(TrackerError, match="DATAPixx3 is powered"):
             make_viewpixx().connect()
+
+    def test_wakes_the_tracker_with_the_datapixx3_selected(self, fake_pypixxlib):
+        # pypixxlib's own open() is never called: it leaves the camera
+        # controller selected and then writes a DATAPixx3 register (see
+        # wake_tracker). The constructor opens the link; connect() puts the
+        # selection where the tracker's registers are and wakes it.
+        make_viewpixx().connect()
+        libdpx = fake_pypixxlib.libdpx
+        assert not fake_pypixxlib.opened
+        assert libdpx.selected == HOST_DEVICE == "DATAPIXX3"
+        assert libdpx.overlay_hidden
+        assert libdpx.awake
+        assert libdpx.cache_updates >= 1
+
+    def test_a_libdpx_fault_flag_becomes_a_tracker_error(self, fake_pypixxlib):
+        # libdpx's free functions do not raise: they set a sticky flag and
+        # carry on. Left unread, a failed wake-up would surface later as a
+        # session that recorded nothing.
+        libdpx = fake_pypixxlib.libdpx
+        libdpx.error = "DPX_ERR_SETREG16_ADDR_RANGE"
+        libdpx.error_string = "DPxSetReg16 passed an address which was out of range"
+        with pytest.raises(TrackerError, match="DPX_ERR_SETREG16_ADDR_RANGE") as excinfo:
+            make_viewpixx().connect()
+        assert "out of range" in str(excinfo.value)
+        assert "DATAPixx3 is powered" in str(excinfo.value)
+        assert libdpx.error == "DPX_SUCCESS"  # cleared: not reported twice
 
     def test_construction_does_not_import_the_sdk(self):
         # check-rig and session build both construct before they connect, and
