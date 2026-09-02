@@ -364,3 +364,45 @@ raise SystemExit(
 The flags are shared with `alhazen run` through the same code, because two
 entry points that drifted apart would mean a flag behaving one way at the rig
 and another way in a script.
+
+### Parameters derived from the invocation
+
+`Task.make_source(params, rng)` receives the task's params and the
+scheduler's generator, and nothing else. That is right for almost every
+design, and wrong for one shape: a scheduler that has to know **which
+subject and which session it is**, because it carries state across
+sessions. An adaptive search that pools every block an animal has ever run
+is the general case, and it has no route from the command line to its own
+code — the dispatch loads the params from YAML and constructs the task with
+nothing in between.
+
+`params_hook` is that route, and the only one:
+
+```python
+def _fill_state_path(params, args):
+    # Every other task's params model rejects unknown keys, so a hook
+    # shared across tasks must ask rather than assume.
+    if "state_dir" not in type(params).model_fields:
+        return params
+    rig = load_rig(args.rig)
+    return params.model_copy(update={
+        "state_dir": Path(rig.data_root) / f"sub-{args.sub}" / "my-search",
+        "session": args.ses,
+    })
+
+run_experiment(
+    task_class=MyTask,
+    default_rig=HERE / "configs" / "rig-lab.yaml",
+    params_hook=_fill_state_path,
+)
+```
+
+It runs once, between the load and the task's construction, and whatever it
+returns is re-validated through the task's own params model — so a hook that
+returns something the task cannot express fails with the config still on
+screen rather than mid-session. `alhazen run` passes no hook and is
+unaffected.
+
+Do this here rather than in `run.py` itself. A `run.py` that parsed `argv`,
+loaded the params and called `build_session` directly would be a second copy
+of the mode dispatch, which is the thing `run_experiment` exists to prevent.

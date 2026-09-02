@@ -19,9 +19,12 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from pydantic import ValidationError
 
 from alhazen.config.loader import load_rig
 from alhazen.errors import AlhazenError, ConfigError
@@ -289,13 +292,21 @@ def add_mode_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _run_session(args: argparse.Namespace, task_class: Any = None) -> int:
+def _run_session(
+    args: argparse.Namespace,
+    task_class: Any = None,
+    params_hook: Callable[[Any, argparse.Namespace], Any] | None = None,
+) -> int:
     """Dispatch one of the six modes.
 
     All six arrive through the same command because they are six ways of
     starting the same experiment, and an experimenter who has to remember a
     different command per mode will use one of them and forget the rest. What
     they share is the task and the rig; what differs is what happens next.
+
+    ``params_hook`` is supplied only by an experiment's own ``run.py``
+    (``alhazen.cli.modes.run_experiment``); ``alhazen run`` passes None and
+    is unaffected. See that function for why the seam exists.
     """
     from alhazen.cli.tasks import installed_tasks, load_task_class
 
@@ -351,6 +362,18 @@ def _run_session(args: argparse.Namespace, task_class: Any = None) -> int:
             if args.params
             else task_class.params_model()
         )
+        if params_hook is not None:
+            # Re-validated through the task's own model, so a hook that
+            # returns something the task cannot express fails here — with
+            # the config still on screen — rather than mid-session. Same
+            # rule a training stage's overrides follow.
+            try:
+                params = task_class.params_model.model_validate(params_hook(params, args))
+            except ValidationError as e:
+                raise ConfigError(
+                    f"the params hook for {task_class.__name__} returned something "
+                    f"{task_class.params_model.__name__} cannot accept:\n{e}"
+                ) from e
     except ConfigError as e:
         print(f"INVALID: {e}", file=sys.stderr)
         return 1
