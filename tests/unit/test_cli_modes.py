@@ -125,3 +125,127 @@ class TestMeasureRejectsAnUnknownSkip:
 
         assert code == 2
         assert "trackr" in capsys.readouterr().err
+
+
+class TestParamsHook:
+    """The one place an experiment may derive its parameters from how it was
+    invoked.
+
+    ``Task.make_source(params, rng)`` receives the params and the scheduler's
+    generator, and nothing else. So a task whose scheduler must know which
+    subject and which session it is — an adaptive design carrying state
+    across sessions is the general case — has no route from the command line
+    to its own code. This hook is that route, and it is applied here rather
+    than in an experiment's run.py because a run.py that parsed argv and
+    called build_session itself would be a second copy of the mode dispatch.
+    """
+
+    def hook_task(self):
+        from alhazen.config.models import Model
+        from alhazen.core.events import EventSchema
+        from alhazen.core.trial import outcomes as make_outcomes
+        from alhazen.task.task import Task
+
+        class HookParams(Model):
+            state_dir: str | None = None
+            session: int | None = None
+
+        class HookTask(Task):
+            name = "hook-check"
+            events = EventSchema(())
+            outcomes = make_outcomes(DONE=dict(completed=True, success=True))
+            params_model = HookParams
+
+        return HookTask, HookParams
+
+    def run(self, tmp_path, monkeypatch, hook, argv_extra=()):
+        """Start a session far enough to see the params, then stop.
+
+        The task is never actually run: build_session opens a window and
+        wants a display. What matters is the value the dispatch constructed
+        the task with, which the spy captures on the way past.
+        """
+        from alhazen.cli.modes import run_experiment
+
+        HookTask, _ = self.hook_task()
+        seen = {}
+
+        def spy(args, rig, task, params, mode):
+            seen["params"] = params
+            seen["task"] = task
+            return 0
+
+        # Reached through sys.modules, not by attribute path: the cli
+        # package re-exports the `main` FUNCTION under that name, so
+        # "alhazen.cli.main" resolves to it rather than to the module.
+        import sys
+
+        monkeypatch.setattr(sys.modules["alhazen.cli.main"], "_trial_session", spy)
+        code = run_experiment(
+            task_class=HookTask,
+            default_rig=rig_file(tmp_path),
+            argv=["--mode", "test", "--sub", "t01", "--ses", "4", *argv_extra],
+            params_hook=hook,
+        )
+        return code, seen
+
+    def test_a_hook_reaches_the_task(self, tmp_path, monkeypatch):
+        def hook(params, args):
+            return params.model_copy(
+                update={"state_dir": f"/data/sub-{args.sub}", "session": args.ses}
+            )
+
+        code, seen = self.run(tmp_path, monkeypatch, hook)
+
+        assert code == 0
+        assert seen["params"].state_dir == "/data/sub-t01"
+        assert seen["params"].session == 4
+        # The task the dispatch built is the one carrying the derived values,
+        # not a second instance built from the file.
+        assert seen["task"].params.session == 4
+
+    def test_no_hook_changes_nothing(self, tmp_path, monkeypatch):
+        code, seen = self.run(tmp_path, monkeypatch, None)
+
+        assert code == 0
+        assert seen["params"].state_dir is None
+        assert seen["params"].session is None
+
+    def test_a_hook_returning_something_the_task_cannot_express_is_refused(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        # Re-validated through the task's own model, so a hook that returns
+        # nonsense fails here with the file open rather than mid-session.
+        def hook(params, args):
+            return {"session": "the fourth one"}
+
+        code, _ = self.run(tmp_path, monkeypatch, hook)
+
+        assert code == 1
+        err = capsys.readouterr().err
+        assert "INVALID" in err
+        assert "session" in err
+
+    def test_a_hook_returning_an_unknown_field_is_refused(self, tmp_path, monkeypatch, capsys):
+        def hook(params, args):
+            return {"stat_dir": "/data"}  # a typo for state_dir
+
+        code, _ = self.run(tmp_path, monkeypatch, hook)
+
+        assert code == 1
+        assert "stat_dir" in capsys.readouterr().err
+
+    def test_a_hook_that_raises_is_not_swallowed(self, tmp_path, monkeypatch):
+        def hook(params, args):
+            raise RuntimeError("the rig file has no data_root I can use")
+
+        with pytest.raises(RuntimeError, match="data_root"):
+            self.run(tmp_path, monkeypatch, hook)
+
+    def test_alhazen_run_passes_no_hook(self, tmp_path, capsys):
+        # The shared dispatch must behave identically when nobody supplies
+        # one; this is the regression guard on the default.
+        code = main(["run", "--mode", "test", "--rig", str(rig_file(tmp_path))])
+
+        assert code == 2
+        assert "--task" in capsys.readouterr().err

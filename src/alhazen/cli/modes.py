@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 
 def run_experiment(
@@ -29,6 +30,7 @@ def run_experiment(
     instructions: Callable[[], str] | None = None,
     argv: list[str] | None = None,
     description: str | None = None,
+    params_hook: Callable[[Any, argparse.Namespace], Any] | None = None,
 ) -> int:
     """Parse ``argv`` and run this experiment in the mode it names.
 
@@ -37,6 +39,16 @@ def run_experiment(
     subject hears cannot drift from what was reviewed — pays for the read only
     when a session is actually going to show it, and fails at that point with
     its own error rather than at import.
+
+    ``params_hook(params, args)`` is the one place an experiment may derive
+    its parameters from how it was invoked. A task receives only its params
+    and the scheduler's generator (``Task.make_source``), so one whose
+    scheduler must know *which subject and which session it is* — an
+    adaptive design carrying state across sessions is the general case — has
+    no other route from the command line to its own code. Whatever it
+    returns is re-validated through the task's own params model, so a hook
+    that returns something the task cannot express fails here rather than
+    mid-session.
     """
     from alhazen.cli.main import _run_session, add_mode_arguments
 
@@ -53,4 +65,4 @@ def run_experiment(
     # Resolved here rather than inside the dispatch: an experiment's wording
     # is its own business, and the dispatch has no way to find it.
     args.instructions = instructions() if instructions is not None else None
-    return _run_session(args, task_class=task_class)
+    return _run_session(args, task_class=task_class, params_hook=params_hook)
