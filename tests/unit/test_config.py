@@ -169,6 +169,51 @@ class TestDeviceModels:
         with pytest.raises(ValueError):
             EyeTrackerConfig(backend="viewpixx", eye="both")
 
+    def test_the_procedure_fields_are_shared_by_every_backend(self):
+        # How a calibration advances, whether a validation follows it, and
+        # the two accuracy limits are about the *procedure*, which alhazen
+        # runs the same way on every tracker — so no backend may reject them.
+        for backend in ("eyelink", "viewpixx", "mouse_sim"):
+            cfg = EyeTrackerConfig(
+                backend=backend,
+                calibration_advance="auto",
+                validate_after_calibration=False,
+                accuracy_max_deg=0.75,
+                drift_max_deg=2.0,
+            )
+            assert cfg.calibration_advance == "auto"
+            assert cfg.validate_after_calibration is False
+            assert (cfg.accuracy_max_deg, cfg.drift_max_deg) == (0.75, 2.0)
+
+    def test_the_procedure_defaults_are_manual_and_validated(self):
+        # Manual: an experimenter watching beats a heuristic guessing when
+        # the subject is on the target. Validated: a calibration that is
+        # never measured is a calibration nobody knows the quality of.
+        cfg = EyeTrackerConfig(backend="viewpixx")
+        assert cfg.calibration_advance == "manual"
+        assert cfg.validate_after_calibration is True
+        assert cfg.accuracy_max_deg == 1.0
+        assert cfg.drift_max_deg == 3.0
+
+    def test_the_advance_mode_is_one_of_two_words(self):
+        with pytest.raises(ValueError):
+            EyeTrackerConfig(backend="viewpixx", calibration_advance="automatic")
+
+    def test_the_accuracy_limits_must_be_positive(self):
+        with pytest.raises(ValueError, match="accuracy_max_deg must be > 0"):
+            EyeTrackerConfig(backend="eyelink", accuracy_max_deg=0.0)
+        with pytest.raises(ValueError, match="drift_max_deg must be > 0"):
+            EyeTrackerConfig(backend="eyelink", drift_max_deg=-1.0)
+
+    def test_the_camera_image_is_a_viewpixx_switch(self):
+        # Only the TRACKPixx3 hands alhazen its camera image; the EyeLink's
+        # lives on the Host PC. So the switch is viewpixx-only, and on by
+        # default there.
+        assert EyeTrackerConfig(backend="viewpixx").camera_image is True
+        assert EyeTrackerConfig(backend="viewpixx", camera_image=False).camera_image is False
+        with pytest.raises(ValueError, match="ignores camera_image"):
+            EyeTrackerConfig(backend="eyelink", camera_image=False)
+
     def test_sync_needs_a_positive_pulse_width(self):
         with pytest.raises(ValueError, match="pulse_ms"):
             SyncHwConfig(backend="simulated", pulse_ms=0)

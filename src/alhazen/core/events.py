@@ -40,6 +40,14 @@ RESERVED_EVENTS = frozenset(
         # an analysis wants to count, and inferring it from a missing event is
         # indistinguishable from an event that failed to be written.
         "NO_REWARD",
+        # The eye tracker's procedures, between trials: a calibration, a
+        # validation of it against a target grid, a drift correction. Their
+        # payloads carry the outcome (session/eyetracker.py), so an analysis
+        # can tell which trials sit between which calibration and how good it
+        # was — the error figures are otherwise only in the log.
+        "CALIBRATION",
+        "VALIDATION",
+        "DRIFT_CORRECTION",
     }
 )
 

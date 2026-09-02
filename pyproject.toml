@@ -135,6 +135,9 @@ no_implicit_optional = true
 [[tool.mypy.overrides]]
 module = [
   "psychopy.*",
+  # pyglet is PsychoPy's window and font layer; the display backend asks it
+  # directly whether a face is installed. No stubs.
+  "pyglet.*",
   "PIL.*",
   "pandas.*",
   "nidaqmx.*",

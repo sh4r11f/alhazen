@@ -32,6 +32,8 @@ class TestOnlyOffersWhatTheSessionHas:
         ("wiring", "action"),
         [
             ({"has_tracker": True}, "calibrate"),
+            ({"has_tracker": True}, "validate"),
+            ({"has_tracker": True}, "drift_correct"),
             ({"has_reward": True}, "manual_reward"),
             ({"has_training": True}, "promote_stage"),
         ],
@@ -39,6 +41,16 @@ class TestOnlyOffersWhatTheSessionHas:
     def test_each_component_adds_its_own_action(self, wiring, action):
         assert action in build_pause_menu(**wiring).actions().values()
         assert action not in build_pause_menu().actions().values()
+
+    def test_the_tracker_rows_are_listed_together_in_procedure_order(self):
+        # Calibrate, validate, drift-correct: the order they are usually
+        # wanted in, and the order the dashboard's buttons keep.
+        actions = list(build_pause_menu(has_tracker=True).actions().items())
+        assert actions[1:4] == [
+            ("C", "calibrate"),
+            ("V", "validate"),
+            ("D", "drift_correct"),
+        ]
 
     def test_a_missing_component_is_not_listed_even_as_reference(self):
         """The reward key is real and bound, but on a rig with no pump it does
@@ -97,7 +109,14 @@ class TestTheLoop:
 
     @pytest.mark.parametrize(
         ("key", "action"),
-        [("space", "resume"), ("q", "quit"), ("escape", "quit"), ("c", "calibrate")],
+        [
+            ("space", "resume"),
+            ("q", "quit"),
+            ("escape", "quit"),
+            ("c", "calibrate"),
+            ("v", "validate"),
+            ("d", "drift_correct"),
+        ],
     )
     def test_a_key_returns_its_action(self, key, action):
         menu = build_pause_menu(has_tracker=True)

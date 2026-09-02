@@ -19,12 +19,14 @@ from alhazen.config.models import (
 from alhazen.core.events import EventSchema
 from alhazen.core.trial import InputFrame
 from alhazen.devices.eyetracker import GazeSample, ScriptedTracker
+from alhazen.devices.eyetracker.procedures import GazeCorrection
 from alhazen.devices.reward import SimulatedReward
 from alhazen.errors import ConfigError
 from alhazen.paradigms.base import Condition, SimpleSequence
 from alhazen.session.builder import (
     build_session,
     make_gaze_input_provider,
+    make_input_provider,
     make_tracker_health_check,
 )
 from alhazen.session.runner import host_overlay_shapes
@@ -180,6 +182,19 @@ class TestDeviceOverrides:
         runner.run()
         assert tracker.trials_started  # the runner drove this object, not a config's
 
+    def test_a_handed_in_tracker_gets_the_session_monitor(self, tmp_path):
+        # The monitor is what the pause menu's C/V/D and the dashboard's
+        # buttons act on, and it holds the drift correction the engine's
+        # input provider applies — so a tracker handed in must get one, with
+        # the rig's eye-tracker config when there is one and the test-only
+        # default when the rig names no tracker at all.
+        tracker = ScriptedTracker([], FakeClock())
+        runner = build(tmp_path, EventSchema(()), tracker=tracker)
+        monitor = runner._eyetracker
+        assert monitor is not None
+        assert monitor.publisher is not None and monitor.emit is not None
+        assert monitor.correction.offset == (0.0, 0.0)
+
     def test_an_override_wins_over_the_rig_config(self, tmp_path):
         reward = SimulatedReward()
         runner = build(
@@ -204,6 +219,22 @@ class TestGazeInputProvider:
         provide = make_gaze_input_provider(ScriptedTracker([], FakeClock()), SCREEN)
         # Never a guess: an unverifiable position stays unverifiable, which
         # is what puts it outside every region.
+        assert provide().gaze is None
+
+    def test_the_drift_correction_is_applied_after_the_conversion(self):
+        # The correction is measured in centered px, so it is added after
+        # the screen-to-centered conversion — and read on every frame, so a
+        # correction applied at a pause moves the very next sample.
+        clock = FakeClock()
+        tracker = ScriptedTracker([(0.0, GazeSample(gx=980.0, gy=540.0, t=0.0))], clock)
+        correction = GazeCorrection()
+        provide = make_input_provider(SCREEN, tracker=tracker, correction=correction)
+        assert provide().gaze == (20.0, 0.0)
+        correction.shift_by(-20.0, 0.0, clock.now())
+        assert provide().gaze == (0.0, 0.0)
+        # A blink is still a blink: nothing is corrected into a position.
+        tracker = ScriptedTracker([], clock)
+        provide = make_input_provider(SCREEN, tracker=tracker, correction=correction)
         assert provide().gaze is None
 
     def test_health_check_reports_a_stopped_tracker(self):

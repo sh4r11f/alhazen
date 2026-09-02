@@ -11,13 +11,28 @@ thing (events, flips, commands) is stamped on that same clock, so gaze can be
 compared against them with no epoch or unit conversion. The tracker's native
 clock reappears only offline, in the EDF, where the messages we write into it
 provide the alignment.
+
+Beyond the protocol, a backend may offer three *optional capabilities* that
+the session's eye-tracker monitor (session/eyetracker.py) looks for with
+``hasattr`` and does without when absent. They are not protocol members on
+purpose: an experiment package's own fake tracker satisfies ``EyeTracker``
+today, and must go on doing so without growing methods it has no use for.
+
+- ``camera_frame() -> CameraFrame``: the tracker's current eye image, for
+  the dashboard. Raises ``TrackerError`` when the device cannot supply one.
+- ``eye_status() -> str``: one line saying which eyes the camera sees now.
+- ``set_progress_hook(hook: ProgressHook | None)``: a callable the backend
+  calls from inside its blocking ``calibrate()`` with ``(stage, detail)`` —
+  ``("calibrating", "target 3 of 9 · eyes: both tracked")`` — so the
+  dashboard can follow a procedure the render thread is busy running.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from alhazen.core.clock import Clock
 from alhazen.display.screen import Screen
@@ -30,6 +45,58 @@ class GazeSample:
     gx: float
     gy: float
     t: float
+
+
+@dataclass(frozen=True)
+class CalibrationResult:
+    """What a backend can say about the calibration it just ran.
+
+    ``aborted`` means the experimenter stopped it (ESC) and the device keeps
+    whatever calibration it had before — so an aborted result says nothing
+    about the tracker's state, and ``ok`` is None. Otherwise ``ok`` is None
+    only when the backend has no way to ask its device whether the fit took
+    (a real EyeLink whose SDK could not answer); never for want of asking.
+    ``note`` is the backend's own account of what happened — "aborted at
+    target 3 of 9", the device's own result message — and is shown on the
+    dashboard beside the verdict.
+    """
+
+    ok: bool | None
+    layout: str  # the target layout walked, e.g. "HV9"
+    n_targets: int  # how many targets that layout has
+    eye: str  # which eye(s) were calibrated, in the backend's own words
+    advance: str  # "manual" or "auto": how the walk moved between targets
+    t: float  # session clock, when the procedure finished
+    note: str = ""
+    aborted: bool = False
+
+    @property
+    def verdict(self) -> str:
+        """The one word a panel leads with."""
+        if self.aborted:
+            return "aborted"
+        return {True: "calibrated", False: "NOT calibrated", None: "result unknown"}[self.ok]
+
+    def summary(self) -> str:
+        """One line for a log or a panel."""
+        line = (
+            f"{self.verdict}: {self.layout} ({self.n_targets} targets), {self.eye}, {self.advance}"
+        )
+        return f"{line} — {self.note}" if self.note else line
+
+
+@dataclass(frozen=True)
+class CameraFrame:
+    """The tracker's eye image: 8-bit grey, ``pixels[row, column]`` with row
+    0 at the top, stamped on the session clock when it was read."""
+
+    pixels: Any  # numpy uint8 array of shape (height, width)
+    t: float
+
+
+# What a backend calls, from inside a blocking procedure, to say how far it
+# has got: ``hook(stage, detail)``. See the module docstring.
+ProgressHook = Callable[[str, str], None]
 
 
 @dataclass(frozen=True)
@@ -71,7 +138,14 @@ class EyeTracker(Protocol):
         """
         ...
 
-    def calibrate(self) -> None: ...
+    def calibrate(self) -> CalibrationResult | None:
+        """Run the backend's calibration; blocks until it is done or aborted.
+
+        Returns what the backend can say about the outcome, or None from a
+        backend that has nothing to calibrate (the mouse, a scripted replay)
+        — the monitor treats None as "no result", never as success.
+        """
+        ...
 
     def start_trial(self, trial_index: int, status: str) -> None: ...
 

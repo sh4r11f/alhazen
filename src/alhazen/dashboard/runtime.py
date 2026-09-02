@@ -30,9 +30,16 @@ from alhazen.errors import SessionError
 
 log = logging.getLogger(__name__)
 
+# The button names the server forwards to the session. Anything else in a
+# POST is rejected before it reaches the queue, so a stray request cannot
+# trigger a session action the pause menu does not offer. "calibrate",
+# "validate" and "drift_correct" are the three eye-tracker procedures
+# (session/eyetracker.py) — the same rows the pause menu shows as C, V and D.
 _ALLOWED_COMMANDS = {
     "resume",
     "calibrate",
+    "validate",
+    "drift_correct",
     "manual_reward",
     "quit",
     "promote_stage",
@@ -361,17 +368,18 @@ def dashboard_state(
 
     ``extra_panels`` are panels whose data does not come from the trial
     records at all — a live analysis's receptive-field map, computed by the
-    session process between trials (task/live.py). Each entry arrives as a
-    finished ``{"title", "section", "data"}`` payload in the same wire shapes
-    panels.py produces, so the page draws them exactly like every other
-    panel. Validated here, loudly: a malformed entry would otherwise render
-    as a permanently and inexplicably blank card.
+    session process between trials (task/live.py), or the eye tracker's
+    camera image and calibration results (session/eyetracker.py). Each entry
+    arrives as a finished ``{"title", "section", "data"}`` payload in the
+    same wire shapes panels.py produces, so the page draws them exactly like
+    every other panel. Validated here, loudly: a malformed entry would
+    otherwise render as a permanently and inexplicably blank card.
     """
     for panel in extra_panels:
         missing = [key for key in ("title", "data") if key not in panel]
         if missing:
             raise SessionError(
-                f"a live-analysis dashboard panel is missing {missing}; each entry of "
+                f"an extra dashboard panel is missing {missing}; each entry of "
                 f"panels() must carry title and data (got keys {sorted(panel)})"
             )
     return {
@@ -391,10 +399,12 @@ def dashboard_state(
                 }
                 for panel in spec.resolved_panels(condition_fields)
             ),
-            # Live-analysis panels last: the trial-record panels are the ones
-            # every session has, and a reader scanning top-to-bottom meets
-            # the familiar ones first. Defaulted section: the sidebar groups
-            # by it, and an unfiled panel would vanish from every group.
+            # Extra panels last: the trial-record panels are the ones every
+            # session has, and a reader scanning top-to-bottom meets the
+            # familiar ones first. Defaulted section: the sidebar groups by
+            # it, and an unfiled panel would vanish from every group. An
+            # entry that names its own section (the eye tracker's do) keeps
+            # it, because the entry's keys are spread second.
             *({"section": "Live analysis", **panel} for panel in extra_panels),
         ],
         "training": training,

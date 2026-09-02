@@ -12,6 +12,7 @@ import numpy as np
 
 from alhazen.config.models import (
     DisplayConfig,
+    EyeTrackerConfig,
     FrameQAConfig,
     MonitorConfig,
     RewardPulses,
@@ -28,7 +29,7 @@ from alhazen.devices.reward import RewardDispenser
 from alhazen.devices.sync import SyncOutput, make_sync_subscriber
 from alhazen.display.frames import FrameMonitor
 from alhazen.display.screen import Screen
-from alhazen.session.builder import make_gaze_input_provider, make_tracker_health_check
+from alhazen.session.builder import make_input_provider, make_tracker_health_check
 from alhazen.testing import EventCollector, FakeClock, FakeDisplay, ScriptedCommands
 
 SCREEN = Screen(width_px=1920, height_px=1080, px_per_deg=40.0)
@@ -171,6 +172,7 @@ class SessionHarness:
     ) -> None:
         from alhazen.data.paths import SessionPaths
         from alhazen.paradigms.base import Condition, SimpleSequence
+        from alhazen.session.eyetracker import EyeTrackerMonitor
         from alhazen.session.pause import run_pause_menu
         from alhazen.session.recorder import DataRecorder
         from alhazen.session.runner import SessionRunner
@@ -199,6 +201,23 @@ class SessionHarness:
         self.schema = EventSchema(declared_events)
         self.commands = commands or ScriptedCommands()
         self.frame_monitor = FrameMonitor(FrameQAConfig(), 1 / FRAME_S)
+        # The session's eye-tracker monitor, built the way the builder builds
+        # it: it owns the drift correction the input provider applies and the
+        # procedures the pause menu's C/V/D keys run. Validation after a
+        # calibration is off so a test that presses C gets one calibration,
+        # not a calibration plus a validation walk.
+        self.eyetracker = (
+            EyeTrackerMonitor(
+                tracker,
+                self.display,
+                SCREEN,
+                self.clock,
+                EyeTrackerConfig(backend="scripted", validate_after_calibration=False),
+                poll_keys=self.commands.poll_raw_keys,
+            )
+            if tracker is not None
+            else None
+        )
         # The same closures build_session derives from a tracker — reused
         # rather than re-implemented, so there stays exactly one gaze
         # coordinate conversion in the codebase.
@@ -210,7 +229,9 @@ class SessionHarness:
             commands=self.commands,
             frame_monitor=self.frame_monitor,
             input_provider=(
-                make_gaze_input_provider(tracker, SCREEN) if tracker is not None else None
+                make_input_provider(SCREEN, tracker=tracker, correction=self.eyetracker.correction)
+                if tracker is not None and self.eyetracker is not None
+                else None
             ),
             health_checks=((make_tracker_health_check(tracker),) if tracker is not None else ()),
             on_manual_reward=(
@@ -263,5 +284,5 @@ class SessionHarness:
             reward=reward,
             sync=sync,
             reward_policy=reward_policy,
-            on_calibrate=tracker.calibrate if tracker is not None else None,
+            eyetracker=self.eyetracker,
         )

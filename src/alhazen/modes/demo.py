@@ -35,15 +35,17 @@ from typing import Any
 import numpy as np
 
 from alhazen.display.backend import DisplayBackend
+from alhazen.display.psychopy_backend import HEADING_FONT, MONO_FONT
 from alhazen.display.screen import Screen
 
 # The furniture's styling. Two faces on purpose: the caption is prose and gets
-# the same humanist sans a session's messages use, so the viewer and a session
-# look like one tool; the key list is a table and gets a monospace face so its
-# columns line up. DejaVu Sans Mono is on every desktop Linux and ships with
-# matplotlib, so no rig has to install anything.
-CAPTION_FONT = "Open Sans"
-KEYS_FONT = "DejaVu Sans Mono"
+# the same humanist sans the pause menu's heading uses, so the viewer and a
+# session look like one tool; the key list is a table and gets a monospace
+# face so its columns line up. The display registers both faces when it
+# opens (display.psychopy_backend) and warns if it cannot, so neither has to
+# be installed on the rig and neither is substituted silently.
+CAPTION_FONT = HEADING_FONT
+KEYS_FONT = MONO_FONT
 CAPTION_COLOR = (0.88, 0.88, 0.92)
 KEYS_COLOR = (0.55, 0.55, 0.60)
 
@@ -116,7 +118,7 @@ class DemoControl:
 
 
 # The keys every demo has, whatever it is showing. Spelled out rather than
-# drawn with arrow glyphs: Open Sans renders a missing glyph as a hollow box,
+# drawn with arrow glyphs: a face renders a glyph it lacks as a hollow box,
 # and a key table with tofu in it is worse than one with a few extra words.
 # The key names the viewer itself consumes, as the keyboard reports them.
 # `press` checks these BEFORE the experiment's own bindings, so an experiment

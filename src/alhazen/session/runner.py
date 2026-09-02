@@ -50,6 +50,7 @@ from alhazen.display.frames import FrameMonitor
 from alhazen.display.screen import Screen
 from alhazen.paradigms.base import Condition, TrialSource
 from alhazen.session.database import ExperimentDatabase, FrameInputBuffer
+from alhazen.session.eyetracker import PROCEDURE_STATUS, EyeTrackerMonitor
 from alhazen.session.pause import (
     PauseMenu,
     build_pause_menu,
@@ -123,6 +124,20 @@ PAUSE_STAGE_COMMANDS = {
     "hold_stage": Command.HOLD_STAGE,
 }
 
+# The pause-menu actions that are eye-tracker procedures, run through the
+# session's EyeTrackerMonitor. Same names as the menu rows (session/pause.py)
+# and the dashboard's buttons (dashboard/runtime.py _ALLOWED_COMMANDS).
+PROCEDURE_ACTIONS = ("calibrate", "validate", "drift_correct")
+
+# While a session is paused, how often the dashboard is republished so a
+# tracker with a camera shows a live image. A pause is when the experimenter
+# is looking at the subject's eye; the image is the point of the tab.
+CAMERA_REFRESH_S = 1.0
+
+# The statuses during which a camera frame is read for the dashboard: when
+# the device is not busy with a trial and somebody is looking at the image.
+CAMERA_STATUSES = frozenset({"paused", PROCEDURE_STATUS})
+
 
 class SessionRunner:
     def __init__(
@@ -144,7 +159,7 @@ class SessionRunner:
         iti_s: float = 0.0,
         score: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
         on_pause: Callable[[PauseMenu], str] | None = None,
-        on_calibrate: Callable[[], None] | None = None,
+        eyetracker: EyeTrackerMonitor | None = None,
         wait: Callable[[float], None] | None = None,
         tracker: EyeTracker | None = None,
         reward: RewardDispenser | None = None,
@@ -182,7 +197,14 @@ class SessionRunner:
         # experiment code, never inside the engine.
         self._score = score
         self._on_pause = on_pause
-        self._on_calibrate = on_calibrate
+        # The tracker's procedures and their results (session/eyetracker.py).
+        # It reports through the runner: its progress lines go out as
+        # dashboard publishes, and its results as session events, both of
+        # which are the runner's to send.
+        self._eyetracker = eyetracker
+        if eyetracker is not None:
+            eyetracker.publisher = self._publish_dashboard
+            eyetracker.emit = self._emit_session_event
         self._wait = wait if wait is not None else time.sleep
         # Devices are owned here, not by the engine: the engine sees only the
         # narrow hooks the builder derived from them (gaze inputs, health
@@ -499,7 +521,7 @@ class SessionRunner:
         heading belongs only to the pause it describes.
         """
         return build_pause_menu(
-            has_tracker=self._tracker is not None and self._on_calibrate is not None,
+            has_tracker=self._eyetracker is not None,
             has_reward=self._manual_reward is not None,
             has_training=self._training is not None,
             has_dashboard=self._dashboard is not None,
@@ -521,13 +543,18 @@ class SessionRunner:
         had to pause twice; and after a recalibration the natural thing to
         want is a look at the menu again, not the next trial.
         """
-        if record.get("pause_action") == "calibrate" and self._on_calibrate is not None:
-            self._on_calibrate()
+        notice = "Paused — browser controls are enabled."
+        if record.get("pause_action") == "calibrate":
+            # The in-trial calibrate key: a pause that arrives with the
+            # procedure already chosen. Its verdict becomes the pause notice,
+            # so the browser says "calibrated …" or "NOT calibrated …" rather
+            # than only that the session is paused.
+            notice = self._apply_pause_action("calibrate") or notice
         # A reward failure is not a pause anybody asked for, so the screen
         # leads with what went wrong rather than with the word PAUSED.
         menu = self._pause_menu(fault="REWARD FAILURE — check the pump" if reward_failed else None)
         if self._dashboard is not None:
-            return self._handle_dashboard_pause(menu)
+            return self._handle_dashboard_pause(menu, notice)
         if self._on_pause is None:
             # Unattended. Still shown, so a simulated session's log records
             # that it stopped and why.
@@ -541,21 +568,45 @@ class SessionRunner:
                 return self._resumed()
             self._apply_pause_action(action)
 
-    def _apply_pause_action(self, action: str) -> None:
-        """One non-terminal menu choice. Anything unrecognised is logged
-        rather than ignored: a key that silently does nothing is the fault
-        this menu exists to prevent."""
-        if action == "calibrate":
-            if self._on_calibrate is None:
-                log.warning("calibrate requested while paused, but no eye tracker is wired")
-            else:
-                self._on_calibrate()
-        elif action == "manual_reward":
+    def _apply_pause_action(self, action: str) -> str | None:
+        """One non-terminal menu choice; returns the line the dashboard shows
+        for it, or None when the action published its own.
+
+        Anything unrecognised is logged rather than ignored: a key that
+        silently does nothing is the fault this menu exists to prevent.
+        """
+        if action in PROCEDURE_ACTIONS:
+            return self._run_procedure(action)
+        if action == "manual_reward":
             self._manual_reward_while_paused()
-        elif action in {"promote_stage", "demote_stage", "hold_stage"}:
+            return None  # publishes its own outcome, which is more specific
+        if action in PAUSE_STAGE_COMMANDS:
             self.on_session_command(PAUSE_STAGE_COMMANDS[action])
-        else:
-            log.warning("unhandled pause action %r", action)
+            return f"{action.replace('_', ' ')} requested."
+        log.warning("unhandled pause action %r", action)
+        return f"unhandled action {action!r}."
+
+    def _run_procedure(self, action: str) -> str:
+        """One eye-tracker procedure from the pause menu, and its one-line
+        outcome. The monitor keeps the results and shows them on the
+        dashboard's Eye tracker tab; this line is what the pause notice says.
+        """
+        monitor = self._eyetracker
+        if monitor is None:
+            log.warning("%s requested while paused, but no eye tracker is wired", action)
+            return "No eye tracker is wired."
+        if action == "calibrate":
+            calibration = monitor.calibrate()
+            line = calibration.summary()
+            validation = monitor.validation
+            # The validation the calibration triggered, if the rig asks for
+            # one: newer than the calibration, so not a stale result.
+            if validation is not None and validation.t >= calibration.t:
+                line += f" · {validation.summary()}"
+            return line
+        if action == "validate":
+            return monitor.validate().summary()
+        return monitor.drift_correct().summary()
 
     def _resumed(self) -> bool:
         self._bus.emit(
@@ -563,12 +614,13 @@ class SessionRunner:
         )
         return True
 
-    def _handle_dashboard_pause(self, menu: PauseMenu) -> bool:
+    def _handle_dashboard_pause(self, menu: PauseMenu, notice: str) -> bool:
         """Drive the local browser controls only after a keyboard pause.
 
         The browser is server-enforced read-only before this state is
         published. Keyboard polling remains available so closing the browser
-        can never strand an experimenter in the pause screen.
+        can never strand an experimenter in the pause screen. `notice` is the
+        line the browser shows as the pause begins.
         """
         assert self._dashboard is not None
         dashboard = self._dashboard
@@ -585,8 +637,13 @@ class SessionRunner:
         # person standing at the rig could see — and the rig is where a pause
         # is usually resolved, browser or no browser.
         self._show_pause_menu(menu)
-        self._publish_dashboard("paused", "Paused — browser controls are enabled.")
+        self._publish_dashboard("paused", notice)
         keys = menu.actions()
+        # A tracker with a camera gets its image refreshed through the pause,
+        # so the Eye tracker tab shows the eye as it is now, not as it was
+        # when the pause began.
+        live_camera = self._eyetracker is not None and self._eyetracker.has_camera
+        published_at = self._clock.now()
         while True:
             actions = [command.name for command in dashboard.poll_commands()]
             actions += [
@@ -594,23 +651,47 @@ class SessionRunner:
                 for key in self._commands.poll_raw_keys()
                 if (action := _menu_action(keys, key)) is not None
             ]
-            for action in actions:
+            for index, action in enumerate(actions):
                 if action == "resume":
                     self._publish_dashboard("running", "Resumed.")
                     return self._resumed()
                 if action == "quit":
                     self._publish_dashboard("stopping", "Quit requested.")
                     return False
-                self._apply_pause_action(action)
+                message = self._apply_pause_action(action)
                 # Every non-terminal action redraws the menu, because
                 # _apply_pause_action may have put a calibration screen over
                 # it, and a menu that vanishes after one keypress looks like
                 # a session that has crashed.
                 self._show_pause_menu(menu)
-                if action != "manual_reward":
-                    # _manual_reward_while_paused publishes its own outcome,
-                    # which is more specific than this.
-                    self._publish_dashboard("paused", f"{action.replace('_', ' ')} requested.")
+                if action in PROCEDURE_ACTIONS:
+                    # A procedure runs for seconds to minutes, and the browser
+                    # keeps accepting clicks until it learns of the
+                    # "calibrating" status — about 0.2 s after the first
+                    # click. A double-click on Calibrate, or Validate pressed
+                    # right after it, would otherwise sit in the queue and run
+                    # NOW, after the procedure, with nobody expecting a second
+                    # walk. Discard it, and the rest of this batch, before the
+                    # buttons come back; the keys a walk polls are already
+                    # consumed by the walk itself.
+                    dropped = actions[index + 1 :] + [c.name for c in dashboard.poll_commands()]
+                    if dropped:
+                        log.info(
+                            "discarding %d command(s) queued while %s ran: %s",
+                            len(dropped),
+                            action,
+                            ", ".join(dropped),
+                        )
+                if message is not None:
+                    # Back to "paused" whatever the action published while it
+                    # ran: the buttons are live again.
+                    self._publish_dashboard("paused", message)
+                published_at = self._clock.now()
+                if action in PROCEDURE_ACTIONS:
+                    break
+            if live_camera and self._clock.now() - published_at >= CAMERA_REFRESH_S:
+                self._publish_dashboard("paused", self._dashboard_message)
+                published_at = self._clock.now()
             self._wait(0.01)
 
     def _manual_reward_while_paused(self) -> None:
@@ -642,6 +723,17 @@ class SessionRunner:
         if self._dashboard is None:
             return {}
         self._dashboard_revision += 1
+        # The panels no trial record produces: the live analysis's, then the
+        # eye tracker's. A camera frame is read only while the device is
+        # between trials and somebody is looking (paused, or a procedure
+        # running), and the pixels stay out of the copy written to disk.
+        extra_panels: list[dict[str, Any]] = []
+        if self._live is not None:
+            extra_panels += self._live.panels()
+        if self._eyetracker is not None:
+            extra_panels += self._eyetracker.panels(
+                camera=status in CAMERA_STATUSES and not full, image=not full
+            )
         state = dashboard_state(
             revision=self._dashboard_revision,
             status=status,
@@ -658,7 +750,7 @@ class SessionRunner:
             training=self._training.stamp() if self._training is not None else None,
             message=message,
             max_rows=None if full else self._cfg.rig.dashboard.max_rows,
-            extra_panels=self._live.panels() if self._live is not None else (),
+            extra_panels=extra_panels,
         )
         self._dashboard_message = message
         self._dashboard.publish(state)

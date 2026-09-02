@@ -20,8 +20,15 @@ from typing import Any
 
 from alhazen.config.models import EyeTrackerConfig
 from alhazen.core.clock import Clock
-from alhazen.devices.eyetracker.protocol import GazeSample, HostShape
+from alhazen.devices.eyetracker.guide import GUIDE_TITLE, calibration_guide, target_count
+from alhazen.devices.eyetracker.protocol import (
+    CalibrationResult,
+    GazeSample,
+    HostShape,
+    ProgressHook,
+)
 from alhazen.display.backend import DisplayBackend
+from alhazen.display.palette import TERMINAL_GREEN
 from alhazen.display.screen import Screen
 from alhazen.errors import TrackerError
 
@@ -31,6 +38,23 @@ log = logging.getLogger(__name__)
 # measure. Read from pylink at runtime; this is the fallback for SDK builds
 # that do not expose the constant.
 MISSING_DATA = -32768
+
+# pylink's result codes for the last calibration, validation or drift
+# correction (EyeLink.getCalibrationResult). Read from pylink at runtime;
+# these are the fallbacks for SDK builds that do not expose the names.
+OK_RESULT = 0
+ABORT_RESULT = 27
+NO_REPLY = 1000
+
+# The keys the guide lists for the EyeLink. The procedure itself runs on the
+# Host PC's setup screen, which alhazen mirrors into the subject window
+# through calibration.py; these are the Host PC's own keys.
+GUIDE_KEYS = (
+    ("C", "calibrate"),
+    ("V", "validate (on the Host PC)"),
+    ("SPACE/ENTER", "accept a target"),
+    ("ESC", "back to the session"),
+)
 
 
 def is_missing_gaze(gx: float, gy: float, missing_sentinel: float) -> bool:
@@ -79,6 +103,9 @@ class EyeLinkTracker:
         self._pylink: Any = None  # the lazily-imported module itself
         self._eye_index = 0  # 0=left, 1=right; re-resolved every trial
         self._recording = False
+        # Where calibrate() reports its stages (the dashboard, via the
+        # session's monitor); None until someone asks to be told.
+        self._progress: ProgressHook | None = None
 
     # ------------------------------------------------------------------
     # Setup
@@ -154,6 +181,11 @@ class EyeLinkTracker:
         area = self._cfg.calibration_area
         tracker.sendCommand(f"calibration_area_proportion {area} {area}")
         tracker.sendCommand(f"validation_area_proportion {area} {area}")
+        # Who moves the calibration from one target to the next: the
+        # experimenter (NO: a key per target) or the Host PC by itself once
+        # gaze has settled (YES). The Host PC's own pacing applies in auto.
+        auto = "YES" if self._cfg.calibration_advance == "auto" else "NO"
+        tracker.sendCommand(f"enable_automatic_calibration = {auto}")
 
         if self._display is None:
             raise TrackerError(
@@ -170,20 +202,130 @@ class EyeLinkTracker:
         graphics = make_calibration_graphics(tracker, self._display.window, screen)
         self._pylink.openGraphicsEx(graphics)
 
-    def calibrate(self) -> None:
-        """Run camera setup / calibration / validation on the Host PC. Blocks
-        until the experimenter finishes or aborts.
+    def set_progress_hook(self, hook: ProgressHook | None) -> None:
+        """Where calibrate() reports its stages; None to stop reporting."""
+        self._progress = hook
 
-        Aborting with ESC makes pylink raise RuntimeError from inside
-        ``doTrackerSetup()``. That is a deliberate experimenter action (the
-        subject needs a break), not a hardware fault, so it is logged and the
-        tracker is returned to a clean state instead of aborting the session.
+    def _report(self, stage: str, detail: str) -> None:
+        if self._progress is not None:
+            self._progress(stage, detail)
+
+    def calibrate(self) -> CalibrationResult:
+        """Show the guide, then run camera setup / calibration / validation on
+        the Host PC. Blocks until the experimenter finishes or aborts.
+
+        The guide is alhazen's; the procedure is the Host PC's, mirrored into
+        the subject window by calibration.py. Aborting with ESC makes pylink
+        raise RuntimeError from inside ``doTrackerSetup()``. That is a
+        deliberate experimenter action (the subject needs a break), not a
+        hardware fault, so it is logged and the tracker is returned to a
+        clean state instead of aborting the session.
         """
+        if self._display is None:
+            raise TrackerError(
+                "EyeLinkTracker.calibrate() needs an open display for its guide; this "
+                "instance was constructed without one (check-rig does that deliberately "
+                "and never calibrates)."
+            )
+        # Local for the same reason as pylink: psychopy may not exist off the rig.
+        from psychopy import event
+
+        if not self._show_guide(event):
+            note = "skipped at the guide; the tracker keeps its previous calibration"
+            log.warning("EyeLink calibration %s", note)
+            return self._result(None, note, aborted=True)
+        self._report("calibrating", "on the Host PC's setup screen")
         try:
             self._tracker.doTrackerSetup()
         except RuntimeError as e:
             log.warning("EyeLink calibration aborted by the experimenter: %s", e)
             self._tracker.exitCalibration()
+            return self._result(None, f"aborted on the Host PC ({e})", aborted=True)
+        return self._host_result()
+
+    def _show_guide(self, event: Any) -> bool:
+        """Draw the calibration guide and wait; True when SPACE starts the setup.
+
+        No live eye line here: the EyeLink's camera image is on the Host PC's
+        own screen, and the setup screen that follows shows it too.
+        """
+        cfg = self._cfg
+        body = calibration_guide(
+            tracker="EyeLink (the Host PC drives the procedure)",
+            eye="set on the Host PC; the session reads the eye the tracker reports",
+            layout=cfg.calibration_type,
+            n_targets=target_count(cfg.calibration_type),
+            area=cfg.calibration_area,
+            advance=cfg.calibration_advance,
+            keys=GUIDE_KEYS,
+            start_line="press SPACE to open the Host PC setup, ESC to skip",
+        )
+        self._display.show_menu(GUIDE_TITLE, body, color=TERMINAL_GREEN)  # type: ignore[union-attr]
+        self._report("calibration guide", "waiting for SPACE")
+        keys = event.waitKeys(keyList=["space", "escape"])
+        return bool(keys) and keys[0] == "space"
+
+    def _host_result(self) -> CalibrationResult:
+        """What the Host PC says about the last calibration it ran.
+
+        pylink keeps the result code and message of the last calibration,
+        validation or drift correction; after ``doTrackerSetup()`` returns
+        they describe whatever the experimenter did last on the setup screen.
+        The message is the Host PC's own text ("GOOD", "POOR", validation
+        error statistics), passed on verbatim rather than interpreted.
+        """
+        pylink = self._pylink
+        try:
+            code = int(self._tracker.getCalibrationResult())
+            message = str(self._tracker.getCalibrationMessage()).strip()
+        except (AttributeError, RuntimeError) as e:
+            log.warning("EyeLink reported no calibration result: %s", e)
+            return self._result(None, "the tracker did not report a result; check the Host PC")
+        detail = f"Host PC: {message}" if message else f"Host PC result code {code}"
+        if code == getattr(pylink, "NO_REPLY", NO_REPLY):
+            note = "the Host PC reports no calibration — was C pressed on its setup screen?"
+            log.warning("EyeLink calibration: %s", note)
+            return self._result(None, note)
+        if code == getattr(pylink, "ABORT_RESULT", ABORT_RESULT):
+            note = f"the last calibration on the Host PC was aborted with ESC ({detail})"
+            log.warning("EyeLink calibration: %s", note)
+            return self._result(None, note, aborted=True)
+        if code == getattr(pylink, "OK_RESULT", OK_RESULT):
+            return self._result(True, detail)
+        log.error("EyeLink calibration did not succeed (%s, code %d)", detail, code)
+        return self._result(False, f"{detail} (code {code}) — calibrate again")
+
+    def _result(self, ok: bool | None, note: str, *, aborted: bool = False) -> CalibrationResult:
+        return CalibrationResult(
+            ok=ok,
+            layout=self._cfg.calibration_type,
+            n_targets=target_count(self._cfg.calibration_type),
+            eye=self._eye_reported(),
+            advance=self._cfg.calibration_advance,
+            t=self._clock.now(),
+            note=note,
+            aborted=aborted,
+        )
+
+    def _eye_reported(self) -> str:
+        """Which eye the tracker says it tracks, in words for the result.
+
+        Outside a recording the tracker may have no sample to answer from;
+        that is not an error here, the eye is resolved for real at every
+        start_trial().
+        """
+        pylink = self._pylink
+        try:
+            eye = self._tracker.eyeAvailable()
+        except RuntimeError as e:
+            return f"set on the Host PC (not reported: {e})"
+        if eye == pylink.RIGHT_EYE:
+            return "right (reported by the tracker)"
+        if eye == pylink.LEFT_EYE:
+            return "left (reported by the tracker)"
+        if eye == pylink.BINOCULAR:
+            return "both (reported by the tracker; the session reads the left)"
+        return "set on the Host PC (the tracker reports it when recording starts)"
 
     # ------------------------------------------------------------------
     # Per trial

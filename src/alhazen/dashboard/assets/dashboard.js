@@ -1165,9 +1165,56 @@ function drawHeatmap(legendHost, host, data) {
 function drawStat(legendHost, host, data) {
   const tile = htmlEl('div', 'stat-tile', null, host);
   tile.style.height = chartHeight(host.clientWidth || 380) + 'px';
+  /* The same status vocabulary the stats strip uses ("critical"), so a
+   * calibration that failed or a drift correction that was refused is red
+   * in the tile, not only in its wording. */
+  if (data.status) tile.dataset.status = data.status;
   htmlEl('div', 'tile-value', data.value + (data.unit ? ' ' + data.unit : ''), tile);
   htmlEl('div', 'tile-label', data.label, tile);
   if (data.secondary) htmlEl('div', 'tile-secondary', data.secondary, tile);
+}
+
+/**
+ * A camera image — the eye tracker's view of the eye, for checking that the
+ * pupil is in the frame, in focus and lit before a calibration is started.
+ *
+ * The session sends one grayscale byte per pixel, base64-encoded, so the
+ * page needs no image codec: the bytes go straight into a canvas. The canvas
+ * keeps the image's own pixel size and is scaled by CSS to the card's width;
+ * the experimenter needs a big picture, not a faithful one. A saved copy
+ * carries no pixels at all (a photograph of the subject does not belong in
+ * figures/), and says so in place of the picture.
+ */
+function drawImage(legendHost, host, data) {
+  /* The reason there is no picture is the panel's note, which buildPanel
+   * already prints under the plot; the placeholder does not repeat it. */
+  if (!data.pixels) return drawEmpty(host, 'No image');
+  const width = data.width | 0;
+  const height = data.height | 0;
+  let bytes;
+  try {
+    bytes = Uint8Array.from(atob(data.pixels), (ch) => ch.charCodeAt(0));
+  } catch (error) {
+    return drawEmpty(host, 'Malformed image: pixels are not base64');
+  }
+  if (width <= 0 || height <= 0 || bytes.length !== width * height) {
+    return drawEmpty(host, 'Malformed image: ' + bytes.length + ' bytes for ' +
+      width + '\u00d7' + height + ' pixels');
+  }
+  const canvas = htmlEl('canvas', 'camera', null, host);
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext('2d');
+  const image = context.createImageData(width, height);
+  /* Grey in, RGBA out: the same byte on the three colour channels and an
+   * opaque alpha, one pixel at a time. */
+  for (let i = 0; i < bytes.length; i += 1) {
+    image.data[4 * i] = bytes[i];
+    image.data[4 * i + 1] = bytes[i];
+    image.data[4 * i + 2] = bytes[i];
+    image.data[4 * i + 3] = 255;
+  }
+  context.putImageData(image, 0, 0);
 }
 
 function drawEmpty(host, message) {
@@ -1228,6 +1275,9 @@ function tableRows(data) {
         ]) };
     case 'stat':
       return { head: [data.label || 'value', ''], rows: [[data.value + (data.unit ? ' ' + data.unit : ''), data.secondary || '']] };
+    case 'image':
+      /* A picture has no rows; its numbers travel in the stats strip. */
+      return null;
     case 'heatmap': {
       /* One row per cell, top row first (the reading order of the drawn
        * map), a column per map — every plotted rate readable as text. */
@@ -1294,6 +1344,7 @@ const DRAW = {
   dots: drawDots,
   stat: drawStat,
   heatmap: drawHeatmap,
+  image: drawImage,
 };
 
 /**
@@ -1404,9 +1455,17 @@ function render() {
 
   const paused = state.status === 'paused';
   document.querySelectorAll('[data-command]').forEach((button) => { button.disabled = !paused; });
+  /* While an eye-tracker procedure runs ("calibrating") the session publishes
+   * its progress as the message — which target it is on, whether it is
+   * waiting for SPACE — and the buttons stay inert, because the server only
+   * takes a command while paused and a second procedure mid-procedure would
+   * be wrong anyway. */
+  const calibrating = state.status === 'calibrating';
   byId('notice').textContent = paused
     ? (state.message || 'Paused — controls are enabled.')
-    : 'Press P on the experimenter keyboard to pause.';
+    : calibrating
+      ? (state.message || 'Eye-tracker procedure running — controls return when it ends.')
+      : 'Press P on the experimenter keyboard to pause.';
 
   /* Which table views the reader had open, so a new trial does not close
    * one they were reading. */

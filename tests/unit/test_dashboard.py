@@ -3,21 +3,27 @@
 from __future__ import annotations
 
 import json
+import logging
+import re
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from alhazen import DashboardPanel, DashboardSpec, RewardPulses
 from alhazen.config.models import DashboardConfig
 from alhazen.core.commands import Command
 from alhazen.dashboard.runtime import DashboardCommand, DashboardController, dashboard_state
+from alhazen.devices.eyetracker import GazeSample
+from alhazen.devices.eyetracker.protocol import CameraFrame
+from alhazen.devices.eyetracker.scripted import ScriptedTracker
 from alhazen.devices.reward import SimulatedReward
 from alhazen.errors import SessionError
-from alhazen.testing import ScriptedCommands
-from support import SessionHarness
+from alhazen.testing import FakeClock, ScriptedCommands
+from support import SCREEN, SessionHarness
 
 
 def _state(revision: int, status: str) -> dict:
@@ -32,7 +38,8 @@ def _state(revision: int, status: str) -> dict:
 
 
 class TestExtraPanels:
-    """Live-analysis panels: precomputed payloads appended to the state."""
+    """Precomputed payloads appended to the state — a live analysis's panels
+    or the eye tracker's — drawn like every other panel."""
 
     def make(self, extra):
         return dashboard_state(
@@ -121,12 +128,24 @@ class TestRuntime:
             self._wait_for_revision(root, token, 2)
             assert self._post(root, token, "manual_reward", "same") == 202
             assert self._post(root, token, "manual_reward", "same") == 202
+            # The eye-tracker procedures are buttons too, so their names must
+            # pass the server's allow-list; a name it does not know is refused
+            # before it can reach the session.
+            assert self._post(root, token, "validate", "v1") == 202
+            assert self._post(root, token, "drift_correct", "d1") == 202
+            with pytest.raises(urllib.error.HTTPError) as unknown:
+                self._post(root, token, "recalibrate", "x1")
+            assert unknown.value.code == 400
             deadline = time.monotonic() + 2
-            commands = []
-            while time.monotonic() < deadline and not commands:
-                commands = controller.poll_commands()
+            commands: list[DashboardCommand] = []
+            while time.monotonic() < deadline and len(commands) < 3:
+                commands += controller.poll_commands()
                 time.sleep(0.01)
-            assert [command.name for command in commands] == ["manual_reward"]
+            assert [command.name for command in commands] == [
+                "manual_reward",
+                "validate",
+                "drift_correct",
+            ]
         finally:
             controller.stop()
         assert not controller.alive()
@@ -208,6 +227,177 @@ class TestRunnerIntegration:
         assert dashboard.stopped
         assert (harness.paths.figures_dir / "dashboard.html").exists()
 
+    def test_the_browser_runs_the_eye_tracker_procedures(self, tmp_path: Path):
+        """Validate and Drift correct are buttons: each runs its procedure,
+        publishes its progress while it runs, and reports its result in the
+        notice and in the Eye tracker panels once it is done."""
+        clock = FakeClock()
+        gaze = GazeSample(gx=SCREEN.width_px / 2 + 20.0, gy=SCREEN.height_px / 2, t=0.0)
+        tracker = ScriptedTracker([(0.0, gaze)], clock)
+        commands = ScriptedCommands([[Command.PAUSE]])
+        harness = SessionHarness(
+            tmp_path, n_trials=1, commands=commands, tracker=tracker, clock=clock
+        )
+        # The empty batch after each procedure is what the runner's drain
+        # finds: nothing was clicked while the walk ran. The next click comes
+        # once the buttons are back.
+        dashboard = FakeDashboard([[], ["validate"], [], ["drift_correct"], [], ["resume"]])
+        harness.runner._dashboard = dashboard
+
+        harness.runner.run()
+
+        statuses = [state["status"] for state in dashboard.states]
+        # The walk published its progress under its own status, so the page
+        # showed "validating: target 2 of 5" rather than a frozen "paused".
+        assert "calibrating" in statuses
+        progress = [s["message"] for s in dashboard.states if s["status"] == "calibrating"]
+        assert any(m.startswith("validating: target") for m in progress)
+        assert any(m.startswith("drift correcting: target") for m in progress)
+        # Each result went out as the notice of a "paused" state.
+        paused = [s["message"] for s in dashboard.states if s["status"] == "paused"]
+        assert any(m.startswith("validation FAILED") for m in paused), paused
+        assert any(m.startswith("drift correction applied: offset 0.50°") for m in paused), paused
+        # ...and as the Eye tracker section's panels, drawn like any other.
+        final = dashboard.states[-1]
+        titles = {p["title"] for p in final["panels"] if p["section"] == "Eye tracker"}
+        assert titles == {"Calibration", "Validation", "Drift correction"}
+        by_title = {p["title"]: p["data"] for p in final["panels"]}
+        assert by_title["Validation"]["form"] == "scatter"
+        assert by_title["Drift correction"]["value"] == "0.50"
+        assert dashboard.states[-1]["status"] == "complete"
+
+    def test_a_calibrate_click_reports_the_verdict_in_the_notice(self, tmp_path: Path):
+        clock = FakeClock()
+        gaze = GazeSample(gx=SCREEN.width_px / 2, gy=SCREEN.height_px / 2, t=0.0)
+        tracker = ScriptedTracker([(0.0, gaze)], clock)
+        commands = ScriptedCommands([[Command.PAUSE]])
+        harness = SessionHarness(
+            tmp_path, n_trials=1, commands=commands, tracker=tracker, clock=clock
+        )
+        dashboard = FakeDashboard([[], ["calibrate"], [], ["resume"]])
+        harness.runner._dashboard = dashboard
+
+        harness.runner.run()
+
+        paused = [s["message"] for s in dashboard.states if s["status"] == "paused"]
+        # The scripted tracker reports no calibration result, and the notice
+        # says exactly that rather than "Paused".
+        assert any("result unknown" in m for m in paused), paused
+
+    def test_the_in_trial_calibrate_key_reports_its_verdict_too(self, tmp_path: Path):
+        """The C key mid-trial calibrates before the pause begins; the pause
+        notice the browser then shows is the verdict, not the generic
+        "Paused"."""
+        clock = FakeClock()
+        gaze = GazeSample(gx=SCREEN.width_px / 2, gy=SCREEN.height_px / 2, t=0.0)
+        tracker = ScriptedTracker([(0.0, gaze)], clock)
+        commands = ScriptedCommands([[Command.CALIBRATE]])
+        harness = SessionHarness(
+            tmp_path, n_trials=1, commands=commands, tracker=tracker, clock=clock
+        )
+        dashboard = FakeDashboard([[], ["resume"]])
+        harness.runner._dashboard = dashboard
+
+        harness.runner.run()
+
+        first_pause = next(s["message"] for s in dashboard.states if s["status"] == "paused")
+        assert "result unknown" in first_pause, first_pause
+        assert [e.name for e in harness.collector.events].count("CALIBRATION") == 1
+
+    def test_a_click_on_a_rig_without_a_tracker_says_so(self, tmp_path: Path, caplog):
+        """The server accepts Validate whether or not a tracker is wired, so
+        the runner has to answer the click rather than crash or stay mute."""
+        commands = ScriptedCommands([[Command.PAUSE]])
+        harness = SessionHarness(tmp_path, n_trials=1, commands=commands)
+        dashboard = FakeDashboard([[], ["validate"], [], ["resume"]])
+        harness.runner._dashboard = dashboard
+
+        with caplog.at_level(logging.WARNING, logger="alhazen.session.runner"):
+            harness.runner.run()
+
+        paused = [s["message"] for s in dashboard.states if s["status"] == "paused"]
+        assert "No eye tracker is wired." in paused, paused
+        assert "validate requested while paused, but no eye tracker is wired" in caplog.text
+        assert dashboard.states[-1]["status"] == "complete"
+
+
+class CameraScriptedTracker(ScriptedTracker):
+    """A scripted tracker with a camera, like the viewpixx: every read is a
+    fresh frame stamped with the time it was taken."""
+
+    def __init__(self, samples, clock: FakeClock) -> None:
+        super().__init__(samples, clock)
+        self.reads = 0
+
+    def camera_frame(self) -> CameraFrame:
+        self.reads += 1
+        return CameraFrame(np.full((3, 4), self.reads, dtype=np.uint8), t=self._clock.now())
+
+
+class TestCameraThroughThePause:
+    """A tracker with a camera has its image refreshed while the session is
+    paused, about once a second, so the Eye tracker tab shows the eye as it
+    is now — and the saved copy never carries the picture."""
+
+    def _run(self, tmp_path: Path, batches: list[list[str]]):
+        clock = FakeClock()
+        gaze = GazeSample(gx=SCREEN.width_px / 2, gy=SCREEN.height_px / 2, t=0.0)
+        tracker = CameraScriptedTracker([(0.0, gaze)], clock)
+        commands = ScriptedCommands([[Command.PAUSE]])
+        harness = SessionHarness(
+            tmp_path, n_trials=1, commands=commands, tracker=tracker, clock=clock
+        )
+        dashboard = FakeDashboard(batches)
+        harness.runner._dashboard = dashboard
+        harness.runner.run()
+        return harness, tracker, dashboard
+
+    @staticmethod
+    def _camera(state: dict) -> dict:
+        return next(p["data"] for p in state["panels"] if p["title"] == "Camera")
+
+    def test_the_image_is_read_again_about_once_a_second(self, tmp_path: Path):
+        # The pause loop waits 10 ms of simulated time per poll: 250 empty
+        # polls are 2.5 s of pause, long enough for two refreshes at 1 Hz.
+        harness, tracker, dashboard = self._run(tmp_path, [[]] * 250 + [["resume"]])
+
+        paused = [s for s in dashboard.states if s["status"] == "paused"]
+        assert len(paused) == 3, [s["message"] for s in paused]
+        read_at = [self._camera(s)["stats"][0]["value"] for s in paused]
+        assert len(set(read_at)) == 3, read_at  # three different frames
+        # The refresh republishes the standing notice, not a new one.
+        assert {s["message"] for s in paused} == {"Paused — browser controls are enabled."}
+        # About a second apart in the session's own clock.
+        times = [float(v.removesuffix(" s")) for v in read_at]
+        assert times[1] - times[0] == pytest.approx(1.0, abs=0.02)
+        assert times[2] - times[1] == pytest.approx(1.0, abs=0.02)
+        assert all(self._camera(s)["pixels"] for s in paused)
+        assert dashboard.states[-1]["status"] == "complete"
+
+    def test_a_rig_without_a_camera_is_not_republished(self, tmp_path: Path):
+        clock = FakeClock()
+        gaze = GazeSample(gx=SCREEN.width_px / 2, gy=SCREEN.height_px / 2, t=0.0)
+        tracker = ScriptedTracker([(0.0, gaze)], clock)
+        commands = ScriptedCommands([[Command.PAUSE]])
+        harness = SessionHarness(
+            tmp_path, n_trials=1, commands=commands, tracker=tracker, clock=clock
+        )
+        dashboard = FakeDashboard([[]] * 250 + [["resume"]])
+        harness.runner._dashboard = dashboard
+        harness.runner.run()
+        assert [s["status"] for s in dashboard.states].count("paused") == 1
+
+    def test_the_saved_copy_leaves_the_pixels_out(self, tmp_path: Path):
+        harness, tracker, dashboard = self._run(tmp_path, [[], ["resume"]])
+
+        saved = json.loads((harness.paths.figures_dir / "dashboard_state.json").read_text())
+        camera = self._camera(saved)
+        assert camera["form"] == "image" and camera["pixels"] == ""
+        assert camera["note"] == "image left out of the saved copy"
+        # The live pause page did carry the picture.
+        live = next(s for s in dashboard.states if s["status"] == "paused")
+        assert self._camera(live)["pixels"]
+
 
 class TestStaleCommandsAreDiscarded:
     """A command accepted in the milliseconds between the browser seeing
@@ -227,6 +417,33 @@ class TestStaleCommandsAreDiscarded:
         harness.runner.run()
 
         assert reward.deliveries == []
+        assert dashboard.states[-1]["status"] == "complete"
+
+    def test_a_click_queued_while_a_procedure_ran_never_fires(self, tmp_path: Path):
+        """The browser keeps accepting clicks for ~0.2 s after a procedure
+        starts, until it learns of the "calibrating" status. A double-click
+        on Calibrate is the common case: without the drain, the second click
+        ran a whole second calibration after the first, with nobody at the
+        rig expecting it."""
+        clock = FakeClock()
+        gaze = GazeSample(gx=SCREEN.width_px / 2, gy=SCREEN.height_px / 2, t=0.0)
+        tracker = ScriptedTracker([(0.0, gaze)], clock)
+        commands = ScriptedCommands([[Command.PAUSE]])
+        harness = SessionHarness(
+            tmp_path, n_trials=1, commands=commands, tracker=tracker, clock=clock
+        )
+        # Second batch: a double-click, two Calibrates in one poll. Third: a
+        # Validate the server accepted before it saw "calibrating". Then a
+        # Resume clicked after the buttons came back, which must still work.
+        dashboard = FakeDashboard([[], ["calibrate", "calibrate"], ["validate"], ["resume"]])
+        harness.runner._dashboard = dashboard
+
+        harness.runner.run()
+
+        names = [event.name for event in harness.collector.events]
+        assert names.count("CALIBRATION") == 1, names
+        assert "VALIDATION" not in names, names
+        assert "RESUMED" in names, names
         assert dashboard.states[-1]["status"] == "complete"
 
     def test_a_stale_quit_does_not_end_the_next_pause(self, tmp_path: Path):
@@ -301,6 +518,31 @@ class TestPage:
         assert "__STYLE__" not in html and "__SCRIPT__" not in html
         assert "--series-1:" in html  # the stylesheet
         assert "function drawLineChart(" in html  # the renderer
+
+    def test_every_allowed_command_has_a_button(self):
+        # A command the server would accept but the page has no button for is
+        # a control nobody can reach; a button for a command the server
+        # refuses is a control that silently does nothing. The two lists are
+        # kept equal so neither can happen.
+        from alhazen.dashboard.runtime import _ALLOWED_COMMANDS
+
+        html = self.page()
+        buttons = set(re.findall(r'data-command="([a-z_]+)"', html))
+        assert buttons == _ALLOWED_COMMANDS
+
+    def test_the_eye_tracker_panels_can_be_drawn(self):
+        # The monitor (session/eyetracker.py) sends a camera picture as an
+        # ``image`` form and its verdicts as ``stat`` tiles with a status;
+        # a form the renderer lacks draws as "Nothing to draw", so both are
+        # asserted against the asset.
+        html = self.page()
+        assert "image: drawImage," in html
+        assert "putImageData" in html
+        assert "tile.dataset.status" in html
+        # The status a procedure publishes under has its own colour, and the
+        # notice shows the procedure's progress instead of the pause hint.
+        assert '#status[data-state="calibrating"]' in html
+        assert "state.status === 'calibrating'" in html
 
     def test_nothing_is_fetched_from_the_network(self):
         # A rig has no internet and a saved figure outlives any CDN.
