@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import math
 import sys
+import threading
+import time
 import types
 from pathlib import Path
 
@@ -27,6 +29,7 @@ import pytest
 from alhazen.config.models import EyeTrackerConfig
 from alhazen.devices.eyetracker import EyeTracker, ViewPixxTracker, make_tracker
 from alhazen.devices.eyetracker.viewpixx import (
+    GAZE_STALE_S,
     HOST_DEVICE,
     TRACKING_LOST_PX,
     calibration_targets,
@@ -50,6 +53,29 @@ class FakeLibdpx:
         self.cache_updates = 0
         self.error = "DPX_SUCCESS"
         self.error_string = "Function executed successfully"
+        # The sample ring: where the device says it is, and whether it runs.
+        self.freerun = False
+        self.buffer_base = 0
+        self.arms = 0
+        # Pupil ellipse semi-axes (left major/minor, right major/minor); all
+        # zero is the device's "no eye in the image".
+        self.pupils: tuple[float, float, float, float] = (3.0, 2.0, 3.0, 2.0)
+
+    def TPxSetBuff(self, base: int, size: int) -> None:  # noqa: N802 - vendor's name
+        self.buffer_base = base
+        self.arms += 1
+
+    def TPxEnableFreeRun(self) -> None:  # noqa: N802 - vendor's name
+        self.freerun = True
+
+    def TPxIsFreeRun(self) -> int:  # noqa: N802 - vendor's name
+        return 1048576 if self.freerun else 0
+
+    def TPxGetBuffBaseAddr(self) -> int:  # noqa: N802 - vendor's name
+        return self.buffer_base
+
+    def TPxGetPupilSize(self) -> tuple[float, float, float, float]:  # noqa: N802
+        return self.pupils
 
     def DPxSelectDevice(self, name: str) -> None:  # noqa: N802 - vendor's name
         self.selected = name
@@ -92,9 +118,17 @@ class FakeTrackPixx:
         self.samples_file: Path | None = None
         self.device_time = 100.0
         self.positions: list[float] = [0.0, 0.0, 0.0, 0.0]
+        self.reads = 0
         self.drains = 0
         self.calibration_points: list[tuple[float, float, int]] = []
         self.finished_calibration = False
+        # What the device answers after finishCalibration(); False is the
+        # calibration-with-no-eye case seen on the rig.
+        self.calibrated_after_finish = True
+        # pypixxlib's own ring layout, which the backend reads back.
+        self.buffer_base_addr = 0x12000000
+        self.buffer_size = 0x18000000
+        self.last_read_addr = 0x12000000
 
     def open(self) -> None:
         self.opened = True
@@ -112,6 +146,10 @@ class FakeTrackPixx:
         data_dir = Path(folder) / "data"
         data_dir.mkdir(parents=True, exist_ok=True)
         self.samples_file = data_dir / "TPx_2026-08-27_09-00-00.csv"
+        # Mirrors the real one's TPxSetBuff + TPxEnableFreeRun.
+        self.libdpx.buffer_base = self.buffer_base_addr
+        self.libdpx.freerun = True
+        self.last_read_addr = self.buffer_base_addr
         return str(self.samples_file)
 
     def saveBufferedData(self) -> None:  # noqa: N802 - vendor's name
@@ -123,7 +161,11 @@ class FakeTrackPixx:
             f.write(f"drain {self.drains}\n")
 
     def getEyePosition(self):  # noqa: N802 - vendor's name
+        self.reads += 1
         return list(self.positions)
+
+    def isDeviceCalibrated(self) -> bool:  # noqa: N802 - vendor's name
+        return self.finished_calibration and self.calibrated_after_finish
 
     def getTime(self) -> float:  # noqa: N802 - vendor's name
         return self.device_time
@@ -154,9 +196,11 @@ def fake_pypixxlib(monkeypatch):
     return device
 
 
-def make_viewpixx(clock=None, **cfg_kwargs) -> ViewPixxTracker:
+def make_viewpixx(clock=None, *, background_gaze=False, **cfg_kwargs) -> ViewPixxTracker:
+    # No reader thread by default: a test that queues a gaze report wants
+    # get_gaze() to read exactly that, on its own thread, with no race.
     cfg = EyeTrackerConfig(backend="viewpixx", **cfg_kwargs)
-    return ViewPixxTracker(cfg, None, SCREEN, clock or FakeClock())
+    return ViewPixxTracker(cfg, None, SCREEN, clock or FakeClock(), background_gaze=background_gaze)
 
 
 def connected(clock=None, **cfg_kwargs) -> ViewPixxTracker:
@@ -532,11 +576,12 @@ class TestShutdown:
 
 
 class FakeWindow:
-    """The one part of a psychopy Window the calibration routine touches."""
+    """The parts of a psychopy Window the calibration routine touches."""
 
     def __init__(self) -> None:
         self.color = (0.0, 0.0, 0.0)
         self.flips = 0
+        self._closed = False
 
     def flip(self) -> None:
         self.flips += 1
@@ -564,27 +609,54 @@ def fake_psychopy(monkeypatch):
     """
     keys: list[str] = []
     circles: list[FakeCircle] = []
+    texts: list[FakeText] = []
+    windows: list[FakeWindow] = []
 
-    def wait_keys(keyList=None):  # noqa: N803 - psychopy's own parameter name
-        return [keys.pop(0)] if keys else None
+    def wait_keys(maxWait=None, keyList=None):  # noqa: N803 - psychopy's own parameter names
+        if keys:
+            return [keys.pop(0)]
+        # Out of keys: the window has gone away, as far as the walk can tell.
+        # Without this a walk that waits with a timeout would spin forever.
+        for window in windows:
+            window._closed = True
+        return None
 
     event_module = types.ModuleType("psychopy.event")
     event_module.waitKeys = wait_keys  # type: ignore[attr-defined]
 
     def make_circle(window, **kwargs):
+        if window not in windows:
+            windows.append(window)
         circle = FakeCircle(window, **kwargs)
         circles.append(circle)
         return circle
 
+    def make_text(window, **kwargs):
+        text = FakeText(window, **kwargs)
+        texts.append(text)
+        return text
+
     visual_module = types.ModuleType("psychopy.visual")
     visual_module.Circle = make_circle  # type: ignore[attr-defined]
+    visual_module.TextStim = make_text  # type: ignore[attr-defined]
     package = types.ModuleType("psychopy")
     package.event = event_module  # type: ignore[attr-defined]
     package.visual = visual_module  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "psychopy", package)
     monkeypatch.setitem(sys.modules, "psychopy.event", event_module)
     monkeypatch.setitem(sys.modules, "psychopy.visual", visual_module)
-    return types.SimpleNamespace(keys=keys, circles=circles)
+    return types.SimpleNamespace(keys=keys, circles=circles, texts=texts)
+
+
+class FakeText:
+    """A visual.TextStim that only remembers what it was told to say."""
+
+    def __init__(self, window, **kwargs) -> None:
+        self.text = kwargs.get("text", "")
+        self.shown: list[str] = []
+
+    def draw(self) -> None:
+        self.shown.append(self.text)
 
 
 class FakeDisplay:
@@ -592,11 +664,15 @@ class FakeDisplay:
 
     def __init__(self) -> None:
         self.window = FakeWindow()
+        self.messages: list[str] = []
+
+    def show_message(self, text: str) -> None:
+        self.messages.append(text)
 
 
 def calibrating(fake_pypixxlib, **cfg_kwargs) -> ViewPixxTracker:
     cfg = EyeTrackerConfig(backend="viewpixx", **cfg_kwargs)
-    tracker = ViewPixxTracker(cfg, FakeDisplay(), SCREEN, FakeClock())
+    tracker = ViewPixxTracker(cfg, FakeDisplay(), SCREEN, FakeClock(), background_gaze=False)
     tracker.connect()
     tracker.configure(SCREEN, FakeClock())
     return tracker
@@ -660,3 +736,160 @@ class TestCalibrationWalk:
         tracker.calibrate()
         assert fake_pypixxlib.calibration_points == []
         assert not fake_pypixxlib.finished_calibration
+
+
+class TestGazeReader:
+    """Gaze is read off the render thread on the rig; the tests above run the
+    reader synchronously. This is the thread itself."""
+
+    def test_the_thread_reads_and_the_caller_only_copies(self, fake_pypixxlib):
+        tracker = make_viewpixx(background_gaze=True)
+        tracker.connect()
+        tracker.configure(SCREEN, tracker._clock)
+        try:
+            fake_pypixxlib.positions = [10.0, 20.0, 0.0, 0.0]
+            deadline = time.monotonic() + 2.0
+            sample = None
+            while sample is None and time.monotonic() < deadline:
+                sample = tracker.get_gaze()
+                time.sleep(0.005)
+            assert sample is not None, "the reader thread never delivered a sample"
+            reads_before = fake_pypixxlib.reads
+            for _ in range(20):
+                tracker.get_gaze()
+            # get_gaze() itself never touched the device: every read was the thread's.
+            assert fake_pypixxlib.reads - reads_before < 200
+            assert reads_before > 0
+        finally:
+            tracker.shutdown(None)
+        assert fake_pypixxlib.closed
+
+    def test_a_read_that_raises_surfaces_on_the_caller(self, fake_pypixxlib, monkeypatch):
+        tracker = make_viewpixx(background_gaze=True)
+        tracker.connect()
+        tracker.configure(SCREEN, tracker._clock)
+        try:
+
+            def explode():
+                raise OSError("USB read failed")
+
+            monkeypatch.setattr(fake_pypixxlib, "getEyePosition", explode)
+            deadline = time.monotonic() + 2.0
+            raised = False
+            while time.monotonic() < deadline:
+                try:
+                    tracker.get_gaze()
+                except TrackerError as e:
+                    assert "stopped answering" in str(e)
+                    raised = True
+                    break
+                time.sleep(0.005)
+            assert raised
+        finally:
+            tracker.shutdown(None)
+
+    def test_a_stale_report_is_no_sample(self, fake_pypixxlib):
+        # A reader that has fallen behind is a stalled USB call, and the
+        # position it last saw is not this frame's. Simulated by a thread that
+        # looks alive but never reads again: the caller must not read for it.
+        clock = FakeClock()
+        tracker = connected(clock)
+        fake_pypixxlib.positions = [10.0, 20.0, 0.0, 0.0]
+        assert tracker.get_gaze() is not None
+        reader = tracker._reader
+        assert reader is not None
+        reader._thread = threading.current_thread()
+        try:
+            clock.advance(GAZE_STALE_S / 2)
+            assert tracker.get_gaze() is not None  # still fresh enough
+            clock.advance(GAZE_STALE_S)
+            assert tracker.get_gaze() is None
+        finally:
+            reader._thread = None
+
+    def test_get_gaze_before_configure_is_an_error(self, fake_pypixxlib):
+        tracker = make_viewpixx()
+        tracker.connect()
+        with pytest.raises(TrackerError, match="before configure"):
+            tracker.get_gaze()
+
+
+class TestRecordingGuard:
+    def test_a_drain_after_the_device_moved_the_ring_rearms_instead_of_hanging(
+        self, fake_pypixxlib
+    ):
+        # What a calibration does to the device: free-run off, ring at 0. A
+        # drain from the old read pointer never returns on the real library.
+        tracker = connected()
+        libdpx = fake_pypixxlib.libdpx
+        libdpx.freerun = False
+        libdpx.buffer_base = 0
+        fake_pypixxlib.last_read_addr = 0x12345678
+        tracker.start_trial(1, "ok")
+        tracker.stop_trial()
+        assert fake_pypixxlib.drains == 0  # nothing valid to save
+        assert libdpx.freerun
+        assert libdpx.buffer_base == fake_pypixxlib.buffer_base_addr
+        assert fake_pypixxlib.last_read_addr == fake_pypixxlib.buffer_base_addr
+
+    def test_an_armed_ring_drains_normally(self, fake_pypixxlib):
+        tracker = connected()
+        tracker.start_trial(1, "ok")
+        tracker.stop_trial()
+        assert fake_pypixxlib.drains == 1
+
+
+class TestCalibrationRecording:
+    def test_drains_before_and_rearms_after(self, fake_pypixxlib, fake_psychopy):
+        tracker = calibrating(fake_pypixxlib, calibration_type="HV5")
+        libdpx = fake_pypixxlib.libdpx
+
+        def calib_point(x, y, eye):
+            # The real device switches free-run off and moves the ring here.
+            fake_pypixxlib.calibration_points.append((x, y, eye))
+            libdpx.freerun = False
+            libdpx.buffer_base = 0
+
+        fake_pypixxlib.getEyePositionDuringCalib = calib_point  # type: ignore[method-assign]
+        fake_psychopy.keys.extend(["space"] * 5)
+        tracker.calibrate()
+        assert fake_pypixxlib.drains == 1  # the pre-calibration drain
+        assert libdpx.freerun
+        assert libdpx.buffer_base == fake_pypixxlib.buffer_base_addr
+        # And the next trial's drain is a real one again.
+        tracker.start_trial(1, "ok")
+        tracker.stop_trial()
+        assert fake_pypixxlib.drains == 2
+
+    def test_accept_is_refused_while_no_eye_is_in_the_image(self, fake_pypixxlib, fake_psychopy):
+        tracker = calibrating(fake_pypixxlib, calibration_type="HV5")
+        fake_pypixxlib.libdpx.pupils = (0.0, 0.0, 0.0, 0.0)
+        fake_psychopy.keys.extend(["space", "space", "escape"])
+        tracker.calibrate()
+        assert fake_pypixxlib.calibration_points == []
+        assert not fake_pypixxlib.finished_calibration
+        assert any("NO EYE" in shown for text in fake_psychopy.texts for shown in text.shown)
+
+    def test_the_status_line_names_the_tracked_eyes(self, fake_pypixxlib, fake_psychopy):
+        tracker = calibrating(fake_pypixxlib, calibration_type="HV5")
+        fake_pypixxlib.libdpx.pupils = (3.0, 2.0, 0.0, 0.0)
+        fake_psychopy.keys.extend(["space"] * 5)
+        tracker.calibrate()
+        assert any("left only" in shown for text in fake_psychopy.texts for shown in text.shown)
+        assert len(fake_pypixxlib.calibration_points) == 5
+
+    def test_a_calibration_the_device_did_not_keep_is_reported(self, fake_pypixxlib, fake_psychopy):
+        tracker = calibrating(fake_pypixxlib, calibration_type="HV5")
+        fake_pypixxlib.calibrated_after_finish = False
+        fake_psychopy.keys.extend(["space"] * 5)
+        tracker.calibrate()
+        assert fake_pypixxlib.finished_calibration
+        assert tracker._display is not None
+        messages = tracker._display.messages  # type: ignore[attr-defined]
+        assert messages and "FAILED" in messages[0]
+
+    def test_a_kept_calibration_says_nothing_on_screen(self, fake_pypixxlib, fake_psychopy):
+        tracker = calibrating(fake_pypixxlib, calibration_type="HV5")
+        fake_psychopy.keys.extend(["space"] * 5)
+        tracker.calibrate()
+        assert tracker._display.messages == []  # type: ignore[attr-defined]

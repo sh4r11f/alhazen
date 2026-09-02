@@ -91,6 +91,25 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Fixed
 
+- **A TRACKPixx3 session no longer hangs after a calibration, drops frames
+  on every gaze read, or accepts a calibration the device did not keep.**
+  Three rig findings (2026-09-01). The per-target calibration call switches
+  the device's free-run sampling off and re-points its sample ring at a small
+  buffer of its own; the next per-trial drain then saved from a read pointer
+  into a ring that no longer existed, and never returned — Windows killed the
+  session as "not responding". Every drain now checks the ring is the one it
+  was armed with and re-arms it otherwise, and `calibrate()` drains first
+  and re-arms after. A gaze read is a USB round trip with a 20-40 ms tail on
+  one call in five; read on the render thread it dropped ~30 frames per
+  trial at 120 Hz, so the backend now reads on its own thread (one lock
+  around every call into libdpx) and a frame only copies the newest report,
+  discarding one older than 100 ms. The calibration screen shows whether the
+  camera is fitting a pupil in each eye, refuses to accept a target while it
+  is not, and checks `isDeviceCalibrated()` after the fit — a "calibrated"
+  session with no eye in the image was the tracking-lost sentinel forever.
+  The PsychoPy backend also claims the foreground and presents the
+  instructions twice: the dashboard's browser window took focus as they were
+  drawn and that frame never reached the panel.
 - **The TRACKPixx3 backend brings the device up itself, and connects on a
   real rig.** pypixxlib 1.9.2's `TRACKPixx3.open()` leaves libdpx addressing
   the camera controller and then writes the video-overlay register, which is

@@ -10,6 +10,7 @@ everywhere in this package.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 from alhazen.config.models import MonitorConfig
@@ -225,8 +226,27 @@ class PsychoPyDisplay:
             wrapWidth=min(self._monitor.width_px * 0.8, height * 34),
             units="pix",
         )
+        # The instructions are the first frame after the build, and on the rig
+        # the dashboard's browser window arrived at that moment and took the
+        # foreground; Windows never presented the frame, and nothing flips
+        # again while the runner waits for a key, so the subject's screen kept
+        # the previous one. Claim the foreground, and present twice.
+        self._bring_to_front()
         msg.draw()
         self.window.flip()
+        time.sleep(0.05)
+        msg.draw()
+        self.window.flip()
+
+    def _bring_to_front(self) -> None:
+        """Ask the OS to make this window the foreground one, if it can."""
+        activate = getattr(getattr(self.window, "winHandle", None), "activate", None)
+        if activate is None:
+            return
+        try:
+            activate()
+        except Exception:  # a window that cannot be raised is not a reason to stop
+            log.debug("could not bring the window to the front", exc_info=True)
 
     def show_menu(self, title: str, body: str, *, color: tuple[float, float, float]) -> None:
         """Draw the menu over whatever is on screen, and flip.
