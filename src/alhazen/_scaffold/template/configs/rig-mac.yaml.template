@@ -1,12 +1,18 @@
-# PURPOSE: a Mac (Apple Silicon, Retina display) as the dev machine — the
-# same purposes as rig-view / rig-auto / rig-mouse, in one file.
+# MACHINE: a development laptop — here, a Mac (Apple Silicon, Retina display).
+#
+# A rig file describes a machine: its panel, its devices, where its data
+# goes. Which of the six modes you run on it is not the file's business, so
+# every mode takes this file as it stands:
 #
 #   python run.py --mode demo     --rig configs/rig-mac.yaml
 #   python run.py --mode test     --rig configs/rig-mac.yaml --sub dev --ses 1
 #   python run.py --mode simulate --rig configs/rig-mac.yaml --seed 1
+#   python run.py --mode movie    --rig configs/rig-mac.yaml
 #
-# (Simulate accepts this rig as it stands: mouse_sim is not real hardware,
-# and the injected subject's gaze wins over the cursor.)
+# There is no eye tracker on a laptop, and none is configured below. Test
+# mode notices and lets the mouse cursor stand in for gaze; simulate mode
+# supplies its own gaze and needs none. Rehearsal data (test, simulate)
+# lands beside data_root under data-rehearsal/, never in it.
 #
 # ---------------------------------------------------------------------------
 # TWO NUMBERS TO GET RIGHT, AND NEITHER IS THE ONE MACOS SHOWS YOU
@@ -65,9 +71,8 @@ dashboard:
   auto_open: true
   port: 0
 
-devices:
-  eyetracker:
-    backend: mouse_sim   # no tracker on a laptop; the cursor stands in for gaze
+# No devices: a laptop has none. Test mode substitutes the mouse for the
+# missing tracker and says so before trial one.
+devices: {}
 
-# Dry-run data lives apart from subject data (see rig-auto.yaml).
-data_root: data/dev
+data_root: data

@@ -25,7 +25,7 @@ from typing import Any
 
 from alhazen.config.loader import load_rig
 from alhazen.errors import AlhazenError, ConfigError
-from alhazen.modes import Mode
+from alhazen.modes import Mode, flag_refusal
 from alhazen.session.checks import check_rig, format_result
 from alhazen.version import get_version
 
@@ -126,9 +126,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  cd {root}")
         print('  pip install -e ".[dev]"')
         print("  pytest")
-        print("  python run.py --rig configs/rig-sim.yaml --sub s01 --ses 1")
-        print("\nthen, with a display attached:")
-        print("  python run.py --mode demo --rig configs/rig-view.yaml")
+        print("  python run.py --mode simulate --rig configs/rig-lab.yaml --headless")
+        print("\nthen, on a machine with a screen:")
+        print("  python run.py --mode demo --rig configs/rig-mac.yaml")
         return 0
 
     if args.command == "run":
@@ -199,6 +199,18 @@ def add_mode_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--seed", type=int, default=None, help="session seed")
     parser.add_argument("--windowed", action="store_true", help="bordered window, for dev")
+    # The two flags that override the machine rather than the experiment.
+    # Any rig takes them; only one mode each honours them (alhazen.modes.flag_refusal).
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="simulate mode: no window and no browser — for CI and ssh",
+    )
+    parser.add_argument(
+        "--mouse",
+        action="store_true",
+        help="test mode: the mouse cursor as gaze, even on a rig with an eye tracker",
+    )
     dashboard_group = parser.add_mutually_exclusive_group()
     dashboard_group.add_argument(
         "--dashboard", action="store_true", default=None, help="enable the live dashboard"
@@ -288,6 +300,14 @@ def _run_session(args: argparse.Namespace, task_class: Any = None) -> int:
     from alhazen.cli.tasks import installed_tasks, load_task_class
 
     mode = Mode(args.mode)
+
+    # Refused before anything loads: a flag the mode cannot honour is a
+    # usage error, and finding that out after the rig opened a window is
+    # the wrong moment.
+    refusal = flag_refusal(mode, headless=args.headless, mouse=args.mouse)
+    if refusal is not None:
+        print(f"CANNOT RUN: {refusal}", file=sys.stderr)
+        return 2
 
     if getattr(args, "list", False):
         tasks = installed_tasks()
@@ -492,6 +512,8 @@ def _trial_session(args: argparse.Namespace, rig: Any, task: Any, params: Any, m
             curriculum=curriculum,
             dashboard=args.dashboard,
             open_dashboard=False if args.no_dashboard_browser else None,
+            headless=args.headless,
+            mouse=args.mouse,
             instructions=getattr(args, "instructions", None),
             sources={"rig": str(args.rig), "task": str(args.params or "<defaults>")},
         )

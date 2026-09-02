@@ -12,12 +12,14 @@ pip install alhazen-vision
 alhazen new my_experiment && cd my_experiment
 pip install -e ".[dev]"
 pytest                                                    # no display needed
-python run.py --rig configs/rig-sim.yaml --sub s01 --ses 1
+python run.py --mode simulate --rig configs/rig-lab.yaml --headless
 ```
 
-That last command runs a complete session and writes a real run directory —
+That last command runs a complete session on the rig's own config, with
+nobody in the chair and no window open, and writes a real run directory —
 trials, events and frame timings, a config snapshot, a session log and a
-hashed manifest — on a laptop with no rig attached.
+hashed manifest — on a laptop with no rig attached. Every mode runs on every
+rig file: the mode decides what to do with the machine, not the file.
 
 Every run is also mirrored into `data/experiment.sqlite3`, where subjects,
 sessions, trials, displayed frames, gaze/responses, artifacts and aligned

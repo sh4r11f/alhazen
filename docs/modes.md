@@ -16,58 +16,71 @@ written twice, including the same off-by-one in the run-number counter.
 | `run` | the experiment | yes | to the rig's data root |
 
 ```
-alhazen run --mode demo --task kde-vergence --rig configs/rig-view.yaml
+alhazen run --mode demo --task kde-vergence --rig configs/rig-mac.yaml
 alhazen run --mode movie --task kde-vergence --rig configs/rig-lab.yaml --out movies
 alhazen run --mode measure --rig configs/rig-lab.yaml
+alhazen run --mode simulate --task kde-vergence --rig configs/rig-lab.yaml --headless
 alhazen run --mode test --task kde-vergence --rig configs/rig-lab.yaml --sub s01 --ses 1
 ```
 
 An experiment's own `run.py` takes the same flags, through the same code —
 see [Starting an experiment](#starting-an-experiment).
 
-## One rig file per purpose
+## Every mode on every rig
 
-Every mode takes `--rig`, and the temptation is one rig file per machine.
-It does not survive contact: the dev modes want different things from the
-same machine — a bare window to look at, a dashboard for a dry run, a mouse
-standing in for gaze, nothing at all for a headless test — and one file
-serving them all accumulates flags nobody remembers. So the convention, and
-what `alhazen new` scaffolds, is one file per **machine and purpose**:
+A rig file describes a **machine**: its panel, its devices, where its data
+goes. It says nothing about what you are about to do on it, because that is
+the mode's business. So there is one rig file per machine — `alhazen new`
+scaffolds a laptop (`rig-mac.yaml`) and the rig (`rig-lab.yaml`) — and every
+mode takes either of them as it stands.
 
-| rig file | built for | display | devices | data |
-|---|---|---|---|---|
-| `rig-sim.yaml` | tests, CI, ssh — any mode, headless | simulated | none | `data/` |
-| `rig-view.yaml` | `demo`, `movie` | a window | none | `data/dev/` |
-| `rig-auto.yaml` | `simulate`, watched live with the dashboard | a window | none | `data/dev/` |
-| `rig-mouse.yaml` | `test`, played by hand | a window | `mouse_sim` gaze | `data/dev/` |
-| `rig-mac.yaml` | any dev mode on a Mac | a window | `mouse_sim` gaze | `data/dev/` |
-| `rig-lab.yaml` | `run` — and `measure`, `test` and `movie` against the real geometry | fullscreen | the rig's own | `data/` |
+The framework used to ship a file per *purpose* as well: `rig-sim` for a
+headless run, `rig-auto` for a dry run with the dashboard, `rig-mouse` for
+playing the task by hand. Each was the machine's file with a device left out
+or swapped for a stand-in, which meant the machine's numbers lived in five
+places and a change to a rig's tracker had to be made in the one file that
+still mentioned it. Worse, `simulate` refused a rig with real hardware,
+so the file that described the rig was the one file the rig could not
+rehearse on.
+
+Now the mode decides what to do with the machine, one function
+(`alhazen.modes.session.rig_for_mode`), and says what it decided before
+trial one:
+
+| mode | what it drives | what it substitutes, and says so |
+|---|---|---|
+| `run` | the rig, exactly as written | nothing |
+| `test` | the rig, with a person in the chair | on a rig with no tracker, the mouse cursor stands in for gaze; `--mouse` asks for that on a rig whose tracker is off |
+| `simulate` | nothing that acts on or reads a subject | the task's autopilot for the tracker; the pump and the sync lines are logged rather than fired; the recorder is marked absent; a live spike stream is dropped; `--headless` takes the window and the browser away too |
+| `measure`, `demo`, `movie` | the panel (`movie`: not even that) | nothing |
 
 ```mermaid
 flowchart LR
-    subgraph dev["development machine"]
-        V["rig-view"] --> DM["demo · movie"]
-        A["rig-auto"] --> SI["simulate"]
-        MO["rig-mouse"] --> TE["test"]
-    end
-    subgraph anywhere["no display at all"]
-        SM["rig-sim"] --> HL["simulate · test · run, headless"]
-    end
-    subgraph rig["the rig"]
-        L["rig-lab"] --> RN["measure · test · run · movie"]
-    end
+    F["one rig file<br/><i>the machine</i>"] --> RFM["rig_for_mode(mode, rig)"]
+    RFM --> R["run<br/><i>as written</i>"]
+    RFM --> T["test<br/><i>no tracker → the mouse</i>"]
+    RFM --> S["simulate<br/><i>tracker → autopilot<br/>pump, sync → logged<br/>--headless → no window</i>"]
+    RFM --> O["measure · demo · movie<br/><i>as written</i>"]
 ```
 
-Two properties make the set safe rather than merely tidy. First, every dev
-rig points `data_root` at `data/dev`, a tree apart from subject data, so a
-rehearsal can never land where the analysis looks for subjects — and
-`rm -rf data/dev*` resets the development state without touching a session.
-Second, the monitor numbers in each file are that machine's own. They decide
-what a degree of visual angle is, so they are measured per machine
+Two flags override the machine itself, and each belongs to exactly one mode:
+`--headless` to `simulate` (CI, ssh: no window opens and the dashboard does
+not open a browser) and `--mouse` to `test`. Any other mode refuses them by
+name, with the reason — `--headless` on `test` is refused because a person
+needs a window, not silently ignored — because an experimenter who typed
+`--headless` and got a window would not know which of the two the data came
+from.
+
+Two properties keep the one-file-per-machine rule safe. First, `test` and
+`simulate` redirect their data to the [rehearsal root](#the-rehearsal-root)
+themselves, so no rig file carries a second `data_root` for the purpose and
+a rehearsal can never land where the analysis looks for subjects. Second,
+the monitor numbers in each file are that machine's own. They decide what a
+degree of visual angle is, so they are measured per machine
 (`alhazen calibrate ruler` checks them with a tape measure), and a rig file
 is never copied between machines with its numbers left as they were.
 
-The scaffolded dev rigs ship with starting-point numbers and say so loudly;
+The scaffolded files ship with starting-point numbers and say so loudly;
 `rig-mac.yaml` also carries the Retina notes — device pixels versus points is
 worth exactly one 2x error, once.
 
@@ -130,7 +143,7 @@ count to be a multiple of its motion levels and would refuse a reduced one.
 
 ```
 mode: test — the whole session with fewer trials, for a person to sit through once
-data: data/dev-rehearsal  (NOT the rig's data root)
+data: data-rehearsal  (NOT the rig's data root)
 reduced: saccade_paradigm.n_per_condition: 10 -> 1
 reduced: pursuit_paradigm.n_per_condition: 7 -> 1
 ```
@@ -184,9 +197,30 @@ gaze has to know where *this trial's* target is, and target position is drawn
 per trial, so a scripted trace cannot do it. Substituting a task subclass that
 publishes the current plan is the smallest honest way to connect them.
 
-**It refuses a rig with real hardware.** Driving a real rig with an invented
-subject writes a run directory full of numbers that look exactly like a
-session and are not one.
+**It drives no hardware.** Nobody is in the chair, so nothing that acts on
+a subject or reads one is driven: the rig's tracker stands down for the
+autopilot, a `nidaq` pump and sync lines become `simulated` (deliveries and
+pulses logged, not fired), a `spikeglx` recorder becomes `simulated` (the run
+is marked as having no recording attached) and a live spike stream is
+dropped. Each substitution is a line in the summary printed before trial
+one:
+
+```
+mode: simulate — the whole session, driven by a simulated subject
+data: data-rehearsal  (NOT the rig's data root)
+reduced: paradigm.n_per_condition: 10 -> 1
+autopilot: seed=1
+eyetracker: eyelink stands down — the task's autopilot supplies gaze
+reward: nidaq stands down — deliveries are logged, not pumped
+sync: nidaq stands down — pulses are logged, not fired
+display: none (--headless) — no window opens, and the dashboard does not open a browser
+```
+
+The data still lands in the rehearsal root, so an invented subject never
+writes a run directory where the analysis looks for real ones. The rig file
+is not touched: the substitutions live in the copy handed to
+`build_session`, and the config snapshot records that copy — the one that
+actually ran.
 
 ## `demo` — look at the stimulus
 
@@ -319,7 +353,7 @@ from alhazen.cli.modes import run_experiment
 raise SystemExit(
     run_experiment(
         task_class=MyTask,
-        default_rig=HERE / "configs" / "rig-sim.yaml",
+        default_rig=HERE / "configs" / "rig-mac.yaml",
         default_params=HERE / "configs" / "task.yaml",
         instructions=lambda: subject_instructions(HERE / "instructions.md"),
         argv=sys.argv[1:],

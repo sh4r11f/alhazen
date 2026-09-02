@@ -17,6 +17,20 @@ mode          trial counts     who is in the chair  where data lands
 
 Everything else — the phases, the stimuli, the scheduler, the recorder, the
 snapshot, the analysis that reads it afterwards — is the same code.
+
+"Who is in the chair" is also what decides which of the rig's devices are
+driven, and that is why the same rig file serves all three. A rig file
+describes the machine; the mode decides what to do with it (``rig_for_mode``):
+
+- ``run`` drives the rig exactly as written.
+- ``test`` puts a person in the chair. On a rig with no tracker — a laptop —
+  their mouse cursor stands in for gaze; ``--mouse`` asks for that on a rig
+  whose tracker is switched off.
+- ``simulate`` puts nobody in the chair, so it drives no hardware: the task's
+  autopilot replaces the tracker, the pump and the sync lines are recorded
+  rather than fired, and ``--headless`` takes the window away as well.
+
+Every substitution is a line in ``describe()``, printed before trial one.
 """
 
 from __future__ import annotations
@@ -26,9 +40,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from alhazen.config.models import RigConfig
+from alhazen.config.models import EyeTrackerConfig, RigConfig
 from alhazen.errors import ConfigError
-from alhazen.modes import Mode
+from alhazen.modes import Mode, flag_refusal
 from alhazen.modes.rehearsal import Reduction, rehearsal_root, shrink_params
 from alhazen.modes.simulation import Simulation
 from alhazen.session.runner import SessionRunner
@@ -99,20 +113,118 @@ def next_run(data_root: Path | str, subject: str, session: int) -> int:
     return max(taken, default=0) + 1
 
 
-def _real_devices(rig: RigConfig) -> list[str]:
-    """The rig's devices that drive real hardware.
+# Backends that are already stand-ins. Simulate mode leaves these alone: there
+# is nothing to switch off, and the note it would print would be noise.
+_STAND_INS = {"simulated", "mouse_sim", "scripted", "none"}
 
-    ``mouse_sim`` and ``scripted`` trackers are not hardware, and neither is
-    a simulated pump; a laptop rig configured with them is exactly what a
-    simulated session is for.
+
+def rig_for_mode(
+    mode: Mode, rig: RigConfig, *, headless: bool = False, mouse: bool = False
+) -> tuple[RigConfig, list[str]]:
+    """The rig as ``mode`` will drive it, and one line per thing it changed.
+
+    Pure — the rig file is never rewritten, and the copy handed back is what
+    ``build_session`` gets — so a test can ask what a mode would do to a rig
+    without opening a window. The lines go into ``ModeSession.notes`` and are
+    printed by ``describe()``, because every one of them is a device the
+    experimenter configured and is not getting.
     """
-    simulated = {"simulated", "mouse_sim", "scripted", "none"}
-    found = []
-    for name in ("eyetracker", "reward", "sync", "recording", "spikes"):
-        device = getattr(rig.devices, name)
-        if device is not None and device.backend not in simulated:
-            found.append(f"{name} ({device.backend})")
-    return found
+    refusal = flag_refusal(mode, headless=headless, mouse=mouse)
+    if refusal is not None:
+        raise ConfigError(refusal)
+    notes: list[str] = []
+    devices = rig.devices
+    display = rig.display
+    dashboard = rig.dashboard
+
+    if mode is Mode.SIMULATE:
+        # Nobody is in the chair, so nothing that acts on a subject or reads
+        # one is driven. Each stand-in is the same one a purely simulated rig
+        # would have configured; what changes is that the rig file no longer
+        # has to say so, because the mode already knows.
+        if devices.eyetracker is not None and devices.eyetracker.backend not in _STAND_INS:
+            notes.append(
+                f"eyetracker: {devices.eyetracker.backend} stands down — "
+                f"the task's autopilot supplies gaze"
+            )
+            devices = devices.model_copy(update={"eyetracker": None})
+        if devices.reward is not None and devices.reward.backend not in _STAND_INS:
+            notes.append(
+                f"reward: {devices.reward.backend} stands down — deliveries are logged, not pumped"
+            )
+            devices = devices.model_copy(
+                update={"reward": devices.reward.model_copy(update={"backend": "simulated"})}
+            )
+        if devices.sync is not None and devices.sync.backend not in _STAND_INS:
+            notes.append(f"sync: {devices.sync.backend} stands down — pulses are logged, not fired")
+            devices = devices.model_copy(
+                update={"sync": devices.sync.model_copy(update={"backend": "simulated"})}
+            )
+        if devices.recording is not None and devices.recording.backend not in _STAND_INS:
+            notes.append(
+                f"recording: {devices.recording.backend} stands down — "
+                f"the run is marked as having no recording attached"
+            )
+            devices = devices.model_copy(
+                update={"recording": devices.recording.model_copy(update={"backend": "simulated"})}
+            )
+        # Spikes are dropped rather than simulated: a simulated spike source
+        # needs a receptive field and a stimulus event to fire on, which only
+        # an RF task declares. A task that wants simulated spikes configures
+        # them in its rig as `simulated`, and that passes through untouched.
+        if devices.spikes is not None and devices.spikes.backend not in _STAND_INS:
+            notes.append(
+                f"spikes: {devices.spikes.backend} stands down — no spike source in a "
+                f"simulated session"
+            )
+            devices = devices.model_copy(update={"spikes": None})
+        if headless:
+            # No window, and no browser either: the dashboard still serves
+            # its page, but whoever started this over ssh has no browser to
+            # open it in, and CI has nobody to look.
+            notes.append(
+                "display: none (--headless) — no window opens, and the dashboard "
+                "does not open a browser"
+            )
+            display = display.model_copy(update={"backend": "simulated"})
+            dashboard = dashboard.model_copy(update={"auto_open": False})
+
+    elif mode is Mode.TEST:
+        # A person is in the chair. Their gaze has to come from somewhere,
+        # and on a machine with no tracker the mouse cursor is that
+        # somewhere — which needs a window to move the cursor over.
+        if mouse and display.backend == "simulated":
+            raise ConfigError(
+                "--mouse needs a window for the cursor to move over, and this rig's "
+                "display is simulated. Point --rig at a machine with a screen."
+            )
+        if mouse:
+            was = (
+                f"{devices.eyetracker.backend} switched off (--mouse)"
+                if devices.eyetracker is not None
+                else "this rig has none (--mouse)"
+            )
+            notes.append(f"eyetracker: the mouse cursor stands in for gaze — {was}")
+            devices = devices.model_copy(
+                update={"eyetracker": EyeTrackerConfig(backend="mouse_sim")}
+            )
+        elif devices.eyetracker is None:
+            if display.backend == "simulated":
+                notes.append(
+                    "eyetracker: none — this rig has no tracker and no window for a "
+                    "mouse cursor, so gaze is blank"
+                )
+            else:
+                notes.append("eyetracker: the mouse cursor stands in for gaze — this rig has none")
+                devices = devices.model_copy(
+                    update={"eyetracker": EyeTrackerConfig(backend="mouse_sim")}
+                )
+
+    if devices is not rig.devices or display is not rig.display or dashboard is not rig.dashboard:
+        rig = rig.model_copy(
+            update={"devices": devices, "display": display, "dashboard": dashboard}
+        )
+    return rig, notes
 
 
 def build_mode_session(
@@ -132,10 +244,16 @@ def build_mode_session(
     curriculum: Any = None,
     dashboard: bool | None = None,
     open_dashboard: bool | None = None,
+    headless: bool = False,
+    mouse: bool = False,
     build_session: Callable[..., SessionRunner] | None = None,
     **extra: Any,
 ) -> ModeSession:
     """Wire one session in the given mode.
+
+    ``headless`` and ``mouse`` are the two flags that override the machine
+    (see :func:`alhazen.modes.flag_refusal`); a mode that cannot honour one
+    raises ``ConfigError`` before anything is wired.
 
     ``build_session`` is injectable only so tests can watch what this passes
     down without opening a window; production always gets the real one.
@@ -147,10 +265,14 @@ def build_mode_session(
 
         build_session = _real_build_session
 
+    # The rig as this mode drives it — real hardware stood down for simulate,
+    # the mouse standing in for a missing tracker in test — decided before
+    # anything else, so a flag the mode refuses is refused first.
+    rig, notes = rig_for_mode(mode, rig, headless=headless, mouse=mouse)
+
     params = task.params
     reductions: list[Reduction] = []
     simulation: Simulation | None = None
-    notes: list[str] = []
 
     if mode is not Mode.RUN:
         params, reductions = shrink_params(
@@ -165,14 +287,6 @@ def build_mode_session(
             task = type(task)(params)
 
     if mode is Mode.SIMULATE:
-        hardware = _real_devices(rig)
-        if hardware:
-            raise ConfigError(
-                f"simulate mode refuses this rig: it configures real hardware "
-                f"({', '.join(hardware)}). Driving a real rig with an invented subject "
-                f"writes a run directory full of numbers that look exactly like a session "
-                f"and are not one. Point --rig at a simulated config."
-            )
         simulation = task.simulation(seed if seed is not None else 0)
         if simulation is None or simulation.is_empty():
             raise ConfigError(
