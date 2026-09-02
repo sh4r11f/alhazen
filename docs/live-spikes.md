@@ -78,6 +78,80 @@ in, same field out* rather than "a map appeared". Simulate mode counts a
 real spike source as hardware and refuses it, exactly as it refuses a
 real tracker.
 
+## Sorted streams: `backend: sorted_stream`
+
+The `spikeglx` backend detects its own threshold crossings, so its rows
+are *channels*. When a real-time spike sorter is already running, the
+useful unit of analysis is a *unit*, and this backend subscribes to one:
+
+```yaml
+devices:
+  spikes:
+    backend: sorted_stream
+    address: tcp://192.168.1.50:5556   # the sorter's ZeroMQ PUB endpoint
+    fetch_interval_ms: 20              # how often the reader thread polls
+    heartbeat_timeout_ms: 2000         # silence past this is a fault
+```
+
+Install the transport with `pip install 'alhazen-vision[zmq]'`; the
+backend imports `zmq` lazily and names this extra if it is missing.
+
+**Rows are units, and the row map only grows.** A unit first seen in the
+tenth minute of a session gets a new row rather than renumbering the
+existing ones, so a consumer's per-row history stays valid for the whole
+session. `channel_ids` maps a row back to its unit id. A unit that spikes
+before it has been announced still gets a row, because dropping it would
+undercount the newest unit at exactly the moment it appears.
+
+### The wire contract
+
+The sorter is a ZeroMQ `PUB` socket; alhazen subscribes. Every message is
+a multipart frame whose first frame is a JSON header. Three types:
+
+```jsonc
+// "units" — MUST be the first message, and repeated whenever the set changes.
+{"type": "units", "unit_ids": [3, 9, 14], "labels": ["good", "good", "mua"],
+ "sample_rate_hz": 30000}
+
+// "spikes" — three frames: this header, then k int64 sample indices,
+// then k int32 unit ids.
+{"type": "spikes", "stream": "imec0", "covered_until_sample": 90300, "n": 2,
+ "seq": 41}
+
+// "heartbeat" — at least every 200 ms, so silence is distinguishable
+// from a quiet brain.
+{"type": "heartbeat", "covered_until_sample": 90600, "seq": 42}
+```
+
+Four rules the consumer enforces, each because the alternative fails
+quietly:
+
+- **The sample rate rides on `units`, which must come first.** Nothing can
+  be placed on a clock without it, and a timebase built on a rate of zero
+  would stack every spike at one instant. A `spikes` or `heartbeat`
+  arriving before any `units` is refused by name, and so is a rate that
+  changes mid-session.
+- **`covered_until_sample` is on every timed message**, including
+  heartbeats. It is what lets a consumer wait for a window to be complete
+  instead of counting early, and a silent stretch must still make
+  progress.
+- **`seq` is optional but strongly recommended.** A `PUB` socket discards
+  messages for a slow subscriber without telling either end, so a lost
+  `spikes` message would otherwise just undercount a decoder's features.
+  Given a sequence number, the source counts the gap, logs it, and reports
+  it in `describe()`; without one it says `drops undetectable (no seq)`,
+  because "no drops seen" and "cannot see drops" are different claims.
+- **`n` must match the array frames.** A header disagreeing with its own
+  payload is refused rather than truncated.
+
+`alhazen check-rig` **listens** for this backend rather than only opening
+the socket: a SUB socket connects successfully to an endpoint nobody is
+publishing on, so a connect-only check would give a dead sorter a clean
+bill of health. It waits up to `heartbeat_timeout_ms` for a `units`
+message and reports the unit count, the sample rate and the covered-until
+lag — which is the number that decides whether a between-trials decode can
+finish in time.
+
 ## The live-analysis seam: `Task.live_analysis`
 
 Architecture §5.5 states the contract; the shape of an implementation:

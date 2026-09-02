@@ -14,7 +14,9 @@ problem, re-run, and only then discover a second.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
+from typing import Any
 
 from alhazen.config.models import RewardPulses, RigConfig
 from alhazen.core.clock import MonotonicClock
@@ -249,6 +251,11 @@ def _check_spikes(rig: RigConfig) -> CheckResult:
     closes again without starting the fetch thread. The failure this
     catches is SpikeGLX left un-started (or its command server disabled),
     discovered here rather than with the subject in the chair.
+
+    The ``sorted_stream`` backend needs more than a connect, because a
+    ZeroMQ SUB socket connects to an endpoint nobody is publishing on and
+    reports success. So that backend is checked by listening (below), which
+    is the only thing that can tell a running sorter from a dead one.
     """
     cfg = rig.devices.spikes
     if cfg is None:
@@ -256,15 +263,62 @@ def _check_spikes(rig: RigConfig) -> CheckResult:
     source = make_spikes(cfg)
     try:
         source.connect()
-        detail = source.describe()
+        detail = _listen_for_units(source, cfg) if cfg.backend == "sorted_stream" else None
+        if detail is None:
+            detail = source.describe()
+        elif detail.startswith("no units message"):
+            return CheckResult("spikes", False, detail)
     except AlhazenError as e:
         return CheckResult("spikes", False, str(e))
     finally:
-        # Nothing must be left holding the command-server connection: the
-        # session that is about to start needs it.
+        # Nothing must be left holding the command-server connection or the
+        # socket: the session that is about to start needs both.
         source.close()
     simulated = " (simulated)" if cfg.backend == "simulated" else ""
     return CheckResult("spikes", True, f"{detail}{simulated}")
+
+
+def _listen_for_units(source: Any, cfg: Any) -> str:
+    """Wait for the sorter's first ``units`` message, then report the lag.
+
+    Polls synchronously rather than starting the background thread, for the
+    same reason every other check avoids one: a check that leaves a thread
+    running has changed the rig it was asked to inspect. The wait is the
+    configured heartbeat timeout, since a stream that has not said anything
+    within its own silence budget is by definition not publishing.
+
+    The covered-until lag is the number the phase-2 bring-up gate is about:
+    it is how far behind real time the sorter's output is, and therefore how
+    long a consumer will wait for a window to close.
+    """
+    clock = MonotonicClock()
+    source.configure(clock)
+    budget_s = max(cfg.heartbeat_timeout_ms / 1000.0, 0.5)
+    deadline = time.monotonic() + budget_s
+    while time.monotonic() < deadline:
+        try:
+            source.poll_once()
+        except AlhazenError as e:
+            return str(e)
+        if source.n_channels:
+            break
+        time.sleep(0.02)
+    if not source.n_channels:
+        return (
+            f"no units message from the sorted stream at {cfg.address} within "
+            f"{budget_s:g} s — is the real-time sorter running and publishing?"
+        )
+    # One more poll so a heartbeat that arrived just after the units message
+    # has a chance to set coverage; without it the lag reads as unknown on a
+    # stream that is working perfectly well.
+    covered = source.drain().covered_until
+    if covered is None:
+        source.poll_once()
+        covered = source.drain().covered_until
+    lag = "lag unknown (no timed message yet)"
+    if covered is not None:
+        lag = f"lag {1000.0 * (clock.now() - covered):.0f} ms"
+    return f"{source.describe()}, {lag}"
 
 
 def format_result(result: CheckResult) -> str:
