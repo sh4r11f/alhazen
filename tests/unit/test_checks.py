@@ -227,6 +227,43 @@ class TestSortedStreamSpikes:
             thread.join(timeout=2.0)
             publisher.close(linger=0)
 
+    def test_a_stream_speaking_the_wrong_protocol_fails(self, tmp_path):
+        # The other way this check can be wrong: something IS publishing, so
+        # the listen succeeds, but what it says is unusable. The error has to
+        # come back as a FAIL, not as a detail line under an OK.
+        zmq = pytest.importorskip("zmq")
+        context = zmq.Context.instance()
+        publisher = context.socket(zmq.PUB)
+        port = publisher.bind_to_random_port("tcp://127.0.0.1")
+
+        stop = threading.Event()
+
+        def publish() -> None:
+            # Heartbeats with no units message ever: the sample rate has
+            # nowhere to come from.
+            while not stop.is_set():
+                publisher.send_multipart(
+                    [json.dumps({"type": "heartbeat", "covered_until_sample": 1000}).encode()]
+                )
+                stop.wait(0.02)
+
+        thread = threading.Thread(target=publish, daemon=True)
+        thread.start()
+        try:
+            rig = sim_rig(
+                tmp_path,
+                spikes=SpikeSourceConfig(
+                    backend="sorted_stream", address=f"tcp://127.0.0.1:{port}"
+                ),
+            )
+            result = by_name(check_rig(rig))["spikes"]
+            assert not result.ok
+            assert "units" in result.detail
+        finally:
+            stop.set()
+            thread.join(timeout=2.0)
+            publisher.close(linger=0)
+
     def test_a_silent_endpoint_fails_rather_than_looking_connected(self, tmp_path):
         pytest.importorskip("zmq")
         # Nothing is bound to this port. A check that only opened the socket
