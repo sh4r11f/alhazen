@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from alhazen.config.models import (
@@ -112,10 +114,14 @@ class TestRecording:
 
 
 class TestTestOnlyBackend:
-    def test_a_missing_tracker_sdk_is_a_fail_line_not_a_traceback(self, tmp_path):
+    def test_a_missing_tracker_sdk_is_a_fail_line_not_a_traceback(self, tmp_path, monkeypatch):
         # check-rig exists to tell an experimenter what is wrong with the rig.
-        # Both real backends need a vendor SDK that is absent here, and each
-        # must come back as a FAIL naming what to install.
+        # Both real backends need a vendor SDK, and each must come back as a
+        # FAIL naming what to install. The SDKs are made absent explicitly:
+        # on the rig itself they are installed, and check_rig would otherwise
+        # open the real tracker from inside a unit test.
+        monkeypatch.setitem(sys.modules, "pylink", None)
+        monkeypatch.setitem(sys.modules, "pypixxlib", None)
         for backend, installer in (
             ("eyelink", "Developer's Kit"),
             ("viewpixx", "Software Tools"),
