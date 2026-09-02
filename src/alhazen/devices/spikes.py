@@ -37,6 +37,7 @@ experimenter, not in a log nobody is watching.
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -529,6 +530,400 @@ class SpikeGLXLiveSource:
 
 
 # ----------------------------------------------------------------------
+# The sorted-unit stream
+# ----------------------------------------------------------------------
+
+
+class _ZmqSubscriber:
+    """A ZeroMQ SUB socket, reduced to the two calls the source makes.
+
+    Isolated for the same reason ``_SglxConnection`` is: the loop above it
+    is then plain Python over bytes, and a test drives it with a queue.
+    """
+
+    def __init__(self, address: str) -> None:
+        try:
+            import zmq
+        except ImportError as error:
+            raise SpikeSourceError(
+                "pyzmq is not installed, and the sorted_stream spike backend needs it — "
+                "pip install 'alhazen-vision[zmq]'"
+            ) from error
+        self._zmq = zmq
+        # A process-wide shared context, never terminated here: it is shared
+        # with anything else in the process using zmq, and the socket's own
+        # close() is what releases this device's resources.
+        self._context: Any = zmq.Context.instance()
+        self._socket = self._context.socket(zmq.SUB)
+        self._socket.setsockopt(zmq.SUBSCRIBE, b"")  # every message; the sorter filters nothing
+        # Bound our own inbound queue. A PUB socket drops for a slow
+        # subscriber rather than blocking, so an unbounded queue would only
+        # let the session fall further behind; a few seconds at the
+        # contract's 10 Hz is all a live map can use anyway. Drops are
+        # invisible at this layer, which is why the wire contract carries an
+        # optional `seq` and the source counts gaps in it.
+        self._socket.setsockopt(zmq.RCVHWM, 1000)
+        self._socket.connect(address)
+        self._poller = zmq.Poller()
+        self._poller.register(self._socket, zmq.POLLIN)
+
+    def recv(self, timeout_ms: float) -> list[bytes] | None:
+        # zmq's poller counts whole milliseconds, and 0 means "return at
+        # once" rather than "block forever" — which is what the caller's
+        # drain-until-empty loop wants.
+        if not self._poller.poll(int(timeout_ms)):
+            return None
+        frames: list[bytes] = self._socket.recv_multipart(self._zmq.NOBLOCK)
+        return frames
+
+    def close(self) -> None:
+        self._poller.unregister(self._socket)
+        self._socket.close(linger=0)
+
+
+class SortedStreamSource:
+    """Sorted spikes published live by an external sorter, over ZeroMQ.
+
+    Where :class:`SpikeGLXLiveSource` reads raw samples and detects
+    threshold crossings itself, this one consumes units somebody else
+    already sorted. The consequence for the ``SpikeBatch`` contract is that
+    **rows are units, not channels**, and the row map only ever grows: a
+    unit that appears mid-session gets a new row rather than renumbering the
+    old ones, so a consumer's per-row history stays valid for the whole
+    session. ``channel_ids`` maps a row back to its unit id.
+
+    The wire contract is in ``docs/live-spikes.md``. Two of its rules are
+    load-bearing here:
+
+    - the sample rate rides on the ``units`` message, which must arrive
+      before any message carrying a time, because ``StreamTimebase``
+      refuses a rate of zero and a timebase built on one would place every
+      spike at the same instant;
+    - the publisher heartbeats even when nothing fires, so a sorter that
+      died is distinguishable from a quiet brain. Silence past
+      ``heartbeat_timeout_ms`` is a fault, re-raised on the session thread
+      from ``drain()`` like every other device fault.
+    """
+
+    def __init__(
+        self,
+        cfg: SpikeSourceConfig,
+        subscriber_factory: Callable[[], Any] | None = None,
+    ) -> None:
+        self._cfg = cfg
+        # Injectable for tests only, exactly as the SpikeGLX backend injects
+        # its connection: the seam is the socket, so the loop above it — the
+        # row map, the timebase, the watchdog, the fault path — is tested
+        # for real.
+        self._subscriber_factory = subscriber_factory or (lambda: _ZmqSubscriber(cfg.address))
+        self._subscriber: Any | None = None
+        self._clock: Clock | None = None
+        self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        # Guarded by _lock:
+        self._timebase: StreamTimebase | None = None
+        self._rows: dict[int, int] = {}  # unit id -> row
+        self._ids: list[int] = []  # row -> unit id
+        self._pending: list[tuple[np.ndarray, np.ndarray]] = []
+        self._covered: float | None = None
+        self._fault: BaseException | None = None
+        self._last_heard: float | None = None
+        self._last_seq: int | None = None
+        self._seq_seen = False
+        self._dropped = 0
+
+    # -- the SpikeSource surface ---------------------------------------
+
+    @property
+    def n_channels(self) -> int:
+        with self._lock:
+            return len(self._ids)
+
+    @property
+    def channel_ids(self) -> tuple[int, ...]:
+        """Unit id per row, in first-seen order."""
+        with self._lock:
+            return tuple(self._ids)
+
+    @property
+    def dropped_messages(self) -> int | None:
+        """Messages the sequence numbers say went missing, or None when the
+        publisher sends no sequence numbers and drops cannot be detected."""
+        with self._lock:
+            return self._dropped if self._seq_seen else None
+
+    def configure(self, clock: Clock) -> None:
+        self._clock = clock
+
+    def connect(self) -> None:
+        # Note what a SUB socket can and cannot prove: connect() succeeds
+        # against an endpoint nobody is publishing on, so unlike the
+        # SpikeGLX backend this one cannot verify the far end here. Whether
+        # the sorter is actually publishing is answered by listening, which
+        # is what check-rig does.
+        self._subscriber = self._subscriber_factory()
+        log.info("spikes: %s", self.describe())
+
+    def start(self) -> None:
+        if self._subscriber is None:
+            raise SpikeSourceError("the sorted stream was started before connect()")
+        if self._clock is None:
+            raise SpikeSourceError("the sorted stream was started before configure(clock)")
+        if self._thread is not None:
+            raise SpikeSourceError("the sorted stream was started twice")
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, name="alhazen-sorted", daemon=True)
+        self._thread.start()
+
+    def _run(self) -> None:
+        interval_s = self._cfg.fetch_interval_ms / 1000.0
+        try:
+            while not self._stop.is_set():
+                self.poll_once()
+                self._stop.wait(interval_s)
+        except BaseException as error:  # stored, re-raised on the session thread
+            log.exception("sorted spike stream thread failed")
+            with self._lock:
+                self._fault = error
+
+    def poll_once(self) -> None:
+        """Receive everything waiting, then check the watchdog.
+
+        Public, unlike the SpikeGLX backend's, because two callers outside
+        the background thread drive it: ``check-rig`` listens for a units
+        message without starting a thread, and the tests do the same.
+        """
+        subscriber = self._subscriber
+        if subscriber is None:
+            raise SpikeSourceError("the sorted stream was polled before connect()")
+        clock = self._clock
+        if clock is None:
+            raise SpikeSourceError("the sorted stream was polled before configure(clock)")
+
+        now = clock.now()
+        with self._lock:
+            # The watchdog starts at the first poll rather than at connect(),
+            # because connect() runs before configure(clock) and there is no
+            # clock to start it from until then.
+            if self._last_heard is None:
+                self._last_heard = now
+
+        while True:
+            frames = subscriber.recv(timeout_ms=0)
+            # Read the clock after the receive, never before: the message
+            # existed by the time it arrived, so "after" bounds the error on
+            # the one side StreamTimebase's minimum removes.
+            now = clock.now()
+            if frames is None:
+                break
+            self._handle(frames, now)
+
+        with self._lock:
+            silent_s = now - (self._last_heard if self._last_heard is not None else now)
+            if silent_s * 1000.0 > self._cfg.heartbeat_timeout_ms and self._fault is None:
+                # A sorter that stopped publishing must not read as "the
+                # neurons went quiet". Raised from drain(), on the session
+                # thread, so it reaches the experimenter either way.
+                self._fault = SpikeSourceError(
+                    f"no heartbeat from the sorted stream at {self._cfg.address} for "
+                    f"{silent_s:.1f} s (limit {self._cfg.heartbeat_timeout_ms:g} ms) — "
+                    f"the sorter has stopped publishing"
+                )
+
+    # -- one message ---------------------------------------------------
+
+    def _handle(self, frames: list[bytes], now: float) -> None:
+        try:
+            header = json.loads(frames[0])
+        except (ValueError, IndexError) as error:
+            raise SpikeSourceError(
+                f"the sorted stream at {self._cfg.address} sent a message whose first frame "
+                f"is not a JSON header ({error})"
+            ) from error
+        kind = header.get("type")
+        if kind == "units":
+            self._handle_units(header, now)
+        elif kind in ("spikes", "heartbeat"):
+            self._handle_timed(kind, header, frames, now)
+        else:
+            raise SpikeSourceError(
+                f"the sorted stream at {self._cfg.address} sent an unknown message type "
+                f"{kind!r}; this consumer understands 'units', 'spikes' and 'heartbeat' "
+                f"(see docs/live-spikes.md)"
+            )
+
+    def _handle_units(self, header: dict[str, Any], now: float) -> None:
+        rate = header.get("sample_rate_hz")
+        if rate is None or float(rate) <= 0:
+            raise SpikeSourceError(
+                f"the sorted stream at {self._cfg.address} sent a 'units' message with "
+                f"sample_rate_hz={rate!r}; it must be positive, because it is the only "
+                f"place the stream's sample rate is published"
+            )
+        with self._lock:
+            self._last_heard = now
+            if self._timebase is None:
+                self._timebase = StreamTimebase(float(rate))
+            elif float(rate) != self._timebase.rate_hz:
+                # A rate that changed mid-session means a different
+                # acquisition, and every sample placed so far belongs to the
+                # old one.
+                raise SpikeSourceError(
+                    f"the sorted stream at {self._cfg.address} changed sample rate from "
+                    f"{self._timebase.rate_hz:g} to {float(rate):g} Hz mid-session — "
+                    f"restart the session when the acquisition restarts"
+                )
+            for unit in header.get("unit_ids", []):
+                self._row_for(int(unit))
+
+    def _handle_timed(
+        self, kind: str, header: dict[str, Any], frames: list[bytes], now: float
+    ) -> None:
+        with self._lock:
+            timebase = self._timebase
+        if timebase is None:
+            raise SpikeSourceError(
+                f"the sorted stream at {self._cfg.address} sent a {kind!r} message before "
+                f"any 'units' message. The sample rate rides on 'units', which the contract "
+                f"requires first; a timebase without one would place every spike at the "
+                f"same instant"
+            )
+        covered = int(header["covered_until_sample"])
+        samples, units = self._decode_spikes(header, frames) if kind == "spikes" else (None, None)
+
+        with self._lock:
+            self._last_heard = now
+            self._note_sequence(header.get("seq"))
+            try:
+                timebase.note_fetch(covered, now)
+            except ValueError as error:
+                raise SpikeSourceError(
+                    f"the sorted stream at {self._cfg.address}: {error}"
+                ) from error
+            self._covered = timebase.sample_to_session(covered)
+            if samples is not None and units is not None and samples.size:
+                rows = np.fromiter(
+                    (self._row_for(int(unit)) for unit in units), np.int32, count=units.size
+                )
+                # Mapped to session seconds here, with the offset the
+                # timebase holds now — the same rule the SpikeGLX backend
+                # follows, and the reason drain() re-sorts.
+                self._pending.append((timebase.to_session(samples), rows))
+
+    def _decode_spikes(
+        self, header: dict[str, Any], frames: list[bytes]
+    ) -> tuple[np.ndarray | None, np.ndarray | None]:
+        n = int(header.get("n", 0))
+        if n == 0:
+            return None, None
+        if len(frames) < 3:
+            raise SpikeSourceError(
+                f"the sorted stream at {self._cfg.address} sent a 'spikes' header claiming "
+                f"{n} spikes but only {len(frames)} frame(s); it must carry three: the "
+                f"header, int64 sample indices, int32 unit ids"
+            )
+        try:
+            samples = np.frombuffer(frames[1], dtype=np.int64)
+            units = np.frombuffer(frames[2], dtype=np.int32)
+        except ValueError as error:
+            raise SpikeSourceError(
+                f"the sorted stream at {self._cfg.address} sent 'spikes' frames that are "
+                f"not whole int64/int32 arrays ({error})"
+            ) from error
+        if samples.size != n or units.size != n:
+            raise SpikeSourceError(
+                f"the sorted stream at {self._cfg.address} sent a 'spikes' header claiming "
+                f"n = {n} but frames carrying {samples.size} sample indices and "
+                f"{units.size} unit ids"
+            )
+        return samples, units
+
+    def _note_sequence(self, seq: Any) -> None:
+        """Count messages the publisher's sequence numbers say went missing.
+
+        Optional in the contract, and the only way to notice a drop at all:
+        a PUB socket discards for a slow subscriber without telling either
+        end, and a lost 'spikes' message would otherwise just undercount a
+        decoder's features. Caller holds the lock.
+        """
+        if seq is None:
+            return
+        value = int(seq)
+        if self._last_seq is not None and value > self._last_seq + 1:
+            missing = value - self._last_seq - 1
+            self._dropped += missing
+            log.warning(
+                "sorted stream at %s dropped %d message(s) (seq %d -> %d)",
+                self._cfg.address,
+                missing,
+                self._last_seq,
+                value,
+            )
+        self._seq_seen = True
+        self._last_seq = value
+
+    def _row_for(self, unit: int) -> int:
+        """The row for a unit id, assigning the next one on first sight.
+        Caller holds the lock."""
+        row = self._rows.get(unit)
+        if row is None:
+            row = len(self._ids)
+            self._rows[unit] = row
+            self._ids.append(unit)
+        return row
+
+    # -- the session-side surface --------------------------------------
+
+    def drain(self) -> SpikeBatch:
+        with self._lock:
+            if self._fault is not None:
+                fault, self._fault = self._fault, None
+                if isinstance(fault, SpikeSourceError):
+                    raise fault
+                raise SpikeSourceError(
+                    f"the sorted stream at {self._cfg.address} failed: {fault}"
+                ) from fault
+            if self._thread is not None and not self._thread.is_alive() and not self._stop.is_set():
+                raise SpikeSourceError(
+                    "the sorted stream's reader thread is no longer running and left no "
+                    "error — the live map has stopped updating"
+                )
+            batches, self._pending = self._pending, []
+            covered = self._covered
+        if not batches:
+            return SpikeBatch(np.empty(0, dtype=np.float64), np.empty(0, dtype=np.int32), covered)
+        times = np.concatenate([t for t, _ in batches])
+        rows = np.concatenate([r for _, r in batches])
+        # The offset estimate moves between fetches, so batches appended
+        # later can carry earlier session times. Sorting here is what makes
+        # the batch's time order true rather than merely usual.
+        order = np.argsort(times, kind="stable")
+        return SpikeBatch(times[order], rows[order], covered)
+
+    def describe(self) -> str:
+        with self._lock:
+            rate = self._timebase.rate_hz if self._timebase is not None else None
+            units = len(self._ids)
+            dropped = self._dropped if self._seq_seen else None
+        if rate is None:
+            return f"sorted_stream at {self._cfg.address} — connected, no units message yet"
+        drops = f"{dropped} dropped" if dropped is not None else "drops undetectable (no seq)"
+        return f"sorted_stream at {self._cfg.address} — {units} units @ {rate:g} Hz, {drops}"
+
+    def close(self) -> None:
+        self._stop.set()
+        thread, self._thread = self._thread, None
+        if thread is not None:
+            thread.join(timeout=2.0)
+            if thread.is_alive():  # pragma: no cover - a hung socket
+                log.error("sorted stream reader did not stop within 2 s; abandoning it")
+        subscriber, self._subscriber = self._subscriber, None
+        if subscriber is not None:
+            subscriber.close()
+
+
+# ----------------------------------------------------------------------
 # The simulated sibling
 # ----------------------------------------------------------------------
 
@@ -677,4 +1072,6 @@ def make_spikes(cfg: SpikeSourceConfig) -> SpikeSource:
     constructor."""
     if cfg.backend == "spikeglx":
         return SpikeGLXLiveSource(cfg)
+    if cfg.backend == "sorted_stream":
+        return SortedStreamSource(cfg)
     return SimulatedSpikeSource(cfg)

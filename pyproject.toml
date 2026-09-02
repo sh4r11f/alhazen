@@ -44,6 +44,11 @@ movie = ["imageio>=2.31", "imageio-ffmpeg>=0.4", "pillow>=10.1"]
 # and the alignment need only numpy, so a plain install can still read a
 # session and align it to a recording.
 analysis = ["scipy>=1.10"]
+# The sorted_stream spike backend's transport. An extra rather than a core
+# dependency because only a rig running a real-time sorter needs it;
+# alhazen.devices.spikes imports it lazily and raises a SpikeSourceError
+# naming this extra if it is missing.
+zmq = ["pyzmq>=25"]
 # The documentation site. Not needed to use alhazen, only to build its docs.
 docs = [
   "mkdocs-material>=9.5",
@@ -61,6 +66,10 @@ dev = [
   # exercising the real encoder, and a writer whose only test skips itself is
   # a writer nobody is testing.
   "alhazen-vision[movie]",
+  # Same argument as movie: the sorted_stream backend's socket needs no
+  # sorter and no probe — a PUB socket in the test process is a complete
+  # far end — so the real transport is tested rather than skipped.
+  "alhazen-vision[zmq]",
   # scripts/release_check.py reads pyproject.toml. tomllib is stdlib from
   # 3.11; this is the backport for the 3.10 job.
   "tomli>=2.0; python_version < '3.11'",

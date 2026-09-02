@@ -437,11 +437,16 @@ class RecordingConfig(Model):
         return self
 
 
-# Which fields on SpikeSourceConfig belong to which backend, enforced the
-# same way EyeTrackerConfig enforces its split: a field set on the wrong
-# backend is a config error, because the experimenter who wrote it believes
-# they configured something and nothing at runtime would say otherwise.
-SPIKEGLX_ONLY_FIELDS = (
+# Which fields on SpikeSourceConfig each backend actually reads, enforced
+# the same way EyeTrackerConfig enforces its split: a field set on a backend
+# that never reads it is a config error, because the experimenter who wrote
+# it believes they configured something and nothing at runtime would say
+# otherwise.
+#
+# Stated as "what this backend uses" rather than "what only this backend
+# uses" because one field is genuinely shared: fetch_interval_ms paces the
+# background poll loop, and two of the three backends run one.
+SPIKEGLX_FIELDS = (
     "host",
     "port",
     "stream",
@@ -452,7 +457,7 @@ SPIKEGLX_ONLY_FIELDS = (
     "refractory_ms",
     "car",
 )
-SIMULATED_SPIKES_ONLY_FIELDS = (
+SIMULATED_SPIKES_FIELDS = (
     "sim_channels",
     "sim_rf_centers_dva",
     "sim_rf_sigma_dva",
@@ -463,6 +468,21 @@ SIMULATED_SPIKES_ONLY_FIELDS = (
     "sim_respond_to",
     "sim_seed",
 )
+SORTED_STREAM_FIELDS = (
+    "address",
+    "fetch_interval_ms",
+    "heartbeat_timeout_ms",
+)
+BACKEND_FIELDS = {
+    "spikeglx": SPIKEGLX_FIELDS,
+    "simulated": SIMULATED_SPIKES_FIELDS,
+    "sorted_stream": SORTED_STREAM_FIELDS,
+}
+
+# A ZeroMQ endpoint: a transport, then an address. Validated at load time so
+# a bare "host:port" — which zmq.connect() accepts and then never receives
+# anything on — fails with the file open.
+_ZMQ_ADDRESS_RE = r"^(tcp|ipc|inproc|pgm|epgm)://.+$"
 
 # "all", or comma-separated entries of "N" / "N:M" (inclusive), e.g.
 # "0:383", "0:127,256:383", "5,9,12". Validated at load time so a malformed
@@ -479,20 +499,24 @@ class SpikeSourceConfig(Model):
     acquisition and streams samples back live. A rig doing chronic
     recordings typically configures both.
 
-    Two backends:
+    Three backends:
 
     - ``spikeglx`` connects to SpikeGLX's remote command server (Options →
       Command Server in SpikeGLX; default port 4142) through the official
       SpikeGLX-CPP-SDK Python bindings, fetches the stream in the
       background, and turns it into threshold-crossing spikes
       (:mod:`alhazen.neural.detect`);
+    - ``sorted_stream`` subscribes to an external real-time sorter
+      publishing already-sorted units over ZeroMQ, so the rows a live
+      analysis sees are units rather than channels (see
+      ``docs/live-spikes.md`` for the wire contract);
     - ``simulated`` invents spikes from configured ground-truth receptive
       fields, driven by the session's own stimulus events — which is what
       lets the whole live pipeline run, and be tested, with no probe in any
       brain.
     """
 
-    backend: Literal["spikeglx", "simulated"]
+    backend: Literal["spikeglx", "simulated", "sorted_stream"]
 
     # --- spikeglx ------------------------------------------------------
     host: str = "127.0.0.1"  # the machine SpikeGLX runs on
@@ -530,11 +554,27 @@ class SpikeSourceConfig(Model):
     sim_respond_to: str = "PROBE_ON"
     sim_seed: int = 0
 
+    # --- sorted_stream -------------------------------------------------
+    # The sorter's ZeroMQ PUB endpoint. It publishes; alhazen subscribes.
+    address: str = "tcp://127.0.0.1:5556"
+    # How long the stream may go completely silent before that is a fault.
+    # A sorter that stopped publishing must never read as "the neurons went
+    # quiet", so the contract asks it to heartbeat at least every 200 ms and
+    # this is the ten-fold margin on that.
+    heartbeat_timeout_ms: float = 2000.0
+
     @model_validator(mode="after")
     def _valid(self) -> SpikeSourceConfig:
         self._reject_other_backend_fields()
         if not 1024 <= self.port <= 65535:
             raise ValueError("spikes port must be between 1024 and 65535")
+        if not re.match(_ZMQ_ADDRESS_RE, self.address):
+            raise ValueError(
+                f"spikes address {self.address!r} must be a ZeroMQ endpoint with a "
+                f"transport, e.g. 'tcp://192.168.1.50:5556'"
+            )
+        if self.heartbeat_timeout_ms <= 0:
+            raise ValueError("spikes heartbeat_timeout_ms must be > 0")
         if not re.match(_CHANNELS_RE, self.channels):
             raise ValueError(
                 f"spikes channels {self.channels!r} must be 'all' or comma-separated "
@@ -566,13 +606,11 @@ class SpikeSourceConfig(Model):
 
     def _reject_other_backend_fields(self) -> None:
         # model_fields_set holds only the keys the YAML actually supplied,
-        # so untouched defaults for the other backend stay silent while a
+        # so untouched defaults for the other backends stay silent while a
         # value someone typed on purpose is refused by name.
-        wrong = {
-            "spikeglx": SIMULATED_SPIKES_ONLY_FIELDS,
-            "simulated": SPIKEGLX_ONLY_FIELDS,
-        }[self.backend]
-        named = sorted(set(wrong) & self.model_fields_set)
+        every = set().union(*BACKEND_FIELDS.values())
+        wrong = every - set(BACKEND_FIELDS[self.backend])
+        named = sorted(wrong & self.model_fields_set)
         if named:
             raise ValueError(
                 f"spikes backend {self.backend!r} ignores {', '.join(named)} — "

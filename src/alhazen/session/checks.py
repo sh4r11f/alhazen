@@ -14,7 +14,9 @@ problem, re-run, and only then discover a second.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
+from typing import Any
 
 from alhazen.config.models import RewardPulses, RigConfig
 from alhazen.core.clock import MonotonicClock
@@ -25,7 +27,7 @@ from alhazen.devices.spikes import make_spikes
 from alhazen.devices.sync import SyncOutput, make_sync
 from alhazen.display import monitors as monitor_registry
 from alhazen.display.screen import Screen
-from alhazen.errors import AlhazenError, DisplayError
+from alhazen.errors import AlhazenError, DisplayError, SpikeSourceError
 
 log = logging.getLogger(__name__)
 
@@ -249,6 +251,11 @@ def _check_spikes(rig: RigConfig) -> CheckResult:
     closes again without starting the fetch thread. The failure this
     catches is SpikeGLX left un-started (or its command server disabled),
     discovered here rather than with the subject in the chair.
+
+    The ``sorted_stream`` backend needs more than a connect, because a
+    ZeroMQ SUB socket connects to an endpoint nobody is publishing on and
+    reports success. So that backend is checked by listening (below), which
+    is the only thing that can tell a running sorter from a dead one.
     """
     cfg = rig.devices.spikes
     if cfg is None:
@@ -256,15 +263,65 @@ def _check_spikes(rig: RigConfig) -> CheckResult:
     source = make_spikes(cfg)
     try:
         source.connect()
-        detail = source.describe()
+        detail = (
+            _listen_for_units(source, cfg) if cfg.backend == "sorted_stream" else source.describe()
+        )
     except AlhazenError as e:
+        # One path for every way this can go wrong, including a stream that
+        # is publishing but unusable. A listen that returned its error as a
+        # detail string would report it under an OK, which is the exact
+        # false clean bill of health this backend's check exists to refuse.
         return CheckResult("spikes", False, str(e))
     finally:
-        # Nothing must be left holding the command-server connection: the
-        # session that is about to start needs it.
+        # Nothing must be left holding the command-server connection or the
+        # socket: the session that is about to start needs both.
         source.close()
     simulated = " (simulated)" if cfg.backend == "simulated" else ""
     return CheckResult("spikes", True, f"{detail}{simulated}")
+
+
+def _listen_for_units(source: Any, cfg: Any) -> str:
+    """Wait for the sorter's first ``units`` message, then report the lag.
+
+    Polls synchronously rather than starting the background thread, for the
+    same reason every other check avoids one: a check that leaves a thread
+    running has changed the rig it was asked to inspect. The wait is the
+    configured heartbeat timeout, since a stream that has not said anything
+    within its own silence budget is by definition not publishing.
+
+    The covered-until lag is the number the phase-2 bring-up gate is about:
+    it is how far behind real time the sorter's output is, and therefore how
+    long a consumer will wait for a window to close.
+
+    Raises ``SpikeSourceError`` for every failure, including nothing
+    arriving at all, so the caller has one path to report rather than a
+    string it has to inspect.
+    """
+    clock = MonotonicClock()
+    source.configure(clock)
+    budget_s = max(cfg.heartbeat_timeout_ms / 1000.0, 0.5)
+    deadline = time.monotonic() + budget_s
+    while time.monotonic() < deadline:
+        source.poll_once()
+        if source.n_channels:
+            break
+        time.sleep(0.02)
+    if not source.n_channels:
+        raise SpikeSourceError(
+            f"no units message from the sorted stream at {cfg.address} within "
+            f"{budget_s:g} s — is the real-time sorter running and publishing?"
+        )
+    # One more poll so a heartbeat that arrived just after the units message
+    # has a chance to set coverage; without it the lag reads as unknown on a
+    # stream that is working perfectly well.
+    covered = source.drain().covered_until
+    if covered is None:
+        source.poll_once()
+        covered = source.drain().covered_until
+    lag = "lag unknown (no timed message yet)"
+    if covered is not None:
+        lag = f"lag {1000.0 * (clock.now() - covered):.0f} ms"
+    return f"{source.describe()}, {lag}"
 
 
 def format_result(result: CheckResult) -> str:

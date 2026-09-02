@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import sys
+import threading
+import time
 
 import pytest
 
@@ -12,6 +15,7 @@ from alhazen.config.models import (
     EyeTrackerConfig,
     RewardHwConfig,
     RigConfig,
+    SpikeSourceConfig,
     SyncHwConfig,
 )
 from alhazen.errors import ConfigError
@@ -161,6 +165,122 @@ class TestTestOnlyBackend:
         rig = sim_rig(tmp_path, eyetracker=EyeTrackerConfig(backend="scripted"))
         with pytest.raises(ConfigError, match="test-only"):
             check_rig(rig)
+
+
+class TestSortedStreamSpikes:
+    """A SUB socket connects to an endpoint nobody is publishing on without
+    complaining, so unlike every other device this one can only be checked
+    by listening. These tests pin that it does."""
+
+    def test_a_publishing_sorter_reports_its_units_and_lag(self, tmp_path):
+        zmq = pytest.importorskip("zmq")
+        context = zmq.Context.instance()
+        publisher = context.socket(zmq.PUB)
+        port = publisher.bind_to_random_port("tcp://127.0.0.1")
+
+        stop = threading.Event()
+
+        def publish() -> None:
+            # 30 kHz, and a covered_until that tracks wall time, so the
+            # reported lag is a real number rather than a constructed one.
+            t0 = time.monotonic()
+            while not stop.is_set():
+                publisher.send_multipart(
+                    [
+                        json.dumps(
+                            {
+                                "type": "units",
+                                "unit_ids": [3, 9, 14],
+                                "labels": ["good"] * 3,
+                                "sample_rate_hz": 30000,
+                            }
+                        ).encode()
+                    ]
+                )
+                publisher.send_multipart(
+                    [
+                        json.dumps(
+                            {
+                                "type": "heartbeat",
+                                "covered_until_sample": int(30000 * (time.monotonic() - t0)),
+                            }
+                        ).encode()
+                    ]
+                )
+                stop.wait(0.02)
+
+        thread = threading.Thread(target=publish, daemon=True)
+        thread.start()
+        try:
+            rig = sim_rig(
+                tmp_path,
+                spikes=SpikeSourceConfig(
+                    backend="sorted_stream", address=f"tcp://127.0.0.1:{port}"
+                ),
+            )
+            result = by_name(check_rig(rig))["spikes"]
+            assert result.ok, result.detail
+            assert "3 units" in result.detail
+            assert "lag" in result.detail
+        finally:
+            stop.set()
+            thread.join(timeout=2.0)
+            publisher.close(linger=0)
+
+    def test_a_stream_speaking_the_wrong_protocol_fails(self, tmp_path):
+        # The other way this check can be wrong: something IS publishing, so
+        # the listen succeeds, but what it says is unusable. The error has to
+        # come back as a FAIL, not as a detail line under an OK.
+        zmq = pytest.importorskip("zmq")
+        context = zmq.Context.instance()
+        publisher = context.socket(zmq.PUB)
+        port = publisher.bind_to_random_port("tcp://127.0.0.1")
+
+        stop = threading.Event()
+
+        def publish() -> None:
+            # Heartbeats with no units message ever: the sample rate has
+            # nowhere to come from.
+            while not stop.is_set():
+                publisher.send_multipart(
+                    [json.dumps({"type": "heartbeat", "covered_until_sample": 1000}).encode()]
+                )
+                stop.wait(0.02)
+
+        thread = threading.Thread(target=publish, daemon=True)
+        thread.start()
+        try:
+            rig = sim_rig(
+                tmp_path,
+                spikes=SpikeSourceConfig(
+                    backend="sorted_stream", address=f"tcp://127.0.0.1:{port}"
+                ),
+            )
+            result = by_name(check_rig(rig))["spikes"]
+            assert not result.ok
+            assert "units" in result.detail
+        finally:
+            stop.set()
+            thread.join(timeout=2.0)
+            publisher.close(linger=0)
+
+    def test_a_silent_endpoint_fails_rather_than_looking_connected(self, tmp_path):
+        pytest.importorskip("zmq")
+        # Nothing is bound to this port. A check that only opened the socket
+        # would pass here, which is exactly the false clean bill of health
+        # this backend's check exists to refuse.
+        rig = sim_rig(
+            tmp_path,
+            spikes=SpikeSourceConfig(
+                backend="sorted_stream",
+                address="tcp://127.0.0.1:5999",
+                heartbeat_timeout_ms=200.0,
+            ),
+        )
+        result = by_name(check_rig(rig))["spikes"]
+        assert not result.ok
+        assert "no units message" in result.detail
+        assert "5999" in result.detail
 
 
 class TestFormatting:
