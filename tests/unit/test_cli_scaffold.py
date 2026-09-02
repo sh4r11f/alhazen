@@ -25,6 +25,7 @@ from alhazen.cli.main import _next_run, main
 from alhazen.cli.tasks import load_task_class
 from alhazen.config.models import DisplayConfig, RigConfig
 from alhazen.errors import ConfigError
+from alhazen.modes import Mode
 from support import MONITOR
 
 
@@ -74,10 +75,6 @@ class TestScaffold:
             ".gitignore",
             "src/saccade_bias/__init__.py",
             "src/saccade_bias/task.py",
-            "configs/rig-sim.yaml",
-            "configs/rig-view.yaml",
-            "configs/rig-auto.yaml",
-            "configs/rig-mouse.yaml",
             "configs/rig-mac.yaml",
             "configs/rig-lab.yaml",
             "configs/task.yaml",
@@ -114,33 +111,62 @@ class TestScaffold:
         module = import_scaffolded_task(root, "saccade_bias")
         params_model = getattr(module, task_class_name("saccade_bias")).params_model
 
-        for name in (
-            "rig-sim.yaml",
-            "rig-view.yaml",
-            "rig-auto.yaml",
-            "rig-mouse.yaml",
-            "rig-mac.yaml",
-            "rig-lab.yaml",
-        ):
+        for name in ("rig-mac.yaml", "rig-lab.yaml"):
             rig = load_rig(root / "configs" / name)
             assert rig.monitor.width_px > 0, name
         load_params(root / "configs" / "task.yaml", params_model)
 
-    def test_the_dev_rigs_keep_their_data_out_of_the_subject_tree(self, tmp_path):
-        """One rig file per purpose, and the purposes that rehearse — view,
-        auto, mouse, mac — all write under data/dev. A dev rig pointing at
-        the rig's own data root is how a simulated subject ends up in the
-        same table as a real one."""
+    def test_there_is_one_rig_file_per_machine_and_none_per_purpose(self, tmp_path):
+        """A rig file describes a machine. What you are about to do on it is
+        the mode's business, so the scaffold ships two machines — the laptop
+        and the rig — and nothing named after a mode."""
+        root = scaffold("saccade_bias", tmp_path)
+
+        rigs = sorted(path.name for path in (root / "configs").glob("rig-*.yaml"))
+
+        assert rigs == ["rig-lab.yaml", "rig-mac.yaml"]
+
+    def test_every_mode_takes_both_rig_files(self, tmp_path):
+        """The property the two-file scaffold rests on: each of the six modes
+        accepts each machine, so nobody needs a third file."""
+        from alhazen.config.loader import load_rig
+        from alhazen.modes.session import rig_for_mode
+
+        root = scaffold("saccade_bias", tmp_path)
+        for name in ("rig-mac.yaml", "rig-lab.yaml"):
+            rig = load_rig(root / "configs" / name)
+            for mode in Mode:
+                rig_for_mode(mode, rig)
+
+    def test_the_laptop_rig_has_no_devices_and_the_mode_supplies_them(self, tmp_path):
+        """A laptop has no tracker, and the file no longer pretends it does
+        with a mouse_sim block: test mode substitutes the mouse and simulate
+        brings its own gaze, each saying so."""
+        from alhazen.config.loader import load_rig
+        from alhazen.modes.session import rig_for_mode
+
+        root = scaffold("saccade_bias", tmp_path)
+        mac = load_rig(root / "configs" / "rig-mac.yaml")
+        assert mac.devices.eyetracker is None
+
+        tested, notes = rig_for_mode(Mode.TEST, mac)
+        assert tested.devices.eyetracker.backend == "mouse_sim"
+        assert any("mouse cursor" in note for note in notes)
+
+    def test_rehearsal_data_stays_out_of_the_subject_tree(self, tmp_path):
+        """Both machines write real data under data/; test and simulate
+        redirect to data-rehearsal/ themselves, so no rig file has to carry a
+        second data root for the purpose."""
         from pathlib import PurePath
 
         from alhazen.config.loader import load_rig
+        from alhazen.modes.rehearsal import rehearsal_root
 
         root = scaffold("saccade_bias", tmp_path)
-        for name in ("rig-view.yaml", "rig-auto.yaml", "rig-mouse.yaml", "rig-mac.yaml"):
+        for name in ("rig-mac.yaml", "rig-lab.yaml"):
             rig = load_rig(root / "configs" / name)
-            assert rig.data_root == PurePath("data/dev"), name
-        for name in ("rig-sim.yaml", "rig-lab.yaml"):
-            assert load_rig(root / "configs" / name).data_root == PurePath("data"), name
+            assert rig.data_root == PurePath("data"), name
+            assert rehearsal_root(rig.data_root) == PurePath("data-rehearsal"), name
 
     def test_the_template_task_answers_every_advertised_mode(self, tmp_path):
         """`alhazen new`'s closing message, run.py's docstring and the rig
@@ -300,6 +326,11 @@ class TestScaffoldedPackageWorks:
         )
         assert tests.returncode == 0, tests.stdout + tests.stderr
 
+        # A whole session on the RIG's config, with no window and nobody in
+        # the chair: simulate stands the rig's devices down and --headless
+        # takes the panel away, so the lab's own file runs on a CI box.
+        # --trials-per-condition asks for the full design back, so the row
+        # count is the template's paradigm block and not simulate's default.
         session = subprocess.run(
             [
                 sys.executable,
@@ -308,14 +339,19 @@ class TestScaffoldedPackageWorks:
                 "run",
                 "--task",
                 "acceptance-demo",
+                "--mode",
+                "simulate",
+                "--headless",
                 "--rig",
-                str(root / "configs" / "rig-sim.yaml"),
+                str(root / "configs" / "rig-lab.yaml"),
                 "--params",
                 str(root / "configs" / "task.yaml"),
                 "--sub",
                 "s01",
                 "--ses",
                 "1",
+                "--trials-per-condition",
+                "10",
             ],
             capture_output=True,
             text=True,
@@ -324,11 +360,14 @@ class TestScaffoldedPackageWorks:
             timeout=600,
         )
         assert session.returncode == 0, session.stdout + session.stderr
-        run_dir = next((root / "data").glob("sub-s01/ses-001/run-*"))
+        assert "display: none (--headless)" in session.stdout
+        run_dir = next((root / "data-rehearsal").glob("sub-s01/ses-001/run-*"))
         with next(run_dir.glob("*_trials.csv")).open() as handle:
             rows = list(csv.DictReader(handle))
         assert len(rows) == 10  # the template's paradigm block
         assert all(row["outcome"] in {"FIXATED", "NO_FIXATION", "FIX_BREAK"} for row in rows)
+        # And nothing landed where the analysis looks for subjects.
+        assert not (root / "data").exists()
 
     def test_the_bundled_runner_works_without_installing_anything(self, tmp_path):
         """`run.py` exists so a session can be started before the package is
@@ -336,31 +375,10 @@ class TestScaffoldedPackageWorks:
         root = scaffold("bundled_demo", tmp_path)
         environment = scrubbed_env([root / "src", Path(__file__).parents[2] / "src"], tmp_path)
 
-        session = subprocess.run(
-            [
-                sys.executable,
-                str(root / "run.py"),
-                "--rig",
-                str(root / "configs" / "rig-sim.yaml"),
-                "--sub",
-                "s01",
-                "--ses",
-                "1",
-            ],
-            capture_output=True,
-            text=True,
-            cwd=root,
-            env=environment,
-            timeout=600,
-        )
-
-        assert session.returncode == 0, session.stdout + session.stderr
-        assert next((root / "data").glob("sub-s01/ses-001/run-*")).is_dir()
-
-        # The OTHER advertised headless modes work from the same tree — the
-        # scaffold's own printed commands must not be the first thing a new
-        # user sees fail. Simulate names its subject and reduces its own
-        # trial counts; movie needs no window at all.
+        # The scaffold's own printed commands must not be the first thing a
+        # new user sees fail. This is the README's quick start, verbatim:
+        # simulate names its subject and reduces its own trial counts, and
+        # --headless is what lets the rig's file run with no panel attached.
         simulate = subprocess.run(
             [
                 sys.executable,
@@ -368,9 +386,8 @@ class TestScaffoldedPackageWorks:
                 "--mode",
                 "simulate",
                 "--rig",
-                str(root / "configs" / "rig-sim.yaml"),
-                "--seed",
-                "1",
+                str(root / "configs" / "rig-lab.yaml"),
+                "--headless",
             ],
             capture_output=True,
             text=True,
@@ -381,6 +398,7 @@ class TestScaffoldedPackageWorks:
         assert simulate.returncode == 0, simulate.stdout + simulate.stderr
         assert next((root / "data-rehearsal").glob("sub-sim/**/run-*"), None) is not None
 
+        # Movie needs no window at all, so it takes the rig's file as it is.
         recorded = subprocess.run(
             [
                 sys.executable,
@@ -388,7 +406,7 @@ class TestScaffoldedPackageWorks:
                 "--mode",
                 "movie",
                 "--rig",
-                str(root / "configs" / "rig-sim.yaml"),
+                str(root / "configs" / "rig-lab.yaml"),
                 "--out",
                 str(root / "movies"),
             ],
@@ -556,6 +574,51 @@ class TestRunCommand:
 
         assert code == 1
         assert "INVALID" in capsys.readouterr().err
+
+    def test_a_flag_the_mode_cannot_honour_is_refused_before_anything_loads(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """--headless on test mode, --mouse on simulate: a usage error, said
+        with the mode's own reason, and exit 2 like every other usage error
+        — not a session that quietly opened a window anyway."""
+        rig = self.registered(monkeypatch, tmp_path)
+
+        code = main(self.run_args(rig, "--mode", "test", "--headless", "--sub", "s", "--ses", "1"))
+        assert code == 2
+        err = capsys.readouterr().err
+        assert "CANNOT RUN: --headless: only simulate mode" in err
+        assert "test mode is for a person to sit through" in err
+        assert not (tmp_path / "data").exists()
+
+        code = main(self.run_args(rig, "--mode", "simulate", "--mouse"))
+        assert code == 2
+        assert "CANNOT RUN: --mouse: only test mode" in capsys.readouterr().err
+
+    def test_headless_simulate_runs_a_rig_that_has_a_real_display(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """The rig file says psychopy; --headless is what makes it runnable
+        where there is no panel, and the session says so before trial one."""
+        rig = self.registered(monkeypatch, tmp_path)
+        rig.write_text(
+            yaml.safe_dump(
+                {
+                    "monitor": MONITOR.model_dump(),
+                    "display": {"backend": "psychopy"},
+                    "devices": {"eyetracker": {"backend": "eyelink"}},
+                    "data_root": str(tmp_path / "data"),
+                }
+            )
+        )
+
+        code = main(self.run_args(rig, "--mode", "simulate", "--headless", "--no-dashboard"))
+
+        assert code == 0
+        out = capsys.readouterr().out
+        assert "display: none (--headless)" in out
+        assert "eyetracker: eyelink stands down" in out
+        assert next((tmp_path / "data-rehearsal").glob("sub-sim/ses-001/run-*")).is_dir()
+        assert not (tmp_path / "data").exists()
 
 
 class TestGammaReachesTheDisplay:

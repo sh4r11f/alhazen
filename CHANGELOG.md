@@ -27,6 +27,45 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ## Unreleased
 
+### Changed
+
+- **Every mode runs on every rig.** A rig file describes a machine — its
+  panel, its devices, where its data goes — and says nothing about what you
+  are about to do on it; that is the mode's business. Simulate mode used to
+  refuse a rig that configured real hardware, which made the file that
+  described the rig the one file the rig could not rehearse on, and the
+  scaffold answered by shipping a file per *purpose* (`rig-sim`, `rig-view`,
+  `rig-auto`, `rig-mouse`): the machine's file with a device left out or
+  swapped for a stand-in, so the machine's numbers lived in five places.
+
+  Now the mode decides what to do with the machine, in one pure function
+  (`alhazen.modes.session.rig_for_mode`), and prints what it decided before
+  trial one. `simulate` stands the rig's real devices down instead of
+  refusing them: the task's autopilot takes the tracker's place, `nidaq`
+  reward and sync become `simulated` (deliveries and pulses logged, not
+  fired), a `spikeglx` recorder becomes `simulated` and a live spike stream
+  is dropped — each a line in `describe()`. `test`, on a rig with no
+  tracker, takes the mouse cursor as gaze. The rig file itself is never
+  touched; the substituted copy is what `build_session` gets and what the
+  snapshot records. `run` drives the rig exactly as written.
+
+  Two new flags override the machine itself, and each belongs to exactly one
+  mode: `--headless` (simulate: no window opens and the dashboard does not
+  open a browser — CI, ssh) and `--mouse` (test: the cursor as gaze on a rig
+  whose tracker is off). Any other mode refuses them by name with the reason
+  (`alhazen.modes.flag_refusal`), exit 2, before anything loads.
+
+  `alhazen new` therefore scaffolds two rig files, one per machine:
+  `rig-mac.yaml` (a development laptop: a window, no devices, `data_root:
+  data`) and `rig-lab.yaml` (the rig). `rig-sim`, `rig-view`, `rig-auto` and
+  `rig-mouse` are gone, and so is the `data/dev` convention — `test` and
+  `simulate` redirect to the rehearsal root themselves, so no rig file needs
+  a second data root for the purpose. The scaffold's `run.py` defaults to
+  `rig-mac.yaml`, and its README, `alhazen new`'s closing hints and the docs
+  ([docs/modes.md](docs/modes.md#every-mode-on-every-rig)) are rewritten
+  around the two files. An experiment that kept a purpose rig can delete it:
+  `--mode simulate --headless` on the lab rig is what `rig-sim` was for.
+
 ### Added
 
 - **A calibration guide, validation and drift correction, and an Eye

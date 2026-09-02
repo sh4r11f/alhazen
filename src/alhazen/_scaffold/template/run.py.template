@@ -1,11 +1,17 @@
-"""Run $name, in any of alhazen's six modes.
+"""Run $name, in any of alhazen's six modes, on any rig.
 
-    python run.py --mode demo      --rig configs/rig-view.yaml
+    python run.py --mode demo      --rig configs/rig-mac.yaml
     python run.py --mode movie     --rig configs/rig-lab.yaml --out movies
     python run.py --mode measure   --rig configs/rig-lab.yaml
-    python run.py --mode simulate  --rig configs/rig-sim.yaml --seed 1
-    python run.py --mode test      --rig configs/rig-mouse.yaml --sub dev --ses 1
+    python run.py --mode simulate  --rig configs/rig-lab.yaml --seed 1 --headless
+    python run.py --mode test      --rig configs/rig-mac.yaml --sub dev --ses 1
     python run.py                  --rig configs/rig-lab.yaml --sub s01 --ses 1
+
+A rig file describes a machine; the mode decides what to do with it. So the
+laptop config and the rig config each take all six modes — simulate stands
+the rig's real devices down, test lets the mouse stand in for a tracker the
+laptop does not have. The default rig is the laptop, so that a bare
+``python run.py --mode demo`` shows the stimulus wherever you are sitting.
 
 This exists so the experiment can be started without installing anything.
 Once the package IS installed, ``alhazen run --task $task_name --mode ...``
@@ -32,7 +38,7 @@ if __name__ == "__main__":
     raise SystemExit(
         run_experiment(
             task_class=$task_class,
-            default_rig=HERE / "configs" / "rig-sim.yaml",
+            default_rig=HERE / "configs" / "rig-mac.yaml",
             default_params=HERE / "configs" / "task.yaml",
             argv=sys.argv[1:],
         )

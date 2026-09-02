@@ -22,6 +22,16 @@ data lands in. Nothing else.
 
 The other three are their own programs, because none of them runs trials at
 all — and one of them, movie, never even opens a window.
+
+Every mode runs on every rig. A rig file describes a machine — its panel,
+its devices, where its data goes — and says nothing about what you are about
+to do on it; that is the mode's business. So a mode that cannot use what the
+rig has (simulate, on a rig with a real tracker) substitutes for it and says
+so, rather than asking for a second rig file with the device left out. Two
+flags override the machine itself: ``--headless`` (simulate with no window,
+for CI and ssh) and ``--mouse`` (test with the mouse cursor as gaze, on a rig
+whose tracker is off). Each is honoured by exactly one mode and refused by
+name everywhere else — see :func:`flag_refusal`.
 """
 
 from __future__ import annotations
@@ -69,5 +79,42 @@ MODE_SUMMARIES = {
     Mode.RUN: "the experiment",
 }
 
+# Why each of the other five modes cannot take --headless. Spelled out per
+# mode rather than as one generic refusal: "demo cannot run headless" is
+# obvious, but "test cannot" is a question, and the answer is the point.
+_NOT_HEADLESS = {
+    Mode.MEASURE: "measure mode measures the real panel, so there has to be one",
+    Mode.DEMO: "demo mode exists to look at the stimulus on a real panel",
+    Mode.MOVIE: "movie mode never opens a window, so there is nothing to make headless",
+    Mode.TEST: "test mode is for a person to sit through, and a person needs a window",
+    Mode.RUN: "run mode records real data, and a subject needs a window",
+}
 
-__all__ = ["MODE_SUMMARIES", "Mode"]
+# Why each of the other five modes cannot take --mouse.
+_NOT_MOUSE = {
+    Mode.MEASURE: "measure mode measures the rig's own tracker, and the mouse is not one",
+    Mode.DEMO: "demo mode reads no gaze",
+    Mode.MOVIE: "movie mode reads no gaze",
+    Mode.SIMULATE: "simulate mode's gaze comes from the task's own autopilot",
+    Mode.RUN: "run mode records real data, so its gaze must come from the rig's tracker",
+}
+
+
+def flag_refusal(mode: Mode, *, headless: bool = False, mouse: bool = False) -> str | None:
+    """Why ``mode`` cannot honour the flags asked for — or None when it can.
+
+    ``--headless`` belongs to simulate alone and ``--mouse`` to test alone.
+    The check is one function, called by the command line before anything
+    loads and by ``build_mode_session`` before anything is wired, so a flag
+    a mode cannot honour is refused with the reason and never silently
+    ignored: an experimenter who typed ``--headless`` and got a window would
+    not know which of the two the data came from.
+    """
+    if headless and mode is not Mode.SIMULATE:
+        return f"--headless: only simulate mode runs without a window — {_NOT_HEADLESS[mode]}"
+    if mouse and mode is not Mode.TEST:
+        return f"--mouse: only test mode takes the mouse cursor as gaze — {_NOT_MOUSE[mode]}"
+    return None
+
+
+__all__ = ["MODE_SUMMARIES", "Mode", "flag_refusal"]

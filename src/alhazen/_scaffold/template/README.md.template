@@ -7,16 +7,31 @@ An experiment built on [alhazen](https://github.com/sh4r11f/alhazen).
 ```bash
 pip install -e ".[dev]"     # no renderer needed for this
 pytest                      # the task's own tests, on a fake clock
-python run.py --rig configs/rig-sim.yaml --sub s01 --ses 1
+python run.py --mode simulate --rig configs/rig-lab.yaml --headless
 ```
 
-That last command runs a complete session against the simulated display and
-writes a real run directory under `data/` — trials, events and frame timings,
-a config snapshot, a session log and a manifest.
+That last command runs a complete session with nobody in the chair and no
+window open, and writes a real run directory under `data-rehearsal/` —
+trials, events and frame timings, a config snapshot, a session log and a
+manifest — in exactly the layout a real session writes under `data/`.
 
 `run.py` starts the experiment in any of alhazen's six modes (`--mode demo`,
-`movie`, `measure`, `simulate`, `test`, `run`); each ships with a rig config
-built for it, below.
+`movie`, `measure`, `simulate`, `test`, `run`), and every mode runs on every
+rig file:
+
+```bash
+python run.py --mode demo     --rig configs/rig-mac.yaml              # look at the stimulus
+python run.py --mode test     --rig configs/rig-mac.yaml --sub dev --ses 1   # play it, mouse as gaze
+python run.py --mode simulate --rig configs/rig-lab.yaml --seed 1     # watch it run itself, on the rig
+python run.py --mode movie    --rig configs/rig-lab.yaml --out movies # files, at the rig's sizes
+```
+
+A rig file describes a machine, not a purpose. Simulate mode stands the
+rig's real devices down (the autopilot supplies gaze; the pump and the sync
+lines are logged, not fired) and prints what it stood down before trial
+one; `--headless` takes the window away too. Test mode, on a machine with no
+tracker, takes the mouse cursor as gaze — `--mouse` asks for that on a rig
+whose tracker is off.
 
 ## What is where
 
@@ -24,19 +39,14 @@ built for it, below.
 |---|---|
 | `src/$package/task.py` | the experiment: parameters, events, outcomes, and what a trial is made of |
 | `configs/task.yaml` | the task's parameters for a session |
-| `configs/rig-sim.yaml` | run headless: no window, no devices — tests, CI, ssh |
-| `configs/rig-view.yaml` | look at the stimulus (`--mode demo`) on this machine's own panel |
-| `configs/rig-auto.yaml` | watch the task run itself (`--mode simulate`), dashboard up |
-| `configs/rig-mouse.yaml` | play the task yourself (`--mode test`), mouse cursor as gaze |
-| `configs/rig-mac.yaml` | any dev mode on a Mac — read its Retina notes before judging a stimulus |
+| `configs/rig-mac.yaml` | a development laptop: a window, no devices — read its Retina notes before judging a stimulus |
 | `configs/rig-lab.yaml` | the rig: fill in your monitor's real geometry and uncomment the devices it has |
 | `tests/` | the task's tests, using `alhazen.testing`'s doubles |
 
-Every rig file that opens a window carries starting-point monitor numbers,
-not measurements. The numbers decide what a degree of visual angle is, so
-measure them for each machine (`alhazen calibrate ruler` checks them with a
-tape measure) — that is why there is one rig file per machine and purpose
-rather than one shared one.
+Both rig files carry starting-point monitor numbers, not measurements. The
+numbers decide what a degree of visual angle is, so measure them for each
+machine (`alhazen calibrate ruler` checks them with a tape measure) — that
+is why there is one rig file per machine.
 
 ## On the rig
 

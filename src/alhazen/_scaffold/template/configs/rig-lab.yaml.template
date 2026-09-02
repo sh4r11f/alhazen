@@ -1,7 +1,22 @@
-# PURPOSE: the rig — the machine that collects the data.
+# MACHINE: the rig — the machine that collects the data.
 #
-#   python run.py --mode test --rig configs/rig-lab.yaml --sub s01 --ses 1
-#   python run.py             --rig configs/rig-lab.yaml --sub s01 --ses 1
+# A rig file describes a machine: its panel, its devices, where its data
+# goes. Which of the six modes you run on it is not the file's business, so
+# every mode takes this file as it stands:
+#
+#   python run.py --mode measure  --rig configs/rig-lab.yaml
+#   python run.py --mode demo     --rig configs/rig-lab.yaml
+#   python run.py --mode movie    --rig configs/rig-lab.yaml
+#   python run.py --mode simulate --rig configs/rig-lab.yaml --seed 1
+#   python run.py --mode test     --rig configs/rig-lab.yaml --sub s01 --ses 1
+#   python run.py                 --rig configs/rig-lab.yaml --sub s01 --ses 1
+#
+# Simulate stands the real devices down (the autopilot supplies gaze, the
+# pump and the sync lines are logged rather than fired) and says so before
+# trial one; add --headless to run it with no window, over ssh or in CI.
+# Test with --mouse takes the cursor as gaze while the tracker is off.
+# Rehearsal data (test, simulate) lands beside data_root under
+# data-rehearsal/, never in it.
 #
 # Fill in the numbers for YOUR monitor — the geometry here decides what a
 # degree of visual angle is, and every stimulus size depends on it. This is
@@ -69,9 +84,8 @@ devices: {}
   #   calibration_type: HV9   # HV5, HV9 or HV13
   #   # led_intensity: 6      # 1-8; omit to keep what VPixx's own tools set
   #
-  # No tracker at all — the mouse cursor stands in for gaze:
-  # eyetracker:
-  #   backend: mouse_sim
+  # No tracker at all: leave eyetracker out. Test mode then takes the mouse
+  # cursor as gaze, and simulate mode brings its own.
   # reward:
   #   backend: nidaq
   #   device: Dev1

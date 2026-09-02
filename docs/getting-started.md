@@ -46,19 +46,18 @@ You now have a working experiment package:
 saccade_bias/
 ├── src/saccade_bias/task.py   the experiment: params, events, outcomes, one trial
 ├── configs/task.yaml          the task's parameters
-├── configs/rig-sim.yaml       run headless: no window, no devices
-├── configs/rig-view.yaml      look at the stimulus (--mode demo)
-├── configs/rig-auto.yaml      watch it run itself (--mode simulate), dashboard up
-├── configs/rig-mouse.yaml     play it yourself (--mode test), mouse as gaze
-├── configs/rig-mac.yaml       a Mac as the dev machine (read its Retina notes)
+├── configs/rig-mac.yaml       a development laptop: a window, no devices (read its Retina notes)
 ├── configs/rig-lab.yaml       the rig: fill in your monitor, uncomment your devices
 ├── tests/test_task.py         tests on a fake clock, no display needed
-└── run.py                     starts any of the six modes without installing
+└── run.py                     starts any of the six modes, on either rig, without installing
 ```
 
-One rig file per machine and purpose, because the monitor numbers in each one
-decide what a degree of visual angle is — [the modes page](modes.md#one-rig-file-per-purpose)
-explains the set.
+One rig file per machine — not per purpose — because a rig file describes
+the machine and the mode decides what to do with it: every mode runs on
+both files, substituting for what the machine lacks and saying so
+([the modes page](modes.md#every-mode-on-every-rig) explains). The monitor
+numbers in each file decide what a degree of visual angle is, which is why
+there is one per machine and never one shared between them.
 
 ## Run its tests
 
@@ -74,13 +73,16 @@ fixation.
 ## Run a session
 
 ```bash
-python run.py --rig configs/rig-sim.yaml --sub s01 --ses 1
+python run.py --mode simulate --rig configs/rig-lab.yaml --headless --sub s01 --ses 1
 ```
 
-That is a complete session. Look at what it wrote:
+That is a complete session, on the rig's own config, with nobody in the
+chair and no window open — `simulate` stands the rig's devices down and
+`--headless` takes the panel away, so it runs on a laptop with nothing
+attached. Look at what it wrote:
 
 ```
-data/sub-s01/ses-001/run-01_task-saccade-bias/
+data-rehearsal/sub-s01/ses-001/run-01_task-saccade-bias/
 ├── sub-s01_..._trials.csv     one row per trial that produced a measurement
 ├── sub-s01_..._events.csv     every event, timestamped by the flip that showed it
 ├── sub-s01_..._frames.csv     every frame interval, and which were dropped
@@ -93,10 +95,15 @@ The snapshot is the important one. It is written *before the first trial*, so
 a session that crashes still documents what it was trying to do, and every
 later analysis reads the rig's configuration out of it rather than being told.
 
+It landed under `data-rehearsal/`, not `data/`: a simulated subject writes
+real files in real formats, which is exactly why it must not land where the
+analysis looks for real ones. A real session (`--mode run`, the default)
+writes the same layout under `data/`.
+
 ## Read the run back
 
 ```bash
-alhazen report --run data/sub-s01/ses-001/run-01_task-saccade-bias
+alhazen report --run data-rehearsal/sub-s01/ses-001/run-01_task-saccade-bias
 ```
 
 Trial counts by outcome, frame-drop statistics, and a manifest check. Exits
