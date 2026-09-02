@@ -46,6 +46,7 @@ nav:
   - Concepts: architecture.md
   - The six modes: modes.md
   - Live spikes and live analysis: live-spikes.md
+  - Eye tracker procedures: eye-tracker.md
   - How-to:
       - Add a stimulus, phase or paradigm: how-to.md
   - Scenes: scenes.md

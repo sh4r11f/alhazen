@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 import urllib.error
 import urllib.request
@@ -14,10 +15,12 @@ from alhazen import DashboardPanel, DashboardSpec, RewardPulses
 from alhazen.config.models import DashboardConfig
 from alhazen.core.commands import Command
 from alhazen.dashboard.runtime import DashboardCommand, DashboardController, dashboard_state
+from alhazen.devices.eyetracker import GazeSample
+from alhazen.devices.eyetracker.scripted import ScriptedTracker
 from alhazen.devices.reward import SimulatedReward
 from alhazen.errors import SessionError
-from alhazen.testing import ScriptedCommands
-from support import SessionHarness
+from alhazen.testing import FakeClock, ScriptedCommands
+from support import SCREEN, SessionHarness
 
 
 def _state(revision: int, status: str) -> dict:
@@ -32,7 +35,8 @@ def _state(revision: int, status: str) -> dict:
 
 
 class TestExtraPanels:
-    """Live-analysis panels: precomputed payloads appended to the state."""
+    """Precomputed payloads appended to the state — a live analysis's panels
+    or the eye tracker's — drawn like every other panel."""
 
     def make(self, extra):
         return dashboard_state(
@@ -121,12 +125,24 @@ class TestRuntime:
             self._wait_for_revision(root, token, 2)
             assert self._post(root, token, "manual_reward", "same") == 202
             assert self._post(root, token, "manual_reward", "same") == 202
+            # The eye-tracker procedures are buttons too, so their names must
+            # pass the server's allow-list; a name it does not know is refused
+            # before it can reach the session.
+            assert self._post(root, token, "validate", "v1") == 202
+            assert self._post(root, token, "drift_correct", "d1") == 202
+            with pytest.raises(urllib.error.HTTPError) as unknown:
+                self._post(root, token, "recalibrate", "x1")
+            assert unknown.value.code == 400
             deadline = time.monotonic() + 2
-            commands = []
-            while time.monotonic() < deadline and not commands:
-                commands = controller.poll_commands()
+            commands: list[DashboardCommand] = []
+            while time.monotonic() < deadline and len(commands) < 3:
+                commands += controller.poll_commands()
                 time.sleep(0.01)
-            assert [command.name for command in commands] == ["manual_reward"]
+            assert [command.name for command in commands] == [
+                "manual_reward",
+                "validate",
+                "drift_correct",
+            ]
         finally:
             controller.stop()
         assert not controller.alive()
@@ -207,6 +223,42 @@ class TestRunnerIntegration:
         assert dashboard.states[-1]["status"] == "complete"
         assert dashboard.stopped
         assert (harness.paths.figures_dir / "dashboard.html").exists()
+
+    def test_the_browser_runs_the_eye_tracker_procedures(self, tmp_path: Path):
+        """Validate and Drift correct are buttons: each runs its procedure,
+        publishes its progress while it runs, and reports its result in the
+        notice and in the Eye tracker panels once it is done."""
+        clock = FakeClock()
+        gaze = GazeSample(gx=SCREEN.width_px / 2 + 20.0, gy=SCREEN.height_px / 2, t=0.0)
+        tracker = ScriptedTracker([(0.0, gaze)], clock)
+        commands = ScriptedCommands([[Command.PAUSE]])
+        harness = SessionHarness(
+            tmp_path, n_trials=1, commands=commands, tracker=tracker, clock=clock
+        )
+        dashboard = FakeDashboard([[], ["validate"], ["drift_correct"], ["resume"]])
+        harness.runner._dashboard = dashboard
+
+        harness.runner.run()
+
+        statuses = [state["status"] for state in dashboard.states]
+        # The walk published its progress under its own status, so the page
+        # showed "validating: target 2 of 5" rather than a frozen "paused".
+        assert "calibrating" in statuses
+        progress = [s["message"] for s in dashboard.states if s["status"] == "calibrating"]
+        assert any(m.startswith("validating: target") for m in progress)
+        assert any(m.startswith("drift correcting: target") for m in progress)
+        # Each result went out as the notice of a "paused" state.
+        paused = [s["message"] for s in dashboard.states if s["status"] == "paused"]
+        assert any(m.startswith("validation FAILED") for m in paused), paused
+        assert any(m.startswith("drift correction applied: offset 0.50°") for m in paused), paused
+        # ...and as the Eye tracker section's panels, drawn like any other.
+        final = dashboard.states[-1]
+        titles = {p["title"] for p in final["panels"] if p["section"] == "Eye tracker"}
+        assert titles == {"Calibration", "Validation", "Drift correction"}
+        by_title = {p["title"]: p["data"] for p in final["panels"]}
+        assert by_title["Validation"]["form"] == "scatter"
+        assert by_title["Drift correction"]["value"] == "0.50"
+        assert dashboard.states[-1]["status"] == "complete"
 
 
 class TestStaleCommandsAreDiscarded:
@@ -301,6 +353,31 @@ class TestPage:
         assert "__STYLE__" not in html and "__SCRIPT__" not in html
         assert "--series-1:" in html  # the stylesheet
         assert "function drawLineChart(" in html  # the renderer
+
+    def test_every_allowed_command_has_a_button(self):
+        # A command the server would accept but the page has no button for is
+        # a control nobody can reach; a button for a command the server
+        # refuses is a control that silently does nothing. The two lists are
+        # kept equal so neither can happen.
+        from alhazen.dashboard.runtime import _ALLOWED_COMMANDS
+
+        html = self.page()
+        buttons = set(re.findall(r'data-command="([a-z_]+)"', html))
+        assert buttons == _ALLOWED_COMMANDS
+
+    def test_the_eye_tracker_panels_can_be_drawn(self):
+        # The monitor (session/eyetracker.py) sends a camera picture as an
+        # ``image`` form and its verdicts as ``stat`` tiles with a status;
+        # a form the renderer lacks draws as "Nothing to draw", so both are
+        # asserted against the asset.
+        html = self.page()
+        assert "image: drawImage," in html
+        assert "putImageData" in html
+        assert "tile.dataset.status" in html
+        # The status a procedure publishes under has its own colour, and the
+        # notice shows the procedure's progress instead of the pause hint.
+        assert '#status[data-state="calibrating"]' in html
+        assert "state.status === 'calibrating'" in html
 
     def test_nothing_is_fetched_from_the_network(self):
         # A rig has no internet and a saved figure outlives any CDN.

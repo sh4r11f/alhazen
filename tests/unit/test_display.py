@@ -292,3 +292,159 @@ class TestFramebufferMatchesTheRigConfig:
         with caplog.at_level(logging.WARNING):
             display.open()
         assert "could not be checked" in caplog.text
+
+
+class _FakeTextStim:
+    """Stands in for `visual.TextStim`: keeps its keyword arguments, counts
+    draws, and reports a bounding box the way PsychoPy's does, so a test can
+    check what would have been laid out without a renderer."""
+
+    bounding_box: tuple[float, float] | None = (600.0, 200.0)
+
+    def __init__(self, window, **kwargs):
+        self.window = window
+        self.kwargs = kwargs
+        self.text = kwargs["text"]
+        self.draws = 0
+
+    @property
+    def boundingBox(self):  # noqa: N802 — PsychoPy's spelling
+        if self.bounding_box is None:
+            raise AttributeError("no layout")
+        return self.bounding_box
+
+    def draw(self):
+        self.draws += 1
+        self.window.drawn.append(self)
+
+
+class _FakeRect:
+    def __init__(self, window, **kwargs):
+        self.window = window
+        self.kwargs = kwargs
+        self.draws = 0
+
+    def draw(self):
+        self.draws += 1
+        self.window.drawn.append(self)
+
+
+class _FakeWindow:
+    """An open PsychoPy window as the backend sees it: something to draw
+    into and flip, with a handle that can be raised to the foreground."""
+
+    frameBufferSize = (1920, 1080)  # noqa: N815 — PsychoPy's spelling
+    clientSize = (1920, 1080)  # noqa: N815
+    size = (1920, 1080)
+
+    def __init__(self):
+        self.drawn: list = []
+        self.flips = 0
+        self.activations = 0
+        self.winHandle = types.SimpleNamespace(activate=self._activate)  # noqa: N815
+
+    def _activate(self):
+        self.activations += 1
+
+    def flip(self, clearBuffer=True):  # noqa: N803 — PsychoPy's spelling
+        self.flips += 1
+
+
+def _open_psychopy_display(monkeypatch):
+    """A PsychoPyDisplay opened against fake `psychopy.visual` classes, with
+    the presentation sleep removed so the test does not wait on it."""
+    from alhazen.config.models import MonitorConfig
+    from alhazen.display import psychopy_backend
+
+    fake_visual = types.SimpleNamespace(
+        Window=lambda **kwargs: _FakeWindow(), TextStim=_FakeTextStim, Rect=_FakeRect
+    )
+    monkeypatch.setattr(psychopy_backend, "resolve_monitor", lambda monitor: None)
+    monkeypatch.setitem(
+        __import__("sys").modules, "psychopy", types.SimpleNamespace(visual=fake_visual)
+    )
+    monkeypatch.setitem(__import__("sys").modules, "psychopy.visual", fake_visual)
+    monkeypatch.setattr(psychopy_backend.time, "sleep", lambda seconds: None)
+    monitor = MonitorConfig(
+        width_px=1920, height_px=1080, width_cm=52.0, distance_cm=57.0, refresh_rate_hz=120.0
+    )
+    display = psychopy_backend.PsychoPyDisplay(monitor)
+    display.open()
+    return display
+
+
+class TestMessageBox:
+    """A message is the session talking: it is drawn as a terminal — mono
+    text on a dark panel outlined in green, sized to what it says — so it
+    reads as a panel over the session, and as a different panel from the
+    orange pause menu and the red fault."""
+
+    def test_the_text_sits_in_a_box_sized_to_it(self, monkeypatch):
+        from alhazen.display import psychopy_backend as pb
+
+        display = _open_psychopy_display(monkeypatch)
+        display.show_message("Look at the dot.\nPress SPACE when ready.")
+
+        drawn = display.window.drawn
+        rects = [d for d in drawn if isinstance(d, _FakeRect)]
+        texts = [d for d in drawn if isinstance(d, _FakeTextStim)]
+        assert rects and texts
+        # The panel is drawn under the text, every time the text is drawn.
+        assert isinstance(drawn[0], _FakeRect)
+        assert len(rects) == len(texts) == 2
+
+        text_height = max(18.0, 1080 * 0.022)
+        box = rects[0].kwargs
+        assert box["lineColor"] == pb.MESSAGE_OUTLINE == pb.TERMINAL_GREEN
+        assert box["fillColor"] == pb.MESSAGE_PANEL_FILL
+        # Hugging the laid-out text: its bounding box plus the padding.
+        assert box["width"] == pytest.approx(600.0 + 2 * pb.MESSAGE_PADDING[0] * text_height)
+        assert box["height"] == pytest.approx(200.0 + 2 * pb.MESSAGE_PADDING[1] * text_height)
+
+        text = texts[0].kwargs
+        assert text["font"] == pb.MESSAGE_FONT == pb.MONO_FONT
+        assert text["color"] == pb.MESSAGE_COLOR == pb.TERMINAL_TEXT
+        assert text["alignText"] == "left" and text["anchorHoriz"] == "center"
+        assert text["height"] == pytest.approx(text_height)
+
+    def test_the_message_is_presented_twice_from_the_foreground(self, monkeypatch):
+        """The instructions are the first frame after the build, when the
+        dashboard's browser may have just taken the foreground. Claim it,
+        and present twice, or Windows keeps the previous frame."""
+        display = _open_psychopy_display(monkeypatch)
+        display.show_message("hello")
+        assert display.window.flips == 2
+        assert display.window.activations == 1
+
+    def test_a_text_with_no_layout_still_gets_a_box_and_says_so(self, monkeypatch, caplog):
+        """A renderer that cannot report the text's extent is not a reason to
+        draw no box: the box is estimated from the wrap width and the line
+        count, and the estimate is logged as one."""
+        monkeypatch.setattr(_FakeTextStim, "bounding_box", None)
+        display = _open_psychopy_display(monkeypatch)
+        with caplog.at_level(logging.WARNING):
+            display.show_message("one\ntwo\nthree")
+        rect = next(d for d in display.window.drawn if isinstance(d, _FakeRect))
+        text_height = max(18.0, 1080 * 0.022)
+        wrap_width = min(1920 * 0.8, text_height * 34)
+        assert rect.kwargs["width"] == pytest.approx(wrap_width + 4 * text_height)
+        assert rect.kwargs["height"] > 3 * text_height * 1.2
+        assert "could not measure the message text" in caplog.text
+        assert "3 line(s)" in caplog.text
+
+    def test_the_menu_keeps_its_own_colour_and_size(self, monkeypatch):
+        """The pause menu is the other panel: same backing, its own colour,
+        and a fixed fraction of the screen rather than a text-sized box."""
+        from alhazen.display import psychopy_backend as pb
+
+        display = _open_psychopy_display(monkeypatch)
+        display.show_menu("PAUSED", "SPACE  resume", color=(1.0, 0.16, -0.70))
+        drawn = display.window.drawn
+        assert isinstance(drawn[0], _FakeRect)
+        assert drawn[0].kwargs["lineColor"] == (1.0, 0.16, -0.70)
+        assert drawn[0].kwargs["width"] == pytest.approx(1920 * pb.MENU_PANEL_FRACTION[0])
+        assert drawn[0].kwargs["height"] == pytest.approx(1080 * pb.MENU_PANEL_FRACTION[1])
+        heading, rows = (d for d in drawn if isinstance(d, _FakeTextStim))
+        assert heading.kwargs["font"] == pb.HEADING_FONT
+        assert rows.kwargs["font"] == pb.MENU_FONT == pb.MONO_FONT
+        assert display.window.flips == 1

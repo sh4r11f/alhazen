@@ -28,6 +28,7 @@ from alhazen.config.gamma import gamma_path, load_gamma
 from alhazen.config.loader import build_session_config, load_rig
 from alhazen.config.models import (
     Duration,
+    EyeTrackerConfig,
     RewardPulses,
     RigConfig,
     SessionInfo,
@@ -44,6 +45,7 @@ from alhazen.dashboard.spec import DashboardSpec
 from alhazen.data.paths import SessionPaths
 from alhazen.devices.eyetracker import EyeTracker, TrackerMessageSubscriber, make_tracker
 from alhazen.devices.eyetracker.messages import MessageMap
+from alhazen.devices.eyetracker.procedures import GazeCorrection
 from alhazen.devices.recording import make_recording
 from alhazen.devices.response import ResponseDevice, SubjectKeyboard
 from alhazen.devices.reward import RewardDispenser, make_reward
@@ -57,6 +59,7 @@ from alhazen.display.simulated import SimulatedDisplay
 from alhazen.errors import ConfigError
 from alhazen.paradigms.base import TrialSource
 from alhazen.session.database import ExperimentDatabase, FrameInputBuffer
+from alhazen.session.eyetracker import EyeTrackerMonitor
 from alhazen.session.pause import PauseMenu, run_pause_menu
 from alhazen.session.recorder import DataRecorder
 from alhazen.session.runner import SessionRunner
@@ -77,6 +80,7 @@ def make_input_provider(
     screen: Screen,
     tracker: EyeTracker | None = None,
     response: ResponseDevice | None = None,
+    correction: GazeCorrection | None = None,
 ) -> Callable[[], InputFrame] | None:
     """The engine's per-frame input snapshot: where the subject is looking and
     what their hands did, assembled in one place.
@@ -85,6 +89,11 @@ def make_input_provider(
     report screen px with y growing down, phases read centered px with y
     growing up. A second conversion site anywhere else is how a task ends up
     silently mirrored about the horizontal midline.
+
+    ``correction`` is the session's drift correction (session/eyetracker.py),
+    applied after the conversion, in the centered px it was measured in. It
+    is consulted on every frame rather than copied, so a correction applied
+    at a pause takes effect on the next trial's first frame.
 
     ``None`` gaze passes straight through as ``None``: an unverifiable
     position stays unverifiable (the blink rule), never a guess. Returns None
@@ -100,6 +109,8 @@ def make_input_provider(
             sample = tracker.get_gaze()
             if sample is not None:
                 gaze = screen.screen_to_centered(sample.gx, sample.gy)
+                if correction is not None:
+                    gaze = correction.apply(gaze)
         hands = response.poll() if response is not None else None
         return InputFrame(
             gaze=gaze,
@@ -390,6 +401,7 @@ def build_session(
         # scripted test supplies its inputs directly.
         if response is None and display.kind != "simulated":
             response = SubjectKeyboard(window=display.window)
+        eyetracker: EyeTrackerMonitor | None = None
         if tracker is not None:
             # Connect at build time, alongside opening the display and measuring
             # the refresh rate: a rig fault must surface before the snapshot is
@@ -397,8 +409,24 @@ def build_session(
             tracker.connect()
             tracker.configure(screen, clock)
             # Calibration is deliberately NOT automatic. It blocks on an
-            # experimenter at the Host PC, so it stays an explicit action — the
-            # calibrate key, or the pause menu — wired below as on_calibrate.
+            # experimenter at the rig, so it stays an explicit action — the
+            # calibrate key, the pause menu, or the dashboard — run through
+            # the session's monitor, which also validates, drift-corrects and
+            # shows the results. A caller-supplied tracker with no config of
+            # its own gets the procedures' defaults. The procedures read their
+            # keys from the same source as the pause menu.
+            eyetracker = EyeTrackerMonitor(
+                tracker,
+                display,
+                screen,
+                clock,
+                (
+                    devices.eyetracker
+                    if devices.eyetracker is not None
+                    else EyeTrackerConfig(backend="scripted")
+                ),
+                poll_keys=commands.poll_raw_keys,
+            )
         if spikes is not None:
             # Same rule as the tracker: a SpikeGLX host that is unreachable,
             # or reachable but not acquiring, must refuse the session now.
@@ -460,7 +488,12 @@ def build_session(
             schema=event_schema,
             commands=commands,
             frame_monitor=frame_monitor,
-            input_provider=make_input_provider(screen, tracker=tracker, response=response),
+            input_provider=make_input_provider(
+                screen,
+                tracker=tracker,
+                response=response,
+                correction=eyetracker.correction if eyetracker is not None else None,
+            ),
             health_checks=((make_tracker_health_check(tracker),) if tracker is not None else ()),
             on_manual_reward=on_manual_reward,
             manual_reward_payload={"pulses": manual_pulses.model_dump(mode="json")},
@@ -494,7 +527,7 @@ def build_session(
             iti_s=iti.seconds(refresh_hz) if iti is not None else 0.0,
             score=score,
             on_pause=on_pause,
-            on_calibrate=tracker.calibrate if tracker is not None else None,
+            eyetracker=eyetracker,
             tracker=tracker,
             reward=reward,
             sync=sync,

@@ -177,7 +177,15 @@ def build_pause_menu(
 
     now = [MenuItem("SPACE", "resume", "resume")]
     if has_tracker:
-        now.append(MenuItem("C", "recalibrate the eye tracker", "calibrate"))
+        # The three eye-tracker procedures (session/eyetracker.py). Listed
+        # together because they are chosen together: a validation that fails
+        # is answered with a recalibration, a small offset with a drift
+        # correction, and the experimenter picks between them here.
+        now += [
+            MenuItem("C", "recalibrate the eye tracker", "calibrate"),
+            MenuItem("V", "validate the calibration", "validate"),
+            MenuItem("D", "drift-correct the eye tracker", "drift_correct"),
+        ]
     if has_reward:
         now.append(MenuItem("R", "deliver one reward", "manual_reward"))
     if has_training:

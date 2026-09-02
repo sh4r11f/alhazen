@@ -21,7 +21,8 @@ src/alhazen/
 ├── devices/        # EyeTracker (eyelink/viewpixx/mouse_sim/scripted), RewardDispenser,
 │                   #   SyncOutput, SubjectKeyboard, SpikeSource (spikeglx/simulated);
 │                   #   eyetracker/calibration.py is our own cal graphics for the
-│                   #   EyeLink, and viewpixx.py draws its own
+│                   #   EyeLink, viewpixx.py draws its own, guide.py is the screen
+│                   #   before either, procedures.py validates and drift-corrects any
 ├── neural/         # pure-numpy neural arithmetic: threshold spike detection, the live
 │                   #   stream→session timebase, probe grids and RF accumulation — shared
 │                   #   by the live device path and the offline analysis
@@ -32,7 +33,9 @@ src/alhazen/
 ├── training/       # curricula: stages, ramps, criteria, per-subject state
 ├── analysis/       # reading a run back: io/ readers, TTL alignment, photodiode, report
 ├── modes/          # the six ways to start an experiment (docs/modes.md)
-├── session/        # SessionRunner, build_session, DataRecorder, the pause menu, check_rig
+├── session/        # SessionRunner, build_session, DataRecorder, the pause menu,
+│                   #   eyetracker.py (the session's calibration/validation/drift
+│                   #   results and dashboard panels), check_rig
 ├── config/         # pydantic models (extra=forbid, frozen), YAML loader, snapshot writer
 ├── data/           # naming, SessionPaths, manifest, participants registry
 ├── dashboard/      # isolated local HTTP process, panel statistics, and the browser page
@@ -310,7 +313,9 @@ because the two devices are not the same shape of thing.
 | Gaze frame | screen px, y down | **centered px, y up** — converted once, in the backend |
 | "No eye" | coordinates set to `-32768` | coordinates parked at `±9000`, or NaN |
 | Eyes | tracker reports which one; binocular ties break to left | always binocular; `eyetracker.eye` picks `left`/`right`/`average` |
-| Calibration | `doTrackerSetup()` runs it on the Host PC | alhazen draws the target grid in the session window and fits from it |
+| Calibration | `doTrackerSetup()` runs it on the Host PC, after alhazen's guide screen | alhazen shows the guide, draws the target grid in the session window with a live "eyes:" line, and fits from it |
+| Validation, drift correction | `devices/eyetracker/procedures.py`, the same on both: generic over `get_gaze()`, results on the dashboard ([eye-tracker.md](eye-tracker.md)) | |
+| Camera image | on the Host PC's own screen | read through `camera_frame()` into the dashboard's *Eye tracker* group while paused |
 | Messages | written into the EDF, which then carries its own alignment | written to a sidecar CSV stamped on **both** clocks, because nothing can be written into the sample stream |
 | Operator overlay | drawn on the Host PC's eye image | none — the only surface the device can draw on is the subject's screen |
 
@@ -805,7 +810,10 @@ of the page is described in [`dashboard.md`](dashboard.md):
   trial 40, and no statistic lives in untested page JavaScript. A live
   analysis (§5.5) obeys the same division: its `panels()` are finished
   payloads (a receptive-field map travels as a `heatmap` form the page
-  only renders), appended after the spec's own panels.
+  only renders), appended after the spec's own panels. So does the
+  session's eye-tracker monitor (`session/eyetracker.py`), whose
+  calibration, validation and drift-correction results and camera image
+  make up the *Eye tracker* group.
 
 The child starts before the display opens, so the whole remainder of
 `build_session` runs inside a guard that stops it on any failure — otherwise

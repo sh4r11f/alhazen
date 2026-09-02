@@ -29,6 +29,42 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Added
 
+- **A calibration guide, validation and drift correction, and an Eye
+  tracker tab on the dashboard.** Before a calibration starts, the subject
+  display shows a guide (`devices/eyetracker/guide.py`): which tracker,
+  which eye the session reads, how many targets over what part of the
+  screen, whether the experimenter presses SPACE for each target or the
+  tracker moves on by itself (`eyetracker.calibration_advance: manual |
+  auto`), the keys, and — on a TRACKPixx3 — a live line saying which eyes
+  the camera sees. `calibrate()` now returns a `CalibrationResult` (`ok`,
+  layout, target count, eye, advance mode, the device's own note).
+  Validation (the same targets again, per-target error in degrees, passing
+  when the *worst* is within `accuracy_max_deg`) and drift correction (one
+  centre target, the offset applied to every gaze position from then on
+  unless it exceeds `drift_max_deg`) are new, generic over the `EyeTracker`
+  protocol (`devices/eyetracker/procedures.py`), so they run the same way
+  on every backend and are tested on the scripted one. A validation runs by
+  itself after every calibration (`validate_after_calibration`). The pause
+  screen offers them as `V` and `D` beside `C`, the dashboard as *Validate*
+  and *Drift correct* buttons; while one runs the dashboard's status reads
+  *calibrating* and follows the walk target by target, and a new *Eye
+  tracker* group shows the camera image (TRACKPixx3, `eyetracker.
+  camera_image`), the calibration verdict, the validation's targets and
+  gaze on a degree grid with its errors, and the drift offset. All three go
+  on the record as the reserved events `CALIBRATION`, `VALIDATION` and
+  `DRIFT_CORRECTION`. The EyeLink's `calibration_type` is checked against
+  the layouts its Host PC accepts when the rig loads. The session's side of
+  all this is `session/eyetracker.py` (`EyeTrackerMonitor`), which
+  `SessionRunner` now takes as `eyetracker=` in place of the `on_calibrate`
+  callable. Documented in [docs/eye-tracker.md](docs/eye-tracker.md).
+
+- **Instruction screens look like a terminal.** Every message the session
+  puts on the subject display — the instructions, `stage: 2`, the
+  calibration guide — is drawn as monospace text in pale green on a
+  near-black panel with a green outline, sized to what it says, the way the
+  pause menu is drawn in orange and a fault in red (`display/palette.py`):
+  the border colour alone says which of the three a screen is.
+
 - **A live spike source behind the device seam** (`devices.spikes`): the
   `SpikeSource` protocol with a `spikeglx` backend — SpikeGLX's remote
   command server through the official SpikeGLX-CPP-SDK bindings, imported

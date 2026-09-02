@@ -17,25 +17,36 @@ behaviour, and neither should first run on a rig with a subject in it.
 
 from __future__ import annotations
 
+import ctypes
 import math
 import sys
 import threading
 import time
 import types
+from collections.abc import Callable
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from alhazen.config.models import EyeTrackerConfig
 from alhazen.devices.eyetracker import EyeTracker, ViewPixxTracker, make_tracker
+from alhazen.devices.eyetracker.guide import GUIDE_TITLE
 from alhazen.devices.eyetracker.viewpixx import (
+    AUTO_SETTLE_S,
+    AUTO_STEADY_REFRESHES,
     GAZE_STALE_S,
     HOST_DEVICE,
+    STATUS_REFRESH_S,
     TRACKING_LOST_PX,
     calibration_targets,
+    eye_in_view,
+    image_from_pointer,
     is_tracking_lost,
     select_eye,
+    shrink_image,
 )
+from alhazen.display.palette import TERMINAL_GREEN
 from alhazen.errors import TrackerError
 from alhazen.testing import FakeClock
 from support import SCREEN
@@ -60,6 +71,28 @@ class FakeLibdpx:
         # Pupil ellipse semi-axes (left major/minor, right major/minor); all
         # zero is the device's "no eye in the image".
         self.pupils: tuple[float, float, float, float] = (3.0, 2.0, 3.0, 2.0)
+        # The camera image TPxGetImagePtr hands back: 8-bit grey, row-major.
+        # None is the library's NULL pointer (no image available).
+        self.image: np.ndarray | None = np.full((24, 32), 200, dtype=np.uint8)
+        self.image_reads = 0
+        # What reading the image does to the ring, if anything — a hook a
+        # test sets to mimic a device call that re-points the buffer.
+        self.on_image_read: Callable[[], None] | None = None
+
+    def TPxGetImagePtr(self):  # noqa: N802 - vendor's name
+        self.image_reads += 1
+        if self.on_image_read is not None:
+            self.on_image_read()
+        if self.image is None:
+            return ctypes.POINTER(ctypes.c_byte)(), 0, 0
+        height, width = self.image.shape
+        # Kept alive on the fake so the pointer stays valid until the
+        # backend has copied out of it, as the device's own buffer would.
+        self._image_buffer = (ctypes.c_byte * (height * width))(
+            *(int(v) - 256 if v > 127 else int(v) for v in self.image.ravel())
+        )
+        pointer = ctypes.cast(self._image_buffer, ctypes.POINTER(ctypes.c_byte))
+        return pointer, height, width
 
     def TPxSetBuff(self, base: int, size: int) -> None:  # noqa: N802 - vendor's name
         self.buffer_base = base
@@ -607,14 +640,22 @@ def fake_psychopy(monkeypatch):
     the accept/redo/abort walk over the target grid be tested with no window
     and no device — the walk is alhazen's own logic, not the vendor's.
     """
-    keys: list[str] = []
+    keys: list[str | None] = []
     circles: list[FakeCircle] = []
     texts: list[FakeText] = []
     windows: list[FakeWindow] = []
+    # The session clock the walk reads; every wait moves it one refresh on,
+    # the way a real waitKeys(maxWait=STATUS_REFRESH_S) spends that long.
+    clocks: list[FakeClock] = []
 
     def wait_keys(maxWait=None, keyList=None):  # noqa: N803 - psychopy's own parameter names
+        for clock in clocks:
+            clock.advance(STATUS_REFRESH_S)
         if keys:
-            return [keys.pop(0)]
+            # None queued means "no key this refresh" — the window is still
+            # open, nobody pressed anything, and the walk decides for itself.
+            key = keys.pop(0)
+            return None if key is None else [key]
         # Out of keys: the window has gone away, as far as the walk can tell.
         # Without this a walk that waits with a timeout would spin forever.
         for window in windows:
@@ -645,7 +686,9 @@ def fake_psychopy(monkeypatch):
     monkeypatch.setitem(sys.modules, "psychopy", package)
     monkeypatch.setitem(sys.modules, "psychopy.event", event_module)
     monkeypatch.setitem(sys.modules, "psychopy.visual", visual_module)
-    return types.SimpleNamespace(keys=keys, circles=circles, texts=texts)
+    return types.SimpleNamespace(
+        keys=keys, circles=circles, texts=texts, windows=windows, clocks=clocks
+    )
 
 
 class FakeText:
@@ -665,17 +708,127 @@ class FakeDisplay:
     def __init__(self) -> None:
         self.window = FakeWindow()
         self.messages: list[str] = []
+        # (title, body, colour) of every menu-style panel — the guide.
+        self.menus: list[tuple[str, str, tuple[float, float, float]]] = []
 
     def show_message(self, text: str) -> None:
         self.messages.append(text)
 
+    def show_menu(self, title: str, body: str, *, color: tuple[float, float, float]) -> None:
+        self.menus.append((title, body, color))
 
-def calibrating(fake_pypixxlib, **cfg_kwargs) -> ViewPixxTracker:
+
+def calibrating(fake_pypixxlib, fake_psychopy=None, **cfg_kwargs) -> ViewPixxTracker:
+    """A connected tracker with a display, ready to calibrate.
+
+    With the psychopy fake passed in, its window and clock are registered so
+    that running out of queued keys closes the window and every wait moves
+    the session clock on — what the guide loop and auto advance need.
+    """
     cfg = EyeTrackerConfig(backend="viewpixx", **cfg_kwargs)
-    tracker = ViewPixxTracker(cfg, FakeDisplay(), SCREEN, FakeClock(), background_gaze=False)
+    clock = FakeClock()
+    display = FakeDisplay()
+    tracker = ViewPixxTracker(cfg, display, SCREEN, clock, background_gaze=False)
     tracker.connect()
-    tracker.configure(SCREEN, FakeClock())
+    tracker.configure(SCREEN, clock)
+    if fake_psychopy is not None:
+        fake_psychopy.windows.append(display.window)
+        fake_psychopy.clocks.append(clock)
     return tracker
+
+
+def guide_body(tracker: ViewPixxTracker) -> str:
+    """The last guide panel the display drew."""
+    menus = tracker._display.menus  # type: ignore[union-attr]
+    assert menus, "the calibration guide was never shown"
+    title, body, color = menus[-1]
+    assert title == GUIDE_TITLE
+    assert color == TERMINAL_GREEN
+    return body
+
+
+# The guide screen comes first, and SPACE there starts the walk.
+START = "space"
+
+
+class TestCalibrationGuide:
+    def test_the_guide_is_shown_before_the_first_target(self, fake_pypixxlib, fake_psychopy):
+        tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV9", eye="right")
+        fake_psychopy.keys.extend([START] + ["space"] * 9)
+        tracker.calibrate()
+        body = guide_body(tracker)
+        # It says which eye the session reads, what the walk is and how it
+        # advances, and what the keys do — the questions an experimenter has
+        # before the first target, in one place.
+        assert "RIGHT eye read by the session" in body
+        assert "both eyes are calibrated" in body
+        assert "HV9 — 9 targets" in body
+        assert "MANUAL" in body and "press SPACE" in body
+        assert "BACKSPACE" in body and "ESC" in body
+        # Shown before any target was drawn.
+        assert fake_psychopy.circles[0].drawn_at
+        assert tracker._display.menus  # type: ignore[union-attr]
+
+    def test_the_guide_shows_the_live_eye_line(self, fake_pypixxlib, fake_psychopy):
+        tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
+        fake_pypixxlib.libdpx.pupils = (3.0, 2.0, 0.0, 0.0)
+        # Two refreshes at the guide, then start.
+        fake_psychopy.keys.extend([None, START] + ["space"] * 5)
+        tracker.calibrate()
+        menus = tracker._display.menus  # type: ignore[union-attr]
+        assert len(menus) == 2  # redrawn every refresh while it waits
+        assert all("eyes: left only" in body for _, body, _ in menus)
+
+    def test_the_guide_says_auto_when_the_rig_advances_by_itself(
+        self, fake_pypixxlib, fake_psychopy
+    ):
+        tracker = calibrating(
+            fake_pypixxlib, fake_psychopy, calibration_type="HV5", calibration_advance="auto"
+        )
+        fake_psychopy.keys.extend(["escape"])
+        tracker.calibrate()
+        assert "AUTO" in guide_body(tracker)
+
+    def test_escape_at_the_guide_aborts_with_nothing_sampled(self, fake_pypixxlib, fake_psychopy):
+        tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
+        fake_psychopy.keys.extend(["escape", "space", "space"])
+        result = tracker.calibrate()
+        assert result.aborted and result.ok is None
+        assert "guide" in result.note
+        assert fake_pypixxlib.calibration_points == []
+        assert not fake_pypixxlib.finished_calibration
+        # The guide is cleared from the screen on the way out.
+        assert tracker._display.window.flips >= 1  # type: ignore[union-attr]
+
+    def test_a_closed_window_at_the_guide_aborts(self, fake_pypixxlib, fake_psychopy):
+        tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
+        result = tracker.calibrate()  # no keys at all: the window goes away
+        assert result.aborted
+        assert fake_pypixxlib.calibration_points == []
+
+    def test_progress_is_reported_from_the_guide_and_every_target(
+        self, fake_pypixxlib, fake_psychopy
+    ):
+        tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
+        reports: list[tuple[str, str]] = []
+        tracker.set_progress_hook(lambda stage, detail: reports.append((stage, detail)))
+        fake_psychopy.keys.extend([START] + ["space"] * 5)
+        tracker.calibrate()
+        stages = [stage for stage, _ in reports]
+        assert stages[0] == "calibration guide"
+        details = [detail for stage, detail in reports if stage == "calibrating"]
+        assert details[0].startswith("target 1 of 5")
+        assert details[-1].startswith("target 5 of 5")
+        assert "eyes: both tracked" in details[0]
+
+    def test_the_hook_can_be_removed(self, fake_pypixxlib, fake_psychopy):
+        tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
+        reports: list[tuple[str, str]] = []
+        tracker.set_progress_hook(lambda stage, detail: reports.append((stage, detail)))
+        tracker.set_progress_hook(None)
+        fake_psychopy.keys.extend([START] + ["space"] * 5)
+        tracker.calibrate()
+        assert reports == []
 
 
 class TestCalibrationWalk:
@@ -685,9 +838,9 @@ class TestCalibrationWalk:
             tracker.calibrate()
 
     def test_accepting_every_target_samples_each_one_and_fits(self, fake_pypixxlib, fake_psychopy):
-        tracker = calibrating(fake_pypixxlib, calibration_type="HV5")
-        fake_psychopy.keys.extend(["space"] * 5)
-        tracker.calibrate()
+        tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
+        fake_psychopy.keys.extend([START] + ["space"] * 5)
+        result = tracker.calibrate()
 
         # Each target is handed to the device in the frame it was drawn in —
         # both are the device's own centered px, so no conversion happens and
@@ -695,13 +848,19 @@ class TestCalibrationWalk:
         expected = calibration_targets("HV5", SCREEN, tracker._cfg.calibration_area)
         assert [(x, y) for x, y, _ in fake_pypixxlib.calibration_points] == expected
         assert fake_pypixxlib.finished_calibration
+        # And the session hears what happened, in the words a panel shows.
+        assert result.ok is True and not result.aborted
+        assert result.verdict == "calibrated"
+        assert (result.layout, result.n_targets, result.advance) == ("HV5", 5, "manual")
+        assert result.eye.startswith("left")
+        assert result.t == tracker._clock.now()
 
     def test_redo_steps_back_to_the_previous_target(self, fake_pypixxlib, fake_psychopy):
         # The point an experimenter wants to redo is almost always the one
         # they just accepted, not the one still on screen.
-        tracker = calibrating(fake_pypixxlib, calibration_type="HV5")
+        tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
         fake_psychopy.keys.extend(
-            ["space", "space", "backspace", "space", "space", "space", "space"]
+            [START, "space", "space", "backspace", "space", "space", "space", "space"]
         )
         tracker.calibrate()
 
@@ -714,8 +873,8 @@ class TestCalibrationWalk:
     def test_redo_on_the_first_target_does_not_walk_off_the_grid(
         self, fake_pypixxlib, fake_psychopy
     ):
-        tracker = calibrating(fake_pypixxlib, calibration_type="HV5")
-        fake_psychopy.keys.extend(["backspace"] + ["space"] * 5)
+        tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
+        fake_psychopy.keys.extend([START, "backspace"] + ["space"] * 5)
         tracker.calibrate()
         assert len(fake_pypixxlib.calibration_points) == 5
 
@@ -723,19 +882,122 @@ class TestCalibrationWalk:
         # The fit is only committed by finishCalibration(); aborting before it
         # means the device keeps whatever calibration it already had, which is
         # what an experimenter pressing escape for a subject break expects.
-        tracker = calibrating(fake_pypixxlib, calibration_type="HV5")
-        fake_psychopy.keys.extend(["space", "escape"])
-        tracker.calibrate()
+        tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
+        fake_psychopy.keys.extend([START, "space", "escape"])
+        result = tracker.calibrate()
         assert len(fake_pypixxlib.calibration_points) == 1
         assert not fake_pypixxlib.finished_calibration
+        assert result.aborted and result.ok is None
+        assert result.verdict == "aborted"
+        assert "target 2 of 5" in result.note
 
     def test_a_closed_window_aborts_rather_than_spinning(self, fake_pypixxlib, fake_psychopy):
         # waitKeys returns None if the window goes away. Treating that as
         # "accept" would fit the model to nothing; looping would hang the rig.
-        tracker = calibrating(fake_pypixxlib, calibration_type="HV5")
-        tracker.calibrate()
+        tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
+        fake_psychopy.keys.extend([START])
+        result = tracker.calibrate()
         assert fake_pypixxlib.calibration_points == []
         assert not fake_pypixxlib.finished_calibration
+        assert result.aborted
+
+
+class TestAutoAdvance:
+    """``calibration_advance: auto`` — the walk accepts each target itself once
+    the configured eye has been in the image for long enough."""
+
+    # Refreshes one target needs: the settle time, and then the steady run —
+    # both counted in refreshes of STATUS_REFRESH_S, from the same clock. The
+    # refresh on which the settle time is reached is the first of the run.
+    PER_TARGET = math.ceil(AUTO_SETTLE_S / STATUS_REFRESH_S) + AUTO_STEADY_REFRESHES - 1
+
+    def test_targets_are_accepted_without_a_key(self, fake_pypixxlib, fake_psychopy):
+        tracker = calibrating(
+            fake_pypixxlib, fake_psychopy, calibration_type="HV5", calibration_advance="auto"
+        )
+        # A few spare refreshes: the clock is a float sum, and a target that
+        # settles one refresh late is not what this test is about.
+        fake_psychopy.keys.extend([START] + [None] * (5 * self.PER_TARGET + 5))
+        result = tracker.calibrate()
+        assert len(fake_pypixxlib.calibration_points) == 5
+        assert fake_pypixxlib.finished_calibration
+        assert result.ok is True and result.advance == "auto"
+
+    def test_a_target_is_held_for_the_settle_time_first(self, fake_pypixxlib, fake_psychopy):
+        # Fewer refreshes than one target needs: nothing may be accepted, or
+        # the walk has fitted a point to a saccade still in flight.
+        tracker = calibrating(
+            fake_pypixxlib, fake_psychopy, calibration_type="HV5", calibration_advance="auto"
+        )
+        fake_psychopy.keys.extend([START] + [None] * (self.PER_TARGET - 1))
+        tracker.calibrate()
+        assert fake_pypixxlib.calibration_points == []
+
+    def test_one_more_refresh_accepts(self, fake_pypixxlib, fake_psychopy):
+        tracker = calibrating(
+            fake_pypixxlib, fake_psychopy, calibration_type="HV5", calibration_advance="auto"
+        )
+        fake_psychopy.keys.extend([START] + [None] * self.PER_TARGET)
+        tracker.calibrate()
+        assert len(fake_pypixxlib.calibration_points) == 1
+
+    def test_the_configured_eye_has_to_be_in_view(self, fake_pypixxlib, fake_psychopy):
+        # Only the left pupil is found; the session reads the right eye. Auto
+        # must never accept that, however long it waits.
+        tracker = calibrating(
+            fake_pypixxlib,
+            fake_psychopy,
+            calibration_type="HV5",
+            calibration_advance="auto",
+            eye="right",
+        )
+        fake_pypixxlib.libdpx.pupils = (3.0, 2.0, 0.0, 0.0)
+        fake_psychopy.keys.extend([START] + [None] * (5 * self.PER_TARGET))
+        result = tracker.calibrate()
+        assert fake_pypixxlib.calibration_points == []
+        assert result.aborted  # the window closed on it in the end
+
+    def test_a_lost_refresh_restarts_the_steady_count(self, fake_pypixxlib, fake_psychopy):
+        tracker = calibrating(
+            fake_pypixxlib, fake_psychopy, calibration_type="HV5", calibration_advance="auto"
+        )
+        libdpx = fake_pypixxlib.libdpx
+        # The eye drops out on every fourth read: never five in a row.
+        reads = {"n": 0}
+
+        def flicker():
+            reads["n"] += 1
+            return (0.0, 0.0, 0.0, 0.0) if reads["n"] % 4 == 0 else (3.0, 2.0, 3.0, 2.0)
+
+        libdpx.TPxGetPupilSize = flicker  # type: ignore[method-assign]
+        fake_psychopy.keys.extend([START] + [None] * (3 * self.PER_TARGET))
+        tracker.calibrate()
+        assert fake_pypixxlib.calibration_points == []
+
+    def test_the_keys_still_work_in_auto_mode(self, fake_pypixxlib, fake_psychopy):
+        tracker = calibrating(
+            fake_pypixxlib, fake_psychopy, calibration_type="HV5", calibration_advance="auto"
+        )
+        # SPACE accepts at once; ESC aborts.
+        fake_psychopy.keys.extend([START, "space", "space", "escape"])
+        result = tracker.calibrate()
+        assert len(fake_pypixxlib.calibration_points) == 2
+        assert result.aborted and "target 3 of 5" in result.note
+
+
+class TestEyeInView:
+    def test_the_configured_eye_is_the_one_that_counts(self):
+        assert eye_in_view((True, False), "left")
+        assert not eye_in_view((True, False), "right")
+        assert eye_in_view((False, True), "right")
+
+    def test_average_needs_both(self):
+        assert eye_in_view((True, True), "average")
+        assert not eye_in_view((True, False), "average")
+
+    def test_an_unknown_eye_is_an_error(self):
+        with pytest.raises(TrackerError, match="unknown eyetracker.eye"):
+            eye_in_view((True, True), "cyclopean")
 
 
 class TestGazeReader:
@@ -841,7 +1103,7 @@ class TestRecordingGuard:
 
 class TestCalibrationRecording:
     def test_drains_before_and_rearms_after(self, fake_pypixxlib, fake_psychopy):
-        tracker = calibrating(fake_pypixxlib, calibration_type="HV5")
+        tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
         libdpx = fake_pypixxlib.libdpx
 
         def calib_point(x, y, eye):
@@ -851,7 +1113,7 @@ class TestCalibrationRecording:
             libdpx.buffer_base = 0
 
         fake_pypixxlib.getEyePositionDuringCalib = calib_point  # type: ignore[method-assign]
-        fake_psychopy.keys.extend(["space"] * 5)
+        fake_psychopy.keys.extend([START] + ["space"] * 5)
         tracker.calibrate()
         assert fake_pypixxlib.drains == 1  # the pre-calibration drain
         assert libdpx.freerun
@@ -862,34 +1124,166 @@ class TestCalibrationRecording:
         assert fake_pypixxlib.drains == 2
 
     def test_accept_is_refused_while_no_eye_is_in_the_image(self, fake_pypixxlib, fake_psychopy):
-        tracker = calibrating(fake_pypixxlib, calibration_type="HV5")
+        tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
         fake_pypixxlib.libdpx.pupils = (0.0, 0.0, 0.0, 0.0)
-        fake_psychopy.keys.extend(["space", "space", "escape"])
-        tracker.calibrate()
+        fake_psychopy.keys.extend([START, "space", "space", "escape"])
+        result = tracker.calibrate()
         assert fake_pypixxlib.calibration_points == []
         assert not fake_pypixxlib.finished_calibration
         assert any("NO EYE" in shown for text in fake_psychopy.texts for shown in text.shown)
+        # The guide said so as well, before the walk started.
+        assert "NO EYE" in guide_body(tracker)
+        assert result.aborted
 
     def test_the_status_line_names_the_tracked_eyes(self, fake_pypixxlib, fake_psychopy):
-        tracker = calibrating(fake_pypixxlib, calibration_type="HV5")
+        tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
         fake_pypixxlib.libdpx.pupils = (3.0, 2.0, 0.0, 0.0)
-        fake_psychopy.keys.extend(["space"] * 5)
+        fake_psychopy.keys.extend([START] + ["space"] * 5)
         tracker.calibrate()
         assert any("left only" in shown for text in fake_psychopy.texts for shown in text.shown)
         assert len(fake_pypixxlib.calibration_points) == 5
 
     def test_a_calibration_the_device_did_not_keep_is_reported(self, fake_pypixxlib, fake_psychopy):
-        tracker = calibrating(fake_pypixxlib, calibration_type="HV5")
+        tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
         fake_pypixxlib.calibrated_after_finish = False
-        fake_psychopy.keys.extend(["space"] * 5)
-        tracker.calibrate()
+        fake_psychopy.keys.extend([START] + ["space"] * 5)
+        result = tracker.calibrate()
         assert fake_pypixxlib.finished_calibration
         assert tracker._display is not None
         messages = tracker._display.messages  # type: ignore[attr-defined]
         assert messages and "FAILED" in messages[0]
+        # And the result says so, for the dashboard and the log.
+        assert result.ok is False and not result.aborted
+        assert result.verdict == "NOT calibrated"
+        assert "calibrate again" in result.note
 
     def test_a_kept_calibration_says_nothing_on_screen(self, fake_pypixxlib, fake_psychopy):
-        tracker = calibrating(fake_pypixxlib, calibration_type="HV5")
-        fake_psychopy.keys.extend(["space"] * 5)
+        tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
+        fake_psychopy.keys.extend([START] + ["space"] * 5)
         tracker.calibrate()
         assert tracker._display.messages == []  # type: ignore[attr-defined]
+
+
+class TestCameraImage:
+    """The camera frame: the optional capability the dashboard's eye-tracker
+    tab draws. The pixel copy and the shrink are free functions; the method
+    is the device calls around them."""
+
+    def test_the_bytes_come_out_unsigned_and_in_the_same_order(self):
+        # 200 is what the device means, whatever ctypes calls the byte.
+        values = [0, 1, 127, 128, 200, 255]
+        buffer = (ctypes.c_byte * 6)(*(v - 256 if v > 127 else v for v in values))
+        pixels = image_from_pointer(ctypes.cast(buffer, ctypes.POINTER(ctypes.c_byte)), 2, 3)
+        assert pixels.dtype == np.uint8
+        assert pixels.tolist() == [[0, 1, 127], [128, 200, 255]]
+
+    def test_the_copy_outlives_the_buffer(self):
+        buffer = (ctypes.c_byte * 4)(1, 2, 3, 4)
+        pixels = image_from_pointer(ctypes.cast(buffer, ctypes.POINTER(ctypes.c_byte)), 2, 2)
+        buffer[0] = 99  # the device overwrites its buffer with the next frame
+        assert pixels[0, 0] == 1
+
+    def test_a_null_pointer_is_an_error_not_a_black_image(self):
+        with pytest.raises(TrackerError, match="null image pointer"):
+            image_from_pointer(ctypes.POINTER(ctypes.c_byte)(), 24, 32)
+
+    def test_an_empty_size_is_an_error(self):
+        buffer = (ctypes.c_byte * 4)(1, 2, 3, 4)
+        with pytest.raises(TrackerError, match="0x0"):
+            image_from_pointer(ctypes.cast(buffer, ctypes.POINTER(ctypes.c_byte)), 0, 0)
+
+    def test_shrink_keeps_the_longer_side_within_the_cap(self):
+        big = np.arange(700 * 900, dtype=np.uint32).reshape(700, 900).astype(np.uint8)
+        small = shrink_image(big, 320)
+        assert small.shape == (234, 300)  # every 3rd pixel
+        # Point-sampled, not averaged: a pupil edge stays an edge.
+        assert small[1, 1] == big[3, 3]
+        assert small.flags["C_CONTIGUOUS"]
+
+    def test_shrink_leaves_a_small_image_alone(self):
+        small = np.zeros((24, 32), dtype=np.uint8)
+        assert shrink_image(small, 320).shape == (24, 32)
+
+    def test_the_frame_is_the_device_image_on_the_session_clock(self, fake_pypixxlib):
+        clock = FakeClock()
+        tracker = connected(clock)
+        clock.advance(3.0)
+        frame = tracker.camera_frame()
+        assert frame.pixels.shape == (24, 32)
+        assert int(frame.pixels[0, 0]) == 200
+        assert frame.t == 3.0
+        assert fake_pypixxlib.libdpx.image_reads == 1
+
+    def test_a_large_image_is_shrunk_for_the_dashboard(self, fake_pypixxlib):
+        tracker = connected()
+        fake_pypixxlib.libdpx.image = np.zeros((1200, 1600), dtype=np.uint8)
+        assert tracker.camera_frame().pixels.shape == (240, 320)
+
+    def test_off_in_the_rig_config_is_an_error_that_says_so(self, fake_pypixxlib):
+        tracker = connected(camera_image=False)
+        with pytest.raises(TrackerError, match="camera_image"):
+            tracker.camera_frame()
+        assert fake_pypixxlib.libdpx.image_reads == 0
+
+    def test_before_connect_is_an_error(self):
+        tracker = make_viewpixx()
+        with pytest.raises(TrackerError, match="before connect"):
+            tracker.camera_frame()
+
+    def test_no_image_from_the_device_is_an_error(self, fake_pypixxlib):
+        tracker = connected()
+        fake_pypixxlib.libdpx.image = None
+        with pytest.raises(TrackerError, match="no camera image"):
+            tracker.camera_frame()
+
+    def test_a_libdpx_fault_during_the_read_is_an_error(self, fake_pypixxlib):
+        tracker = connected()
+        libdpx = fake_pypixxlib.libdpx
+
+        def fail() -> None:
+            libdpx.error = "DPX_ERR_USB_RAW_EZREAD"
+            libdpx.error_string = "USB read failed"
+
+        libdpx.on_image_read = fail
+        with pytest.raises(TrackerError, match="DPX_ERR_USB_RAW_EZREAD"):
+            tracker.camera_frame()
+        # Cleared, so the next unrelated check does not report it again.
+        assert libdpx.error == "DPX_SUCCESS"
+
+    def test_a_read_that_moved_the_ring_rearms_it(self, fake_pypixxlib):
+        tracker = connected()
+        libdpx = fake_pypixxlib.libdpx
+
+        def move_ring() -> None:
+            libdpx.freerun = False
+            libdpx.buffer_base = 0
+
+        libdpx.on_image_read = move_ring
+        arms_before = libdpx.arms
+        tracker.camera_frame()
+        assert libdpx.arms == arms_before + 1
+        assert libdpx.freerun and libdpx.buffer_base == fake_pypixxlib.buffer_base_addr
+
+    def test_the_lock_is_held_around_the_device_calls(self, fake_pypixxlib):
+        # The gaze reader shares the device; the image read must not
+        # interleave with its calls.
+        tracker = connected()
+        libdpx = fake_pypixxlib.libdpx
+        libdpx.on_image_read = lambda: (
+            pytest.fail("not locked") if tracker._device_lock.acquire(blocking=False) else None
+        )
+        tracker.camera_frame()
+
+
+class TestEyeStatus:
+    def test_names_the_eyes_the_camera_sees(self, fake_pypixxlib):
+        tracker = connected()
+        assert tracker.eye_status() == "eyes: both tracked"
+        fake_pypixxlib.libdpx.pupils = (0.0, 0.0, 3.0, 2.0)
+        assert tracker.eye_status() == "eyes: right only"
+        fake_pypixxlib.libdpx.pupils = (0.0, 0.0, 0.0, 0.0)
+        assert "NO EYE" in tracker.eye_status()
+
+    def test_before_connect_is_an_error(self):
+        with pytest.raises(TrackerError, match="before connect"):
+            make_viewpixx().eye_status()

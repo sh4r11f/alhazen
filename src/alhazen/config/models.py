@@ -218,12 +218,16 @@ class DatabaseConfig(Model):
 # who wrote it believes they configured something, and nothing at runtime
 # would ever tell them otherwise. Fields absent from both maps are shared.
 EYELINK_ONLY_FIELDS = ("host_ip", "edf_host_filename")
-VIEWPIXX_ONLY_FIELDS = ("eye", "led_intensity")
+VIEWPIXX_ONLY_FIELDS = ("eye", "led_intensity", "camera_image")
 
 # Target layouts alhazen can lay out itself, for backends whose calibration
 # it drives (viewpixx). The EyeLink accepts more of them, but its Host PC
 # owns the grid, so alhazen never has to enumerate the positions.
 SELF_DRIVEN_CALIBRATION_TYPES = ("HV5", "HV9", "HV13")
+# The layouts the EyeLink Host PC accepts for its ``calibration_type``
+# command. Checked at load time: the Host PC would otherwise report the bad
+# name on its own screen, in another room, with the subject already seated.
+EYELINK_CALIBRATION_TYPES = ("H3", "HV3", "HV5", "HV9", "HV13")
 
 
 class EyeTrackerConfig(Model):
@@ -243,15 +247,40 @@ class EyeTrackerConfig(Model):
 
     Most fields belong to exactly one backend, and setting one that the
     chosen backend ignores is rejected below rather than quietly dropped.
-    ``calibration_type`` and ``calibration_area`` are the two that are shared:
-    both real backends calibrate over a target grid of that layout covering
-    that fraction of the screen.
+    The shared ones describe the calibration procedure itself, which every
+    backend runs the same way from the experimenter's side: a target grid of
+    ``calibration_type`` layout covering ``calibration_area`` of the screen,
+    walked by hand or automatically (``calibration_advance``), then checked
+    (``validate_after_calibration``) against ``accuracy_max_deg``.
     """
 
     backend: Literal["eyelink", "viewpixx", "mouse_sim", "scripted"]
     host_ip: str = "100.1.1.1"  # EyeLink Host PC, on the isolated tracker subnet
     calibration_type: str = "HV5"  # target layout (5-point horizontal/vertical)
     calibration_area: float = 0.6  # fraction of the screen the target grid spans
+    # How the calibration moves from one target to the next. "manual": the
+    # experimenter watches the subject and presses SPACE to accept each
+    # target — the safe default, because a target accepted while the subject
+    # looked elsewhere fits the gaze model to the wrong point and every
+    # sample in the session inherits the error. "auto": the tracker accepts a
+    # target by itself once gaze has settled on it (the EyeLink's own
+    # automatic calibration; alhazen's walk for the TRACKPixx3), for a
+    # subject who cannot be waited on — an animal that will not hold a
+    # fixation long enough for a hand on the keyboard to catch it.
+    calibration_advance: Literal["manual", "auto"] = "manual"
+    # Run a validation right after every calibration: the same targets shown
+    # again, gaze measured against them, and the errors reported on the
+    # dashboard. Off only for a rig that validates some other way.
+    validate_after_calibration: bool = True
+    # A validation passes when its WORST target error is at most this many
+    # degrees of visual angle. The worst, not the mean: one corner the model
+    # gets wrong is one region of the screen the whole session gets wrong.
+    accuracy_max_deg: float = 1.0
+    # A drift correction is refused when the measured offset exceeds this.
+    # A drift is a small shift from a headrest settling or a camera nudge; an
+    # offset of several degrees is a calibration that no longer applies, and
+    # shifting the whole gaze model by it would only hide that.
+    drift_max_deg: float = 3.0
     edf_host_filename: str = "alhazen.EDF"  # what the EyeLink Host PC saves its recording as
     # TRACKPixx3 is always binocular and a GazeSample carries one position, so
     # which eye that is has to be stated rather than guessed. "average" needs
@@ -261,17 +290,33 @@ class EyeTrackerConfig(Model):
     # set on the device — the same division of labour as the EyeLink, whose
     # camera setup lives on its Host PC and not in this file.
     led_intensity: int | None = None
+    # Show the TRACKPixx3's camera image on the dashboard's eye-tracker
+    # panel, read while the session is paused or calibrating. The EyeLink's
+    # camera lives on its Host PC, which has its own screen for it.
+    camera_image: bool = True
 
     @model_validator(mode="after")
     def _valid(self) -> EyeTrackerConfig:
         if not 0.0 < self.calibration_area <= 1.0:
             raise ValueError("calibration_area must be in (0, 1] — a fraction of the screen")
+        if self.accuracy_max_deg <= 0.0:
+            raise ValueError("accuracy_max_deg must be > 0 (degrees of visual angle)")
+        if self.drift_max_deg <= 0.0:
+            raise ValueError("drift_max_deg must be > 0 (degrees of visual angle)")
         self._reject_other_backends_fields()
         if self.backend == "eyelink":
             self._valid_edf_filename()
+            self._valid_eyelink_layout()
         if self.backend == "viewpixx":
             self._valid_viewpixx()
         return self
+
+    def _valid_eyelink_layout(self) -> None:
+        if self.calibration_type not in EYELINK_CALIBRATION_TYPES:
+            raise ValueError(
+                f"calibration_type {self.calibration_type!r} is not one the EyeLink accepts — "
+                f"use one of {', '.join(EYELINK_CALIBRATION_TYPES)}"
+            )
 
     def _reject_other_backends_fields(self) -> None:
         """Refuse a field that the chosen backend has no use for.

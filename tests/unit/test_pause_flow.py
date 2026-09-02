@@ -13,7 +13,28 @@ from alhazen.devices.eyetracker import GazeSample
 from alhazen.devices.eyetracker.scripted import ScriptedTracker
 from alhazen.session.pause import PAUSE_COLOR
 from alhazen.testing import FakeClock, ScriptedCommands
-from support import SessionHarness
+from support import SCREEN, SessionHarness
+
+
+class TimedKeys(ScriptedCommands):
+    """Raw keys pressed at simulated times rather than at polls.
+
+    A validation or drift-correction walk polls the keyboard every frame for
+    its own keys (SPACE, BACKSPACE, ESC), so a script that hands out one
+    batch per poll would feed the walk the keys meant for the menu after it.
+    Keys due by the clock go to whoever polls once the clock gets there.
+    """
+
+    def __init__(self, clock: FakeClock, batches, presses: list[tuple[float, str]]) -> None:
+        super().__init__(batches=batches)
+        self._clock = clock
+        self._presses = sorted(presses)
+
+    def poll_raw_keys(self) -> list[str]:
+        now = self._clock.now()
+        due = [key for t, key in self._presses if t <= now]
+        self._presses = [(t, key) for t, key in self._presses if t > now]
+        return due
 
 
 class TestTheMenuReachesTheScreen:
@@ -85,3 +106,53 @@ class TestTheMenuStaysUpUntilResumeOrQuit:
         names = [event.name for event in harness.collector.events]
         assert "PAUSED" in names and "RESUMED" not in names
         assert harness.recorder.trials == []
+
+
+class TestTheProceduresRunFromTheMenu:
+    """V and D run a validation and a drift correction through the session's
+    eye-tracker monitor, then return to the menu like C does."""
+
+    def test_validate_and_drift_correct_then_resume(self, tmp_path):
+        clock = FakeClock()
+        # A subject who stares 20 px (half a degree) right of the screen's
+        # centre whatever is shown: every target is measured, the centre one
+        # with a 0.5° error, and a drift correction has something to correct.
+        gaze = GazeSample(gx=SCREEN.width_px / 2 + 20.0, gy=SCREEN.height_px / 2, t=0.0)
+        tracker = ScriptedTracker([(0.0, gaze)], clock)
+        # Each procedure takes a few simulated seconds (settle + sample per
+        # target, auto-advanced on the simulated display), so the next key
+        # is pressed well after the previous walk is over.
+        commands = TimedKeys(
+            clock,
+            batches=[[Command.PAUSE]],
+            presses=[(0.0, "v"), (30.0, "d"), (60.0, "space")],
+        )
+        harness = SessionHarness(
+            tmp_path,
+            n_trials=2,
+            commands=commands,
+            use_pause_menu=True,
+            tracker=tracker,
+            clock=clock,
+        )
+
+        harness.runner.run()
+
+        monitor = harness.eyetracker
+        assert monitor is not None
+        validation = monitor.validation
+        assert validation is not None and not validation.aborted
+        assert len(validation.targets) == 5 and validation.n_missed == 0
+        drift = monitor.drift
+        assert drift is not None and drift.applied
+        assert drift.offset_deg == 0.5
+        # The correction the input provider applies from now on is the
+        # measured offset, reversed.
+        assert monitor.correction.offset == (-20.0, 0.0)
+        # Both procedures went on the record, and the session then ran on.
+        names = [event.name for event in harness.collector.events]
+        assert "VALIDATION" in names and "DRIFT_CORRECTION" in names
+        assert "RESUMED" in names
+        assert [row["trial_index"] for row in harness.recorder.trials] == [2, 3]
+        # Redrawn after each procedure, as after a calibration.
+        assert len(harness.display.menus) >= 3

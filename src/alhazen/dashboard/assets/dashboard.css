@@ -132,6 +132,9 @@ header {
   color: var(--good);
 }
 #status[data-state="paused"] { color: var(--series-2); }
+/* An eye-tracker procedure in progress: not running, not paused, and not a
+ * fault — its own colour, so a glance at the header says which it is. */
+#status[data-state="calibrating"] { color: var(--series-3); }
 #status[data-state="failed"],
 #status[data-state="disconnected"] { color: var(--critical); }
 #counts { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
@@ -275,6 +278,16 @@ main { flex: 1 1 auto; min-width: 0; padding: 22px 28px 56px; }
 
 .plot { position: relative; margin-top: 8px; }
 .plot svg { display: block; }
+/* The camera image fills the card's width at its own aspect ratio. Nearest-
+ * neighbour scaling on purpose: a blurred-up eye looks out of focus, and
+ * focus is one of the things the experimenter is checking. */
+.plot canvas.camera {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 6px;
+  image-rendering: pixelated;
+}
 
 /* Reserved whether or not this panel has a legend, so a panel that does not
  * sits at the same height as one that does. */
@@ -383,6 +396,7 @@ details.table th { color: var(--muted); font-weight: 600; }
  * purpose — `tabular-nums` gives every digit the width of a zero, which makes
  * a large standalone value look loose. */
 .stat-tile { display: grid; align-content: center; padding: 4px 2px; }
+.stat-tile[data-status="critical"] .tile-value { color: var(--critical); }
 .tile-value { font-size: 44px; font-weight: 650; line-height: 1.05; letter-spacing: -0.02em; }
 .tile-label { margin-top: 8px; color: var(--ink-2); font-size: 13.5px; }
 .tile-secondary { margin-top: 3px; color: var(--muted); font-size: 12.5px; }

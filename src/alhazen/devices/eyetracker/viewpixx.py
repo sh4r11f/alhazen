@@ -53,10 +53,21 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from alhazen.config.models import EyeTrackerConfig
 from alhazen.core.clock import Clock
-from alhazen.devices.eyetracker.protocol import GazeSample, HostShape
+from alhazen.devices.eyetracker.guide import GUIDE_TITLE, calibration_guide
+from alhazen.devices.eyetracker.procedures import ABORT_KEY, ACCEPT_KEYS, REDO_KEY
+from alhazen.devices.eyetracker.protocol import (
+    CalibrationResult,
+    CameraFrame,
+    GazeSample,
+    HostShape,
+    ProgressHook,
+)
 from alhazen.display.backend import DisplayBackend
+from alhazen.display.palette import TERMINAL_GREEN
 from alhazen.display.screen import Screen
 from alhazen.errors import TrackerError
 
@@ -67,12 +78,31 @@ log = logging.getLogger(__name__)
 # named constant, so it is named here instead.
 TRACKING_LOST_PX = 9000.0
 
-# Keys the calibration routine reads. Deliberately the same three roles the
-# EyeLink's own calibration screen uses, so an experimenter moving between
-# the two rigs is not learning a second set.
-ACCEPT_KEYS = ("space", "return", "num_enter")
-REDO_KEY = "backspace"
-ABORT_KEY = "escape"
+# The keys the calibration walk reads are the procedures' (procedures.py):
+# the same three roles the EyeLink's own calibration screen uses, and the
+# same three the validation walk uses, so an experimenter learns one set.
+
+# The walk's keys on the guide screen, in the experimenter's words.
+GUIDE_KEYS = (
+    ("SPACE", "accept this target (refused while no eye is in the image)"),
+    ("BACKSPACE", "go back one target"),
+    ("ESC", "abort — the previous calibration is kept"),
+)
+
+# Auto advance: a target is accepted once the camera has seen the eyes on
+# this many consecutive status refreshes after the settle time. Half a
+# second of "both eyes found" is the closest thing the device offers to
+# "fixating" before a calibration exists — the gaze report is the lost
+# sentinel until then — and the device's own per-target call then waits
+# for the fixation itself.
+AUTO_SETTLE_S = 0.5
+AUTO_STEADY_REFRESHES = 5
+
+# The camera image on the dashboard is capped to this many px on its longer
+# side. The full frame is over a megapixel; the dashboard polls twice a
+# second through a one-slot queue and a JSON long-poll, and a pupil can be
+# judged at a quarter of the resolution.
+CAMERA_MAX_PX = 320
 
 # libdpx addresses one device at a time (``DPxSelectDevice``). The TRACKPixx3's
 # registers — overlay, wake/sleep, LED, the sample ring buffer, the gaze
@@ -174,6 +204,36 @@ def eye_status_text(left: bool, right: bool) -> str:
     if left or right:
         return f"eyes: {'left' if left else 'right'} only"
     return "NO EYE IN THE CAMERA IMAGE — check position, focus and LED (accept is refused)"
+
+
+def image_from_pointer(pointer: Any, height: int, width: int) -> np.ndarray:
+    """Copy the device's camera image out of the C buffer libdpx hands back.
+
+    ``TPxGetImagePtr`` returns a pointer to ``height * width`` bytes of 8-bit
+    grey, row-major, top row first, and says nothing about how long the
+    buffer stays valid — so the pixels are copied into an array of our own
+    before the pointer goes out of scope. ctypes types the bytes as signed;
+    the reinterpretation to unsigned is a view, not an arithmetic conversion,
+    so a pixel value of 200 stays 200.
+    """
+    if not pointer:
+        raise TrackerError("the TRACKPixx3 returned no camera image (null image pointer)")
+    if height <= 0 or width <= 0:
+        raise TrackerError(f"the TRACKPixx3 reported a {width}x{height} camera image")
+    flat = np.ctypeslib.as_array(pointer, shape=(height * width,))
+    return flat.view(np.uint8).reshape(height, width).copy()
+
+
+def shrink_image(pixels: np.ndarray, max_px: int = CAMERA_MAX_PX) -> np.ndarray:
+    """Every k-th pixel in each direction, so the longer side fits ``max_px``.
+
+    Point sampling rather than averaging, on purpose: this is a camera image
+    somebody judges a pupil edge and a corneal reflection from, and blurring
+    it would smooth away exactly the thing they are looking for.
+    """
+    longer = max(pixels.shape[:2])
+    step = max(1, math.ceil(longer / max_px))
+    return np.ascontiguousarray(pixels[::step, ::step])
 
 
 # How old the newest gaze report may be before get_gaze() calls it "no
@@ -369,6 +429,24 @@ def select_eye(positions: Sequence[float], eye: str) -> tuple[float, float] | No
     raise TrackerError(f"unknown eyetracker.eye {eye!r} — expected left, right or average")
 
 
+def eye_in_view(eyes: tuple[bool, bool], eye: str) -> bool:
+    """Is the eye the session reads in the camera image? ``eyes`` is what
+    :func:`eyes_detected` returned.
+
+    What auto advance waits for before accepting a target. ``average`` needs
+    both, for the reason :func:`select_eye` gives: a calibration point taken
+    with one eye missing fits half of what the session will later read.
+    """
+    left, right = eyes
+    if eye == "left":
+        return left
+    if eye == "right":
+        return right
+    if eye == "average":
+        return left and right
+    raise TrackerError(f"unknown eyetracker.eye {eye!r} — expected left, right or average")
+
+
 def calibration_targets(
     calibration_type: str, screen: Screen, area: float
 ) -> list[tuple[float, float]]:
@@ -459,6 +537,9 @@ class ViewPixxTracker:
         # (device clock seconds, session clock seconds, text) for every
         # message, held until shutdown writes them beside the samples.
         self._messages: list[tuple[float, float, str]] = []
+        # Where the calibration walk reports its progress (set_progress_hook);
+        # None until the session's eye-tracker monitor installs one.
+        self._progress: ProgressHook | None = None
 
     # ------------------------------------------------------------------
     # Setup
@@ -534,17 +615,25 @@ class ViewPixxTracker:
         if self._background_gaze:
             self._reader.start()
 
-    def calibrate(self) -> None:
-        """Walk the target grid and fit the device's gaze model. Blocks until
-        the experimenter finishes or aborts.
+    def set_progress_hook(self, hook: ProgressHook | None) -> None:
+        """Optional capability (protocol.py): where the calibration walk says
+        which target it is on. None switches the reports off."""
+        self._progress = hook
+
+    def calibrate(self) -> CalibrationResult:
+        """Show the guide, walk the target grid and fit the device's gaze
+        model. Blocks until the experimenter finishes or aborts.
 
         Unlike the EyeLink — where ``doTrackerSetup()`` hands the whole
         procedure to the Host PC — nothing else can run this: the targets have
-        to be drawn in the session's own window. The experimenter drives it,
-        one target at a time, rather than a fixation-stability heuristic
-        deciding when a subject is looking at the right place: a wrong guess
-        there fits the model to the wrong point and every gaze position in
-        the session inherits the error.
+        to be drawn in the session's own window. In the default *manual* mode
+        the experimenter drives it, one target at a time, rather than a
+        heuristic deciding when a subject is looking at the right place: a
+        wrong guess there fits the model to the wrong point and every gaze
+        position in the session inherits the error. *auto* mode
+        (``eyetracker.calibration_advance``) accepts a target once the camera
+        has held the configured eye for a while — for a subject who cannot be
+        watched, at that price.
 
         Aborting leaves the *previous* calibration on the device untouched,
         because the fit is only committed by the ``finishCalibration()`` at
@@ -566,7 +655,7 @@ class ViewPixxTracker:
         if reader is not None:
             reader.pause()
         try:
-            self._walk_targets(event, visual)
+            return self._walk_targets(event, visual)
         finally:
             # Whether the walk finished or aborted, the device is left
             # recording into this backend's ring again — a calibration that
@@ -577,13 +666,58 @@ class ViewPixxTracker:
             if reader is not None:
                 reader.resume()
 
-    def _walk_targets(self, event: Any, visual: Any) -> None:
-        """The target walk itself; calibrate() owns the recording around it."""
+    def _eye_status(self) -> tuple[tuple[bool, bool], str]:
+        """One look at the camera: which eyes it sees, and the line that says so."""
+        with self._device_lock:
+            eyes = eyes_detected(self._libdpx)
+        return eyes, eye_status_text(*eyes)
+
+    def _report(self, stage: str, detail: str) -> None:
+        """Tell the progress hook, if there is one — outside the device lock,
+        because the hook publishes to the dashboard and must not hold up the
+        gaze reader for that."""
+        if self._progress is not None:
+            self._progress(stage, detail)
+
+    def _show_guide(self, event: Any, n_targets: int) -> bool:
+        """The guide screen, redrawn with the live eye line until SPACE or ESC.
+
+        True to start the walk, False to abort. The window closing (waitKeys
+        returning nothing with the window gone) is an abort, never a start.
+        """
         assert self._display is not None  # calibrate() checked
+        cfg = self._cfg
         window = self._display.window
-        targets = calibration_targets(
-            self._cfg.calibration_type, self._screen, self._cfg.calibration_area
-        )
+        while True:
+            _eyes, status = self._eye_status()
+            body = calibration_guide(
+                tracker="TRACKPixx3",
+                # The device fits both eyes whatever the session reads; what
+                # the experimenter has to know is which one the trial logic
+                # (fixation windows, gaze contingency) will be judged on.
+                eye=f"{cfg.eye.upper()} eye read by the session; both eyes are calibrated",
+                layout=cfg.calibration_type,
+                n_targets=n_targets,
+                area=cfg.calibration_area,
+                advance=cfg.calibration_advance,
+                keys=GUIDE_KEYS,
+                status=status,
+            )
+            self._display.show_menu(GUIDE_TITLE, body, color=TERMINAL_GREEN)
+            self._report("calibration guide", status)
+            keys = event.waitKeys(maxWait=STATUS_REFRESH_S, keyList=[ACCEPT_KEYS[0], ABORT_KEY])
+            if keys:
+                return keys[0] == ACCEPT_KEYS[0]
+            if getattr(window, "_closed", False):
+                return False
+
+    def _walk_targets(self, event: Any, visual: Any) -> CalibrationResult:
+        """The guide and the target walk; calibrate() owns the recording around it."""
+        assert self._display is not None  # calibrate() checked
+        cfg = self._cfg
+        window = self._display.window
+        targets = calibration_targets(cfg.calibration_type, self._screen, cfg.calibration_area)
+        n = len(targets)
         # The standard eye-tracking target: a disc with a hole, so the subject
         # has an unambiguous point to look at rather than a blob's centre.
         foreground = (-1.0, -1.0, -1.0)
@@ -596,7 +730,7 @@ class ViewPixxTracker:
         # The experimenter's only view of the camera: the TRACKPixx3 has no
         # Host PC, and VPixx's own viewer (LabMaestro) must not run alongside
         # a session — it shares the device server, and did hang with one.
-        status = visual.TextStim(
+        status_line = visual.TextStim(
             window,
             text="",
             pos=(0, -0.4 * self._screen.height_px),
@@ -605,20 +739,41 @@ class ViewPixxTracker:
             units="pix",
         )
 
+        def result(ok: bool | None, note: str, *, aborted: bool = False) -> CalibrationResult:
+            return CalibrationResult(
+                ok=ok,
+                layout=cfg.calibration_type,
+                n_targets=n,
+                eye=f"{cfg.eye} (both eyes calibrated)",
+                advance=cfg.calibration_advance,
+                t=self._clock.now(),
+                note=note,
+                aborted=aborted,
+            )
+
+        if not self._show_guide(event, n):
+            note = "aborted at the guide; the device keeps its previous calibration"
+            log.warning("TRACKPixx3 calibration %s", note)
+            window.flip()
+            return result(None, note, aborted=True)
+
+        auto = cfg.calibration_advance == "auto"
         index = 0
-        while index < len(targets):
+        while index < n:
             x, y = targets[index]
             outer.pos = inner.pos = (x, y)
+            shown_at = self._clock.now()
+            steady = 0  # auto mode: consecutive refreshes with the configured eye in view
             pressed: str | None = None
             eyes = (False, False)
             while pressed is None:
-                with self._device_lock:
-                    eyes = eyes_detected(self._libdpx)
-                status.text = eye_status_text(*eyes)
+                eyes, status = self._eye_status()
+                status_line.text = status
                 outer.draw()
                 inner.draw()
-                status.draw()
+                status_line.draw()
                 window.flip()
+                self._report("calibrating", f"target {index + 1} of {n} · {status}")
                 keys = event.waitKeys(
                     maxWait=STATUS_REFRESH_S, keyList=[*ACCEPT_KEYS, REDO_KEY, ABORT_KEY]
                 )
@@ -627,15 +782,23 @@ class ViewPixxTracker:
                 elif getattr(window, "_closed", False):
                     # The window went away: abort, never accept.
                     pressed = ABORT_KEY
+                elif auto:
+                    # The configured eye has to be in the image on every
+                    # refresh of a run of them, and the run only starts once
+                    # the target has been up long enough for a saccade to it
+                    # to have landed. One lost refresh restarts the count.
+                    settled = self._clock.now() - shown_at >= AUTO_SETTLE_S
+                    steady = steady + 1 if settled and eye_in_view(eyes, cfg.eye) else 0
+                    if steady >= AUTO_STEADY_REFRESHES:
+                        pressed = ACCEPT_KEYS[0]
             if pressed == ABORT_KEY:
-                log.warning(
-                    "TRACKPixx3 calibration aborted by the experimenter at target %d of %d; "
-                    "the device keeps its previous calibration",
-                    index + 1,
-                    len(targets),
+                note = (
+                    f"aborted at target {index + 1} of {n}; "
+                    "the device keeps its previous calibration"
                 )
+                log.warning("TRACKPixx3 calibration %s", note)
                 window.flip()
-                return
+                return result(None, note, aborted=True)
             if pressed == REDO_KEY:
                 # Step back rather than re-showing this one: the point the
                 # experimenter wants to redo is almost always the one just
@@ -649,7 +812,7 @@ class ViewPixxTracker:
                 log.warning(
                     "target %d of %d not accepted: no eye in the camera image",
                     index + 1,
-                    len(targets),
+                    n,
                 )
                 continue
             # Screen coordinates here are the device's own frame — centered
@@ -664,8 +827,8 @@ class ViewPixxTracker:
             calibrated = bool(self._tracker.isDeviceCalibrated())
         window.flip()
         if calibrated:
-            log.info("TRACKPixx3 calibrated over %d targets", len(targets))
-            return
+            log.info("TRACKPixx3 calibrated over %d targets", n)
+            return result(True, "the device reports a calibration")
         # The fit was submitted and the device did not keep it — every gaze
         # read from here would be the tracking-lost sentinel, and a session
         # that looks calibrated but is not is exactly what must not happen
@@ -675,13 +838,61 @@ class ViewPixxTracker:
             "TRACKPixx3 calibration did NOT take: the device reports no calibration after "
             "%d targets. Check that the camera sees the eyes (position, focus, LED) and "
             "calibrate again.",
-            len(targets),
+            n,
         )
         self._display.show_message(
             "Calibration FAILED: the tracker reports no calibration.\n"
             "Check the camera sees the eyes (position, focus, LED), then calibrate again."
         )
         event.waitKeys(maxWait=CALIBRATION_FAIL_HOLD_S, keyList=[*ACCEPT_KEYS, ABORT_KEY])
+        return result(False, "the device reports NO calibration after the walk — calibrate again")
+
+    # ------------------------------------------------------------------
+    # Optional capabilities (protocol.py): the camera and the eye line
+    # ------------------------------------------------------------------
+
+    def _require_device(self, what: str) -> None:
+        if self._tracker is None or self._libdpx is None:
+            raise TrackerError(f"{what} before connect(): the TRACKPixx3 is not open")
+
+    def eye_status(self) -> str:
+        """Which eyes the camera sees right now, in the calibration screen's words."""
+        self._require_device("eye_status()")
+        return self._eye_status()[1]
+
+    def camera_frame(self) -> CameraFrame:
+        """The tracker's current eye image, shrunk for the dashboard.
+
+        Raises ``TrackerError`` rather than returning an empty frame when the
+        rig turned the image off, the device is not open, or the device hands
+        back no image: the dashboard shows the reason in place of a picture,
+        and an experimenter never mistakes "no image" for "no eye".
+        """
+        if not self._cfg.camera_image:
+            raise TrackerError(
+                "the camera image is off in the rig config (eyetracker.camera_image: false)"
+            )
+        self._require_device("camera_frame()")
+        with self._device_lock:
+            # The register cache is refreshed first so the image header the
+            # library reads (size, buffer address) is this frame's, not the
+            # one cached at the last gaze read.
+            self._libdpx.DPxUpdateRegCache()
+            pointer, height, width = self._libdpx.TPxGetImagePtr()
+            fault = dpx_fault(self._libdpx)
+            if fault is not None:
+                raise TrackerError(f"the TRACKPixx3 camera image could not be read: {fault}")
+            pixels = image_from_pointer(pointer, int(height), int(width))
+            # A register-level read on this device has re-pointed the sample
+            # ring before (recording_armed); if this one did, the ring is put
+            # back now rather than at the next drain, so fewer samples are
+            # lost. Only once there is a recording to protect (configure()).
+            if self._samples_path is not None and not recording_armed(self._libdpx, self._tracker):
+                log.warning(
+                    "reading the TRACKPixx3 camera image re-pointed the sample ring; re-arming"
+                )
+                arm_recording(self._libdpx, self._tracker)
+        return CameraFrame(pixels=shrink_image(pixels), t=self._clock.now())
 
     # ------------------------------------------------------------------
     # Per trial

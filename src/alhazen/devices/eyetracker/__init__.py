@@ -12,7 +12,14 @@ from alhazen.core.clock import Clock
 from alhazen.devices.eyetracker.eyelink import EyeLinkTracker, is_missing_gaze
 from alhazen.devices.eyetracker.messages import TrackerMessageSubscriber
 from alhazen.devices.eyetracker.mouse_sim import MouseSimTracker
-from alhazen.devices.eyetracker.protocol import EyeTracker, GazeSample, HostShape
+from alhazen.devices.eyetracker.protocol import (
+    CalibrationResult,
+    CameraFrame,
+    EyeTracker,
+    GazeSample,
+    HostShape,
+    ProgressHook,
+)
 from alhazen.devices.eyetracker.scripted import ScriptedTracker
 from alhazen.devices.eyetracker.viewpixx import ViewPixxTracker
 from alhazen.display.backend import DisplayBackend
@@ -51,11 +58,14 @@ def make_tracker(
 
 
 __all__ = [
+    "CalibrationResult",
+    "CameraFrame",
     "EyeLinkTracker",
     "EyeTracker",
     "GazeSample",
     "HostShape",
     "MouseSimTracker",
+    "ProgressHook",
     "ScriptedTracker",
     "TrackerMessageSubscriber",
     "ViewPixxTracker",

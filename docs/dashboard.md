@@ -38,20 +38,27 @@ Python can react, so a web Pause button cannot honestly promise not to affect
 subject input.
 
 Press **P** on the experimenter keyboard first. Once the subject display says
-the run is paused, the dashboard enables Resume, Calibrate, Give reward, Quit,
-and curriculum controls. The server also rejects control requests unless its
-authoritative session state is `paused`; disabling the buttons is not the
-security boundary. Space, C, R and Q remain available from the keyboard while
-paused, so closing the browser cannot strand a session.
+the run is paused, the dashboard enables Resume, Calibrate, Validate, Drift
+correct, Give reward, Quit, and curriculum controls. The server also rejects
+control requests unless its authoritative session state is `paused`;
+disabling the buttons is not the security boundary. Space, C, V, D, R and Q
+remain available from the keyboard while paused, so closing the browser
+cannot strand a session.
 
 Commands queued before a pause begins are **discarded**. A click accepted in
 the milliseconds between the browser seeing "paused" and the runner resuming
 would otherwise sit in the queue and fire at the next pause — a reward
 delivered, or a session quit, minutes after the click that asked for it.
 
-Calibration and manual reward leave the run paused. Resume is always an
-explicit action. Each successful or failed reward is written to `events.csv`,
-including its configured pulse train.
+The eye-tracker procedures and manual reward leave the run paused. Resume is
+always an explicit action. Each successful or failed reward is written to
+`events.csv`, including its configured pulse train.
+
+While a calibration, validation or drift correction runs, the status reads
+**calibrating**, the buttons are inert, and the notice follows the
+procedure's progress (`validating: target 3 of 5`); when it ends, the notice
+shows the result line and the *Eye tracker* panels update. See
+[eye-tracker.md](eye-tracker.md).
 
 ## The plots
 
@@ -345,6 +352,24 @@ never as zero. The scale interpolates the theme's own ordinal ramp, so it
 follows light and dark like every other mark; the theme toggle repaints it.
 Hover reads out the cell's position, value and flash count, and the table
 view lists every cell.
+
+## Eye-tracker panels
+
+A session with a tracker gets an **Eye tracker** group from
+`session/eyetracker.py`: the latest calibration's verdict as a `stat` tile
+(red when the tracker reports failure), the latest validation as a `scatter`
+of targets and measured gaze on a degree grid with the errors in its stats
+strip, the latest drift correction as a `stat` tile, and — on a TRACKPixx3 —
+the camera image. Like the live-analysis panels they are computed in Python
+and delivered finished.
+
+The camera is the one panel that is a picture, and it introduces the
+`image` wire form: width, height and one grayscale byte per pixel,
+base64-encoded, drawn straight into a canvas with nearest-neighbour scaling
+(a blurred-up eye looks out of focus, and focus is one of the things being
+checked). It is read only while the session is paused or a procedure is
+running, refreshed about once a second through a pause, and left out of the
+copy saved to `figures/` — the saved panel says so in its place.
 
 ## Saved output
 
