@@ -45,8 +45,11 @@ import csv
 import logging
 import math
 import shutil
+import sys
 import tempfile
-from collections.abc import Sequence
+import threading
+import time
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -70,6 +73,245 @@ TRACKING_LOST_PX = 9000.0
 ACCEPT_KEYS = ("space", "return", "num_enter")
 REDO_KEY = "backspace"
 ABORT_KEY = "escape"
+
+# libdpx addresses one device at a time (``DPxSelectDevice``). The TRACKPixx3's
+# registers — overlay, wake/sleep, LED, the sample ring buffer, the gaze
+# polynomial — live on the DATAPixx3 that hosts the camera, so that is the
+# device every call in this backend must find selected.
+HOST_DEVICE = "DATAPIXX3"
+
+_OPEN_FAILED = (
+    "TRACKPixx3 could not be opened: {reason}. Check that the DATAPixx3 is powered "
+    "and connected, that no other VPixx application holds the device, or use "
+    "eyetracker backend 'mouse_sim'."
+)
+
+
+def wake_tracker(libdpx: Any) -> None:
+    """Bring the tracker up the way VPixx's own TRACKPixx3 demos do.
+
+    Not ``TRACKPixx3.open()``. In pypixxlib 1.9.2 the constructor and
+    ``open()`` both leave libdpx addressing the camera controller — a USB
+    device of its own, part number 13328 — and ``open()`` then writes the
+    overlay register, which is on the DATAPixx3. The write is out of range
+    for the controller, so ``open()`` fails with DPX_ERR_SETREG16_ADDR_RANGE
+    on a perfectly healthy rig, every time. VPixx's demos never call it: they
+    DPxOpen, hide the overlay, wake the tracker and flush the register cache
+    with the DATAPixx3 selected. The constructor has already done the open,
+    so this puts the selection back and does the rest.
+    """
+    libdpx.DPxSelectDevice(HOST_DEVICE)
+    libdpx.TPxHideOverlay()
+    libdpx.DPxSetTPxAwake()
+    libdpx.DPxUpdateRegCache()
+
+
+def dpx_fault(libdpx: Any) -> str | None:
+    """The fault libdpx's free functions left behind, cleared — or None.
+
+    libdpx does not raise: a failed register access sets a sticky error code
+    and later calls carry on. pypixxlib's device classes check the flag after
+    each method (their ``DpxExceptionDecorate``); its free functions do not,
+    so a caller of those has to. Clearing it here is what keeps one fault
+    from being reported again by the next unrelated check.
+    """
+    error = libdpx.DPxGetError()
+    if error == "DPX_SUCCESS":
+        return None
+    detail = libdpx.DPxGetErrorString()
+    libdpx.DPxClearError()
+    return f"{error} ({detail})"
+
+
+def recording_armed(libdpx: Any, tracker: Any) -> bool:
+    """Is the device still streaming samples into the ring this backend drains?
+
+    The per-target calibration call (``TPxGetEyePositionDuringCalib``) does
+    two things VPixx's documentation does not mention: it switches free-run
+    sampling OFF and re-points the ring at a 64 KB buffer at address 0, for
+    its own use. After that, the class's read pointer names an address inside
+    a ring that no longer exists, and ``TPxSaveToCSV`` from it never returns
+    — the session hangs with it and Windows kills the process as "not
+    responding" (observed on the rig, 2026-09-01). So every drain first asks
+    whether the ring is still the one it was armed with.
+    """
+    libdpx.DPxUpdateRegCache()
+    return bool(libdpx.TPxIsFreeRun()) and int(libdpx.TPxGetBuffBaseAddr()) == int(
+        tracker.buffer_base_addr
+    )
+
+
+def arm_recording(libdpx: Any, tracker: Any) -> None:
+    """Point the device's ring back at this backend's buffer and start
+    free-run sampling, with the class's read pointer at the ring's start.
+
+    The same three steps ``setUpDataRecording`` performs, minus the new file
+    name: samples keep appending to the CSV the session already has.
+    """
+    libdpx.TPxSetBuff(tracker.buffer_base_addr, tracker.buffer_size)
+    tracker.last_read_addr = tracker.buffer_base_addr
+    libdpx.TPxEnableFreeRun()
+    libdpx.DPxUpdateRegCache()
+
+
+def eyes_detected(libdpx: Any) -> tuple[bool, bool]:
+    """(left, right): is the camera fitting a pupil in each eye right now?
+
+    ``TPxGetPupilSize`` is the semi-axes of the ellipse fitted to each pupil,
+    and all four are 0.0 when there is no eye in the image. The gaze report
+    cannot say this before a calibration exists — it is the tracking-lost
+    sentinel until then — so this is what the calibration screen shows the
+    experimenter, who otherwise accepts every target blind.
+    """
+    left_major, _left_minor, right_major, _right_minor = libdpx.TPxGetPupilSize()
+    return float(left_major) > 0.0, float(right_major) > 0.0
+
+
+def eye_status_text(left: bool, right: bool) -> str:
+    """The calibration screen's one line of feedback."""
+    if left and right:
+        return "eyes: both tracked"
+    if left or right:
+        return f"eyes: {'left' if left else 'right'} only"
+    return "NO EYE IN THE CAMERA IMAGE — check position, focus and LED (accept is refused)"
+
+
+# How old the newest gaze report may be before get_gaze() calls it "no
+# verifiable position". A reader thread that has fallen this far behind is a
+# stalled USB call, and a position from before the stall is not this frame's.
+GAZE_STALE_S = 0.1
+# How often the calibration screen refreshes its eye status between keys.
+STATUS_REFRESH_S = 0.1
+# How long a failed calibration's verdict stays on screen before the pause
+# menu replaces it.
+CALIBRATION_FAIL_HOLD_S = 2.5
+
+
+def _no_release() -> None:
+    return None
+
+
+def request_fine_timer() -> Callable[[], None]:
+    """Ask Windows for 1 ms scheduler ticks; returns the call that gives them
+    back. A no-op elsewhere, and on a Windows that refuses.
+
+    Windows sleeps in 15.6 ms ticks unless asked otherwise, which turned the
+    reader's 1 ms pause between reads into ~67 reads/s on the rig.
+    """
+    windll = getattr(ctypes_module(), "windll", None)
+    if sys.platform != "win32" or windll is None:
+        return _no_release
+    winmm = windll.winmm
+    if winmm.timeBeginPeriod(1) != 0:
+        return _no_release
+
+    def release() -> None:
+        winmm.timeEndPeriod(1)
+
+    return release
+
+
+def ctypes_module() -> Any:
+    import ctypes
+
+    return ctypes
+
+
+class GazeReader:
+    """Reads the device's gaze report on its own thread, so a frame never
+    waits on USB.
+
+    One ``TPxBestPolyGetEyePosition`` is a USB round trip: 2 ms as a rule,
+    but 20-40 ms on one call in five on the rig (measured 2026-09-01), and a
+    frame at 120 Hz is 8.3 ms. Read on the render thread, that tail dropped
+    thirty frames in every trial. Read here, the render thread only copies
+    the newest report, and a slow read costs staleness — a sample a frame or
+    two old — rather than a dropped frame.
+
+    ``lock`` serialises every call into libdpx across the session: the
+    library keeps global state (its register cache, the selected device, the
+    sticky error flag) and says nothing about threads. The reader holds it
+    for one read at a time and sleeps between reads, so the render thread's
+    own calls (messages, drains) get in promptly.
+
+    A read that raises stops the thread, and the next ``latest()`` re-raises
+    it on the caller's thread: a tracker that stops answering must abort
+    loudly (invariant 6), not quietly report "no eye" for the rest of the
+    session.
+    """
+
+    def __init__(
+        self,
+        read: Callable[[], Sequence[float]],
+        clock: Clock,
+        lock: threading.Lock,
+        interval_s: float = 0.004,
+    ) -> None:
+        self._read = read
+        self._clock = clock
+        self._lock = lock
+        self._interval = interval_s
+        self._latest: tuple[list[float], float] | None = None
+        self._fault: BaseException | None = None
+        self._stop = threading.Event()
+        self._paused = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._release_timer: Callable[[], None] = _no_release
+
+    def start(self) -> None:
+        self._stop.clear()
+        self._release_timer = request_fine_timer()
+        self._thread = threading.Thread(target=self._run, name="trackpixx-gaze", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+            self._thread = None
+        self._release_timer()
+        self._release_timer = _no_release
+
+    @property
+    def running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def pause(self) -> None:
+        """Leave the device to the caller (a calibration) until resume()."""
+        self._paused.set()
+
+    def resume(self) -> None:
+        self._paused.clear()
+
+    def read_now(self) -> None:
+        """One read, on the calling thread: what the loop does, and what a
+        caller with no thread running does to refresh. A read that fails is
+        recorded as the reader's fault and raised as a TrackerError."""
+        try:
+            with self._lock:
+                positions = list(self._read())
+        except Exception as e:  # pypixxlib's exception type cannot be named off the rig
+            self._fault = e
+            raise TrackerError(f"the TRACKPixx3 stopped answering: {e}") from e
+        self._latest = (positions, self._clock.now())
+
+    def latest(self) -> tuple[list[float], float] | None:
+        """The newest (positions, session time) report, or None before the
+        first read. Raises what the reader thread died of, if it did."""
+        if self._fault is not None:
+            raise TrackerError(f"the TRACKPixx3 stopped answering: {self._fault}") from self._fault
+        return self._latest
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            if self._paused.is_set():
+                time.sleep(self._interval * 10)
+                continue
+            try:
+                self.read_now()
+            except TrackerError:
+                return  # recorded as the fault; latest() re-raises it on the caller
+            time.sleep(self._interval)
 
 
 def is_tracking_lost(x: float, y: float) -> bool:
@@ -188,6 +430,8 @@ class ViewPixxTracker:
         display: DisplayBackend | None,
         screen: Screen,
         clock: Clock,
+        *,
+        background_gaze: bool = True,
     ) -> None:
         self._cfg = cfg
         # None is legitimate: check-rig constructs this class to exercise the
@@ -199,6 +443,13 @@ class ViewPixxTracker:
         # Everything below is hardware-derived state; the sentinels are how
         # stop_trial()/shutdown() know whether there is anything real to undo.
         self._tracker: Any = None  # pypixxlib TRACKPixx3 handle, once open
+        self._libdpx: Any = None  # pypixxlib's free functions, once imported
+        # One lock around every call into the device library (see GazeReader).
+        self._device_lock = threading.Lock()
+        # False only for callers that want every read on their own thread —
+        # the unit tests, which then see exactly the report they queued.
+        self._background_gaze = background_gaze
+        self._reader: GazeReader | None = None
         self._recording = False
         # Where the device library is writing its CSV, and the scratch
         # directory it chose that name inside. Both are None until configure()
@@ -214,31 +465,34 @@ class ViewPixxTracker:
     # ------------------------------------------------------------------
 
     def connect(self) -> None:
-        """Open the link to the DATAPixx3 and its tracker."""
+        """Open the link to the DATAPixx3 and wake its tracker."""
         try:
+            from pypixxlib import _libdpx as libdpx
             from pypixxlib.tracker import TRACKPixx3
         except ImportError as e:
             raise TrackerError(
-                "pypixxlib is not installed. It ships with VPixx's Software Tools "
-                "installer (vpixx.com/software-tools), which is installed on the rig from "
-                "VPixx's own installer — it is NOT on PyPI. Install the Software Tools on "
-                "the rig, or use eyetracker backend 'mouse_sim' for development."
+                "pypixxlib is not installed in this Python environment. It is NOT on PyPI: "
+                "VPixx's Software Tools installer (vpixx.com/software-tools) leaves it on "
+                "the rig as a source archive — on Windows, "
+                "C:\\Program Files\\VPixx Technologies\\Software Tools\\pypixxlib\\"
+                "pypixxlib-<version>.tar.gz — and that file is what to pip install into "
+                "this environment. Or use eyetracker backend 'mouse_sim' for development."
             ) from e
 
         try:
             self._tracker = TRACKPixx3()
-            self._tracker.open()
+            self._libdpx = libdpx
+            wake_tracker(libdpx)
+            fault = dpx_fault(libdpx)
         except Exception as e:
             # Deliberately broad: pypixxlib signals device faults with its own
             # DpxException, which cannot be imported here to name in an
             # `except` clause — this module must import on machines with no
             # VPixx software at all. `from e` keeps the original traceback, so
             # nothing is hidden by the widening.
-            raise TrackerError(
-                f"TRACKPixx3 could not be opened: {e}. Check that the DATAPixx3 is powered "
-                f"and connected, that no other VPixx application holds the device, or use "
-                f"eyetracker backend 'mouse_sim'."
-            ) from e
+            raise TrackerError(_OPEN_FAILED.format(reason=e)) from e
+        if fault is not None:
+            raise TrackerError(_OPEN_FAILED.format(reason=fault))
 
     def configure(self, screen: Screen, clock: Clock) -> None:
         """Apply the rig's tracker settings and start the device recording.
@@ -273,6 +527,12 @@ class ViewPixxTracker:
             "TRACKPixx3 is recording to %s; teardown moves it into the run directory",
             self._samples_path,
         )
+        # Gaze is read off the render thread from here on (GazeReader).
+        # Looked up per read, not bound once: the handle's methods are what
+        # the device answers through, and a swapped-in one must be honoured.
+        self._reader = GazeReader(lambda: self._tracker.getEyePosition(), clock, self._device_lock)
+        if self._background_gaze:
+            self._reader.start()
 
     def calibrate(self) -> None:
         """Walk the target grid and fit the device's gaze model. Blocks until
@@ -299,6 +559,27 @@ class ViewPixxTracker:
             )
         from psychopy import event, visual
 
+        # Everything buffered so far is saved BEFORE the device's calibration
+        # routine re-points the ring (recording_armed): it is the only copy.
+        self._drain_buffer()
+        reader = self._reader
+        if reader is not None:
+            reader.pause()
+        try:
+            self._walk_targets(event, visual)
+        finally:
+            # Whether the walk finished or aborted, the device is left
+            # recording into this backend's ring again — a calibration that
+            # got as far as one target has already switched it off.
+            with self._device_lock:
+                if not recording_armed(self._libdpx, self._tracker):
+                    arm_recording(self._libdpx, self._tracker)
+            if reader is not None:
+                reader.resume()
+
+    def _walk_targets(self, event: Any, visual: Any) -> None:
+        """The target walk itself; calibrate() owns the recording around it."""
+        assert self._display is not None  # calibrate() checked
         window = self._display.window
         targets = calibration_targets(
             self._cfg.calibration_type, self._screen, self._cfg.calibration_area
@@ -312,16 +593,40 @@ class ViewPixxTracker:
         inner = visual.Circle(
             window, radius=4, units="pix", fillColor=window.color, lineColor=window.color
         )
+        # The experimenter's only view of the camera: the TRACKPixx3 has no
+        # Host PC, and VPixx's own viewer (LabMaestro) must not run alongside
+        # a session — it shares the device server, and did hang with one.
+        status = visual.TextStim(
+            window,
+            text="",
+            pos=(0, -0.4 * self._screen.height_px),
+            height=max(18.0, 0.02 * self._screen.height_px),
+            color=(0.82, 0.82, 0.86),
+            units="pix",
+        )
 
         index = 0
         while index < len(targets):
             x, y = targets[index]
             outer.pos = inner.pos = (x, y)
-            outer.draw()
-            inner.draw()
-            window.flip()
-            keys = event.waitKeys(keyList=[*ACCEPT_KEYS, REDO_KEY, ABORT_KEY])
-            pressed = keys[0] if keys else ABORT_KEY
+            pressed: str | None = None
+            eyes = (False, False)
+            while pressed is None:
+                with self._device_lock:
+                    eyes = eyes_detected(self._libdpx)
+                status.text = eye_status_text(*eyes)
+                outer.draw()
+                inner.draw()
+                status.draw()
+                window.flip()
+                keys = event.waitKeys(
+                    maxWait=STATUS_REFRESH_S, keyList=[*ACCEPT_KEYS, REDO_KEY, ABORT_KEY]
+                )
+                if keys:
+                    pressed = keys[0]
+                elif getattr(window, "_closed", False):
+                    # The window went away: abort, never accept.
+                    pressed = ABORT_KEY
             if pressed == ABORT_KEY:
                 log.warning(
                     "TRACKPixx3 calibration aborted by the experimenter at target %d of %d; "
@@ -337,15 +642,46 @@ class ViewPixxTracker:
                 # accepted, not the one still on screen.
                 index = max(0, index - 1)
                 continue
+            if not any(eyes):
+                # A target accepted with no eye in the image fits the model
+                # to nothing, and the device reports the whole calibration as
+                # absent at the end (it did, on the rig). Stay on this one.
+                log.warning(
+                    "target %d of %d not accepted: no eye in the camera image",
+                    index + 1,
+                    len(targets),
+                )
+                continue
             # Screen coordinates here are the device's own frame — centered
             # px, y up — which is the frame the targets were drawn in, so the
             # position passes through unconverted.
-            self._tracker.getEyePositionDuringCalib(x, y, self._tracker.eye_to_verify)
+            with self._device_lock:
+                self._tracker.getEyePositionDuringCalib(x, y, self._tracker.eye_to_verify)
             index += 1
 
-        self._tracker.finishCalibration()
+        with self._device_lock:
+            self._tracker.finishCalibration()
+            calibrated = bool(self._tracker.isDeviceCalibrated())
         window.flip()
-        log.info("TRACKPixx3 calibrated over %d targets", len(targets))
+        if calibrated:
+            log.info("TRACKPixx3 calibrated over %d targets", len(targets))
+            return
+        # The fit was submitted and the device did not keep it — every gaze
+        # read from here would be the tracking-lost sentinel, and a session
+        # that looks calibrated but is not is exactly what must not happen
+        # quietly. Said on the screen the experimenter is looking at, then
+        # the pause menu follows and they can run it again.
+        log.error(
+            "TRACKPixx3 calibration did NOT take: the device reports no calibration after "
+            "%d targets. Check that the camera sees the eyes (position, focus, LED) and "
+            "calibrate again.",
+            len(targets),
+        )
+        self._display.show_message(
+            "Calibration FAILED: the tracker reports no calibration.\n"
+            "Check the camera sees the eyes (position, focus, LED), then calibrate again."
+        )
+        event.waitKeys(maxWait=CALIBRATION_FAIL_HOLD_S, keyList=[*ACCEPT_KEYS, ABORT_KEY])
 
     # ------------------------------------------------------------------
     # Per trial
@@ -388,7 +724,18 @@ class ViewPixxTracker:
         (with ``eye: average``) one of the two is not. Both are routine; the
         phases decide what a gap means, this method never guesses.
         """
-        chosen = select_eye(self._tracker.getEyePosition(), self._cfg.eye)
+        reader = self._reader
+        if reader is None:
+            raise TrackerError("get_gaze() before configure(): the tracker is not recording")
+        if not reader.running:
+            reader.read_now()  # no thread (tests, synchronous callers): read here
+        report = reader.latest()
+        if report is None:
+            return None  # nothing has been read yet
+        positions, t = report
+        if self._clock.now() - t > GAZE_STALE_S:
+            return None  # the reader is behind: a stalled USB call, no position for now
+        chosen = select_eye(positions, self._cfg.eye)
         if chosen is None:
             return None
         # The device speaks CENTERED, y-up px; every GazeSample in alhazen is
@@ -396,7 +743,7 @@ class ViewPixxTracker:
         # boundary, so nothing downstream has to know which backend produced
         # a sample.
         gx, gy = self._screen.centered_to_screen(*chosen)
-        return GazeSample(gx=gx, gy=gy, t=self._clock.now())
+        return GazeSample(gx=gx, gy=gy, t=t)
 
     def send_message(self, text: str) -> None:
         """Record one marker against BOTH clocks.
@@ -414,7 +761,9 @@ class ViewPixxTracker:
         must abort loudly rather than produce a session that only looks
         recorded.
         """
-        self._messages.append((float(self._tracker.getTime()), self._clock.now(), text))
+        with self._device_lock:
+            device_time = float(self._tracker.getTime())
+        self._messages.append((device_time, self._clock.now(), text))
 
     def draw_host_overlay(self, shapes: list[HostShape]) -> None:
         # No operator display exists to draw on. The device *can* put its eye
@@ -437,7 +786,19 @@ class ViewPixxTracker:
         """
         if self._samples_path is None:
             return  # configure() never started a recording
-        self._tracker.saveBufferedData()
+        with self._device_lock:
+            if not recording_armed(self._libdpx, self._tracker):
+                # Draining now would hand the library a read pointer into a
+                # ring that is gone, and that call never returns. Re-arm and
+                # say what was lost, rather than hang the session.
+                log.warning(
+                    "the TRACKPixx3's sample ring was reconfigured under the session (a "
+                    "calibration does this); recording re-armed, samples since the last "
+                    "drain are lost"
+                )
+                arm_recording(self._libdpx, self._tracker)
+                return
+            self._tracker.saveBufferedData()
 
     def _write_messages(self, destination: Path) -> None:
         """Write the two-clock message record beside the samples."""
@@ -458,6 +819,8 @@ class ViewPixxTracker:
         """
         if self._tracker is None:
             return  # connect() never ran: nothing was opened
+        if self._reader is not None:
+            self._reader.stop()  # before the drain: nothing else may touch the device
 
         if self._recording:
             # The session can end mid-trial (quit, abort); stop_trial() owns

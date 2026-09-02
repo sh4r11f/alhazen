@@ -20,9 +20,17 @@ pip install "alhazen-vision[nidaq]"      # reward and TTL sync hardware (Windows
 
 Neither eye tracker's SDK is on PyPI. `pylink` ships with SR Research's
 EyeLink Developer's Kit — and the PyPI package of that name is something else
-entirely — while `pypixxlib` ships with VPixx's Software Tools installer.
-alhazen will tell you which one is missing, and where it comes from, if you
-try to use a tracker without it.
+entirely. `pypixxlib` ships with VPixx's Software Tools installer, which puts
+it on no Python path: it leaves a source archive on the rig, and that archive
+is what goes into your environment —
+
+```bash
+pip install "C:\Program Files\VPixx Technologies\Software Tools\pypixxlib\pypixxlib-1.9.2.tar.gz"
+```
+
+— with whatever version your Software Tools shipped (it depends only on
+numpy and pypng). alhazen will tell you which SDK is missing, and where it
+comes from, if you try to use a tracker without it.
 
 ## Scaffold an experiment
 
