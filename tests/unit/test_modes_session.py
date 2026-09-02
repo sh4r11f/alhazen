@@ -61,6 +61,21 @@ class SimTask(ModeTask):
         return Simulation(tracker=object(), describe={"seed": seed})
 
 
+class SimTaskWithSpikes(ModeTask):
+    """A task whose simulated subject has a simulated brain as well.
+
+    The case this exists for: an experiment whose objective is computed
+    from spikes cannot rehearse itself with gaze alone, and its simulated
+    neurons have to answer the trial the autopilot is running — which only
+    the task can build.
+    """
+
+    name = "sim-task-spikes"
+
+    def simulation(self, seed: int) -> Simulation:
+        return Simulation(tracker=object(), spikes=object(), describe={"seed": seed})
+
+
 class Spy:
     """Stands in for build_session, recording what a mode passed down."""
 
@@ -187,6 +202,48 @@ class TestSimulateMode:
     def test_a_task_with_no_autopilot_is_refused_with_the_reason(self, tmp_path):
         with pytest.raises(ConfigError, match="simulation"):
             build(tmp_path, Mode.SIMULATE)
+
+    def test_a_simulated_spike_source_reaches_the_builder(self, tmp_path):
+        built, spy = build(tmp_path, Mode.SIMULATE, task=SimTaskWithSpikes(Params()))
+
+        assert spy.kwargs["spikes"] is built.simulation.spikes
+        assert spy.kwargs["spikes"] is not None
+
+    def test_a_task_that_supplies_no_spikes_passes_none(self, tmp_path):
+        # None means "leave the rig's own", which in simulate mode is
+        # nothing at all — the same rule every other stand-in follows.
+        _, spy = build(tmp_path, Mode.SIMULATE, task=SimTask(Params()))
+
+        assert spy.kwargs["spikes"] is None
+
+    def test_the_rigs_own_probe_still_stands_down_beside_a_simulated_one(self, tmp_path):
+        # The task's simulated brain does not make the real probe wanted:
+        # the rig's spikeglx device is still dropped, and what reaches the
+        # builder is the task's stand-in.
+        built, spy = build(
+            tmp_path,
+            Mode.SIMULATE,
+            task=SimTaskWithSpikes(Params()),
+            devices=LAB_DEVICES,
+        )
+
+        assert spy.kwargs["rig"].devices.spikes is None
+        assert spy.kwargs["spikes"] is built.simulation.spikes
+        assert "spikes: spikeglx stands down" in built.describe()
+
+    def test_a_simulation_of_spikes_alone_is_not_empty(self, tmp_path):
+        # is_empty() asks "did the task supply any stand-in at all", which
+        # is what distinguishes a task that forgot to implement simulation()
+        # from one that supplied a partial subject.
+        assert not Simulation(spikes=object()).is_empty()
+        assert Simulation().is_empty()
+
+    def test_the_other_trial_modes_pass_no_spikes(self, tmp_path):
+        # Only simulate substitutes a subject; test and run drive whatever
+        # the rig config built, which is the rig's own spike source.
+        for mode in (Mode.RUN, Mode.TEST):
+            _, spy = build(tmp_path, mode, task=SimTaskWithSpikes(Params()))
+            assert spy.kwargs["spikes"] is None
 
     def test_it_runs_on_the_lab_rig_with_every_real_device_stood_down(self, tmp_path):
         """The rig file describes the machine; simulate decides what to

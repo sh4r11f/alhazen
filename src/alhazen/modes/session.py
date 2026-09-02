@@ -319,6 +319,10 @@ def build_mode_session(
         open_dashboard=open_dashboard,
         tracker=simulation.tracker if simulation else None,
         response=simulation.response if simulation else None,
+        # The rig's own probe has already been stood down by rig_for_mode;
+        # this is the simulated brain that runs in its place, and None
+        # leaves the rig's spike source (a `simulated` one, or none) alone.
+        spikes=simulation.spikes if simulation else None,
         # A simulated session has nobody to press SPACE at the instructions.
         auto_start=mode is Mode.SIMULATE,
         **extra,

@@ -234,3 +234,74 @@ def test_live_analysis_seam_end_to_end(tmp_path):
     assert live_panels[0]["title"] == "Spikes heard"
     assert live_panels[0]["data"]["form"] == "stat"
     assert live_panels[0]["data"]["secondary"] == "2 pings"
+
+
+# ----------------------------------------------------------------------
+# The task-supplied spike source
+# ----------------------------------------------------------------------
+
+
+class TaskSuppliedTask(PingTask):
+    """A task whose simulated subject brings its own brain.
+
+    The case this covers is the one a rig YAML cannot: a simulated source
+    whose response depends on what the trial was asking. The rig file can
+    only name a backend and its constants, so an experiment whose simulated
+    neurons have to answer *this* stimulus has to construct them itself and
+    hand them to simulate mode.
+    """
+
+    name = "live-ping-own-spikes"
+
+    def simulation(self, seed: int) -> Any:
+        from alhazen.devices.automated import AutomatedGazeTracker
+        from alhazen.devices.spikes import SimulatedSpikeSource
+        from alhazen.modes.simulation import Simulation
+
+        return Simulation(
+            tracker=AutomatedGazeTracker(),
+            spikes=SimulatedSpikeSource(
+                SpikeSourceConfig(
+                    backend="simulated",
+                    sim_channels=2,
+                    # Deliberately the mirror of the rig's: channel 1 is the
+                    # one on the ping here. If the rig's source were used
+                    # instead, channel 0 would fire and the assertion below
+                    # would fail rather than pass for the wrong reason.
+                    sim_rf_centers_dva=(FAR_AWAY, PING_AT),
+                    sim_rf_sigma_dva=1.0,
+                    sim_baseline_hz=0.0,
+                    sim_peak_hz=300.0,
+                    sim_latency_ms=0.0,
+                    sim_duration_ms=20.0,
+                    sim_respond_to="PING",
+                )
+            ),
+            describe={"seed": seed},
+        )
+
+
+def test_a_task_supplied_spike_source_reaches_the_live_analysis(tmp_path):
+    PingTask.instances.clear()
+    built = build_mode_session(
+        Mode.SIMULATE,
+        rig=sim_rig(tmp_path),  # its own simulated source has the mirrored fields
+        task=TaskSuppliedTask(PingParams()),
+        subject="sim",
+        session=1,
+        seed=9,
+        n_per_condition=2,
+    )
+    built.runner.run()
+
+    ran = PingTask.instances[-1]
+    assert ran.live is not None
+    assert ran.live.spikes is built.simulation.spikes
+
+    run_dir = next((built.data_root / "sub-sim" / "ses-001").glob("run-01_*"))
+    saved = json.loads((run_dir / "live_counts.json").read_text())
+    # Channel 1 is the one whose field sits on the ping in the task's own
+    # source. Spikes there and none on channel 0 proves the task's source
+    # ran, was subscribed to the bus, and beat the rig's.
+    assert saved["per_channel"][1] > 0
+    assert saved["per_channel"][0] == 0
