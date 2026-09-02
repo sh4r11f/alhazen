@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:  # pragma: no cover - import cycle: Task imports this module
     from alhazen.devices.eyetracker import EyeTracker
     from alhazen.devices.response import ResponseDevice
+    from alhazen.devices.spikes import SpikeSource
     from alhazen.task.task import Task
 
 
@@ -35,11 +36,18 @@ class Simulation:
     depend on what the trial was asking supplies a ``task`` as well — a
     subclass that knows the right answer, which is the only way an autopilot
     can be scored rather than just counted.
+
+    ``spikes`` is the same idea one layer in: an experiment whose objective
+    is computed from neural activity cannot rehearse itself with gaze alone,
+    and simulated neurons that respond to *this* trial's stimulus are
+    something only the experiment can build. The rig's own probe still
+    stands down in simulate mode; this is what runs in its place.
     """
 
     tracker: EyeTracker | None = None
     response: ResponseDevice | None = None
     task: Task | None = None
+    spikes: SpikeSource | None = None
     # Free-form, recorded in the run's snapshot: what this simulated subject
     # was configured to do (its blink rate, its latency spread). It ends up in
     # the data, so a rehearsal's numbers can be read months later by someone
@@ -47,4 +55,16 @@ class Simulation:
     describe: dict[str, Any] | None = None
 
     def is_empty(self) -> bool:
-        return self.tracker is None and self.response is None and self.task is None
+        """Whether the task supplied no stand-in at all.
+
+        The question simulate mode asks, and it is about the task having
+        implemented ``simulation()`` rather than about the subject being
+        complete: a partial subject is the experiment's business, a missing
+        one is a mode that cannot run.
+        """
+        return (
+            self.tracker is None
+            and self.response is None
+            and self.task is None
+            and self.spikes is None
+        )
