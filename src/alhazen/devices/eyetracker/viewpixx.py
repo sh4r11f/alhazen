@@ -245,7 +245,7 @@ class GazeReader:
         read: Callable[[], Sequence[float]],
         clock: Clock,
         lock: threading.Lock,
-        interval_s: float = 0.001,
+        interval_s: float = 0.004,
     ) -> None:
         self._read = read
         self._clock = clock
