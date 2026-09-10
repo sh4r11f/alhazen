@@ -195,6 +195,11 @@ class SessionRunner:
             )
         self._max_consecutive_failures = max_consecutive_failures
         self._failures_in_a_row = 0
+        # How many of the trials counted in the current streak dropped more of
+        # their frames than frame QA allows, and that number as it stood when
+        # the last streak pause was raised (the running count is reset by then).
+        self._failure_streak_display_trials = 0
+        self._paused_streak_display_trials = 0
         # What was decided about this session before it started — a mode's
         # reductions and stood-down devices (modes/session.py describe()),
         # in the experimenter's words. Logged right after "session start",
@@ -411,11 +416,7 @@ class SessionRunner:
                     continue  # the pause menu already gave all the time needed; skip ITI
 
                 if too_many_failures:
-                    fault = (
-                        f"{self._max_consecutive_failures} TRIALS FAILED IN A ROW — last "
-                        f"{outcome.name}; check the calibration (V), the subject, and the "
-                        f"stimulus before resuming"
-                    )
+                    fault = self._failure_streak_heading(outcome)
                     if not self._handle_pause(result.record, fault=fault):
                         break
                     continue
@@ -641,40 +642,108 @@ class SessionRunner:
         return self._handle_pause({}, rest=f"BLOCK {done} OF {total} COMPLETE — REST")
 
     def _too_many_failures_in_a_row(self, outcome: Any) -> bool:
-        """Count non-completed trials back to back; True on the one that
+        """Count the subject's failed trials back to back; True on the one that
         reaches the task's limit, which the caller turns into a pause.
 
-        Two outcomes are neither, because neither is about the subject, and
-        the pause this raises blames the subject's calibration:
+        What counts is what the SUBJECT did, trial by trial:
 
-        - ``PAUSED`` — the experimenter stopped it. The count restarts after
-          the pause, so a subject who is still not fixating gets another whole
-          run of chances before the screen says so again, rather than a pause
-          every trial.
-        - ``DROPPED_FRAMES`` — the display failed, not the eye. Frame QA
-          counts those itself and aborts the run with the display's own
-          message (display/frames.py); counting them here as well would stop
-          the session to ask someone to check a calibration that is fine.
+        - A completed trial ends the streak.
+        - ``DROPPED_FRAMES`` ends it too. The engine only recycles a trial the
+          subject completed (core/engine.py): the display failed, not the eye,
+          and the row keeps what the subject did as ``outcome_before_frame_qa``.
+          Recycles used to be skipped over instead, neither counted nor ending
+          anything, and that let a failing display join separate runs of
+          failures into one. A rehearsal whose completed trials were all
+          recycled paused on "6 trials in a row" for fixation breaks and missed
+          saccades that those completed trials had separated, and told the
+          operator to check a calibration while the panel dropped half its
+          frames. Frame QA counts recycles on its own and stops the run with
+          the display's message.
+        - ``PAUSED`` neither counts nor ends it: the experimenter stopped the
+          trial, and that says nothing about the subject. The count restarts
+          after the pause this raises, so a subject still not fixating gets a
+          whole new run of chances rather than a pause every trial.
+        - Every other outcome that did not complete counts.
+
+        Beside the count it keeps how many of the counted trials dropped more
+        of their frames than frame QA's budget, so the pause can say when the
+        display was failing through the streak. A panel missing vsyncs can
+        cause real fixation breaks, and what must not happen is sending the
+        experimenter to recalibrate while it does.
         """
         limit = self._max_consecutive_failures
-        if limit is None or outcome.name in ("PAUSED", "DROPPED_FRAMES"):
+        if limit is None or outcome.name == "PAUSED":
             return False
-        if outcome.completed:
+        if outcome.completed or outcome.name == "DROPPED_FRAMES":
             self._failures_in_a_row = 0
+            self._failure_streak_display_trials = 0
             return False
         self._failures_in_a_row += 1
+        if self._display_was_failing():
+            self._failure_streak_display_trials += 1
         if self._failures_in_a_row < limit:
             return False
-        log.warning(
-            "%d trials in a row not completed, the last %s on trial %d: pausing. The subject "
-            "may not be seeing what this session is measuring — a calibration that passed "
-            "but sits at the edge of the fixation window looks exactly like this.",
-            self._failures_in_a_row,
-            outcome.name,
-            self._trial_index,
-        )
+
+        display_trials = self._failure_streak_display_trials
+        if display_trials:
+            log.warning(
+                "%d trials in a row not completed, the last %s on trial %d, and %d of them "
+                "dropped more than %.0f%% of their frames: pausing. The display was failing "
+                "through this streak, and a panel missing vsyncs causes real fixation breaks "
+                "— check the display before recalibrating.",
+                self._failures_in_a_row,
+                outcome.name,
+                self._trial_index,
+                display_trials,
+                self._frame_monitor.dropped_fraction_budget * 100,
+            )
+        else:
+            log.warning(
+                "%d trials in a row not completed, the last %s on trial %d: pausing. The "
+                "subject may not be seeing what this session is measuring — a calibration "
+                "that passed but sits at the edge of the fixation window looks exactly like "
+                "this.",
+                self._failures_in_a_row,
+                outcome.name,
+                self._trial_index,
+            )
+        self._paused_streak_display_trials = display_trials
         self._failures_in_a_row = 0
+        self._failure_streak_display_trials = 0
         return True
+
+    def _display_was_failing(self) -> bool:
+        """Did the trial that just ended drop more of its frames than frame QA's
+        budget allows?
+
+        False on a simulated display: its frame times measure how accurately
+        the host can wait, not a panel, which is also why the session builder
+        stands frame QA down there (session/builder.py).
+        """
+        if getattr(self._display, "kind", None) == "simulated":
+            return False
+        frames = self._frame_monitor.last_trial
+        return (
+            frames is not None
+            and frames.dropped_fraction > self._frame_monitor.dropped_fraction_budget
+        )
+
+    def _failure_streak_heading(self, outcome: Any) -> str:
+        """What the pause screen leads with when the failure streak stops the
+        session: the display first when it was failing through the streak,
+        the subject-side checks otherwise."""
+        limit = self._max_consecutive_failures
+        display_trials = self._paused_streak_display_trials
+        if display_trials:
+            return (
+                f"{limit} TRIALS FAILED IN A ROW — last {outcome.name}, and {display_trials} "
+                f"of them dropped over {self._frame_monitor.dropped_fraction_budget:.0%} of "
+                f"their frames; check the display before recalibrating"
+            )
+        return (
+            f"{limit} TRIALS FAILED IN A ROW — last {outcome.name}; check the calibration "
+            f"(V), the subject, and the stimulus before resuming"
+        )
 
     def _require_tracker_calibration(self) -> bool:
         """Before trial 1: a tracker that can say it holds no calibration
