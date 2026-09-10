@@ -193,6 +193,17 @@ class TestRegister:
         registry.register(MONITOR)
         assert registry.lookup("rig-a").gamma == 2.2
 
+    def test_a_record_that_reads_back_differently_is_refused(self, fake_psychopy, monkeypatch):
+        """Saving without complaint is not the same as storing what was
+        written: a stale file under the same name, or a unit PsychoPy
+        converted on the way in, comes back as different numbers. The round
+        trip is checked at registration, not discovered at the next window."""
+        monkeypatch.setattr(FakeMonitor, "getDistance", lambda self: 99.0)
+
+        with pytest.raises(DisplayError, match="reads it back differently") as error:
+            registry.register(MONITOR)
+        assert "distance_cm: config 57, registered 99.0" in str(error.value)
+
     def test_a_non_positive_gamma_is_refused(self, fake_psychopy):
         with pytest.raises(DisplayError, match="gamma must be positive"):
             registry.register(MONITOR, gamma=0.0)

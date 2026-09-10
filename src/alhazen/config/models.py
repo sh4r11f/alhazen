@@ -82,9 +82,11 @@ class MonitorConfig(Model):
     # The name this panel is registered under in PsychoPy's per-machine
     # monitor database (`alhazen monitor register`), which is also the name
     # Monitor Center and any other PsychoPy script on this machine look it up
-    # by. A machine that drives more than one panel must give each rig config
-    # its own name: two rigs left on the default would share one registration
-    # and overwrite each other's geometry.
+    # by. Two rig configs sharing a name share one registration and overwrite
+    # each other's geometry, so a rig loaded from a file is named after the
+    # file (``load_rig``: `rig-lab.yaml` registers as `rig-lab`) unless the
+    # file says otherwise. The default here is what a config built in code
+    # gets.
     name: str = "alhazen"
 
     @model_validator(mode="after")

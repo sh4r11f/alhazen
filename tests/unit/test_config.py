@@ -129,6 +129,37 @@ class TestFrameQAPolicyConfig:
             load_rig(path)
 
 
+class TestTheMonitorIsNamedAfterTheRigFile:
+    """PsychoPy looks a panel up by name, so two rig files sharing the
+    default would share one registration and overwrite each other's
+    geometry. A rig file is one machine, and its stem is the name nobody
+    has to think of."""
+
+    def rig(self, tmp_path, name, extra=""):
+        path = tmp_path / name
+        path.write_text(
+            "monitor: {width_px: 100, height_px: 100, width_cm: 30, distance_cm: 60, "
+            f"refresh_rate_hz: 60{extra}}}\n"
+            f"data_root: {tmp_path.as_posix()}\n"
+        )
+        return path
+
+    def test_an_unnamed_monitor_takes_the_files_stem(self, tmp_path):
+        assert load_rig(self.rig(tmp_path, "rig-vpixx.yaml")).monitor.name == "rig-vpixx"
+
+    def test_a_named_monitor_keeps_its_name(self, tmp_path):
+        rig = load_rig(self.rig(tmp_path, "rig-vpixx.yaml", extra=", name: lab-panel"))
+        assert rig.monitor.name == "lab-panel"
+
+    def test_a_config_built_in_code_keeps_the_default(self):
+        assert (
+            MonitorConfig(
+                width_px=100, height_px=100, width_cm=30, distance_cm=60, refresh_rate_hz=60
+            ).name
+            == "alhazen"
+        )
+
+
 class TestDeviceModels:
     def test_a_rig_without_devices_has_none_of_them(self, tmp_path):
         # A rig file may name no devices, and "absent" is spelled None

@@ -975,7 +975,13 @@ panel in alhazen's terms; PsychoPy keeps its own per-machine database of
 monitors, and that is where Monitor Center writes, where a window looks up a
 stored calibration, and what every other PsychoPy script on the rig reads.
 `alhazen monitor register` writes one into the other (`display/monitors.py`),
-under `monitor.name`, carrying the measured gamma if there is one.
+under `monitor.name`, carrying the measured gamma if there is one — and then
+looks the record up again and refuses if PsychoPy hands back different
+numbers from the ones just written, so a stale file under the same name is
+found at registration rather than by the next window. `monitor.name` is the
+rig file's stem unless the file says otherwise (`load_rig`): a rig file is
+one machine, and two files sharing PsychoPy's one default name would
+overwrite each other's geometry.
 
 The two then have one rule each. **The config owns the geometry**: every
 degree goes through `Screen`, which reads the config, so a registration that

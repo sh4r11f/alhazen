@@ -59,6 +59,15 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   none of 33 trials, every one a fixation break, on a calibration that
   passed but sat at the edge of the fixation window, and ran to its end with
   nothing on screen saying so.
+- **The monitor is named after the rig file, and registration reads the
+  record back.** `load_rig` names an unnamed `monitor` after the file's stem
+  (`rig-lab.yaml` registers as `rig-lab`), so two rig files on one machine
+  never share PsychoPy's one registration and overwrite each other; a
+  `monitor.name` in the file still wins. `monitor register` now looks the
+  record up after writing it and refuses if PsychoPy hands back different
+  numbers from the ones just given — a stale file under the same name, a
+  unit converted on the way in — rather than leaving that for the next
+  window to refuse.
 
 ## 1.1.0 - 2026-09-09
 

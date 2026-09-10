@@ -29,12 +29,13 @@ monitor:
   distance_cm: 57.0    # eye to screen
   refresh_rate_hz: 120.0
   fullscreen: true
-  # The name PsychoPy files this panel under. Give it something that names
-  # the rig, then run `alhazen monitor register --rig configs/rig-lab.yaml`:
-  # PsychoPy's Monitor Center and every window opened for this rig then find
-  # the same geometry and the same measured gamma. A machine driving two
-  # panels needs two names, or they overwrite each other.
-  name: alhazen
+  # PsychoPy files this panel under this rig file's own name (rig-lab) unless
+  # a `name:` is given here, so two rig files on one machine never share a
+  # registration and overwrite each other. Run
+  # `alhazen monitor register --rig configs/rig-lab.yaml` once: it writes the
+  # geometry (and any measured gamma) into PsychoPy's monitor database and
+  # reads it back, after which Monitor Center and every window opened for
+  # this rig find the same numbers. `alhazen monitor show --rig` compares.
 display:
   backend: psychopy
   frame_qa:
