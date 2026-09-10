@@ -211,6 +211,33 @@ class TestFrameMonitor:
         with pytest.raises(FrameQAError, match="2 trials in a row recycled"):
             bad_trial(3, True)
 
+    def test_the_last_trial_is_kept_for_the_rest_of_the_session(self):
+        """The runner asks whether the display was failing while a subject's
+        failures piled up. It reads the answer here rather than from a new
+        trial-record column."""
+        monitor = self.make(policy="warn")
+        monitor.start_trial(3)
+        monitor.note_flip(0.0)
+        monitor.note_flip(0.030)
+        summary = monitor.end_trial()
+
+        assert monitor.last_trial is summary
+        assert monitor.last_trial.trial_index == 3
+        assert monitor.dropped_fraction_budget == FrameQAConfig().max_dropped_fraction
+
+    def test_the_trial_that_aborted_the_run_is_still_the_one_on_record(self):
+        cfg = FrameQAConfig(policy="recycle_trial", max_consecutive_recycles=1)
+        monitor = FrameMonitor(cfg, refresh_rate_hz=100.0)
+        monitor.start_trial(4)
+        monitor.note_flip(0.0)
+        monitor.note_flip(0.030)
+        with pytest.raises(FrameQAError):
+            monitor.end_trial()
+
+        assert monitor.last_trial is not None
+        assert monitor.last_trial.trial_index == 4
+        assert monitor.last_trial.recycle
+
     def test_recycle_is_never_the_verdict_under_other_policies(self):
         for policy in ("log", "warn", "mark_trial"):
             monitor = self.make(policy=policy)

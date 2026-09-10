@@ -92,6 +92,11 @@ class FrameMonitor:
         self._worst_this_trial = 0.0
         # Trials recycled back to back; reset by any trial that is not.
         self._consecutive_recycles = 0
+        # The summary of the trial that ended last, kept for the rest of the
+        # session rather than handed to the engine alone. The runner reads it
+        # to say whether the display was failing while a subject's failures
+        # piled up, without adding a column to the trial record.
+        self.last_trial: TrialFrameSummary | None = None
 
     @property
     def records(self) -> list[FrameRecord]:
@@ -222,6 +227,17 @@ class FrameMonitor:
                 self._expected * 1000,
                 " — trial recycled" if recycle else "",
             )
+        summary = TrialFrameSummary(
+            trial_index=self._trial_index,
+            n_frames=n,
+            n_dropped=dropped,
+            worst_interval_s=self._worst_this_trial,
+            recycle=recycle,
+            reason=reason,
+        )
+        # Stored before the check below can raise, so the trial that aborted a
+        # run is still the one on record.
+        self.last_trial = summary
         if self._consecutive_recycles >= self._cfg.max_consecutive_recycles:
             raise FrameQAError(
                 f"{self._consecutive_recycles} trials in a row recycled for dropped frames "
@@ -231,14 +247,17 @@ class FrameMonitor:
                 f"the subject. Close other applications, check the video mode and the "
                 f"cable, and run --mode measure before the next session."
             )
-        return TrialFrameSummary(
-            trial_index=self._trial_index,
-            n_frames=n,
-            n_dropped=dropped,
-            worst_interval_s=self._worst_this_trial,
-            recycle=recycle,
-            reason=reason,
-        )
+        return summary
+
+    @property
+    def dropped_fraction_budget(self) -> float:
+        """The fraction of a trial's frames that may drop before the trial has
+        not shown what the config describes.
+
+        The ``recycle_trial`` budget, readable under every policy so the rest
+        of the session can say "over budget" in the same terms frame QA does.
+        """
+        return self._cfg.max_dropped_fraction
 
     @property
     def marks_trials(self) -> bool:

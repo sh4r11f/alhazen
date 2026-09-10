@@ -430,6 +430,58 @@ class TestSnapshot:
 
         assert _alhazen_git_describe(tmp_path) == "not a source checkout"
 
+    def test_a_directory_git_cannot_open_is_unknown_not_a_verdict(self, tmp_path):
+        """git refusing to look is not git saying "no repository here". Only
+        the second earns the label that means the version alone identifies the
+        code; anything else is an honest unknown."""
+        from alhazen.config.snapshot import _alhazen_git_describe
+
+        assert _alhazen_git_describe(tmp_path / "no" / "such" / "directory") == "unknown"
+
+    def test_a_shallow_clone_of_alhazen_is_described_by_its_commit(self, tmp_path):
+        """Experiment CI clones alhazen with --depth 1, which brings no tags.
+        That is exactly the clone-of-main case this key exists for, so it must
+        name the commit rather than fall back to either label."""
+        import subprocess
+
+        from alhazen.config.snapshot import _alhazen_git_describe
+
+        origin = tmp_path / "origin"
+        (origin / "src" / "alhazen").mkdir(parents=True)
+        (origin / "src" / "alhazen" / "__init__.py").write_text("", encoding="utf-8")
+        (origin / "pyproject.toml").write_text(
+            """[project]
+name = "alhazen-vision"
+""",
+            encoding="utf-8",
+        )
+
+        def git(cwd, *args):
+            return subprocess.run(
+                ["git", "-C", str(cwd), "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+
+        git(origin, "init", "-q")
+        git(origin, "add", ".")
+        git(origin, "commit", "-q", "-m", "first")
+        git(origin, "tag", "-a", "v0.0.1", "-m", "a tag the shallow clone will not have")
+        (origin / "NOTES").write_text("second commit", encoding="utf-8")
+        git(origin, "add", "NOTES")
+        git(origin, "commit", "-q", "-m", "second")
+        head = git(origin, "rev-parse", "--short", "HEAD")
+
+        clone = tmp_path / "clone"
+        subprocess.run(
+            ["git", "clone", "-q", "--depth", "1", origin.as_uri(), str(clone)],
+            capture_output=True,
+            check=True,
+        )
+
+        assert _alhazen_git_describe(clone / "src" / "alhazen") == head
+
     def test_a_wheel_inside_an_experiments_repository_is_not_given_its_commit(self, tmp_path):
         """A virtualenv inside an experiment repo puts an installed alhazen
         inside that repo's work tree, and git describes it without complaint:

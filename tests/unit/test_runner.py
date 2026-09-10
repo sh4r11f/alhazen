@@ -366,16 +366,115 @@ class TestTooManyFailuresInARow:
         assert "REWARD FAILURE" in pauses[0]
         assert not any("FAILED IN A ROW" in title for title in pauses)
 
-    def test_a_display_fault_is_not_counted_as_the_subject_failing(self, tmp_path):
-        """DROPPED_FRAMES is the panel, not the eye. Frame QA counts those
-        itself and stops the run with its own message; counting them here as
-        well stopped the session to ask someone to check a calibration that
-        was fine."""
+    def test_a_recycled_trial_ends_the_streak_because_the_subject_completed_it(self, tmp_path):
+        """The engine only recycles a trial the subject completed; the display
+        failed, not the eye. Recycles used to be skipped over rather than end
+        the streak, which joined separate runs of failures into one."""
         from alhazen.core.trial import DROPPED_FRAMES
+        from support import FAILED
 
-        harness = self.harness(tmp_path, [COMPLETED], limit=2)
-        for _ in range(5):
-            assert not harness.runner._too_many_failures_in_a_row(DROPPED_FRAMES)
+        harness = self.harness(tmp_path, [COMPLETED], limit=3)
+        for outcome in (FAILED, FAILED, DROPPED_FRAMES, FAILED, FAILED):
+            assert not harness.runner._too_many_failures_in_a_row(outcome)
+
+    def _frames_session(self, tmp_path, plan, limit, kind):
+        """A session on a display that drops frames when told to.
+
+        ``plan`` holds outcomes, and ``("slow", outcome)`` for a trial that ends
+        with that outcome after every one of its frames overran. Frame QA
+        recycles, with a consecutive-recycle limit high enough never to be
+        what stops the run. ``kind`` is what the display reports itself as.
+        """
+        from alhazen.config.models import FrameQAConfig
+        from alhazen.display.frames import FrameMonitor
+        from alhazen.task.plan import TrialPlan
+        from support import FRAME_S, RunForFrames
+
+        served = iter(plan)
+        box = {}
+
+        class Overruns(RunForFrames):
+            def on_frame(self, ctx):
+                box["harness"].display.next_flip_extra = FRAME_S
+                return super().on_frame(ctx)
+
+        def build(setup):
+            item = next(served)
+            if isinstance(item, tuple):
+                return TrialPlan(phases=[Overruns(20, item[1])])
+            return TrialPlan(phases=[RunForFrames(20, item)])
+
+        # The session ends after this many completed trials; a slow trial the
+        # subject completes is recycled and re-served, so only clean ones count.
+        clean_completions = sum(1 for item in plan if item is COMPLETED)
+        harness = SessionHarness(tmp_path, n_trials=clean_completions, build_trial=build)
+        box["harness"] = harness
+        harness.display.kind = kind
+        monitor = FrameMonitor(
+            FrameQAConfig(
+                policy="recycle_trial", max_dropped_fraction=0.10, max_consecutive_recycles=50
+            ),
+            1 / FRAME_S,
+        )
+        harness.engine._frame_monitor = monitor
+        harness.runner._frame_monitor = monitor
+        harness.runner._max_consecutive_failures = limit
+        pauses = []
+        harness.runner._on_pause = lambda menu: (pauses.append(menu.title), "resume")[1]
+        harness.runner.run()
+        return harness, pauses
+
+    def test_a_display_that_recycles_completed_trials_cannot_manufacture_a_streak(self, tmp_path):
+        """kde-vergence's rehearsal, trial for trial. Every recycled trial was
+        one the subject completed, and those completions separated two, two
+        and two failures. Skipped over, they left a "6 trials in a row" that
+        was never in a row, and the pause told the operator to check the
+        calibration while the panel dropped half its frames."""
+        from alhazen.core.trial import Outcome
+
+        no_saccade = Outcome("NO_SACCADE", completed=False)
+        fix_break = Outcome("FIX_BREAK", completed=False)
+        slow = ("slow", COMPLETED)
+        plan = [slow, fix_break, fix_break, slow, no_saccade, no_saccade, slow, slow]
+        plan += [fix_break, no_saccade] + [COMPLETED] * 3
+
+        harness, pauses = self._frames_session(tmp_path, plan, limit=6, kind="psychopy")
+
+        assert not any("FAILED IN A ROW" in title for title in pauses), pauses
+        outcomes = [row["outcome"] for row in read_trials(harness)]
+        assert outcomes.count("DROPPED_FRAMES") == 4
+
+    def test_a_streak_on_a_failing_display_says_to_check_the_display_first(self, tmp_path):
+        """A panel missing vsyncs can cause real fixation breaks. When failures
+        in the streak happened on trials that dropped more frames than frame QA
+        allows, the pause leads with the display rather than sending the
+        experimenter to recalibrate a calibration that is fine."""
+        from support import FAILED
+
+        slow_failure = ("slow", FAILED)
+        plan = [slow_failure, slow_failure, FAILED, COMPLETED]
+
+        harness, pauses = self._frames_session(tmp_path, plan, limit=3, kind="psychopy")
+
+        (title,) = [t for t in pauses if "FAILED IN A ROW" in t]
+        assert "2 of them dropped over 10% of their frames" in title
+        assert "check the display before recalibrating" in title
+        log = harness.paths.log_path.read_text(encoding="utf-8")
+        assert "check the display before recalibrating" in log
+
+    def test_on_a_simulated_display_frame_times_are_not_evidence(self, tmp_path):
+        """A simulated display's frame times are the host's scheduler, so the
+        same streak there keeps the subject-side heading."""
+        from support import FAILED
+
+        slow_failure = ("slow", FAILED)
+        plan = [slow_failure, slow_failure, FAILED, COMPLETED]
+
+        _harness, pauses = self._frames_session(tmp_path, plan, limit=3, kind="simulated")
+
+        (title,) = [t for t in pauses if "FAILED IN A ROW" in t]
+        assert "check the calibration" in title
+        assert "display" not in title
 
     def test_no_limit_never_pauses(self, tmp_path):
         from support import FAILED
