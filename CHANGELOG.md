@@ -85,6 +85,11 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   `LandingCheck` accepts `PhaseAction.ADVANCE` in place of either outcome so
   a feedback phase can follow it. The fixation point gained `set_color`, and
   the simulated stand-in records the colours it was given.
+- **Docs: test versus pilot.** A section in [docs/modes.md](docs/modes.md)
+  on what `--mode test` reduces and what it deliberately does not (block
+  structure, with the rationale from `modes/rehearsal.py`), why a default
+  config and a pilot config can land on the same trial count from opposite
+  directions, and how the two compose as `--mode test --params <pilot>`.
 - **`--mode measure` ends by drawing the ruler.** It used to print what a
   10-degree bar should measure and send the operator to run `alhazen
   calibrate ruler` separately; one expected the bar and did not get one. The

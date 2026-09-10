@@ -358,6 +358,49 @@ has drifted is only visible by comparing two of them.
     Where a photodiode is configured the marker flips the patch too, so a
     simultaneous recording holds the ground truth for the display half.
 
+## Test versus pilot, and using the two together
+
+These get confused because they can come out the same length by accident,
+from opposite directions. They are different things.
+
+**`--mode test` is a rehearsal.** It runs the whole experiment — every phase,
+every condition, the block breaks, the instructions — with the trial counts
+turned down, a person in the chair, and three things that make it safe to run
+as often as you like: its data goes to a sibling of the rig's `data_root`
+named `<data_root>-rehearsal`, where no analysis will find it; real hardware
+the mode cannot use is stood down and said so before trial one; and on a
+machine with no tracker, `--mouse` puts the cursor in for gaze. What it
+reduces is exactly two things (`modes/rehearsal.py` `shrink_params`): every
+scheduler's `n_per_condition`, to 1 by default, and an adaptive block's trial
+and reversal counts.
+
+**A pilot is a real run with a shorter config.** `python run.py --params
+configs/task-pilot.yaml` writes to the real `data_root`, drives the rig as
+written, and reduces nothing — the pilot config *is* the design, at the size
+the pilot needs.
+
+**The reduction is per block, not per session.** This is the part that
+surprises people. `shrink_params` deliberately leaves block structure alone:
+a design with six blocks still runs six blocks in test mode, each holding
+one trial per cell. Blocks are part of what a rehearsal is for — the break is
+where a subject stops concentrating and where the experimenter has to do
+something — they cost almost nothing at one trial per cell, and a task may
+constrain its own block count in ways the framework cannot know (one
+experiment requires it to be a multiple of its motion levels, and would refuse
+a reduced one). So a default config with 6 blocks × 24 cells rehearses at 144
+trials, and a reader who does not know the rule reads that as a bug.
+
+**The two compose.** `--mode test --params configs/task-pilot.yaml` is the
+actual short rehearsal: the pilot's block structure with one trial per cell,
+to the rehearsal root, with the rehearsal's substitutions. For the experiment
+above that is 72 trials. Use it to sit through the pilot once before the
+subject does; use the pilot config alone, in the default mode, for the pilot
+itself.
+
+`describe()` prints every number test mode changed before trial one, and the
+same lines go into the run's `session.log`, so a rehearsal never quietly
+redesigns the experiment: the snapshot records the numbers that ran.
+
 ## Starting an experiment
 
 An experiment package ships a `run.py` so it can be started without installing
