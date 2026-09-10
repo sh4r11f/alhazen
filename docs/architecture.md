@@ -744,11 +744,22 @@ answer.
 binary, digital-word bit extraction, analog channels), `kilosort` (spike
 times, clusters, curation labels), `eyelink`/`asc` (EDF→ASC conversion with
 an error that names the Developer's Kit, and a parser where a blink is NaN
-rather than a position at the origin), and `session` (a run directory,
-manifest-verified, returned as typed pandas DataFrames — a `csv.DictReader`
-row hands back `row["success"] == "False"`, and `"False"` is truthy). All are
-tested against synthetic files written by `tests/fixtures_neural.py`, so each
-test can say what should come out rather than only that nothing crashed.
+rather than a position at the origin), `viewpixx` (a TRACKPixx3 run's
+`*_gaze.csv` and `*_gaze-messages.csv`: an affine device→session clock
+**fit** from the two-clock message pairs that refuses a residual worse than a
+sample period, a sample table in degrees where a lost eye or a blink flag is
+a NaN row rather than a missing one, `event_times` and `trial_spans` from the
+messages, and `gaze_frame` as an explicit setting because whether the
+device's `Screen X/Y` are centred and y-up has not yet been checked against a
+valid sample), and `session` (a run directory, manifest-verified, returned as
+typed pandas DataFrames — a `csv.DictReader` row hands back
+`row["success"] == "False"`, and `"False"` is truthy). All are tested against
+synthetic files written by `tests/fixtures_neural.py`, so each test can say
+what should come out rather than only that nothing crashed — and the viewpixx
+reader also against `tests/fixtures/trackpixx3/`, the header and messages of
+a real recording, because its column names are the device's (`Timestamp`,
+`Left Screen X`, VPixx's own `Right Fixaion`) and a fixture written in the
+names the reader wanted once let it ship unable to open a real file.
 
 An experiment's own analysis composes them: the
 [rf-mapping](https://github.com/sh4r11f/rf-mapping) experiment, for one,

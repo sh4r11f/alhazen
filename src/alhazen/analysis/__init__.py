@@ -10,8 +10,10 @@ where the line map, the geometry and the seed come from.
 
 Layering: analysis imports ``core``, ``config``, ``data`` and
 ``display.screen`` — the same geometry and configuration the experiment used —
-and never ``session``, ``devices``, ``stimuli`` or ``task``. That is enforced
-by the import contract, not by convention.
+and never ``session``, ``stimuli`` or ``task``. From ``devices`` it takes only
+pure decisions the live path also makes (the viewpixx blink rule), never a
+device, so online and offline cannot disagree about what a sample means. The
+rest is enforced by the import contract, not by convention.
 """
 
 from alhazen.analysis.io.session import RunData, load_run
