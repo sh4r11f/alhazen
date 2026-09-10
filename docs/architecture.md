@@ -834,7 +834,13 @@ of the page is described in [`dashboard.md`](dashboard.md):
   only renders), appended after the spec's own panels. So does the
   session's eye-tracker monitor (`session/eyetracker.py`), whose
   calibration, validation and drift-correction results and camera image
-  make up the *Eye tracker* group.
+  make up the *Eye tracker* group — and the runner's own *Frame intervals*
+  panel (`panels.frame_intervals_panel`), a histogram of every flip-to-flip
+  interval from the `FrameMonitor` in eighths of a frame period: the one
+  panel drawn from the frame log rather than the trials, because the
+  *shape* is what tells a vsync miss from a flip that never waited for
+  vsync (frames under half a period, impossible on a locked panel), and no
+  dropped-frame count can.
 
 The child starts before the display opens, so the whole remainder of
 `build_session` runs inside a guard that stops it on any failure — otherwise

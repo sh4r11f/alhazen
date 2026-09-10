@@ -43,8 +43,10 @@ from __future__ import annotations
 import json
 import math
 from collections import Counter
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from typing import Any
+
+import numpy as np
 
 from alhazen.dashboard.spec import DashboardPanel
 
@@ -1100,6 +1102,93 @@ def _stat(panel: DashboardPanel, rows: list[dict[str, Any]]) -> dict[str, Any]:
         "unit": unit,
         "label": f"{panel.agg} {split_unit(field)[0]}",
         "secondary": secondary,
+    }
+
+
+def frame_intervals_panel(
+    intervals_s: Sequence[float] | np.ndarray,
+    expected_s: float,
+    threshold_s: float,
+    *,
+    n_dropped: int | None = None,
+) -> dict[str, Any]:
+    """The distribution of flip-to-flip intervals, as an extra panel.
+
+    A dropped-frame *count* hides the thing that matters: the shape. A
+    vsync-locked panel puts every frame in one bin at the frame period, and a
+    frame under half a period is physically impossible on one — a headless
+    rehearsal here had a perfect-looking median (8.343 ms, 119.9 Hz) and 338
+    frames under 4 ms, which no count could show and this histogram shows at
+    a glance. Bins are an eighth of a frame period, from zero to two and a
+    half periods; anything longer is counted in the note, with the longest.
+
+    Not a ``DashboardPanel`` kind: those read trial records, and frame
+    intervals live in the frame log. Built by the runner from its
+    FrameMonitor and delivered finished, like a live analysis's panels.
+    """
+    values = np.asarray(intervals_s, dtype=float)
+    if values.size == 0:
+        return {
+            "title": "Frame intervals",
+            "section": "Session",
+            "data": _empty("No frames flipped yet"),
+        }
+    expected_ms = expected_s * 1000.0
+    width = expected_ms / 8.0
+    edges = [index * width for index in range(21)]  # 0 .. 2.5 frame periods
+    ms = values * 1000.0
+    counts, _ = np.histogram(ms, bins=edges)
+    overflow = int(np.count_nonzero(ms >= edges[-1]))
+    impossible = int(np.count_nonzero(values < 0.5 * expected_s))
+    dropped = int(np.count_nonzero(values > threshold_s)) if n_dropped is None else int(n_dropped)
+    n = int(values.size)
+    median = float(np.median(ms))
+
+    stats: list[dict[str, Any]] = [
+        {"label": "frames", "value": f"{n:,}"},
+        {"label": "median", "value": f"{format_number(median)} ms"},
+        {
+            "label": "dropped",
+            "value": f"{dropped:,} ({dropped / n:.1%})",
+            # One drop in a thousand frames is a session; one in a hundred
+            # is a display with a problem.
+            **({"status": "critical"} if dropped / n > 0.01 else {}),
+        },
+        {
+            "label": "under ½ frame",
+            "value": f"{impossible:,}",
+            # Impossible on a vsync-locked panel: the flip is not waiting
+            # for the display, so nothing timed against it means anything.
+            **({"status": "critical"} if impossible else {}),
+        },
+    ]
+    notes = [f"bins ⅛ of a frame period; a locked panel fills the bin at {expected_ms:.2f} ms"]
+    if overflow:
+        plural = "s" if overflow > 1 else ""
+        notes.append(
+            f"{overflow} frame{plural} longer than 2.5 periods, off the axis "
+            f"(longest {format_number(float(ms.max()))} ms)"
+        )
+    if impossible:
+        notes.append(
+            f"{impossible} frame{'s' if impossible > 1 else ''} under half a period — "
+            f"impossible on a vsync-locked display; the flip is not waiting for vsync"
+        )
+    return {
+        "title": "Frame intervals",
+        "section": "Session",
+        "data": {
+            "form": "histogram",
+            "bins": [
+                {"x0": edges[i], "x1": edges[i + 1], "count": int(counts[i])}
+                for i in range(len(counts))
+            ],
+            "median": median,
+            "x_label": "flip-to-flip interval (ms)",
+            "y_label": "frames",
+            "stats": stats,
+            "note": " · ".join(notes),
+        },
     }
 
 

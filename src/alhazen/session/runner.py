@@ -36,6 +36,7 @@ from alhazen.core.commands import Command, CommandSource
 from alhazen.core.engine import QuitRequested, TrialEngine
 from alhazen.core.events import Event, EventBus
 from alhazen.core.trial import CircleRegion, TrialContext
+from alhazen.dashboard.panels import frame_intervals_panel
 from alhazen.dashboard.runtime import DashboardController, dashboard_state
 from alhazen.dashboard.spec import DashboardSpec
 from alhazen.data.manifest import write_manifest
@@ -831,7 +832,7 @@ class SessionRunner:
         # eye tracker's. A camera frame is read only while the device is
         # between trials and somebody is looking (paused, or a procedure
         # running), and the pixels stay out of the copy written to disk.
-        extra_panels: list[dict[str, Any]] = []
+        extra_panels: list[dict[str, Any]] = [self._frame_timing_panel()]
         if self._live is not None:
             extra_panels += self._live.panels()
         if self._eyetracker is not None:
@@ -859,6 +860,17 @@ class SessionRunner:
         self._dashboard_message = message
         self._dashboard.publish(state)
         return state
+
+    def _frame_timing_panel(self) -> dict[str, Any]:
+        """The frame-interval histogram, from the monitor's own record: the
+        one panel whose data is the frame log rather than the trials."""
+        monitor = self._frame_monitor
+        return frame_intervals_panel(
+            monitor.intervals_s(),
+            monitor.expected_s,
+            monitor.threshold_s,
+            n_dropped=monitor.n_dropped,
+        )
 
     # ------------------------------------------------------------------
 

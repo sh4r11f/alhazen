@@ -829,3 +829,67 @@ def test_where_combines_with_completed_only():
     )
     rows = _cells() + [trial(4, completed=False, hit=1.0, alignment="aligned", separation="near")]
     assert [row["trial_index"] for row in select_rows(panel, rows)] == [0, 2]
+
+
+class TestFrameIntervals:
+    """The distribution of flip-to-flip intervals, not a dropped count: the
+    shape is what separates a genuine vsync miss from a clock that is not
+    waiting for vsync at all."""
+
+    EXPECTED = 1 / 120  # 8.333 ms
+    THRESHOLD = EXPECTED * 1.5
+
+    def panel(self, intervals, **kwargs):
+        from alhazen.dashboard.panels import frame_intervals_panel
+
+        return frame_intervals_panel(intervals, self.EXPECTED, self.THRESHOLD, **kwargs)
+
+    def test_a_locked_panel_fills_one_bin_at_the_frame_period(self):
+        panel = self.panel([self.EXPECTED] * 500)
+        assert panel["title"] == "Frame intervals" and panel["section"] == "Session"
+        data = panel["data"]
+        assert data["form"] == "histogram"
+        assert len(data["bins"]) == 20  # eighths of a period, to 2.5 periods
+        full = [b for b in data["bins"] if b["count"]]
+        assert len(full) == 1 and full[0]["count"] == 500
+        assert full[0]["x0"] - 1e-9 <= self.EXPECTED * 1000 <= full[0]["x1"]
+        assert data["median"] == pytest.approx(8.333, abs=1e-3)
+        stats = {s["label"]: s for s in data["stats"]}
+        assert stats["frames"]["value"] == "500"
+        assert stats["dropped"]["value"] == "0 (0.0%)" and "status" not in stats["dropped"]
+        assert stats["under ½ frame"]["value"] == "0" and "status" not in stats["under ½ frame"]
+        assert "fills the bin at 8.33 ms" in data["note"]
+
+    def test_a_perfect_median_does_not_hide_impossible_frames(self):
+        """The rehearsal that motivated this: median 8.343 ms and hundreds of
+        frames under 4 ms — physically impossible on a vsync-locked display,
+        and invisible in any count of late frames."""
+        intervals = [self.EXPECTED] * 600 + [0.003] * 338
+        data = self.panel(intervals)["data"]
+        stats = {s["label"]: s for s in data["stats"]}
+        assert stats["under ½ frame"]["value"] == "338"
+        assert stats["under ½ frame"]["status"] == "critical"
+        assert "338 frames under half a period" in data["note"]
+        assert "not waiting for vsync" in data["note"]
+        # And they are visible as a second mode in the bars, not only a number.
+        low = sum(b["count"] for b in data["bins"] if b["x1"] <= 4.2)
+        assert low == 338
+
+    def test_dropped_frames_are_counted_and_flagged_past_one_percent(self):
+        data = self.panel([self.EXPECTED] * 98 + [self.EXPECTED * 2] * 2)["data"]
+        stats = {s["label"]: s for s in data["stats"]}
+        assert stats["dropped"]["value"] == "2 (2.0%)"
+        assert stats["dropped"]["status"] == "critical"
+        # The monitor's own count wins over recounting when it is given.
+        data = self.panel([self.EXPECTED] * 100, n_dropped=0)["data"]
+        assert {s["label"]: s for s in data["stats"]}["dropped"]["value"] == "0 (0.0%)"
+
+    def test_very_long_frames_are_counted_off_the_axis_with_the_longest(self):
+        data = self.panel([self.EXPECTED] * 10 + [0.5, 0.12])["data"]
+        assert sum(b["count"] for b in data["bins"]) == 10
+        assert "2 frames longer than 2.5 periods, off the axis (longest 500 ms)" in data["note"]
+
+    def test_no_frames_yet_is_an_empty_panel(self):
+        panel = self.panel([])
+        assert panel["data"]["form"] == "empty"
+        assert panel["section"] == "Session"
