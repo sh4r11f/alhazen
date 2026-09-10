@@ -25,6 +25,38 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## 1.3.0 - 2026-09-09
+
+### Changed
+
+- **A phase that declares `must_be_last` is now the trial's closing phase,
+  and runs whatever the trial ended as.** The engine returned as soon as any
+  phase produced an Outcome, so a trial that ended early — a fixation break,
+  a saccade that never came — never reached its last phase. `TrialFeedback`
+  was therefore unreachable on exactly the trials a subject most needs to
+  hear about: a pilot came back with 72 completed trials all showing feedback
+  and 7 failures showing none. There was no way for a task to work around it,
+  because the only way to stop a procedural phase from ending the trial is to
+  have it ADVANCE, which lets a broken fixation fall through into the phase
+  that measures the response.
+
+  A closing phase reads how the trial ended from `TrialContext.outcome`, and
+  what it returns is discarded when the trial already had an outcome: feedback
+  is shown for a fixation break, it does not turn one into a completed trial.
+  It does not run on `PAUSED` or `ABORTED` — neither is a trial result, and
+  telling a subject they failed a trial they were still in the middle of would
+  be a lie.
+
+- **`TrialFeedback` calls a trial that ended with a non-completed outcome a
+  failure without consulting `verdict`.** The predicate judges a measurement,
+  and a fixation break has none; a predicate that answers True by default
+  would otherwise show a green point for a trial the subject broke.
+
+### Added
+
+- **`TrialContext.outcome`** — how the trial ended, set by the engine before a
+  closing phase runs and `None` everywhere else.
+
 ## 1.2.2 - 2026-09-09
 
 ### Fixed
