@@ -345,9 +345,16 @@ def measure_key_latency(
     """
     lags, latencies = [], []
     for index in range(n_presses):
+        # ``show`` (a display's show_message) draws the prompt AND flips, so
+        # the flip that is timed is the one that showed it. A second flip
+        # after it presented an empty back buffer — the prompt vanished, and
+        # the latency was measured from the wrong flip, which is a wrong
+        # number rather than an ugly screen. Without a prompt, the marker is
+        # the flip itself.
         if show is not None:
             show(f"press any key   ({index + 1} of {n_presses})")
-        display.flip()
+        else:
+            display.flip()
         flipped = now()
         _, arrived, noticed = wait_for_key()
         latencies.append(arrived - flipped)
@@ -380,6 +387,7 @@ def measure_tracker_accuracy(
     screen: Screen,
     present_target: Callable[[tuple[float, float]], tuple[float, float]],
     targets: Sequence[tuple[float, float]] = DEFAULT_ACCURACY_TARGETS_DVA,
+    calibration: str | None = None,
 ) -> Measurement:
     """Show targets at known positions and measure how far the gaze lands off.
 
@@ -390,7 +398,10 @@ def measure_tracker_accuracy(
 
     A validation, not a calibration: it says how wrong the tracker still is
     after being calibrated, which is the number that decides whether a
-    2-degree fixation window is generous or impossible today.
+    2-degree fixation window is generous or impossible today. ``calibration``
+    is the one line saying which calibration that is — the tracker's own
+    account of the one just run — and goes in the report beside the number,
+    because an accuracy with no calibration behind it is not a measurement.
     """
     positions = [(screen.deg2px(x), screen.deg2px(y)) for x, y in targets]
     samples = [present_target(position) for position in positions]
@@ -400,23 +411,37 @@ def measure_tracker_accuracy(
     # EyeLink; a degree is where a small fixation window starts refusing
     # trials a subject is actually making.
     ok = worst <= 1.0
+    notes = [] if calibration is None else [f"Measured against: {calibration}"]
+    if not ok:
+        notes.append(
+            "Worse than 1 degree: a fixation window narrower than that will "
+            "refuse trials the subject is making. Recalibrate before the "
+            "session, and check the head support and the camera focus."
+        )
     return Measurement(
         "eye tracker accuracy",
         f"median {result['median']:.2f} dva off, worst {worst:.2f} dva over {result['n']} targets",
         ok,
-        {
-            **result,
-            "notes": (
-                []
-                if ok
-                else [
-                    "Worse than 1 degree: a fixation window narrower than that will "
-                    "refuse trials the subject is making. Recalibrate before the "
-                    "session, and check the head support and the camera focus."
-                ]
-            ),
-        },
+        {**result, "calibration": calibration, "notes": notes},
     )
+
+
+def calibration_verdict(result: Any) -> tuple[bool, str]:
+    """Whether a tracker's ``calibrate()`` result allows an accuracy check,
+    and the line the report carries about it.
+
+    ``None`` is a tracker that reports nothing (the mouse stand-in): the
+    check proceeds, and the report says the calibration is unknown rather
+    than claiming one. An aborted or failed calibration refuses the check:
+    gaze from an uncalibrated device compared against target positions is
+    not an accuracy measurement, and reporting it as one was the bug.
+    """
+    if result is None:
+        return True, "this tracker reports no calibration result"
+    summary = result.summary()
+    if result.aborted or result.ok is False:
+        return False, summary
+    return True, summary
 
 
 # ----------------------------------------------------------------------
@@ -509,6 +534,7 @@ def sample_target(
     get_gaze: Callable[[], Any],
     screen: Screen,
     echo: Callable[[str], None] = print,
+    gaze_status: Callable[[], str] | None = None,
 ) -> tuple[float, float]:
     """Show one validation target and return the gaze it was looking at.
 
@@ -518,18 +544,23 @@ def sample_target(
     the only part of this module reaching for the device layer directly, so it
     was the only part no test could reach.
 
-    ``get_gaze`` returns None when the tracker has no eye — a blink, or the
-    subject looking away — and asking again is the only sane answer.
-    Substituting a default would report perfect accuracy at a point that was
-    never measured; raising would throw away the targets already collected.
-    So it says what happened and waits for another press.
+    ``get_gaze`` returns None when the tracker has no verifiable position — a
+    blink, the subject looking away, or a device with no calibration — and
+    asking again is the only sane answer. Substituting a default would report
+    perfect accuracy at a point that was never measured; raising would throw
+    away the targets already collected. So it says what happened and waits
+    for another press. ``gaze_status`` is the tracker's own account of *why*
+    there was no position, where it has one (the TRACKPixx3 does): "no eye"
+    was the wrong diagnosis for a whole afternoon on a device that simply had
+    no calibration.
     """
     while True:
         show_and_wait(position)
         sample = get_gaze()
         if sample is not None:
             return screen.screen_to_centered(sample.gx, sample.gy)
-        echo("  no eye at that moment — look at the dot and press again")
+        reason = gaze_status() if gaze_status is not None else "no eye at that moment"
+        echo(f"  no gaze position: {reason} — look at the dot and press again")
 
 
 def _psychopy_key_waiter() -> Callable[[], tuple[str, float, float]]:
@@ -570,7 +601,17 @@ def _psychopy_key_waiter() -> Callable[[], tuple[str, float, float]]:
 def _measure_tracker_on_rig(
     rig: RigConfig, display: Any, screen: Screen, echo: Callable[[str], None]
 ) -> Measurement:
-    """Connect the rig's tracker, show the targets, and read the gaze back.
+    """Connect the rig's tracker, calibrate it, show the targets, and read
+    the gaze back.
+
+    Calibrated first, through the same ``calibrate()`` a session runs,
+    because an accuracy is the error *of a calibration*: uncalibrated gaze
+    compared against target positions is not a measurement of anything, and
+    on a device with no calibration at all it is NaN against a number. The
+    operator on the rig put it exactly: "there's no calibration, so I don't
+    know how it's supposed to know where the eyes are." A calibration that is
+    aborted or that the device reports as failed ends the measurement with
+    that as the verdict.
 
     The operator advances each target by pressing a key once the subject is
     steady on it, because "steady" is a judgement a person makes and a timer
@@ -591,6 +632,23 @@ def _measure_tracker_on_rig(
     tracker.connect()
     tracker.configure(screen, clock)
     try:
+        echo("calibrating the tracker first: an accuracy is the error of a calibration")
+        proceed, calibration = calibration_verdict(tracker.calibrate())
+        if not proceed:
+            return Measurement(
+                "eye tracker accuracy",
+                f"not measured — {calibration}",
+                False,
+                {
+                    "calibration": calibration,
+                    "notes": [
+                        "No accuracy can be measured without a calibration on the device. "
+                        "Check the camera sees the eyes (position, focus, LED), calibrate "
+                        "again, and re-run."
+                    ],
+                },
+            )
+        echo(f"  {calibration}")
         tracker.start_trial(0, "accuracy check")
         dot = visual.Circle(
             display.window,
@@ -609,10 +667,19 @@ def _measure_tracker_on_rig(
             event.waitKeys()
 
         def present(position: tuple[float, float]) -> tuple[float, float]:
-            return sample_target(position, show_and_wait, tracker.get_gaze, screen, echo)
+            return sample_target(
+                position,
+                show_and_wait,
+                tracker.get_gaze,
+                screen,
+                echo,
+                # The tracker's own reason for a missing position, where it
+                # has one (protocol.py's optional capabilities).
+                gaze_status=getattr(tracker, "gaze_status", None),
+            )
 
         echo("look at each dot; press a key when the eye is steady on it")
-        return measure_tracker_accuracy(tracker, screen, present)
+        return measure_tracker_accuracy(tracker, screen, present, calibration=calibration)
     finally:
         tracker.stop_trial()
         # shutdown(), not close(): it is what the EyeTracker protocol declares,

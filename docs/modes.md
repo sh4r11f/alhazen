@@ -328,6 +328,16 @@ non-zero on a disagreement, so it can gate a pre-session script.
 validated against that list — an experimenter who thinks they skipped the
 tracker and did not will sit through it wondering why.
 
+The tracker measurement **calibrates first**, through the same `calibrate()`
+a session runs, and the report names the calibration it measured against. An
+accuracy is the error *of a calibration*: uncalibrated gaze compared with
+target positions measures nothing, and on a TRACKPixx3 with no calibration it
+is NaN against a number. A calibration that is aborted, or that the device
+reports as failed, ends the measurement with that as its verdict rather than
+reporting an accuracy it did not measure. When a target's press finds no gaze
+position, the prompt says why in the tracker's own words where it can — on a
+TRACKPixx3, whether the device has no calibration or the camera has no eye.
+
 Reports are written beside the **rig config**, timestamped and never
 overwritten. They describe the machine, they outlive the data, and a rig that
 has drifted is only visible by comparing two of them.

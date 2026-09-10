@@ -35,17 +35,24 @@ SCREEN = Screen.from_monitor(MONITOR)
 
 
 class FlipCounter:
-    """Stands in for a display: counts flips, records messages."""
+    """Stands in for a display: counts flips, records messages, and — like
+    the real show_message — flips when it shows one."""
 
     def __init__(self):
         self.flips = 0
         self.messages = []
+        # What each flip presented: the message drawn for it, or None for a
+        # flip that cleared the screen.
+        self.presented = []
 
     def flip(self, clear=True):
         self.flips += 1
+        self.presented.append(None)
 
     def show_message(self, text):
         self.messages.append(text)
+        self.flips += 1
+        self.presented.append(text)
 
 
 class TestSummarise:
@@ -186,6 +193,30 @@ class TestKeyLatency:
         assert len(display.messages) == 3
         assert "3" in display.messages[-1]
 
+    def test_the_timed_flip_is_the_one_that_showed_the_prompt(self):
+        """show_message flips. A second flip after it cleared the prompt off
+        the screen AND was the flip the latency was measured from — so the
+        prompt vanished and the number was wrong, which is the worse half."""
+        display = FlipCounter()
+        stamps = []
+
+        def now():
+            stamps.append(list(display.presented))
+            return 0.0
+
+        measure_key_latency(
+            display, lambda: ("a", 0.2, 0.21), n_presses=2, show=display.show_message, now=now
+        )
+
+        # At every stamp, the last thing flipped was the prompt, not a blank.
+        assert all(presented[-1] is not None for presented in stamps)
+        assert None not in display.presented
+
+    def test_without_a_prompt_the_flip_itself_is_the_marker(self):
+        display = FlipCounter()
+        measure_key_latency(display, lambda: ("a", 0.2, 0.21), n_presses=2, now=lambda: 0.0)
+        assert display.flips == 2
+
 
 class TestReport:
     def test_a_measurement_with_no_right_answer_does_not_make_the_rig_ok_or_not(self):
@@ -294,6 +325,48 @@ class TestSamplingOneValidationTarget:
         assert shown == [(10.0, 20.0)] * 3
         assert len(said) == 2 and "no eye" in said[0]
 
+    def test_the_trackers_own_reason_is_what_the_operator_reads(self):
+        """ "No eye" was the wrong diagnosis for an afternoon on a device that
+        had no calibration. A tracker that can say which it was is asked."""
+        from types import SimpleNamespace
+
+        from alhazen.modes.measure import sample_target
+
+        samples = iter([None, SimpleNamespace(gx=960.0, gy=540.0)])
+        said = []
+
+        sample_target(
+            (0.0, 0.0),
+            lambda _p: None,
+            lambda: next(samples),
+            self._screen(),
+            echo=said.append,
+            gaze_status=lambda: "NO CALIBRATION on the device — the camera SEES the eye",
+        )
+
+        assert said == [
+            "  no gaze position: NO CALIBRATION on the device — the camera SEES the eye "
+            "— look at the dot and press again"
+        ]
+
+    def test_the_accuracy_report_names_the_calibration_it_measured(self):
+        from alhazen.modes.measure import measure_tracker_accuracy
+
+        screen = self._screen()
+        result = measure_tracker_accuracy(
+            tracker=None,
+            screen=screen,
+            present_target=lambda position: position,
+            targets=((0.0, 0.0),),
+            calibration="calibrated: HV9 (9 targets), left (both eyes calibrated), manual",
+        )
+
+        assert result.ok is True
+        assert result.detail["calibration"].startswith("calibrated: HV9")
+        assert result.detail["notes"] == [
+            "Measured against: calibrated: HV9 (9 targets), left (both eyes calibrated), manual"
+        ]
+
     def test_it_does_not_throw_away_the_targets_already_collected(self):
         """A blink raising would lose every point measured before it, which
         on the ninth target of nine is the whole validation."""
@@ -323,6 +396,41 @@ class TestSamplingOneValidationTarget:
         )
 
         assert result.detail["n"] == 2
+
+
+class TestCalibrationBeforeAccuracy:
+    """Uncalibrated gaze against target positions is not an accuracy
+    measurement; on a device with no calibration it is NaN against a number.
+    The verdict of the calibrate() that precedes the check decides whether
+    there is anything to measure."""
+
+    def _result(self, **kwargs):
+        from alhazen.devices.eyetracker.protocol import CalibrationResult
+
+        base = dict(ok=True, layout="HV9", n_targets=9, eye="left", advance="manual", t=1.0)
+        return CalibrationResult(**{**base, **kwargs})
+
+    def test_a_calibration_that_took_lets_the_check_run(self):
+        from alhazen.modes.measure import calibration_verdict
+
+        proceed, line = calibration_verdict(self._result(note="the device reports a calibration"))
+        assert proceed
+        assert line.startswith("calibrated: HV9 (9 targets), left, manual")
+
+    def test_an_aborted_or_failed_calibration_refuses_the_check(self):
+        from alhazen.modes.measure import calibration_verdict
+
+        proceed, line = calibration_verdict(self._result(ok=None, aborted=True, note="aborted"))
+        assert not proceed and line.startswith("aborted")
+        proceed, line = calibration_verdict(self._result(ok=False, note="did not take"))
+        assert not proceed and line.startswith("NOT calibrated")
+
+    def test_a_tracker_that_reports_nothing_is_measured_and_said_so(self):
+        from alhazen.modes.measure import calibration_verdict
+
+        proceed, line = calibration_verdict(None)
+        assert proceed
+        assert line == "this tracker reports no calibration result"
 
 
 class TestItSaysWhenTheDisplayIsCrawling:
