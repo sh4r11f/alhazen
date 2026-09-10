@@ -263,14 +263,21 @@ class LandingCheck:
         self,
         region: str = "target",
         timeout_s: float = 0.5,
-        on_hit: Outcome | None = None,
-        on_miss: Outcome | None = None,
+        on_hit: Outcome | str | None = None,
+        on_miss: Outcome | str | None = None,
         stimulus_keys: list[str] | None = None,
         landed_event: str | None = "LANDED",
         record_prefix: str = "endpoint",
     ) -> None:
+        # Either may be PhaseAction.ADVANCE instead of an Outcome: the
+        # endpoint is on the record either way (``<prefix>_in_target``), and a
+        # trial that shows feedback needs the next phase to read it and end
+        # the trial, rather than this one ending it first.
         if on_hit is None or on_miss is None:
-            raise ValueError("LandingCheck needs both on_hit and on_miss outcomes")
+            raise ValueError(
+                "LandingCheck needs both on_hit and on_miss — an Outcome each, or "
+                "PhaseAction.ADVANCE to let a following phase (TrialFeedback) end the trial"
+            )
         self._region = region
         self._timeout_s = timeout_s
         self._on_hit = on_hit

@@ -219,6 +219,10 @@ class DisplayConfig(Model):
     # (a 240 Hz panel silently running at 60 Hz invalidates every duration).
     warmup_flips: int = 30
     refresh_tolerance_hz: float = 5.0
+    # Sound a tone with trial feedback (task/phases TrialFeedback): a high
+    # one for a good trial, a low one for a bad one. Off for a rig with no
+    # audio, or a task whose feedback must be silent.
+    feedback_beeps: bool = True
 
 
 class DashboardConfig(Model):

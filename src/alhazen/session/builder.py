@@ -60,6 +60,7 @@ from alhazen.errors import ConfigError
 from alhazen.paradigms.base import TrialSource
 from alhazen.session.database import ExperimentDatabase, FrameInputBuffer
 from alhazen.session.eyetracker import EyeTrackerMonitor
+from alhazen.session.feedback import FeedbackSounder
 from alhazen.session.pause import PauseMenu, run_pause_menu
 from alhazen.session.recorder import DataRecorder
 from alhazen.session.runner import SessionRunner
@@ -453,6 +454,11 @@ def build_session(
             bus.subscribe(make_sync_subscriber(sync, sync_cfg.event_lines))
         recorder = DataRecorder(paths.trials_path, paths.events_path)
         bus.subscribe(recorder.on_event)
+        # The beep that goes with trial feedback. A subscriber like the sync
+        # lines, because the phase that shows feedback touches no hardware;
+        # it emits FEEDBACK and this is what hears it.
+        if rig_cfg.display.feedback_beeps:
+            bus.subscribe(FeedbackSounder(display))
         # After the recorder, deliberately: these two only take notes (the
         # simulated spike source reacting to a stimulus event, a live
         # analysis logging a flash), and the hardware paths and the record

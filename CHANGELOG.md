@@ -68,6 +68,23 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   numbers from the ones just given — a stale file under the same name, a
   unit converted on the way in — rather than leaving that for the next
   window to refuse.
+- **Trial feedback, with the verdict kept apart from the outcome.** A new
+  last phase, `TrialFeedback`, turns the fixation point green or red for a
+  fixed time, writes `feedback` (`success`/`failure`) on the record, and
+  emits the reserved event `FEEDBACK` on the flip that showed it; the
+  session's new `FeedbackSounder` beeps from that event (a phase touches no
+  hardware), switchable with `display.feedback_beeps`. The verdict is the
+  task's own predicate over the record — an acceptance region, a latency
+  bound — and the outcome is the task's too and unchanged by it: a saccade
+  that missed is still a completed, scored measurement, and re-serving it on
+  the basis of where the eye landed would bias every cell toward its own
+  hypothesis. The phase declares it must be last and the engine refuses it
+  anywhere else, so feedback is never on screen while something is being
+  measured — for a display whose premise is one ink value and one
+  background, a red dot mid-trial is a third luminance in the measurement.
+  `LandingCheck` accepts `PhaseAction.ADVANCE` in place of either outcome so
+  a feedback phase can follow it. The fixation point gained `set_color`, and
+  the simulated stand-in records the colours it was given.
 - **`--mode measure` ends by drawing the ruler.** It used to print what a
   10-degree bar should measure and send the operator to run `alhazen
   calibrate ruler` separately; one expected the bar and did not get one. The

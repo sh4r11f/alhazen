@@ -117,6 +117,19 @@ class TrialEngine:
                 # a third and `astype(int)` raise on the rig's own data.
                 ctx.record["n_dropped_frames"] = 0
 
+        # A phase that declares it must be last — trial feedback, which must
+        # never be on screen while something is still being measured — is
+        # refused anywhere else, before a frame is drawn. A programming error
+        # in the task, met while writing it rather than with a subject in
+        # the chair and a coloured fixation point over the measurement.
+        for index, phase in enumerate(phases):
+            if getattr(phase, "must_be_last", False) and index != len(phases) - 1:
+                raise RuntimeError(
+                    f"phase {getattr(phase, 'name', phase)!r} must be the trial's last phase, "
+                    f"but {len(phases) - 1 - index} phase(s) follow it. Feedback is shown "
+                    f"only after everything has been measured."
+                )
+
         # TRIAL_START is emitted immediately — not on a flip — because it is
         # not a visual event: nothing has been drawn yet, and downstream
         # alignment needs a trial-start mark that precedes every other event

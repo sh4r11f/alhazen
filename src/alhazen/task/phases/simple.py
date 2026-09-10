@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from alhazen.core.trial import Outcome, PhaseAction, TrialContext
+
+# What the fixation point turns for a good and a bad trial, in the renderer's
+# signed RGB. Green and red rather than anything subtler: feedback is read
+# across a room, at a glance, by someone who has just made a saccade.
+SUCCESS_COLOR = (-1.0, 1.0, -1.0)
+FAILURE_COLOR = (1.0, -1.0, -1.0)
 
 
 class Blank:
@@ -65,4 +72,83 @@ class Feedback:
             stimulus.draw()
         if ctx.clock.now() - self._t0 >= self._duration_s:
             return self._then
+        return PhaseAction.CONTINUE
+
+
+class TrialFeedback:
+    """Tell the subject how the trial went — after everything is measured.
+
+    The fixation point turns green for a good trial and red for a bad one,
+    the ``FEEDBACK`` event goes out on the flip that showed it (the session
+    sounds the beep from that; a phase touches no hardware), and after
+    ``duration_s`` the trial ends with the task's outcome.
+
+    Two things are deliberately separate here, because an experiment's
+    first use of this would have been wrong either way:
+
+    - **The verdict is the task's, and it is not the outcome.** ``verdict``
+      is a predicate over the record so far — an acceptance region, a
+      latency bound, whatever the design calls a good trial — and its answer
+      is written to the record as ``feedback``. ``then`` is the outcome, also
+      the task's, and unchanged by the verdict. A saccade that missed the
+      figure is still a completed, scored measurement; dropping those would
+      leave a dataset of exactly the trials that agreed with the hypothesis.
+      So the subject can be told a trial was not good enough while the
+      scheduler is told it was complete.
+    - **Feedback is never on screen while something is being measured.** A
+      display whose whole premise is one ink value and one background cannot
+      have a red dot on it mid-trial. This phase declares ``must_be_last``
+      and the engine refuses it anywhere else, so the ordering is enforced
+      rather than left to each task to get right.
+
+    The stimulus under ``stimulus_key`` must offer ``set_color``; the
+    fixation point does, and the simulated stand-in records it.
+    """
+
+    name = "trial_feedback"
+    must_be_last = True
+
+    def __init__(
+        self,
+        verdict: Callable[[TrialContext], bool],
+        then: Outcome | Callable[[TrialContext], Outcome],
+        duration_s: float,
+        stimulus_key: str = "fixation",
+        success_color: tuple[float, float, float] = SUCCESS_COLOR,
+        failure_color: tuple[float, float, float] = FAILURE_COLOR,
+        record_key: str = "feedback",
+        feedback_event: str = "FEEDBACK",
+    ) -> None:
+        if duration_s < 0:
+            raise ValueError(f"feedback duration must be >= 0 s, got {duration_s}")
+        self._verdict = verdict
+        self._then = then
+        self._duration_s = duration_s
+        self._stimulus_key = stimulus_key
+        self._success_color = success_color
+        self._failure_color = failure_color
+        self._record_key = record_key
+        self._feedback_event = feedback_event
+
+    def on_enter(self, ctx: TrialContext) -> None:
+        good = bool(self._verdict(ctx))
+        ctx.record[self._record_key] = "success" if good else "failure"
+        stimulus = ctx.stimuli[self._stimulus_key]
+        set_color = getattr(stimulus, "set_color", None)
+        if set_color is None:
+            raise TypeError(
+                f"TrialFeedback cannot recolour stimulus {self._stimulus_key!r} "
+                f"({type(stimulus).__name__}): it has no set_color(). Feedback needs the "
+                f"fixation point, or a stimulus that can change colour."
+            )
+        set_color(self._success_color if good else self._failure_color)
+        ctx.emit_on_flip(self._feedback_event, {"success": good})
+        self._t0 = ctx.clock.now()
+
+    def on_frame(self, ctx: TrialContext) -> str | Outcome:
+        stimulus = ctx.stimuli[self._stimulus_key]
+        stimulus.update(ctx.dt)
+        stimulus.draw()
+        if ctx.clock.now() - self._t0 >= self._duration_s:
+            return self._then(ctx) if callable(self._then) else self._then
         return PhaseAction.CONTINUE

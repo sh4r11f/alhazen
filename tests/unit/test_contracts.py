@@ -174,6 +174,19 @@ class TestTrialRecordColumns:
                 return super().on_frame(ctx)
 
         records.append(harness.engine.run_trial(harness.ctx(), [AlwaysSlow(3, COMPLETED)]).record)
+
+        # A trial that ends with feedback carries what the subject was told.
+        from alhazen.core.trial import PhaseAction
+        from alhazen.stimuli.base import NullStimulus
+        from alhazen.task.phases import TrialFeedback
+
+        harness = EngineHarness()
+        ctx = harness.ctx(stimuli={"fixation": NullStimulus("fixation")})
+        phases = [
+            RunForFrames(1, PhaseAction.ADVANCE),
+            TrialFeedback(verdict=lambda c: True, then=COMPLETED, duration_s=0.0),
+        ]
+        records.append(harness.engine.run_trial(ctx, phases).record)
         return records
 
     def session_record(self, tmp_path) -> dict:

@@ -48,6 +48,12 @@ RESERVED_EVENTS = frozenset(
         "CALIBRATION",
         "VALIDATION",
         "DRIFT_CORRECTION",
+        # Trial feedback was shown (task/phases TrialFeedback): the flip that
+        # recoloured the fixation point, with ``success`` in the payload. On
+        # the record so an analysis can see what the subject was told, and on
+        # the bus so the session — never the phase, which touches no hardware
+        # — can sound the beep that goes with it.
+        "FEEDBACK",
     }
 )
 

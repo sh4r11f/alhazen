@@ -18,6 +18,7 @@
   "reserved_events": [
     "CALIBRATION",
     "DRIFT_CORRECTION",
+    "FEEDBACK",
     "NO_REWARD",
     "PAUSED",
     "RESUMED",
@@ -48,7 +49,8 @@
     "n_dropped_frames",
     "outcome_before_frame_qa",
     "frame_qa_reason",
-    "rewarded"
+    "rewarded",
+    "feedback"
   ],
   "schema_versions": {
     "database": 2,
