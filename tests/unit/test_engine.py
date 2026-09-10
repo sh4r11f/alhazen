@@ -245,6 +245,15 @@ class TestFrameQAIntegration:
         result = harness.engine.run_trial(harness.ctx(), [AlwaysSlow(3, COMPLETED)])
         assert "n_dropped_frames" not in result.record
 
+    def test_a_clean_trial_writes_zero_not_nothing(self):
+        """An absent cell reads back as NaN, and NaN is not "no drops": it
+        inflated a column mean by a third and made astype(int) raise on the
+        rig's own data. Zero is a number; absence is not."""
+        for policy in ("mark_trial", "recycle_trial", "abort_run"):
+            harness = EngineHarness(frame_qa=FrameQAConfig(policy=policy))
+            result = harness.engine.run_trial(harness.ctx(), [RunForFrames(3, COMPLETED)])
+            assert result.record["n_dropped_frames"] == 0
+
     def _run_with_drops(self, n_frames, drop_frames, outcome, **cfg):
         harness = EngineHarness(frame_qa=FrameQAConfig(policy="recycle_trial", **cfg))
 

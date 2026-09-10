@@ -316,7 +316,11 @@ def _dropped_by_trial(run: RunData, frames: Any, dropped_mask: Any) -> dict[int,
             per_trial[int(index)] = int(count)
     trials = run.trials
     if "n_dropped_frames" in trials and "trial_index" in trials:
-        rows = trials[["trial_index", "n_dropped_frames"]].dropna()
+        # Runs recorded before the engine zeroed the counter at trial start
+        # left a clean trial's cell empty, which reads back as NaN; it means
+        # "no drops", so it is read as 0 rather than dropped from the table.
+        rows = trials[["trial_index", "n_dropped_frames"]].fillna({"n_dropped_frames": 0})
+        rows = rows.dropna(subset=["trial_index"])
         for _, row in rows.iterrows():
             index, count = int(row["trial_index"]), int(row["n_dropped_frames"])
             per_trial[index] = max(per_trial.get(index, 0), count)

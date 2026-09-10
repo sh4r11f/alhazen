@@ -110,6 +110,12 @@ class TrialEngine:
         self._frame_index = 0
         if self._frame_monitor is not None:
             self._frame_monitor.start_trial(ctx.trial_index)
+            if self._frame_monitor.marks_trials:
+                # Zero from the start, not created on the first drop: a clean
+                # trial must write 0, because an empty cell reads back as
+                # NaN, and NaN is what made a column mean overstate drops by
+                # a third and `astype(int)` raise on the rig's own data.
+                ctx.record["n_dropped_frames"] = 0
 
         # TRIAL_START is emitted immediately — not on a flip — because it is
         # not a visual event: nothing has been drawn yet, and downstream
