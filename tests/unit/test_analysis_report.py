@@ -129,6 +129,20 @@ class TestFrames:
 
         assert build_report(run_dir).frames["dropped_by_trial"] == {}
 
+    def test_an_empty_cell_from_an_older_run_reads_as_no_drops(self, tmp_path):
+        """Before the engine zeroed the counter at trial start, a clean
+        trial wrote nothing and read back as NaN. That is "no drops", and it
+        must neither crash the int() nor make the clean trial vanish."""
+        run_dir = write_run(
+            tmp_path,
+            "trial_index,attempt,outcome,completed,success,n_dropped_frames\n"
+            "1,1,CORRECT,True,True,\n"
+            "2,1,CORRECT,True,True,2\n",
+            frames_csv="trial_index,t,interval_s,dropped\n1,0.0,0.0167,False\n",
+        )
+
+        assert build_report(run_dir).frames["dropped_by_trial"] == {2: 2}
+
 
 class TestTypedRowsReachTheReport:
     def test_a_false_success_is_false_not_a_truthy_string(self, tmp_path):

@@ -15,11 +15,15 @@ could double-serve the same condition.
 Blocks are record-only. There is deliberately no BLOCK_START event: a block
 boundary is analysis structure, not a physical instant anything needs to be
 aligned to, and inventing an event for it would put a pulse on a sync line
-that marks nothing that happened on screen.
+that marks nothing that happened on screen. The boundary does go in the
+session log, though — one line when a block starts and one when it ends —
+because a log with no block structure cannot say where a between-block
+validation fell.
 """
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import numpy as np
@@ -27,6 +31,8 @@ import pandas as pd
 
 from alhazen.core.engine import TrialResult
 from alhazen.paradigms.base import Condition, TrialSource
+
+log = logging.getLogger(__name__)
 
 
 class BlockPlan:
@@ -87,6 +93,8 @@ class BlockPlan:
         self._block = 0
         self._completed_in_block = 0
         self._completed_per_block: list[int] = []
+        # The last block whose start went into the log; -1 before the first.
+        self._announced_block = -1
         # The condition this wrapper handed out, and the inner one it wraps,
         # so record() can give the inner scheduler back its own object. The
         # runner serves strictly one trial at a time, so one pair is enough.
@@ -106,12 +114,27 @@ class BlockPlan:
                 # quota): that is the end of this block, not of the session.
                 self._end_block()
                 continue
+            if self._block != self._announced_block:
+                # The block boundary goes in the session log (not the event
+                # stream — see the module docstring), once, when the block's
+                # first condition is served.
+                log.info("block %d of %d starts", self._block + 1, len(self._sources))
+                self._announced_block = self._block
             wrapped = Condition({**inner_condition.params, self._block_key: self._block + 1})
             self._served = (wrapped, inner_condition)
             return wrapped
         return None
 
     def _end_block(self) -> None:
+        if self._block == self._announced_block:
+            # Only a block that served something is announced as ending; a
+            # source that was empty from the start never started a block.
+            log.info(
+                "block %d of %d ends: %d completed trials",
+                self._block + 1,
+                len(self._sources),
+                self._completed_in_block,
+            )
         self._completed_per_block.append(self._completed_in_block)
         self._completed_in_block = 0
         self._block += 1

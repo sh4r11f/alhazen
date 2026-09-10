@@ -214,6 +214,20 @@ class EyeTrackerMonitor:
             progress=self._on_progress,
         )
         self.validation = result
+        # The procedure logged its verdict; the per-target errors follow it
+        # here, in the log as well as the event payload. For an experiment
+        # whose design names a validation limit, the log is where "which
+        # validation was accepted, and how good was it" has to be answerable
+        # without parsing JSON.
+        per_target = ", ".join(
+            f"{i + 1}: {t.error_deg:.2f}°" if t.error_deg is not None else f"{i + 1}: missed"
+            for i, t in enumerate(result.targets)
+        )
+        log.log(
+            logging.INFO if result.accepted or result.aborted else logging.WARNING,
+            "validation per target: %s",
+            per_target or "none measured",
+        )
         self._emit("VALIDATION", result.payload())
         return result
 

@@ -38,6 +38,18 @@
     "log": "session.log",
     "figures": "figures"
   },
+  "trial_record_columns": [
+    "trial_index",
+    "attempt",
+    "outcome",
+    "completed",
+    "success",
+    "abort_reason",
+    "n_dropped_frames",
+    "outcome_before_frame_qa",
+    "frame_qa_reason",
+    "rewarded"
+  ],
   "schema_versions": {
     "database": 2,
     "results_bundle": 1,

@@ -38,10 +38,16 @@ monitor:
 display:
   backend: psychopy
   frame_qa:
-    # Count dropped frames on the trial record, so analysis can exclude
-    # trials whose timing was not what the config promised.
-    policy: mark_trial
-    max_dropped_per_trial: 3
+    # A trial that dropped more than this fraction of its frames did not
+    # show the stimulus the config describes: it ends as DROPPED_FRAMES and
+    # the scheduler re-serves its condition, the way a fixation break is
+    # re-served. A fraction, not a count, because trials differ in length.
+    # Clean trials still record n_dropped_frames: 0. After
+    # max_consecutive_recycles (default 5) recycled trials in a row the run
+    # aborts naming the display — a panel that is not holding its refresh
+    # cannot be fixed by re-serving trials.
+    policy: recycle_trial
+    max_dropped_fraction: 0.10
   # Uncomment once a photodiode is taped over a corner: it marks the exact
   # frame each named event was shown on, which is what makes the software
   # timestamps auditable.

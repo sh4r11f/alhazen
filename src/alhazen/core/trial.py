@@ -40,12 +40,52 @@ class Outcome:
 
 
 # Framework-reserved outcomes, produced by the engine (never by a phase):
-# both are non-completed by definition — the trial ended before its
-# measurement existed. PAUSED additionally writes no trials row (the runner
-# enforces that split; see session/runner.py).
+# all are non-completed by definition. PAUSED and ABORTED ended the trial
+# before its measurement existed; PAUSED additionally writes no trials row
+# (the runner enforces that split; see session/runner.py). DROPPED_FRAMES is
+# different in kind: the trial ran to its own end, but the display dropped
+# more frames than the rig's frame QA allows (display/frames.py, policy
+# ``recycle_trial``), so what the subject saw was not the stimulus the config
+# describes and the measurement is discarded. The trial's own outcome is
+# kept on the record as ``outcome_before_frame_qa``.
 PAUSED = Outcome("PAUSED", completed=False)
 ABORTED = Outcome("ABORTED", completed=False)
-_RESERVED_OUTCOMES = {"PAUSED": PAUSED, "ABORTED": ABORTED}
+DROPPED_FRAMES = Outcome("DROPPED_FRAMES", completed=False)
+_RESERVED_OUTCOMES = {"PAUSED": PAUSED, "ABORTED": ABORTED, "DROPPED_FRAMES": DROPPED_FRAMES}
+
+
+# The columns the framework itself writes into a trial record, as against the
+# ones an experiment's own build_trial and score put there.
+#
+# Named here because they are a *cross-repo* contract. An analysis in another
+# package reads them out of trials.csv, and when it types the name itself
+# nothing tells it that it asked for `dropped_frames` while alhazen writes
+# `n_dropped_frames`. That happened, in an experiment whose dropped-frame
+# exclusion therefore matched no trial for its whole life, with a fixture
+# written in the same wrong name keeping its suite green. Importing this is
+# how a reader stops guessing.
+#
+# Not every column is on every row: `abort_reason` only on an abort,
+# `rewarded` only where a pump is wired, the two frame-QA columns only on a
+# recycled trial, `success` only where the outcome defines one. Every emitted
+# event also mirrors its time as `t_<event name lowercased>`, which is a
+# pattern rather than a fixed name and so is not listed.
+#
+# tests/unit/test_contracts.py drives real trials through the engine and the
+# runner and checks the names they produce against this tuple, so a rename at
+# a write site that misses this list fails there rather than downstream.
+TRIAL_RECORD_COLUMNS: tuple[str, ...] = (
+    "trial_index",
+    "attempt",
+    "outcome",
+    "completed",
+    "success",
+    "abort_reason",
+    "n_dropped_frames",
+    "outcome_before_frame_qa",
+    "frame_qa_reason",
+    "rewarded",
+)
 
 
 _OUTCOME_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")

@@ -371,6 +371,24 @@ checked). It is read only while the session is paused or a procedure is
 running, refreshed about once a second through a pause, and left out of the
 copy saved to `figures/` — the saved panel says so in its place.
 
+## Frame-timing panel
+
+Every session gets a **Frame intervals** panel in the *Session* group, built
+by the runner from its frame monitor rather than from the trial records: a
+histogram of every flip-to-flip interval so far, in bins an eighth of a frame
+period wide from zero to two and a half periods, with frames beyond that
+counted in the note along with the longest. Its stats strip shows the frame
+count, the median, the dropped count (red past one percent) and the number of
+frames **under half a period** — red if there are any, because that is
+physically impossible on a vsync-locked display and means the flip is not
+waiting for vsync at all.
+
+A count of dropped frames cannot show that. A headless rehearsal here had a
+median interval of 8.343 ms (119.9 Hz, perfect on paper) and 338 frames under
+4 ms; "308 dropped frames" hid it, and the histogram shows it as a second
+mode at a glance. That shape is the difference between a genuine vsync miss
+and a clock that is not locked to the panel.
+
 ## Saved output
 
 At shutdown, the final state is saved as `figures/dashboard_state.json` and a

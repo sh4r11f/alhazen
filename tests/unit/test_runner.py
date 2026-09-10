@@ -8,8 +8,9 @@ import pytest
 import yaml
 
 from alhazen.core.commands import Command
-from alhazen.testing import ScriptedCommands
-from support import SessionHarness
+from alhazen.devices.eyetracker.scripted import ScriptedTracker
+from alhazen.testing import FakeClock, ScriptedCommands
+from support import COMPLETED, SessionHarness
 
 
 def read_trials(harness):
@@ -55,6 +56,70 @@ class TestHappyPath:
         harness = SessionHarness(tmp_path, n_trials=1)
         harness.runner.run()
         assert verify_manifest(harness.paths.run_dir, harness.paths.manifest_path) == []
+
+
+class TestSessionLogStructure:
+    """The log is a record of the session, not of its dropped frames: it
+    says how the session started, what each trial was, and how it ended.
+    A log that simply stops is what a crashed session used to look like."""
+
+    def read_log(self, harness):
+        return harness.paths.log_path.read_text(encoding="utf-8").splitlines()
+
+    def test_it_records_start_devices_notes_every_trial_and_the_end(self, tmp_path):
+        harness = SessionHarness(tmp_path, n_trials=2)
+        harness.runner.setup_notes = ["mode: test — a rehearsal", "reduced: n: 8 -> 1"]
+        harness.runner.run()
+
+        log = self.read_log(harness)
+        assert any("session start: subject t01" in line for line in log)
+        assert any("devices: display " in line and "eyetracker none" in line for line in log)
+        assert any("setup: mode: test — a rehearsal" in line for line in log)
+        assert any("setup: reduced: n: 8 -> 1" in line for line in log)
+        assert any("trial 1 attempt 1: COMPLETED" in line for line in log)
+        # The harness serves one condition twice, so the second trial is its attempt 2.
+        assert any("trial 2 attempt 2: COMPLETED" in line for line in log)
+        assert "session end: complete — 2 trials served, 2 rows recorded (COMPLETED 2)" in log[-1]
+
+    def test_an_incomplete_trial_says_it_was_re_served(self, tmp_path):
+        from alhazen.task.plan import TrialPlan
+        from support import FAILED, RunForFrames
+
+        answers = iter([FAILED, COMPLETED, COMPLETED])
+
+        def build(setup):
+            return TrialPlan(phases=[RunForFrames(1, next(answers))])
+
+        harness = SessionHarness(tmp_path, n_trials=2, build_trial=build)
+        harness.runner.run()
+
+        log = self.read_log(harness)
+        assert any("trial 1 attempt 1: FAILED — not completed" in line for line in log)
+        assert "3 trials served, 3 rows recorded (COMPLETED 2, FAILED 1)" in log[-1]
+
+    def test_a_session_that_fails_says_so_and_why(self, tmp_path):
+        def broken_build(setup):
+            raise RuntimeError("task bug")
+
+        harness = SessionHarness(tmp_path, n_trials=1, build_trial=broken_build)
+        with pytest.raises(RuntimeError):
+            harness.runner.run()
+
+        log = self.read_log(harness)
+        assert any(
+            "ERROR" in line
+            and "session end: FAILED on trial 1 after 0 rows" in line
+            and "RuntimeError: task bug" in line
+            for line in log
+        )
+
+    def test_a_cancelled_session_is_not_a_complete_one(self, tmp_path):
+        harness = SessionHarness(tmp_path, n_trials=1)
+        harness.runner._instructions = "press space"
+        harness.runner._await_start = lambda: False
+        harness.runner.run()
+
+        assert "session end: cancelled — 0 trials served" in self.read_log(harness)[-1]
 
 
 class TestParadigmSummary:
@@ -145,3 +210,56 @@ class TestTeardownResilience:
         harness.recorder.write = broken_write  # type: ignore[method-assign]
         with pytest.raises(RuntimeError, match="task bug"):
             harness.runner.run()
+
+
+class TestTrackerCalibrationBeforeTrialOne:
+    """A tracker that can say it holds no calibration stops the session at
+    the pause screen before trial 1, with that reason. Gaze from an
+    uncalibrated device is not a position, and a session that ran on one
+    would look like a subject who never fixated."""
+
+    class Tracker(ScriptedTracker):
+        def __init__(self, clock, calibrated: bool) -> None:
+            super().__init__([], clock)
+            self.calibrated = calibrated
+            self.asked = 0
+
+        def calibration_state(self) -> bool:
+            self.asked += 1
+            return self.calibrated
+
+    def test_no_calibration_pauses_with_the_reason_then_runs(self, tmp_path):
+        clock = FakeClock()
+        tracker = self.Tracker(clock, calibrated=False)
+        harness = SessionHarness(tmp_path, n_trials=1, tracker=tracker, clock=clock)
+        harness.runner.run()
+
+        assert tracker.asked == 1
+        # Unattended, so the pause resolved by resuming — but the screen said
+        # why, the log said why, and the session then ran its trial.
+        assert any(
+            "TRACKER NOT CALIBRATED" in title or "TRACKER NOT CALIBRATED" in body
+            for title, body, _ in harness.display.menus
+        )
+        assert "RESUMED" in harness.collector.names()
+        assert [r["outcome"] for r in read_trials(harness)] == ["COMPLETED"]
+        log = harness.paths.log_path.read_text(encoding="utf-8")
+        assert "reports NO calibration before trial 1" in log
+
+    def test_a_calibrated_tracker_is_not_interrupted(self, tmp_path):
+        clock = FakeClock()
+        tracker = self.Tracker(clock, calibrated=True)
+        harness = SessionHarness(tmp_path, n_trials=1, tracker=tracker, clock=clock)
+        harness.runner.run()
+
+        assert tracker.asked == 1
+        assert harness.display.menus == []
+        assert "RESUMED" not in harness.collector.names()
+
+    def test_a_tracker_without_the_capability_is_not_asked(self, tmp_path):
+        clock = FakeClock()
+        harness = SessionHarness(
+            tmp_path, n_trials=1, tracker=ScriptedTracker([], clock), clock=clock
+        )
+        harness.runner.run()
+        assert harness.display.menus == []

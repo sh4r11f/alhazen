@@ -53,8 +53,15 @@ class TestScreen:
 
 
 class TestFrameMonitor:
-    def make(self, policy="warn", tolerance=0.5, budget=3):
-        cfg = FrameQAConfig(policy=policy, tolerance=tolerance, max_dropped_per_trial=budget)
+    def make(self, policy="warn", tolerance=0.5, budget=None, fraction=None):
+        # A threshold is only passed under the policy that reads it: under
+        # any other policy the config refuses it (TestFrameQAPolicyConfig).
+        thresholds = {}
+        if budget is not None:
+            thresholds["max_dropped_per_trial"] = budget
+        if fraction is not None:
+            thresholds["max_dropped_fraction"] = fraction
+        cfg = FrameQAConfig(policy=policy, tolerance=tolerance, **thresholds)
         return FrameMonitor(cfg, refresh_rate_hz=100.0)  # expected 10 ms
 
     def test_first_flip_only_establishes_reference(self):
@@ -90,9 +97,127 @@ class TestFrameMonitor:
 
     def test_marks_trials_flag(self):
         assert self.make(policy="mark_trial").marks_trials
+        assert self.make(policy="recycle_trial").marks_trials
         assert self.make(policy="abort_run").marks_trials
         assert not self.make(policy="warn").marks_trials
         assert not self.make(policy="log").marks_trials
+
+    def test_end_trial_sums_the_trial_up(self):
+        monitor = self.make()
+        monitor.start_trial(4)
+        monitor.note_flip(0.0)
+        monitor.note_flip(0.010)
+        monitor.note_flip(0.040)  # 30 ms: dropped, and the worst
+        monitor.note_flip(0.050)
+        summary = monitor.end_trial()
+        assert (summary.trial_index, summary.n_frames, summary.n_dropped) == (4, 3, 1)
+        assert summary.worst_interval_s == pytest.approx(0.030)
+        assert summary.dropped_fraction == pytest.approx(1 / 3)
+        assert not summary.recycle and summary.reason is None
+
+    def test_recycle_trial_judges_the_fraction_at_the_end(self):
+        """Ten percent of the trial's frames, not an absolute count: the
+        same three drops recycle a 20-frame trial and pass a 300-frame one."""
+        monitor = self.make(policy="recycle_trial", fraction=0.10)
+
+        def run_trial(index, n_frames, drop_at):
+            monitor.start_trial(index)
+            t = 0.0
+            monitor.note_flip(t)
+            for frame in range(n_frames):
+                t += 0.030 if frame in drop_at else 0.010
+                monitor.note_flip(t)
+            return monitor.end_trial()
+
+        short = run_trial(1, 20, drop_at={3, 9, 15})
+        assert short.recycle
+        assert "3 of 20 frames dropped (15.0%)" in (short.reason or "")
+        long = run_trial(2, 300, drop_at={3, 9, 15})
+        assert not long.recycle
+        # Exactly at the budget is not over it.
+        at_budget = run_trial(3, 30, drop_at={3, 9, 15})
+        assert not at_budget.recycle
+
+    def test_a_display_that_recycles_every_trial_aborts_the_run(self):
+        """Persistently bad timing would otherwise re-serve every condition
+        forever, with a subject in the chin rest watching a block that never
+        ends. The Nth recycle in a row names the display and stops."""
+        cfg = FrameQAConfig(policy="recycle_trial", max_consecutive_recycles=3)
+        monitor = FrameMonitor(cfg, refresh_rate_hz=100.0)
+
+        def bad_trial(index):
+            monitor.start_trial(index)
+            monitor.note_flip(0.0)
+            monitor.note_flip(0.030)
+            return monitor.end_trial()
+
+        assert bad_trial(1).recycle and bad_trial(2).recycle
+        with pytest.raises(FrameQAError, match="3 trials in a row recycled .* 100 Hz refresh"):
+            bad_trial(3)
+
+    def test_one_good_trial_resets_the_consecutive_count(self):
+        cfg = FrameQAConfig(policy="recycle_trial", max_consecutive_recycles=2)
+        monitor = FrameMonitor(cfg, refresh_rate_hz=100.0)
+        for index, intervals in enumerate(([0.030], [0.010, 0.010], [0.030], [0.010]), start=1):
+            monitor.start_trial(index)
+            t = 0.0
+            monitor.note_flip(t)
+            for interval in intervals:
+                t += interval
+                monitor.note_flip(t)
+            monitor.end_trial()  # never reaches two in a row, so never raises
+
+    def test_recycle_is_never_the_verdict_under_other_policies(self):
+        for policy in ("log", "warn", "mark_trial"):
+            monitor = self.make(policy=policy)
+            monitor.start_trial(1)
+            monitor.note_flip(0.0)
+            monitor.note_flip(0.5)  # one frame, dropped: 100% of the trial
+            assert not monitor.end_trial().recycle
+
+    def test_drops_reach_the_session_log_once_per_trial(self, caplog):
+        """Per-frame lines are DEBUG; the trial's one-line summary is the
+        WARNING. A log that is hundreds of identical per-frame warnings and
+        nothing else is not a record of a session."""
+        import logging
+
+        monitor = self.make(policy="warn")
+        monitor.start_trial(7)
+        with caplog.at_level(logging.DEBUG, logger="alhazen.display.frames"):
+            monitor.note_flip(0.0)
+            monitor.note_flip(0.030)
+            monitor.note_flip(0.060)
+            monitor.end_trial()
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "trial 7: 2 of 2 frames dropped (100.0%), worst 30.0 ms" in warnings[0].message
+        debug = [r for r in caplog.records if r.levelno == logging.DEBUG]
+        assert len(debug) == 2
+
+    def test_a_clean_trial_writes_no_summary_line(self, caplog):
+        import logging
+
+        monitor = self.make(policy="warn")
+        monitor.start_trial(1)
+        with caplog.at_level(logging.DEBUG, logger="alhazen.display.frames"):
+            monitor.note_flip(0.0)
+            monitor.note_flip(0.010)
+            monitor.end_trial()
+        assert caplog.records == []
+
+    def test_intervals_and_the_session_drop_count_accumulate_across_trials(self):
+        monitor = self.make()
+        monitor.start_trial(1)
+        monitor.note_flip(0.0)
+        monitor.note_flip(0.010)
+        monitor.note_flip(0.040)
+        monitor.start_trial(2)
+        monitor.note_flip(5.0)
+        monitor.note_flip(5.010)
+        assert monitor.intervals_s().tolist() == pytest.approx([0.010, 0.030, 0.010])
+        assert monitor.n_dropped == 1
+        assert monitor.expected_s == pytest.approx(0.010)
+        assert monitor.threshold_s == pytest.approx(0.015)
 
     def test_save_writes_full_log(self, tmp_path):
         monitor = self.make()

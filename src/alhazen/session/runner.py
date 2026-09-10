@@ -24,7 +24,7 @@ import logging
 import sys
 import time
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import numpy as np
@@ -36,6 +36,7 @@ from alhazen.core.commands import Command, CommandSource
 from alhazen.core.engine import QuitRequested, TrialEngine
 from alhazen.core.events import Event, EventBus
 from alhazen.core.trial import CircleRegion, TrialContext
+from alhazen.dashboard.panels import frame_intervals_panel
 from alhazen.dashboard.runtime import DashboardController, dashboard_state
 from alhazen.dashboard.spec import DashboardSpec
 from alhazen.data.manifest import write_manifest
@@ -176,8 +177,17 @@ class SessionRunner:
         manual_reward_payload: dict[str, Any] | None = None,
         spikes: SpikeSource | None = None,
         live: LiveAnalysis | None = None,
+        setup_notes: Sequence[str] = (),
     ) -> None:
         self._cfg = cfg
+        # What was decided about this session before it started — a mode's
+        # reductions and stood-down devices (modes/session.py describe()),
+        # in the experimenter's words. Logged right after "session start",
+        # so the run directory itself records what was live and what was
+        # reduced; printing them to a terminal left no trace in the run. A
+        # public attribute because the mode learns them after the builder
+        # has already returned the runner.
+        self.setup_notes: list[str] = list(setup_notes)
         self._paths = paths
         self._display = display
         self._screen = screen
@@ -264,6 +274,9 @@ class SessionRunner:
             self._cfg.info.task_name,
             self._cfg.info.seed,
         )
+        log.info("devices: %s", self._devices_line())
+        for note in self.setup_notes:
+            log.info("setup: %s", note)
         if self._dashboard is not None:
             log.info("live dashboard: %s", self._dashboard.url)
         self._publish_dashboard("running")
@@ -276,6 +289,8 @@ class SessionRunner:
                     log.info("session cancelled from instructions screen")
                     self._cancelled = True
                     return
+            if not self._require_tracker_calibration():
+                return
             while True:
                 condition = self._source.next()
                 if condition is None:
@@ -314,6 +329,7 @@ class SessionRunner:
                         self._tracker.stop_trial()
 
                 outcome = result.outcome
+                self._log_trial(attempt, result.record, outcome)
 
                 # Two different questions, two different gates. The SCHEDULER
                 # holds the plan and must hear about every outcome — the
@@ -359,7 +375,8 @@ class SessionRunner:
                     # measurement is already recorded above — a hardware fault
                     # after the fact must never discard a trial the subject
                     # actually completed.
-                    if not self._handle_pause(result.record, reward_failed=reward_failed):
+                    fault = "REWARD FAILURE — check the pump" if reward_failed else None
+                    if not self._handle_pause(result.record, fault=fault):
                         break
                     continue  # the pause menu already gave all the time needed; skip ITI
 
@@ -367,6 +384,68 @@ class SessionRunner:
                     self._wait(self._iti_s)
         finally:
             self._teardown(file_handler)
+
+    # ------------------------------------------------------------------
+    # The session log's structure
+    # ------------------------------------------------------------------
+
+    def _devices_line(self) -> str:
+        """Which backend drives each device this session, in one line.
+
+        The snapshot holds the same facts, but a log that says "eyetracker
+        viewpixx" on its third line is the one a reader opens first when a
+        run looks wrong.
+        """
+        devices = self._cfg.rig.devices
+        parts = [f"display {self._cfg.rig.display.backend}"]
+        for name in ("eyetracker", "reward", "sync", "recording", "spikes"):
+            device = getattr(devices, name, None)
+            backend = getattr(device, "backend", None) if device is not None else None
+            parts.append(f"{name} {backend if backend is not None else 'none'}")
+        return ", ".join(parts)
+
+    def _log_trial(self, attempt: int, record: dict[str, Any], outcome: Any) -> None:
+        """One line per trial: the backbone a session log is read by."""
+        detail = ""
+        if record.get("abort_reason"):
+            detail = f" ({record['abort_reason']})"
+        elif record.get("frame_qa_reason"):
+            detail = f" (was {record.get('outcome_before_frame_qa')}: {record['frame_qa_reason']})"
+        log.info(
+            "trial %d attempt %d: %s%s%s",
+            self._trial_index,
+            attempt,
+            outcome.name,
+            "" if outcome.completed else " — not completed, condition re-served",
+            detail,
+        )
+
+    def _log_session_end(self) -> None:
+        """The last line the session writes about itself, so a log that stops
+        mid-trial can be told from one that ended: how it ended, how many
+        trials were served, and how their rows came out."""
+        rows = self._recorder.trials
+        counts = Counter(str(row.get("outcome")) for row in rows)
+        outcomes = ", ".join(f"{name} {count}" for name, count in sorted(counts.items()))
+        exc = sys.exc_info()[1]
+        if exc is not None:
+            log.error(
+                "session end: FAILED on trial %d after %d rows (%s) — %s: %s",
+                self._trial_index,
+                len(rows),
+                outcomes or "no rows",
+                type(exc).__name__,
+                exc,
+            )
+            return
+        status = "cancelled" if self._cancelled else "complete"
+        log.info(
+            "session end: %s — %d trials served, %d rows recorded (%s)",
+            status,
+            self._trial_index,
+            len(rows),
+            outcomes or "no rows",
+        )
 
     # ------------------------------------------------------------------
 
@@ -504,6 +583,28 @@ class SessionRunner:
         ctx.record[f"t_{name.lower()}"] = t
         self._bus.emit(Event(name=name, t=t, trial_index=self._trial_index, payload=payload))
 
+    def _require_tracker_calibration(self) -> bool:
+        """Before trial 1: a tracker that can say it holds no calibration
+        stops the session at the pause screen, with that reason, until the
+        experimenter has calibrated (or chosen to go on). Returns False
+        when they quit instead.
+
+        Only trackers with the optional ``calibration_state`` capability
+        (the TRACKPixx3) are asked; the EyeLink's Host PC owns its own
+        calibration and the stand-ins have none. Gaze from an uncalibrated
+        device is not a position, and a session that ran on it would look
+        like a session where the subject never fixated — every trial a
+        fixation break, nothing in the record saying why.
+        """
+        state = getattr(self._tracker, "calibration_state", None)
+        if state is None or state():
+            return True
+        log.warning(
+            "the eye tracker reports NO calibration before trial 1; pausing until one is "
+            "done (C on the pause screen, or the dashboard's Calibrate button)"
+        )
+        return self._handle_pause({}, fault="TRACKER NOT CALIBRATED — press C to calibrate")
+
     def _start_tracker_trial(self, ctx: TrialContext, attempt: int) -> None:
         """Open the tracker's recording segment and refresh its operator
         overlay, before the trial's first frame."""
@@ -531,11 +632,15 @@ class SessionRunner:
     def _show_pause_menu(self, menu: PauseMenu) -> None:
         self._display.show_menu(menu.title, menu.render(), color=menu.color)
 
-    def _handle_pause(self, record: dict[str, Any], reward_failed: bool = False) -> bool:
+    def _handle_pause(self, record: dict[str, Any], *, fault: str | None = None) -> bool:
         """Resolve a PAUSED trial; returns False when the experimenter chose
         to quit. With no pause strategy wired (unattended runs), resume
         immediately — blocking forever with nobody at the keyboard would
         hang a simulated session.
+
+        ``fault`` makes this an involuntary pause — a reward failure, a
+        tracker with no calibration — and the screen leads with what went
+        wrong rather than with the word PAUSED.
 
         The menu stays up across everything except resume and quit. Pressing
         the calibrate key used to calibrate and then resume in one press,
@@ -550,9 +655,9 @@ class SessionRunner:
             # so the browser says "calibrated …" or "NOT calibrated …" rather
             # than only that the session is paused.
             notice = self._apply_pause_action("calibrate") or notice
-        # A reward failure is not a pause anybody asked for, so the screen
-        # leads with what went wrong rather than with the word PAUSED.
-        menu = self._pause_menu(fault="REWARD FAILURE — check the pump" if reward_failed else None)
+        elif fault is not None:
+            notice = f"{fault} — browser controls are enabled."
+        menu = self._pause_menu(fault=fault)
         if self._dashboard is not None:
             return self._handle_dashboard_pause(menu, notice)
         if self._on_pause is None:
@@ -727,7 +832,7 @@ class SessionRunner:
         # eye tracker's. A camera frame is read only while the device is
         # between trials and somebody is looking (paused, or a procedure
         # running), and the pixels stay out of the copy written to disk.
-        extra_panels: list[dict[str, Any]] = []
+        extra_panels: list[dict[str, Any]] = [self._frame_timing_panel()]
         if self._live is not None:
             extra_panels += self._live.panels()
         if self._eyetracker is not None:
@@ -756,10 +861,24 @@ class SessionRunner:
         self._dashboard.publish(state)
         return state
 
+    def _frame_timing_panel(self) -> dict[str, Any]:
+        """The frame-interval histogram, from the monitor's own record: the
+        one panel whose data is the frame log rather than the trials."""
+        monitor = self._frame_monitor
+        return frame_intervals_panel(
+            monitor.intervals_s(),
+            monitor.expected_s,
+            monitor.threshold_s,
+            n_dropped=monitor.n_dropped,
+        )
+
     # ------------------------------------------------------------------
 
     def _attach_file_logging(self) -> logging.FileHandler:
-        handler = logging.FileHandler(self._paths.log_path)
+        # UTF-8 by name, not the platform default: on Windows that default
+        # is cp1252, and every line with a dash or a degree sign in it came
+        # back from the rig's own logs as mojibake.
+        handler = logging.FileHandler(self._paths.log_path, encoding="utf-8")
         handler.setLevel(logging.INFO)
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
         root = logging.getLogger()
@@ -774,6 +893,10 @@ class SessionRunner:
 
     def _teardown(self, file_handler: logging.FileHandler) -> None:
         errors: list[Exception] = []
+        # First, before any step can fail: the log's own account of how the
+        # session ended is worth more than a step's failure message, and a
+        # log that simply stops is what this line exists to prevent.
+        self._log_session_end()
 
         def step(name: str, fn: Callable[[], None]) -> None:
             try:

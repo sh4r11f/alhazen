@@ -41,9 +41,11 @@ from alhazen.devices.eyetracker.viewpixx import (
     STATUS_REFRESH_S,
     TRACKING_LOST_PX,
     calibration_targets,
+    eye_in_raw,
     eye_in_view,
     image_from_pointer,
     is_tracking_lost,
+    quietly,
     select_eye,
     shrink_image,
 )
@@ -72,6 +74,13 @@ class FakeLibdpx:
         # Pupil ellipse semi-axes (left major/minor, right major/minor); all
         # zero is the device's "no eye in the image".
         self.pupils: tuple[float, float, float, float] = (3.0, 2.0, 3.0, 2.0)
+        # The gaze report TPxBestPolyGetEyePosition writes: calibrated
+        # positions and raw eye vectors, [x_left, y_left, x_right, y_right].
+        # Raw vectors of a tracked eye are plain numbers; the device's own
+        # buffers start at zero, which the backend reads as "not measured".
+        self.positions: list[float] = [0.0, 0.0, 0.0, 0.0]
+        self.raw_positions: list[float] = [1.5, -0.5, 1.4, -0.4]
+        self.reads = 0
         # The camera image TPxGetImagePtr hands back: 8-bit grey, row-major.
         # None is the library's NULL pointer (no image available).
         self.image: np.ndarray | None = np.full((24, 32), 200, dtype=np.uint8)
@@ -111,6 +120,17 @@ class FakeLibdpx:
     def TPxGetPupilSize(self) -> tuple[float, float, float, float]:  # noqa: N802
         return self.pupils
 
+    def TPxBestPolyGetEyePosition(self, packed, raw) -> float:  # noqa: N802 - vendor's name
+        """The gaze report, both forms, written into the caller's buffers
+        the way the C call does: the calibrated positions the test queued in
+        ``positions``, the raw eye vectors in ``raw_positions``."""
+        self.reads += 1
+        for index, value in enumerate(self.positions):
+            packed[index] = value
+        for index, value in enumerate(self.raw_positions):
+            raw[index] = value
+        return 0.0
+
     def DPxSelectDevice(self, name: str) -> None:  # noqa: N802 - vendor's name
         self.selected = name
 
@@ -136,8 +156,10 @@ class FakeLibdpx:
 class FakeTrackPixx:
     """Stand-in for pypixxlib's TRACKPixx3, recording what it was asked to do.
 
-    ``getEyePosition`` hands back whatever the test queued, in the device's
-    own order and frame: [x_left, y_left, x_right, y_right], centered px.
+    The gaze report lives on the fake libdpx (the backend reads it through
+    ``TPxBestPolyGetEyePosition``, not through this class, to get the raw
+    vectors pypixxlib's wrapper discards); ``positions`` and ``reads`` here
+    forward to it so a test reaches everything through the one fixture.
     """
 
     def __init__(self) -> None:
@@ -151,18 +173,37 @@ class FakeTrackPixx:
         self.recording_folder: str | None = None
         self.samples_file: Path | None = None
         self.device_time = 100.0
-        self.positions: list[float] = [0.0, 0.0, 0.0, 0.0]
-        self.reads = 0
         self.drains = 0
         self.calibration_points: list[tuple[float, float, int]] = []
         self.finished_calibration = False
         # What the device answers after finishCalibration(); False is the
         # calibration-with-no-eye case seen on the rig.
         self.calibrated_after_finish = True
+        # What it answers BEFORE any calibration this session: the device
+        # keeps one across runs, and the rig had one. False is a fresh
+        # device, which is what the failed pilot ran on.
+        self.holds_calibration = True
+        # Printed by the real setUpDataRecording() and saveBufferedData().
+        self.chatter = (
+            "Recording data is not yet directly implemented in the TRACKPixx3 -- "
+            "Please use the schedule method"
+        )
         # pypixxlib's own ring layout, which the backend reads back.
         self.buffer_base_addr = 0x12000000
         self.buffer_size = 0x18000000
         self.last_read_addr = 0x12000000
+
+    @property
+    def positions(self) -> list[float]:
+        return self.libdpx.positions
+
+    @positions.setter
+    def positions(self, value: list[float]) -> None:
+        self.libdpx.positions = list(value)
+
+    @property
+    def reads(self) -> int:
+        return self.libdpx.reads
 
     def open(self) -> None:
         self.opened = True
@@ -174,8 +215,9 @@ class FakeTrackPixx:
         self.led_intensity = value
 
     def setUpDataRecording(self, folder: str) -> str:  # noqa: N802 - vendor's name
-        # Mirrors pypixxlib: it picks the name itself, inside a data/
-        # subdirectory of the folder it was given.
+        # Mirrors pypixxlib: it prints its note, then picks the name itself,
+        # inside a data/ subdirectory of the folder it was given.
+        print(self.chatter)
         self.recording_folder = folder
         data_dir = Path(folder) / "data"
         data_dir.mkdir(parents=True, exist_ok=True)
@@ -187,19 +229,19 @@ class FakeTrackPixx:
         return str(self.samples_file)
 
     def saveBufferedData(self) -> None:  # noqa: N802 - vendor's name
-        # The real one appends the device's newly-buffered samples; this one
-        # appends a line per drain so a test can count them in the file.
+        # The real one prints its note and appends the device's newly-
+        # buffered samples; this one appends a line per drain so a test can
+        # count them in the file.
+        print(self.chatter)
         self.drains += 1
         assert self.samples_file is not None
         with self.samples_file.open("a") as f:
             f.write(f"drain {self.drains}\n")
 
-    def getEyePosition(self):  # noqa: N802 - vendor's name
-        self.reads += 1
-        return list(self.positions)
-
     def isDeviceCalibrated(self) -> bool:  # noqa: N802 - vendor's name
-        return self.finished_calibration and self.calibrated_after_finish
+        if self.finished_calibration:
+            return self.calibrated_after_finish
+        return self.holds_calibration
 
     def getTime(self) -> float:  # noqa: N802 - vendor's name
         return self.device_time
@@ -1044,10 +1086,10 @@ class TestGazeReader:
         tracker.configure(SCREEN, tracker._clock)
         try:
 
-            def explode():
+            def explode(packed, raw):
                 raise OSError("USB read failed")
 
-            monkeypatch.setattr(fake_pypixxlib, "getEyePosition", explode)
+            monkeypatch.setattr(fake_pypixxlib.libdpx, "TPxBestPolyGetEyePosition", explode)
             deadline = time.monotonic() + 2.0
             raised = False
             while time.monotonic() < deadline:
@@ -1347,3 +1389,162 @@ class TestEyeStatus:
     def test_before_connect_is_an_error(self):
         with pytest.raises(TrackerError, match="before connect"):
             make_viewpixx().eye_status()
+
+
+# ----------------------------------------------------------------------
+# The calibration gate: "no calibration" is not "no eye"
+# ----------------------------------------------------------------------
+
+
+class TestEyeInRaw:
+    """The raw eye vector is what says the camera measured an eye at all,
+    calibration or not — the calibrated position cannot, because without a
+    calibration it is NaN whether or not there is an eye."""
+
+    def test_a_number_is_a_measured_eye(self):
+        assert eye_in_raw([1.5, -0.5, 1.4, -0.4], "left")
+        assert eye_in_raw([1.5, -0.5, 1.4, -0.4], "right")
+        assert eye_in_raw([1.5, -0.5, 1.4, -0.4], "average")
+
+    def test_the_buffers_initial_zero_is_no_measurement(self):
+        # A call that wrote nothing leaves the ctypes buffer at zero, and an
+        # "eye at exactly the origin" would defeat the point of reading it.
+        assert not eye_in_raw([0.0, 0.0, 1.4, -0.4], "left")
+        assert eye_in_raw([0.0, 0.0, 1.4, -0.4], "right")
+
+    def test_nan_and_the_lost_sentinel_are_no_measurement(self):
+        assert not eye_in_raw([math.nan, 0.2, 1.4, -0.4], "left")
+        assert not eye_in_raw([TRACKING_LOST_PX, 0.2, 1.4, -0.4], "left")
+
+    def test_average_needs_both(self):
+        assert not eye_in_raw([1.5, -0.5, 0.0, 0.0], "average")
+
+    def test_a_short_report_is_an_error(self):
+        with pytest.raises(TrackerError, match="expected 4"):
+            eye_in_raw([1.0, 2.0], "left")
+
+
+class TestCalibrationGate:
+    """The gaze report is a CALIBRATED read. On a device with no calibration
+    every position is NaN whatever the camera sees — which the rig reported
+    as "no eye" for an afternoon. Both facts have to be told apart."""
+
+    def test_configure_says_what_the_device_holds(self, fake_pypixxlib, caplog):
+        with caplog.at_level(logging.WARNING, logger="alhazen.devices.eyetracker.viewpixx"):
+            connected()
+        assert any(
+            "holds a calibration from BEFORE this session" in r.message for r in caplog.records
+        )
+
+        caplog.clear()
+        fake_pypixxlib.holds_calibration = False
+        with caplog.at_level(logging.WARNING, logger="alhazen.devices.eyetracker.viewpixx"):
+            connected()
+        assert any("has NO calibration" in r.message for r in caplog.records)
+
+    def test_an_uncalibrated_device_reports_no_position_whatever_the_array_holds(
+        self, fake_pypixxlib, caplog
+    ):
+        fake_pypixxlib.holds_calibration = False
+        tracker = connected()
+        fake_pypixxlib.positions = [100.0, 200.0, 0.0, 0.0]  # would be a fine sample
+        with caplog.at_level(logging.WARNING, logger="alhazen.devices.eyetracker.viewpixx"):
+            assert tracker.get_gaze() is None
+            assert tracker.get_gaze() is None
+            assert tracker.get_gaze() is None
+        # Said once per uncalibrated stretch, not once per frame — and it says
+        # the camera does see the eye, which is the distinction that matters.
+        said = [
+            r
+            for r in caplog.records
+            if "get_gaze(): the TRACKPixx3 has no calibration" in r.message
+        ]
+        assert len(said) == 1
+        assert "the camera sees the eye" in said[0].message
+
+    def test_gaze_status_tells_no_calibration_from_no_eye(self, fake_pypixxlib):
+        fake_pypixxlib.holds_calibration = False
+        tracker = connected()
+        tracker.get_gaze()
+        assert tracker.gaze_status().startswith(
+            "NO CALIBRATION on the device — the camera SEES the eye"
+        )
+
+        fake_pypixxlib.libdpx.raw_positions = [0.0, 0.0, 0.0, 0.0]
+        tracker.get_gaze()
+        assert "NO CALIBRATION" in tracker.gaze_status()
+        assert "no eye in the camera image" in tracker.gaze_status()
+
+    def test_gaze_status_on_a_calibrated_device(self, fake_pypixxlib):
+        tracker = connected()
+        fake_pypixxlib.positions = [100.0, 200.0, 0.0, 0.0]
+        tracker.get_gaze()
+        assert tracker.gaze_status() == "tracked"
+
+        fake_pypixxlib.positions = [math.nan, math.nan, 0.0, 0.0]  # eye seen, no fit for it
+        tracker.get_gaze()
+        assert tracker.gaze_status().startswith(
+            "eye in the camera image but no calibrated position"
+        )
+
+        fake_pypixxlib.libdpx.raw_positions = [0.0, 0.0, 0.0, 0.0]
+        tracker.get_gaze()
+        assert tracker.gaze_status().startswith("no eye in the camera image")
+
+    def test_gaze_status_before_any_read(self, fake_pypixxlib):
+        assert make_viewpixx().gaze_status().startswith("not reading gaze")
+        assert connected().gaze_status() == "no gaze report yet"
+
+    def test_calibration_state_is_a_fresh_read(self, fake_pypixxlib):
+        tracker = connected()
+        assert tracker.calibration_state() is True
+        fake_pypixxlib.holds_calibration = False
+        assert tracker.calibration_state() is False
+        with pytest.raises(TrackerError, match="before connect"):
+            make_viewpixx().calibration_state()
+
+    def test_a_calibration_that_takes_opens_the_gate(self, fake_pypixxlib, fake_psychopy):
+        fake_pypixxlib.holds_calibration = False
+        tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
+        fake_pypixxlib.positions = [100.0, 200.0, 0.0, 0.0]
+        assert tracker.get_gaze() is None
+        fake_psychopy.keys.extend([START] + ["space"] * 5)
+        assert tracker.calibrate().ok is True
+        assert tracker.get_gaze() is not None
+
+    def test_the_raw_vectors_come_from_the_same_call_as_the_positions(self, fake_pypixxlib):
+        # One USB round trip per report, not two: the reader thread's budget
+        # is the frame, and TPxBestPolyGetEyePosition hands both back at once.
+        tracker = connected()
+        before = fake_pypixxlib.reads
+        tracker.get_gaze()
+        assert fake_pypixxlib.reads == before + 1
+
+
+class TestVendorChatter:
+    """pypixxlib prints "Recording data is not yet directly implemented" from
+    two methods that then work perfectly well. On the rig it read as an
+    error and stopped the operator cold. Captured, and logged as what it is."""
+
+    def test_the_known_line_goes_to_the_debug_log_not_the_terminal(
+        self, fake_pypixxlib, capsys, caplog
+    ):
+        with caplog.at_level(logging.DEBUG, logger="alhazen.devices.eyetracker.viewpixx"):
+            tracker = connected()
+            tracker.start_trial(1, "attempt 1")
+            tracker.stop_trial()  # drains: the second method that prints
+        assert capsys.readouterr().out == ""
+        noted = [r for r in caplog.records if "usual note (expected, harmless)" in r.message]
+        assert len(noted) == 2 and all(r.levelno == logging.DEBUG for r in noted)
+
+    def test_anything_else_the_library_prints_is_kept_at_info(self, caplog):
+        def chatty():
+            print("Recording data is not yet directly implemented in the TRACKPixx3 -- x")
+            print("firmware 2.1 is out of date")
+            return 42
+
+        with caplog.at_level(logging.DEBUG, logger="alhazen.devices.eyetracker.viewpixx"):
+            assert quietly(chatty) == 42
+        levels = {r.message: r.levelno for r in caplog.records}
+        assert levels["pypixxlib printed: firmware 2.1 is out of date"] == logging.INFO
+        assert any(level == logging.DEBUG for level in levels.values())

@@ -21,6 +21,18 @@ Three facts about the device decide most of what follows:
   carries one. Which one is configuration (``eyetracker.eye``), not a guess
   made here.
 
+And a fourth, learned on the rig: **the gaze report is a *calibrated* read.**
+``TPxBestPolyGetEyePosition`` evaluates the device's calibration polynomial,
+and with no calibration on the device it returns nothing usable — every
+position NaN, every blink flag set — whether or not the camera sees an eye.
+Read as "no eye", that is a misdiagnosis that cost an afternoon. So this
+backend reads the *raw* eye vectors the same call hands back beside the
+calibrated positions (pypixxlib's own wrapper throws them away), keeps the
+device's calibration state, and can say which of the two is missing:
+:meth:`ViewPixxTracker.gaze_status`. The device also keeps a calibration
+across runs, so a session may start on one nobody in the room made; the
+state is logged at :meth:`ViewPixxTracker.configure` for that reason.
+
 What this backend writes into the run directory, in place of the EyeLink's
 retrieved EDF:
 
@@ -41,7 +53,9 @@ not the rig.
 
 from __future__ import annotations
 
+import contextlib
 import csv
+import io
 import logging
 import math
 import shutil
@@ -50,8 +64,9 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import numpy as np
 
@@ -115,6 +130,71 @@ _OPEN_FAILED = (
     "and connected, that no other VPixx application holds the device, or use "
     "eyetracker backend 'mouse_sim'."
 )
+
+# What pypixxlib prints, verbatim, from setUpDataRecording() and
+# saveBufferedData(). Both methods work regardless — each goes on to
+# TPxSetBuff / TPxEnableFreeRun / TPxSaveToCSV — but the line reads as an
+# error to anyone watching the terminal, and stopped an operator cold on the
+# rig. It is captured and logged as what it is.
+VENDOR_CHATTER = ("Recording data is not yet directly implemented in the TRACKPixx3",)
+
+T = TypeVar("T")
+
+
+def quietly(call: Callable[[], T]) -> T:
+    """Run one pypixxlib call with its stdout captured.
+
+    The library's known chatter goes to the debug log; anything *else* it
+    printed is logged at INFO with a prefix, so a message nobody has seen
+    before is not hidden — captured, not suppressed. ``redirect_stdout`` is
+    process-wide, which is safe here because every call it wraps runs under
+    the device lock and nothing else in a session prints.
+    """
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        result = call()
+    for line in buffer.getvalue().splitlines():
+        if any(line.startswith(known) for known in VENDOR_CHATTER):
+            log.debug("pypixxlib printed its usual note (expected, harmless): %s", line)
+        elif line.strip():
+            log.info("pypixxlib printed: %s", line)
+    return result
+
+
+@dataclass(frozen=True)
+class DeviceGaze:
+    """One gaze report from the device: both eyes, both forms.
+
+    ``screen`` is the *calibrated* position — ``[x_left, y_left, x_right,
+    y_right]`` in centered px, from the device's calibration polynomial;
+    NaN or the lost sentinel when there is no calibration or no eye. ``raw``
+    is the uncalibrated eye vector the camera measured, in the same order:
+    a number whenever the camera has an eye, calibration or not. Reading both
+    is what lets "no calibration" be told from "no eye".
+    """
+
+    screen: tuple[float, float, float, float]
+    raw: tuple[float, float, float, float]
+
+
+def read_device_gaze(libdpx: Any) -> DeviceGaze:
+    """``TPxBestPolyGetEyePosition``, keeping both of its outputs.
+
+    pypixxlib's ``TRACKPixx3.getEyePosition()`` makes this same call and
+    returns only the calibrated array, discarding the raw one. Called with
+    ``libdpx`` directly for the raw vectors; the ctypes buffers start at zero,
+    so a call that writes nothing leaves zeros, which :func:`eye_in_raw`
+    reads as "no measurement".
+    """
+    import ctypes
+
+    packed = (ctypes.c_double * 4)(0.0, 0.0, 0.0, 0.0)
+    raw = (ctypes.c_double * 4)(0.0, 0.0, 0.0, 0.0)
+    libdpx.TPxBestPolyGetEyePosition(packed, raw)
+    return DeviceGaze(
+        screen=(float(packed[0]), float(packed[1]), float(packed[2]), float(packed[3])),
+        raw=(float(raw[0]), float(raw[1]), float(raw[2]), float(raw[3])),
+    )
 
 
 def wake_tracker(libdpx: Any) -> None:
@@ -278,8 +358,8 @@ def ctypes_module() -> Any:
 
 
 class GazeReader:
-    """Reads the device's gaze report on its own thread, so a frame never
-    waits on USB.
+    """Reads the device's gaze report (a :class:`DeviceGaze`) on its own
+    thread, so a frame never waits on USB.
 
     One ``TPxBestPolyGetEyePosition`` is a USB round trip: 2 ms as a rule,
     but 20-40 ms on one call in five on the rig (measured 2026-09-01), and a
@@ -302,7 +382,7 @@ class GazeReader:
 
     def __init__(
         self,
-        read: Callable[[], Sequence[float]],
+        read: Callable[[], DeviceGaze],
         clock: Clock,
         lock: threading.Lock,
         interval_s: float = 0.004,
@@ -311,7 +391,7 @@ class GazeReader:
         self._clock = clock
         self._lock = lock
         self._interval = interval_s
-        self._latest: tuple[list[float], float] | None = None
+        self._latest: tuple[DeviceGaze, float] | None = None
         self._fault: BaseException | None = None
         self._stop = threading.Event()
         self._paused = threading.Event()
@@ -349,15 +429,15 @@ class GazeReader:
         recorded as the reader's fault and raised as a TrackerError."""
         try:
             with self._lock:
-                positions = list(self._read())
+                report = self._read()
         except Exception as e:  # pypixxlib's exception type cannot be named off the rig
             self._fault = e
             raise TrackerError(f"the TRACKPixx3 stopped answering: {e}") from e
-        self._latest = (positions, self._clock.now())
+        self._latest = (report, self._clock.now())
 
-    def latest(self) -> tuple[list[float], float] | None:
-        """The newest (positions, session time) report, or None before the
-        first read. Raises what the reader thread died of, if it did."""
+    def latest(self) -> tuple[DeviceGaze, float] | None:
+        """The newest (report, session time) pair, or None before the first
+        read. Raises what the reader thread died of, if it did."""
         if self._fault is not None:
             raise TrackerError(f"the TRACKPixx3 stopped answering: {self._fault}") from self._fault
         return self._latest
@@ -427,6 +507,31 @@ def select_eye(positions: Sequence[float], eye: str) -> tuple[float, float] | No
             return None
         return ((left[0] + right[0]) / 2.0, (left[1] + right[1]) / 2.0)
     raise TrackerError(f"unknown eyetracker.eye {eye!r} — expected left, right or average")
+
+
+def eye_in_raw(raw: Sequence[float], eye: str) -> bool:
+    """Did the camera measure the configured eye, calibration or not?
+
+    ``raw`` is the uncalibrated vector from :func:`read_device_gaze`, in the
+    device's order ``[x_left, y_left, x_right, y_right]``. An eye counts as
+    measured when its vector is a finite number that is neither the lost
+    sentinel nor the exact zero the ctypes buffer started with — a call that
+    wrote nothing leaves zeros, and reading those as "an eye at the origin"
+    would defeat the point of reading them. ``average`` needs both eyes, as
+    :func:`select_eye` does.
+    """
+    if len(raw) < 4:
+        raise TrackerError(
+            f"TRACKPixx3 reported {len(raw)} raw eye values; expected 4 "
+            f"(x_left, y_left, x_right, y_right). Check the pypixxlib version on this rig."
+        )
+
+    def measured(x: float, y: float) -> bool:
+        return not is_tracking_lost(x, y) and not (x == 0.0 and y == 0.0)
+
+    left = measured(float(raw[0]), float(raw[1]))
+    right = measured(float(raw[2]), float(raw[3]))
+    return eye_in_view((left, right), eye)
 
 
 def eye_in_view(eyes: tuple[bool, bool], eye: str) -> bool:
@@ -546,6 +651,13 @@ class ViewPixxTracker:
         # anything that reads the device meanwhile (the camera image the
         # dashboard shows) must leave the ring alone.
         self._calibrating = False
+        # Whether the device holds a calibration: read from it at
+        # configure() (it keeps one across runs) and after every
+        # calibrate(); None until asked. Every gaze read is gated on it.
+        self._calibrated: bool | None = None
+        # The "no calibration" warning is said once per uncalibrated stretch,
+        # not once per frame.
+        self._warned_uncalibrated = False
 
     # ------------------------------------------------------------------
     # Setup
@@ -609,17 +721,43 @@ class ViewPixxTracker:
         # shutdown() moves the finished file into the run directory under the
         # run's own name.
         self._scratch_dir = Path(tempfile.mkdtemp(prefix="alhazen-trackpixx-"))
-        self._samples_path = Path(self._tracker.setUpDataRecording(str(self._scratch_dir)))
+        scratch = str(self._scratch_dir)
+        self._samples_path = Path(quietly(lambda: self._tracker.setUpDataRecording(scratch)))
         log.info(
             "TRACKPixx3 is recording to %s; teardown moves it into the run directory",
             self._samples_path,
         )
-        # Gaze is read off the render thread from here on (GazeReader).
-        # Looked up per read, not bound once: the handle's methods are what
-        # the device answers through, and a swapped-in one must be honoured.
-        self._reader = GazeReader(lambda: self._tracker.getEyePosition(), clock, self._device_lock)
+        # What the device holds before this session touches it. It keeps a
+        # calibration across runs, so "calibrated" here means "somebody's,
+        # at some point" — said in the log, because a session that runs on
+        # a previous subject's calibration looks exactly like one that ran
+        # on its own.
+        if self._read_calibration_state():
+            log.warning(
+                "the TRACKPixx3 holds a calibration from BEFORE this session (the device "
+                "keeps one across runs). Nothing here knows whose it is: validate it, or "
+                "calibrate again, before trusting a gaze position from it."
+            )
+        else:
+            log.warning(
+                "the TRACKPixx3 has NO calibration: every gaze read reports no position "
+                "until one is done (press C while paused, or the dashboard's Calibrate)."
+            )
+        # Gaze is read off the render thread from here on (GazeReader),
+        # through libdpx directly so the raw eye vectors come back too.
+        # Looked up per read, not bound once: a swapped-in library (the
+        # tests') must be honoured.
+        self._reader = GazeReader(lambda: read_device_gaze(self._libdpx), clock, self._device_lock)
         if self._background_gaze:
             self._reader.start()
+
+    def _read_calibration_state(self) -> bool:
+        """Ask the device whether it holds a calibration, and remember it."""
+        with self._device_lock:
+            self._calibrated = bool(self._tracker.isDeviceCalibrated())
+        if self._calibrated:
+            self._warned_uncalibrated = False
+        return self._calibrated
 
     def set_progress_hook(self, hook: ProgressHook | None) -> None:
         """Optional capability (protocol.py): where the calibration walk says
@@ -832,7 +970,7 @@ class ViewPixxTracker:
 
         with self._device_lock:
             self._tracker.finishCalibration()
-            calibrated = bool(self._tracker.isDeviceCalibrated())
+        calibrated = self._read_calibration_state()
         window.flip()
         if calibrated:
             log.info("TRACKPixx3 calibrated over %d targets", n)
@@ -867,6 +1005,49 @@ class ViewPixxTracker:
         """Which eyes the camera sees right now, in the calibration screen's words."""
         self._require_device("eye_status()")
         return self._eye_status()[1]
+
+    def calibration_state(self) -> bool:
+        """Does the device hold a calibration right now? A fresh read.
+
+        Optional capability: the session runner asks before trial 1 and
+        pauses with the reason when the answer is no, and measure mode
+        refuses to call an uncalibrated read an accuracy. Whose calibration
+        it is, the device cannot say — see :meth:`configure`.
+        """
+        self._require_device("calibration_state()")
+        return self._read_calibration_state()
+
+    def gaze_status(self) -> str:
+        """Why the newest gaze read is, or is not, a position — in words.
+
+        Optional capability, for whoever is looking at "no gaze" and needs
+        to know which of the three different things it means: no calibration
+        on the device (the camera may see the eye perfectly well), no eye in
+        the image, or a reader that has stalled. ``get_gaze()`` returns None
+        for all three, as the protocol requires; this says which.
+        """
+        reader = self._reader
+        if reader is None:
+            return "not reading gaze: configure() has not run"
+        report = reader.latest()
+        if report is None:
+            return "no gaze report yet"
+        gaze, t = report
+        if self._clock.now() - t > GAZE_STALE_S:
+            return "gaze reader stalled: the newest report is too old to use"
+        eye = self._cfg.eye
+        raw_seen = eye_in_raw(gaze.raw, eye)
+        if self._calibrated is False:
+            seen = "the camera SEES the eye" if raw_seen else "and no eye in the camera image"
+            return f"NO CALIBRATION on the device — {seen}; calibrate before reading gaze"
+        if select_eye(gaze.screen, eye) is not None:
+            return "tracked"
+        if raw_seen:
+            return (
+                "eye in the camera image but no calibrated position for it — the "
+                "calibration does not cover this eye; calibrate again"
+            )
+        return "no eye in the camera image (blink, or the eye is lost)"
 
     def camera_frame(self) -> CameraFrame:
         """The tracker's current eye image, shrunk for the dashboard.
@@ -951,8 +1132,14 @@ class ViewPixxTracker:
         """Newest sample for the configured eye, or None.
 
         None means "no verifiable position": the eye is not being tracked, or
-        (with ``eye: average``) one of the two is not. Both are routine; the
-        phases decide what a gap means, this method never guesses.
+        (with ``eye: average``) one of the two is not — or the device holds
+        no calibration, in which case nothing it reports is a position at
+        all. All are routine for the phases, which decide what a gap means;
+        this method never guesses. :meth:`gaze_status` says which it was.
+
+        The calibration gate uses the state read at configure() and after
+        each calibrate(), not a device round trip per frame: the polynomial
+        cannot change between those two moments.
         """
         reader = self._reader
         if reader is None:
@@ -962,10 +1149,23 @@ class ViewPixxTracker:
         report = reader.latest()
         if report is None:
             return None  # nothing has been read yet
-        positions, t = report
+        gaze, t = report
         if self._clock.now() - t > GAZE_STALE_S:
             return None  # the reader is behind: a stalled USB call, no position for now
-        chosen = select_eye(positions, self._cfg.eye)
+        if self._calibrated is False:
+            # Whatever the array holds, it is not a gaze position. Said once
+            # per uncalibrated stretch — loud, but not once per frame.
+            if not self._warned_uncalibrated:
+                self._warned_uncalibrated = True
+                log.warning(
+                    "get_gaze(): the TRACKPixx3 has no calibration, so there is no gaze "
+                    "position to report (%s). Calibrate before the trials that need it.",
+                    "the camera sees the eye"
+                    if eye_in_raw(gaze.raw, self._cfg.eye)
+                    else "and no eye is in the camera image",
+                )
+            return None
+        chosen = select_eye(gaze.screen, self._cfg.eye)
         if chosen is None:
             return None
         # The device speaks CENTERED, y-up px; every GazeSample in alhazen is
@@ -1028,7 +1228,7 @@ class ViewPixxTracker:
                 )
                 arm_recording(self._libdpx, self._tracker)
                 return
-            self._tracker.saveBufferedData()
+            quietly(self._tracker.saveBufferedData)
 
     def _write_messages(self, destination: Path) -> None:
         """Write the two-clock message record beside the samples."""

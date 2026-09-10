@@ -5,7 +5,9 @@ from alhazen.core.events import RESERVED_EVENTS, Event, EventBus, EventSchema
 from alhazen.core.rng import STREAMS, resolve_seed, spawn_streams
 from alhazen.core.trial import (
     ABORTED,
+    DROPPED_FRAMES,
     PAUSED,
+    TRIAL_RECORD_COLUMNS,
     CircleRegion,
     InputFrame,
     Outcome,
@@ -18,7 +20,9 @@ from alhazen.core.trial import (
 
 __all__ = [
     "ABORTED",
+    "DROPPED_FRAMES",
     "PAUSED",
+    "TRIAL_RECORD_COLUMNS",
     "RESERVED_EVENTS",
     "STREAMS",
     "CircleRegion",

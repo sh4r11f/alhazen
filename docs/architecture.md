@@ -87,7 +87,16 @@ command source, and the bus:
 5. draw the rig's `overlay(ctx)`, if any — today, the photodiode patch
 6. `display.flip()` — the only moment photons change
 7. stamp the session clock; compute `ctx.dt` (duration of the just-shown frame)
-8. feed the FrameMonitor (dropped-frame policy: log/warn/mark_trial/abort_run)
+8. feed the FrameMonitor (dropped-frame policy:
+   log/warn/mark_trial/recycle_trial/abort_run; at the trial's end its
+   `end_trial()` logs one line per trial with drops and, under
+   `recycle_trial`, turns a trial that dropped more than
+   `max_dropped_fraction` of its frames into the reserved `DROPPED_FRAMES`
+   outcome — `completed=False`, so the scheduler re-serves it like a fixation
+   break, with the outcome it would have had kept as
+   `outcome_before_frame_qa`; `max_consecutive_recycles` in a row abort the
+   run naming the display. Under every marking policy `n_dropped_frames` is
+   `0` on a clean trial, never absent)
 9. emit the events the phase queued via `ctx.emit_on_flip`, stamped now —
    the photon-honest timestamp
 
@@ -314,6 +323,7 @@ because the two devices are not the same shape of thing.
 | "No eye" | coordinates set to `-32768` | coordinates parked at `±9000`, or NaN |
 | Eyes | tracker reports which one; binocular ties break to left | always binocular; `eyetracker.eye` picks `left`/`right`/`average` |
 | Calibration | `doTrackerSetup()` runs it on the Host PC, after alhazen's guide screen | alhazen shows the guide, draws the target grid in the session window with a live "eyes:" line, and fits from it |
+| Calibration state | the Host PC's | read from the device at `configure()` and after each `calibrate()`; **the gaze report is a calibrated read**, NaN without one, so `get_gaze()` is gated on it, `gaze_status()` says whether it was the calibration or the eye that was missing (the raw eye vectors are read beside the calibrated positions to tell), and the runner pauses before trial 1 with that reason. The device keeps a calibration across runs; the log says so at `configure()` |
 | Validation, drift correction | `devices/eyetracker/procedures.py`, the same on both: generic over `get_gaze()`, results on the dashboard ([eye-tracker.md](eye-tracker.md)) | |
 | Camera image | on the Host PC's own screen | read through `camera_frame()` into the dashboard's *Eye tracker* group while paused |
 | Messages | written into the EDF, which then carries its own alignment | written to a sidecar CSV stamped on **both** clocks, because nothing can be written into the sample stream |
@@ -734,11 +744,22 @@ answer.
 binary, digital-word bit extraction, analog channels), `kilosort` (spike
 times, clusters, curation labels), `eyelink`/`asc` (EDF→ASC conversion with
 an error that names the Developer's Kit, and a parser where a blink is NaN
-rather than a position at the origin), and `session` (a run directory,
-manifest-verified, returned as typed pandas DataFrames — a `csv.DictReader`
-row hands back `row["success"] == "False"`, and `"False"` is truthy). All are
-tested against synthetic files written by `tests/fixtures_neural.py`, so each
-test can say what should come out rather than only that nothing crashed.
+rather than a position at the origin), `viewpixx` (a TRACKPixx3 run's
+`*_gaze.csv` and `*_gaze-messages.csv`: an affine device→session clock
+**fit** from the two-clock message pairs that refuses a residual worse than a
+sample period, a sample table in degrees where a lost eye or a blink flag is
+a NaN row rather than a missing one, `event_times` and `trial_spans` from the
+messages, and `gaze_frame` as an explicit setting because whether the
+device's `Screen X/Y` are centred and y-up has not yet been checked against a
+valid sample), and `session` (a run directory, manifest-verified, returned as
+typed pandas DataFrames — a `csv.DictReader` row hands back
+`row["success"] == "False"`, and `"False"` is truthy). All are tested against
+synthetic files written by `tests/fixtures_neural.py`, so each test can say
+what should come out rather than only that nothing crashed — and the viewpixx
+reader also against `tests/fixtures/trackpixx3/`, the header and messages of
+a real recording, because its column names are the device's (`Timestamp`,
+`Left Screen X`, VPixx's own `Right Fixaion`) and a fixture written in the
+names the reader wanted once let it ship unable to open a real file.
 
 An experiment's own analysis composes them: the
 [rf-mapping](https://github.com/sh4r11f/rf-mapping) experiment, for one,
@@ -813,7 +834,13 @@ of the page is described in [`dashboard.md`](dashboard.md):
   only renders), appended after the spec's own panels. So does the
   session's eye-tracker monitor (`session/eyetracker.py`), whose
   calibration, validation and drift-correction results and camera image
-  make up the *Eye tracker* group.
+  make up the *Eye tracker* group — and the runner's own *Frame intervals*
+  panel (`panels.frame_intervals_panel`), a histogram of every flip-to-flip
+  interval from the `FrameMonitor` in eighths of a frame period: the one
+  panel drawn from the frame log rather than the trials, because the
+  *shape* is what tells a vsync miss from a flip that never waited for
+  vsync (frames under half a period, impossible on a locked panel), and no
+  dropped-frame count can.
 
 The child starts before the display opens, so the whole remainder of
 `build_session` runs inside a guard that stops it on any failure — otherwise
@@ -843,6 +870,20 @@ every backend precisely so a backend cannot quietly reach for
 4. teardown attempts every step regardless of earlier failures (recorder →
    frame log → close log file → manifest → display), re-raising the first
    teardown error only if nothing else is propagating.
+
+`session.log` (UTF-8, attached at the root logger at INFO) is meant to be
+read as the record of the session's *structure*, so what it carries at INFO
+is exactly that: `session start` (identity and seed), a `devices:` line naming
+each device's backend, one `setup:` line per thing the mode decided before
+trial 1 (`ModeSession.describe()` — reductions, stood-down devices; the
+terminal is not part of the run directory), `block N of M starts/ends` from
+`BlockPlan`, every calibration / validation (with per-target errors) / drift
+correction verdict, one line per trial (`trial 12 attempt 1: CORRECT`, with
+the abort or frame-QA reason where there is one), one line per trial that
+dropped frames (per-frame drops are DEBUG; the frame log holds every
+interval), and a `session end:` line with the status and outcome counts —
+or `session end: FAILED … <exception>` at ERROR, so a log that merely stops is
+a crash and one that ends is a session.
 
 On-disk layout per run (see `data/paths.py`; overwriting an existing run's
 trials file is refused):

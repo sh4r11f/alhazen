@@ -7,7 +7,14 @@ import pytest
 from alhazen.core.clock import MonotonicClock
 from alhazen.core.events import RESERVED_EVENTS, Event, EventBus, EventSchema
 from alhazen.core.rng import STREAMS, resolve_seed, spawn_streams
-from alhazen.core.trial import ABORTED, PAUSED, CircleRegion, TrialContext, outcomes
+from alhazen.core.trial import (
+    ABORTED,
+    DROPPED_FRAMES,
+    PAUSED,
+    CircleRegion,
+    TrialContext,
+    outcomes,
+)
 from alhazen.testing import EventCollector, FakeClock
 from support import SCREEN
 
@@ -96,7 +103,9 @@ class TestOutcomes:
         assert not outs.FIX_BREAK.completed and outs.FIX_BREAK.success is None
         assert outs["PAUSED"] is PAUSED
         assert outs["ABORTED"] is ABORTED
-        assert outs.names == {"CORRECT", "FIX_BREAK", "PAUSED", "ABORTED"}
+        assert outs["DROPPED_FRAMES"] is DROPPED_FRAMES
+        assert not DROPPED_FRAMES.completed and DROPPED_FRAMES.success is None
+        assert outs.names == {"CORRECT", "FIX_BREAK", "PAUSED", "ABORTED", "DROPPED_FRAMES"}
 
     def test_reserved_names_rejected(self):
         with pytest.raises(ValueError, match="reserved"):

@@ -283,6 +283,22 @@ class TestBlockPlan:
         served = drain(plan)
         assert [c.params["block"] for c in served] == [1, 1, 2, 2]
 
+    def test_block_boundaries_go_in_the_session_log(self, caplog):
+        """No event (the module docstring says why), but the log has to show
+        where a block began and ended, or a between-block validation cannot
+        be placed against the trials it covered."""
+        import logging
+
+        plan = BlockPlan([self.inner(2), self.inner(1)], trials_per_block=2)
+        with caplog.at_level(logging.INFO, logger="alhazen.paradigms.blocks"):
+            drain(plan)
+        assert [r.message for r in caplog.records] == [
+            "block 1 of 2 starts",
+            "block 1 of 2 ends: 2 completed trials",
+            "block 2 of 2 starts",
+            "block 2 of 2 ends: 1 completed trials",
+        ]
+
     def test_a_failed_trial_comes_back_inside_its_own_block(self):
         # End-of-block recycling: the block is bounded by COMPLETED trials, so
         # the inner scheduler's re-queue lands the retry back in this block.

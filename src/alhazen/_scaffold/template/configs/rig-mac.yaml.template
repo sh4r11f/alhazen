@@ -60,8 +60,12 @@ display:
   # under a compositor. More frames to look in, not a looser standard.
   warmup_flips: 240
   frame_qa:
+    # Count drops on the trial record (n_dropped_frames, 0 when clean) and
+    # carry on: a laptop sharing its GPU drops frames constantly, and the
+    # lab rig's recycle_trial would re-serve trials faster than it retires
+    # them here. No threshold: mark_trial reads none, and the config refuses
+    # one it would ignore.
     policy: mark_trial
-    max_dropped_per_trial: 3
 
 dashboard:
   # Opens in a browser BEFORE PsychoPy takes focus. On macOS a fullscreen

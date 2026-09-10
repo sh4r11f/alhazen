@@ -2,8 +2,9 @@
 
 Once per displayed frame: poll experimenter commands, run health checks,
 snapshot inputs into the context, let the current phase draw and decide, draw
-the rig's overlay, flip, stamp the flip on the session clock, feed frame QA,
-then emit whatever events that frame queued — stamped with the flip's own
+the rig's overlay, flip, stamp the flip on the session clock, feed frame QA
+(which, at the trial's end, may recycle a trial whose display dropped too many
+frames), then emit whatever events that frame queued — stamped with the flip's own
 time, because a visual event's timestamp must correspond to the frame that
 actually showed it, not to the Python call that requested it. Those
 timestamps are what let analysis line up behavior with device recordings
@@ -26,7 +27,15 @@ from typing import Any
 from alhazen.core.clock import Clock
 from alhazen.core.commands import Command, CommandSource
 from alhazen.core.events import Event, EventBus, EventSchema
-from alhazen.core.trial import ABORTED, PAUSED, InputFrame, Outcome, PhaseAction, TrialContext
+from alhazen.core.trial import (
+    ABORTED,
+    DROPPED_FRAMES,
+    PAUSED,
+    InputFrame,
+    Outcome,
+    PhaseAction,
+    TrialContext,
+)
 from alhazen.display.backend import DisplayBackend
 from alhazen.display.frames import FrameMonitor
 
@@ -101,6 +110,12 @@ class TrialEngine:
         self._frame_index = 0
         if self._frame_monitor is not None:
             self._frame_monitor.start_trial(ctx.trial_index)
+            if self._frame_monitor.marks_trials:
+                # Zero from the start, not created on the first drop: a clean
+                # trial must write 0, because an empty cell reads back as
+                # NaN, and NaN is what made a column mean overstate drops by
+                # a third and `astype(int)` raise on the rig's own data.
+                ctx.record["n_dropped_frames"] = 0
 
         # TRIAL_START is emitted immediately — not on a flip — because it is
         # not a visual event: nothing has been drawn yet, and downstream
@@ -126,6 +141,20 @@ class TrialEngine:
         # drawn frame would stay on screen through the ITI and the next
         # trial's setup — while the record claims the trial ended.
         self._display.flip()
+
+        if self._frame_monitor is not None:
+            frames = self._frame_monitor.end_trial()
+            if frames.recycle and outcome.completed:
+                # The trial ran to its end, but the display did not show what
+                # the config describes. Its measurement is discarded the way a
+                # fixation break's is — a non-completed outcome, which the
+                # scheduler re-serves — and what it would have been is kept
+                # on the row. Only a COMPLETED outcome is replaced: one that
+                # was already non-completed is already being re-served, and
+                # PAUSED in particular drives the runner's pause flow.
+                ctx.record["outcome_before_frame_qa"] = outcome.name
+                ctx.record["frame_qa_reason"] = frames.reason
+                outcome = DROPPED_FRAMES
 
         self._finalize(ctx, outcome)
         return TrialResult(outcome=outcome, record=ctx.record)
