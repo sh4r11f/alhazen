@@ -83,6 +83,21 @@ class TrialFeedback:
     sounds the beep from that; a phase touches no hardware), and after
     ``duration_s`` the trial ends with the task's outcome.
 
+    **It runs on trials that ended early too.** A phase declaring
+    ``must_be_last`` is the trial's closing phase, and the engine runs a
+    closing phase whatever the trial ended as (core/engine.py) — so a broken
+    fixation and a saccade that never came get feedback like any other
+    failure, which is the half of it a subject most needs. A trial that ended
+    with a non-completed outcome is a failure and the ``verdict`` predicate
+    is not consulted: the predicate judges a measurement, and on a fixation
+    break there is no measurement to judge. Nothing the closing phase returns
+    can change an outcome the trial already had.
+
+    The two outcomes it does NOT run on are PAUSED and ABORTED. Neither is a
+    trial result — one is an experimenter stopping the session, the other a
+    quit — and telling a subject they failed a trial they were still in the
+    middle of would be a lie.
+
     Two things are deliberately separate here, because an experiment's
     first use of this would have been wrong either way:
 
@@ -143,7 +158,12 @@ class TrialFeedback:
         self._feedback_event = feedback_event
 
     def on_enter(self, ctx: TrialContext) -> None:
-        good = bool(self._verdict(ctx))
+        # `ctx.outcome` is set by the engine when the trial ended before this
+        # phase — a fixation break, a saccade that never came. Those are
+        # failures by definition and the task's predicate is not asked: it
+        # was written to judge a measurement, and there is none.
+        ended_early = ctx.outcome is not None and not ctx.outcome.completed
+        good = False if ended_early else bool(self._verdict(ctx))
         ctx.record[self._record_key] = "success" if good else "failure"
         stimulus = ctx.stimuli[self._stimulus_key]
         set_color = getattr(stimulus, "set_color", None)
@@ -162,5 +182,9 @@ class TrialFeedback:
         stimulus.update(ctx.dt)
         stimulus.draw()
         if ctx.clock.now() - self._t0 >= self._duration_s:
+            # Discarded by the engine when the trial already had an outcome;
+            # returned rather than skipped so the phase ends the same way in
+            # both cases and `then` stays the single answer to "what does a
+            # trial that got this far end as".
             return self._then(ctx) if callable(self._then) else self._then
         return PhaseAction.CONTINUE
