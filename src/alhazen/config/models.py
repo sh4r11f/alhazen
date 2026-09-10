@@ -129,6 +129,15 @@ class FrameQAConfig(Model):
     - ``abort_run``: also raise ``FrameQAError`` once more than
       ``max_dropped_per_trial`` frames drop in one trial.
 
+    **Set these thresholds from the frame log, not from what the policy
+    did.** ``frames.csv`` holds every interval and whether it was over
+    budget: that is the measurement. A recycle count, a run of aborts, the
+    number of ``DROPPED_FRAMES`` rows — those are decisions made from the
+    measurement under whatever thresholds were in force at the time, so
+    tuning the thresholds from them tunes a number against itself. Read the
+    intervals, decide what fraction of a trial's frames the design can
+    tolerate, then write that here.
+
     ``recycle_trial`` has a floor under it: a display that is persistently
     bad would otherwise recycle every trial forever and the session would
     never end, with a subject in the chin rest. Once
