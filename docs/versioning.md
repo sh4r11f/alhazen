@@ -155,3 +155,26 @@ index means living with the number forever.
 If the gate fails after you have already pushed the tag, delete it
 (`git push --delete origin vX.Y.Z`), fix the mismatch, and tag again. Nothing
 was published, because the gate runs before the build.
+
+### 5a. A downstream pin follows the push; it never leads it
+
+An experiment repo that installs alhazen from a **git clone of `main`** —
+rather than from PyPI — resolves its pin against whatever `version` says in
+`pyproject.toml` on `main` at that moment. Several do, deliberately: the
+distribution is `alhazen-vision`, the import is `alhazen`, and cloning main
+means pip never has to resolve the ambiguous `alhazen` name off PyPI at all.
+
+So raising a downstream floor to `>=X.Y.Z` before the release commit is on
+`main` breaks that repo's CI, and breaks it in a way that reads like a typo in
+the pin:
+
+```
+Could not find a version that satisfies the requirement alhazen-vision>=1.2.0
+    (from versions: none)
+```
+
+Nothing in that message says "the release you pinned is not on main yet". The
+order is: cut the release here, push to `main`, tag — **then** tell the
+downstream repos to raise their pins. When telling them, say which commit on
+`main` carries the version, because a repo whose CI clones main is pinning
+against a branch and not against a tag.

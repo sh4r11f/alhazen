@@ -44,6 +44,11 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   the acceptance radius plus the fixation radius reaches the target's
   eccentricity, every saccade large enough to count as leaving fixation
   already lands inside the region, so an undershoot can never go red.
+- **`docs/versioning.md` says that a downstream pin follows the push to
+  `main` and never leads it.** An experiment repo that installs alhazen from a
+  clone of `main` resolves its pin against `main`, not against a tag, so a
+  floor raised before the release commit lands fails resolution with a message
+  that reads like a broken pin.
 
 ## 1.3.0 - 2026-09-09
 
