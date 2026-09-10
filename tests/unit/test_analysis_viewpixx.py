@@ -379,6 +379,48 @@ class TestReading:
         fit = fit_clock(self._marks(), tolerance_s=0.0005)
         assert fit.n_dropped == 0 and fit.n_marks == 198
 
+    def test_a_step_at_the_end_of_the_run_is_not_dropped_as_a_hiccup(self):
+        """A clock re-set during the last trial touches one mark, which is
+        inside the 5% budget — and dropping it would leave a tight fit, a
+        reassuring warning, and every sample of that trial timed wrong. The
+        last mark has nothing after it to show the clocks back on the line,
+        so it cannot be told apart from a step and is not dropped."""
+        marks = self._marks(n=60, late={59: 0.004})
+        with pytest.raises(DataError, match="a stamping delay cannot explain") as error:
+            fit_clock(marks, tolerance_s=0.0005)
+        assert "run's last mark" in str(error.value)
+
+    def test_a_step_at_the_start_of_the_run_is_not_dropped_either(self):
+        marks = self._marks(n=60, late={0: 0.004})
+        with pytest.raises(DataError, match="a stamping delay cannot explain") as error:
+            fit_clock(marks, tolerance_s=0.0005)
+        assert "run's first mark" in str(error.value)
+
+    def test_two_off_line_marks_in_a_row_are_a_clock_that_moved(self):
+        """Neighbours have to be on the line for a mark to be a stamping
+        delay. Two in a row is the beginning of a step, and a step that
+        happens to be short is still a step."""
+        marks = self._marks(n=60, late={30: 0.004, 31: 0.004})
+        with pytest.raises(DataError, match="a stamping delay cannot explain") as error:
+            fit_clock(marks, tolerance_s=0.0005)
+        assert "next to another off-line mark" in str(error.value)
+
+    def test_an_early_mark_is_not_a_stamping_delay(self):
+        """The backend reads the device clock and then the session clock, so
+        a scheduler blocking between them can only make the session stamp
+        LATE. A mark that is early is something the fit does not understand,
+        and pretending otherwise would drop it and carry on."""
+        marks = self._marks(n=60, late={30: -0.004})
+        with pytest.raises(DataError, match="a stamping delay cannot explain") as error:
+            fit_clock(marks, tolerance_s=0.0005)
+        assert "EARLY" in str(error.value)
+
+    def test_isolated_interior_late_marks_are_still_dropped(self):
+        """The rule has to leave the case it was written for alone: two late
+        marks, far apart, both with neighbours on the line."""
+        fit = fit_clock(self._marks(n=100, late={20: 0.002, 70: 0.002}), tolerance_s=0.0005)
+        assert fit.n_dropped == 2 and fit.n_marks == 98
+
     def test_two_alignment_marks_are_refused(self):
         messages = pd.DataFrame(
             {"device_time_s": [0.0, 1.0], "session_time_s": [0.0, 1.0], "message": ["a", "b"]}

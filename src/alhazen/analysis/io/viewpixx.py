@@ -560,6 +560,51 @@ def fit_clock(messages: pd.DataFrame, tolerance_s: float) -> ClockFit:
                 f"{tolerance_s * 1000:.2f} ms tolerance. Worst: {worst_marks(residuals)}. "
                 f"That is drift or a step, not a stamping delay."
             )
+        # Being past the tolerance is not on its own a reason to drop a mark,
+        # and dropping on size alone would let a real clock step through
+        # whenever it happened to touch few enough marks. A stamping delay has
+        # a shape, and the shape is checkable, so it is checked here rather
+        # than asserted in the warning below:
+        #
+        #   - LATE, never early. The backend reads the device clock and then
+        #     the session clock; a scheduler that blocks between the two reads
+        #     can only make the session stamp look later than it was. An early
+        #     mark is something else.
+        #   - ISOLATED. Both neighbours have to be on the line. Two off-line
+        #     marks in a row is a clock that moved, not a read that was slow.
+        #   - INTERIOR. The first and last marks have no neighbour on one
+        #     side, so nothing shows the line resumed after them — a step
+        #     starting at the last mark looks exactly like one late mark.
+        #
+        # Residuals are taken from the REFIT, which the dropped marks did not
+        # pull, so the signs and sizes here are the ones that mean something.
+        edge = len(device) - 1
+        unexplained = []
+        for i in np.flatnonzero(outliers):
+            where = f"{texts[i]!r} at {session[i]:.3f} s ({residuals[i] * 1000:+.2f} ms)"
+            if i == 0 or i == edge:
+                side = "first" if i == 0 else "last"
+                unexplained.append(
+                    f"{where} is the run's {side} mark — nothing on the other side of it "
+                    f"shows the clocks back on the line"
+                )
+            elif outliers[i - 1] or outliers[i + 1]:
+                unexplained.append(
+                    f"{where} sits next to another off-line mark — two in a row is a clock "
+                    f"that moved, not a stamp that was slow"
+                )
+            elif residuals[i] < 0:
+                unexplained.append(f"{where} is EARLY, and a stamping delay can only ever be late")
+        if unexplained:
+            raise DataError(
+                "the device and session clocks fit a straight line only if marks are dropped "
+                "that a stamping delay cannot explain: "
+                + "; ".join(unexplained)
+                + ". A clock that stepped mid-run fits the remaining marks perfectly and is "
+                "still wrong for every sample on the other side of the step, so this run is "
+                "refused rather than silently re-timed. Check whether the session was paused "
+                "or the device re-clocked while it ran."
+            )
         n_dropped = int(outliers.sum())
         log.warning(
             "clock fit dropped %d of %d alignment marks as stamping delays — isolated, "
