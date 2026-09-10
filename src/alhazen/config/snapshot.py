@@ -17,6 +17,7 @@ version that several different trees share.
 from __future__ import annotations
 
 import hashlib
+import os
 import platform
 import subprocess
 import sys
@@ -75,14 +76,24 @@ def _alhazen_git_describe(package_dir: Path) -> str:
             text=True,
             timeout=5,
             check=True,
+            # English messages whatever the machine's language, because the
+            # answer below depends on reading one of git's error messages.
+            env={**os.environ, "LC_ALL": "C", "LANGUAGE": "C"},
         ).stdout.strip()
 
     try:
         top = Path(git("rev-parse", "--show-toplevel"))
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return "unknown"  # no git on this machine, or it did not answer
-    except subprocess.CalledProcessError:
-        return "not a source checkout"  # not inside any work tree at all
+    except subprocess.CalledProcessError as error:
+        # Only git's own "not a git repository" means what the label says. Any
+        # other refusal is git failing to answer: a directory that does not
+        # exist, or a repository git will not open for this user ("dubious
+        # ownership"). Calling those "not a source checkout" would be a
+        # confident wrong answer where an honest "unknown" belongs.
+        if "not a git repository" in (error.stderr or ""):
+            return "not a source checkout"
+        return "unknown"
 
     # Whose tree is it? Compared line by line with spaces removed, so a
     # dependency line such as `"alhazen-vision>=1.3"` in an experiment's own
