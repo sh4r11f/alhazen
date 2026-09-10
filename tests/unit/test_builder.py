@@ -77,6 +77,60 @@ def build(tmp_path, schema, **kwargs):
     )
 
 
+class TestFrameQAOnADisplayWithNoPanel:
+    """A simulated display's flip times measure how accurately the host can
+    wait, not whether a panel is holding its refresh. A scaffolded lab rig
+    ships `recycle_trial`, and its own acceptance run — `--mode simulate
+    --headless`, the documented way to run an experiment on a CI box — aborted
+    with "the display is not holding its 120 Hz refresh" on a loaded machine.
+    There was no display."""
+
+    def test_a_judging_policy_is_stood_down_and_said_so(self, tmp_path, caplog):
+        import logging
+
+        from alhazen.config.models import FrameQAConfig
+
+        schema = EventSchema(("FIX_ON",))
+        display = DisplayConfig(
+            backend="simulated",
+            frame_qa=FrameQAConfig(policy="recycle_trial", max_dropped_fraction=0.1),
+        )
+        with caplog.at_level(logging.INFO, logger="alhazen.session.builder"):
+            built = build(tmp_path, schema, display=display)
+
+        # Recorded, not acted on: the intervals still reach frames.csv.
+        assert built._frame_monitor._cfg.policy == "log"
+        assert not built._frame_monitor.marks_trials
+        assert any(
+            "not applied on a simulated display" in record.getMessage() for record in caplog.records
+        ), [r.getMessage() for r in caplog.records]
+
+    def test_the_rig_files_own_policy_is_kept_for_a_real_display(self, tmp_path):
+        """Nothing changes for the rig this was written for: only a display
+        that reports itself simulated is exempt."""
+        from alhazen.config.models import FrameQAConfig
+        from alhazen.display.frames import FrameMonitor
+
+        cfg = FrameQAConfig(policy="recycle_trial", max_dropped_fraction=0.1)
+        monitor = FrameMonitor(cfg, refresh_rate_hz=120.0)
+        assert monitor._cfg.policy == "recycle_trial"
+        assert monitor.marks_trials
+
+    def test_log_is_left_alone(self, tmp_path, caplog):
+        import logging
+
+        from alhazen.config.models import FrameQAConfig
+
+        schema = EventSchema(("FIX_ON",))
+        display = DisplayConfig(backend="simulated", frame_qa=FrameQAConfig(policy="log"))
+        with caplog.at_level(logging.INFO, logger="alhazen.session.builder"):
+            built = build(tmp_path, schema, display=display)
+        assert built._frame_monitor._cfg.policy == "log"
+        assert not any(
+            "not applied on a simulated display" in record.getMessage() for record in caplog.records
+        )
+
+
 class TestEventNameCrossValidation:
     def test_sync_line_for_an_undeclared_event_fails_at_build(self, tmp_path):
         schema = EventSchema(("FIX_ON",))

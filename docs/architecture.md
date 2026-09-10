@@ -95,8 +95,12 @@ command source, and the bus:
    outcome — `completed=False`, so the scheduler re-serves it like a fixation
    break, with the outcome it would have had kept as
    `outcome_before_frame_qa`; `max_consecutive_recycles` in a row abort the
-   run naming the display. Under every marking policy `n_dropped_frames` is
-   `0` on a clean trial, never absent)
+   run naming the display. Only a COMPLETED trial can be recycled: one that
+   already ended in a fixation break or a pause is being re-served for its
+   own reason. Under every marking policy `n_dropped_frames` is `0` on a
+   clean trial, never absent. On a simulated display the policy is stood
+   down to `log` at build time — the flip times there measure how accurately
+   the host can wait, not whether a panel is holding its refresh)
 9. emit the events the phase queued via `ctx.emit_on_flip`, stamped now —
    the photon-honest timestamp
 

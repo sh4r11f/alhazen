@@ -473,7 +473,27 @@ def build_session(
         if live is not None and hasattr(live, "on_event"):
             bus.subscribe(live.on_event)
 
-        frame_monitor = FrameMonitor(rig_cfg.display.frame_qa, refresh_hz)
+        # Frame QA judges a panel, and a simulated display has no panel. Its
+        # flip times measure how accurately the host can wait between them,
+        # which on a loaded machine — a CI box, a laptop compiling something
+        # else — is not the rate the rig file asks for. Judging that and then
+        # marking, recycling or aborting trials for the answer stops a dry run
+        # for a reason that has nothing to do with the experiment.
+        #
+        # Exactly the argument `SimulatedDisplay.measure_refresh_rate` makes
+        # for reporting its paced rate rather than a stopwatch's
+        # (display/simulated.py). The intervals are still recorded, and still
+        # reach frames.csv and the dashboard's timing panel: the policy that
+        # records and does not act is `log`.
+        frame_qa = rig_cfg.display.frame_qa
+        if display.kind == "simulated" and frame_qa.policy != "log":
+            log.info(
+                "frame QA policy %r is not applied on a simulated display (there is no panel "
+                "to judge): the intervals are recorded, no trial is marked or recycled",
+                frame_qa.policy,
+            )
+            frame_qa = frame_qa.model_copy(update={"policy": "log"})
+        frame_monitor = FrameMonitor(frame_qa, refresh_hz)
         frame_inputs = FrameInputBuffer()
 
         overlay: Callable[[TrialContext], None] | None = None
