@@ -25,6 +25,37 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## 1.4.0 - 2026-09-10
+
+### Fixed
+
+- **The run snapshot records alhazen's version.** Every snapshot alhazen had
+  ever written said `alhazen_version: unknown`. `config/snapshot.py` looked the
+  version up under the bare name `alhazen`, which belongs to an unrelated
+  project on PyPI — the exact trap `alhazen/version.py` exists to close — so
+  the lookup found nothing, or, on a machine with that project installed,
+  found theirs. It now calls `get_version()`, and a test fails if any module
+  other than `version.py` looks a distribution version up itself. An
+  integration test had checked the field only for being non-empty, which
+  `unknown` is, so it passed the whole time.
+
+  **Do not trust `alhazen_version` in any snapshot written before 1.4.0.** The
+  run's date, `experiment_git_sha` and `environment_digest` are what is left
+  to narrow down which alhazen produced it.
+
+### Added
+
+- **`alhazen_git_describe`, in the snapshot's provenance and in the run
+  report.** Between releases `main` carries the previous release's number, so
+  a run made from a source checkout records a version that several different
+  trees share. The describe string — tag, commits past it, `-dirty` —
+  identifies the code. It is taken only when alhazen is running from a git
+  clone of itself: an installed alhazen inside another repository's
+  virtualenv would otherwise be given that repository's commit, and on a
+  scratch repository it was. Otherwise it reads `not a source checkout`,
+  meaning the version alone identifies the code, or `unknown` when git could
+  not answer. An additive key; no existing key changed meaning.
+
 ## 1.3.1 - 2026-09-09
 
 Documentation and one log line, cut as its own release rather than left on
