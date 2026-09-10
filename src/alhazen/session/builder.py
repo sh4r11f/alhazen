@@ -173,6 +173,7 @@ def build_session(
     seed: int | None = None,
     iti: Duration | None = None,
     max_consecutive_failures: int | None = None,
+    rest_resume_after_s: float | None = None,
     score: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     reward_pulses: RewardPulses | None = None,
     tracker_messages: MessageMap | None = None,
@@ -556,6 +557,9 @@ def build_session(
             # modes: a limit on failed trials in a row is the experiment's
             # number, and belongs in its task config next to the trial
             # counts, not in a rig file or in code.
+            # How long a rest between blocks waits before it resumes by itself;
+            # None waits for a person. Set by simulate mode (modes/session.py).
+            rest_resume_after_s=rest_resume_after_s,
             max_consecutive_failures=(
                 max_consecutive_failures
                 if max_consecutive_failures is not None

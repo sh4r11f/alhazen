@@ -166,6 +166,7 @@ def build_pause_menu(
     fault: str | None = None,
     rest: str | None = None,
     keymap: dict[str, Command] | None = None,
+    resumes_in_s: float | None = None,
 ) -> PauseMenu:
     """The menu for THIS session — only the controls it actually has.
 
@@ -228,6 +229,12 @@ def build_pause_menu(
     subtitle = "the session is paused — nothing is being recorded"
     if rest is not None:
         subtitle = "between blocks — nothing is being recorded; SPACE when the subject is ready"
+        if resumes_in_s is not None:
+            # A simulation's rest times out (session/runner.py), and whoever
+            # is watching the screen should know it will not wait for them.
+            subtitle += (
+                f"\nsimulation: resumes by itself in {resumes_in_s:g} s unless a key is pressed"
+            )
     if has_dashboard:
         subtitle += "\nthe dashboard's buttons are live too"
     return PauseMenu(

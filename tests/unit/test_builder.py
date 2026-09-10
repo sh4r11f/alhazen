@@ -310,3 +310,14 @@ class TestHostOverlay:
 
     def test_no_regions_still_draws_the_fixation_cross(self):
         assert len(host_overlay_shapes(SCREEN, {})) == 1
+
+
+class TestTheRestTimeoutReachesTheRunner:
+    def test_build_session_hands_it_to_the_runner(self, tmp_path):
+        built = build(tmp_path, EventSchema(("FIX_ON",)), rest_resume_after_s=5.0)
+
+        assert built._rest_resume_after_s == 5.0
+
+    def test_a_wait_of_zero_is_refused(self, tmp_path):
+        with pytest.raises(ValueError, match="rest_resume_after_s must be > 0"):
+            build(tmp_path, EventSchema(("FIX_ON",)), rest_resume_after_s=0)

@@ -227,6 +227,15 @@ def rig_for_mode(
     return rig, notes
 
 
+# How long simulate mode's break between blocks waits for somebody before it
+# resumes by itself. A rehearsal on a real display has a keyboard wired, so
+# the break used to wait for a SPACE that nobody watching a dry run had a
+# reason to press, and the run sat on the rest screen. Ten seconds is long
+# enough to read the screen, or to press a key and keep the pause, and short
+# enough that a rehearsal finishes by itself.
+SIMULATION_REST_RESUME_S = 10.0
+
+
 def build_mode_session(
     mode: Mode,
     *,
@@ -325,6 +334,7 @@ def build_mode_session(
         spikes=simulation.spikes if simulation else None,
         # A simulated session has nobody to press SPACE at the instructions.
         auto_start=mode is Mode.SIMULATE,
+        rest_resume_after_s=SIMULATION_REST_RESUME_S if mode is Mode.SIMULATE else None,
         **extra,
     )
     built = ModeSession(

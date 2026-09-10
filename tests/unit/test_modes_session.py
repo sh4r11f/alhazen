@@ -481,3 +481,24 @@ class TestDescribe:
         assert spy.runner.setup_notes == built.describe().splitlines()
         assert any("eyetracker: eyelink stands down" in line for line in spy.runner.setup_notes)
         assert any("reduced: paradigm.n_per_condition" in line for line in spy.runner.setup_notes)
+
+
+class TestTheBreakBetweenBlocksInASimulation:
+    def test_simulate_mode_resumes_a_break_by_itself(self, tmp_path):
+        from alhazen.modes.session import SIMULATION_REST_RESUME_S
+
+        _, spy = build(tmp_path, Mode.SIMULATE, task=SimTask(Params()))
+
+        assert spy.kwargs["rest_resume_after_s"] == SIMULATION_REST_RESUME_S == 10.0
+
+    def test_a_real_run_waits_for_a_person(self, tmp_path):
+        _, spy = build(tmp_path, Mode.RUN)
+
+        assert spy.kwargs["rest_resume_after_s"] is None
+
+    def test_a_test_run_waits_for_a_person(self, tmp_path):
+        """Test mode is somebody sitting through the session: their break is
+        theirs to end."""
+        _, spy = build(tmp_path, Mode.TEST)
+
+        assert spy.kwargs["rest_resume_after_s"] is None

@@ -175,3 +175,17 @@ class TestRender:
         # that follows the key.
         starts = {re.match(r"\S+(?: \S+)*\s+", line).end() for line in rows}
         assert len(starts) == 1, f"labels start at different columns: {starts}"
+
+
+class TestARestThatResumesByItselfSaysSo:
+    def test_the_rest_screen_names_the_wait(self):
+        from alhazen.session.pause import build_pause_menu
+
+        menu = build_pause_menu(rest="BLOCK 1 OF 3 COMPLETE — REST", resumes_in_s=10.0)
+        assert "resumes by itself in 10 s" in menu.render()
+
+    def test_without_a_wait_it_says_nothing_of_the_kind(self):
+        from alhazen.session.pause import build_pause_menu
+
+        menu = build_pause_menu(rest="BLOCK 1 OF 3 COMPLETE — REST")
+        assert "resumes by itself" not in menu.render()
