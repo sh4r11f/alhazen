@@ -84,6 +84,16 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   `astype(int)` raised, and `alhazen report` dropped clean trials from its
   own table. The counter is zeroed at trial start under every marking policy,
   and the report reads an old run's empty cell as 0.
+
+  This does change what lands on disk — a cell that was empty is now `0` —
+  and the preamble above reserves changes to column meanings for a major
+  version. It is in a minor because the *meaning* is unchanged: an empty cell
+  always meant no drops, every file written before this release still reads,
+  and `alhazen report` reads the old empty cell as the zero it meant. The
+  promise protects a stranger's year-old analysis; a change that keeps their
+  files readable and their columns meaning what they meant does not break
+  it. Noted here so that nobody reading the preamble literally either blocks
+  the next such fix or quietly ships one without saying so.
 - **`session.log` is written as UTF-8.** It used the platform default, which
   on Windows is cp1252, and every line with a dash or a degree sign came back
   from the rig as mojibake.
