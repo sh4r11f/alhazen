@@ -179,6 +179,7 @@ class SessionRunner:
         live: LiveAnalysis | None = None,
         setup_notes: Sequence[str] = (),
         max_consecutive_failures: int | None = None,
+        rest_resume_after_s: float | None = None,
     ) -> None:
         self._cfg = cfg
         # How many non-completed trials in a row stop the session at the pause
@@ -194,6 +195,16 @@ class SessionRunner:
                 f"max_consecutive_failures must be >= 1 or None, got {max_consecutive_failures}"
             )
         self._max_consecutive_failures = max_consecutive_failures
+        # How long a rest between blocks waits for somebody before it resumes
+        # by itself, or None to wait for a person however long that takes. A
+        # real session leaves it None: the break is the subject's, and it ends
+        # when the experimenter says so. Simulate mode sets it
+        # (modes/session.py). A rehearsal on a real display has a keyboard
+        # wired, so it is not "unattended" and its break used to wait for a
+        # SPACE that nobody watching a dry run had a reason to press.
+        if rest_resume_after_s is not None and rest_resume_after_s <= 0:
+            raise ValueError(f"rest_resume_after_s must be > 0 or None, got {rest_resume_after_s}")
+        self._rest_resume_after_s = rest_resume_after_s
         self._failures_in_a_row = 0
         # How many of the trials counted in the current streak dropped more of
         # their frames than frame QA allows, and that number as it stood when
@@ -775,7 +786,12 @@ class SessionRunner:
         self._tracker.start_trial(ctx.trial_index, f"attempt {attempt}")
         self._tracker.draw_host_overlay(host_overlay_shapes(self._screen, ctx.regions))
 
-    def _pause_menu(self, fault: str | None = None, rest: str | None = None) -> PauseMenu:
+    def _pause_menu(
+        self,
+        fault: str | None = None,
+        rest: str | None = None,
+        resumes_in_s: float | None = None,
+    ) -> PauseMenu:
         """The menu for this session, built from what is actually wired.
 
         Built fresh at each pause rather than once at construction, because
@@ -790,6 +806,7 @@ class SessionRunner:
             has_dashboard=self._dashboard is not None,
             fault=fault,
             rest=rest,
+            resumes_in_s=resumes_in_s,
         )
 
     def _show_pause_menu(self, menu: PauseMenu) -> None:
@@ -828,7 +845,14 @@ class SessionRunner:
             notice = f"{fault} — browser controls are enabled."
         elif rest is not None:
             notice = f"{rest.capitalize()} — resume when the subject is ready."
-        menu = self._pause_menu(fault=fault, rest=rest)
+        # A rest can resume by itself when nobody acts in time: a simulation's
+        # break, and only with someone who could act, since an unattended run
+        # below resumes at once anyway. Never a fault: a pump or a
+        # calibration that failed is exactly what somebody has to look at.
+        resume_after_s = (
+            self._rest_resume_after_s if rest is not None and self._on_pause is not None else None
+        )
+        menu = self._pause_menu(fault=fault, rest=rest, resumes_in_s=resume_after_s)
         if self._on_pause is None:
             # Nobody is going to answer. `on_pause` is wired only for a
             # rendering display with a keyboard behind it (session/builder.py),
@@ -855,9 +879,26 @@ class SessionRunner:
                 self._publish_dashboard("running", f"{notice} Unattended — resumed.")
             return self._resumed()
         if self._dashboard is not None:
-            return self._handle_dashboard_pause(menu, notice, fault=fault, rest=rest)
+            return self._handle_dashboard_pause(
+                menu, notice, fault=fault, rest=rest, resume_after_s=resume_after_s
+            )
+        deadline: float | None = None
+        if resume_after_s is not None:
+            deadline = self._clock.now() + resume_after_s
         while True:
-            action = self._on_pause(menu)
+            if deadline is not None:
+                # `on_pause` blocks until a key is pressed, so a pause that can
+                # time out polls the keyboard here instead, until the deadline.
+                timed = self._next_menu_action_before(menu, deadline)
+                if timed is None:
+                    return self._resumed_by_itself(resume_after_s or 0.0)
+                # Somebody is there after all. From here the rest waits for
+                # them, and the screen stops promising otherwise.
+                action = timed
+                deadline = None
+                menu = self._pause_menu(fault=fault, rest=rest)
+            else:
+                action = self._on_pause(menu)
             if action == "quit":
                 return False
             if action == "resume":
@@ -876,6 +917,38 @@ class SessionRunner:
                     fault=failed if failed is not None else fault,
                     rest=rest if failed is None else None,
                 )
+
+    def _next_menu_action_before(self, menu: PauseMenu, deadline: float) -> str | None:
+        """Draw the menu and poll the keyboard until a key picks an action or
+        the deadline passes. None when it passed.
+
+        The keyboard half of a pause that can time out. ``on_pause`` blocks
+        until a key is pressed, which is right for a pause a person has to
+        resolve and wrong for one that resumes by itself, so the runner polls
+        the same keys, through the same row mapping the dashboard path uses.
+        """
+        self._show_pause_menu(menu)
+        keys = menu.actions()
+        while self._clock.now() < deadline:
+            for key in self._commands.poll_raw_keys():
+                action = _menu_action(keys, key)
+                if action is not None:
+                    return action
+            self._wait(0.01)
+        return None
+
+    def _resumed_by_itself(self, after_s: float) -> bool:
+        """End a rest that nobody resolved in time: say so, then resume."""
+        log.info(
+            "the rest between blocks resumed by itself after %g s: nothing was pressed "
+            "(simulation)",
+            after_s,
+        )
+        if self._dashboard is not None:
+            self._publish_dashboard(
+                "running", f"Resumed by itself after {after_s:g} s (simulation)."
+            )
+        return self._resumed()
 
     def _apply_pause_action(self, action: str) -> str | None:
         """One non-terminal menu choice; returns the line the dashboard shows
@@ -962,6 +1035,7 @@ class SessionRunner:
         *,
         fault: str | None = None,
         rest: str | None = None,
+        resume_after_s: float | None = None,
     ) -> bool:
         """Drive the local browser controls only after a keyboard pause.
 
@@ -994,6 +1068,11 @@ class SessionRunner:
         # when the pause began.
         live_camera = self._eyetracker is not None and self._eyetracker.has_camera
         published_at = self._clock.now()
+        # A rest that can resume by itself: the same deadline as the keyboard
+        # path, cancelled by the first thing anybody does.
+        deadline: float | None = None
+        if resume_after_s is not None:
+            deadline = self._clock.now() + resume_after_s
         while True:
             actions = [command.name for command in dashboard.poll_commands()]
             actions += [
@@ -1001,6 +1080,15 @@ class SessionRunner:
                 for key in self._commands.poll_raw_keys()
                 if (action := _menu_action(keys, key)) is not None
             ]
+            if deadline is not None:
+                if actions:
+                    # Somebody acted, at the rig or in the browser: the rest
+                    # waits for them from here, and the menu drawn after their
+                    # action no longer says it will resume by itself.
+                    deadline = None
+                    menu = self._pause_menu(fault=fault, rest=rest)
+                elif self._clock.now() >= deadline:
+                    return self._resumed_by_itself(resume_after_s or 0.0)
             for index, action in enumerate(actions):
                 if action == "resume":
                     self._publish_dashboard("running", "Resumed.")

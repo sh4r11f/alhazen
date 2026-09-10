@@ -417,3 +417,137 @@ class TestAnUnattendedRunIsNeverLeftWaiting:
         statuses = [status for status, _message in dashboard.published]
         assert "paused" in statuses, statuses
         assert len(read_trials(harness)) == 2
+
+
+class TestASimulationsBreakResumesByItself:
+    """In simulate mode the break between blocks waited for SPACE whenever a
+    keyboard was wired, which it is on a real display: a rehearsal watched on
+    the rig's screen sat on BLOCK 1 OF 2 COMPLETE until someone pressed a key.
+    With a rest timeout set, a rest nobody resolves in time resumes by itself.
+    A key pressed first is still obeyed, and a fault never times out."""
+
+    REST = "BLOCK 1 OF 2 COMPLETE — REST"
+
+    def two_blocks(self):
+        import numpy as np
+
+        from alhazen.paradigms.base import Condition, SimpleSequence
+        from alhazen.paradigms.blocks import BlockPlan
+
+        def block():
+            return SimpleSequence([Condition({"condition": "a"})], rng=np.random.default_rng(0))
+
+        return BlockPlan([block(), block()], trials_per_block=1)
+
+    @staticmethod
+    def _break_length(harness):
+        (paused,) = [e for e in harness.collector.events if e.name == "PAUSED"]
+        (resumed,) = [e for e in harness.collector.events if e.name == "RESUMED"]
+        return resumed.t - paused.t
+
+    def test_nobody_pressing_anything_resumes_after_the_wait(self, tmp_path):
+        harness = SessionHarness(tmp_path, use_pause_menu=True, source=self.two_blocks())
+        harness.runner._rest_resume_after_s = 10.0
+
+        harness.runner.run()
+
+        assert len(read_trials(harness)) == 2, "the session did not get past the break"
+        assert self._break_length(harness) >= 10.0
+        title, body, _color = harness.display.menus[0]
+        assert title == self.REST
+        assert "resumes by itself in 10 s" in body
+        log = harness.paths.log_path.read_text(encoding="utf-8")
+        assert "resumed by itself after 10 s" in log
+
+    def test_a_key_pressed_before_the_wait_is_over_is_obeyed(self, tmp_path):
+        commands = ScriptedCommands(batches=[], raw_keys=[[], ["space"]])
+        harness = SessionHarness(
+            tmp_path, commands=commands, use_pause_menu=True, source=self.two_blocks()
+        )
+        harness.runner._rest_resume_after_s = 10.0
+
+        harness.runner.run()
+
+        assert len(read_trials(harness)) == 2
+        assert self._break_length(harness) < 1.0
+        assert "resumed by itself" not in harness.paths.log_path.read_text(encoding="utf-8")
+
+    def test_acting_on_the_menu_stops_the_clock(self, tmp_path):
+        """A key that is not resume or quit means somebody is there: from then
+        on the rest waits for them, and the screen stops promising otherwise."""
+        from alhazen.devices.eyetracker.procedures import TargetError, ValidationResult
+
+        class StubMonitor:
+            calibration = None
+            drift = None
+            validation = None
+            publisher = None
+            has_camera = False
+
+            def validate(self):
+                self.validation = ValidationResult(
+                    targets=(
+                        TargetError(
+                            target_px=(0.0, 0.0), gaze_px=(0.0, 0.0), error_deg=0.2, n_samples=10
+                        ),
+                    ),
+                    threshold_deg=1.0,
+                    t=0.0,
+                )
+                return self.validation
+
+        harness = SessionHarness(tmp_path, n_trials=1)
+        runner = harness.runner
+        runner._eyetracker = StubMonitor()
+        runner._rest_resume_after_s = 10.0
+        runner._commands = ScriptedCommands(batches=[], raw_keys=[["v"]])
+        seen = []
+
+        def on_pause(menu):
+            seen.append(menu.subtitle)
+            return "resume"
+
+        runner._on_pause = on_pause
+
+        assert runner._handle_pause({}, rest=self.REST)
+        assert runner._eyetracker.validation is not None, "the key was not obeyed"
+        assert len(seen) == 1, "the attended loop never took over from the clock"
+        assert "resumes by itself" not in seen[0]
+
+    def test_a_fault_never_resumes_by_itself(self, tmp_path):
+        harness = SessionHarness(tmp_path, n_trials=1)
+        runner = harness.runner
+        runner._rest_resume_after_s = 10.0
+        titles = []
+        runner._on_pause = lambda menu: (titles.append(menu.title), "resume")[1]
+        started = harness.clock.now()
+
+        assert runner._handle_pause({}, fault="REWARD FAILURE — check the pump")
+
+        assert titles == ["REWARD FAILURE — check the pump"]
+        assert harness.clock.now() - started < 1.0
+
+    def test_with_the_dashboard_on_the_break_still_resumes_by_itself(self, tmp_path):
+        dashboard = FakeDashboard(poll_budget=5000)
+        harness = SessionHarness(
+            tmp_path, use_pause_menu=True, source=self.two_blocks(), dashboard=dashboard
+        )
+        harness.runner._rest_resume_after_s = 10.0
+
+        harness.runner.run()
+
+        assert len(read_trials(harness)) == 2
+        assert self._break_length(harness) >= 10.0
+        assert any(message and "by itself" in message for _status, message in dashboard.published)
+
+    def test_with_no_keyboard_wired_it_still_resumes_at_once(self, tmp_path):
+        """Unattended runs already resumed immediately, since nobody can act.
+        The wait is only for a run someone could be watching."""
+        harness = SessionHarness(tmp_path, source=self.two_blocks())
+        harness.runner._rest_resume_after_s = 10.0
+
+        harness.runner.run()
+
+        assert self._break_length(harness) < 1.0
+        _title, body, _color = harness.display.menus[0]
+        assert "resumes by itself" not in body

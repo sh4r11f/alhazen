@@ -222,6 +222,16 @@ is not touched: the substitutions live in the copy handed to
 `build_session`, and the config snapshot records that copy — the one that
 actually ran.
 
+**A break between blocks resumes by itself.** A simulation has nobody to
+press SPACE, but on a real display it still has a keyboard wired, so its rest
+screen used to wait for a key the person watching a dry run had no reason to
+press. In simulate mode the rest screen says it resumes by itself in 10
+seconds, and it does unless a key is pressed first. Resume and quit do what
+they say; any other key, at the rig or in the dashboard, means somebody is
+there, and the break then waits for them. Fault pauses never time out. With no
+keyboard wired at all (`--headless`), the break resumes at once, as before.
+The wait is `SIMULATION_REST_RESUME_S` in `modes/session.py`.
+
 ## `demo` — look at the stimulus
 
 The stimulus is the one thing in an experiment that no test can check. A test

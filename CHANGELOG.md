@@ -25,6 +25,34 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## 1.4.4 - 2026-09-10
+
+### Fixed
+
+- **A message taller than the screen shrinks to fit, and says so.**
+  `show_message` drew its box centred at the usual letter size whatever the
+  text's length, so instructions that laid out taller than the window lost
+  their first and last lines off the top and bottom of the screen, and nothing
+  was logged. A rig's subject instructions did exactly that. The letters now
+  shrink, keeping the same number of characters to a line, until the box fits
+  in 95% of the screen's height, and a WARNING says by how much so the text
+  can be shortened. They never shrink below 60% of their usual size. Past that
+  the box is drawn from the top of the screen, so the text reads from its
+  start, and the overflow is logged as an ERROR.
+
+### Changed
+
+- **In simulate mode, the break between blocks resumes by itself after 10
+  seconds if nothing is pressed.** A simulation on a real display has a
+  keyboard wired, so its break waited for a SPACE that nobody watching a dry
+  run had a reason to press. The rest screen now says it will resume by
+  itself. Any key other than resume or quit, at the rig or in the dashboard,
+  means somebody is there, and from then on the break waits for them. A run
+  with no keyboard wired still resumes at once, and fault pauses, such as a
+  failed reward or validation, never time out. Real sessions and test mode are
+  unchanged: their breaks end when the experimenter says so. `build_session`
+  and `SessionRunner` take the wait as `rest_resume_after_s`.
+
 ## 1.4.3 - 2026-09-10
 
 ### Fixed
