@@ -101,6 +101,18 @@ class TrialFeedback:
       and the engine refuses it anywhere else, so the ordering is enforced
       rather than left to each task to get right.
 
+    **Choose the predicate for what the subject was asked to do, not for the
+    dependent measure.** The tempting default is to feed the measurement in —
+    "landed inside the target" — and it is the one most likely to bias a
+    result. Feedback delivered every trial is a stronger instruction than
+    anything read once at the start: an experiment that measures *where* a
+    saccade lands, and tells the subject "just move your eyes to it quickly,
+    don't aim", would be training landing accuracy per trial while asking
+    for speed, and could manufacture its own predicted effect. The honest
+    verdict there is procedural — held fixation, saccaded within the window
+    — which is why ``verdict`` is any predicate over the record rather than
+    a built-in region test.
+
     The stimulus under ``stimulus_key`` must offer ``set_color``; the
     fixation point does, and the simulated stand-in records it.
     """
