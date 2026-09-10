@@ -756,11 +756,19 @@ class SessionRunner:
             if action == "resume":
                 return self._resumed()
             self._apply_pause_action(action)
-            # A procedure that failed becomes the heading of the menu that
-            # comes back, on the screen the experimenter is actually facing.
-            failed = self._procedure_fault(action)
-            if failed is not None:
-                menu = self._pause_menu(fault=failed)
+            # The menu is rebuilt after every procedure, not only after one
+            # that failed. A procedure that failed becomes the heading of the
+            # menu that comes back, on the screen the experimenter is actually
+            # facing — and a procedure that then SUCCEEDS has to take that
+            # heading back down again. Without this, a red VALIDATION FAILED
+            # stays up after the recalibration that fixed it, and the pause's
+            # own heading (a block break's REST) never comes back.
+            if action in PROCEDURE_ACTIONS:
+                failed = self._procedure_fault(action)
+                menu = self._pause_menu(
+                    fault=failed if failed is not None else fault,
+                    rest=rest if failed is None else None,
+                )
 
     def _apply_pause_action(self, action: str) -> str | None:
         """One non-terminal menu choice; returns the line the dashboard shows
@@ -840,13 +848,22 @@ class SessionRunner:
         )
         return True
 
-    def _handle_dashboard_pause(self, menu: PauseMenu, notice: str) -> bool:
+    def _handle_dashboard_pause(
+        self,
+        menu: PauseMenu,
+        notice: str,
+        *,
+        fault: str | None = None,
+        rest: str | None = None,
+    ) -> bool:
         """Drive the local browser controls only after a keyboard pause.
 
         The browser is server-enforced read-only before this state is
         published. Keyboard polling remains available so closing the browser
         can never strand an experimenter in the pause screen. `notice` is the
-        line the browser shows as the pause begins.
+        line the browser shows as the pause begins; `fault` and `rest` are the
+        pause's own heading, kept so that a procedure run from the browser can
+        put it back after replacing it.
         """
         assert self._dashboard is not None
         dashboard = self._dashboard
@@ -891,9 +908,15 @@ class SessionRunner:
                 # a session that has crashed. A procedure that failed becomes
                 # the menu's heading: the browser gets the verdict as its
                 # notice, but the rig's own screen must say it too.
-                failed = self._procedure_fault(action)
-                if failed is not None:
-                    menu = self._pause_menu(fault=failed)
+                if action in PROCEDURE_ACTIONS:
+                    # Rebuilt after every procedure, so a heading that a
+                    # failure put up comes back down when a later procedure
+                    # succeeds, and the pause's own heading returns with it.
+                    failed = self._procedure_fault(action)
+                    menu = self._pause_menu(
+                        fault=failed if failed is not None else fault,
+                        rest=rest if failed is None else None,
+                    )
                 self._show_pause_menu(menu)
                 if action in PROCEDURE_ACTIONS:
                     # A procedure runs for seconds to minutes, and the browser

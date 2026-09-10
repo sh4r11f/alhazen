@@ -247,3 +247,62 @@ class TestTheSessionTakesTheBlockBreak:
         titles = [title for title, _body, _color in harness.display.menus]
         assert titles == ["BLOCK 1 OF 2 COMPLETE — REST"]
         assert len(read_trials(harness)) == 2
+
+
+class TestAProcedureThatSucceedsTakesTheHeadingBackDown:
+    """The heading a failed procedure puts up was never removed. An
+    experimenter who validated (failed), recalibrated and validated again
+    (passed) was still looking at a red VALIDATION FAILED, and the pause's
+    own heading — a block break's REST — never came back."""
+
+    def validation(self, error_deg, t):
+        from alhazen.devices.eyetracker.procedures import TargetError, ValidationResult
+
+        return ValidationResult(
+            targets=(
+                TargetError(
+                    target_px=(0.0, 0.0), gaze_px=(0.0, 0.0), error_deg=error_deg, n_samples=10
+                ),
+            ),
+            threshold_deg=1.0,
+            t=t,
+        )
+
+    class StubMonitor:
+        """Stands in for EyeTrackerMonitor: two validations, the first
+        failing and the second passing, and nothing else."""
+
+        def __init__(self, results) -> None:
+            self._results = list(results)
+            self.calibration = None
+            self.drift = None
+            self.validation = None
+            self.publisher = None
+
+        def validate(self):
+            self.validation = self._results.pop(0)
+            return self.validation
+
+    def test_the_pauses_own_heading_comes_back(self, tmp_path):
+        harness = SessionHarness(tmp_path, n_trials=1)
+        runner = harness.runner
+        runner._eyetracker = self.StubMonitor(
+            [self.validation(2.3, t=1.0), self.validation(0.4, t=2.0)]
+        )
+        actions = iter(["validate", "validate", "resume"])
+        seen: list[str] = []
+
+        def on_pause(menu):
+            seen.append(menu.title)
+            return next(actions)
+
+        runner._on_pause = on_pause
+
+        assert runner._handle_pause({}, rest="BLOCK 1 OF 2 COMPLETE — REST")
+
+        # First the break's own heading; then the failure; then the break's
+        # heading again, because the second validation passed.
+        assert len(seen) == 3, seen
+        assert "REST" in seen[0]
+        assert "VALIDATION FAILED" in seen[1] and "2.30°" in seen[1]
+        assert seen[2] == seen[0], seen
