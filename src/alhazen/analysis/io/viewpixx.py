@@ -25,18 +25,34 @@ an earlier guess (``Time``, ``LeftEyeX``) passed every test written against
 fixtures that used the guessed names and could not open a real file. The
 fixture in ``tests/fixtures/trackpixx3/`` is the real header, for that reason.
 
-**Which way is up is a setting, not an assumption.** The backend hands the
-device its calibration targets in centered px with y up (the frame PsychoPy
-draws in), and the device's polynomial maps raw eye vectors onto the frame
-the targets were given in — so ``Left/Right Screen X/Y`` *should* be centered
-px, y up. That has never been checked against a valid sample: the only real
-recordings so far were made with no calibration on the device and hold NaN
-throughout. ``gaze_frame`` makes the choice explicit and overridable rather
-than buried in a comment.
+**Which way is up has now been measured.** The backend hands the device its
+calibration targets in centered px with y up (the frame PsychoPy draws in),
+and the device's polynomial maps raw eye vectors onto the frame the targets
+were given in — so ``Left/Right Screen X/Y`` should be centered px, y up.
+That is no longer only an argument. A calibrated accuracy check on the rig
+(``--mode measure``, 2026-09-09) reports each target's position and the gaze
+measured at it, and those gaze numbers *are* the device's own output: the
+backend converts device→screen with ``Screen.centered_to_screen`` and the
+check converts back with ``screen_to_centered``, which are exact inverses. At
+a target on the screen's centre the device returned (1, 32) px; at targets
+±293 px from it, (-293, 305), (299, 301), (-279, -274) and (300, -270), for
+errors of 0.26 to 0.87 degrees. A top-left, y-down device would have answered
+the centre target with roughly (960, 540) and every error would have been
+tens of degrees.
+
+``gaze_frame`` stays, because a recording calibrated by some other tool — one
+that handed the device top-left-origin targets — is in the other frame, and
+that is a fact about the recording rather than about the hardware. Reading
+the wrong one is the quietest mistake available here: every position shifts
+by half a panel while staying a tight, plausible-looking cluster, so nothing
+downstream raises and every landing is wrong. :func:`read_run` therefore
+checks how much of a run's tracked gaze falls outside the panel it was
+recorded on, and refuses a run where most of it does.
 """
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -50,6 +66,8 @@ from alhazen.config.models import MonitorConfig
 from alhazen.devices.eyetracker.viewpixx import is_tracking_lost
 from alhazen.display.screen import Screen
 from alhazen.errors import DataError
+
+log = logging.getLogger(__name__)
 
 # One real TRACKPixx3 header, exactly as the device wrote it (pypixxlib 1.9.2,
 # ``TPxSaveToCSV``). Kept so DEFAULT_COLUMNS can be resolved against the
@@ -103,10 +121,19 @@ OPTIONAL_COLUMNS: dict[str, str] = {
 
 MESSAGE_COLUMNS = ("device_time_s", "session_time_s", "message")
 
+# How much of a run's tracked gaze may sit outside the panel before the frame
+# it was read in is in doubt. A subject looks away and a calibration
+# extrapolates a little past the edges, so a few percent is ordinary; a
+# quarter of a run is not, and reading the wrong frame puts most of a run
+# there — offset by half a panel, and no less tightly clustered for it.
+OFF_PANEL_WARN = 0.02
+OFF_PANEL_REFUSE = 0.25
+
 # The frame the device's ``Screen X/Y`` columns are in. ``centered_y_up`` is
-# what the backend's calibration implies (module docstring); ``screen_y_down``
-# is the frame a GazeSample carries, for a recording calibrated by another
-# tool that handed the device top-left-origin targets.
+# what a TRACKPixx3 calibrated by this backend reports, measured on the rig
+# (module docstring); ``screen_y_down`` is the frame a GazeSample carries, for
+# a recording calibrated by another tool that handed the device
+# top-left-origin targets.
 GazeFrame = Literal["centered_y_up", "screen_y_down"]
 
 
@@ -205,6 +232,7 @@ def read_run(
     columns: dict[str, str] | None = None,
     max_residual_s: float | None = None,
     gaze_frame: GazeFrame = "centered_y_up",
+    check_bounds: bool = True,
 ) -> GazeRecording:
     """Read a run directory's ViewPixx eye data onto the session clock.
 
@@ -215,6 +243,12 @@ def read_run(
     eyes where both were tracked, and a gap where either was not — the same
     rule the live backend applies (devices/eyetracker/viewpixx.py
     ``select_eye``), so online and offline never disagree about a sample.
+
+    ``check_bounds`` refuses a run whose tracked gaze mostly falls outside the
+    panel, which is what reading the wrong ``gaze_frame`` looks like. Pass
+    False for a recording that genuinely sits off-panel — and only once that
+    is established, because the failure it guards against produces data that
+    looks entirely reasonable.
     """
     run_dir = Path(run_dir)
     samples_path = _one_file(run_dir, "*_gaze.csv")
@@ -250,6 +284,8 @@ def read_run(
         raise DataError(
             f"gaze_frame must be 'centered_y_up' or 'screen_y_down', got {gaze_frame!r}"
         )
+    if check_bounds:
+        _check_on_panel(x_px, y_px, tracked, screen, gaze_frame, samples_path)
 
     data = {
         "t_session": fit.to_session(device_t),
@@ -447,6 +483,58 @@ def _select_eye(
     tracked = ltracked & rtracked
     pupil = None if lpupil is None or rpupil is None else (lpupil + rpupil) / 2.0
     return (lx + rx) / 2.0, (ly + ry) / 2.0, tracked, pupil
+
+
+def _check_on_panel(
+    x_px: np.ndarray,
+    y_px: np.ndarray,
+    tracked: np.ndarray,
+    screen: Screen,
+    gaze_frame: GazeFrame,
+    path: Path,
+) -> None:
+    """Refuse a run whose tracked gaze does not lie on the panel it was
+    recorded on, because that is what the wrong ``gaze_frame`` looks like.
+
+    Positions arrive here already in centred px. Read in the wrong frame they
+    are all displaced by half a panel — and displaced *together*, so the
+    cluster stays as tight as ever, the clock fit stays as good as ever, and
+    nothing else in this module has any reason to complain. That is why this
+    check exists: not because off-panel gaze is impossible, but because a
+    silently plausible answer is worse than a loud one.
+
+    A run with no tracked samples at all (a recording made with no
+    calibration on the device) says nothing about the frame, so it passes.
+    """
+    if not tracked.any():
+        return
+    x, y = x_px[tracked], y_px[tracked]
+    off = (np.abs(x) > screen.width_px / 2.0) | (np.abs(y) > screen.height_px / 2.0)
+    fraction = float(off.mean())
+    if fraction <= OFF_PANEL_WARN:
+        return
+    other = "screen_y_down" if gaze_frame == "centered_y_up" else "centered_y_up"
+    where = (
+        f"{fraction:.0%} of the tracked samples in {path.name} lie outside the "
+        f"{screen.width_px}x{screen.height_px} px panel they were recorded on"
+    )
+    if fraction < OFF_PANEL_REFUSE:
+        log.warning(
+            "%s, read as %r. That is high enough to be worth a look: a subject who "
+            "spent the run looking away, or a calibration extrapolating past the "
+            "edges.",
+            where,
+            gaze_frame,
+        )
+        return
+    raise DataError(
+        f"{where}, read as gaze_frame={gaze_frame!r}. Almost certainly the frame: "
+        f"the other one, {other!r}, moves every position by half a panel, and the "
+        f"wrong one leaves the cluster looking perfectly tidy in the wrong place. "
+        f"Read it as {other!r} if that is what the recording is, or pass "
+        f"check_bounds=False once you have established that this gaze really was "
+        f"off the panel."
+    )
 
 
 def _sample_period_s(device_t: np.ndarray, path: Path) -> float:

@@ -240,6 +240,51 @@ class TestReading:
         with pytest.raises(DataError, match="gaze_frame must be"):
             read_run(run, gaze_frame="upside_down")  # type: ignore[arg-type]
 
+    def test_gaze_that_is_mostly_off_the_panel_is_refused_as_the_wrong_frame(self, tmp_path):
+        """Screen-frame samples read as centred sit half a panel away — and
+        sit there together, so the cluster stays tight, the clock fit stays
+        good, and nothing else here has any reason to complain. That is the
+        whole danger, so it is checked rather than documented."""
+        builder = RunBuilder(tmp_path)
+        builder.trial_of(gaze_px=(1100.0, 700.0))  # a little right of and below centre, screen px
+        run = builder.write()
+
+        with pytest.raises(DataError, match="outside the .* panel") as error:
+            read_run(run)
+        assert "screen_y_down" in str(error.value)
+
+        # Told what the recording is, it reads — and lands where it should.
+        recording = read_run(run, gaze_frame="screen_y_down")
+        assert recording.samples["x_dva"].median() == pytest.approx(140 / PX_PER_DEG, abs=1e-6)
+        # And the check can be waived for gaze that really was off the panel.
+        assert read_run(run, check_bounds=False).samples["tracked"].all()
+
+    def test_a_little_gaze_off_the_panel_is_a_warning_not_a_refusal(self, tmp_path, caplog):
+        """A subject does look away, and a calibration does extrapolate past
+        the edges; neither is a reason to refuse a run."""
+        import logging
+
+        builder = RunBuilder(tmp_path)
+        for _ in range(9):
+            builder.trial_of(duration_s=0.05, gaze_px=(0.0, 0.0))
+        builder.trial_of(duration_s=0.05, gaze_px=(1500.0, 0.0))  # off the panel's right edge
+        run = builder.write()
+
+        with caplog.at_level(logging.WARNING, logger="alhazen.analysis.io.viewpixx"):
+            recording = read_run(run)
+
+        assert len(recording.samples) == 1000  # ten trials of 0.05 s at 2000 Hz
+        (warning,) = [r for r in caplog.records if "outside" in r.getMessage()]
+        assert "10%" in warning.getMessage()
+
+    def test_a_recording_with_no_tracked_gaze_says_nothing_about_the_frame(self, tmp_path):
+        """The real fixture is exactly this: a run made with no calibration on
+        the device, every sample NaN. It has no evidence to offer either way."""
+        for path in FIXTURES.glob("*.csv"):
+            shutil.copy(path, tmp_path / path.name)
+        write_snapshot(tmp_path)
+        assert not read_run(tmp_path).samples["tracked"].any()
+
     def test_a_drifting_clock_is_refused_rather_than_averaged_away(self):
         device = np.linspace(0, 100, 11)
         session = device + 0.002 * (device / 100) ** 2  # a curve, not a line
