@@ -27,7 +27,77 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ## Unreleased
 
+### Fixed
+
+- **The TRACKPixx3's gaze report is a calibrated read, and the backend now
+  says so.** With no calibration on the device, `TPxBestPolyGetEyePosition`
+  returns NaN for every position whether or not the camera sees an eye, and
+  the session reported it as "no eye" — the wrong diagnosis, for an afternoon
+  on the rig. The backend now reads the raw eye vectors the same call hands
+  back (pypixxlib's wrapper throws them away), keeps the device's calibration
+  state (read at `configure()` and after every `calibrate()`), gates
+  `get_gaze()` on it with one warning per uncalibrated stretch, and offers
+  `gaze_status()`, which says whether it was the calibration or the eye that
+  was missing. `SessionRunner` asks a tracker with that capability before
+  trial 1 and pauses with `TRACKER NOT CALIBRATED` as the reason. The device
+  keeps a calibration across runs, so the log now says at `configure()`
+  whether the session starts on one nobody in the room made.
+- **`--mode measure` measured the wrong flip, an uncalibrated tracker, and
+  printed vendor chatter as if it were an error.** The key-latency prompt was
+  drawn by `show_message`, which already flips, and then flipped again — so
+  the prompt vanished and the latency was timed from the blank flip. The
+  tracker accuracy check compared uncalibrated gaze with target positions;
+  it now calibrates first through the tracker's own `calibrate()`, names the
+  calibration in the report, and refuses to report an accuracy when the
+  calibration was aborted or failed. And pypixxlib's "Recording data is not
+  yet directly implemented" print — from two methods that work perfectly
+  well — is captured and logged as expected chatter at DEBUG, with anything
+  else the library prints kept at INFO.
+- **`n_dropped_frames` is 0 on a clean trial, not absent.** The engine
+  created the column on the first drop, so a clean trial wrote an empty cell
+  that read back as NaN: a column mean overstated drops by a third,
+  `astype(int)` raised, and `alhazen report` dropped clean trials from its
+  own table. The counter is zeroed at trial start under every marking policy,
+  and the report reads an old run's empty cell as 0.
+- **`session.log` is written as UTF-8.** It used the platform default, which
+  on Windows is cp1252, and every line with a dash or a degree sign came back
+  from the rig as mojibake.
+
 ### Changed
+
+- **Frame QA has a proportional policy, and an inert threshold is a config
+  error.** `frame_qa.max_dropped_per_trial` was only read under `abort_run`;
+  under `mark_trial` it sat in a rig file reading like a tolerance and did
+  nothing, and the analysis downstream, excluding on any drop, emptied two
+  thirds of a rehearsal's design cells. New policy `recycle_trial` ends a
+  trial that dropped more than `max_dropped_fraction` (default 10%) of its
+  frames as the reserved outcome `DROPPED_FRAMES` — `completed=False`, so the
+  scheduler re-serves the condition exactly as it re-serves a fixation break
+  — keeping what the outcome would have been as `outcome_before_frame_qa`
+  and the reason as `frame_qa_reason`; a fraction rather than a count because
+  three drops are a tenth of a 30-frame trial and nothing in a 350-frame one.
+  `max_consecutive_recycles` (default 5) in a row abort the run with a
+  message naming the display, so a panel that is not holding its refresh
+  cannot re-serve every trial forever with a subject in the chin rest.
+  Setting `max_dropped_per_trial` under any policy but `abort_run`, or
+  `max_dropped_fraction` / `max_consecutive_recycles` under any but
+  `recycle_trial`, is refused when the rig loads — a threshold that does
+  nothing is the thing this refuses. (`DROPPED_FRAMES` joins `PAUSED` and
+  `ABORTED` as a name a task cannot declare.)
+- **The session log records the session, not its dropped frames.** A
+  72-trial rehearsal's log was 310 lines: 308 identical per-frame warnings
+  and two of anything else, and it stopped mid-trial whether the session
+  crashed or ended. Per-frame drops are now DEBUG (the frame log holds every
+  interval) and one WARNING per trial that dropped anything sums the trial
+  up. What is INFO is the structure: `session start`, a `devices:` line, one
+  `setup:` line per thing the mode decided (reductions, stood-down devices —
+  `ModeSession.describe()` now goes into the log as well as the terminal,
+  because a terminal is not part of the run directory), `block N of M
+  starts/ends` from `BlockPlan`, every validation's per-target errors and
+  every drift correction beside the calibration verdicts already there, one
+  line per trial with its outcome and reason, and `session end:` with the
+  status and outcome counts — or `session end: FAILED … <exception>` at
+  ERROR.
 
 - **Every mode runs on every rig.** A rig file describes a machine — its
   panel, its devices, where its data goes — and says nothing about what you
@@ -67,6 +137,39 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   `--mode simulate --headless` on the lab rig is what `rig-sim` was for.
 
 ### Added
+
+- **A ViewPixx (TRACKPixx3) reader, `analysis/io/viewpixx.py`.** Reads a
+  run's `*_gaze.csv` and `*_gaze-messages.csv` onto the session clock: an
+  affine device→session **fit** from the two-clock message pairs, refused
+  when its worst residual exceeds a sample period; a sample table in degrees
+  from the screen centre where a lost eye or the device's blink flag is a NaN
+  row at its own time rather than a missing one (so a differentiator cannot
+  interpolate across a blink and invent a saccade); pupil diameter when the
+  file has it; `average` as the mean where both eyes are tracked, by the same
+  rule the live backend applies; `event_times` and `trial_spans` from the
+  messages; and `gaze_frame`, an explicit setting for which way the device's
+  `Screen X/Y` point — centred px with y up for a TRACKPixx3 this backend
+  calibrated, which a calibrated accuracy check on the rig has now measured
+  rather than argued. Reading the wrong frame displaces every position by
+  half a panel while leaving the cluster as tight as ever, so `read_run`
+  refuses a run with a quarter or more of its tracked gaze off the panel
+  (naming the other frame), warns above a few percent, and takes
+  `check_bounds=False` for gaze that really was off the panel. Its column
+  names are the device's own — `Timestamp`, `Left Screen
+  X`, VPixx's `Right Fixaion` typo included — matched regardless of the
+  header's tabs and spaces, and pinned by a test against
+  `tests/fixtures/trackpixx3/`, the header and messages of a real recording:
+  the reader that preceded it, in an experiment package, passed every test
+  written against fixtures in the names it wanted and could not open a real
+  file.
+- **A *Frame intervals* panel on every dashboard.** A histogram of every
+  flip-to-flip interval, in eighths of a frame period, built by the runner
+  from its `FrameMonitor` (`dashboard.panels.frame_intervals_panel`) and
+  filed under *Session*. The stats strip counts the frames **under half a
+  period** and turns red if there are any: impossible on a vsync-locked
+  display, so the flip is not waiting for vsync — which a headless rehearsal
+  here had 338 of behind a perfect-looking median, and no dropped-frame count
+  could show ([docs/dashboard.md](docs/dashboard.md#frame-timing-panel)).
 
 - **A calibration guide, validation and drift correction, and an Eye
   tracker tab on the dashboard.** Before a calibration starts, the subject
