@@ -40,12 +40,18 @@ class Outcome:
 
 
 # Framework-reserved outcomes, produced by the engine (never by a phase):
-# both are non-completed by definition — the trial ended before its
-# measurement existed. PAUSED additionally writes no trials row (the runner
-# enforces that split; see session/runner.py).
+# all are non-completed by definition. PAUSED and ABORTED ended the trial
+# before its measurement existed; PAUSED additionally writes no trials row
+# (the runner enforces that split; see session/runner.py). DROPPED_FRAMES is
+# different in kind: the trial ran to its own end, but the display dropped
+# more frames than the rig's frame QA allows (display/frames.py, policy
+# ``recycle_trial``), so what the subject saw was not the stimulus the config
+# describes and the measurement is discarded. The trial's own outcome is
+# kept on the record as ``outcome_before_frame_qa``.
 PAUSED = Outcome("PAUSED", completed=False)
 ABORTED = Outcome("ABORTED", completed=False)
-_RESERVED_OUTCOMES = {"PAUSED": PAUSED, "ABORTED": ABORTED}
+DROPPED_FRAMES = Outcome("DROPPED_FRAMES", completed=False)
+_RESERVED_OUTCOMES = {"PAUSED": PAUSED, "ABORTED": ABORTED, "DROPPED_FRAMES": DROPPED_FRAMES}
 
 
 _OUTCOME_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")

@@ -87,7 +87,16 @@ command source, and the bus:
 5. draw the rig's `overlay(ctx)`, if any — today, the photodiode patch
 6. `display.flip()` — the only moment photons change
 7. stamp the session clock; compute `ctx.dt` (duration of the just-shown frame)
-8. feed the FrameMonitor (dropped-frame policy: log/warn/mark_trial/abort_run)
+8. feed the FrameMonitor (dropped-frame policy:
+   log/warn/mark_trial/recycle_trial/abort_run; at the trial's end its
+   `end_trial()` logs one line per trial with drops and, under
+   `recycle_trial`, turns a trial that dropped more than
+   `max_dropped_fraction` of its frames into the reserved `DROPPED_FRAMES`
+   outcome — `completed=False`, so the scheduler re-serves it like a fixation
+   break, with the outcome it would have had kept as
+   `outcome_before_frame_qa`; `max_consecutive_recycles` in a row abort the
+   run naming the display. Under every marking policy `n_dropped_frames` is
+   `0` on a clean trial, never absent)
 9. emit the events the phase queued via `ctx.emit_on_flip`, stamped now —
    the photon-honest timestamp
 

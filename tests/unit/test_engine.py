@@ -244,3 +244,44 @@ class TestFrameQAIntegration:
 
         result = harness.engine.run_trial(harness.ctx(), [AlwaysSlow(3, COMPLETED)])
         assert "n_dropped_frames" not in result.record
+
+    def _run_with_drops(self, n_frames, drop_frames, outcome, **cfg):
+        harness = EngineHarness(frame_qa=FrameQAConfig(policy="recycle_trial", **cfg))
+
+        class DropSome(RunForFrames):
+            def on_frame(self, ctx):
+                if len(self.frames_seen) in drop_frames:
+                    harness.display.next_flip_extra = FRAME_S
+                return super().on_frame(ctx)
+
+        return harness.engine.run_trial(harness.ctx(), [DropSome(n_frames, outcome)]), harness
+
+    def test_recycle_trial_discards_a_trial_that_dropped_too_many_frames(self):
+        """The trial finishes, but its measurement is not one: the outcome
+        becomes DROPPED_FRAMES (completed=False, so the scheduler re-serves
+        the condition) and what it would have been stays on the row."""
+        result, harness = self._run_with_drops(9, {1, 2, 3}, COMPLETED, max_dropped_fraction=0.2)
+        assert result.outcome.name == "DROPPED_FRAMES"
+        assert result.outcome.completed is False
+        assert result.record["outcome"] == "DROPPED_FRAMES"
+        assert result.record["completed"] is False
+        assert result.record["outcome_before_frame_qa"] == "COMPLETED"
+        assert result.record["n_dropped_frames"] == 3
+        # Ten flips are nine measured intervals: the first only sets the reference.
+        assert "3 of 9 frames dropped (33.3%)" in result.record["frame_qa_reason"]
+        (end,) = events_named(harness, "TRIAL_END")
+        assert end.payload == {"outcome": "DROPPED_FRAMES", "completed": False}
+
+    def test_recycle_trial_keeps_a_trial_within_its_budget(self):
+        result, _ = self._run_with_drops(29, {1, 2}, COMPLETED, max_dropped_fraction=0.1)
+        assert result.outcome is COMPLETED
+        assert result.record["n_dropped_frames"] == 2
+        assert "outcome_before_frame_qa" not in result.record
+
+    def test_recycle_trial_leaves_an_incomplete_outcome_alone(self):
+        """FAILED is already re-served, and PAUSED drives the runner's pause
+        flow: replacing either would change what happens next for no gain."""
+        result, _ = self._run_with_drops(4, {1, 2, 3}, FAILED, max_dropped_fraction=0.1)
+        assert result.outcome is FAILED
+        assert result.record["n_dropped_frames"] == 3
+        assert "frame_qa_reason" not in result.record

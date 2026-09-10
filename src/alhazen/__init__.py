@@ -32,6 +32,7 @@ from alhazen.core.engine import QuitRequested, TrialEngine, TrialResult
 from alhazen.core.events import Event, EventBus, EventSchema
 from alhazen.core.trial import (
     ABORTED,
+    DROPPED_FRAMES,
     PAUSED,
     CircleRegion,
     InputFrame,
@@ -70,6 +71,7 @@ __version__ = get_version()
 
 __all__ = [
     "ABORTED",
+    "DROPPED_FRAMES",
     "PAUSED",
     "AlhazenError",
     "build_session",

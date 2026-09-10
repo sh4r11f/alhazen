@@ -12,6 +12,7 @@ from alhazen.config.models import (
     DevicesConfig,
     Duration,
     EyeTrackerConfig,
+    FrameQAConfig,
     MonitorConfig,
     PhotodiodeConfig,
     RewardPulses,
@@ -79,6 +80,53 @@ class TestModels:
         info = SessionInfo(subject="s1", session=1, run=1, task_name="t", seed=1)
         with pytest.raises(ValueError):
             info.subject = "other"  # type: ignore[misc]
+
+
+class TestFrameQAPolicyConfig:
+    """A threshold the policy never reads is a config error, not a default.
+
+    ``max_dropped_per_trial: 3`` under ``mark_trial`` sat in a rig file
+    reading like a tolerance and did nothing at all; the analysis then
+    excluded on any drop and emptied two thirds of its design cells.
+    """
+
+    def test_defaults_carry_no_inert_threshold(self):
+        cfg = FrameQAConfig()
+        assert cfg.policy == "warn"
+        assert cfg.max_dropped_per_trial == 3 and cfg.max_dropped_fraction == pytest.approx(0.1)
+
+    def test_a_budget_under_a_policy_that_ignores_it_is_refused(self):
+        with pytest.raises(
+            ValueError, match="max_dropped_per_trial only applies under policy 'abort_run'"
+        ):
+            FrameQAConfig(policy="mark_trial", max_dropped_per_trial=3)
+        with pytest.raises(
+            ValueError, match="max_dropped_fraction only applies under policy 'recycle_trial'"
+        ):
+            FrameQAConfig(policy="abort_run", max_dropped_fraction=0.2)
+
+    def test_each_threshold_is_accepted_by_its_own_policy(self):
+        assert FrameQAConfig(policy="abort_run", max_dropped_per_trial=0).max_dropped_per_trial == 0
+        recycle = FrameQAConfig(policy="recycle_trial", max_dropped_fraction=0.25)
+        assert recycle.max_dropped_fraction == pytest.approx(0.25)
+
+    def test_the_fraction_is_a_fraction(self):
+        with pytest.raises(ValueError, match="max_dropped_fraction must be in"):
+            FrameQAConfig(policy="recycle_trial", max_dropped_fraction=1.0)
+        with pytest.raises(ValueError, match="max_dropped_fraction must be in"):
+            FrameQAConfig(policy="recycle_trial", max_dropped_fraction=0.0)
+
+    def test_the_same_rule_holds_from_yaml(self, tmp_path):
+        path = tmp_path / "rig.yaml"
+        path.write_text(
+            "monitor: {width_px: 100, height_px: 100, width_cm: 30, distance_cm: 60, "
+            "refresh_rate_hz: 60}\n"
+            "display: {backend: simulated, frame_qa: {policy: mark_trial, "
+            "max_dropped_per_trial: 3}}\n"
+            f"data_root: {tmp_path.as_posix()}\n"
+        )
+        with pytest.raises(ConfigError, match="max_dropped_per_trial only applies"):
+            load_rig(path)
 
 
 class TestDeviceModels:

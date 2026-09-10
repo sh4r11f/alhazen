@@ -262,7 +262,9 @@ def _trials(run: RunData) -> dict[str, Any]:
         # ones. Nothing better is available from an old table, since outcome
         # names belong to the experiment and this layer cannot import them.
         completed = sum(
-            count for outcome, count in counts.items() if outcome not in ("PAUSED", "ABORTED")
+            count
+            for outcome, count in counts.items()
+            if outcome not in ("PAUSED", "ABORTED", "DROPPED_FRAMES")
         )
     return {
         "n_rows": n_rows,

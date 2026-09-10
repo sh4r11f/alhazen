@@ -108,15 +108,48 @@ class FrameQAConfig(Model):
 
     A frame is "dropped" when its measured interval exceeds the nominal frame
     period by more than ``tolerance`` frame periods (0.5 = halfway to the
-    next vsync). Policies escalate: ``log`` (debug log only), ``warn``
-    (session log warning), ``mark_trial`` (also count on the trial record so
-    analysis can exclude), ``abort_run`` (also raise FrameQAError once
-    ``max_dropped_per_trial`` is exceeded in one trial).
+    next vsync). Every policy records every interval in the frame log and
+    counts each trial's drops; they differ in how the live session reacts:
+
+    - ``log``: the per-trial drop line goes to the debug log only.
+    - ``warn``: one warning line per trial that dropped frames.
+    - ``mark_trial``: also count them on the trial record
+      (``n_dropped_frames``, 0 for a clean trial) so an analysis can exclude
+      or weight.
+    - ``recycle_trial``: also end the trial as ``DROPPED_FRAMES`` — a reserved
+      outcome with ``completed=False`` — when more than
+      ``max_dropped_fraction`` of its frames were dropped, so the scheduler
+      re-serves the condition exactly as it re-serves a fixation break. A
+      fraction rather than a count because trials differ in length: three
+      drops are a tenth of a 30-frame trial and a rounding error in a
+      350-frame one. The trial's own outcome and the reason are kept on the
+      record (``outcome_before_frame_qa``, ``frame_qa_reason``).
+    - ``abort_run``: also raise ``FrameQAError`` once more than
+      ``max_dropped_per_trial`` frames drop in one trial.
+
+    ``recycle_trial`` has a floor under it: a display that is persistently
+    bad would otherwise recycle every trial forever and the session would
+    never end, with a subject in the chin rest. Once
+    ``max_consecutive_recycles`` trials in a row have been recycled the run
+    aborts with ``FrameQAError`` naming the display, because at that point
+    the panel is not holding its refresh rate and no scheduler can fix that.
+
+    A threshold the chosen policy never reads is a config error, not a
+    default: ``max_dropped_per_trial: 3`` under ``mark_trial`` reads like a
+    tolerance and does nothing, and a silent no-op in a rig file is exactly
+    what this module exists to refuse.
     """
 
-    policy: Literal["log", "warn", "mark_trial", "abort_run"] = "warn"
+    policy: Literal["log", "warn", "mark_trial", "recycle_trial", "abort_run"] = "warn"
     tolerance: float = 0.5
+    # abort_run only: how many dropped frames one trial may have before the
+    # run stops.
     max_dropped_per_trial: int = 3
+    # recycle_trial only: the fraction of a trial's frames that may drop
+    # before the trial is recycled, and how many recycled trials in a row
+    # turn "a bad trial" into "a bad display" and abort the run.
+    max_dropped_fraction: float = 0.10
+    max_consecutive_recycles: int = 5
 
     @model_validator(mode="after")
     def _valid(self) -> FrameQAConfig:
@@ -124,6 +157,28 @@ class FrameQAConfig(Model):
             raise ValueError("tolerance must be in (0, 1) — fractions of one frame period")
         if self.max_dropped_per_trial < 0:
             raise ValueError("max_dropped_per_trial must be >= 0")
+        if not 0.0 < self.max_dropped_fraction < 1.0:
+            raise ValueError(
+                "max_dropped_fraction must be in (0, 1) — a fraction of the trial's frames"
+            )
+        if self.max_consecutive_recycles < 1:
+            raise ValueError("max_consecutive_recycles must be >= 1")
+        # ``model_fields_set`` holds only the keys the YAML (or the caller)
+        # actually supplied, so a default that does not apply stays silent
+        # while a threshold someone typed under a policy that ignores it does
+        # not — the same rule EyeTrackerConfig applies to backend-only fields.
+        read_by = {
+            "max_dropped_per_trial": "abort_run",
+            "max_dropped_fraction": "recycle_trial",
+            "max_consecutive_recycles": "recycle_trial",
+        }
+        for name, policy in read_by.items():
+            if name in self.model_fields_set and self.policy != policy:
+                raise ValueError(
+                    f"{name} only applies under policy {policy!r}; under {self.policy!r} it "
+                    f"would be ignored, and a threshold that does nothing is a config error. "
+                    f"Remove it or change the policy."
+                )
         return self
 
 
