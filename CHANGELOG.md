@@ -25,6 +25,31 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+### Added
+
+- **`read_run_binocular`, for an experiment whose measurement is the relation
+  between the eyes.** `read_run` reduces a recording to one eye, which is what
+  most experiments want and is none of what a vergence experiment wants:
+  vergence is the difference between the eyes and `average` is not vergence
+  either. The new entry point reads the same file once and keeps both, as
+  `left_x_dva`/`left_y_dva`/`left_tracked`/`left_pupil` and their `right_`
+  equivalents, in the same degrees-from-centre the monocular reader uses. The
+  header mapping, the clock fit, the blink rule and the bounds check are the
+  same code, so nothing verified is re-implemented to get there.
+
+  Two `tracked` flags rather than one, deliberately: a single flag meaning
+  "both eyes" is a different predicate under the same name, and it hides the
+  case that matters most — one eye lost while the other tracks. Encoding loss
+  only as NaN loses that case too, since `(finite + nan) / 2` is nan, so a
+  version estimate silently discards the surviving eye's answer; measured at
+  50 of 500 samples on a recording where only the left eye blinked. Vergence
+  is not a column, because its absolute value carries the subject's tonic
+  vergence and both eyes' calibration offsets and means nothing until it is
+  baseline-subtracted — a column would invite plotting it raw. Designed with
+  the kde-vergence experiment, whose own adapter it replaces.
+
 ## 1.1.0 - 2026-09-09
 
 ### Fixed

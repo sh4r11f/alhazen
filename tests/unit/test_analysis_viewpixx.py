@@ -25,10 +25,12 @@ from alhazen.analysis.io import viewpixx
 from alhazen.analysis.io.viewpixx import (
     DEFAULT_COLUMNS,
     REAL_HEADER,
+    BinocularRecording,
     ClockFit,
     event_times,
     fit_clock,
     read_run,
+    read_run_binocular,
 )
 from alhazen.config.models import MonitorConfig
 from alhazen.display.screen import Screen
@@ -94,29 +96,53 @@ class RunBuilder:
         blink_s: tuple[float, float] | None = None,
         lost_s: tuple[float, float] | None = None,
         end_mark: bool = True,
+        eye_lost_s: dict[str, tuple[float, float]] | None = None,
+        eye_offset_px: dict[str, float] | None = None,
+        mark_eye_used: bool = True,
     ) -> None:
+        """One trial of samples.
+
+        ``lost_s`` loses both eyes together, which is a blink. ``eye_lost_s``
+        loses them separately — ``{"left": (0.1, 0.2)}`` — which is the case
+        a binocular reader has to represent and a monocular one cannot see.
+        ``eye_offset_px`` shifts one eye's x, so the two eyes differ by a
+        known amount and vergence is a number a test can predict.
+        """
         self.trial += 1
         self.mark(f"TRIAL {self.trial} attempt 1")
-        self.mark(f"EYE_USED {self.eye}")
+        if mark_eye_used:
+            self.mark(f"EYE_USED {self.eye}")
         self.mark("trial_start")
         start = self.t
         n = int(duration_s * SAMPLE_HZ)
+        eye_lost_s = eye_lost_s or {}
+        offsets = {"left": 0.0, "right": 10.0, **(eye_offset_px or {})}
         for index in range(n):
             t = start + index / SAMPLE_HZ
             since = t - start
-            x, y = gaze_px
             blink = 0.0
             if blink_s is not None and blink_s[0] <= since < blink_s[1]:
                 blink = 1.0  # the device's flag, position still a number
-            if lost_s is not None and lost_s[0] <= since < lost_s[1]:
-                x = y = 9000.0  # the device's lost sentinel
+
+            def position(eye: str, since: float = since) -> tuple[float, float]:
+                x, y = gaze_px
+                x = x + offsets[eye]
+                window = eye_lost_s.get(eye)
+                both = lost_s is not None and lost_s[0] <= since < lost_s[1]
+                one = window is not None and window[0] <= since < window[1]
+                if both or one:
+                    return 9000.0, 9000.0  # the device's lost sentinel
+                return x, y
+
+            left_x, left_y = position("left")
+            right_x, right_y = position("right")
             self.samples.append(
                 {
                     "Timestamp": self.device_time(t),
-                    "\tLeft Screen X": x,
-                    " Left Screen Y": y,
-                    " Right Screen X": x + 10.0,
-                    " Right Screen Y": y,
+                    "\tLeft Screen X": left_x,
+                    " Left Screen Y": left_y,
+                    " Right Screen X": right_x,
+                    " Right Screen Y": right_y,
                     " Left Blink": blink,
                     " Right Blink": blink,
                     " Left Pupil Diameter": 3.0,
@@ -424,3 +450,135 @@ class TestEventsAndTrials:
         # The last one ends where the samples do.
         assert spans["t_end"].iloc[1] == pytest.approx(recording.samples["t_session"].iloc[-1])
         assert spans["status"].tolist() == ["attempt 1", "attempt 1"]
+
+
+# ----------------------------------------------------------------------
+# Both eyes
+# ----------------------------------------------------------------------
+
+
+class TestBinocular:
+    """`read_run_binocular` keeps what the monocular reader reduces away.
+
+    For a vergence experiment one eye is not a smaller version of the
+    measurement, it is none of it, so this is a separate entry point rather
+    than an argument — and everything above the eye selection is the same
+    code the monocular tests above already cover.
+    """
+
+    def test_it_keeps_both_eyes_in_the_same_units(self, tmp_path):
+        builder = RunBuilder(tmp_path)
+        # Left at 4 deg, right one degree nearer the nose: 1 deg of vergence.
+        builder.trial_of(
+            gaze_px=(PX_PER_DEG * 4.0, -PX_PER_DEG * 2.0),
+            eye_offset_px={"right": -PX_PER_DEG},
+        )
+        recording = read_run_binocular(builder.write())
+
+        assert isinstance(recording, BinocularRecording)
+        assert recording.gaze_frame == "centered_y_up"
+        samples = recording.samples
+        assert samples["left_x_dva"].median() == pytest.approx(4.0, abs=1e-6)
+        assert samples["right_x_dva"].median() == pytest.approx(3.0, abs=1e-6)
+        assert samples["left_y_dva"].median() == pytest.approx(-2.0, abs=1e-6)
+        assert samples["left_tracked"].all() and samples["right_tracked"].all()
+        assert samples["left_pupil"].median() == pytest.approx(3.0)
+        assert samples["right_pupil"].median() == pytest.approx(4.0)
+
+        # Vergence is the caller's one line, and it comes out where it was put.
+        vergence = samples["left_x_dva"] - samples["right_x_dva"]
+        assert vergence.median() == pytest.approx(1.0, abs=1e-6)
+
+    def test_one_eye_lost_does_not_lose_the_other(self, tmp_path):
+        """The case a single `tracked` flag would hide. Encoding loss only as
+        NaN also loses the surviving eye through any arithmetic that touches
+        both, since (finite + nan) / 2 is nan — so the position is NaN AND the
+        per-eye boolean says which eye it was."""
+        builder = RunBuilder(tmp_path)
+        builder.trial_of(duration_s=0.25, eye_lost_s={"left": (0.0, 0.025)})
+        samples = read_run_binocular(builder.write()).samples
+
+        lost = ~samples["left_tracked"]
+        assert lost.sum() == pytest.approx(0.025 * SAMPLE_HZ, abs=1)
+        # The left eye is gone for those samples...
+        assert samples.loc[lost, "left_x_dva"].isna().all()
+        assert samples.loc[lost, "left_pupil"].isna().all()
+        # ...and the right eye is there for every one of them, which is the
+        # whole point: a monocular epoch stays usable and stays findable.
+        assert samples["right_tracked"].all()
+        assert samples.loc[lost, "right_x_dva"].notna().all()
+        assert len(samples) == int(0.25 * SAMPLE_HZ)
+
+    def test_a_blink_loses_both_eyes(self, tmp_path):
+        builder = RunBuilder(tmp_path)
+        builder.trial_of(duration_s=0.25, blink_s=(0.1, 0.15))
+        samples = read_run_binocular(builder.write()).samples
+
+        blinking = ~samples["left_tracked"]
+        assert blinking.sum() == pytest.approx(0.05 * SAMPLE_HZ, abs=1)
+        assert (~samples.loc[blinking, "right_tracked"]).all()
+
+    def test_it_does_not_need_to_be_told_which_eye_the_session_read(self, tmp_path):
+        """EYE_USED records the eye the SESSION read online, for its fixation
+        windows. The device recorded both regardless, so a binocular read has
+        no use for it — and must not refuse a run that lacks it."""
+        builder = RunBuilder(tmp_path)
+        builder.trial_of(mark_eye_used=False)
+        run = builder.write()
+
+        assert read_run_binocular(run).samples["left_tracked"].all()
+        # The monocular reader still insists, because it has to choose.
+        with pytest.raises(DataError, match="no EYE_USED mark"):
+            read_run(run)
+
+    def test_the_views_are_the_same_ones_the_monocular_recording_offers(self, tmp_path):
+        builder = RunBuilder(tmp_path)
+        builder.trial_of(duration_s=0.1)
+        builder.trial_of(duration_s=0.1)
+        recording = read_run_binocular(builder.write())
+
+        assert recording.sample_rate_hz == pytest.approx(SAMPLE_HZ, rel=1e-3)
+        spans = recording.trial_spans()
+        assert spans["trial_index"].tolist() == [1, 2]
+        first = recording.between(spans["t_start"].iloc[0], spans["t_end"].iloc[0])
+        assert 0 < len(first) <= len(recording.samples)
+        assert event_times(recording.messages, "STIM_ON")["trial_index"].tolist() == [1, 2]
+
+    def test_the_bounds_check_applies_per_eye_and_names_it(self, tmp_path):
+        """Read in the wrong frame, both eyes are half a panel out; the error
+        has to say which eye it measured so a one-eyed fault is findable."""
+        builder = RunBuilder(tmp_path)
+        builder.trial_of(gaze_px=(1100.0, 700.0))  # screen px, read as centred
+        run = builder.write()
+
+        with pytest.raises(DataError, match="left-eye samples") as error:
+            read_run_binocular(run)
+        assert "screen_y_down" in str(error.value)
+
+        recording = read_run_binocular(run, gaze_frame="screen_y_down")
+        assert recording.samples["left_x_dva"].median() == pytest.approx(140 / PX_PER_DEG, abs=1e-6)
+        assert read_run_binocular(run, check_bounds=False).samples["left_tracked"].all()
+
+    def test_the_real_recording_reads_with_both_eyes_untracked(self, tmp_path, caplog):
+        """The fixture from the rig: made with no calibration on the device,
+        so every position is NaN and both blink flags are set. The reader
+        represents that faithfully and says so, rather than refusing it —
+        whether an all-NaN run is analysable is the experiment's call, not
+        the reader's."""
+        import logging
+
+        for path in FIXTURES.glob("*.csv"):
+            shutil.copy(path, tmp_path / path.name)
+        write_snapshot(tmp_path)
+
+        with caplog.at_level(logging.WARNING, logger="alhazen.analysis.io.viewpixx"):
+            recording = read_run_binocular(tmp_path)
+
+        assert len(recording.samples) == 40
+        assert not recording.samples["left_tracked"].any()
+        assert not recording.samples["right_tracked"].any()
+        # One warning per eye, naming the likely cause.
+        said = [r.getMessage() for r in caplog.records if "is tracked" in r.getMessage()]
+        assert len(said) == 2
+        assert any("no left-eye sample" in m for m in said)
+        assert all("no calibration on the device" in m for m in said)

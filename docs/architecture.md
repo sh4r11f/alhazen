@@ -749,9 +749,14 @@ rather than a position at the origin), `viewpixx` (a TRACKPixx3 run's
 **fit** from the two-clock message pairs that refuses a residual worse than a
 sample period, a sample table in degrees where a lost eye or a blink flag is
 a NaN row rather than a missing one, `event_times` and `trial_spans` from the
-messages, and `gaze_frame` as an explicit setting because whether the
-device's `Screen X/Y` are centred and y-up has not yet been checked against a
-valid sample), and `session` (a run directory, manifest-verified, returned as
+messages, and `gaze_frame` as an explicit setting, defaulting to the centred,
+y-up frame a TRACKPixx3 this backend calibrated reports — measured on the rig,
+and guarded by a check that refuses a run whose tracked gaze mostly falls off
+the panel, which is what the wrong frame looks like. `read_run_binocular`
+reads the same file keeping both eyes, for an experiment whose measurement is
+the relation between them: one eye is not a reduced version of a vergence
+measurement but none of it, and each eye carries its own `tracked` flag so
+that one eye lost while the other tracks stays visible and usable), and `session` (a run directory, manifest-verified, returned as
 typed pandas DataFrames — a `csv.DictReader` row hands back
 `row["success"] == "False"`, and `"False"` is truthy). All are tested against
 synthetic files written by `tests/fixtures_neural.py`, so each test can say
