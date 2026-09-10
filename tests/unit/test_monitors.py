@@ -266,6 +266,30 @@ class TestResolve:
         assert mon.getWidth() == 52.0
         assert mon.getDistance() == 57.0
 
+    def test_an_unregistered_monitor_says_so_at_warning(self, fake_psychopy, caplog):
+        """Nothing fails — the window opens either way — which is exactly why
+        this has to be audible. The session runs with no measured gamma and
+        looks identical to one that inherited a calibration, and a rig whose
+        monitor is registered under another name lands here and nowhere
+        else."""
+        import logging
+
+        with caplog.at_level(logging.INFO, logger="alhazen.display.monitors"):
+            registry.resolve(MONITOR)
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1, [r.getMessage() for r in caplog.records]
+        message = warnings[0].getMessage()
+        assert "not registered" in message and "uncalibrated" in message
+        assert "alhazen monitor register" in message
+
+    def test_a_registered_monitor_says_nothing(self, fake_psychopy, caplog):
+        import logging
+
+        registry.register(MONITOR, gamma=2.2)
+        with caplog.at_level(logging.WARNING, logger="alhazen.display.monitors"):
+            registry.resolve(MONITOR)
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+
     def test_resolving_an_unregistered_monitor_writes_nothing(self, fake_psychopy):
         registry.resolve(MONITOR)
         assert registry.registered_names() == []
