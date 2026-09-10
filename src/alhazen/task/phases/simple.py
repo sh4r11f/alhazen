@@ -128,6 +128,23 @@ class TrialFeedback:
     — which is why ``verdict`` is any predicate over the record rather than
     a built-in region test.
 
+    **Check what your acceptance region can actually distinguish.** A region
+    wide enough to be honest is often wide enough to be unfalsifiable in one
+    direction, and the geometry says which. If the acceptance radius plus the
+    fixation radius reaches the target's eccentricity, the near edge of the
+    region touches the fixation window: every saccade large enough to count
+    as leaving fixation at all already lands inside it, so "fell short" is
+    unreachable and the only failure the verdict can ever report is "went
+    somewhere else". That may be exactly what you want — it was, for the
+    experiment this was built for, where an 8° window around a figure at 10°
+    eccentricity against a 2° fixation window left undershoot geometrically
+    impossible and nobody minded, because the region only had to catch a
+    subject who saccaded to the other hemifield. Work the arithmetic before
+    the pilot rather than after it, and if undershoot is a failure mode you
+    need the subject to hear about, an amplitude bound has to carry it — but
+    only where the bound can sit clear of every legitimate landing, which in
+    a design with targets at several eccentricities it usually cannot.
+
     The stimulus under ``stimulus_key`` must offer ``set_color``; the
     fixation point does, and the simulated stand-in records it.
     """
