@@ -163,4 +163,4 @@ def write_snapshot(cfg: SessionConfig, path: Path, experiment_dir: Path | None =
         "config": cfg.model_dump(mode="json"),
         "provenance": build_provenance(experiment_dir),
     }
-    path.write_text(yaml.safe_dump(payload, sort_keys=False))
+    path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")

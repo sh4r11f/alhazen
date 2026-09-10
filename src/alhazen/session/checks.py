@@ -140,7 +140,7 @@ def _check_data_root(rig: RigConfig) -> CheckResult:
     probe = root / ".alhazen-write-check"
     try:
         root.mkdir(parents=True, exist_ok=True)
-        probe.write_text("ok")
+        probe.write_text("ok", encoding="utf-8")
         probe.unlink()
     except OSError as e:
         return CheckResult("data_root", False, f"{root} is not writable: {e}")

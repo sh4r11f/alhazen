@@ -266,7 +266,7 @@ class FrameMonitor:
         return self._cfg.policy in ("mark_trial", "recycle_trial", "abort_run")
 
     def save(self, path: Path) -> None:
-        with path.open("w", newline="") as f:
+        with path.open("w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow(["trial_index", "t", "interval_s", "dropped"])
             for r in self._records:

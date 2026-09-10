@@ -71,12 +71,12 @@ class DataRecorder:
         """Write both tables. Called from the runner's teardown, which
         guarantees this is attempted even when other teardown steps fail."""
         columns = ordered_trial_columns(self._trials)
-        with self._trials_path.open("w", newline="") as f:
+        with self._trials_path.open("w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=columns, extrasaction="ignore")
             writer.writeheader()
             for row in self._trials:
                 writer.writerow({k: v for k, v in row.items() if v is not None})
-        with self._events_path.open("w", newline="") as f:
+        with self._events_path.open("w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=["trial_index", "event", "t", "payload_json"])
             writer.writeheader()
             writer.writerows(self._events)

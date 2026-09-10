@@ -41,7 +41,7 @@ def parse_meta(meta_path: Path | str) -> dict[str, str]:
     if not meta_path.exists():
         raise DataError(f"SpikeGLX meta file not found: {meta_path}")
     meta: dict[str, str] = {}
-    for line in meta_path.read_text().splitlines():
+    for line in meta_path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line or "=" not in line:
             continue

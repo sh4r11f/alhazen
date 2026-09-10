@@ -106,7 +106,7 @@ class TrainingState:
             log.info("no training state for %s yet; starting at stage %r", subject, default_stage)
             return cls(stage=default_stage)
         try:
-            raw = yaml.safe_load(path.read_text()) or {}
+            raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
             state = cls(
                 stage=raw["stage"],
                 completed_by_stage=raw.get("completed_by_stage", {}),
@@ -143,6 +143,7 @@ class TrainingState:
                     "history": self.history,
                 },
                 sort_keys=False,
-            )
+            ),
+            encoding="utf-8",
         )
         return path

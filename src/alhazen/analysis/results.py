@@ -66,14 +66,14 @@ class ResultsBundle:
 
         path = self.out_dir / name
         if rows:
-            with path.open("w", newline="") as handle:
+            with path.open("w", newline="", encoding="utf-8") as handle:
                 writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
                 writer.writeheader()
                 writer.writerows(rows)
         else:
             # An empty result is a result; writing nothing would be
             # indistinguishable from the analysis never running.
-            path.write_text("")
+            path.write_text("", encoding="utf-8")
         self.outputs.append(name)
         return path
 
@@ -92,7 +92,8 @@ class ResultsBundle:
                 },
                 indent=2,
                 sort_keys=False,
-            )
+            ),
+            encoding="utf-8",
         )
         log.info("results bundle written to %s (%d outputs)", self.out_dir, len(self.outputs))
         return path

@@ -25,6 +25,31 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## 1.4.2 - 2026-09-10
+
+### Fixed
+
+- **Every text file alhazen reads or writes names its encoding.** Thirty-four
+  reads and writes left it to the locale, which is UTF-8 on Linux and macOS
+  and cp1252 on the Windows rig. There, a non-ASCII character in a config
+  value loaded as different characters with no error; a non-ASCII trial or
+  event field went into the CSV as cp1252, for pandas to refuse or mis-read;
+  and a character cp1252 has no code for raised inside the recorder in the
+  middle of a session. Files a person writes by hand — rig and params YAML,
+  scene files, the photometer CSV and the participants table — are read as
+  UTF-8 that tolerates the byte-order mark Windows editors add. Everything
+  else is plain UTF-8, and nothing is written with a byte-order mark.
+
+  A test now fails if any module reads or writes text without naming an
+  encoding. It has to be mechanical: CI does not run on a cp1252 machine, so
+  a test that writes a file and reads it back passes there either way.
+
+  Files already on disk read the same when they are ASCII, and every run
+  directory checked so far is: YAML snapshots escape non-ASCII, and the CSVs
+  hold outcome names and numbers. A CSV an older version wrote with a
+  non-ASCII value in it now fails loudly on read instead of being quietly
+  mis-decoded.
+
 ## 1.4.1 - 2026-09-10
 
 ### Fixed

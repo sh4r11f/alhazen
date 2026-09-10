@@ -100,7 +100,7 @@ def _read_cluster_groups(sort_dir: Path) -> dict[int, str]:
         if not path.exists():
             continue
         groups: dict[int, str] = {}
-        for line in path.read_text().splitlines()[1:]:  # skip the header
+        for line in path.read_text(encoding="utf-8").splitlines()[1:]:  # skip the header
             fields = line.replace(",", "\t").split("\t")
             if len(fields) < 2:
                 continue

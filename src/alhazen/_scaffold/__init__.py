@@ -75,7 +75,9 @@ def scaffold(name: str, destination: Path, force: bool = False) -> Path:
         # path and off ruff's radar; the rendered file is a real .py.
         target = root / relative.removesuffix(".template")
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(Template(source.read_text()).substitute(substitutions))
+        target.write_text(
+            Template(source.read_text(encoding="utf-8")).substitute(substitutions), encoding="utf-8"
+        )
         log.info("wrote %s", target.relative_to(root))
 
     return root

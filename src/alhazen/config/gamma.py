@@ -29,7 +29,7 @@ def gamma_path(rig_path: Path | str) -> Path:
 
 def write_gamma(rig_path: Path | str, fit: dict[str, float]) -> Path:
     path = gamma_path(rig_path)
-    path.write_text(yaml.safe_dump({"schema_version": 1, **fit}, sort_keys=False))
+    path.write_text(yaml.safe_dump({"schema_version": 1, **fit}, sort_keys=False), encoding="utf-8")
     log.info("gamma fit written to %s", path)
     return path
 
@@ -39,5 +39,5 @@ def load_gamma(rig_path: Path | str) -> dict[str, float] | None:
     path = gamma_path(rig_path)
     if not path.exists():
         return None
-    data = yaml.safe_load(path.read_text()) or {}
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     return {key: float(value) for key, value in data.items() if key != "schema_version"}
