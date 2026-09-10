@@ -288,6 +288,8 @@ class SessionRunner:
                     log.info("session cancelled from instructions screen")
                     self._cancelled = True
                     return
+            if not self._require_tracker_calibration():
+                return
             while True:
                 condition = self._source.next()
                 if condition is None:
@@ -372,7 +374,8 @@ class SessionRunner:
                     # measurement is already recorded above — a hardware fault
                     # after the fact must never discard a trial the subject
                     # actually completed.
-                    if not self._handle_pause(result.record, reward_failed=reward_failed):
+                    fault = "REWARD FAILURE — check the pump" if reward_failed else None
+                    if not self._handle_pause(result.record, fault=fault):
                         break
                     continue  # the pause menu already gave all the time needed; skip ITI
 
@@ -579,6 +582,28 @@ class SessionRunner:
         ctx.record[f"t_{name.lower()}"] = t
         self._bus.emit(Event(name=name, t=t, trial_index=self._trial_index, payload=payload))
 
+    def _require_tracker_calibration(self) -> bool:
+        """Before trial 1: a tracker that can say it holds no calibration
+        stops the session at the pause screen, with that reason, until the
+        experimenter has calibrated (or chosen to go on). Returns False
+        when they quit instead.
+
+        Only trackers with the optional ``calibration_state`` capability
+        (the TRACKPixx3) are asked; the EyeLink's Host PC owns its own
+        calibration and the stand-ins have none. Gaze from an uncalibrated
+        device is not a position, and a session that ran on it would look
+        like a session where the subject never fixated — every trial a
+        fixation break, nothing in the record saying why.
+        """
+        state = getattr(self._tracker, "calibration_state", None)
+        if state is None or state():
+            return True
+        log.warning(
+            "the eye tracker reports NO calibration before trial 1; pausing until one is "
+            "done (C on the pause screen, or the dashboard's Calibrate button)"
+        )
+        return self._handle_pause({}, fault="TRACKER NOT CALIBRATED — press C to calibrate")
+
     def _start_tracker_trial(self, ctx: TrialContext, attempt: int) -> None:
         """Open the tracker's recording segment and refresh its operator
         overlay, before the trial's first frame."""
@@ -606,11 +631,15 @@ class SessionRunner:
     def _show_pause_menu(self, menu: PauseMenu) -> None:
         self._display.show_menu(menu.title, menu.render(), color=menu.color)
 
-    def _handle_pause(self, record: dict[str, Any], reward_failed: bool = False) -> bool:
+    def _handle_pause(self, record: dict[str, Any], *, fault: str | None = None) -> bool:
         """Resolve a PAUSED trial; returns False when the experimenter chose
         to quit. With no pause strategy wired (unattended runs), resume
         immediately — blocking forever with nobody at the keyboard would
         hang a simulated session.
+
+        ``fault`` makes this an involuntary pause — a reward failure, a
+        tracker with no calibration — and the screen leads with what went
+        wrong rather than with the word PAUSED.
 
         The menu stays up across everything except resume and quit. Pressing
         the calibrate key used to calibrate and then resume in one press,
@@ -625,9 +654,9 @@ class SessionRunner:
             # so the browser says "calibrated …" or "NOT calibrated …" rather
             # than only that the session is paused.
             notice = self._apply_pause_action("calibrate") or notice
-        # A reward failure is not a pause anybody asked for, so the screen
-        # leads with what went wrong rather than with the word PAUSED.
-        menu = self._pause_menu(fault="REWARD FAILURE — check the pump" if reward_failed else None)
+        elif fault is not None:
+            notice = f"{fault} — browser controls are enabled."
+        menu = self._pause_menu(fault=fault)
         if self._dashboard is not None:
             return self._handle_dashboard_pause(menu, notice)
         if self._on_pause is None:

@@ -8,7 +8,8 @@ import pytest
 import yaml
 
 from alhazen.core.commands import Command
-from alhazen.testing import ScriptedCommands
+from alhazen.devices.eyetracker.scripted import ScriptedTracker
+from alhazen.testing import FakeClock, ScriptedCommands
 from support import COMPLETED, SessionHarness
 
 
@@ -209,3 +210,56 @@ class TestTeardownResilience:
         harness.recorder.write = broken_write  # type: ignore[method-assign]
         with pytest.raises(RuntimeError, match="task bug"):
             harness.runner.run()
+
+
+class TestTrackerCalibrationBeforeTrialOne:
+    """A tracker that can say it holds no calibration stops the session at
+    the pause screen before trial 1, with that reason. Gaze from an
+    uncalibrated device is not a position, and a session that ran on one
+    would look like a subject who never fixated."""
+
+    class Tracker(ScriptedTracker):
+        def __init__(self, clock, calibrated: bool) -> None:
+            super().__init__([], clock)
+            self.calibrated = calibrated
+            self.asked = 0
+
+        def calibration_state(self) -> bool:
+            self.asked += 1
+            return self.calibrated
+
+    def test_no_calibration_pauses_with_the_reason_then_runs(self, tmp_path):
+        clock = FakeClock()
+        tracker = self.Tracker(clock, calibrated=False)
+        harness = SessionHarness(tmp_path, n_trials=1, tracker=tracker, clock=clock)
+        harness.runner.run()
+
+        assert tracker.asked == 1
+        # Unattended, so the pause resolved by resuming — but the screen said
+        # why, the log said why, and the session then ran its trial.
+        assert any(
+            "TRACKER NOT CALIBRATED" in title or "TRACKER NOT CALIBRATED" in body
+            for title, body, _ in harness.display.menus
+        )
+        assert "RESUMED" in harness.collector.names()
+        assert [r["outcome"] for r in read_trials(harness)] == ["COMPLETED"]
+        log = harness.paths.log_path.read_text(encoding="utf-8")
+        assert "reports NO calibration before trial 1" in log
+
+    def test_a_calibrated_tracker_is_not_interrupted(self, tmp_path):
+        clock = FakeClock()
+        tracker = self.Tracker(clock, calibrated=True)
+        harness = SessionHarness(tmp_path, n_trials=1, tracker=tracker, clock=clock)
+        harness.runner.run()
+
+        assert tracker.asked == 1
+        assert harness.display.menus == []
+        assert "RESUMED" not in harness.collector.names()
+
+    def test_a_tracker_without_the_capability_is_not_asked(self, tmp_path):
+        clock = FakeClock()
+        harness = SessionHarness(
+            tmp_path, n_trials=1, tracker=ScriptedTracker([], clock), clock=clock
+        )
+        harness.runner.run()
+        assert harness.display.menus == []

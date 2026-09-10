@@ -323,6 +323,7 @@ because the two devices are not the same shape of thing.
 | "No eye" | coordinates set to `-32768` | coordinates parked at `±9000`, or NaN |
 | Eyes | tracker reports which one; binocular ties break to left | always binocular; `eyetracker.eye` picks `left`/`right`/`average` |
 | Calibration | `doTrackerSetup()` runs it on the Host PC, after alhazen's guide screen | alhazen shows the guide, draws the target grid in the session window with a live "eyes:" line, and fits from it |
+| Calibration state | the Host PC's | read from the device at `configure()` and after each `calibrate()`; **the gaze report is a calibrated read**, NaN without one, so `get_gaze()` is gated on it, `gaze_status()` says whether it was the calibration or the eye that was missing (the raw eye vectors are read beside the calibrated positions to tell), and the runner pauses before trial 1 with that reason. The device keeps a calibration across runs; the log says so at `configure()` |
 | Validation, drift correction | `devices/eyetracker/procedures.py`, the same on both: generic over `get_gaze()`, results on the dashboard ([eye-tracker.md](eye-tracker.md)) | |
 | Camera image | on the Host PC's own screen | read through `camera_frame()` into the dashboard's *Eye tracker* group while paused |
 | Messages | written into the EDF, which then carries its own alignment | written to a sidecar CSV stamped on **both** clocks, because nothing can be written into the sample stream |

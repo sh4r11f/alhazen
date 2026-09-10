@@ -184,6 +184,31 @@ The **Eye tracker** section of the panels holds:
 - **Drift correction** — the offset applied or refused, the total correction
   now in force, and the limit.
 
+## A TRACKPixx3 with no calibration
+
+The TRACKPixx3's gaze report is a *calibrated* read: the device evaluates its
+calibration polynomial, and with no calibration on it every position comes
+back NaN and every blink flag set, whether or not the camera sees an eye.
+Read as "no eye", that is a misdiagnosis — it cost an afternoon on the rig —
+so the backend does three things about it:
+
+- it reads the **raw eye vectors** beside the calibrated positions (the same
+  device call hands both back; pypixxlib's own wrapper discards the raw ones),
+  so `gaze_status()` can say *which* is missing: "NO CALIBRATION on the
+  device — the camera SEES the eye" is a different problem from "no eye in
+  the camera image";
+- `get_gaze()` reports no position while the device says it holds no
+  calibration, and warns once per uncalibrated stretch rather than once per
+  frame;
+- the session **pauses before trial 1** with `TRACKER NOT CALIBRATED` as the
+  reason, so the experimenter calibrates (C, or the dashboard's Calibrate)
+  before any trial runs on gaze that is not a position.
+
+The device keeps a calibration across runs. At `configure()` the log says
+whether it holds one from before the session — whose, it cannot say — so a
+session that ran on a previous subject's calibration is at least a session
+whose log says so. Validate it, or calibrate again, before trusting it.
+
 ## Configuration
 
 ```yaml
