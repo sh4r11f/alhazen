@@ -390,6 +390,14 @@ class SessionRunner:
                     if not self._apply_stage_transition():
                         break
 
+                # Counted here, before the pause branches, so that a trial
+                # the subject completed clears the count even when its reward
+                # pump failed. The reward branch below `continue`s, and used
+                # to carry the counter past a completed trial untouched: two
+                # fixation breaks, a completed trial with a dead pump, one
+                # more fixation break and the screen said three in a row.
+                too_many_failures = self._too_many_failures_in_a_row(outcome)
+
                 if outcome.name == "PAUSED" or reward_failed:
                     # A reward failure goes through the same pause flow as a
                     # deliberate pause: a human has to look at the pump before
@@ -402,7 +410,7 @@ class SessionRunner:
                         break
                     continue  # the pause menu already gave all the time needed; skip ITI
 
-                if self._too_many_failures_in_a_row(outcome):
+                if too_many_failures:
                     fault = (
                         f"{self._max_consecutive_failures} TRIALS FAILED IN A ROW — last "
                         f"{outcome.name}; check the calibration (V), the subject, and the "
@@ -636,13 +644,20 @@ class SessionRunner:
         """Count non-completed trials back to back; True on the one that
         reaches the task's limit, which the caller turns into a pause.
 
-        A PAUSED trial is neither: the experimenter stopped it, and it says
-        nothing about the subject. The count restarts after the pause, so a
-        subject who is still not fixating gets another whole run of chances
-        before the screen says so again, rather than a pause every trial.
+        Two outcomes are neither, because neither is about the subject, and
+        the pause this raises blames the subject's calibration:
+
+        - ``PAUSED`` — the experimenter stopped it. The count restarts after
+          the pause, so a subject who is still not fixating gets another whole
+          run of chances before the screen says so again, rather than a pause
+          every trial.
+        - ``DROPPED_FRAMES`` — the display failed, not the eye. Frame QA
+          counts those itself and aborts the run with the display's own
+          message (display/frames.py); counting them here as well would stop
+          the session to ask someone to check a calibration that is fine.
         """
         limit = self._max_consecutive_failures
-        if limit is None or outcome.name == "PAUSED":
+        if limit is None or outcome.name in ("PAUSED", "DROPPED_FRAMES"):
             return False
         if outcome.completed:
             self._failures_in_a_row = 0
