@@ -25,6 +25,30 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## 1.4.1 - 2026-09-10
+
+### Fixed
+
+- **A recycled trial ends the failure streak, and the streak's pause names a
+  failing display.** The engine only recycles a trial the subject completed,
+  but the runner skipped recycles when counting failed trials in a row
+  instead of letting them end the streak. On a display dropping half its
+  frames, a rehearsal's completed trials were all recycled, the fixation
+  breaks and missed saccades between them joined into one streak, and the
+  session paused on "6 trials in a row" telling the operator to check the
+  calibration. A recycle now ends the streak like the completion it was.
+  When the failures that do form a streak happened on trials that dropped
+  more frames than frame QA's budget, the pause says so and sends the
+  operator to the display first, because a panel missing vsyncs causes real
+  fixation breaks. Frame times on a simulated display are not counted as
+  evidence, since they measure the host's scheduler.
+- **`alhazen_git_describe` reads `unknown` when git refuses to look, not `not a
+  source checkout`.** Only git's own "not a git repository" earns that label.
+  A directory that does not exist, or a repository git will not open for the
+  current user, is git failing to answer. A shallow clone with no tags is
+  described by its commit, and a test now pins that because experiment CI
+  clones alhazen that way.
+
 ## 1.4.0 - 2026-09-10
 
 ### Fixed
