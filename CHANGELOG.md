@@ -25,6 +25,51 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## 1.2.1 - 2026-09-09
+
+### Fixed
+
+- **An unattended run no longer hangs at a pause when the rig config enables
+  the dashboard.** The pause asked whether a browser was serving before it
+  asked whether anyone was at the rig to answer, so a rig with
+  `dashboard.enabled` sat in the browser loop waiting for a click nobody was
+  there to make. With the block break added in 1.2.0 that was every simulated
+  run of every experiment with more than one block: 28 trials and then
+  nothing. The unattended check now comes first, the browser is told the
+  session carried on, and the skipped pause is logged at WARNING.
+- **Frame QA counts a trial as recycled only where one is recycled.** The
+  monitor made the `recycle_trial` verdict for every trial over the
+  dropped-frame budget and counted it towards `max_consecutive_recycles`,
+  while the engine applied it only to a COMPLETED trial. A run of fixation
+  breaks on a display dropping the odd frame could therefore abort the
+  session blaming the panel, with no `DROPPED_FRAMES` row in the data to
+  support it. `FrameMonitor.end_trial` now takes `completed`.
+- **The clock fit proves that a dropped alignment mark is a stamping delay**
+  rather than asserting it. A mark is dropped only if it is late, isolated
+  (both neighbours on the line) and interior; a clock that stepped during the
+  first or last trial used to be inside the five percent budget and was
+  quietly re-timed. The 198-mark case from the pilot is unaffected.
+- **A fault heading comes back down when the procedure succeeds.** A failed
+  validation put a red heading on the pause screen that nothing removed, so a
+  successful recalibration left it up and a block break's REST heading never
+  returned.
+- **The run of failed trials counts only what the subject did.** A completed
+  trial whose reward pump failed did not clear the count, and `DROPPED_FRAMES`
+  — a display fault with its own counter — was counted as a subject failure.
+- **`--mode measure` draws the ruler.** A key left in psychopy's buffer by an
+  earlier measurement ended the ruler before its first flip: a black screen,
+  and a report saying a bar was drawn.
+- **An unregistered monitor is a warning, not an INFO line.** The session runs
+  on the rig config's geometry with no measured gamma, which looks identical
+  to one that inherited a calibration.
+
+### Note
+
+- **`FEEDBACK` became a reserved event name in 1.2.0.** Reserved names are
+  append-only by contract, but a task that already declared `FEEDBACK` of its
+  own is refused at session build from 1.2.0 on. Rename it, or use
+  `TrialFeedback`, which emits it.
+
 ## 1.2.0 - 2026-09-09
 
 ### Added
