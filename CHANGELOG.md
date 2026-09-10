@@ -25,7 +25,12 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
-## Unreleased
+## 1.3.1 - 2026-09-09
+
+Documentation and one log line, cut as its own release rather than left on
+`main`: three experiment repos install alhazen by cloning `main`, so anything
+sitting in `Unreleased` is already running in their CI under the previous
+release's number. A small release makes what they are running nameable.
 
 ### Changed
 
@@ -45,10 +50,12 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   eccentricity, every saccade large enough to count as leaving fixation
   already lands inside the region, so an undershoot can never go red.
 - **`docs/versioning.md` says that a downstream pin follows the push to
-  `main` and never leads it.** An experiment repo that installs alhazen from a
-  clone of `main` resolves its pin against `main`, not against a tag, so a
-  floor raised before the release commit lands fails resolution with a message
-  that reads like a broken pin.
+  `main` and never leads it**, and that between releases `>=X.Y.Z` is
+  satisfied by two different alhazens — the tag, and a `main` that has moved
+  past it. An experiment repo that installs from a clone of `main` resolves
+  its pin against `main`, so a floor raised before the release commit lands
+  fails resolution with a message that reads like a broken pin, and a green
+  run there is evidence about `main` rather than about any release.
 
 ## 1.3.0 - 2026-09-09
 
