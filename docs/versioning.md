@@ -178,3 +178,20 @@ order is: cut the release here, push to `main`, tag — **then** tell the
 downstream repos to raise their pins. When telling them, say which commit on
 `main` carries the version, because a repo whose CI clones main is pinning
 against a branch and not against a tag.
+
+And say it as a commit, not only as a number, because the number is ambiguous
+by construction. `main` declares the version of the last release for as long
+as it takes the next one to be cut, so between releases `>=X.Y.Z` is satisfied
+by **two different alhazens**: the `vX.Y.Z` tag, and a `main` that has moved
+past it. They are not the same code. A repo installing from main is running
+everything in the `Unreleased` section of the changelog as well — that section
+is exactly the diff, which is why it is kept current rather than written at
+release time.
+
+The practical consequence: a green CI run in a repo that clones main is
+evidence about `main`, not about any release. If what a repo needs is a
+reproducible install of a known artifact, it has to install the tag; if what
+it needs is the fix that landed this morning, it has to clone main and accept
+that the number will not distinguish it. Cutting a release closes the gap for
+whatever is in `Unreleased` at that moment, which is a reason to cut small
+ones rather than let `Unreleased` grow.
