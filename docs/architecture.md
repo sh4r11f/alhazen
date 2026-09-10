@@ -853,6 +853,20 @@ every backend precisely so a backend cannot quietly reach for
    frame log → close log file → manifest → display), re-raising the first
    teardown error only if nothing else is propagating.
 
+`session.log` (UTF-8, attached at the root logger at INFO) is meant to be
+read as the record of the session's *structure*, so what it carries at INFO
+is exactly that: `session start` (identity and seed), a `devices:` line naming
+each device's backend, one `setup:` line per thing the mode decided before
+trial 1 (`ModeSession.describe()` — reductions, stood-down devices; the
+terminal is not part of the run directory), `block N of M starts/ends` from
+`BlockPlan`, every calibration / validation (with per-target errors) / drift
+correction verdict, one line per trial (`trial 12 attempt 1: CORRECT`, with
+the abort or frame-QA reason where there is one), one line per trial that
+dropped frames (per-frame drops are DEBUG; the frame log holds every
+interval), and a `session end:` line with the status and outcome counts —
+or `session end: FAILED … <exception>` at ERROR, so a log that merely stops is
+a crash and one that ends is a session.
+
 On-disk layout per run (see `data/paths.py`; overwriting an existing run's
 trials file is refused):
 

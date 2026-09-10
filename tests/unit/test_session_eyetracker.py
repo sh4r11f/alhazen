@@ -406,6 +406,31 @@ class TestPublishing:
         s.monitor.validate()
         assert s.monitor.validation is not None
 
+    def test_the_verdict_and_every_target_error_go_in_the_log(self, session, caplog) -> None:
+        """A design that names a validation limit needs the log to answer
+        "which validation was accepted, and how good was it" without
+        parsing the event payload's JSON."""
+        s = session()
+        with caplog.at_level(logging.INFO):
+            s.monitor.validate()
+        messages = [r.message for r in caplog.records if r.message.startswith("validation")]
+        # The procedure's verdict first, then the monitor's per-target line.
+        assert messages[0].startswith("validation passed: mean 0.00°, worst 0.00°")
+        assert (
+            messages[1] == "validation per target: 1: 0.00°, 2: 0.00°, 3: 0.00°, 4: 0.00°, 5: 0.00°"
+        )
+        assert all(r.levelno == logging.INFO for r in caplog.records if r.message in messages)
+
+    def test_a_failed_validation_is_logged_as_a_warning(self, session, caplog) -> None:
+        s = session()
+        s.tracker.offset_px = (SCREEN.deg2px(2.0), 0.0)  # every target 2° off, limit 1°
+        with caplog.at_level(logging.INFO):
+            s.monitor.validate()
+        lines = [r for r in caplog.records if r.message.startswith("validation")]
+        assert lines[0].message.startswith("validation FAILED")
+        assert lines[1].message.startswith("validation per target: 1: 2.00°")
+        assert all(r.levelno == logging.WARNING for r in lines)
+
 
 # ----------------------------------------------------------------------
 # Panels

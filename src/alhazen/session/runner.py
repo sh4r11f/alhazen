@@ -24,7 +24,7 @@ import logging
 import sys
 import time
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import numpy as np
@@ -176,8 +176,17 @@ class SessionRunner:
         manual_reward_payload: dict[str, Any] | None = None,
         spikes: SpikeSource | None = None,
         live: LiveAnalysis | None = None,
+        setup_notes: Sequence[str] = (),
     ) -> None:
         self._cfg = cfg
+        # What was decided about this session before it started — a mode's
+        # reductions and stood-down devices (modes/session.py describe()),
+        # in the experimenter's words. Logged right after "session start",
+        # so the run directory itself records what was live and what was
+        # reduced; printing them to a terminal left no trace in the run. A
+        # public attribute because the mode learns them after the builder
+        # has already returned the runner.
+        self.setup_notes: list[str] = list(setup_notes)
         self._paths = paths
         self._display = display
         self._screen = screen
@@ -264,6 +273,9 @@ class SessionRunner:
             self._cfg.info.task_name,
             self._cfg.info.seed,
         )
+        log.info("devices: %s", self._devices_line())
+        for note in self.setup_notes:
+            log.info("setup: %s", note)
         if self._dashboard is not None:
             log.info("live dashboard: %s", self._dashboard.url)
         self._publish_dashboard("running")
@@ -314,6 +326,7 @@ class SessionRunner:
                         self._tracker.stop_trial()
 
                 outcome = result.outcome
+                self._log_trial(attempt, result.record, outcome)
 
                 # Two different questions, two different gates. The SCHEDULER
                 # holds the plan and must hear about every outcome — the
@@ -367,6 +380,68 @@ class SessionRunner:
                     self._wait(self._iti_s)
         finally:
             self._teardown(file_handler)
+
+    # ------------------------------------------------------------------
+    # The session log's structure
+    # ------------------------------------------------------------------
+
+    def _devices_line(self) -> str:
+        """Which backend drives each device this session, in one line.
+
+        The snapshot holds the same facts, but a log that says "eyetracker
+        viewpixx" on its third line is the one a reader opens first when a
+        run looks wrong.
+        """
+        devices = self._cfg.rig.devices
+        parts = [f"display {self._cfg.rig.display.backend}"]
+        for name in ("eyetracker", "reward", "sync", "recording", "spikes"):
+            device = getattr(devices, name, None)
+            backend = getattr(device, "backend", None) if device is not None else None
+            parts.append(f"{name} {backend if backend is not None else 'none'}")
+        return ", ".join(parts)
+
+    def _log_trial(self, attempt: int, record: dict[str, Any], outcome: Any) -> None:
+        """One line per trial: the backbone a session log is read by."""
+        detail = ""
+        if record.get("abort_reason"):
+            detail = f" ({record['abort_reason']})"
+        elif record.get("frame_qa_reason"):
+            detail = f" (was {record.get('outcome_before_frame_qa')}: {record['frame_qa_reason']})"
+        log.info(
+            "trial %d attempt %d: %s%s%s",
+            self._trial_index,
+            attempt,
+            outcome.name,
+            "" if outcome.completed else " — not completed, condition re-served",
+            detail,
+        )
+
+    def _log_session_end(self) -> None:
+        """The last line the session writes about itself, so a log that stops
+        mid-trial can be told from one that ended: how it ended, how many
+        trials were served, and how their rows came out."""
+        rows = self._recorder.trials
+        counts = Counter(str(row.get("outcome")) for row in rows)
+        outcomes = ", ".join(f"{name} {count}" for name, count in sorted(counts.items()))
+        exc = sys.exc_info()[1]
+        if exc is not None:
+            log.error(
+                "session end: FAILED on trial %d after %d rows (%s) — %s: %s",
+                self._trial_index,
+                len(rows),
+                outcomes or "no rows",
+                type(exc).__name__,
+                exc,
+            )
+            return
+        status = "cancelled" if self._cancelled else "complete"
+        log.info(
+            "session end: %s — %d trials served, %d rows recorded (%s)",
+            status,
+            self._trial_index,
+            len(rows),
+            outcomes or "no rows",
+        )
 
     # ------------------------------------------------------------------
 
@@ -759,7 +834,10 @@ class SessionRunner:
     # ------------------------------------------------------------------
 
     def _attach_file_logging(self) -> logging.FileHandler:
-        handler = logging.FileHandler(self._paths.log_path)
+        # UTF-8 by name, not the platform default: on Windows that default
+        # is cp1252, and every line with a dash or a degree sign in it came
+        # back from the rig's own logs as mojibake.
+        handler = logging.FileHandler(self._paths.log_path, encoding="utf-8")
         handler.setLevel(logging.INFO)
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
         root = logging.getLogger()
@@ -774,6 +852,10 @@ class SessionRunner:
 
     def _teardown(self, file_handler: logging.FileHandler) -> None:
         errors: list[Exception] = []
+        # First, before any step can fail: the log's own account of how the
+        # session ended is worth more than a step's failure message, and a
+        # log that simply stops is what this line exists to prevent.
+        self._log_session_end()
 
         def step(name: str, fn: Callable[[], None]) -> None:
             try:

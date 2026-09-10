@@ -76,15 +76,24 @@ class SimTaskWithSpikes(ModeTask):
         return Simulation(tracker=object(), spikes=object(), describe={"seed": seed})
 
 
+class FakeRunner:
+    """What the spy hands back in place of a SessionRunner: enough surface
+    for the mode to leave its setup notes on."""
+
+    def __init__(self):
+        self.setup_notes: list[str] = []
+
+
 class Spy:
     """Stands in for build_session, recording what a mode passed down."""
 
     def __init__(self):
         self.kwargs = None
+        self.runner = FakeRunner()
 
     def __call__(self, **kwargs):
         self.kwargs = kwargs
-        return "runner"
+        return self.runner
 
 
 def rig(tmp_path, devices=None, display=None):
@@ -462,3 +471,13 @@ class TestDescribe:
         built, _ = build(tmp_path, Mode.TEST)
 
         assert "paradigm.n_per_condition: 8 -> 1" in built.describe()
+
+    def test_the_same_lines_are_handed_to_the_runner_for_the_session_log(self, tmp_path):
+        """Printed to a terminal, the reductions and stand-downs leave no
+        trace in the run directory; the runner logs them after "session
+        start" so the log says what was live and what was reduced."""
+        built, spy = build(tmp_path, Mode.SIMULATE, task=SimTask(Params()), devices=LAB_DEVICES)
+
+        assert spy.runner.setup_notes == built.describe().splitlines()
+        assert any("eyetracker: eyelink stands down" in line for line in spy.runner.setup_notes)
+        assert any("reduced: paradigm.n_per_condition" in line for line in spy.runner.setup_notes)

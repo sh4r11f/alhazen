@@ -327,7 +327,7 @@ def build_mode_session(
         auto_start=mode is Mode.SIMULATE,
         **extra,
     )
-    return ModeSession(
+    built = ModeSession(
         mode=mode,
         runner=runner,
         data_root=data_root,
@@ -336,3 +336,9 @@ def build_mode_session(
         simulation=simulation,
         notes=notes,
     )
+    # The same lines the experimenter reads before trial one go into the
+    # session log after "session start": the run directory has to say for
+    # itself what was reduced and which devices were stood down, and a
+    # terminal is not part of the run directory.
+    runner.setup_notes = built.describe().splitlines()
+    return built
