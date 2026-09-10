@@ -15,7 +15,9 @@ from alhazen.data.manifest import write_manifest
 BASE = "sub-t01_ses-001_run-01_task-demo_20260826"
 
 
-def write_run(tmp_path, trials_csv: str, frames_csv: str | None = None):
+def write_run(
+    tmp_path, trials_csv: str, frames_csv: str | None = None, snapshot: str | None = None
+):
     run = tmp_path / "sub-t01" / "ses-001" / "run-01_task-demo"
     run.mkdir(parents=True)
     (run / f"{BASE}_trials.csv").write_text(trials_csv)
@@ -23,9 +25,45 @@ def write_run(tmp_path, trials_csv: str, frames_csv: str | None = None):
     (run / f"{BASE}_frames.csv").write_text(
         frames_csv or "trial_index,t,interval_s,dropped\n1,0.0,0.0167,False\n"
     )
-    (run / "config_snapshot.yaml").write_text("config: {info: {subject: t01}}\n")
+    (run / "config_snapshot.yaml").write_text(snapshot or "config: {info: {subject: t01}}\n")
     write_manifest(run, run / "manifest.yaml")
     return run
+
+
+class TestTheReportSaysWhichAlhazenProducedTheRun:
+    """The identity block copied `alhazen_version` out of the snapshot, and
+    that field said "unknown" in every snapshot alhazen wrote before 1.4.0.
+    It now carries the git description too, because between releases the
+    version alone does not identify the code."""
+
+    TRIALS = """trial_index,attempt,outcome,completed,success
+1,1,COMPLETED,True,True
+"""
+
+    def test_both_are_read_from_the_snapshot_as_recorded(self, tmp_path):
+        snapshot = """config: {info: {subject: t01}}
+provenance: {alhazen_version: 1.4.0, alhazen_git_describe: v1.4.0-2-gabc1234-dirty}
+"""
+        run_dir = write_run(tmp_path, self.TRIALS, snapshot=snapshot)
+
+        identity = build_report(run_dir).identity
+
+        assert identity["alhazen_version"] == "1.4.0"
+        assert identity["alhazen_git_describe"] == "v1.4.0-2-gabc1234-dirty"
+
+    def test_a_run_from_before_the_key_existed_says_none_rather_than_guessing(self, tmp_path):
+        """An old snapshot has no description and an untrustworthy version.
+        The report shows what was recorded; inventing either would be worse
+        than admitting there is nothing."""
+        snapshot = """config: {info: {subject: t01}}
+provenance: {alhazen_version: unknown}
+"""
+        run_dir = write_run(tmp_path, self.TRIALS, snapshot=snapshot)
+
+        identity = build_report(run_dir).identity
+
+        assert identity["alhazen_version"] == "unknown"
+        assert identity["alhazen_git_describe"] is None
 
 
 class TestCompletedRate:

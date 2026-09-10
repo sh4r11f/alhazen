@@ -237,13 +237,23 @@ def _as_bool(column: pd.Series) -> pd.Series:
 
 def _identity(run: RunData) -> dict[str, Any]:
     info = run.config.get("info", {})
+    provenance = run.snapshot.get("provenance", {})
     return {
         "subject": info.get("subject"),
         "session": info.get("session"),
         "run": info.get("run"),
         "task": info.get("task_name"),
         "seed": info.get("seed"),
-        "alhazen_version": run.snapshot.get("provenance", {}).get("alhazen_version"),
+        # Every snapshot written before 1.4.0 says "unknown" here: the lookup
+        # used the wrong distribution name. Shown as recorded, not repaired —
+        # the report is a reading of the run, and inventing a version would
+        # be worse than admitting there is none.
+        "alhazen_version": provenance.get("alhazen_version"),
+        # Beside the version because, between releases, the version does not
+        # identify the code: `main` carries the last release's number until
+        # the next one is cut. None for a run recorded before the snapshot
+        # kept it.
+        "alhazen_git_describe": provenance.get("alhazen_git_describe"),
     }
 
 

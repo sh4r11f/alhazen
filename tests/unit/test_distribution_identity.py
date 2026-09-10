@@ -61,6 +61,29 @@ class TestWhatIsActuallyInstalled:
         assert get_version() != "unknown"
 
 
+class TestNothingLooksTheNameUpItself:
+    """version.py is the one place that maps this project to a distribution
+    name, and it says so. `config/snapshot.py` looked it up itself with the
+    bare name anyway, and wrote `unknown` into every run alhazen produced.
+    The guard is mechanical because the failure is silent: a wrong lookup
+    raises nothing, it just returns somebody else's number or none."""
+
+    def test_only_version_py_calls_metadata_version(self):
+        offenders = []
+        for path in (ROOT / "src" / "alhazen").rglob("*.py"):
+            if path.name == "version.py":
+                continue
+            for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                if "metadata.version(" in line or "importlib.metadata.version(" in line:
+                    offenders.append(f"{path.relative_to(ROOT)}:{number}: {line.strip()}")
+
+        assert not offenders, (
+            "these look the distribution version up themselves instead of calling "
+            "alhazen.version.get_version(), which is how the snapshot came to record "
+            "`unknown` for every run: " + "; ".join(offenders)
+        )
+
+
 class TestWhatTheDocsTellPeopleToType:
     @pytest.mark.parametrize("path", INSTALL_DOCS)
     def test_no_document_tells_anyone_to_install_the_bare_name(self, path):
