@@ -153,6 +153,13 @@ def draw_ruler_on(display: Any, rig: RigConfig, size_dva: float = 10.0) -> None:
         height=max(round(screen.height_px * 0.025), 12),
         color="white",
     )
+    # Drop whatever is already in psychopy's global key buffer. This used to
+    # run in a process that had just opened its own window, so the buffer was
+    # empty; `--mode measure` calls it on a window that has already collected
+    # presses from the earlier measurements, and one of those left over would
+    # end the ruler before a single flip — a black screen, and a report saying
+    # a bar was drawn.
+    event.clearEvents()
     while not event.getKeys():
         bar.draw()
         for tick in ticks:

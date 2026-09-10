@@ -521,3 +521,64 @@ class TestTheRulerClosesTheLoop:
         assert measurement.detail["expected_cm"] == pytest.approx(expected_cm)
         assert f"{expected_cm:.2f} cm between the ticks" in measurement.summary
         assert any("calibrate ruler" in note for note in measurement.detail["notes"])
+
+    def test_a_key_left_over_from_an_earlier_measurement_does_not_close_it(self, monkeypatch):
+        """`draw_ruler` used to run in a process that had just opened its own
+        window, so psychopy's key buffer was empty. Measure mode calls it on a
+        window that has already collected presses from the tracker and key
+        measurements, and one of those left over ended the ruler before a
+        single flip: a black screen, and a report saying a bar was drawn."""
+        import sys
+        import types
+
+        from alhazen.cli.calibrate import draw_ruler_on
+        from alhazen.config.models import RigConfig
+
+        class FakeEvent:
+            """psychopy's global key buffer, with a press already in it."""
+
+            def __init__(self) -> None:
+                self.buffer = ["space"]  # left over from the previous step
+                self.polls = 0
+                self.cleared_after_polls = None
+
+            def clearEvents(self) -> None:
+                self.cleared_after_polls = self.polls
+                self.buffer = []
+
+            def getKeys(self):
+                self.polls += 1
+                if self.polls > 3:  # the operator's own key, eventually
+                    return ["space"]
+                keys, self.buffer = self.buffer, []
+                return keys
+
+        class FakeStim:
+            def __init__(self, *args, **kwargs) -> None:
+                self.draws = 0
+
+            def draw(self) -> None:
+                self.draws += 1
+
+        class FakeDisplay:
+            window = object()
+
+            def __init__(self) -> None:
+                self.flips = 0
+
+            def flip(self) -> None:
+                self.flips += 1
+
+        event = FakeEvent()
+        psychopy = types.ModuleType("psychopy")
+        psychopy.event = event
+        psychopy.visual = types.SimpleNamespace(Rect=FakeStim, TextStim=FakeStim)
+        monkeypatch.setitem(sys.modules, "psychopy", psychopy)
+
+        display = FakeDisplay()
+        draw_ruler_on(display, RigConfig(monitor=MONITOR, data_root="data"))
+
+        # Cleared before anything was polled, and the bar actually reached
+        # the screen rather than the loop falling through on a stale key.
+        assert event.cleared_after_polls == 0
+        assert display.flips == 3
