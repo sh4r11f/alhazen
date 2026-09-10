@@ -1232,7 +1232,7 @@ class ViewPixxTracker:
 
     def _write_messages(self, destination: Path) -> None:
         """Write the two-clock message record beside the samples."""
-        with destination.open("w", newline="") as f:
+        with destination.open("w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow(["device_time_s", "session_time_s", "message"])
             writer.writerows(self._messages)

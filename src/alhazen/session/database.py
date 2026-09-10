@@ -154,7 +154,7 @@ class ExperimentDatabase:
         frame_inputs: Sequence[FrameInputRecord],
         status: str,
     ) -> str:
-        snapshot = yaml.safe_load(paths.snapshot_path.read_text()) or {}
+        snapshot = yaml.safe_load(paths.snapshot_path.read_text(encoding="utf-8")) or {}
         run_dir = str(paths.run_dir.resolve())
         with self.connect() as db:
             db.execute("INSERT OR IGNORE INTO subjects(subject) VALUES (?)", (cfg.info.subject,))
@@ -268,7 +268,7 @@ class ExperimentDatabase:
                     """INSERT INTO training_states(subject, yaml, updated_run_id)
                        VALUES (?, ?, ?) ON CONFLICT(subject) DO UPDATE SET
                        yaml=excluded.yaml, updated_run_id=excluded.updated_run_id""",
-                    (cfg.info.subject, training_path.read_text(), run_id),
+                    (cfg.info.subject, training_path.read_text(encoding="utf-8"), run_id),
                 )
         return run_id
 
@@ -608,7 +608,7 @@ def _insert_paradigm(db: sqlite3.Connection, run_id: str, path: Path) -> None:
         return
     import csv
 
-    with path.open() as handle:
+    with path.open(encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
     db.executemany(
         "INSERT INTO paradigm_rows(run_id, row_index, record_json) VALUES (?, ?, ?)",

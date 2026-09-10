@@ -27,7 +27,7 @@ def load_model(path: str | Path, model: type[M]) -> M:
     experimenter fixes a file, so the error must say which one."""
     path = Path(path)
     try:
-        raw = yaml.safe_load(path.read_text())
+        raw = yaml.safe_load(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
         raise ConfigError(f"config file not found: {path}") from None
     except yaml.YAMLError as e:

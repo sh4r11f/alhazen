@@ -179,7 +179,7 @@ def read_measurements(path: Path | str) -> tuple[np.ndarray, np.ndarray]:
         raise ConfigError(f"measurements file not found: {path}")
     levels: list[float] = []
     luminances: list[float] = []
-    with path.open() as handle:
+    with path.open(encoding="utf-8-sig") as handle:
         reader = csv.DictReader(handle)
         if reader.fieldnames is None or not {"level", "luminance"} <= set(reader.fieldnames):
             raise ConfigError(

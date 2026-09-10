@@ -131,7 +131,7 @@ class AlignmentFit:
         """
         run_dir = Path(run_dir)
         path = run_dir / f"alignment_{system}.yaml"
-        path.write_text(yaml.safe_dump(self.to_dict(), sort_keys=False))
+        path.write_text(yaml.safe_dump(self.to_dict(), sort_keys=False), encoding="utf-8")
         # A run directory is append-only *by manifest rewrite*: a file added
         # without one makes `verify_manifest` report it as unlisted, which
         # means the first alignment would break every later report and every

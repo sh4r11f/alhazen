@@ -19,7 +19,7 @@ def participants_path(data_root: Path) -> Path:
 
 
 def _read(path: Path) -> tuple[list[str], list[dict[str, str]]]:
-    with path.open(newline="") as f:
+    with path.open(newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f, delimiter="\t")
         return list(reader.fieldnames or []), list(reader)
 
@@ -33,7 +33,7 @@ def ensure_participant(
     row = {_ID_COLUMN: f"sub-{subject}", **(metadata or {})}
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("w", newline="") as f:
+        with path.open("w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=list(row), delimiter="\t")
             writer.writeheader()
             writer.writerow(row)
@@ -44,7 +44,7 @@ def ensure_participant(
         return
     # New metadata keys widen the file; existing rows keep blanks there.
     new_columns = columns + [c for c in row if c not in columns]
-    with path.open("w", newline="") as f:
+    with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=new_columns, delimiter="\t")
         writer.writeheader()
         for r in rows:

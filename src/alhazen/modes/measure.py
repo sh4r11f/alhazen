@@ -116,7 +116,8 @@ class MeasurementReport:
                 },
                 indent=2,
                 default=str,
-            )
+            ),
+            encoding="utf-8",
         )
         return out
 

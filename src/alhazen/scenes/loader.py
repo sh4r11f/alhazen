@@ -82,7 +82,7 @@ def _as_dict(source: str | Path | dict[str, Any]) -> dict[str, Any]:
     # can make Path() itself complain on some systems, hence the guard.
     try:
         if path.exists():
-            text = path.read_text()
+            text = path.read_text(encoding="utf-8-sig")
     except OSError:
         pass
     try:

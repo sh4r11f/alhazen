@@ -75,7 +75,8 @@ def write_pointer(
                 **(extra or {}),
             },
             sort_keys=False,
-        )
+        ),
+        encoding="utf-8",
     )
     log.info("recording pointer written: %s -> %s", path.name, expected)
     return path

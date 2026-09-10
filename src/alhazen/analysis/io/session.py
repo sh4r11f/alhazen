@@ -126,7 +126,7 @@ def load_run(run_dir: Path | str, verify: bool = True) -> RunData:
         trials=_read_csv(run_dir / f"{base}_trials.csv"),
         events=_read_csv(run_dir / f"{base}_events.csv"),
         frames=_read_csv(run_dir / f"{base}_frames.csv"),
-        snapshot=yaml.safe_load(snapshot_path.read_text()) or {},
+        snapshot=yaml.safe_load(snapshot_path.read_text(encoding="utf-8")) or {},
         manifest_problems=problems,
     )
 

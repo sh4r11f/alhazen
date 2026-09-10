@@ -43,7 +43,8 @@ def write_manifest(run_dir: Path, manifest_path: Path) -> None:
         yaml.safe_dump(
             {"schema_version": MANIFEST_SCHEMA_VERSION, "artifacts": artifacts},
             sort_keys=False,
-        )
+        ),
+        encoding="utf-8",
     )
 
 
@@ -51,7 +52,7 @@ def verify_manifest(run_dir: Path, manifest_path: Path) -> list[str]:
     """Return a list of problems (empty = verified). Missing files and hash
     mismatches are reported; extra files are reported too — a run directory
     is append-only by manifest rewrite, never by unrecorded files."""
-    manifest = yaml.safe_load(manifest_path.read_text())
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
     problems: list[str] = []
     listed: set[str] = set()
     for entry in manifest["artifacts"]:

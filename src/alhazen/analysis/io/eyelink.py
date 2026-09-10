@@ -110,7 +110,7 @@ def read_asc(asc_path: Path | str) -> EyeLinkRecording:
     pupils: list[float] = []
     messages: list[tuple[float, str]] = []
 
-    for line in asc_path.read_text(errors="replace").splitlines():
+    for line in asc_path.read_text(errors="replace", encoding="utf-8").splitlines():
         if line.startswith("MSG"):
             parts = line.split(maxsplit=2)
             if len(parts) >= 3:

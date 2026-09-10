@@ -143,7 +143,7 @@ class SessionReport:
         """
         directory = Path(run_dir or self.run_dir)
         path = directory / REPORT_FILENAME
-        path.write_text(yaml.safe_dump(self.to_dict(), sort_keys=False))
+        path.write_text(yaml.safe_dump(self.to_dict(), sort_keys=False), encoding="utf-8")
         write_manifest(directory, directory / "manifest.yaml")
         return path
 
