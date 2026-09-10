@@ -381,6 +381,7 @@ class TestSnapshot:
         assert set(prov) == {
             "created",
             "alhazen_version",
+            "alhazen_git_describe",
             "python",
             "platform",
             "experiment_git_sha",
@@ -403,6 +404,68 @@ class TestSnapshot:
 
         assert prov["alhazen_version"] == get_version()
         assert prov["alhazen_version"] != "unknown"
+
+    def test_alhazens_own_tree_is_recorded_beside_the_experiments(self, tmp_path):
+        """A version number does not identify alhazen's code between
+        releases: `main` carries the last release's number until the next one
+        is cut, so several different trees share it. The describe string does
+        identify it — and this test runs from a checkout, so it gets one."""
+        cfg = make_session_config(tmp_path)
+        path = tmp_path / "config_snapshot.yaml"
+        write_snapshot(cfg, path)
+        prov = yaml.safe_load(path.read_text())["provenance"]
+
+        described = prov["alhazen_git_describe"]
+        assert described not in ("unknown", "not a source checkout"), described
+        # A commit, a tag, or a tag plus how far past it — never empty, and
+        # `-dirty` when the tree has uncommitted changes.
+        assert described.strip() == described and described
+
+    def test_a_directory_outside_any_repository_is_not_a_source_checkout(self, tmp_path):
+        """The three answers have to stay apart. "Not a source checkout" means
+        the version number alone identifies the code, which is what a wheel
+        install looks like; "unknown" means nobody could tell. Reporting the
+        second for the first would make a released install look broken."""
+        from alhazen.config.snapshot import _alhazen_git_describe
+
+        assert _alhazen_git_describe(tmp_path) == "not a source checkout"
+
+    def test_a_wheel_inside_an_experiments_repository_is_not_given_its_commit(self, tmp_path):
+        """A virtualenv inside an experiment repo puts an installed alhazen
+        inside that repo's work tree, and git describes it without complaint:
+        on a scratch repo, the experiment's own tag came back as alhazen's.
+        Recording someone else's commit under alhazen's name is the
+        attribution bug this key exists to fix, so the tree has to prove it
+        is alhazen's own before its description is believed."""
+        import subprocess
+
+        from alhazen.config.snapshot import _alhazen_git_describe
+
+        repo = tmp_path / "experiment"
+        installed = repo / ".venv" / "Lib" / "site-packages" / "alhazen" / "config"
+        installed.mkdir(parents=True)
+        # An experiment that DEPENDS on alhazen, so the one line that names
+        # alhazen-vision in its pyproject is a dependency, not a declaration.
+        (repo / "pyproject.toml").write_text(
+            """[project]
+name = "some-experiment"
+dependencies = ["alhazen-vision>=1.3"]
+"""
+        )
+
+        def git(*args):
+            subprocess.run(
+                ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                capture_output=True,
+                check=True,
+            )
+
+        git("init", "-q")
+        git("add", "pyproject.toml")
+        git("commit", "-q", "-m", "experiment")
+        git("tag", "-a", "v9.9.9", "-m", "the experiment's own release")
+
+        assert _alhazen_git_describe(installed) == "not a source checkout"
 
     def test_environment_digest_stable_within_process(self):
         assert environment_digest() == environment_digest()
