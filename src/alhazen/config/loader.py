@@ -45,7 +45,20 @@ def load_model(path: str | Path, model: type[M]) -> M:
 
 
 def load_rig(path: str | Path) -> RigConfig:
-    return load_model(path, RigConfig)
+    """A rig config from its file, with the monitor named after the file.
+
+    The monitor's name is what PsychoPy's monitor database, Monitor Center
+    and every window opened on this machine look the panel up by, so two rig
+    files sharing a name share one registration and overwrite each other's
+    geometry. A rig file is one machine, so its stem — ``rig-lab``,
+    ``rig-vpixx`` — is the right default, and one an experimenter never has
+    to think about. A ``monitor.name`` written in the file still wins.
+    """
+    rig = load_model(path, RigConfig)
+    if "name" not in rig.monitor.model_fields_set:
+        monitor = rig.monitor.model_copy(update={"name": Path(path).stem})
+        rig = rig.model_copy(update={"monitor": monitor})
+    return rig
 
 
 def load_params(path: str | Path, model: type[M]) -> M:

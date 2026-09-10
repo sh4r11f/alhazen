@@ -193,6 +193,17 @@ class TestRegister:
         registry.register(MONITOR)
         assert registry.lookup("rig-a").gamma == 2.2
 
+    def test_a_record_that_reads_back_differently_is_refused(self, fake_psychopy, monkeypatch):
+        """Saving without complaint is not the same as storing what was
+        written: a stale file under the same name, or a unit PsychoPy
+        converted on the way in, comes back as different numbers. The round
+        trip is checked at registration, not discovered at the next window."""
+        monkeypatch.setattr(FakeMonitor, "getDistance", lambda self: 99.0)
+
+        with pytest.raises(DisplayError, match="reads it back differently") as error:
+            registry.register(MONITOR)
+        assert "distance_cm: config 57, registered 99.0" in str(error.value)
+
     def test_a_non_positive_gamma_is_refused(self, fake_psychopy):
         with pytest.raises(DisplayError, match="gamma must be positive"):
             registry.register(MONITOR, gamma=0.0)
@@ -254,6 +265,30 @@ class TestResolve:
         assert mon.getSizePix() == [1920, 1080]
         assert mon.getWidth() == 52.0
         assert mon.getDistance() == 57.0
+
+    def test_an_unregistered_monitor_says_so_at_warning(self, fake_psychopy, caplog):
+        """Nothing fails — the window opens either way — which is exactly why
+        this has to be audible. The session runs with no measured gamma and
+        looks identical to one that inherited a calibration, and a rig whose
+        monitor is registered under another name lands here and nowhere
+        else."""
+        import logging
+
+        with caplog.at_level(logging.INFO, logger="alhazen.display.monitors"):
+            registry.resolve(MONITOR)
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1, [r.getMessage() for r in caplog.records]
+        message = warnings[0].getMessage()
+        assert "not registered" in message and "uncalibrated" in message
+        assert "alhazen monitor register" in message
+
+    def test_a_registered_monitor_says_nothing(self, fake_psychopy, caplog):
+        import logging
+
+        registry.register(MONITOR, gamma=2.2)
+        with caplog.at_level(logging.WARNING, logger="alhazen.display.monitors"):
+            registry.resolve(MONITOR)
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
 
     def test_resolving_an_unregistered_monitor_writes_nothing(self, fake_psychopy):
         registry.resolve(MONITOR)

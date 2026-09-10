@@ -178,8 +178,23 @@ class SessionRunner:
         spikes: SpikeSource | None = None,
         live: LiveAnalysis | None = None,
         setup_notes: Sequence[str] = (),
+        max_consecutive_failures: int | None = None,
     ) -> None:
         self._cfg = cfg
+        # How many non-completed trials in a row stop the session at the pause
+        # screen. None never pauses. What counts as too many is the task's to
+        # say (the builder reads it off the task's params), because a
+        # fixation-break rate that is routine for one design is a subject who
+        # cannot see the stimulus in another. A session that completed none
+        # of 33 trials — every one a fixation break, with the eye sitting just
+        # outside the window on a calibration that passed — ran to its end
+        # with nothing on screen or in the log saying so. This is that line.
+        if max_consecutive_failures is not None and max_consecutive_failures < 1:
+            raise ValueError(
+                f"max_consecutive_failures must be >= 1 or None, got {max_consecutive_failures}"
+            )
+        self._max_consecutive_failures = max_consecutive_failures
+        self._failures_in_a_row = 0
         # What was decided about this session before it started — a mode's
         # reductions and stood-down devices (modes/session.py describe()),
         # in the experimenter's words. Logged right after "session start",
@@ -295,6 +310,13 @@ class SessionRunner:
                 condition = self._source.next()
                 if condition is None:
                     break  # the scheduler's definition of "session done"
+                # A scheduler that knows its block boundaries (BlockPlan)
+                # leaves a break here when one has just ended; the session
+                # takes it now, before this block's first trial is built.
+                take_break = getattr(self._source, "take_block_break", None)
+                pending = take_break() if take_break is not None else None
+                if pending is not None and not self._block_break(*pending):
+                    break
 
                 # Attempts are keyed by condition identity so a re-served
                 # condition increments the same counter, never restarts it.
@@ -368,6 +390,14 @@ class SessionRunner:
                     if not self._apply_stage_transition():
                         break
 
+                # Counted here, before the pause branches, so that a trial
+                # the subject completed clears the count even when its reward
+                # pump failed. The reward branch below `continue`s, and used
+                # to carry the counter past a completed trial untouched: two
+                # fixation breaks, a completed trial with a dead pump, one
+                # more fixation break and the screen said three in a row.
+                too_many_failures = self._too_many_failures_in_a_row(outcome)
+
                 if outcome.name == "PAUSED" or reward_failed:
                     # A reward failure goes through the same pause flow as a
                     # deliberate pause: a human has to look at the pump before
@@ -379,6 +409,16 @@ class SessionRunner:
                     if not self._handle_pause(result.record, fault=fault):
                         break
                     continue  # the pause menu already gave all the time needed; skip ITI
+
+                if too_many_failures:
+                    fault = (
+                        f"{self._max_consecutive_failures} TRIALS FAILED IN A ROW — last "
+                        f"{outcome.name}; check the calibration (V), the subject, and the "
+                        f"stimulus before resuming"
+                    )
+                    if not self._handle_pause(result.record, fault=fault):
+                        break
+                    continue
 
                 if self._iti_s > 0:
                     self._wait(self._iti_s)
@@ -583,6 +623,59 @@ class SessionRunner:
         ctx.record[f"t_{name.lower()}"] = t
         self._bus.emit(Event(name=name, t=t, trial_index=self._trial_index, payload=payload))
 
+    def _block_break(self, done: int, total: int) -> bool:
+        """The rest between blocks: the pause screen, headed with how far
+        the session has got, until the experimenter resumes. Returns False
+        when they quit instead.
+
+        Its own heading and colour, because the pause menu now also leads
+        with faults, and a subject looking at the screen during a break must
+        not be looking at the thing that appears when a calibration dies.
+        The block count is the heading because "how much longer" is the one
+        question a break gets asked.
+        """
+        log.info("block %d of %d complete: taking the break", done, total)
+        self._emit_session_event(
+            "PAUSED", {"reason": "block_break", "blocks_done": done, "blocks_total": total}
+        )
+        return self._handle_pause({}, rest=f"BLOCK {done} OF {total} COMPLETE — REST")
+
+    def _too_many_failures_in_a_row(self, outcome: Any) -> bool:
+        """Count non-completed trials back to back; True on the one that
+        reaches the task's limit, which the caller turns into a pause.
+
+        Two outcomes are neither, because neither is about the subject, and
+        the pause this raises blames the subject's calibration:
+
+        - ``PAUSED`` — the experimenter stopped it. The count restarts after
+          the pause, so a subject who is still not fixating gets another whole
+          run of chances before the screen says so again, rather than a pause
+          every trial.
+        - ``DROPPED_FRAMES`` — the display failed, not the eye. Frame QA
+          counts those itself and aborts the run with the display's own
+          message (display/frames.py); counting them here as well would stop
+          the session to ask someone to check a calibration that is fine.
+        """
+        limit = self._max_consecutive_failures
+        if limit is None or outcome.name in ("PAUSED", "DROPPED_FRAMES"):
+            return False
+        if outcome.completed:
+            self._failures_in_a_row = 0
+            return False
+        self._failures_in_a_row += 1
+        if self._failures_in_a_row < limit:
+            return False
+        log.warning(
+            "%d trials in a row not completed, the last %s on trial %d: pausing. The subject "
+            "may not be seeing what this session is measuring — a calibration that passed "
+            "but sits at the edge of the fixation window looks exactly like this.",
+            self._failures_in_a_row,
+            outcome.name,
+            self._trial_index,
+        )
+        self._failures_in_a_row = 0
+        return True
+
     def _require_tracker_calibration(self) -> bool:
         """Before trial 1: a tracker that can say it holds no calibration
         stops the session at the pause screen, with that reason, until the
@@ -613,7 +706,7 @@ class SessionRunner:
         self._tracker.start_trial(ctx.trial_index, f"attempt {attempt}")
         self._tracker.draw_host_overlay(host_overlay_shapes(self._screen, ctx.regions))
 
-    def _pause_menu(self, fault: str | None = None) -> PauseMenu:
+    def _pause_menu(self, fault: str | None = None, rest: str | None = None) -> PauseMenu:
         """The menu for this session, built from what is actually wired.
 
         Built fresh at each pause rather than once at construction, because
@@ -627,20 +720,27 @@ class SessionRunner:
             has_training=self._training is not None,
             has_dashboard=self._dashboard is not None,
             fault=fault,
+            rest=rest,
         )
 
     def _show_pause_menu(self, menu: PauseMenu) -> None:
         self._display.show_menu(menu.title, menu.render(), color=menu.color)
 
-    def _handle_pause(self, record: dict[str, Any], *, fault: str | None = None) -> bool:
+    def _handle_pause(
+        self, record: dict[str, Any], *, fault: str | None = None, rest: str | None = None
+    ) -> bool:
         """Resolve a PAUSED trial; returns False when the experimenter chose
         to quit. With no pause strategy wired (unattended runs), resume
         immediately — blocking forever with nobody at the keyboard would
-        hang a simulated session.
+        hang a simulated session. That check comes FIRST, before the
+        dashboard: whether anyone is at the rig and whether a browser is
+        serving are different questions, and answering the second one first
+        hung every unattended run of a rig with the dashboard turned on.
 
         ``fault`` makes this an involuntary pause — a reward failure, a
         tracker with no calibration — and the screen leads with what went
-        wrong rather than with the word PAUSED.
+        wrong rather than with the word PAUSED. ``rest`` is the opposite: a
+        scheduled break, headed and coloured as one.
 
         The menu stays up across everything except resume and quit. Pressing
         the calibrate key used to calibrate and then resume in one press,
@@ -657,14 +757,36 @@ class SessionRunner:
             notice = self._apply_pause_action("calibrate") or notice
         elif fault is not None:
             notice = f"{fault} — browser controls are enabled."
-        menu = self._pause_menu(fault=fault)
-        if self._dashboard is not None:
-            return self._handle_dashboard_pause(menu, notice)
+        elif rest is not None:
+            notice = f"{rest.capitalize()} — resume when the subject is ready."
+        menu = self._pause_menu(fault=fault, rest=rest)
         if self._on_pause is None:
-            # Unattended. Still shown, so a simulated session's log records
-            # that it stopped and why.
+            # Nobody is going to answer. `on_pause` is wired only for a
+            # rendering display with a keyboard behind it (session/builder.py),
+            # so None means an unattended run — and that is true whether or
+            # not the rig file turned the dashboard on. A dashboard is a
+            # window onto the session, not a person at it; waiting for a
+            # browser click that will never come hung every unattended run of
+            # a rig with `dashboard.enabled`, and a scheduled block break made
+            # that every simulated run of a multi-block experiment.
+            #
+            # The menu is still drawn and the skipped pause still logged, at
+            # WARNING: a pause that did not pause is a real difference between
+            # what the session was asked to do and what it did, and the run
+            # that finds out is the dry run, not the one with a subject in it.
             self._show_pause_menu(menu)
+            log.warning(
+                "pause with nobody to answer it (no keyboard wired — unattended run): "
+                "resuming immediately. %s",
+                notice,
+            )
+            if self._dashboard is not None:
+                # Left out, a dashboard open on a dry run would sit on the
+                # last state it was told about while the session ran on.
+                self._publish_dashboard("running", f"{notice} Unattended — resumed.")
             return self._resumed()
+        if self._dashboard is not None:
+            return self._handle_dashboard_pause(menu, notice, fault=fault, rest=rest)
         while True:
             action = self._on_pause(menu)
             if action == "quit":
@@ -672,6 +794,19 @@ class SessionRunner:
             if action == "resume":
                 return self._resumed()
             self._apply_pause_action(action)
+            # The menu is rebuilt after every procedure, not only after one
+            # that failed. A procedure that failed becomes the heading of the
+            # menu that comes back, on the screen the experimenter is actually
+            # facing — and a procedure that then SUCCEEDS has to take that
+            # heading back down again. Without this, a red VALIDATION FAILED
+            # stays up after the recalibration that fixed it, and the pause's
+            # own heading (a block break's REST) never comes back.
+            if action in PROCEDURE_ACTIONS:
+                failed = self._procedure_fault(action)
+                menu = self._pause_menu(
+                    fault=failed if failed is not None else fault,
+                    rest=rest if failed is None else None,
+                )
 
     def _apply_pause_action(self, action: str) -> str | None:
         """One non-terminal menu choice; returns the line the dashboard shows
@@ -713,19 +848,60 @@ class SessionRunner:
             return monitor.validate().summary()
         return monitor.drift_correct().summary()
 
+    def _procedure_fault(self, action: str) -> str | None:
+        """The heading the pause screen leads with after a procedure that
+        did not succeed, or None after one that did.
+
+        The verdict already goes to the dashboard's notice line and the log.
+        Neither is the screen the experimenter is looking at while they stand
+        at the rig, and a validation that failed there without a word — with
+        the session about to resume on a calibration the design rejects — is
+        how every landing of a block inherits an error nobody saw.
+        """
+        monitor = self._eyetracker
+        if monitor is None or action not in PROCEDURE_ACTIONS:
+            return None
+        calibration, validation, drift = monitor.calibration, monitor.validation, monitor.drift
+        if action == "calibrate" and calibration is not None and calibration.ok is False:
+            return f"CALIBRATION FAILED — {calibration.note or 'the tracker reports none'}"
+        if (
+            action in ("calibrate", "validate")
+            and validation is not None
+            and not validation.accepted
+            and not validation.aborted
+        ):
+            worst = validation.max_error_deg
+            measured = f"worst {worst:.2f}°" if worst is not None else "no target measured"
+            return (
+                f"VALIDATION FAILED — {measured} against the {validation.threshold_deg:g}° "
+                f"limit; recalibrate (C) before resuming"
+            )
+        if action == "drift_correct" and drift is not None and not drift.applied:
+            return f"DRIFT CORRECTION REFUSED — {drift.note or drift.summary()}"
+        return None
+
     def _resumed(self) -> bool:
         self._bus.emit(
             Event(name="RESUMED", t=self._clock.now(), trial_index=self._trial_index, payload={})
         )
         return True
 
-    def _handle_dashboard_pause(self, menu: PauseMenu, notice: str) -> bool:
+    def _handle_dashboard_pause(
+        self,
+        menu: PauseMenu,
+        notice: str,
+        *,
+        fault: str | None = None,
+        rest: str | None = None,
+    ) -> bool:
         """Drive the local browser controls only after a keyboard pause.
 
         The browser is server-enforced read-only before this state is
         published. Keyboard polling remains available so closing the browser
         can never strand an experimenter in the pause screen. `notice` is the
-        line the browser shows as the pause begins.
+        line the browser shows as the pause begins; `fault` and `rest` are the
+        pause's own heading, kept so that a procedure run from the browser can
+        put it back after replacing it.
         """
         assert self._dashboard is not None
         dashboard = self._dashboard
@@ -767,7 +943,18 @@ class SessionRunner:
                 # Every non-terminal action redraws the menu, because
                 # _apply_pause_action may have put a calibration screen over
                 # it, and a menu that vanishes after one keypress looks like
-                # a session that has crashed.
+                # a session that has crashed. A procedure that failed becomes
+                # the menu's heading: the browser gets the verdict as its
+                # notice, but the rig's own screen must say it too.
+                if action in PROCEDURE_ACTIONS:
+                    # Rebuilt after every procedure, so a heading that a
+                    # failure put up comes back down when a later procedure
+                    # succeeds, and the pause's own heading returns with it.
+                    failed = self._procedure_fault(action)
+                    menu = self._pause_menu(
+                        fault=failed if failed is not None else fault,
+                        rest=rest if failed is None else None,
+                    )
                 self._show_pause_menu(menu)
                 if action in PROCEDURE_ACTIONS:
                     # A procedure runs for seconds to minutes, and the browser

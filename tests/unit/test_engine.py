@@ -294,3 +294,25 @@ class TestFrameQAIntegration:
         assert result.outcome is FAILED
         assert result.record["n_dropped_frames"] == 3
         assert "frame_qa_reason" not in result.record
+
+    def test_incomplete_trials_never_add_up_to_the_recycle_abort(self):
+        """The monitor counts recycles in a row and aborts the run at the
+        limit. It counted trials the engine had decided not to recycle, so a
+        subject having a bad run on a display dropping the odd frame stopped
+        the session with a message blaming the panel — and no DROPPED_FRAMES
+        row anywhere in the data to support it."""
+        harness = EngineHarness(
+            frame_qa=FrameQAConfig(
+                policy="recycle_trial", max_dropped_fraction=0.1, max_consecutive_recycles=2
+            )
+        )
+
+        class DropSome(RunForFrames):
+            def on_frame(self, ctx):
+                if len(self.frames_seen) in {1, 2, 3}:
+                    harness.display.next_flip_extra = FRAME_S
+                return super().on_frame(ctx)
+
+        for trial in range(1, 6):
+            result = harness.engine.run_trial(harness.ctx(trial), [DropSome(4, FAILED)])
+            assert result.outcome is FAILED

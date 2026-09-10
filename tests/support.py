@@ -169,6 +169,7 @@ class SessionHarness:
         source: Any = None,
         declared_outcomes: Any = None,
         use_pause_menu: bool = False,
+        dashboard: Any = None,
     ) -> None:
         from alhazen.data.paths import SessionPaths
         from alhazen.paradigms.base import Condition, SimpleSequence
@@ -285,4 +286,5 @@ class SessionHarness:
             sync=sync,
             reward_policy=reward_policy,
             eyetracker=self.eyetracker,
+            dashboard=dashboard,
         )

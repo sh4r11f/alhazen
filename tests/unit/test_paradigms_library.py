@@ -283,6 +283,31 @@ class TestBlockPlan:
         served = drain(plan)
         assert [c.params["block"] for c in served] == [1, 1, 2, 2]
 
+    def test_a_finished_block_leaves_a_break_until_it_is_taken(self):
+        """Pending from the end of a block until the runner takes it, once,
+        and never after the last block: the end of the session is not a
+        rest."""
+        plan = BlockPlan([self.inner(1), self.inner(1), self.inner(1)], trials_per_block=1)
+        assert plan.take_block_break() is None
+        first = plan.next()
+        plan.record(first, result(HIT))
+        assert plan.take_block_break() is None  # block 1 has not ended yet
+        second = plan.next()  # ends block 1, starts block 2
+        assert plan.take_block_break() == (1, 3)
+        assert plan.take_block_break() is None  # taken
+        plan.record(second, result(HIT))
+        third = plan.next()
+        assert plan.take_block_break() == (2, 3)
+        plan.record(third, result(HIT))
+        assert plan.next() is None
+        assert plan.take_block_break() is None
+
+    def test_breaks_can_be_switched_off(self):
+        plan = BlockPlan([self.inner(1), self.inner(1)], trials_per_block=1, breaks=False)
+        plan.record(plan.next(), result(HIT))
+        plan.next()
+        assert plan.take_block_break() is None
+
     def test_block_boundaries_go_in_the_session_log(self, caplog):
         """No event (the module docstring says why), but the log has to show
         where a block began and ended, or a between-block validation cannot

@@ -167,6 +167,50 @@ class TestFrameMonitor:
                 monitor.note_flip(t)
             monitor.end_trial()  # never reaches two in a row, so never raises
 
+    def test_a_trial_that_did_not_complete_is_never_recycled(self):
+        """The engine only replaces a COMPLETED outcome — a fixation break is
+        already being re-served — so the monitor must not call one recycled
+        either. It used to, which put "— trial recycled" in the log for
+        trials nothing recycled."""
+        monitor = self.make(policy="recycle_trial", fraction=0.10)
+        monitor.start_trial(1)
+        monitor.note_flip(0.0)
+        monitor.note_flip(0.030)  # one frame, dropped: 100% of the trial
+        summary = monitor.end_trial(completed=False)
+        assert not summary.recycle
+        assert summary.reason is None
+        # The evidence still reaches the log: the display did drop a frame.
+        assert summary.n_dropped == 1
+
+    def test_trials_that_did_not_complete_never_reach_the_recycle_abort(self):
+        """A run of fixation breaks on a display dropping the odd frame used
+        to raise FrameQAError about a display that was fine, with not one
+        DROPPED_FRAMES row in the data to back the claim."""
+        cfg = FrameQAConfig(policy="recycle_trial", max_consecutive_recycles=2)
+        monitor = FrameMonitor(cfg, refresh_rate_hz=100.0)
+        for index in range(1, 11):
+            monitor.start_trial(index)
+            monitor.note_flip(0.0)
+            monitor.note_flip(0.030)
+            assert not monitor.end_trial(completed=False).recycle
+
+    def test_a_trial_that_did_not_complete_leaves_the_count_where_it_was(self):
+        """Neither a recycle nor evidence the display recovered: two real
+        recycles either side of a fixation break are still two in a row."""
+        cfg = FrameQAConfig(policy="recycle_trial", max_consecutive_recycles=2)
+        monitor = FrameMonitor(cfg, refresh_rate_hz=100.0)
+
+        def bad_trial(index, completed):
+            monitor.start_trial(index)
+            monitor.note_flip(0.0)
+            monitor.note_flip(0.030)
+            return monitor.end_trial(completed=completed)
+
+        assert bad_trial(1, True).recycle
+        assert not bad_trial(2, False).recycle
+        with pytest.raises(FrameQAError, match="2 trials in a row recycled"):
+            bad_trial(3, True)
+
     def test_recycle_is_never_the_verdict_under_other_policies(self):
         for policy in ("log", "warn", "mark_trial"):
             monitor = self.make(policy=policy)

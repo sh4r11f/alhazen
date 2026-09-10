@@ -25,10 +25,12 @@ from alhazen.analysis.io import viewpixx
 from alhazen.analysis.io.viewpixx import (
     DEFAULT_COLUMNS,
     REAL_HEADER,
+    BinocularRecording,
     ClockFit,
     event_times,
     fit_clock,
     read_run,
+    read_run_binocular,
 )
 from alhazen.config.models import MonitorConfig
 from alhazen.display.screen import Screen
@@ -94,29 +96,53 @@ class RunBuilder:
         blink_s: tuple[float, float] | None = None,
         lost_s: tuple[float, float] | None = None,
         end_mark: bool = True,
+        eye_lost_s: dict[str, tuple[float, float]] | None = None,
+        eye_offset_px: dict[str, float] | None = None,
+        mark_eye_used: bool = True,
     ) -> None:
+        """One trial of samples.
+
+        ``lost_s`` loses both eyes together, which is a blink. ``eye_lost_s``
+        loses them separately — ``{"left": (0.1, 0.2)}`` — which is the case
+        a binocular reader has to represent and a monocular one cannot see.
+        ``eye_offset_px`` shifts one eye's x, so the two eyes differ by a
+        known amount and vergence is a number a test can predict.
+        """
         self.trial += 1
         self.mark(f"TRIAL {self.trial} attempt 1")
-        self.mark(f"EYE_USED {self.eye}")
+        if mark_eye_used:
+            self.mark(f"EYE_USED {self.eye}")
         self.mark("trial_start")
         start = self.t
         n = int(duration_s * SAMPLE_HZ)
+        eye_lost_s = eye_lost_s or {}
+        offsets = {"left": 0.0, "right": 10.0, **(eye_offset_px or {})}
         for index in range(n):
             t = start + index / SAMPLE_HZ
             since = t - start
-            x, y = gaze_px
             blink = 0.0
             if blink_s is not None and blink_s[0] <= since < blink_s[1]:
                 blink = 1.0  # the device's flag, position still a number
-            if lost_s is not None and lost_s[0] <= since < lost_s[1]:
-                x = y = 9000.0  # the device's lost sentinel
+
+            def position(eye: str, since: float = since) -> tuple[float, float]:
+                x, y = gaze_px
+                x = x + offsets[eye]
+                window = eye_lost_s.get(eye)
+                both = lost_s is not None and lost_s[0] <= since < lost_s[1]
+                one = window is not None and window[0] <= since < window[1]
+                if both or one:
+                    return 9000.0, 9000.0  # the device's lost sentinel
+                return x, y
+
+            left_x, left_y = position("left")
+            right_x, right_y = position("right")
             self.samples.append(
                 {
                     "Timestamp": self.device_time(t),
-                    "\tLeft Screen X": x,
-                    " Left Screen Y": y,
-                    " Right Screen X": x + 10.0,
-                    " Right Screen Y": y,
+                    "\tLeft Screen X": left_x,
+                    " Left Screen Y": left_y,
+                    " Right Screen X": right_x,
+                    " Right Screen Y": right_y,
                     " Left Blink": blink,
                     " Right Blink": blink,
                     " Left Pupil Diameter": 3.0,
@@ -294,6 +320,107 @@ class TestReading:
         with pytest.raises(DataError, match="do not fit a straight line"):
             fit_clock(messages, tolerance_s=0.0002)
 
+    def _marks(self, n: int = 198, late: dict[int, float] | None = None) -> pd.DataFrame:
+        """n marks from two clocks that agree to the microsecond, with the
+        named ones stamped late on the session side — a scheduler blocking
+        between the two clock reads, which is one-sided by nature."""
+        device = 7000.0 + np.arange(n) * 0.25
+        session = device * DEVICE_RATE_ERROR - 7000.0 * DEVICE_RATE_ERROR + 1.0
+        session = session + np.random.default_rng(0).normal(0.0, 0.00005, n)
+        for index, delay in (late or {}).items():
+            session[index] += delay
+        return pd.DataFrame(
+            {
+                "device_time_s": device,
+                "session_time_s": session,
+                "message": [f"TRIAL {i + 1} attempt 1" for i in range(n)],
+            }
+        )
+
+    def test_one_late_mark_is_dropped_and_named_rather_than_refusing_the_run(self, caplog):
+        """The real case: 198 marks, residual sd 0.15 ms, one at +1.75 ms.
+        A stamping delay is different in kind from a drifting clock, and the
+        fit can tell — and must say which mark, so nobody fits it by hand."""
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="alhazen.analysis.io.viewpixx"):
+            fit = fit_clock(self._marks(late={16: 0.00175}), tolerance_s=0.0005)
+
+        assert fit.n_dropped == 1 and fit.n_marks == 197
+        assert fit.max_residual_s < 0.0005
+        assert fit.slope == pytest.approx(DEVICE_RATE_ERROR, rel=1e-6)
+        (warning,) = [
+            r.getMessage() for r in caplog.records if "dropped 1 of 198" in r.getMessage()
+        ]
+        # Named, with its residual against the refit (which absorbed a little
+        # of it while the mark was still in: 1.72 of the 1.75 injected).
+        assert "'TRIAL 17 attempt 1'" in warning and "+1.7" in warning
+
+    def test_too_many_late_marks_are_refused_and_the_worst_are_named(self):
+        """One in twenty is a scheduler; more than that is not, and dropping
+        the marks that show a drift would be rescuing a broken clock."""
+        late = dict.fromkeys(range(0, 198, 9), 0.002)  # 22 of 198
+        with pytest.raises(DataError, match="too many to be stamping delays") as error:
+            fit_clock(self._marks(late=late), tolerance_s=0.0005)
+        assert "22 of 198" in str(error.value)
+        # The worst few are named, so the operator sees marks, not a count.
+        assert "attempt 1' at" in str(error.value)
+
+    def test_a_drift_is_still_refused_after_the_outliers_go(self):
+        """Dropping the single worst mark from a curved residual does not
+        straighten it: the refit still misses, and says so as drift."""
+        marks = self._marks(n=40)
+        device = marks["device_time_s"].to_numpy()
+        marks["session_time_s"] += 0.004 * ((device - device[0]) / (device[-1] - device[0])) ** 2
+        with pytest.raises(DataError, match="do not fit a straight line"):
+            fit_clock(marks, tolerance_s=0.0005)
+
+    def test_a_clean_run_drops_nothing(self):
+        fit = fit_clock(self._marks(), tolerance_s=0.0005)
+        assert fit.n_dropped == 0 and fit.n_marks == 198
+
+    def test_a_step_at_the_end_of_the_run_is_not_dropped_as_a_hiccup(self):
+        """A clock re-set during the last trial touches one mark, which is
+        inside the 5% budget — and dropping it would leave a tight fit, a
+        reassuring warning, and every sample of that trial timed wrong. The
+        last mark has nothing after it to show the clocks back on the line,
+        so it cannot be told apart from a step and is not dropped."""
+        marks = self._marks(n=60, late={59: 0.004})
+        with pytest.raises(DataError, match="a stamping delay cannot explain") as error:
+            fit_clock(marks, tolerance_s=0.0005)
+        assert "run's last mark" in str(error.value)
+
+    def test_a_step_at_the_start_of_the_run_is_not_dropped_either(self):
+        marks = self._marks(n=60, late={0: 0.004})
+        with pytest.raises(DataError, match="a stamping delay cannot explain") as error:
+            fit_clock(marks, tolerance_s=0.0005)
+        assert "run's first mark" in str(error.value)
+
+    def test_two_off_line_marks_in_a_row_are_a_clock_that_moved(self):
+        """Neighbours have to be on the line for a mark to be a stamping
+        delay. Two in a row is the beginning of a step, and a step that
+        happens to be short is still a step."""
+        marks = self._marks(n=60, late={30: 0.004, 31: 0.004})
+        with pytest.raises(DataError, match="a stamping delay cannot explain") as error:
+            fit_clock(marks, tolerance_s=0.0005)
+        assert "next to another off-line mark" in str(error.value)
+
+    def test_an_early_mark_is_not_a_stamping_delay(self):
+        """The backend reads the device clock and then the session clock, so
+        a scheduler blocking between them can only make the session stamp
+        LATE. A mark that is early is something the fit does not understand,
+        and pretending otherwise would drop it and carry on."""
+        marks = self._marks(n=60, late={30: -0.004})
+        with pytest.raises(DataError, match="a stamping delay cannot explain") as error:
+            fit_clock(marks, tolerance_s=0.0005)
+        assert "EARLY" in str(error.value)
+
+    def test_isolated_interior_late_marks_are_still_dropped(self):
+        """The rule has to leave the case it was written for alone: two late
+        marks, far apart, both with neighbours on the line."""
+        fit = fit_clock(self._marks(n=100, late={20: 0.002, 70: 0.002}), tolerance_s=0.0005)
+        assert fit.n_dropped == 2 and fit.n_marks == 98
+
     def test_two_alignment_marks_are_refused(self):
         messages = pd.DataFrame(
             {"device_time_s": [0.0, 1.0], "session_time_s": [0.0, 1.0], "message": ["a", "b"]}
@@ -424,3 +551,156 @@ class TestEventsAndTrials:
         # The last one ends where the samples do.
         assert spans["t_end"].iloc[1] == pytest.approx(recording.samples["t_session"].iloc[-1])
         assert spans["status"].tolist() == ["attempt 1", "attempt 1"]
+
+
+# ----------------------------------------------------------------------
+# Both eyes
+# ----------------------------------------------------------------------
+
+
+class TestBinocular:
+    """`read_run_binocular` keeps what the monocular reader reduces away.
+
+    For a vergence experiment one eye is not a smaller version of the
+    measurement, it is none of it, so this is a separate entry point rather
+    than an argument — and everything above the eye selection is the same
+    code the monocular tests above already cover.
+    """
+
+    def test_it_keeps_both_eyes_in_the_same_units(self, tmp_path):
+        builder = RunBuilder(tmp_path)
+        # Left at 4 deg, right one degree nearer the nose: 1 deg of vergence.
+        builder.trial_of(
+            gaze_px=(PX_PER_DEG * 4.0, -PX_PER_DEG * 2.0),
+            eye_offset_px={"right": -PX_PER_DEG},
+        )
+        recording = read_run_binocular(builder.write())
+
+        assert isinstance(recording, BinocularRecording)
+        assert recording.gaze_frame == "centered_y_up"
+        samples = recording.samples
+        assert samples["left_x_dva"].median() == pytest.approx(4.0, abs=1e-6)
+        assert samples["right_x_dva"].median() == pytest.approx(3.0, abs=1e-6)
+        assert samples["left_y_dva"].median() == pytest.approx(-2.0, abs=1e-6)
+        assert samples["left_tracked"].all() and samples["right_tracked"].all()
+        assert samples["left_pupil"].median() == pytest.approx(3.0)
+        assert samples["right_pupil"].median() == pytest.approx(4.0)
+
+        # Vergence is the caller's one line, and it comes out where it was put.
+        vergence = samples["left_x_dva"] - samples["right_x_dva"]
+        assert vergence.median() == pytest.approx(1.0, abs=1e-6)
+
+    def test_one_eye_lost_does_not_lose_the_other(self, tmp_path):
+        """The case a single `tracked` flag would hide. Encoding loss only as
+        NaN also loses the surviving eye through any arithmetic that touches
+        both, since (finite + nan) / 2 is nan — so the position is NaN AND the
+        per-eye boolean says which eye it was."""
+        builder = RunBuilder(tmp_path)
+        builder.trial_of(duration_s=0.25, eye_lost_s={"left": (0.0, 0.025)})
+        samples = read_run_binocular(builder.write()).samples
+
+        lost = ~samples["left_tracked"]
+        assert lost.sum() == pytest.approx(0.025 * SAMPLE_HZ, abs=1)
+        # The left eye is gone for those samples...
+        assert samples.loc[lost, "left_x_dva"].isna().all()
+        assert samples.loc[lost, "left_pupil"].isna().all()
+        # ...and the right eye is there for every one of them, which is the
+        # whole point: a monocular epoch stays usable and stays findable.
+        assert samples["right_tracked"].all()
+        assert samples.loc[lost, "right_x_dva"].notna().all()
+        assert len(samples) == int(0.25 * SAMPLE_HZ)
+
+    def test_a_blink_loses_both_eyes(self, tmp_path):
+        builder = RunBuilder(tmp_path)
+        builder.trial_of(duration_s=0.25, blink_s=(0.1, 0.15))
+        samples = read_run_binocular(builder.write()).samples
+
+        blinking = ~samples["left_tracked"]
+        assert blinking.sum() == pytest.approx(0.05 * SAMPLE_HZ, abs=1)
+        assert (~samples.loc[blinking, "right_tracked"]).all()
+
+    def test_it_does_not_need_to_be_told_which_eye_the_session_read(self, tmp_path):
+        """EYE_USED records the eye the SESSION read online, for its fixation
+        windows. The device recorded both regardless, so a binocular read has
+        no use for it — and must not refuse a run that lacks it."""
+        builder = RunBuilder(tmp_path)
+        builder.trial_of(mark_eye_used=False)
+        run = builder.write()
+
+        assert read_run_binocular(run).samples["left_tracked"].all()
+        # The monocular reader still insists, because it has to choose.
+        with pytest.raises(DataError, match="no EYE_USED mark"):
+            read_run(run)
+
+    def test_the_views_are_the_same_ones_the_monocular_recording_offers(self, tmp_path):
+        builder = RunBuilder(tmp_path)
+        builder.trial_of(duration_s=0.1)
+        builder.trial_of(duration_s=0.1)
+        recording = read_run_binocular(builder.write())
+
+        assert recording.sample_rate_hz == pytest.approx(SAMPLE_HZ, rel=1e-3)
+        spans = recording.trial_spans()
+        assert spans["trial_index"].tolist() == [1, 2]
+        first = recording.between(spans["t_start"].iloc[0], spans["t_end"].iloc[0])
+        assert 0 < len(first) <= len(recording.samples)
+        assert event_times(recording.messages, "STIM_ON")["trial_index"].tolist() == [1, 2]
+
+    def test_the_bounds_check_applies_per_eye_and_names_it(self, tmp_path):
+        """Read in the wrong frame, both eyes are half a panel out; the error
+        has to say which eye it measured so a one-eyed fault is findable."""
+        builder = RunBuilder(tmp_path)
+        builder.trial_of(gaze_px=(1100.0, 700.0))  # screen px, read as centred
+        run = builder.write()
+
+        with pytest.raises(DataError, match="left-eye samples") as error:
+            read_run_binocular(run)
+        assert "screen_y_down" in str(error.value)
+
+        recording = read_run_binocular(run, gaze_frame="screen_y_down")
+        assert recording.samples["left_x_dva"].median() == pytest.approx(140 / PX_PER_DEG, abs=1e-6)
+        assert read_run_binocular(run, check_bounds=False).samples["left_tracked"].all()
+
+    def test_the_real_recording_reads_with_both_eyes_untracked(self, tmp_path, caplog):
+        """The fixture from the rig: made with no calibration on the device,
+        so every position is NaN and both blink flags are set. The reader
+        represents that faithfully and says so, rather than refusing it —
+        whether an all-NaN run is analysable is the experiment's call, not
+        the reader's."""
+        import logging
+
+        for path in FIXTURES.glob("*.csv"):
+            shutil.copy(path, tmp_path / path.name)
+        write_snapshot(tmp_path)
+
+        with caplog.at_level(logging.WARNING, logger="alhazen.analysis.io.viewpixx"):
+            recording = read_run_binocular(tmp_path)
+
+        assert len(recording.samples) == 40
+        assert not recording.samples["left_tracked"].any()
+        assert not recording.samples["right_tracked"].any()
+        # One warning per eye, naming the likely cause.
+        said = [r.getMessage() for r in caplog.records if "is tracked" in r.getMessage()]
+        assert len(said) == 2
+        assert any("no left-eye sample" in m for m in said)
+        assert all("no calibration on the device" in m for m in said)
+
+    def test_an_empty_recording_is_reported_whatever_the_caller_thinks_of_the_edges(
+        self, tmp_path, caplog
+    ):
+        """`check_bounds=False` means "this run legitimately goes off the
+        panel" — the pursuit case — and it must not also switch off "this
+        recording is empty". It did, and the caller it was recommended to
+        was the one who lost the message."""
+        import logging
+
+        for path in FIXTURES.glob("*.csv"):
+            shutil.copy(path, tmp_path / path.name)
+        write_snapshot(tmp_path)
+
+        with caplog.at_level(logging.WARNING, logger="alhazen.analysis.io.viewpixx"):
+            read_run_binocular(tmp_path, check_bounds=False)
+            read_run(tmp_path, check_bounds=False)
+
+        said = [r.getMessage() for r in caplog.records if "is tracked" in r.getMessage()]
+        # Two eyes from the binocular read, one from the monocular.
+        assert len(said) == 3

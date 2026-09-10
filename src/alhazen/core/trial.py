@@ -85,6 +85,11 @@ TRIAL_RECORD_COLUMNS: tuple[str, ...] = (
     "outcome_before_frame_qa",
     "frame_qa_reason",
     "rewarded",
+    # "success" or "failure": what the subject was told at the end of the
+    # trial (task/phases TrialFeedback). Beside the outcome, never derived
+    # from it, because the two are different questions — a saccade that
+    # missed is still a completed, scored measurement.
+    "feedback",
 )
 
 

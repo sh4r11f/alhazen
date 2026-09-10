@@ -263,3 +263,147 @@ class TestTrackerCalibrationBeforeTrialOne:
         )
         harness.runner.run()
         assert harness.display.menus == []
+
+
+class TestTooManyFailuresInARow:
+    """A session that completed none of 33 trials — every one a fixation
+    break, the eye sitting just outside the window on a calibration that
+    passed — ran to its end with nothing on screen saying so. The task now
+    names how many in a row is too many, and the session pauses there."""
+
+    def harness(self, tmp_path, answers, limit):
+        from alhazen.task.plan import TrialPlan
+        from support import RunForFrames
+
+        outcomes = iter(answers)
+
+        def build(setup):
+            return TrialPlan(phases=[RunForFrames(1, next(outcomes))])
+
+        harness = SessionHarness(tmp_path, n_trials=1, build_trial=build)
+        harness.runner._max_consecutive_failures = limit
+        return harness
+
+    def test_the_limit_pauses_with_the_reason_and_the_count_restarts(self, tmp_path):
+        from support import FAILED
+
+        # Three failures, then success: the limit of two pauses once, after
+        # the second; the third failure starts a fresh count.
+        harness = self.harness(tmp_path, [FAILED, FAILED, FAILED, COMPLETED], limit=2)
+        harness.runner.run()
+
+        headings = [title for title, _body, _color in harness.display.menus]
+        assert sum("2 TRIALS FAILED IN A ROW" in h for h in headings) == 1, headings
+        assert any("last FAILED" in h for h in headings)
+        assert harness.collector.names().count("RESUMED") == 1
+        assert [r["outcome"] for r in read_trials(harness)] == [
+            "FAILED",
+            "FAILED",
+            "FAILED",
+            "COMPLETED",
+        ]
+        log = harness.paths.log_path.read_text(encoding="utf-8")
+        assert "2 trials in a row not completed, the last FAILED on trial 2: pausing" in log
+
+    def test_a_completed_trial_resets_the_count(self, tmp_path):
+        from support import FAILED
+
+        harness = self.harness(tmp_path, [FAILED, COMPLETED, FAILED, COMPLETED], limit=2)
+        harness.runner.run()
+        assert harness.display.menus == []
+
+    def test_a_completed_trial_with_a_dead_pump_still_resets_the_count(self, tmp_path):
+        """The reward failure has its own pause and its own `continue`, which
+        used to carry the counter past the trial untouched. Two breaks, a
+        completed trial the pump could not pay for, one more break — and the
+        screen said three in a row, over a trial the subject had done."""
+        from alhazen.config.models import RewardPulses
+        from alhazen.devices.reward import SimulatedReward
+        from alhazen.errors import RewardError
+        from alhazen.task.plan import TrialPlan
+        from alhazen.task.reward_policy import RewardPolicy
+        from support import FAILED, RunForFrames
+
+        PAID = RewardPulses(n_pulses=1)
+
+        class DeadPump(SimulatedReward):
+            """Fails its first delivery — the one the completed trial in the
+            middle of the run of failures asks for."""
+
+            def __init__(self) -> None:
+                super().__init__()
+                self.attempts = 0
+
+            def deliver(self, pulses) -> None:
+                self.attempts += 1
+                if self.attempts == 1:
+                    raise RewardError("solenoid did not open")
+                super().deliver(pulses)
+
+        # Two conditions; a trial that did not complete is re-served, so this
+        # is served as FAILED, FAILED, COMPLETED (pump dies), FAILED, COMPLETED.
+        outcomes = iter([FAILED, FAILED, COMPLETED, FAILED, COMPLETED])
+
+        def build(setup):
+            return TrialPlan(phases=[RunForFrames(1, next(outcomes))])
+
+        pauses: list = []
+
+        harness = SessionHarness(
+            tmp_path,
+            n_trials=2,
+            build_trial=build,
+            reward=DeadPump(),
+            reward_policy=RewardPolicy(by_outcome={"COMPLETED": PAID}),
+        )
+        harness.runner._max_consecutive_failures = 3
+        harness.runner._on_pause = lambda menu: (pauses.append(menu.title), "resume")[1]
+        harness.runner.run()
+
+        # One pause, and it is the pump's — not a count of three that
+        # included a trial the subject completed.
+        assert len(pauses) == 1, pauses
+        assert "REWARD FAILURE" in pauses[0]
+        assert not any("FAILED IN A ROW" in title for title in pauses)
+
+    def test_a_display_fault_is_not_counted_as_the_subject_failing(self, tmp_path):
+        """DROPPED_FRAMES is the panel, not the eye. Frame QA counts those
+        itself and stops the run with its own message; counting them here as
+        well stopped the session to ask someone to check a calibration that
+        was fine."""
+        from alhazen.core.trial import DROPPED_FRAMES
+
+        harness = self.harness(tmp_path, [COMPLETED], limit=2)
+        for _ in range(5):
+            assert not harness.runner._too_many_failures_in_a_row(DROPPED_FRAMES)
+
+    def test_no_limit_never_pauses(self, tmp_path):
+        from support import FAILED
+
+        harness = self.harness(tmp_path, [FAILED] * 5 + [COMPLETED], limit=None)
+        harness.runner.run()
+        assert harness.display.menus == []
+
+    def test_a_limit_below_one_is_refused(self, tmp_path):
+        harness = SessionHarness(tmp_path, n_trials=1)
+        from alhazen.session.runner import SessionRunner
+
+        with pytest.raises(ValueError, match="max_consecutive_failures must be >= 1"):
+            SessionRunner.__init__(
+                harness.runner,
+                cfg=harness.cfg,
+                paths=harness.paths,
+                display=harness.display,
+                screen=harness.runner._screen,
+                clock=harness.clock,
+                bus=harness.bus,
+                engine=harness.engine,
+                source=harness.source,
+                build_trial=lambda setup: None,
+                recorder=harness.recorder,
+                frame_monitor=harness.frame_monitor,
+                commands=harness.commands,
+                refresh_rate_hz=60.0,
+                task_rng=harness.runner._task_rng,
+                max_consecutive_failures=0,
+            )

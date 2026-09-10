@@ -51,9 +51,11 @@ class TrialFrameSummary:
 
     ``n_frames`` counts measured intervals: the first flip of a trial only
     sets the reference point, so a trial of N flips has N-1 of them.
-    ``recycle`` is the ``recycle_trial`` policy's verdict — True when the
-    trial's dropped fraction exceeded the budget — and ``reason`` says so in
-    words for the trial record. Both are False/None under every other policy.
+    ``recycle`` is the ``recycle_trial`` policy's verdict — True when a
+    COMPLETED trial's dropped fraction exceeded the budget — and ``reason``
+    says so in words for the trial record. Both are False/None under every
+    other policy, and for a trial that did not complete: a fixation break is
+    already being re-served, and recycling it again would count twice.
     """
 
     trial_index: int
@@ -161,7 +163,7 @@ class FrameMonitor:
             )
         return True
 
-    def end_trial(self) -> TrialFrameSummary:
+    def end_trial(self, *, completed: bool = True) -> TrialFrameSummary:
         """Sum the trial up: one log line if it dropped anything, and the
         ``recycle_trial`` verdict for the engine.
 
@@ -170,6 +172,22 @@ class FrameMonitor:
         known once the trial's length is. One early drop in a trial that goes
         on for 300 more frames is not a recycled trial.
 
+        ``completed`` is the engine's answer to "did this trial reach a
+        completed outcome", and it has to be asked because only a completed
+        trial can be recycled: one that already ended in a fixation break, or
+        in a pause, is being re-served for its own reason and the engine
+        leaves it alone (core/engine.py). Counting those as recycles here —
+        which is what this did — made a healthy display raise
+        ``FrameQAError`` after a run of fixation breaks that dropped a frame
+        each, with not one ``DROPPED_FRAMES`` row in the data to back the
+        claim, and put "— trial recycled" in the log for trials nothing
+        recycled.
+
+        A non-completed trial therefore leaves the consecutive count where it
+        was rather than resetting it: it is neither a recycle nor evidence
+        that the display recovered. Its dropped frames are still logged — the
+        evidence belongs in the log whatever the outcome was.
+
         Raises ``FrameQAError`` once ``max_consecutive_recycles`` trials in a
         row have been recycled — after logging the trial, so the log holds
         the evidence. A display that bad would otherwise be re-served the
@@ -177,7 +195,7 @@ class FrameMonitor:
         """
         n, dropped = self._frames_this_trial, self._dropped_this_trial
         recycle, reason = False, None
-        if self._cfg.policy == "recycle_trial" and n > 0:
+        if self._cfg.policy == "recycle_trial" and completed and n > 0:
             fraction = dropped / n
             if fraction > self._cfg.max_dropped_fraction:
                 recycle = True
@@ -185,7 +203,8 @@ class FrameMonitor:
                     f"{dropped} of {n} frames dropped ({fraction:.1%}), over the "
                     f"{self._cfg.max_dropped_fraction:.0%} budget (frame_qa.max_dropped_fraction)"
                 )
-        self._consecutive_recycles = self._consecutive_recycles + 1 if recycle else 0
+        if completed:
+            self._consecutive_recycles = self._consecutive_recycles + 1 if recycle else 0
         if dropped:
             # One line per trial that dropped anything. WARNING under every
             # policy that asked to hear about drops; DEBUG under ``log``,

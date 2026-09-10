@@ -378,6 +378,7 @@ of a real task needs.
 | `AdjustmentLoop` | the commit key is pressed, or the deadline passes | `adjusted_value`, `adjustment_turns` |
 | `FrameSequence` | a compiled `FrameTimeline` finishes | `sequence_frames` |
 | `Blank` / `Feedback` | a fixed duration elapses | — |
+| `TrialFeedback` | a fixed duration elapses; **must be the trial's last phase**, and the engine refuses it anywhere else | `feedback` (`success`/`failure`) from the task's own `verdict` predicate over the record — beside the outcome, never derived from it: a saccade that missed is still a completed, scored measurement. Recolours the fixation point, emits `FEEDBACK`; the session's `FeedbackSounder` beeps, because a phase touches no hardware |
 
 Every constructor takes plain values — seconds, region names, stimulus keys,
 Outcomes — and never a config model: resolving a `Duration` against the
@@ -749,9 +750,14 @@ rather than a position at the origin), `viewpixx` (a TRACKPixx3 run's
 **fit** from the two-clock message pairs that refuses a residual worse than a
 sample period, a sample table in degrees where a lost eye or a blink flag is
 a NaN row rather than a missing one, `event_times` and `trial_spans` from the
-messages, and `gaze_frame` as an explicit setting because whether the
-device's `Screen X/Y` are centred and y-up has not yet been checked against a
-valid sample), and `session` (a run directory, manifest-verified, returned as
+messages, and `gaze_frame` as an explicit setting, defaulting to the centred,
+y-up frame a TRACKPixx3 this backend calibrated reports — measured on the rig,
+and guarded by a check that refuses a run whose tracked gaze mostly falls off
+the panel, which is what the wrong frame looks like. `read_run_binocular`
+reads the same file keeping both eyes, for an experiment whose measurement is
+the relation between them: one eye is not a reduced version of a vergence
+measurement but none of it, and each eye carries its own `tracked` flag so
+that one eye lost while the other tracks stays visible and usable), and `session` (a run directory, manifest-verified, returned as
 typed pandas DataFrames — a `csv.DictReader` row hands back
 `row["success"] == "False"`, and `"False"` is truthy). All are tested against
 synthetic files written by `tests/fixtures_neural.py`, so each test can say
@@ -866,7 +872,17 @@ every backend precisely so a backend cannot quietly reach for
 3. loops: `source.next()` → build → engine → `source.record()` for **every**
    outcome (schedulers own re-queueing) → recorder row for every outcome
    except `PAUSED` (which produced no measurement — its events still land in
-   the events table, so the two tables deliberately do not join 1:1);
+   the events table, so the two tables deliberately do not join 1:1). A
+   task's params may name `max_consecutive_failures`: after that many
+   non-completed trials back to back the runner stops at the pause screen
+   with the count and the last outcome as its heading, because a subject
+   who is not seeing the stimulus — a calibration that passed but sits at
+   the edge of the fixation window — otherwise looks like a session that
+   is simply running. A `BlockPlan` leaves a break when a block ends and
+   another follows (`take_block_break`), and the runner takes it before
+   the next block's first trial: the pause screen headed `BLOCK 3 OF 6
+   COMPLETE — REST`, in its own colour, until SPACE — a rest is never the
+   screen a fault puts up;
 4. teardown attempts every step regardless of earlier failures (recorder →
    frame log → close log file → manifest → display), re-raising the first
    teardown error only if nothing else is propagating.
@@ -964,7 +980,13 @@ panel in alhazen's terms; PsychoPy keeps its own per-machine database of
 monitors, and that is where Monitor Center writes, where a window looks up a
 stored calibration, and what every other PsychoPy script on the rig reads.
 `alhazen monitor register` writes one into the other (`display/monitors.py`),
-under `monitor.name`, carrying the measured gamma if there is one.
+under `monitor.name`, carrying the measured gamma if there is one — and then
+looks the record up again and refuses if PsychoPy hands back different
+numbers from the ones just written, so a stale file under the same name is
+found at registration rather than by the next window. `monitor.name` is the
+rig file's stem unless the file says otherwise (`load_rig`): a rig file is
+one machine, and two files sharing PsychoPy's one default name would
+overwrite each other's geometry.
 
 The two then have one rule each. **The config owns the geometry**: every
 degree goes through `Screen`, which reads the config, so a registration that

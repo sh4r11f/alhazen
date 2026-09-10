@@ -41,6 +41,17 @@ class FixationPoint:
     def draw(self) -> None:
         self._stim.draw()
 
+    def set_color(self, color: tuple[float, float, float]) -> None:
+        """Recolour the point, fill and outline together.
+
+        What trial feedback does to it — green for a good trial, red for a
+        bad one — after everything has been measured. Both colours are set
+        because the outline was constructed from the fill and would otherwise
+        keep the old one as a ring.
+        """
+        self._stim.fillColor = color
+        self._stim.lineColor = color
+
 
 def make_fixation(
     display: DisplayBackend,

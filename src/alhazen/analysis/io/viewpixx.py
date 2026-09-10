@@ -150,32 +150,25 @@ class ClockFit:
     intercept: float
     max_residual_s: float
     n_marks: int
+    # Marks left out of the fit as stamping delays (see fit_clock). Zero for
+    # a run where every mark sat on the line.
+    n_dropped: int = 0
 
     def to_session(self, device_time_s: np.ndarray | float) -> np.ndarray:
         return self.slope * np.asarray(device_time_s, dtype=float) + self.intercept
 
 
-@dataclass(frozen=True)
-class GazeRecording:
-    """One run's eye data, ready to analyse.
+class RecordingViews:
+    """The views every ViewPixx recording offers over its samples table.
 
-    ``samples`` columns: ``t_session`` (seconds, the same clock as every event
-    and flip in the run), ``t_device`` (the device's own clock, kept for
-    cross-checking), ``x_dva``/``y_dva`` (degrees, relative to the screen
-    centre, y up) and ``tracked`` (False where the device reported no eye or
-    flagged a blink); ``pupil`` when the file carried a pupil diameter for the
-    eye read. Lost samples are kept as rows with NaN positions rather than
-    dropped: a blink is a *gap at a known time*, and deleting it would let a
-    velocity differentiator interpolate straight across it and invent a
-    saccade.
+    A plain mixin rather than a dataclass base, deliberately: the recordings
+    below declare their own fields, and inheriting them from here would fix
+    their order for anyone who ever constructed one positionally. What is
+    shared is behaviour, not layout.
     """
 
     samples: pd.DataFrame
     messages: pd.DataFrame
-    fit: ClockFit
-    screen: Screen
-    eye: str
-    gaze_frame: GazeFrame
 
     @property
     def sample_rate_hz(self) -> float:
@@ -226,6 +219,166 @@ class GazeRecording:
         )
 
 
+@dataclass(frozen=True)
+class GazeRecording(RecordingViews):
+    """One run's eye data for a single eye, ready to analyse.
+
+    ``samples`` columns: ``t_session`` (seconds, the same clock as every event
+    and flip in the run), ``t_device`` (the device's own clock, kept for
+    cross-checking), ``x_dva``/``y_dva`` (degrees, relative to the screen
+    centre, y up) and ``tracked`` (False where the device reported no eye or
+    flagged a blink); ``pupil`` when the file carried a pupil diameter for the
+    eye read. Lost samples are kept as rows with NaN positions rather than
+    dropped: a blink is a *gap at a known time*, and deleting it would let a
+    velocity differentiator interpolate straight across it and invent a
+    saccade.
+    """
+
+    samples: pd.DataFrame
+    messages: pd.DataFrame
+    fit: ClockFit
+    screen: Screen
+    eye: str
+    gaze_frame: GazeFrame
+
+
+@dataclass(frozen=True)
+class BinocularRecording(RecordingViews):
+    """One run's eye data with **both** eyes kept, from
+    :func:`read_run_binocular`.
+
+    ``samples`` carries the same ``t_session`` and ``t_device`` as the
+    monocular form, then each eye's own columns: ``left_x_dva``,
+    ``left_y_dva``, ``left_tracked``, ``left_pupil`` and the four ``right_``
+    equivalents. Degrees from the screen centre with y up, exactly as
+    :class:`GazeRecording` uses them, so a reader who knows one knows the
+    other.
+
+    **Two tracked flags, never one.** A single flag meaning "both eyes" would
+    be a different predicate wearing the same name, and it would hide the case
+    it is most important to see: one eye lost while the other is tracked. That
+    case is neither hypothetical nor cheap. Measured on 500 samples with the
+    left eye lost for 50 of them, encoding loss *only* as NaN leaves a version
+    estimate (the mean of the two eyes) undefined for those 50 as well,
+    because ``(finite + nan) / 2`` is nan — so the surviving eye's answer to
+    "where was the subject looking" is discarded silently. A lost eye's
+    position is NaN here, which makes naive arithmetic fail loudly rather than
+    use a stale value; the boolean is what makes the loss *addressable*, so a
+    consumer can tell one eye lost from both without recomputing finiteness
+    for itself.
+
+    **Vergence is not a column**, on purpose. It is ``left_x_dva -
+    right_x_dva`` (positive for convergence, which follows from the frame) and
+    computing it is one line — but its absolute value carries the subject's
+    tonic vergence and both eyes' calibration offsets, so it means nothing
+    until it is baseline-subtracted against a window the experiment defines. A
+    column here would invite somebody to plot it raw.
+    """
+
+    samples: pd.DataFrame
+    messages: pd.DataFrame
+    fit: ClockFit
+    screen: Screen
+    gaze_frame: GazeFrame
+
+
+@dataclass(frozen=True)
+class _Loaded:
+    """A recording's file-level facts, before any eye is chosen.
+
+    Everything here is shared by both readers, and it is the half that has
+    been checked against a file a device really wrote: the header mapping,
+    the clock fit, the device's own timestamps.
+    """
+
+    frame: pd.DataFrame
+    mapping: dict[str, str]
+    optional: dict[str, str]
+    messages: pd.DataFrame
+    messages_path: Path
+    screen: Screen
+    fit: ClockFit
+    device_t: np.ndarray
+    samples_path: Path
+
+
+def _load_run(
+    run_dir: str | Path, columns: dict[str, str] | None, max_residual_s: float | None
+) -> _Loaded:
+    """Open a run directory and do everything that does not depend on which
+    eye is being read."""
+    run_dir = Path(run_dir)
+    samples_path = _one_file(run_dir, "*_gaze.csv")
+    messages_path = _one_file(run_dir, "*_gaze-messages.csv")
+
+    messages = _read_messages(messages_path)
+    screen = _screen_from_snapshot(run_dir)
+
+    frame = pd.read_csv(samples_path)
+    mapping = _resolve_columns(frame, {**DEFAULT_COLUMNS, **(columns or {})}, samples_path)
+    optional = _resolve_columns(frame, OPTIONAL_COLUMNS, samples_path, required=False)
+
+    # Sample period, needed both to set the residual tolerance and to report
+    # the rate. Taken from the device's own timestamps rather than assumed:
+    # the TRACKPixx3 runs at whatever rate VPixx's tools left it at.
+    device_t = frame[mapping["device_time_s"]].to_numpy(dtype=float)
+    period_s = _sample_period_s(device_t, samples_path)
+    fit = fit_clock(messages, tolerance_s=max_residual_s or period_s)
+    return _Loaded(
+        frame=frame,
+        mapping=mapping,
+        optional=optional,
+        messages=messages,
+        messages_path=messages_path,
+        screen=screen,
+        fit=fit,
+        device_t=device_t,
+        samples_path=samples_path,
+    )
+
+
+def _eye_in_dva(
+    loaded: _Loaded, eye: str, gaze_frame: GazeFrame, check_bounds: bool
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
+    """One eye as degrees from the screen centre: (x, y, tracked, pupil).
+
+    The frame conversion and the bounds check live here so that both readers
+    get them, and get them identically — a binocular run read in the wrong
+    frame is wrong in exactly the way a monocular one is.
+    """
+    x_px, y_px, tracked, pupil = _select_eye(loaded.frame, loaded.mapping, loaded.optional, eye)
+    screen = loaded.screen
+    if gaze_frame == "screen_y_down":
+        x_px = x_px - screen.width_px / 2.0
+        y_px = screen.height_px / 2.0 - y_px
+    elif gaze_frame != "centered_y_up":
+        raise DataError(
+            f"gaze_frame must be 'centered_y_up' or 'screen_y_down', got {gaze_frame!r}"
+        )
+    # Unconditional: an empty recording is worth a word whatever the caller
+    # thinks about the panel's edges.
+    _warn_if_nothing_tracked(tracked, loaded.samples_path, eye)
+    if check_bounds:
+        _check_on_panel(x_px, y_px, tracked, screen, gaze_frame, loaded.samples_path, eye)
+    return (
+        np.where(tracked, x_px / screen.px_per_deg, np.nan),
+        np.where(tracked, y_px / screen.px_per_deg, np.nan),
+        tracked,
+        None if pupil is None else np.where(tracked, pupil, np.nan),
+    )
+
+
+def _samples_or_raise(data: dict[str, np.ndarray], samples_path: Path) -> pd.DataFrame:
+    """The samples table, refused if the clock fit left it out of order."""
+    samples = pd.DataFrame(data)
+    if not samples["t_session"].is_monotonic_increasing:
+        raise DataError(
+            f"{samples_path} timestamps are not increasing after the clock fit; the "
+            f"file is out of order or two recordings were concatenated"
+        )
+    return samples
+
+
 def read_run(
     run_dir: str | Path,
     eye: str | None = None,
@@ -247,11 +400,8 @@ def read_run(
     **This returns one eye.** The device always records both, and for most
     experiments one of them is the measurement; for a binocular one it is not
     a reduced version of the measurement but none of it — vergence is the
-    difference between the eyes, and ``average`` is not vergence either. A
-    binocular analysis calls this twice, once per eye, and combines the two
-    itself. Everything above the eye selection — the header, the clock fit,
-    the blink rule, the bounds check — is shared by both calls, so nothing of
-    that has to be re-implemented to do it.
+    difference between the eyes, and ``average`` is not vergence either. Use
+    :func:`read_run_binocular` for that.
 
     ``check_bounds`` refuses a run whose tracked gaze mostly falls outside the
     panel, which is what reading the wrong ``gaze_frame`` looks like. Pass
@@ -259,61 +409,88 @@ def read_run(
     is established, because the failure it guards against produces data that
     looks entirely reasonable.
     """
-    run_dir = Path(run_dir)
-    samples_path = _one_file(run_dir, "*_gaze.csv")
-    messages_path = _one_file(run_dir, "*_gaze-messages.csv")
-
-    messages = _read_messages(messages_path)
-    screen = _screen_from_snapshot(run_dir)
-    eye = eye or _eye_used(messages, messages_path)
+    loaded = _load_run(run_dir, columns, max_residual_s)
+    eye = eye or _eye_used(loaded.messages, loaded.messages_path)
     if eye not in ("left", "right", "average"):
         raise DataError(f"eye must be 'left', 'right' or 'average', got {eye!r}")
 
-    frame = pd.read_csv(samples_path)
-    mapping = _resolve_columns(frame, {**DEFAULT_COLUMNS, **(columns or {})}, samples_path)
-    optional = _resolve_columns(frame, OPTIONAL_COLUMNS, samples_path, required=False)
-
-    # Sample period, needed both to set the residual tolerance and to report
-    # the rate. Taken from the device's own timestamps rather than assumed:
-    # the TRACKPixx3 runs at whatever rate VPixx's tools left it at.
-    device_t = frame[mapping["device_time_s"]].to_numpy(dtype=float)
-    period_s = _sample_period_s(device_t, samples_path)
-
-    fit = fit_clock(messages, tolerance_s=max_residual_s or period_s)
-
-    x_px, y_px, tracked, pupil = _select_eye(frame, mapping, optional, eye)
-    # Into the frame every analysis here works in: centered px, y up — the
-    # frame the figure was placed in — then degrees. A recording in screen
-    # px (origin top-left, y down) is converted the way Screen converts a
-    # GazeSample; NaN passes through either way.
-    if gaze_frame == "screen_y_down":
-        x_px = x_px - screen.width_px / 2.0
-        y_px = screen.height_px / 2.0 - y_px
-    elif gaze_frame != "centered_y_up":
-        raise DataError(
-            f"gaze_frame must be 'centered_y_up' or 'screen_y_down', got {gaze_frame!r}"
-        )
-    if check_bounds:
-        _check_on_panel(x_px, y_px, tracked, screen, gaze_frame, samples_path)
-
+    x_dva, y_dva, tracked, pupil = _eye_in_dva(loaded, eye, gaze_frame, check_bounds)
     data = {
-        "t_session": fit.to_session(device_t),
-        "t_device": device_t,
-        "x_dva": np.where(tracked, x_px / screen.px_per_deg, np.nan),
-        "y_dva": np.where(tracked, y_px / screen.px_per_deg, np.nan),
+        "t_session": loaded.fit.to_session(loaded.device_t),
+        "t_device": loaded.device_t,
+        "x_dva": x_dva,
+        "y_dva": y_dva,
         "tracked": tracked,
     }
     if pupil is not None:
-        data["pupil"] = np.where(tracked, pupil, np.nan)
-    samples = pd.DataFrame(data)
-    if not samples["t_session"].is_monotonic_increasing:
-        raise DataError(
-            f"{samples_path} timestamps are not increasing after the clock fit; the "
-            f"file is out of order or two recordings were concatenated"
-        )
+        data["pupil"] = pupil
     return GazeRecording(
-        samples=samples, messages=messages, fit=fit, screen=screen, eye=eye, gaze_frame=gaze_frame
+        samples=_samples_or_raise(data, loaded.samples_path),
+        messages=loaded.messages,
+        fit=loaded.fit,
+        screen=loaded.screen,
+        eye=eye,
+        gaze_frame=gaze_frame,
     )
+
+
+def read_run_binocular(
+    run_dir: str | Path,
+    columns: dict[str, str] | None = None,
+    max_residual_s: float | None = None,
+    gaze_frame: GazeFrame = "centered_y_up",
+    check_bounds: bool = True,
+) -> BinocularRecording:
+    """Read a run keeping **both** eyes, for an experiment whose measurement
+    is the relation between them.
+
+    Vergence is ``left_x_dva - right_x_dva`` and version is their mean;
+    neither survives the reduction :func:`read_run` performs, which is why
+    this is a separate entry point rather than an argument to that one. It
+    reads the file once and selects each eye from it, so the header mapping,
+    the clock fit, the blink rule and the bounds check are literally the same
+    code the monocular reader is tested through.
+
+    There is no ``eye`` argument and no ``EYE_USED`` requirement: that mark
+    records which eye the *session* read online, for its fixation windows and
+    its drift correction, and the device recorded both regardless. A run whose
+    online eye was the left one is still a perfectly good binocular recording.
+
+    See :class:`BinocularRecording` for the columns, for why there are two
+    tracked flags, and for why vergence is not one of them.
+
+    Moving from two ``read_run`` calls to one of these is mechanical except
+    for one rename: the monocular ``pupil`` column is ``left_pupil`` and
+    ``right_pupil`` here, since a single unprefixed name would have had to
+    pick an eye.
+    """
+    loaded = _load_run(run_dir, columns, max_residual_s)
+    data: dict[str, np.ndarray] = {
+        "t_session": loaded.fit.to_session(loaded.device_t),
+        "t_device": loaded.device_t,
+    }
+    for eye in ("left", "right"):
+        x_dva, y_dva, tracked, pupil = _eye_in_dva(loaded, eye, gaze_frame, check_bounds)
+        data[f"{eye}_x_dva"] = x_dva
+        data[f"{eye}_y_dva"] = y_dva
+        data[f"{eye}_tracked"] = tracked
+        if pupil is not None:
+            data[f"{eye}_pupil"] = pupil
+    return BinocularRecording(
+        samples=_samples_or_raise(data, loaded.samples_path),
+        messages=loaded.messages,
+        fit=loaded.fit,
+        screen=loaded.screen,
+        gaze_frame=gaze_frame,
+    )
+
+
+# How many alignment marks a run may lose to stamping delays before the fit
+# is refused rather than repaired. One in twenty is generous for what this is
+# — the OS scheduler blocking between the two clock reads — and small enough
+# that a clock which is genuinely drifting cannot be rescued by discarding
+# the marks that show it.
+OUTLIER_MARK_FRACTION = 0.05
 
 
 def fit_clock(messages: pd.DataFrame, tolerance_s: float) -> ClockFit:
@@ -323,6 +500,20 @@ def fit_clock(messages: pd.DataFrame, tolerance_s: float) -> ClockFit:
     are required. The residual check is the real content: it is what tells the
     difference between two clocks that ran together and two that merely
     started together.
+
+    Not every mark off the line means the clocks disagree, though. The
+    backend stamps each mark by reading the device clock and then the session
+    clock, and on a desktop OS the scheduler occasionally blocks between the
+    two reads. That leaves one mark a millisecond or two *late* on one side —
+    one-sided, isolated, with every neighbour on the line — and a real run
+    showed exactly that: 198 marks with a residual sd of 0.15 ms and a single
+    mark at +1.75 ms, refused under a 0.5 ms tolerance. A stamping delay and a
+    drifting clock are different in kind, and this can tell them apart: a
+    few marks past the tolerance are dropped and the line refitted, and the
+    refit has to bring every remaining mark inside the tolerance or the run
+    is refused as before. The dropped marks are logged by name, and a refusal
+    names the worst ones, so the operator can see one hiccup for what it is
+    without fitting the line by hand.
     """
     if len(messages) < 3:
         raise DataError(
@@ -332,19 +523,105 @@ def fit_clock(messages: pd.DataFrame, tolerance_s: float) -> ClockFit:
         )
     device = messages["device_time_s"].to_numpy(dtype=float)
     session = messages["session_time_s"].to_numpy(dtype=float)
-    slope, intercept = np.polyfit(device, session, 1)
-    residuals = session - (slope * device + intercept)
-    worst = float(np.max(np.abs(residuals)))
-    if worst > tolerance_s:
-        raise DataError(
-            f"the device and session clocks do not fit a straight line: the worst of "
-            f"{len(messages)} alignment marks is {worst * 1000:.2f} ms off the fit, past "
-            f"the {tolerance_s * 1000:.2f} ms tolerance. Every latency in this run would "
-            f"inherit that error. Check whether the session was paused or the device "
-            f"re-clocked mid-run before analysing it."
+    texts = [str(text) for text in messages["message"]]
+
+    def fit(keep: np.ndarray) -> tuple[float, float, np.ndarray]:
+        slope, intercept = np.polyfit(device[keep], session[keep], 1)
+        return float(slope), float(intercept), session - (slope * device + intercept)
+
+    def worst_marks(residuals: np.ndarray, count: int = 5) -> str:
+        order = np.argsort(-np.abs(residuals))[:count]
+        return ", ".join(
+            f"{texts[i]!r} at {session[i]:.3f} s ({residuals[i] * 1000:+.2f} ms)" for i in order
+        )
+
+    keep = np.ones(len(device), dtype=bool)
+    slope, intercept, residuals = fit(keep)
+    outliers = np.abs(residuals) > tolerance_s
+    n_dropped = 0
+    if outliers.any():
+        allowed = max(1, int(len(device) * OUTLIER_MARK_FRACTION))
+        if int(outliers.sum()) > allowed or int((~outliers).sum()) < 3:
+            raise DataError(
+                f"the device and session clocks do not fit a straight line: "
+                f"{int(outliers.sum())} of {len(device)} alignment marks are more than "
+                f"{tolerance_s * 1000:.2f} ms off the fit, too many to be stamping delays "
+                f"(at most {allowed} would be dropped). Worst: {worst_marks(residuals)}. "
+                f"Every latency in this run would inherit that error. Check whether the "
+                f"session was paused or the device re-clocked mid-run before analysing it."
+            )
+        keep = ~outliers
+        slope, intercept, residuals = fit(keep)
+        if float(np.max(np.abs(residuals[keep]))) > tolerance_s:
+            raise DataError(
+                f"the device and session clocks do not fit a straight line even with "
+                f"{int(outliers.sum())} late mark(s) left out: the worst of the rest is "
+                f"{float(np.max(np.abs(residuals[keep]))) * 1000:.2f} ms off, past the "
+                f"{tolerance_s * 1000:.2f} ms tolerance. Worst: {worst_marks(residuals)}. "
+                f"That is drift or a step, not a stamping delay."
+            )
+        # Being past the tolerance is not on its own a reason to drop a mark,
+        # and dropping on size alone would let a real clock step through
+        # whenever it happened to touch few enough marks. A stamping delay has
+        # a shape, and the shape is checkable, so it is checked here rather
+        # than asserted in the warning below:
+        #
+        #   - LATE, never early. The backend reads the device clock and then
+        #     the session clock; a scheduler that blocks between the two reads
+        #     can only make the session stamp look later than it was. An early
+        #     mark is something else.
+        #   - ISOLATED. Both neighbours have to be on the line. Two off-line
+        #     marks in a row is a clock that moved, not a read that was slow.
+        #   - INTERIOR. The first and last marks have no neighbour on one
+        #     side, so nothing shows the line resumed after them — a step
+        #     starting at the last mark looks exactly like one late mark.
+        #
+        # Residuals are taken from the REFIT, which the dropped marks did not
+        # pull, so the signs and sizes here are the ones that mean something.
+        edge = len(device) - 1
+        unexplained = []
+        for i in np.flatnonzero(outliers):
+            where = f"{texts[i]!r} at {session[i]:.3f} s ({residuals[i] * 1000:+.2f} ms)"
+            if i == 0 or i == edge:
+                side = "first" if i == 0 else "last"
+                unexplained.append(
+                    f"{where} is the run's {side} mark — nothing on the other side of it "
+                    f"shows the clocks back on the line"
+                )
+            elif outliers[i - 1] or outliers[i + 1]:
+                unexplained.append(
+                    f"{where} sits next to another off-line mark — two in a row is a clock "
+                    f"that moved, not a stamp that was slow"
+                )
+            elif residuals[i] < 0:
+                unexplained.append(f"{where} is EARLY, and a stamping delay can only ever be late")
+        if unexplained:
+            raise DataError(
+                "the device and session clocks fit a straight line only if marks are dropped "
+                "that a stamping delay cannot explain: "
+                + "; ".join(unexplained)
+                + ". A clock that stepped mid-run fits the remaining marks perfectly and is "
+                "still wrong for every sample on the other side of the step, so this run is "
+                "refused rather than silently re-timed. Check whether the session was paused "
+                "or the device re-clocked while it ran."
+            )
+        n_dropped = int(outliers.sum())
+        log.warning(
+            "clock fit dropped %d of %d alignment marks as stamping delays — isolated, "
+            "past the %.2f ms tolerance, with every neighbour on the line: %s. The fit over "
+            "the rest has a worst residual of %.3f ms.",
+            n_dropped,
+            len(device),
+            tolerance_s * 1000,
+            worst_marks(residuals, n_dropped),
+            float(np.max(np.abs(residuals[keep]))) * 1000,
         )
     return ClockFit(
-        slope=float(slope), intercept=float(intercept), max_residual_s=worst, n_marks=len(messages)
+        slope=slope,
+        intercept=intercept,
+        max_residual_s=float(np.max(np.abs(residuals[keep]))),
+        n_marks=int(keep.sum()),
+        n_dropped=n_dropped,
     )
 
 
@@ -494,6 +771,28 @@ def _select_eye(
     return (lx + rx) / 2.0, (ly + ry) / 2.0, tracked, pupil
 
 
+def _warn_if_nothing_tracked(tracked: np.ndarray, path: Path, eye: str) -> None:
+    """Say so when a whole recording holds no usable gaze for this eye.
+
+    Nearly always a device that was holding no calibration, and a reader who
+    gets back a table of NaN deserves to be told why rather than left to work
+    it out. Its own function, and called whether or not the bounds check is,
+    because the two are different concerns: ``check_bounds=False`` means "I
+    know this run legitimately goes off the panel", which is precisely the
+    caller a vergence experiment is — and it must not also mean "do not tell
+    me the recording is empty". It did, briefly, and that caller noticed.
+    """
+    if tracked.any():
+        return
+    log.warning(
+        "no %s-eye sample in %s is tracked: every position is the device's lost "
+        "sentinel or is flagged as a blink. On a TRACKPixx3 that is what a recording "
+        "made with no calibration on the device looks like.",
+        eye,
+        path.name,
+    )
+
+
 def _check_on_panel(
     x_px: np.ndarray,
     y_px: np.ndarray,
@@ -501,6 +800,7 @@ def _check_on_panel(
     screen: Screen,
     gaze_frame: GazeFrame,
     path: Path,
+    eye: str,
 ) -> None:
     """Refuse a run whose tracked gaze does not lie on the panel it was
     recorded on, because that is what the wrong ``gaze_frame`` looks like.
@@ -512,8 +812,9 @@ def _check_on_panel(
     check exists: not because off-panel gaze is impossible, but because a
     silently plausible answer is worse than a loud one.
 
-    A run with no tracked samples at all (a recording made with no
-    calibration on the device) says nothing about the frame, so it passes.
+    A run with no tracked samples at all says nothing about the frame, so it
+    passes here; :func:`_warn_if_nothing_tracked` is what says so, and it is
+    deliberately not this function's job — see there.
     """
     if not tracked.any():
         return
@@ -524,7 +825,7 @@ def _check_on_panel(
         return
     other = "screen_y_down" if gaze_frame == "centered_y_up" else "centered_y_up"
     where = (
-        f"{fraction:.0%} of the tracked samples in {path.name} lie outside the "
+        f"{fraction:.0%} of the tracked {eye}-eye samples in {path.name} lie outside the "
         f"{screen.width_px}x{screen.height_px} px panel they were recorded on"
     )
     if fraction < OFF_PANEL_REFUSE:

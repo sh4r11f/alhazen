@@ -117,6 +117,19 @@ class TrialEngine:
                 # a third and `astype(int)` raise on the rig's own data.
                 ctx.record["n_dropped_frames"] = 0
 
+        # A phase that declares it must be last — trial feedback, which must
+        # never be on screen while something is still being measured — is
+        # refused anywhere else, before a frame is drawn. A programming error
+        # in the task, met while writing it rather than with a subject in
+        # the chair and a coloured fixation point over the measurement.
+        for index, phase in enumerate(phases):
+            if getattr(phase, "must_be_last", False) and index != len(phases) - 1:
+                raise RuntimeError(
+                    f"phase {getattr(phase, 'name', phase)!r} must be the trial's last phase, "
+                    f"but {len(phases) - 1 - index} phase(s) follow it. Feedback is shown "
+                    f"only after everything has been measured."
+                )
+
         # TRIAL_START is emitted immediately — not on a flip — because it is
         # not a visual event: nothing has been drawn yet, and downstream
         # alignment needs a trial-start mark that precedes every other event
@@ -143,15 +156,22 @@ class TrialEngine:
         self._display.flip()
 
         if self._frame_monitor is not None:
-            frames = self._frame_monitor.end_trial()
-            if frames.recycle and outcome.completed:
+            # The monitor is told whether the trial completed, because that
+            # decides whether a recycle is even on the table — and the
+            # monitor counts consecutive recycles, so it cannot be left to
+            # guess. Asking it for a verdict the engine then ignores is how
+            # a run of fixation breaks used to trip the "N trials in a row
+            # recycled" abort on a display that was fine.
+            frames = self._frame_monitor.end_trial(completed=outcome.completed)
+            if frames.recycle:
                 # The trial ran to its end, but the display did not show what
                 # the config describes. Its measurement is discarded the way a
                 # fixation break's is — a non-completed outcome, which the
                 # scheduler re-serves — and what it would have been is kept
-                # on the row. Only a COMPLETED outcome is replaced: one that
+                # on the row. Only a COMPLETED outcome can get here: one that
                 # was already non-completed is already being re-served, and
-                # PAUSED in particular drives the runner's pause flow.
+                # PAUSED in particular drives the runner's pause flow, so the
+                # monitor returns no verdict for either.
                 ctx.record["outcome_before_frame_qa"] = outcome.name
                 ctx.record["frame_qa_reason"] = frames.reason
                 outcome = DROPPED_FRAMES

@@ -32,9 +32,15 @@ class NullStimulus:
         self.name = name
         self.draw_count = 0
         self.updates: list[float] = []
+        # Every colour it was ever set to, so a test can see that feedback
+        # recoloured the fixation point and with what.
+        self.colors: list[tuple[float, float, float]] = []
 
     def update(self, dt: float) -> None:
         self.updates.append(dt)
 
     def draw(self) -> None:
         self.draw_count += 1
+
+    def set_color(self, color: tuple[float, float, float]) -> None:
+        self.colors.append((float(color[0]), float(color[1]), float(color[2])))

@@ -60,6 +60,7 @@ from alhazen.errors import ConfigError
 from alhazen.paradigms.base import TrialSource
 from alhazen.session.database import ExperimentDatabase, FrameInputBuffer
 from alhazen.session.eyetracker import EyeTrackerMonitor
+from alhazen.session.feedback import FeedbackSounder
 from alhazen.session.pause import PauseMenu, run_pause_menu
 from alhazen.session.recorder import DataRecorder
 from alhazen.session.runner import SessionRunner
@@ -171,6 +172,7 @@ def build_session(
     make_source: MakeSource | None = None,
     seed: int | None = None,
     iti: Duration | None = None,
+    max_consecutive_failures: int | None = None,
     score: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     reward_pulses: RewardPulses | None = None,
     tracker_messages: MessageMap | None = None,
@@ -452,6 +454,11 @@ def build_session(
             bus.subscribe(make_sync_subscriber(sync, sync_cfg.event_lines))
         recorder = DataRecorder(paths.trials_path, paths.events_path)
         bus.subscribe(recorder.on_event)
+        # The beep that goes with trial feedback. A subscriber like the sync
+        # lines, because the phase that shows feedback touches no hardware;
+        # it emits FEEDBACK and this is what hears it.
+        if rig_cfg.display.feedback_beeps:
+            bus.subscribe(FeedbackSounder(display))
         # After the recorder, deliberately: these two only take notes (the
         # simulated spike source reacting to a stimulus event, a live
         # analysis logging a flash), and the hardware paths and the record
@@ -525,6 +532,15 @@ def build_session(
             refresh_rate_hz=refresh_hz,
             task_rng=streams["task"],
             iti_s=iti.seconds(refresh_hz) if iti is not None else 0.0,
+            # Read off the task's params by name, the way `iti` is by the
+            # modes: a limit on failed trials in a row is the experiment's
+            # number, and belongs in its task config next to the trial
+            # counts, not in a rig file or in code.
+            max_consecutive_failures=(
+                max_consecutive_failures
+                if max_consecutive_failures is not None
+                else getattr(task_params, "max_consecutive_failures", None)
+            ),
             score=score,
             on_pause=on_pause,
             eyetracker=eyetracker,

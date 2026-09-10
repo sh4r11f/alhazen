@@ -25,6 +25,135 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## 1.2.1 - 2026-09-09
+
+### Fixed
+
+- **An unattended run no longer hangs at a pause when the rig config enables
+  the dashboard.** The pause asked whether a browser was serving before it
+  asked whether anyone was at the rig to answer, so a rig with
+  `dashboard.enabled` sat in the browser loop waiting for a click nobody was
+  there to make. With the block break added in 1.2.0 that was every simulated
+  run of every experiment with more than one block: 28 trials and then
+  nothing. The unattended check now comes first, the browser is told the
+  session carried on, and the skipped pause is logged at WARNING.
+- **Frame QA counts a trial as recycled only where one is recycled.** The
+  monitor made the `recycle_trial` verdict for every trial over the
+  dropped-frame budget and counted it towards `max_consecutive_recycles`,
+  while the engine applied it only to a COMPLETED trial. A run of fixation
+  breaks on a display dropping the odd frame could therefore abort the
+  session blaming the panel, with no `DROPPED_FRAMES` row in the data to
+  support it. `FrameMonitor.end_trial` now takes `completed`.
+- **The clock fit proves that a dropped alignment mark is a stamping delay**
+  rather than asserting it. A mark is dropped only if it is late, isolated
+  (both neighbours on the line) and interior; a clock that stepped during the
+  first or last trial used to be inside the five percent budget and was
+  quietly re-timed. The 198-mark case from the pilot is unaffected.
+- **A fault heading comes back down when the procedure succeeds.** A failed
+  validation put a red heading on the pause screen that nothing removed, so a
+  successful recalibration left it up and a block break's REST heading never
+  returned.
+- **The run of failed trials counts only what the subject did.** A completed
+  trial whose reward pump failed did not clear the count, and `DROPPED_FRAMES`
+  — a display fault with its own counter — was counted as a subject failure.
+- **`--mode measure` draws the ruler.** A key left in psychopy's buffer by an
+  earlier measurement ended the ruler before its first flip: a black screen,
+  and a report saying a bar was drawn.
+- **An unregistered monitor is a warning, not an INFO line.** The session runs
+  on the rig config's geometry with no measured gamma, which looks identical
+  to one that inherited a calibration.
+
+### Note
+
+- **`FEEDBACK` became a reserved event name in 1.2.0.** Reserved names are
+  append-only by contract, but a task that already declared `FEEDBACK` of its
+  own is refused at session build from 1.2.0 on. Rename it, or use
+  `TrialFeedback`, which emits it.
+
+## 1.2.0 - 2026-09-09
+
+### Added
+
+- **`read_run_binocular`, for an experiment whose measurement is the relation
+  between the eyes.** `read_run` reduces a recording to one eye, which is what
+  most experiments want and is none of what a vergence experiment wants:
+  vergence is the difference between the eyes and `average` is not vergence
+  either. The new entry point reads the same file once and keeps both, as
+  `left_x_dva`/`left_y_dva`/`left_tracked`/`left_pupil` and their `right_`
+  equivalents, in the same degrees-from-centre the monocular reader uses. The
+  header mapping, the clock fit, the blink rule and the bounds check are the
+  same code, so nothing verified is re-implemented to get there.
+
+  Two `tracked` flags rather than one, deliberately: a single flag meaning
+  "both eyes" is a different predicate under the same name, and it hides the
+  case that matters most — one eye lost while the other tracks. Encoding loss
+  only as NaN loses that case too, since `(finite + nan) / 2` is nan, so a
+  version estimate silently discards the surviving eye's answer; measured at
+  50 of 500 samples on a recording where only the left eye blinked. Vergence
+  is not a column, because its absolute value carries the subject's tonic
+  vergence and both eyes' calibration offsets and means nothing until it is
+  baseline-subtracted — a column would invite plotting it raw. Designed with
+  the kde-vergence experiment, whose own adapter it replaces.
+- **A session pauses after too many failed trials in a row.** A task's
+  params may carry `max_consecutive_failures`, read by name the way `iti`
+  is; after that many non-completed trials back to back (PAUSED excluded)
+  the session stops at the pause screen with the count and the last outcome
+  as its heading, and the count restarts after the pause. It is the task's
+  number because what is routine for one design is a subject who cannot see
+  the stimulus in another. The case behind it: a session that completed
+  none of 33 trials, every one a fixation break, on a calibration that
+  passed but sat at the edge of the fixation window, and ran to its end with
+  nothing on screen saying so.
+- **The monitor is named after the rig file, and registration reads the
+  record back.** `load_rig` names an unnamed `monitor` after the file's stem
+  (`rig-lab.yaml` registers as `rig-lab`), so two rig files on one machine
+  never share PsychoPy's one registration and overwrite each other; a
+  `monitor.name` in the file still wins. `monitor register` now looks the
+  record up after writing it and refuses if PsychoPy hands back different
+  numbers from the ones just given — a stale file under the same name, a
+  unit converted on the way in — rather than leaving that for the next
+  window to refuse.
+- **Trial feedback, with the verdict kept apart from the outcome.** A new
+  last phase, `TrialFeedback`, turns the fixation point green or red for a
+  fixed time, writes `feedback` (`success`/`failure`) on the record, and
+  emits the reserved event `FEEDBACK` on the flip that showed it; the
+  session's new `FeedbackSounder` beeps from that event (a phase touches no
+  hardware), switchable with `display.feedback_beeps`. The verdict is the
+  task's own predicate over the record — an acceptance region, a latency
+  bound — and the outcome is the task's too and unchanged by it: a saccade
+  that missed is still a completed, scored measurement, and re-serving it on
+  the basis of where the eye landed would bias every cell toward its own
+  hypothesis. The phase declares it must be last and the engine refuses it
+  anywhere else, so feedback is never on screen while something is being
+  measured — for a display whose premise is one ink value and one
+  background, a red dot mid-trial is a third luminance in the measurement.
+  `LandingCheck` accepts `PhaseAction.ADVANCE` in place of either outcome so
+  a feedback phase can follow it. The fixation point gained `set_color`, and
+  the simulated stand-in records the colours it was given.
+- **The session takes the break between blocks.** A block boundary was a
+  log line and the experimenter's memory. Now a `BlockPlan` leaves a pending
+  break when a block that served trials ends and another follows, and the
+  runner takes it before the next block's first trial: the pause screen
+  comes up headed `BLOCK 3 OF 6 COMPLETE — REST` — the count, because "how
+  much longer" is the one question a break gets asked — in the terminal
+  green the instructions use rather than the fault red, so a subject resting
+  is never looking at the screen that means a calibration died. It stays up
+  until SPACE, goes on the record as `PAUSED` with `reason: block_break`, and
+  `blocks.breaks: false` turns it off for a design whose blocks are analysis
+  structure only.
+- **Docs: test versus pilot.** A section in [docs/modes.md](docs/modes.md)
+  on what `--mode test` reduces and what it deliberately does not (block
+  structure, with the rationale from `modes/rehearsal.py`), why a default
+  config and a pilot config can land on the same trial count from opposite
+  directions, and how the two compose as `--mode test --params <pilot>`.
+- **`--mode measure` ends by drawing the ruler.** It used to print what a
+  10-degree bar should measure and send the operator to run `alhazen
+  calibrate ruler` separately; one expected the bar and did not get one. The
+  bar is now the last measurement, drawn on the same window everything else
+  was measured through, with the centimetres to check between its ticks in
+  the report. Skippable with `--skip ruler`, since it is the one measurement
+  that needs a person holding a tape.
+
 ## 1.1.0 - 2026-09-09
 
 ### Fixed
@@ -59,6 +188,16 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   `astype(int)` raised, and `alhazen report` dropped clean trials from its
   own table. The counter is zeroed at trial start under every marking policy,
   and the report reads an old run's empty cell as 0.
+
+  This does change what lands on disk — a cell that was empty is now `0` —
+  and the preamble above reserves changes to column meanings for a major
+  version. It is in a minor because the *meaning* is unchanged: an empty cell
+  always meant no drops, every file written before this release still reads,
+  and `alhazen report` reads the old empty cell as the zero it meant. The
+  promise protects a stranger's year-old analysis; a change that keeps their
+  files readable and their columns meaning what they meant does not break
+  it. Noted here so that nobody reading the preamble literally either blocks
+  the next such fix or quietly ships one without saying so.
 - **`session.log` is written as UTF-8.** It used the platform default, which
   on Windows is cp1252, and every line with a dash or a degree sign came back
   from the rig as mojibake.

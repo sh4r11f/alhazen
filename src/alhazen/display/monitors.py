@@ -263,7 +263,20 @@ def register(
             f"psychopy did not write a monitor file for {monitor.name!r} — "
             f"check that {monitor_folder()} is writable"
         )
-    log.info("registered monitor %r with psychopy at %s", monitor.name, path)
+    # The round trip, not only the write: what PsychoPy hands back for this
+    # name has to be the geometry that was just given to it. A record that
+    # saved without complaint but reads back differently — a stale file
+    # winning over the new one, a unit PsychoPy converted on the way in — is
+    # the case a session would otherwise meet as a refused window, or worse,
+    # as a window opened against the wrong numbers.
+    drift = differences(monitor, lookup(monitor.name))
+    if drift:
+        raise DisplayError(
+            f"psychopy stored monitor {monitor.name!r} but reads it back differently from "
+            f"what was written:\n  " + "\n  ".join(drift) + f"\nThe record at {path} cannot "
+            f"be trusted. Check for an older file under the same name in {monitor_folder()}."
+        )
+    log.info("registered monitor %r with psychopy at %s, and read it back", monitor.name, path)
     return path
 
 
@@ -290,9 +303,16 @@ def resolve(monitor: MonitorConfig) -> Any:
             "  alhazen monitor register --rig <your rig yaml>"
         )
     if not registration.registered:
-        log.info(
+        # WARNING, not INFO. The window opens either way, so nothing fails —
+        # which is exactly why this has to be audible: the session runs with
+        # linear luminance and no measured gamma, and looks identical to one
+        # that inherited a calibration. A rig whose monitor was registered
+        # under another name (before `load_rig` started naming an unnamed
+        # monitor after its file) lands here and nowhere else.
+        log.warning(
             "monitor %r is not registered with psychopy — using the rig config's geometry "
-            "and no stored calibration (alhazen monitor register --rig <yaml> to add it)",
+            "and NO stored calibration, so this session runs with an uncalibrated "
+            "luminance ramp (alhazen monitor register --rig <yaml> to add it)",
             monitor.name,
         )
 

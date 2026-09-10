@@ -82,6 +82,9 @@ class BlockConfig(Model):
 
     n_blocks: int = 1
     trials_per_block: int | None = None
+    # Whether the session pauses for a rest between blocks (BlockPlan). Off
+    # for a design whose blocks are analysis structure only.
+    breaks: bool = True
 
     @model_validator(mode="after")
     def _valid(self) -> BlockConfig:
@@ -154,11 +157,13 @@ def make_scheduler(
             n_blocks=cfg.blocks.n_blocks,
             trials_per_block=cfg.blocks.trials_per_block,
             rng=rng,
+            breaks=cfg.blocks.breaks,
         )
     return BlockPlan(
         [_make_inner(cfg, conditions, rng, score, task_name) for _ in range(cfg.blocks.n_blocks)],
         trials_per_block=cfg.blocks.trials_per_block,
         rng=rng,
+        breaks=cfg.blocks.breaks,
     )
 
 
