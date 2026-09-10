@@ -871,7 +871,13 @@ every backend precisely so a backend cannot quietly reach for
 3. loops: `source.next()` → build → engine → `source.record()` for **every**
    outcome (schedulers own re-queueing) → recorder row for every outcome
    except `PAUSED` (which produced no measurement — its events still land in
-   the events table, so the two tables deliberately do not join 1:1);
+   the events table, so the two tables deliberately do not join 1:1). A
+   task's params may name `max_consecutive_failures`: after that many
+   non-completed trials back to back the runner stops at the pause screen
+   with the count and the last outcome as its heading, because a subject
+   who is not seeing the stimulus — a calibration that passed but sits at
+   the edge of the fixation window — otherwise looks like a session that
+   is simply running;
 4. teardown attempts every step regardless of earlier failures (recorder →
    frame log → close log file → manifest → display), re-raising the first
    teardown error only if nothing else is propagating.

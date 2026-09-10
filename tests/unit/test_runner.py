@@ -263,3 +263,82 @@ class TestTrackerCalibrationBeforeTrialOne:
         )
         harness.runner.run()
         assert harness.display.menus == []
+
+
+class TestTooManyFailuresInARow:
+    """A session that completed none of 33 trials — every one a fixation
+    break, the eye sitting just outside the window on a calibration that
+    passed — ran to its end with nothing on screen saying so. The task now
+    names how many in a row is too many, and the session pauses there."""
+
+    def harness(self, tmp_path, answers, limit):
+        from alhazen.task.plan import TrialPlan
+        from support import RunForFrames
+
+        outcomes = iter(answers)
+
+        def build(setup):
+            return TrialPlan(phases=[RunForFrames(1, next(outcomes))])
+
+        harness = SessionHarness(tmp_path, n_trials=1, build_trial=build)
+        harness.runner._max_consecutive_failures = limit
+        return harness
+
+    def test_the_limit_pauses_with_the_reason_and_the_count_restarts(self, tmp_path):
+        from support import FAILED
+
+        # Three failures, then success: the limit of two pauses once, after
+        # the second; the third failure starts a fresh count.
+        harness = self.harness(tmp_path, [FAILED, FAILED, FAILED, COMPLETED], limit=2)
+        harness.runner.run()
+
+        headings = [title for title, _body, _color in harness.display.menus]
+        assert sum("2 TRIALS FAILED IN A ROW" in h for h in headings) == 1, headings
+        assert any("last FAILED" in h for h in headings)
+        assert harness.collector.names().count("RESUMED") == 1
+        assert [r["outcome"] for r in read_trials(harness)] == [
+            "FAILED",
+            "FAILED",
+            "FAILED",
+            "COMPLETED",
+        ]
+        log = harness.paths.log_path.read_text(encoding="utf-8")
+        assert "2 trials in a row not completed, the last FAILED on trial 2: pausing" in log
+
+    def test_a_completed_trial_resets_the_count(self, tmp_path):
+        from support import FAILED
+
+        harness = self.harness(tmp_path, [FAILED, COMPLETED, FAILED, COMPLETED], limit=2)
+        harness.runner.run()
+        assert harness.display.menus == []
+
+    def test_no_limit_never_pauses(self, tmp_path):
+        from support import FAILED
+
+        harness = self.harness(tmp_path, [FAILED] * 5 + [COMPLETED], limit=None)
+        harness.runner.run()
+        assert harness.display.menus == []
+
+    def test_a_limit_below_one_is_refused(self, tmp_path):
+        harness = SessionHarness(tmp_path, n_trials=1)
+        from alhazen.session.runner import SessionRunner
+
+        with pytest.raises(ValueError, match="max_consecutive_failures must be >= 1"):
+            SessionRunner.__init__(
+                harness.runner,
+                cfg=harness.cfg,
+                paths=harness.paths,
+                display=harness.display,
+                screen=harness.runner._screen,
+                clock=harness.clock,
+                bus=harness.bus,
+                engine=harness.engine,
+                source=harness.source,
+                build_trial=lambda setup: None,
+                recorder=harness.recorder,
+                frame_monitor=harness.frame_monitor,
+                commands=harness.commands,
+                refresh_rate_hz=60.0,
+                task_rng=harness.runner._task_rng,
+                max_consecutive_failures=0,
+            )

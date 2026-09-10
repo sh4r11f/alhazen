@@ -49,6 +49,16 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   vergence and both eyes' calibration offsets and means nothing until it is
   baseline-subtracted — a column would invite plotting it raw. Designed with
   the kde-vergence experiment, whose own adapter it replaces.
+- **A session pauses after too many failed trials in a row.** A task's
+  params may carry `max_consecutive_failures`, read by name the way `iti`
+  is; after that many non-completed trials back to back (PAUSED excluded)
+  the session stops at the pause screen with the count and the last outcome
+  as its heading, and the count restarts after the pause. It is the task's
+  number because what is routine for one design is a subject who cannot see
+  the stimulus in another. The case behind it: a session that completed
+  none of 33 trials, every one a fixation break, on a calibration that
+  passed but sat at the edge of the fixation window, and ran to its end with
+  nothing on screen saying so.
 
 ## 1.1.0 - 2026-09-09
 

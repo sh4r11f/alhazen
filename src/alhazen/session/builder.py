@@ -171,6 +171,7 @@ def build_session(
     make_source: MakeSource | None = None,
     seed: int | None = None,
     iti: Duration | None = None,
+    max_consecutive_failures: int | None = None,
     score: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     reward_pulses: RewardPulses | None = None,
     tracker_messages: MessageMap | None = None,
@@ -525,6 +526,15 @@ def build_session(
             refresh_rate_hz=refresh_hz,
             task_rng=streams["task"],
             iti_s=iti.seconds(refresh_hz) if iti is not None else 0.0,
+            # Read off the task's params by name, the way `iti` is by the
+            # modes: a limit on failed trials in a row is the experiment's
+            # number, and belongs in its task config next to the trial
+            # counts, not in a rig file or in code.
+            max_consecutive_failures=(
+                max_consecutive_failures
+                if max_consecutive_failures is not None
+                else getattr(task_params, "max_consecutive_failures", None)
+            ),
             score=score,
             on_pause=on_pause,
             eyetracker=eyetracker,

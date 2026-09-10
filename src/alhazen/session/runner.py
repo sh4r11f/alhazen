@@ -178,8 +178,23 @@ class SessionRunner:
         spikes: SpikeSource | None = None,
         live: LiveAnalysis | None = None,
         setup_notes: Sequence[str] = (),
+        max_consecutive_failures: int | None = None,
     ) -> None:
         self._cfg = cfg
+        # How many non-completed trials in a row stop the session at the pause
+        # screen. None never pauses. What counts as too many is the task's to
+        # say (the builder reads it off the task's params), because a
+        # fixation-break rate that is routine for one design is a subject who
+        # cannot see the stimulus in another. A session that completed none
+        # of 33 trials — every one a fixation break, with the eye sitting just
+        # outside the window on a calibration that passed — ran to its end
+        # with nothing on screen or in the log saying so. This is that line.
+        if max_consecutive_failures is not None and max_consecutive_failures < 1:
+            raise ValueError(
+                f"max_consecutive_failures must be >= 1 or None, got {max_consecutive_failures}"
+            )
+        self._max_consecutive_failures = max_consecutive_failures
+        self._failures_in_a_row = 0
         # What was decided about this session before it started — a mode's
         # reductions and stood-down devices (modes/session.py describe()),
         # in the experimenter's words. Logged right after "session start",
@@ -379,6 +394,16 @@ class SessionRunner:
                     if not self._handle_pause(result.record, fault=fault):
                         break
                     continue  # the pause menu already gave all the time needed; skip ITI
+
+                if self._too_many_failures_in_a_row(outcome):
+                    fault = (
+                        f"{self._max_consecutive_failures} TRIALS FAILED IN A ROW — last "
+                        f"{outcome.name}; check the calibration (V), the subject, and the "
+                        f"stimulus before resuming"
+                    )
+                    if not self._handle_pause(result.record, fault=fault):
+                        break
+                    continue
 
                 if self._iti_s > 0:
                     self._wait(self._iti_s)
@@ -583,6 +608,35 @@ class SessionRunner:
         ctx.record[f"t_{name.lower()}"] = t
         self._bus.emit(Event(name=name, t=t, trial_index=self._trial_index, payload=payload))
 
+    def _too_many_failures_in_a_row(self, outcome: Any) -> bool:
+        """Count non-completed trials back to back; True on the one that
+        reaches the task's limit, which the caller turns into a pause.
+
+        A PAUSED trial is neither: the experimenter stopped it, and it says
+        nothing about the subject. The count restarts after the pause, so a
+        subject who is still not fixating gets another whole run of chances
+        before the screen says so again, rather than a pause every trial.
+        """
+        limit = self._max_consecutive_failures
+        if limit is None or outcome.name == "PAUSED":
+            return False
+        if outcome.completed:
+            self._failures_in_a_row = 0
+            return False
+        self._failures_in_a_row += 1
+        if self._failures_in_a_row < limit:
+            return False
+        log.warning(
+            "%d trials in a row not completed, the last %s on trial %d: pausing. The subject "
+            "may not be seeing what this session is measuring — a calibration that passed "
+            "but sits at the edge of the fixation window looks exactly like this.",
+            self._failures_in_a_row,
+            outcome.name,
+            self._trial_index,
+        )
+        self._failures_in_a_row = 0
+        return True
+
     def _require_tracker_calibration(self) -> bool:
         """Before trial 1: a tracker that can say it holds no calibration
         stops the session at the pause screen, with that reason, until the
@@ -734,14 +788,18 @@ class SessionRunner:
         calibration, validation, drift = monitor.calibration, monitor.validation, monitor.drift
         if action == "calibrate" and calibration is not None and calibration.ok is False:
             return f"CALIBRATION FAILED — {calibration.note or 'the tracker reports none'}"
-        if action in ("calibrate", "validate") and validation is not None:
-            if not validation.accepted and not validation.aborted:
-                worst = validation.max_error_deg
-                measured = f"worst {worst:.2f}°" if worst is not None else "no target measured"
-                return (
-                    f"VALIDATION FAILED — {measured} against the {validation.threshold_deg:g}° "
-                    f"limit; recalibrate (C) before resuming"
-                )
+        if (
+            action in ("calibrate", "validate")
+            and validation is not None
+            and not validation.accepted
+            and not validation.aborted
+        ):
+            worst = validation.max_error_deg
+            measured = f"worst {worst:.2f}°" if worst is not None else "no target measured"
+            return (
+                f"VALIDATION FAILED — {measured} against the {validation.threshold_deg:g}° "
+                f"limit; recalibrate (C) before resuming"
+            )
         if action == "drift_correct" and drift is not None and not drift.applied:
             return f"DRIFT CORRECTION REFUSED — {drift.note or drift.summary()}"
         return None
