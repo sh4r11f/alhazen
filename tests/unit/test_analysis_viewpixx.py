@@ -582,3 +582,24 @@ class TestBinocular:
         assert len(said) == 2
         assert any("no left-eye sample" in m for m in said)
         assert all("no calibration on the device" in m for m in said)
+
+    def test_an_empty_recording_is_reported_whatever_the_caller_thinks_of_the_edges(
+        self, tmp_path, caplog
+    ):
+        """`check_bounds=False` means "this run legitimately goes off the
+        panel" — the pursuit case — and it must not also switch off "this
+        recording is empty". It did, and the caller it was recommended to
+        was the one who lost the message."""
+        import logging
+
+        for path in FIXTURES.glob("*.csv"):
+            shutil.copy(path, tmp_path / path.name)
+        write_snapshot(tmp_path)
+
+        with caplog.at_level(logging.WARNING, logger="alhazen.analysis.io.viewpixx"):
+            read_run_binocular(tmp_path, check_bounds=False)
+            read_run(tmp_path, check_bounds=False)
+
+        said = [r.getMessage() for r in caplog.records if "is tracked" in r.getMessage()]
+        # Two eyes from the binocular read, one from the monocular.
+        assert len(said) == 3

@@ -352,6 +352,9 @@ def _eye_in_dva(
         raise DataError(
             f"gaze_frame must be 'centered_y_up' or 'screen_y_down', got {gaze_frame!r}"
         )
+    # Unconditional: an empty recording is worth a word whatever the caller
+    # thinks about the panel's edges.
+    _warn_if_nothing_tracked(tracked, loaded.samples_path, eye)
     if check_bounds:
         _check_on_panel(x_px, y_px, tracked, screen, gaze_frame, loaded.samples_path, eye)
     return (
@@ -452,6 +455,11 @@ def read_run_binocular(
 
     See :class:`BinocularRecording` for the columns, for why there are two
     tracked flags, and for why vergence is not one of them.
+
+    Moving from two ``read_run`` calls to one of these is mechanical except
+    for one rename: the monocular ``pupil`` column is ``left_pupil`` and
+    ``right_pupil`` here, since a single unprefixed name would have had to
+    pick an eye.
     """
     loaded = _load_run(run_dir, columns, max_residual_s)
     data: dict[str, np.ndarray] = {
@@ -652,6 +660,28 @@ def _select_eye(
     return (lx + rx) / 2.0, (ly + ry) / 2.0, tracked, pupil
 
 
+def _warn_if_nothing_tracked(tracked: np.ndarray, path: Path, eye: str) -> None:
+    """Say so when a whole recording holds no usable gaze for this eye.
+
+    Nearly always a device that was holding no calibration, and a reader who
+    gets back a table of NaN deserves to be told why rather than left to work
+    it out. Its own function, and called whether or not the bounds check is,
+    because the two are different concerns: ``check_bounds=False`` means "I
+    know this run legitimately goes off the panel", which is precisely the
+    caller a vergence experiment is — and it must not also mean "do not tell
+    me the recording is empty". It did, briefly, and that caller noticed.
+    """
+    if tracked.any():
+        return
+    log.warning(
+        "no %s-eye sample in %s is tracked: every position is the device's lost "
+        "sentinel or is flagged as a blink. On a TRACKPixx3 that is what a recording "
+        "made with no calibration on the device looks like.",
+        eye,
+        path.name,
+    )
+
+
 def _check_on_panel(
     x_px: np.ndarray,
     y_px: np.ndarray,
@@ -672,19 +702,10 @@ def _check_on_panel(
     silently plausible answer is worse than a loud one.
 
     A run with no tracked samples at all says nothing about the frame, so it
-    passes — but it is said out loud, because a whole recording with no usable
-    gaze in it is nearly always a device that was holding no calibration, and
-    a reader who gets back a table of NaN deserves to be told why rather than
-    left to work it out.
+    passes here; :func:`_warn_if_nothing_tracked` is what says so, and it is
+    deliberately not this function's job — see there.
     """
     if not tracked.any():
-        log.warning(
-            "no %s-eye sample in %s is tracked: every position is the device's lost "
-            "sentinel or is flagged as a blink. On a TRACKPixx3 that is what a recording "
-            "made with no calibration on the device looks like.",
-            eye,
-            path.name,
-        )
         return
     x, y = x_px[tracked], y_px[tracked]
     off = (np.abs(x) > screen.width_px / 2.0) | (np.abs(y) > screen.height_px / 2.0)
