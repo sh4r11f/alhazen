@@ -58,6 +58,18 @@ def _null_inputs() -> InputFrame:
     return InputFrame()
 
 
+def _is_interrupted(outcome: Outcome | None) -> bool:
+    """Did the trial stop rather than end?
+
+    PAUSED and ABORTED are not trial results — one is an experimenter
+    stopping the session, the other is a quit — so nothing that closes a
+    trial out runs on them. Showing a subject a red fixation point because
+    somebody pressed P would be telling them they failed a trial they were
+    still in the middle of.
+    """
+    return outcome is not None and outcome.name in ("PAUSED", "ABORTED")
+
+
 class TrialEngine:
     def __init__(
         self,
@@ -136,8 +148,23 @@ class TrialEngine:
         # in the trial without exception.
         self._emit(ctx, "TRIAL_START", dict(ctx.params))
 
+        # A phase that must be last is the trial's CLOSING phase, and a
+        # closing phase runs whatever the trial ended as. Held out of the
+        # loop below for that reason: the loop stops at the first phase that
+        # returns an Outcome, so a trial that ended early — a fixation break,
+        # a saccade that never came — would otherwise never reach it.
+        #
+        # That is exactly the trial a subject most needs to hear about, and
+        # it was unreachable: feedback fired on every completed trial and on
+        # none of the failures. There is no way for a task to work around it
+        # either, because the only way to keep a procedural phase from ending
+        # the trial is to have it ADVANCE, which lets a broken fixation fall
+        # through into the phase that measures the response.
+        closing = phases[-1] if phases and getattr(phases[-1], "must_be_last", False) else None
+        body = phases[:-1] if closing is not None else phases
+
         outcome: Outcome | None = None
-        for phase in phases:
+        for phase in body:
             # QuitRequested propagates straight out (its message/cleanup
             # happened at the raise site); any other exception propagates
             # too — a bug or hardware fault mid-trial must surface, not be
@@ -145,6 +172,18 @@ class TrialEngine:
             outcome = self._run_phase(phase, ctx)
             if outcome is not None:
                 break
+
+        if closing is not None and not _is_interrupted(outcome):
+            # What the trial ended as, readable by the closing phase; None
+            # when the body ran to its end and the closing phase is the one
+            # that decides.
+            ctx.outcome = outcome
+            closing_outcome = self._run_phase(closing, ctx)
+            # A closing phase decides the outcome only when nothing else
+            # has. Feedback is shown for a fixation break; it does not turn
+            # one into a completed trial.
+            if outcome is None:
+                outcome = closing_outcome
         if outcome is None:
             # ADVANCE-ing off the end of the phase list is a programming
             # error in the task, not a runtime trial outcome.

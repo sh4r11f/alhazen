@@ -240,6 +240,13 @@ class TrialContext:
     inputs: InputFrame = field(default_factory=InputFrame)
     dt: float = 1 / 60  # duration of the previously-shown frame; set by the engine
     pending_flip_events: list[tuple[str, dict]] = field(default_factory=list)
+    # How the trial ended, set by the engine before it runs a closing phase
+    # (one declaring ``must_be_last``) and None everywhere else. A closing
+    # phase runs whatever the trial ended as — trial feedback has to be able
+    # to say "that one did not count" on a fixation break — so it needs to
+    # see what happened, and the record does not carry the outcome until the
+    # trial is finalized, which is after every phase has run.
+    outcome: Outcome | None = None
 
     def emit_on_flip(self, name: str, payload: dict | None = None) -> None:
         """Queue an event to be emitted right after the next flip, stamped

@@ -88,6 +88,94 @@ class TestTheVerdictIsNotTheOutcome:
             TrialFeedback(verdict=lambda c: True, then=COMPLETED, duration_s=-0.1)
 
 
+class TestFeedbackOnTheTrialsThatEndedEarly:
+    """The half that was unreachable. `TrialFeedback` is `must_be_last`, and
+    the engine used to return as soon as any phase produced an Outcome — so a
+    fixation break or a saccade that never came ended the trial before the
+    feedback phase was ever entered. A run came back with 72 completed trials
+    all showing feedback and 7 failures showing none, which is the opposite
+    of what feedback is for."""
+
+    FIX_BREAK = Outcome("FIX_BREAK", completed=False)
+
+    def run_ending_in(self, outcome, verdict=lambda ctx: True):
+        harness = EngineHarness()
+        fixation = NullStimulus("fixation")
+        ctx = harness.ctx(stimuli={"fixation": fixation})
+        phases = [
+            RunForFrames(1, outcome),
+            TrialFeedback(verdict=verdict, then=COMPLETED, duration_s=2 * FRAME_S),
+        ]
+        return harness.engine.run_trial(ctx, phases), fixation, harness
+
+    def test_a_fixation_break_is_shown_as_a_failure(self):
+        result, fixation, harness = self.run_ending_in(self.FIX_BREAK)
+
+        assert fixation.colors == [FAILURE_COLOR]
+        assert result.record["feedback"] == "failure"
+        (event,) = [e for e in harness.collector.events if e.name == "FEEDBACK"]
+        assert event.payload == {"success": False}
+
+    def test_the_outcome_the_trial_already_had_is_kept(self):
+        """Feedback closes a trial out; it does not turn a fixation break
+        into a completed one. `then` is discarded here."""
+        result, _fixation, _ = self.run_ending_in(self.FIX_BREAK)
+
+        assert result.outcome is self.FIX_BREAK
+        assert result.record["outcome"] == "FIX_BREAK"
+        assert result.record["completed"] is False
+
+    def test_the_tasks_verdict_is_not_asked_about_a_trial_that_has_none(self):
+        """The predicate judges a measurement. On a fixation break there is
+        no measurement, so asking it would be asking about nothing — and a
+        predicate that answers True by default would show a green point for
+        a trial the subject broke."""
+        asked = []
+
+        def verdict(ctx):
+            asked.append(ctx.trial_index)
+            return True
+
+        result, fixation, _ = self.run_ending_in(self.FIX_BREAK, verdict=verdict)
+
+        assert asked == []
+        assert fixation.colors == [FAILURE_COLOR]
+        assert result.record["feedback"] == "failure"
+
+    def test_a_completed_outcome_from_an_earlier_phase_still_gets_the_verdict(self):
+        """Ending early is not the same as failing: a task whose response
+        phase ends the trial with its own completed outcome still has a
+        measurement, and the predicate still judges it."""
+        result, fixation, _ = self.run_ending_in(MISSED, verdict=lambda ctx: True)
+
+        assert fixation.colors == [SUCCESS_COLOR]
+        assert result.record["feedback"] == "success"
+        assert result.outcome is MISSED
+
+    def test_a_pause_shows_nothing(self):
+        """PAUSED is not a trial result — somebody pressed P. Telling the
+        subject they failed a trial they were still in the middle of would be
+        a lie, and the pause menu is about to cover the screen anyway."""
+        from alhazen.core.commands import Command
+        from alhazen.testing import ScriptedCommands
+
+        harness = EngineHarness(commands=ScriptedCommands([[], [Command.PAUSE]]))
+        fixation = NullStimulus("fixation")
+        ctx = harness.ctx(stimuli={"fixation": fixation})
+        result = harness.engine.run_trial(
+            ctx,
+            [
+                RunForFrames(5, COMPLETED),
+                TrialFeedback(verdict=lambda ctx: True, then=COMPLETED, duration_s=2 * FRAME_S),
+            ],
+        )
+
+        assert result.outcome.name == "PAUSED"
+        assert fixation.colors == []
+        assert "feedback" not in result.record
+        assert not [e for e in harness.collector.events if e.name == "FEEDBACK"]
+
+
 class TestFeedbackIsNeverOnScreenDuringAMeasurement:
     def test_the_engine_refuses_feedback_anywhere_but_last(self):
         harness = EngineHarness()
