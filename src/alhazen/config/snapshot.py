@@ -21,6 +21,7 @@ from pathlib import Path
 import yaml
 
 from alhazen.config.models import SessionConfig
+from alhazen.version import get_version
 
 
 def _git_sha(cwd: Path) -> str:
@@ -54,13 +55,18 @@ def environment_digest() -> str:
 
 
 def build_provenance(experiment_dir: Path | None = None) -> dict[str, str]:
-    try:
-        alhazen_version = metadata.version("alhazen")
-    except metadata.PackageNotFoundError:
-        alhazen_version = "unknown"
+    """What produced this run: versions, the experiment's tree, the environment.
+
+    ``alhazen_version`` comes from :func:`alhazen.version.get_version`, which
+    looks up the right distribution. This module looked up ``"alhazen"``
+    directly, which is the trap version.py exists to close: the name belongs
+    to an unrelated project on PyPI, so the lookup either found theirs and
+    stamped their version into the data, or found nothing and wrote
+    ``"unknown"`` into every snapshot alhazen had produced.
+    """
     return {
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "alhazen_version": alhazen_version,
+        "alhazen_version": get_version(),
         "python": sys.version.split()[0],
         "platform": platform.platform(),
         "experiment_git_sha": _git_sha(experiment_dir or Path.cwd()),

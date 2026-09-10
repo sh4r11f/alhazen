@@ -387,5 +387,22 @@ class TestSnapshot:
             "environment_digest",
         }
 
+    def test_the_version_recorded_is_alhazens_own(self, tmp_path):
+        """It was `unknown` in every snapshot alhazen had ever written. The
+        lookup used the bare distribution name, which belongs to an unrelated
+        project on PyPI: on a machine with that project installed it stamped
+        their version into the data, and on one without it stamped nothing at
+        all. A provenance file whose one job is to say what produced the run
+        said it did not know."""
+        from alhazen.version import get_version
+
+        cfg = make_session_config(tmp_path)
+        path = tmp_path / "config_snapshot.yaml"
+        write_snapshot(cfg, path)
+        prov = yaml.safe_load(path.read_text())["provenance"]
+
+        assert prov["alhazen_version"] == get_version()
+        assert prov["alhazen_version"] != "unknown"
+
     def test_environment_digest_stable_within_process(self):
         assert environment_digest() == environment_digest()

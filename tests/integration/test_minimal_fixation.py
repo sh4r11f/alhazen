@@ -75,7 +75,12 @@ def test_builder_session_end_to_end(tmp_path):
 
     snap = yaml.safe_load((run_dir / "config_snapshot.yaml").read_text())
     assert snap["config"]["info"]["seed"] == 1234
-    assert snap["provenance"]["alhazen_version"]
+    # Not merely present. "unknown" is truthy, and it is what every snapshot
+    # held before 1.4.0 because the lookup used the wrong distribution name,
+    # so a bare truthiness check passed the entire time the value was wrong.
+    from alhazen.version import get_version
+
+    assert snap["provenance"]["alhazen_version"] == get_version()
 
     assert next(run_dir.glob("*_frames.csv")).exists()
     assert verify_manifest(run_dir, run_dir / "manifest.yaml") == []
