@@ -25,6 +25,22 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## 1.2.2 - 2026-09-09
+
+### Fixed
+
+- **Frame QA no longer judges a display that has no panel.** A simulated
+  display's flip times measure how accurately the host can wait between them,
+  which on a loaded machine is not the rate the rig file asks for. The
+  scaffolded lab rig ships `recycle_trial`, so its own acceptance run —
+  `--mode simulate --headless`, the documented way to run an experiment on a
+  CI box — aborted with "the display is not holding its 120 Hz refresh" when
+  the machine was busy. There was no display. The policy is stood down to
+  `log` at build time, with a line saying so; the intervals are still
+  recorded and still reach `frames.csv` and the dashboard's timing panel.
+  `SimulatedDisplay.measure_refresh_rate` has reported its paced rate for the
+  same reason since it was written.
+
 ## 1.2.1 - 2026-09-09
 
 ### Fixed
