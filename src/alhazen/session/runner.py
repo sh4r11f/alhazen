@@ -732,7 +732,10 @@ class SessionRunner:
         """Resolve a PAUSED trial; returns False when the experimenter chose
         to quit. With no pause strategy wired (unattended runs), resume
         immediately — blocking forever with nobody at the keyboard would
-        hang a simulated session.
+        hang a simulated session. That check comes FIRST, before the
+        dashboard: whether anyone is at the rig and whether a browser is
+        serving are different questions, and answering the second one first
+        hung every unattended run of a rig with the dashboard turned on.
 
         ``fault`` makes this an involuntary pause — a reward failure, a
         tracker with no calibration — and the screen leads with what went
@@ -757,13 +760,33 @@ class SessionRunner:
         elif rest is not None:
             notice = f"{rest.capitalize()} — resume when the subject is ready."
         menu = self._pause_menu(fault=fault, rest=rest)
-        if self._dashboard is not None:
-            return self._handle_dashboard_pause(menu, notice)
         if self._on_pause is None:
-            # Unattended. Still shown, so a simulated session's log records
-            # that it stopped and why.
+            # Nobody is going to answer. `on_pause` is wired only for a
+            # rendering display with a keyboard behind it (session/builder.py),
+            # so None means an unattended run — and that is true whether or
+            # not the rig file turned the dashboard on. A dashboard is a
+            # window onto the session, not a person at it; waiting for a
+            # browser click that will never come hung every unattended run of
+            # a rig with `dashboard.enabled`, and a scheduled block break made
+            # that every simulated run of a multi-block experiment.
+            #
+            # The menu is still drawn and the skipped pause still logged, at
+            # WARNING: a pause that did not pause is a real difference between
+            # what the session was asked to do and what it did, and the run
+            # that finds out is the dry run, not the one with a subject in it.
             self._show_pause_menu(menu)
+            log.warning(
+                "pause with nobody to answer it (no keyboard wired — unattended run): "
+                "resuming immediately. %s",
+                notice,
+            )
+            if self._dashboard is not None:
+                # Left out, a dashboard open on a dry run would sit on the
+                # last state it was told about while the session ran on.
+                self._publish_dashboard("running", f"{notice} Unattended — resumed.")
             return self._resumed()
+        if self._dashboard is not None:
+            return self._handle_dashboard_pause(menu, notice, fault=fault, rest=rest)
         while True:
             action = self._on_pause(menu)
             if action == "quit":

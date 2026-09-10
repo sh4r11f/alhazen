@@ -205,6 +205,21 @@ class FakeDashboard:
         self.stopped = True
 
 
+def wire_dashboard(harness, dashboard) -> None:
+    """Give the runner a dashboard AND a keyboard, which is what a rig that
+    opens a browser has.
+
+    The builder wires a pause strategy for every rendering display and none
+    for a simulated one (session/builder.py), so "a dashboard and no
+    keyboard" is not an attended rig — it is an unattended run of a rig whose
+    config happens to enable the dashboard, and the runner resumes those
+    rather than waiting at a pause for a browser nobody has open. The browser
+    is the second control surface at a rig, never the only one.
+    """
+    harness.runner._dashboard = dashboard
+    harness.runner._on_pause = lambda menu: "resume"
+
+
 class TestRunnerIntegration:
     def test_keyboard_pause_enables_browser_reward_then_resume(self, tmp_path: Path):
         reward = SimulatedReward()
@@ -214,7 +229,7 @@ class TestRunnerIntegration:
         # the commands that matter start in the second.
         dashboard = FakeDashboard([[], ["manual_reward"], ["resume"]])
         pulses = RewardPulses(n_pulses=1, pulse_ms=25, inter_pulse_ms=0)
-        harness.runner._dashboard = dashboard
+        wire_dashboard(harness, dashboard)
         harness.runner._manual_reward = lambda: reward.deliver(pulses)
         harness.runner._manual_reward_payload = {"pulses": pulses.model_dump(mode="json")}
 
@@ -242,7 +257,7 @@ class TestRunnerIntegration:
         # finds: nothing was clicked while the walk ran. The next click comes
         # once the buttons are back.
         dashboard = FakeDashboard([[], ["validate"], [], ["drift_correct"], [], ["resume"]])
-        harness.runner._dashboard = dashboard
+        wire_dashboard(harness, dashboard)
 
         harness.runner.run()
 
@@ -279,7 +294,7 @@ class TestRunnerIntegration:
             tmp_path, n_trials=1, commands=commands, tracker=tracker, clock=clock
         )
         dashboard = FakeDashboard([[], ["calibrate"], [], ["resume"]])
-        harness.runner._dashboard = dashboard
+        wire_dashboard(harness, dashboard)
 
         harness.runner.run()
 
@@ -300,7 +315,7 @@ class TestRunnerIntegration:
             tmp_path, n_trials=1, commands=commands, tracker=tracker, clock=clock
         )
         dashboard = FakeDashboard([[], ["resume"]])
-        harness.runner._dashboard = dashboard
+        wire_dashboard(harness, dashboard)
 
         harness.runner.run()
 
@@ -314,7 +329,7 @@ class TestRunnerIntegration:
         commands = ScriptedCommands([[Command.PAUSE]])
         harness = SessionHarness(tmp_path, n_trials=1, commands=commands)
         dashboard = FakeDashboard([[], ["validate"], [], ["resume"]])
-        harness.runner._dashboard = dashboard
+        wire_dashboard(harness, dashboard)
 
         with caplog.at_level(logging.WARNING, logger="alhazen.session.runner"):
             harness.runner.run()
@@ -352,7 +367,7 @@ class TestCameraThroughThePause:
             tmp_path, n_trials=1, commands=commands, tracker=tracker, clock=clock
         )
         dashboard = FakeDashboard(batches)
-        harness.runner._dashboard = dashboard
+        wire_dashboard(harness, dashboard)
         harness.runner.run()
         return harness, tracker, dashboard
 
@@ -387,7 +402,7 @@ class TestCameraThroughThePause:
             tmp_path, n_trials=1, commands=commands, tracker=tracker, clock=clock
         )
         dashboard = FakeDashboard([[]] * 250 + [["resume"]])
-        harness.runner._dashboard = dashboard
+        wire_dashboard(harness, dashboard)
         harness.runner.run()
         assert [s["status"] for s in dashboard.states].count("paused") == 1
 
@@ -415,7 +430,7 @@ class TestStaleCommandsAreDiscarded:
         harness = SessionHarness(tmp_path, n_trials=1, commands=commands, reward=reward)
         # A manual reward left over from before this pause, then a resume.
         dashboard = FakeDashboard([["manual_reward"], ["resume"]])
-        harness.runner._dashboard = dashboard
+        wire_dashboard(harness, dashboard)
         harness.runner._manual_reward = lambda: reward.deliver(RewardPulses(n_pulses=1))
 
         harness.runner.run()
@@ -440,7 +455,7 @@ class TestStaleCommandsAreDiscarded:
         # Validate the server accepted before it saw "calibrating". Then a
         # Resume clicked after the buttons came back, which must still work.
         dashboard = FakeDashboard([[], ["calibrate", "calibrate"], ["validate"], ["resume"]])
-        harness.runner._dashboard = dashboard
+        wire_dashboard(harness, dashboard)
 
         harness.runner.run()
 
@@ -454,7 +469,7 @@ class TestStaleCommandsAreDiscarded:
         commands = ScriptedCommands([[Command.PAUSE]])
         harness = SessionHarness(tmp_path, n_trials=2, commands=commands)
         dashboard = FakeDashboard([["quit"], ["resume"]])
-        harness.runner._dashboard = dashboard
+        wire_dashboard(harness, dashboard)
 
         harness.runner.run()
 

@@ -306,3 +306,114 @@ class TestAProcedureThatSucceedsTakesTheHeadingBackDown:
         assert "REST" in seen[0]
         assert "VALIDATION FAILED" in seen[1] and "2.30°" in seen[1]
         assert seen[2] == seen[0], seen
+
+
+class FakeDashboard:
+    """Enough DashboardController for the runner: a URL, somewhere for
+    snapshots to go, and a command queue that is always empty — a browser
+    nobody has opened, which is what an unattended rig has.
+
+    ``poll_commands`` gives up after ``poll_budget`` calls rather than
+    returning [] forever, so a runner that waits for a click that will never
+    come fails this suite in a second instead of hanging it.
+    """
+
+    url = "http://127.0.0.1:0/"
+
+    def __init__(self, poll_budget: int = 200) -> None:
+        self.published: list[tuple[str, str | None]] = []
+        self._polls = 0
+        self._poll_budget = poll_budget
+
+    def poll_commands(self):
+        self._polls += 1
+        if self._polls > self._poll_budget:
+            raise AssertionError(
+                "the runner is still waiting for a dashboard command in a run with no "
+                "keyboard wired — an unattended session cannot be resumed by a browser "
+                "nobody has open"
+            )
+        return []
+
+    def publish(self, state) -> None:
+        self.published.append((state.get("status"), state.get("message")))
+
+    def save(self, figures_dir, state) -> None:
+        self.saved = state
+
+    def stop(self) -> None:
+        self.stopped = True
+
+
+class TestAnUnattendedRunIsNeverLeftWaiting:
+    """`dashboard.enabled` in a rig file turned every pause in an unattended
+    run into a hang: the runner asked whether a dashboard existed before it
+    asked whether anyone was there to answer. A dashboard is a window onto
+    the session, not a person at it. With block breaks that became every
+    simulated run of a multi-block experiment — 28 trials and then nothing,
+    forever."""
+
+    def two_blocks(self):
+        import numpy as np
+
+        from alhazen.paradigms.base import Condition, SimpleSequence
+        from alhazen.paradigms.blocks import BlockPlan
+
+        def block():
+            return SimpleSequence([Condition({"condition": "a"})], rng=np.random.default_rng(0))
+
+        return BlockPlan([block(), block()], trials_per_block=1)
+
+    def test_the_block_break_resumes_itself_when_the_dashboard_is_on(self, tmp_path):
+        dashboard = FakeDashboard()
+        harness = SessionHarness(tmp_path, source=self.two_blocks(), dashboard=dashboard)
+
+        harness.runner.run()
+
+        assert len(read_trials(harness)) == 2, "the session did not get past the break"
+        titles = [title for title, _body, _color in harness.display.menus]
+        assert titles == ["BLOCK 1 OF 2 COMPLETE — REST"]
+        # The browser is told the session carried on, so a dashboard left
+        # open on a dry run does not sit on "paused" while trials go by.
+        statuses = [status for status, _message in dashboard.published]
+        assert "running" in statuses
+        assert any(message and "Unattended" in message for _status, message in dashboard.published)
+
+    def test_a_skipped_pause_is_a_warning_not_a_silence(self, tmp_path, caplog):
+        """A pause that did not pause is a difference between what the
+        session was asked to do and what it did, and the run that finds out
+        should be the dry run."""
+        import logging
+
+        harness = SessionHarness(tmp_path, source=self.two_blocks(), dashboard=FakeDashboard())
+        with caplog.at_level(logging.WARNING, logger="alhazen.session.runner"):
+            harness.runner.run()
+        assert any("nobody to answer it" in record.getMessage() for record in caplog.records), [
+            r.getMessage() for r in caplog.records
+        ]
+
+    def test_a_keyboard_pause_still_goes_through_the_browser(self, tmp_path):
+        """The fix must not take the dashboard out of an attended run: with a
+        pause strategy wired, the browser is still what resolves the pause."""
+        from alhazen.dashboard.runtime import DashboardCommand
+
+        class OneResume(FakeDashboard):
+            def poll_commands(self):
+                super().poll_commands()
+                return [DashboardCommand(name="resume", request_id="r1")]
+
+        dashboard = OneResume()
+        commands = ScriptedCommands(batches=[[Command.PAUSE]], raw_keys=[[], []])
+        harness = SessionHarness(
+            tmp_path,
+            n_trials=2,
+            commands=commands,
+            use_pause_menu=True,
+            dashboard=dashboard,
+        )
+
+        harness.runner.run()
+
+        statuses = [status for status, _message in dashboard.published]
+        assert "paused" in statuses, statuses
+        assert len(read_trials(harness)) == 2
