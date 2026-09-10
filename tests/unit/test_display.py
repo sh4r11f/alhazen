@@ -551,6 +551,25 @@ class _FakeTextStim:
         self.window.drawn.append(self)
 
 
+class _MeasuringTextStim(_FakeTextStim):
+    """A text stand-in that lays itself out, closely enough to test stacking.
+
+    Every character is 0.55 text heights wide, a line wraps at the wrap
+    width, and each line is 1.2 text heights tall. Not pyglet's layout, but
+    the same shape of answer: longer text, or a narrower measure, is taller.
+    """
+
+    @property
+    def boundingBox(self):  # noqa: N802 — PsychoPy's spelling
+        size = self.kwargs["height"]
+        wrap = self.kwargs["wrapWidth"]
+        per_line = max(1, int(wrap // (size * 0.55)))
+        paragraphs = str(self.text).split("\n")
+        lines = sum(max(1, -(-len(part) // per_line)) for part in paragraphs)
+        longest = max(len(part) for part in paragraphs)
+        return (min(wrap, longest * size * 0.55), lines * size * 1.2)
+
+
 class _FakeRect:
     def __init__(self, window, **kwargs):
         self.window = window
@@ -583,7 +602,9 @@ class _FakeWindow:
         self.flips += 1
 
 
-def _open_psychopy_display(monkeypatch, *, fonts=None, width_px=1920, height_px=1080):
+def _open_psychopy_display(
+    monkeypatch, *, fonts=None, width_px=1920, height_px=1080, text_stim=None
+):
     """A PsychoPyDisplay opened against fake `psychopy.visual` classes and a
     fake `pyglet.font`, with the presentation sleep removed so the test does
     not wait on it. The window is `fonts`-agnostic: pass a _FakePygletFont to
@@ -592,7 +613,11 @@ def _open_psychopy_display(monkeypatch, *, fonts=None, width_px=1920, height_px=
     from alhazen.display import psychopy_backend
 
     fake_visual = types.SimpleNamespace(
-        Window=lambda **kwargs: _FakeWindow(), TextStim=_FakeTextStim, Rect=_FakeRect
+        Window=lambda **kwargs: _FakeWindow(),
+        # A measuring stand-in when a test needs text heights that depend on
+        # the text; the fixed-size one otherwise.
+        TextStim=text_stim or _FakeTextStim,
+        Rect=_FakeRect,
     )
     monkeypatch.setattr(psychopy_backend, "resolve_monitor", lambda monitor: None)
     monkeypatch.setitem(
@@ -743,6 +768,118 @@ class TestMessageBox:
         assert heading.kwargs["font"] == pb.HEADING_FONT
         assert rows.kwargs["font"] == pb.MENU_FONT == pb.MONO_FONT
         assert display.window.flips == 1
+
+
+class TestTheMenuNeverDrawsTextOverText:
+    """The failed-trials pause screen was unreadable. The heading and the rows
+    sat at fixed distances below the panel's top, which left room for one line
+    of heading, and a fault heading is a sentence: at heading size it wrapped
+    onto second and third lines that were drawn straight over the rows. The
+    parts are now measured and stacked, a heading too long for one line is
+    split at its dash into a big headline and a smaller instruction, and the
+    panel grows when the content needs it."""
+
+    STREAK = (
+        "6 TRIALS FAILED IN A ROW — last NO_SACCADE, and 4 of them dropped over 10% of "
+        "their frames; check the display before recalibrating"
+    )
+    BODY = "\n".join(
+        [
+            "Paused — browser controls are enabled.",
+            "",
+            "SPACE   resume",
+            "C       calibrate the eye tracker",
+            "V       validate the calibration",
+            "D       drift correct",
+            "R       give a reward",
+            "ESC     quit the session",
+        ]
+    )
+    RED = (1.0, -0.4, -0.4)
+
+    @staticmethod
+    def _texts(display):
+        return [d for d in display.window.drawn if isinstance(d, _FakeTextStim)]
+
+    @staticmethod
+    def _span(stim):
+        """(top, bottom) of a top-anchored text, in window pixels."""
+        return stim.pos[1], stim.pos[1] - stim.boundingBox[1]
+
+    def test_a_fault_heading_too_long_for_one_line_is_split_and_stacked(self, monkeypatch):
+        display = _open_psychopy_display(monkeypatch, text_stim=_MeasuringTextStim)
+        display.show_menu(self.STREAK, self.BODY, color=self.RED)
+
+        heading, instruction, rows = self._texts(display)
+        assert heading.text == "6 TRIALS FAILED IN A ROW"
+        assert instruction.text.startswith("last NO_SACCADE, and 4 of them dropped")
+        assert instruction.kwargs["height"] < heading.kwargs["height"]
+
+        heading_top, heading_bottom = self._span(heading)
+        instruction_top, instruction_bottom = self._span(instruction)
+        rows_top, rows_bottom = self._span(rows)
+        assert instruction_top <= heading_bottom, "the instruction is drawn over the heading"
+        assert rows_top <= instruction_bottom, "the rows are drawn over the instruction"
+
+        panel = display.window.drawn[0]
+        half = panel.kwargs["height"] / 2
+        assert heading_top <= half and rows_bottom >= -half, "text spills out of the panel"
+
+    def test_a_heading_that_fits_on_one_line_is_drawn_whole(self, monkeypatch):
+        """A short heading such as "BLOCK 1 OF 2 COMPLETE — REST" reads best
+        whole; its last word is the point of it."""
+        display = _open_psychopy_display(monkeypatch, text_stim=_MeasuringTextStim)
+        display.show_menu("BLOCK 1 OF 2 COMPLETE — REST", self.BODY, color=self.RED)
+
+        heading, rows = self._texts(display)
+        assert heading.text == "BLOCK 1 OF 2 COMPLETE — REST"
+        assert self._span(rows)[0] <= self._span(heading)[1]
+
+    def test_a_long_heading_with_nothing_to_split_on_still_pushes_the_rows_down(self, monkeypatch):
+        title = (
+            "A HEADING WITH NO SEPARATOR THAT IS FAR TOO LONG TO FIT ON ONE LINE AT HEADING SIZE"
+        )
+        display = _open_psychopy_display(monkeypatch, text_stim=_MeasuringTextStim)
+        display.show_menu(title, self.BODY, color=self.RED)
+
+        heading, rows = self._texts(display)
+        assert heading.text == title
+        assert heading.boundingBox[1] > heading.kwargs["height"] * 1.8, "the title did not wrap"
+        assert self._span(rows)[0] <= self._span(heading)[1]
+
+    def test_the_panel_grows_when_the_menu_needs_more_room(self, monkeypatch):
+        from alhazen.display import psychopy_backend as pb
+
+        body = "\n".join(f"K{index:<6} a menu row" for index in range(30))
+        display = _open_psychopy_display(monkeypatch, text_stim=_MeasuringTextStim)
+        display.show_menu(self.STREAK, body, color=self.RED)
+
+        panel = display.window.drawn[0]
+        assert panel.kwargs["height"] > 1080 * pb.MENU_PANEL_FRACTION[1]
+        _, rows_bottom = self._span(self._texts(display)[-1])
+        assert rows_bottom >= -panel.kwargs["height"] / 2
+
+    def test_a_menu_taller_than_the_screen_says_so(self, monkeypatch, caplog):
+        import logging
+
+        body = "\n".join(f"K{index:<6} a menu row" for index in range(60))
+        display = _open_psychopy_display(monkeypatch, text_stim=_MeasuringTextStim)
+        with caplog.at_level(logging.WARNING):
+            display.show_menu(self.STREAK, body, color=self.RED)
+
+        assert display.window.drawn[0].kwargs["height"] == 1080
+        assert "the pause menu needs" in caplog.text
+
+    def test_the_split_happens_at_the_first_dash_only(self):
+        from alhazen.display.psychopy_backend import split_menu_title
+
+        assert split_menu_title("6 TRIALS FAILED IN A ROW — last X; check it") == (
+            "6 TRIALS FAILED IN A ROW",
+            "last X; check it",
+        )
+        assert split_menu_title("A — B — C") == ("A", "B — C")
+        assert split_menu_title("PAUSED") == ("PAUSED", None)
+        assert split_menu_title("TRAILING — ") == ("TRAILING — ", None)
 
 
 class TestFonts:

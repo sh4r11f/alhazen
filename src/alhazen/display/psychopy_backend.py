@@ -90,6 +90,23 @@ def _bundled_font_files() -> dict[str, Path]:
     return files
 
 
+def split_menu_title(title: str) -> tuple[str, str | None]:
+    """A menu heading's headline and the instruction after it, if it has one.
+
+    Fault headings are written "WHAT HAPPENED — what to do about it"
+    (session/runner.py, session/pause.py). Drawn whole at heading size, a
+    long one wraps onto several big lines; drawn apart, the part a person
+    reads across a room stays big and short, and the instruction sits under
+    it at a size meant for reading from the rig. Only the first dash splits,
+    so an instruction may contain dashes of its own. A title with no dash, or
+    nothing after it, comes back whole.
+    """
+    headline, separator, instruction = title.partition(" — ")
+    if not separator or not instruction.strip():
+        return title, None
+    return headline.strip(), instruction.strip()
+
+
 class PsychoPyDisplay:
     kind = "psychopy"
 
@@ -429,37 +446,67 @@ class PsychoPyDisplay:
         Sizes come off the panel's height, exactly as ``show_message`` does, so
         the menu is the same physical size on a 768-line CRT and a 2160-line
         display instead of shrinking to nothing on the second.
+
+        The parts are stacked by their MEASURED heights. They used to sit at
+        fixed distances below the panel's top, which left room for one line of
+        heading. A fault heading is a sentence — "6 TRIALS FAILED IN A ROW —
+        last NO_SACCADE; check the calibration (V), the subject, and the
+        stimulus before resuming" — and at heading size it wrapped onto more
+        lines that were drawn straight over the rows, so the screen an
+        experimenter most needed to read was unreadable. Now a heading too
+        long for one line is drawn as its headline at heading size with the
+        instruction beneath it at reading size (:func:`split_menu_title`),
+        every part starts below the one above it, and the panel grows when
+        the content needs more room than its usual share of the screen.
         """
         self._require_open()
         from psychopy import visual
 
         width, height = self._monitor.width_px, self._monitor.height_px
         text_height = max(16.0, height * 0.019)
+        heading_size = text_height * 1.6
+        instruction_size = text_height * 1.15
+        panel_width = width * MENU_PANEL_FRACTION[0]
+        text_width = panel_width * 0.9
+        # The rows' measure: wide enough for the longest row this ever draws,
+        # but never wider than the panel. pyglet centres the wrap width, so the
+        # rows start half of it left of centre, and on a 4:3 or 5:4 display 46
+        # text heights is wider than the panel — the rows would begin outside
+        # it. Not a fraction of the window alone, either: on an ultrawide that
+        # is one enormous line.
+        rows_width = min(text_height * 46, text_width)
 
-        panel = self._panel(
-            width=width * MENU_PANEL_FRACTION[0],
-            height=height * MENU_PANEL_FRACTION[1],
-            color=color,
-            fill=MENU_PANEL_FILL,
+        def centred(text: str, size: float) -> Any:
+            # Placed at the origin for now: a text's height is only known once
+            # it has been laid out, and the layout below needs every height.
+            return visual.TextStim(
+                self.window,
+                text=text,
+                font=HEADING_FONT,
+                height=size,
+                color=color,
+                colorSpace="rgb",
+                alignText="center",
+                anchorHoriz="center",
+                anchorVert="top",
+                pos=(0, 0),
+                wrapWidth=text_width,
+                units="pix",
+            )
+
+        # The whole heading first, split only if it does not fit on one line.
+        # A short heading such as "BLOCK 1 OF 2 COMPLETE — REST" reads best
+        # whole, and its last word is the point of it. One laid-out line is
+        # about 1.2 text heights tall, so anything past 1.8 has wrapped.
+        heading = centred(title, heading_size)
+        _, whole_height = self._text_extent(
+            heading, wrap_width=text_width, line_height=heading_size
         )
-        # Anchored to the panel's top rather than centred: the heading has to
-        # stay put as the body grows and shrinks with the rig's wiring, or the
-        # one word an experimenter looks for moves every session.
-        panel_top = height * MENU_PANEL_FRACTION[1] / 2.0
-        heading = visual.TextStim(
-            self.window,
-            text=title,
-            font=HEADING_FONT,
-            height=text_height * 1.6,
-            color=color,
-            colorSpace="rgb",
-            alignText="center",
-            anchorHoriz="center",
-            anchorVert="top",
-            pos=(0, panel_top - text_height * 1.2),
-            wrapWidth=width * MENU_PANEL_FRACTION[0] * 0.9,
-            units="pix",
-        )
+        instruction = None
+        headline, rest_of_title = split_menu_title(title)
+        if rest_of_title is not None and whole_height > heading_size * 1.8:
+            heading = centred(headline, heading_size)
+            instruction = centred(rest_of_title, instruction_size)
         rows = visual.TextStim(
             self.window,
             text=body,
@@ -470,18 +517,61 @@ class PsychoPyDisplay:
             alignText="left",
             anchorHoriz="center",
             anchorVert="top",
-            pos=(0, panel_top - text_height * 4.2),
-            # Wide enough for the longest row this ever draws, but never wider
-            # than the panel: pyglet centres the wrap width, so the rows start
-            # half of it left of centre, and on a 4:3 or 5:4 display 46 text
-            # heights is wider than the panel — the rows would begin outside
-            # it. Not a fraction of the window alone, either: on an ultrawide
-            # that is one enormous line.
-            wrapWidth=min(text_height * 46, width * MENU_PANEL_FRACTION[0] * 0.9),
+            pos=(0, 0),
+            wrapWidth=rows_width,
             units="pix",
+        )
+
+        # Every part measured, then stacked top to bottom with fixed gaps.
+        padding = text_height * 1.2
+        gap_under_heading = text_height * 0.5
+        gap_above_rows = text_height * 1.3
+        _, heading_height = self._text_extent(
+            heading, wrap_width=text_width, line_height=heading_size
+        )
+        instruction_height = 0.0
+        if instruction is not None:
+            _, instruction_height = self._text_extent(
+                instruction, wrap_width=text_width, line_height=instruction_size
+            )
+        _, rows_height = self._text_extent(rows, wrap_width=rows_width, line_height=text_height)
+        needed = padding + heading_height + gap_above_rows + rows_height + padding
+        if instruction is not None:
+            needed += gap_under_heading + instruction_height
+
+        # The usual share of the screen, unless the content needs more. A menu
+        # taller than the screen is still drawn, from the top, but it is said:
+        # rows off the bottom of the screen are keys nobody can see.
+        panel_height = max(height * MENU_PANEL_FRACTION[1], needed)
+        if panel_height > height:
+            log.warning(
+                "the pause menu needs %.0f px and the screen is %.0f px tall: its last rows "
+                "are off the bottom of the screen",
+                panel_height,
+                height,
+            )
+            panel_height = float(height)
+
+        # Anchored to the panel's top rather than centred: the heading stays
+        # put as the body grows and shrinks with the rig's wiring, or the one
+        # word an experimenter looks for would move every session. It moves
+        # only when the menu outgrows its usual panel.
+        y = panel_height / 2.0 - padding
+        heading.pos = (0, y)
+        y -= heading_height
+        if instruction is not None:
+            y -= gap_under_heading
+            instruction.pos = (0, y)
+            y -= instruction_height
+        rows.pos = (0, y - gap_above_rows)
+
+        panel = self._panel(
+            width=panel_width, height=panel_height, color=color, fill=MENU_PANEL_FILL
         )
         panel.draw()
         heading.draw()
+        if instruction is not None:
+            instruction.draw()
         rows.draw()
         self.flip()
 

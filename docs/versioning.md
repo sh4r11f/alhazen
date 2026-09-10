@@ -39,8 +39,8 @@ graph TB
     PY --> GATE
     CL --> GATE
     TAG --> GATE
-    GATE -->|"yes"| BUILD["build → TestPyPI → smoke test → PyPI"]
-    GATE -->|"no"| STOP["fail, publish nothing"]
+    GATE -->|"yes"| BUILD["build the wheel and sdist<br/><i>publishing not set up yet</i>"]
+    GATE -->|"no"| STOP["fail, build nothing"]
     PY -.->|"pip install"| META["installed metadata"]
     META -.-> RUN["alhazen.__version__<br/>alhazen --version<br/>stamped into every run"]
 ```
@@ -130,7 +130,7 @@ graph LR
     B --> C["3. release_check.py<br/>--tag vX.Y.Z"]
     C --> D["4. Commit + push<br/>to main"]
     D --> E["5. git tag vX.Y.Z<br/>git push origin vX.Y.Z"]
-    E --> F["release.yml:<br/>gate → build →<br/>TestPyPI → smoke → PyPI"]
+    E --> F["release.yml:<br/>gate → build"]
 ```
 
 Steps 1 and 2 belong in the **same commit** — that is what the always-on check
@@ -146,15 +146,24 @@ git tag vX.Y.Z
 git push origin vX.Y.Z
 ```
 
-The tag triggers `.github/workflows/release.yml`, which re-runs the gate, then
-builds, publishes to **TestPyPI first**, installs the result on Linux, macOS
-and Windows and imports it, and only then publishes to PyPI. A release that
-cannot be installed is discovered by installing it — doing that on the real
-index means living with the number forever.
+The tag triggers `.github/workflows/release.yml`, which re-runs the gate and
+then builds the wheel and sdist and checks them with twine.
+
+**Nothing is published yet.** The workflow used to go on to TestPyPI, install
+the result on Linux, macOS and Windows, and then publish to PyPI. Every one of
+those uploads failed, because no trusted publisher is registered for this
+repository on either index, so a release run was red even when the release was
+fine. The publishing jobs were removed until alhazen is published. To bring
+them back, register a trusted publisher for `sh4r11f/alhazen` with workflow
+`release.yml` on TestPyPI, environment `testpypi`, and on PyPI, environment
+`pypi`; then restore the jobs from this file's git history. Keep TestPyPI
+before PyPI when they return: a release that cannot be installed is discovered
+by installing it, and doing that on the real index means living with the
+number forever.
 
 If the gate fails after you have already pushed the tag, delete it
 (`git push --delete origin vX.Y.Z`), fix the mismatch, and tag again. Nothing
-was published, because the gate runs before the build.
+was built, because the gate runs first.
 
 ### 5a. A downstream pin follows the push; it never leads it
 

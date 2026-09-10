@@ -25,6 +25,32 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## 1.4.3 - 2026-09-10
+
+### Fixed
+
+- **The pause screen no longer draws its heading over the menu.** The heading
+  and the menu rows sat at fixed distances below the panel's top, which left
+  room for one line of heading. A fault heading is a sentence, such as "6
+  TRIALS FAILED IN A ROW — last NO_SACCADE; check the calibration (V), the
+  subject, and the stimulus before resuming", and at heading size it wrapped
+  onto second and third lines drawn straight over the first rows of the menu,
+  so the screen was unreadable. Every part of the menu is now measured and
+  stacked below the one above it. A heading too long for one line is drawn as
+  its headline, with the instruction after its dash beneath it at reading
+  size; a short one such as "BLOCK 1 OF 2 COMPLETE — REST" is still drawn
+  whole. The panel grows when the menu needs more room than its usual share
+  of the screen, and a menu taller than the screen says so in the log.
+
+### Changed
+
+- **Tagging a release no longer tries to publish to TestPyPI and PyPI.** No
+  trusted publisher is registered for this repository on either index, so
+  every release run failed at the upload and showed red even when the release
+  was fine. `release.yml` now runs the version gate and builds and checks the
+  wheel and sdist, and nothing else. `docs/versioning.md` says how to bring
+  publishing back.
+
 ## 1.4.2 - 2026-09-10
 
 ### Fixed

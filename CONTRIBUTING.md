@@ -111,6 +111,7 @@ git tag vX.Y.Z
 git push origin vX.Y.Z
 ```
 
-The tag triggers `.github/workflows/release.yml`: gate, build, publish to
-TestPyPI, install and import it on all three operating systems, and only then
-publish to PyPI.
+The tag triggers `.github/workflows/release.yml`: the version gate, then a
+build of the wheel and sdist that twine checks. Nothing is published yet;
+docs/versioning.md says why the publishing jobs are not there and how they
+come back.
