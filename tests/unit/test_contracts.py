@@ -12,7 +12,12 @@ layering contract:
 2. **Reserved events may be added, never removed.** An analysis reads these
    names out of data recorded years earlier.
 3. **The run-directory layout is fixed within a major version.** Every script
-   anyone has written to find a run's trials file depends on the name.
+   anyone has written to find a run's trials file depends on the name — and so
+   does every analysis that reads a *column* out of the trials table, which is
+   why `TRIAL_RECORD_COLUMNS` is pinned here too. A downstream package that
+   types a column name itself gets no warning when it types one alhazen does
+   not write; one such exclusion silently matched no trial for the life of an
+   experiment, with the package's own fixture written in the same wrong name.
 
 Also pinned: the on-disk schema version numbers, which may only ever go up. A
 decrement would make new code claim to write an older format than it does, and
@@ -33,14 +38,22 @@ from pathlib import Path
 import pytest
 
 from alhazen.analysis import results
+from alhazen.config.models import FrameQAConfig, RewardPulses
+from alhazen.core.commands import Command
 from alhazen.core.events import RESERVED_EVENTS
 from alhazen.core.rng import STREAMS, spawn_streams
+from alhazen.core.trial import TRIAL_RECORD_COLUMNS
 from alhazen.data import manifest
 from alhazen.data.paths import SessionPaths
 from alhazen.devices import recording
+from alhazen.devices.reward import SimulatedReward
 from alhazen.scenes import model
 from alhazen.session import database
+from alhazen.session.recorder import _LEADING
+from alhazen.task.plan import TrialPlan
+from alhazen.task.reward_policy import RewardPolicy
 from alhazen.training import state
+from support import COMPLETED, FRAME_S, EngineHarness, RunForFrames, SessionHarness
 
 BASELINE = json.loads(
     (Path(__file__).parents[1] / "fixtures" / "contracts.json").read_text(encoding="utf-8")
@@ -113,6 +126,108 @@ class TestRunLayout:
             "The run-directory layout changes only in a major version, with a migration. "
             "Every script anyone wrote to find a run's files depends on these names."
         )
+
+
+class TestTrialRecordColumns:
+    """The names the framework writes into a trial record.
+
+    Pinned by *driving real trials* rather than by re-typing the names: a
+    rename at a write site that misses `TRIAL_RECORD_COLUMNS` leaves the
+    declared name unproduced and fails here, at the source, instead of in
+    somebody else's analysis a repository away.
+    """
+
+    # What the harnesses themselves put on a record, which is an experiment's
+    # business rather than the framework's: the condition each serves.
+    EXPERIMENT_KEYS = {"condition"}
+
+    def produced(self, record: dict) -> set[str]:
+        """A record's framework-written keys: everything but the experiment's
+        own columns and the per-event time mirrors."""
+        return {
+            key for key in record if key not in self.EXPERIMENT_KEYS and not key.startswith("t_")
+        }
+
+    def engine_records(self) -> list[dict]:
+        """One record per engine-level scenario that writes a column."""
+        records = []
+
+        # A completed trial under a marking policy: outcome, completed,
+        # success, and the dropped-frame counter at its clean-trial zero.
+        harness = EngineHarness(frame_qa=FrameQAConfig(policy="mark_trial"))
+        records.append(harness.engine.run_trial(harness.ctx(), [RunForFrames(1, COMPLETED)]).record)
+
+        # An abort carries its reason.
+        from alhazen.testing import ScriptedCommands
+
+        harness = EngineHarness(commands=ScriptedCommands([[Command.SKIP_TRIAL]]))
+        records.append(harness.engine.run_trial(harness.ctx(), [RunForFrames(5, COMPLETED)]).record)
+
+        # A trial recycled by frame QA carries what it would have been.
+        harness = EngineHarness(
+            frame_qa=FrameQAConfig(policy="recycle_trial", max_dropped_fraction=0.1)
+        )
+
+        class AlwaysSlow(RunForFrames):
+            def on_frame(self, ctx):
+                harness.display.next_flip_extra = FRAME_S
+                return super().on_frame(ctx)
+
+        records.append(harness.engine.run_trial(harness.ctx(), [AlwaysSlow(3, COMPLETED)]).record)
+        return records
+
+    def session_record(self, tmp_path) -> dict:
+        """A whole session's row: the runner's own columns, and a delivery."""
+        harness = SessionHarness(
+            tmp_path,
+            n_trials=1,
+            reward=SimulatedReward(),
+            reward_policy=RewardPolicy(
+                by_outcome={"COMPLETED": RewardPulses(n_pulses=1, pulse_ms=50)}
+            ),
+            build_trial=lambda setup: TrialPlan(phases=[RunForFrames(1, COMPLETED)]),
+        )
+        harness.runner.run()
+        return harness.recorder.trials[0]
+
+    def test_every_declared_column_is_actually_written(self, tmp_path):
+        written: set[str] = set()
+        for record in self.engine_records():
+            written |= self.produced(record)
+        written |= self.produced(self.session_record(tmp_path))
+
+        missing = set(TRIAL_RECORD_COLUMNS) - written
+        assert not missing, (
+            f"TRIAL_RECORD_COLUMNS declares {sorted(missing)}, which no real trial produced. "
+            f"Either a write site was renamed without updating the tuple, or the tuple names "
+            f"a column alhazen no longer writes — and an analysis elsewhere is reading it."
+        )
+
+    def test_no_column_is_written_without_being_declared(self, tmp_path):
+        written: set[str] = set()
+        for record in self.engine_records():
+            written |= self.produced(record)
+        written |= self.produced(self.session_record(tmp_path))
+
+        undeclared = written - set(TRIAL_RECORD_COLUMNS)
+        assert not undeclared, (
+            f"the framework wrote {sorted(undeclared)} onto a trial record without declaring "
+            f"it in TRIAL_RECORD_COLUMNS. A column downstream cannot discover is a column it "
+            f"will type by hand and get wrong."
+        )
+
+    def test_no_recorded_column_was_dropped(self):
+        missing = set(BASELINE["trial_record_columns"]) - set(TRIAL_RECORD_COLUMNS)
+        assert not missing, (
+            f"the trial record lost {sorted(missing)}. An analysis in another package reads "
+            f"these out of trials.csv; removing one needs a major version and a migration."
+        )
+
+    def test_the_csvs_leading_columns_are_declared_ones(self):
+        # The recorder orders the trials table by its own list. Two lists of
+        # column names in one codebase is exactly the drift this file exists
+        # to catch.
+        assert set(_LEADING) <= set(TRIAL_RECORD_COLUMNS)
 
 
 class TestSchemaVersions:

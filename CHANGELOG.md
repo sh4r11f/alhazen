@@ -138,6 +138,20 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Added
 
+- **`TRIAL_RECORD_COLUMNS`, and a contract test that drives real trials.**
+  The columns the framework writes onto a trial record are named once, in
+  `core/trial.py`, and exported — so an analysis in another package imports
+  the name instead of typing it. It has to be exported: one experiment's
+  dropped-frame exclusion read `dropped_frames` where alhazen writes
+  `n_dropped_frames`, matched no trial for the life of the experiment, and
+  kept a green suite the whole time because its own fixture was written in
+  the same wrong name. `tests/unit/test_contracts.py` now pins the names by
+  running real trials through the engine and the runner and comparing what
+  they produce against the tuple, in both directions, so a rename at a write
+  site fails there rather than downstream. The names are in
+  `tests/fixtures/contracts.json` as part of the run-layout contract, which
+  already promised column meanings.
+
 - **A ViewPixx (TRACKPixx3) reader, `analysis/io/viewpixx.py`.** Reads a
   run's `*_gaze.csv` and `*_gaze-messages.csv` onto the session clock: an
   affine device→session **fit** from the two-clock message pairs, refused

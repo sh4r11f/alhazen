@@ -244,6 +244,15 @@ def read_run(
     rule the live backend applies (devices/eyetracker/viewpixx.py
     ``select_eye``), so online and offline never disagree about a sample.
 
+    **This returns one eye.** The device always records both, and for most
+    experiments one of them is the measurement; for a binocular one it is not
+    a reduced version of the measurement but none of it — vergence is the
+    difference between the eyes, and ``average`` is not vergence either. A
+    binocular analysis calls this twice, once per eye, and combines the two
+    itself. Everything above the eye selection — the header, the clock fit,
+    the blink rule, the bounds check — is shared by both calls, so nothing of
+    that has to be re-implemented to do it.
+
     ``check_bounds`` refuses a run whose tracked gaze mostly falls outside the
     panel, which is what reading the wrong ``gaze_frame`` looks like. Pass
     False for a recording that genuinely sits off-panel — and only once that
