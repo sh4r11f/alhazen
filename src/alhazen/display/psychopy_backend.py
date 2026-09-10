@@ -55,6 +55,16 @@ MESSAGE_PANEL_FILL = TERMINAL_FILL
 # Padding between the text and the box's edge, in text heights: two on each
 # side, one and a half above and below.
 MESSAGE_PADDING = (2.0, 1.5)
+# A message's box must fit on the screen. When the text is too tall for that
+# at its usual size, the letters shrink until the box fits in this share of
+# the screen's height, leaving a margin so the border is not on the bezel...
+MESSAGE_SCREEN_FRACTION = 0.95
+# ...but never below this share of their usual size. Instructions are read
+# from a chin rest a metre or less away, and past this the text stops being
+# something a subject reads comfortably, so shrinking further trades one
+# failure for another. Beyond it the message is shown from its start and the
+# overflow is logged as an error: the text has to be shortened.
+MESSAGE_MIN_SCALE = 0.6
 
 # How much of the panel the menu's dark backing covers, and how far inside it
 # the text sits. The backing exists so the menu reads as a panel laid over a
@@ -336,32 +346,82 @@ class PsychoPyDisplay:
         #   a wrap width (hundreds of pixels) left of the middle — and of a
         #   box that hugs the text. With the left edge as the anchor and the
         #   text's own measured width, the text and the box share a centre.
-        height = max(18.0, self._monitor.height_px * 0.022)
-        wrap_width = min(self._monitor.width_px * 0.8, height * 34)
-        msg = visual.TextStim(
-            self.window,
-            text=text,
-            font=MESSAGE_FONT,
-            height=height,
-            color=MESSAGE_COLOR,
-            colorSpace="rgb",
-            alignText="left",
-            anchorHoriz="left",
-            pos=(0, 0),
-            wrapWidth=wrap_width,
-            units="pix",
-        )
-        # The box hugs the text: its size comes from the laid-out text's
-        # bounding box plus a margin, so a short notice and a page of
-        # instructions each get a box of their own size.
-        text_w, text_h = self._text_extent(msg, wrap_width=wrap_width, line_height=height)
-        msg.pos = (-text_w / 2.0, 0.0)
+        usual = max(18.0, self._monitor.height_px * 0.022)
+        screen_height = float(self._monitor.height_px)
+        target = screen_height * MESSAGE_SCREEN_FRACTION
+        smallest = usual * MESSAGE_MIN_SCALE
+
+        # The box has to fit on the screen. A message taller than the window
+        # used to be drawn centred and cropped at both ends, with nothing said:
+        # the first and last sentences of a subject's instructions went off the
+        # top and bottom of the rig's screen. So the text is laid out, and if
+        # its box is taller than the target the letters shrink and it is laid
+        # out again. The measure shrinks with the letters, so a line keeps the
+        # same number of characters and only the size changes.
+        height = usual
+        usual_box_height = None
+        for _ in range(8):
+            wrap_width = min(self._monitor.width_px * 0.8, height * 34)
+            msg = visual.TextStim(
+                self.window,
+                text=text,
+                font=MESSAGE_FONT,
+                height=height,
+                color=MESSAGE_COLOR,
+                colorSpace="rgb",
+                alignText="left",
+                anchorHoriz="left",
+                pos=(0, 0),
+                wrapWidth=wrap_width,
+                units="pix",
+            )
+            # The box hugs the text: its size comes from the laid-out text's
+            # bounding box plus a margin, so a short notice and a page of
+            # instructions each get a box of their own size.
+            text_w, text_h = self._text_extent(msg, wrap_width=wrap_width, line_height=height)
+            box_height = text_h + 2 * MESSAGE_PADDING[1] * height
+            if usual_box_height is None:
+                usual_box_height = box_height
+            if box_height <= target or height <= smallest:
+                break
+            # Height is close to proportional to letter size at a fixed number
+            # of characters per line, so one step usually lands; the loop is
+            # for a measure capped by the screen's width, where it is not.
+            height = max(smallest, height * target / box_height * 0.98)
+
+        if height < usual:
+            log.warning(
+                "a message is too tall for the screen at its usual size (%.0f px on a %.0f px "
+                "screen), so its letters were shrunk to %.0f%% of usual to fit. Shorten the "
+                "text to show it at full size.",
+                usual_box_height,
+                screen_height,
+                100 * height / usual,
+            )
+
+        # Centred on the screen, unless even the smallest letters do not fit.
+        # Then the box's top goes at the screen's top, so the message is read
+        # from its start and only its end is lost, and that is an error: a
+        # subject cannot read all of it.
+        centre_y = 0.0
+        if box_height > screen_height:
+            centre_y = screen_height / 2.0 - box_height / 2.0
+            log.error(
+                "a message does not fit on the screen even at %.0f%% of its usual letter size: "
+                "%.0f px of it are below the bottom of the screen. Its start is shown. Shorten "
+                "the text.",
+                100 * MESSAGE_MIN_SCALE,
+                box_height - screen_height,
+            )
+        msg.pos = (-text_w / 2.0, centre_y)
         panel = self._panel(
             width=text_w + 2 * MESSAGE_PADDING[0] * height,
-            height=text_h + 2 * MESSAGE_PADDING[1] * height,
+            height=box_height,
             color=MESSAGE_OUTLINE,
             fill=MESSAGE_PANEL_FILL,
         )
+        if centre_y:
+            panel.pos = (0.0, centre_y)
         # The instructions are the first frame after the build, and on the rig
         # the dashboard's browser window arrived at that moment and took the
         # foreground; Windows never presented the frame, and nothing flips

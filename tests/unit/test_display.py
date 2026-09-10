@@ -735,6 +735,68 @@ class TestMessageBox:
         assert "could not measure the message text" in caplog.text
         assert "3 line(s)" in caplog.text
 
+    def test_instructions_too_tall_for_the_screen_shrink_to_fit_and_say_so(
+        self, monkeypatch, caplog
+    ):
+        """A subject's instructions, laid out, were taller than the rig's
+        1080-px screen, and the box was drawn centred: the first and last
+        sentences went off the top and bottom with nothing logged. The letters
+        shrink instead until the box fits, and the shrink is logged so the text
+        gets shortened."""
+        from alhazen.display import psychopy_backend as pb
+
+        # 21 source lines of 76 characters wrap to 42 laid-out lines at the
+        # usual size, which is about what the rig's instructions came to.
+        text = "\n".join("x" * 76 for _ in range(21))
+        display = _open_psychopy_display(monkeypatch, text_stim=_MeasuringTextStim)
+        with caplog.at_level(logging.WARNING):
+            display.show_message(text)
+
+        rect = next(d for d in display.window.drawn if isinstance(d, _FakeRect))
+        message = next(d for d in display.window.drawn if isinstance(d, _FakeTextStim))
+        usual = max(18.0, 1080 * 0.022)
+        assert rect.kwargs["height"] <= 1080 * pb.MESSAGE_SCREEN_FRACTION
+        assert usual * pb.MESSAGE_MIN_SCALE <= message.kwargs["height"] < usual
+        assert "letters were shrunk" in caplog.text
+        # It fits, so it stays centred.
+        assert message.pos[1] == 0.0
+        assert not hasattr(rect, "pos")
+
+    def test_a_message_that_fits_is_left_at_its_usual_size(self, monkeypatch, caplog):
+        display = _open_psychopy_display(monkeypatch, text_stim=_MeasuringTextStim)
+        with caplog.at_level(logging.WARNING):
+            display.show_message("Look at the dot.\nPress SPACE when ready.")
+
+        message = next(d for d in display.window.drawn if isinstance(d, _FakeTextStim))
+        assert message.kwargs["height"] == pytest.approx(max(18.0, 1080 * 0.022))
+        assert "letters were shrunk" not in caplog.text
+        assert "below the bottom of the screen" not in caplog.text
+
+    def test_a_message_that_cannot_fit_even_shrunk_shows_its_start_and_is_an_error(
+        self, monkeypatch, caplog
+    ):
+        """Past the smallest legible size the text is not shrunk further. The
+        box's top goes at the screen's top, so the message reads from its
+        start, and the overflow is logged as an error: a subject cannot read
+        all of it, and the text has to be shortened."""
+        from alhazen.display import psychopy_backend as pb
+
+        text = "\n".join("x" * 76 for _ in range(80))
+        display = _open_psychopy_display(monkeypatch, text_stim=_MeasuringTextStim)
+        with caplog.at_level(logging.WARNING):
+            display.show_message(text)
+
+        rect = next(d for d in display.window.drawn if isinstance(d, _FakeRect))
+        message = next(d for d in display.window.drawn if isinstance(d, _FakeTextStim))
+        usual = max(18.0, 1080 * 0.022)
+        assert message.kwargs["height"] == pytest.approx(usual * pb.MESSAGE_MIN_SCALE)
+        box = rect.kwargs["height"]
+        assert box > 1080
+        assert rect.pos[1] + box / 2 == pytest.approx(540.0)
+        assert message.pos[1] == pytest.approx(rect.pos[1])
+        errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+        assert errors and "below the bottom of the screen" in errors[0]
+
     def test_the_menu_rows_stay_inside_the_panel_on_a_narrow_display(self, monkeypatch):
         """The rows' wrap width is what pyglet centres, so on a 4:3 display
         the 46-text-height measure would start the rows outside the panel."""
