@@ -672,6 +672,11 @@ class SessionRunner:
             if action == "resume":
                 return self._resumed()
             self._apply_pause_action(action)
+            # A procedure that failed becomes the heading of the menu that
+            # comes back, on the screen the experimenter is actually facing.
+            failed = self._procedure_fault(action)
+            if failed is not None:
+                menu = self._pause_menu(fault=failed)
 
     def _apply_pause_action(self, action: str) -> str | None:
         """One non-terminal menu choice; returns the line the dashboard shows
@@ -712,6 +717,34 @@ class SessionRunner:
         if action == "validate":
             return monitor.validate().summary()
         return monitor.drift_correct().summary()
+
+    def _procedure_fault(self, action: str) -> str | None:
+        """The heading the pause screen leads with after a procedure that
+        did not succeed, or None after one that did.
+
+        The verdict already goes to the dashboard's notice line and the log.
+        Neither is the screen the experimenter is looking at while they stand
+        at the rig, and a validation that failed there without a word — with
+        the session about to resume on a calibration the design rejects — is
+        how every landing of a block inherits an error nobody saw.
+        """
+        monitor = self._eyetracker
+        if monitor is None or action not in PROCEDURE_ACTIONS:
+            return None
+        calibration, validation, drift = monitor.calibration, monitor.validation, monitor.drift
+        if action == "calibrate" and calibration is not None and calibration.ok is False:
+            return f"CALIBRATION FAILED — {calibration.note or 'the tracker reports none'}"
+        if action in ("calibrate", "validate") and validation is not None:
+            if not validation.accepted and not validation.aborted:
+                worst = validation.max_error_deg
+                measured = f"worst {worst:.2f}°" if worst is not None else "no target measured"
+                return (
+                    f"VALIDATION FAILED — {measured} against the {validation.threshold_deg:g}° "
+                    f"limit; recalibrate (C) before resuming"
+                )
+        if action == "drift_correct" and drift is not None and not drift.applied:
+            return f"DRIFT CORRECTION REFUSED — {drift.note or drift.summary()}"
+        return None
 
     def _resumed(self) -> bool:
         self._bus.emit(
@@ -767,7 +800,12 @@ class SessionRunner:
                 # Every non-terminal action redraws the menu, because
                 # _apply_pause_action may have put a calibration screen over
                 # it, and a menu that vanishes after one keypress looks like
-                # a session that has crashed.
+                # a session that has crashed. A procedure that failed becomes
+                # the menu's heading: the browser gets the verdict as its
+                # notice, but the rig's own screen must say it too.
+                failed = self._procedure_fault(action)
+                if failed is not None:
+                    menu = self._pause_menu(fault=failed)
                 self._show_pause_menu(menu)
                 if action in PROCEDURE_ACTIONS:
                     # A procedure runs for seconds to minutes, and the browser

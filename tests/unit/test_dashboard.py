@@ -265,6 +265,10 @@ class TestRunnerIntegration:
         assert by_title["Validation"]["form"] == "scatter"
         assert by_title["Drift correction"]["value"] == "0.50"
         assert dashboard.states[-1]["status"] == "complete"
+        # And the rig's own screen led with the failure when the menu came
+        # back, not only the browser's notice line.
+        headings = [title for title, _body, _color in harness.display.menus]
+        assert any(h.startswith("VALIDATION FAILED") for h in headings), headings
 
     def test_a_calibrate_click_reports_the_verdict_in_the_notice(self, tmp_path: Path):
         clock = FakeClock()

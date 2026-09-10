@@ -156,3 +156,40 @@ class TestTheProceduresRunFromTheMenu:
         assert [row["trial_index"] for row in harness.recorder.trials] == [2, 3]
         # Redrawn after each procedure, as after a calibration.
         assert len(harness.display.menus) >= 3
+
+
+class TestAFailedProcedureIsSaidOnTheRigsOwnScreen:
+    """A validation that fails has to say so on the screen the experimenter
+    is facing, not only in the log and the browser's notice line. One did
+    not, and a session resumed on a calibration its design rejected with
+    nobody the wiser."""
+
+    def test_the_menu_comes_back_with_the_verdict_as_its_heading(self, tmp_path):
+        clock = FakeClock()
+        # Two degrees right of every target, against a one-degree limit.
+        gaze = GazeSample(gx=SCREEN.width_px / 2 + 80.0, gy=SCREEN.height_px / 2, t=0.0)
+        tracker = ScriptedTracker([(0.0, gaze)], clock)
+        commands = TimedKeys(
+            clock, batches=[[Command.PAUSE]], presses=[(0.0, "v"), (30.0, "space")]
+        )
+        harness = SessionHarness(
+            tmp_path,
+            n_trials=1,
+            commands=commands,
+            use_pause_menu=True,
+            tracker=tracker,
+            clock=clock,
+        )
+
+        harness.runner.run()
+
+        validation = harness.eyetracker.validation
+        assert validation is not None and not validation.accepted
+        headings = [title for title, _body, _color in harness.display.menus]
+        # The worst target is a far corner the subject never looks at, so the
+        # number is large; what matters is that the verdict and the limit led.
+        assert any("VALIDATION FAILED" in h and "against the 1° limit" in h for h in headings), (
+            headings
+        )
+        # Before the validation the menu carried no fault at all.
+        assert not any("FAILED" in h for h in headings[:1])
