@@ -25,6 +25,26 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+### Changed
+
+- **`read_run` says what the clock fit cost, on every read.** The worst
+  residual is the error bar on every session time the reader produces — every
+  latency, every event alignment — and it was computed and then discarded.
+  "The fit passed" is not the same fact as "the fit was tight to a tenth of a
+  millisecond", and a number nobody sees cannot be used. One INFO line with
+  the residual, the mark count and how many were dropped.
+- **`FrameQAConfig` says to set its thresholds from the frame log rather than
+  from what the policy did.** `frames.csv` holds the intervals; a recycle
+  count or a run of aborts is a decision made from them under whatever
+  thresholds were in force, so tuning the thresholds from those tunes a
+  number against itself.
+- **`TrialFeedback` says what an acceptance region cannot distinguish.** When
+  the acceptance radius plus the fixation radius reaches the target's
+  eccentricity, every saccade large enough to count as leaving fixation
+  already lands inside the region, so an undershoot can never go red.
+
 ## 1.3.0 - 2026-09-09
 
 ### Changed

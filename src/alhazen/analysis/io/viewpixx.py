@@ -324,6 +324,19 @@ def _load_run(
     device_t = frame[mapping["device_time_s"]].to_numpy(dtype=float)
     period_s = _sample_period_s(device_t, samples_path)
     fit = fit_clock(messages, tolerance_s=max_residual_s or period_s)
+    # Said on every read, not only when something went wrong. The worst
+    # residual is the honest error bar on every session time this reader
+    # produces — every latency, every event alignment, every saccade onset
+    # measured against a stimulus — and it was computed and then thrown away.
+    # A number nobody sees cannot be used, and "the fit passed" is not the
+    # same fact as "the fit was tight to a tenth of a millisecond".
+    log.info(
+        "clock fit over %d alignment marks: worst residual %.3f ms, %d mark(s) dropped. "
+        "Every session time in this run carries that as its floor.",
+        fit.n_marks,
+        fit.max_residual_s * 1000,
+        fit.n_dropped,
+    )
     return _Loaded(
         frame=frame,
         mapping=mapping,

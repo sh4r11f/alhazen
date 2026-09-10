@@ -375,6 +375,22 @@ class TestReading:
         with pytest.raises(DataError, match="do not fit a straight line"):
             fit_clock(marks, tolerance_s=0.0005)
 
+    def test_every_read_says_what_the_fit_cost(self, tmp_path, caplog):
+        """The worst residual is the error bar on every session time the
+        reader produces, and it was computed and thrown away. "The fit
+        passed" is not the same fact as "the fit was tight to a tenth of a
+        millisecond", and a number nobody sees cannot be used."""
+        import logging
+        import shutil
+
+        for path in FIXTURES.glob("*.csv"):
+            shutil.copy(path, tmp_path / path.name)
+        write_snapshot(tmp_path)
+        with caplog.at_level(logging.INFO, logger="alhazen.analysis.io.viewpixx"):
+            read_run(tmp_path)
+        (line,) = [r.getMessage() for r in caplog.records if "clock fit over" in r.getMessage()]
+        assert "worst residual" in line and "0 mark(s) dropped" in line
+
     def test_a_clean_run_drops_nothing(self):
         fit = fit_clock(self._marks(), tolerance_s=0.0005)
         assert fit.n_dropped == 0 and fit.n_marks == 198
