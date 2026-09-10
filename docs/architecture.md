@@ -878,7 +878,11 @@ every backend precisely so a backend cannot quietly reach for
    with the count and the last outcome as its heading, because a subject
    who is not seeing the stimulus — a calibration that passed but sits at
    the edge of the fixation window — otherwise looks like a session that
-   is simply running;
+   is simply running. A `BlockPlan` leaves a break when a block ends and
+   another follows (`take_block_break`), and the runner takes it before
+   the next block's first trial: the pause screen headed `BLOCK 3 OF 6
+   COMPLETE — REST`, in its own colour, until SPACE — a rest is never the
+   screen a fault puts up;
 4. teardown attempts every step regardless of earlier failures (recorder →
    frame log → close log file → manifest → display), re-raising the first
    teardown error only if nothing else is propagating.

@@ -85,6 +85,17 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   `LandingCheck` accepts `PhaseAction.ADVANCE` in place of either outcome so
   a feedback phase can follow it. The fixation point gained `set_color`, and
   the simulated stand-in records the colours it was given.
+- **The session takes the break between blocks.** A block boundary was a
+  log line and the experimenter's memory. Now a `BlockPlan` leaves a pending
+  break when a block that served trials ends and another follows, and the
+  runner takes it before the next block's first trial: the pause screen
+  comes up headed `BLOCK 3 OF 6 COMPLETE — REST` — the count, because "how
+  much longer" is the one question a break gets asked — in the terminal
+  green the instructions use rather than the fault red, so a subject resting
+  is never looking at the screen that means a calibration died. It stays up
+  until SPACE, goes on the record as `PAUSED` with `reason: block_break`, and
+  `blocks.breaks: false` turns it off for a design whose blocks are analysis
+  structure only.
 - **Docs: test versus pilot.** A section in [docs/modes.md](docs/modes.md)
   on what `--mode test` reduces and what it deliberately does not (block
   structure, with the rationale from `modes/rehearsal.py`), why a default

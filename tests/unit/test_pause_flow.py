@@ -16,6 +16,13 @@ from alhazen.testing import FakeClock, ScriptedCommands
 from support import SCREEN, SessionHarness
 
 
+def read_trials(harness):
+    import csv
+
+    with harness.paths.trials_path.open() as f:
+        return list(csv.DictReader(f))
+
+
 class TimedKeys(ScriptedCommands):
     """Raw keys pressed at simulated times rather than at polls.
 
@@ -193,3 +200,50 @@ class TestAFailedProcedureIsSaidOnTheRigsOwnScreen:
         )
         # Before the validation the menu carried no fault at all.
         assert not any("FAILED" in h for h in headings[:1])
+
+
+class TestTheSessionTakesTheBlockBreak:
+    """The break between blocks is the session's job: the pause screen comes
+    up headed with the block count, in the rest colour rather than the fault
+    colour, and stays up until the experimenter resumes."""
+
+    def two_blocks(self):
+        import numpy as np
+
+        from alhazen.paradigms.base import Condition, SimpleSequence
+        from alhazen.paradigms.blocks import BlockPlan
+
+        def block():
+            return SimpleSequence([Condition({"condition": "a"})], rng=np.random.default_rng(0))
+
+        return BlockPlan([block(), block()], trials_per_block=1)
+
+    def test_the_break_is_headed_with_the_block_count_and_waits_for_space(self, tmp_path):
+        from alhazen.session.pause import REST_COLOR
+
+        commands = ScriptedCommands(batches=[], raw_keys=[[], [], ["space"]])
+        harness = SessionHarness(
+            tmp_path, commands=commands, use_pause_menu=True, source=self.two_blocks()
+        )
+        harness.runner.run()
+
+        (menu,) = harness.display.menus
+        title, body, color = menu
+        assert title == "BLOCK 1 OF 2 COMPLETE — REST"
+        assert color == REST_COLOR
+        assert "between blocks" in body
+        rows = read_trials(harness)
+        assert [r["block"] for r in rows] == ["1", "2"]
+        names = harness.collector.names()
+        assert names.count("PAUSED") == 1 and names.count("RESUMED") == 1
+        (paused,) = [e for e in harness.collector.events if e.name == "PAUSED"]
+        assert paused.payload == {"reason": "block_break", "blocks_done": 1, "blocks_total": 2}
+        log = harness.paths.log_path.read_text(encoding="utf-8")
+        assert "block 1 of 2 complete: taking the break" in log
+
+    def test_an_unattended_session_takes_the_break_and_carries_on(self, tmp_path):
+        harness = SessionHarness(tmp_path, source=self.two_blocks())
+        harness.runner.run()
+        titles = [title for title, _body, _color in harness.display.menus]
+        assert titles == ["BLOCK 1 OF 2 COMPLETE — REST"]
+        assert len(read_trials(harness)) == 2

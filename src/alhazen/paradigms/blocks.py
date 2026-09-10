@@ -19,6 +19,14 @@ that marks nothing that happened on screen. The boundary does go in the
 session log, though — one line when a block starts and one when it ends —
 because a log with no block structure cannot say where a between-block
 validation fell.
+
+The break between blocks is the session's job, not the experimenter's
+memory. A finished block leaves a pending break here (``take_block_break``),
+and the runner takes it before the next block's first trial: the pause
+screen comes up with the block count as its heading — a rest, in its own
+colour, not the screen that appears when a calibration dies — and stays up
+until SPACE. ``breaks=False`` turns that off for a design whose blocks are
+analysis structure only.
 """
 
 from __future__ import annotations
@@ -52,6 +60,7 @@ class BlockPlan:
         rng: np.random.Generator | None = None,
         shuffle_blocks: bool = False,
         block_key: str = "block",
+        breaks: bool = True,
     ) -> None:
         sources = list(inner) if isinstance(inner, list) else None
         if sources is not None:
@@ -95,6 +104,12 @@ class BlockPlan:
         self._completed_per_block: list[int] = []
         # The last block whose start went into the log; -1 before the first.
         self._announced_block = -1
+        # Whether a finished block leaves a break for the session to take
+        # (take_block_break), and the one waiting to be taken: (blocks done,
+        # blocks in all). Set when a block that served something ends and
+        # another is about to start, cleared when the runner takes it.
+        self._breaks = breaks
+        self._pending_break: tuple[int, int] | None = None
         # The condition this wrapper handed out, and the inner one it wraps,
         # so record() can give the inner scheduler back its own object. The
         # runner serves strictly one trial at a time, so one pair is enough.
@@ -135,9 +150,27 @@ class BlockPlan:
                 len(self._sources),
                 self._completed_in_block,
             )
+            # ...and only such a block earns a break, and only if another
+            # block follows: a break after the last block is the end of the
+            # session, which is not a rest.
+            if self._breaks and self._block + 1 < len(self._sources):
+                self._pending_break = (self._block + 1, len(self._sources))
         self._completed_per_block.append(self._completed_in_block)
         self._completed_in_block = 0
         self._block += 1
+
+    def take_block_break(self) -> tuple[int, int] | None:
+        """The break waiting between blocks, as (blocks done, blocks in all),
+        or None. Taking it clears it.
+
+        The runner asks after every ``next()``: the break is pending from the
+        moment a block ends until the next block's first condition has been
+        served, which is exactly the gap between trials the pause belongs in.
+        The scheduler knows where the boundaries are; the session knows how to
+        stop. Neither has to know the other's business.
+        """
+        pending, self._pending_break = self._pending_break, None
+        return pending
 
     def record(self, condition: Condition, result: TrialResult) -> None:
         inner_condition = condition

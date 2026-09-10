@@ -310,6 +310,13 @@ class SessionRunner:
                 condition = self._source.next()
                 if condition is None:
                     break  # the scheduler's definition of "session done"
+                # A scheduler that knows its block boundaries (BlockPlan)
+                # leaves a break here when one has just ended; the session
+                # takes it now, before this block's first trial is built.
+                take_break = getattr(self._source, "take_block_break", None)
+                pending = take_break() if take_break is not None else None
+                if pending is not None and not self._block_break(*pending):
+                    break
 
                 # Attempts are keyed by condition identity so a re-served
                 # condition increments the same counter, never restarts it.
@@ -608,6 +615,23 @@ class SessionRunner:
         ctx.record[f"t_{name.lower()}"] = t
         self._bus.emit(Event(name=name, t=t, trial_index=self._trial_index, payload=payload))
 
+    def _block_break(self, done: int, total: int) -> bool:
+        """The rest between blocks: the pause screen, headed with how far
+        the session has got, until the experimenter resumes. Returns False
+        when they quit instead.
+
+        Its own heading and colour, because the pause menu now also leads
+        with faults, and a subject looking at the screen during a break must
+        not be looking at the thing that appears when a calibration dies.
+        The block count is the heading because "how much longer" is the one
+        question a break gets asked.
+        """
+        log.info("block %d of %d complete: taking the break", done, total)
+        self._emit_session_event(
+            "PAUSED", {"reason": "block_break", "blocks_done": done, "blocks_total": total}
+        )
+        return self._handle_pause({}, rest=f"BLOCK {done} OF {total} COMPLETE — REST")
+
     def _too_many_failures_in_a_row(self, outcome: Any) -> bool:
         """Count non-completed trials back to back; True on the one that
         reaches the task's limit, which the caller turns into a pause.
@@ -667,7 +691,7 @@ class SessionRunner:
         self._tracker.start_trial(ctx.trial_index, f"attempt {attempt}")
         self._tracker.draw_host_overlay(host_overlay_shapes(self._screen, ctx.regions))
 
-    def _pause_menu(self, fault: str | None = None) -> PauseMenu:
+    def _pause_menu(self, fault: str | None = None, rest: str | None = None) -> PauseMenu:
         """The menu for this session, built from what is actually wired.
 
         Built fresh at each pause rather than once at construction, because
@@ -681,12 +705,15 @@ class SessionRunner:
             has_training=self._training is not None,
             has_dashboard=self._dashboard is not None,
             fault=fault,
+            rest=rest,
         )
 
     def _show_pause_menu(self, menu: PauseMenu) -> None:
         self._display.show_menu(menu.title, menu.render(), color=menu.color)
 
-    def _handle_pause(self, record: dict[str, Any], *, fault: str | None = None) -> bool:
+    def _handle_pause(
+        self, record: dict[str, Any], *, fault: str | None = None, rest: str | None = None
+    ) -> bool:
         """Resolve a PAUSED trial; returns False when the experimenter chose
         to quit. With no pause strategy wired (unattended runs), resume
         immediately — blocking forever with nobody at the keyboard would
@@ -694,7 +721,8 @@ class SessionRunner:
 
         ``fault`` makes this an involuntary pause — a reward failure, a
         tracker with no calibration — and the screen leads with what went
-        wrong rather than with the word PAUSED.
+        wrong rather than with the word PAUSED. ``rest`` is the opposite: a
+        scheduled break, headed and coloured as one.
 
         The menu stays up across everything except resume and quit. Pressing
         the calibrate key used to calibrate and then resume in one press,
@@ -711,7 +739,9 @@ class SessionRunner:
             notice = self._apply_pause_action("calibrate") or notice
         elif fault is not None:
             notice = f"{fault} — browser controls are enabled."
-        menu = self._pause_menu(fault=fault)
+        elif rest is not None:
+            notice = f"{rest.capitalize()} — resume when the subject is ready."
+        menu = self._pause_menu(fault=fault, rest=rest)
         if self._dashboard is not None:
             return self._handle_dashboard_pause(menu, notice)
         if self._on_pause is None:

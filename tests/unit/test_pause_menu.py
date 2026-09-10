@@ -16,6 +16,7 @@ from alhazen.core.commands import Command
 from alhazen.session.pause import (
     FAULT_COLOR,
     PAUSE_COLOR,
+    REST_COLOR,
     build_pause_menu,
     key_label,
     run_pause_menu,
@@ -87,6 +88,20 @@ class TestItMatchesTheKeyboard:
     )
     def test_keys_are_spelled_for_a_human(self, key, shown):
         assert key_label(key) == shown
+
+
+class TestARestIsNotAFault:
+    def test_a_rest_has_its_own_heading_colour_and_subtitle(self):
+        menu = build_pause_menu(rest="BLOCK 2 OF 6 COMPLETE — REST")
+        assert menu.title == "BLOCK 2 OF 6 COMPLETE — REST"
+        assert menu.color == REST_COLOR
+        assert menu.color not in (PAUSE_COLOR, FAULT_COLOR)
+        assert "between blocks" in menu.render()
+        assert "resume" in menu.actions().values()
+
+    def test_a_pause_is_a_fault_or_a_rest_never_both(self):
+        with pytest.raises(ValueError, match="fault or a rest"):
+            build_pause_menu(fault="REWARD FAILURE", rest="BLOCK 1 OF 2 COMPLETE — REST")
 
 
 class TestTheColourSaysWhatKindOfStopThisIs:

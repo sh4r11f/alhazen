@@ -42,6 +42,11 @@ PAUSE_COLOR = (1.0, 0.16, -0.70)
 # same keys, different heading and colour, because "the pump did not fire" and
 # "I pressed P" want different reactions from whoever looks up.
 FAULT_COLOR = (1.0, -0.30, -0.55)
+# The between-block break: the terminal green the instructions are drawn in,
+# because a rest is the session talking, not the session stopping - and a
+# subject looking at the screen during a break must not be looking at the
+# colour that means something went wrong.
+REST_COLOR = (-0.20, 0.90, 0.10)
 
 
 @dataclass(frozen=True)
@@ -159,6 +164,7 @@ def build_pause_menu(
     has_training: bool = False,
     has_dashboard: bool = False,
     fault: str | None = None,
+    rest: str | None = None,
     keymap: dict[str, Command] | None = None,
 ) -> PauseMenu:
     """The menu for THIS session — only the controls it actually has.
@@ -170,7 +176,9 @@ def build_pause_menu(
     ``fault`` turns this into the involuntary-pause screen: a different colour
     and a heading naming what went wrong, with the same controls underneath —
     whoever looks up needs to know why the session stopped before they need to
-    know which key resumes it.
+    know which key resumes it. ``rest`` is the scheduled break between blocks,
+    headed with how far the session has got and drawn in its own colour, so a
+    subject resting is never looking at the screen a fault puts up.
     """
     keymap = DEFAULT_KEYMAP if keymap is None else keymap
     present = {"reward": has_reward, "training": has_training}
@@ -215,15 +223,19 @@ def build_pause_menu(
             MenuItem(" or ".join(sorted(set(bindings[command]))), COMMAND_LABELS[command])
         )
 
+    if fault is not None and rest is not None:
+        raise ValueError("a pause is a fault or a rest, not both")
     subtitle = "the session is paused — nothing is being recorded"
+    if rest is not None:
+        subtitle = "between blocks — nothing is being recorded; SPACE when the subject is ready"
     if has_dashboard:
         subtitle += "\nthe dashboard's buttons are live too"
     return PauseMenu(
-        title=fault if fault else "PAUSED",
+        title=fault or rest or "PAUSED",
         subtitle=subtitle,
         now=now,
         in_trial=in_trial,
-        color=FAULT_COLOR if fault else PAUSE_COLOR,
+        color=FAULT_COLOR if fault else REST_COLOR if rest else PAUSE_COLOR,
     )
 
 
