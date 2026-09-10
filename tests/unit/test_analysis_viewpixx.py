@@ -320,6 +320,65 @@ class TestReading:
         with pytest.raises(DataError, match="do not fit a straight line"):
             fit_clock(messages, tolerance_s=0.0002)
 
+    def _marks(self, n: int = 198, late: dict[int, float] | None = None) -> pd.DataFrame:
+        """n marks from two clocks that agree to the microsecond, with the
+        named ones stamped late on the session side — a scheduler blocking
+        between the two clock reads, which is one-sided by nature."""
+        device = 7000.0 + np.arange(n) * 0.25
+        session = device * DEVICE_RATE_ERROR - 7000.0 * DEVICE_RATE_ERROR + 1.0
+        session = session + np.random.default_rng(0).normal(0.0, 0.00005, n)
+        for index, delay in (late or {}).items():
+            session[index] += delay
+        return pd.DataFrame(
+            {
+                "device_time_s": device,
+                "session_time_s": session,
+                "message": [f"TRIAL {i + 1} attempt 1" for i in range(n)],
+            }
+        )
+
+    def test_one_late_mark_is_dropped_and_named_rather_than_refusing_the_run(self, caplog):
+        """The real case: 198 marks, residual sd 0.15 ms, one at +1.75 ms.
+        A stamping delay is different in kind from a drifting clock, and the
+        fit can tell — and must say which mark, so nobody fits it by hand."""
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="alhazen.analysis.io.viewpixx"):
+            fit = fit_clock(self._marks(late={16: 0.00175}), tolerance_s=0.0005)
+
+        assert fit.n_dropped == 1 and fit.n_marks == 197
+        assert fit.max_residual_s < 0.0005
+        assert fit.slope == pytest.approx(DEVICE_RATE_ERROR, rel=1e-6)
+        (warning,) = [
+            r.getMessage() for r in caplog.records if "dropped 1 of 198" in r.getMessage()
+        ]
+        # Named, with its residual against the refit (which absorbed a little
+        # of it while the mark was still in: 1.72 of the 1.75 injected).
+        assert "'TRIAL 17 attempt 1'" in warning and "+1.7" in warning
+
+    def test_too_many_late_marks_are_refused_and_the_worst_are_named(self):
+        """One in twenty is a scheduler; more than that is not, and dropping
+        the marks that show a drift would be rescuing a broken clock."""
+        late = dict.fromkeys(range(0, 198, 9), 0.002)  # 22 of 198
+        with pytest.raises(DataError, match="too many to be stamping delays") as error:
+            fit_clock(self._marks(late=late), tolerance_s=0.0005)
+        assert "22 of 198" in str(error.value)
+        # The worst few are named, so the operator sees marks, not a count.
+        assert "attempt 1' at" in str(error.value)
+
+    def test_a_drift_is_still_refused_after_the_outliers_go(self):
+        """Dropping the single worst mark from a curved residual does not
+        straighten it: the refit still misses, and says so as drift."""
+        marks = self._marks(n=40)
+        device = marks["device_time_s"].to_numpy()
+        marks["session_time_s"] += 0.004 * ((device - device[0]) / (device[-1] - device[0])) ** 2
+        with pytest.raises(DataError, match="do not fit a straight line"):
+            fit_clock(marks, tolerance_s=0.0005)
+
+    def test_a_clean_run_drops_nothing(self):
+        fit = fit_clock(self._marks(), tolerance_s=0.0005)
+        assert fit.n_dropped == 0 and fit.n_marks == 198
+
     def test_two_alignment_marks_are_refused(self):
         messages = pd.DataFrame(
             {"device_time_s": [0.0, 1.0], "session_time_s": [0.0, 1.0], "message": ["a", "b"]}
