@@ -492,3 +492,32 @@ class TestItSaysWhenTheDisplayIsCrawling:
 
         assert result.name == "display timing"
         assert result.ok is False  # 1 Hz is not 60 Hz
+
+
+class TestTheRulerClosesTheLoop:
+    """`measure_geometry` said what a bar should measure and sent the
+    operator to run `alhazen calibrate ruler` by hand; one expected the bar
+    on screen and did not get one. It is now the last step of the run."""
+
+    def test_it_is_the_last_measurement_and_skippable(self):
+        from alhazen.config.models import RigConfig
+
+        assert MEASUREMENTS[-1] == "ruler"
+        # The driver validates --skip against the list, so "ruler" is a
+        # name it accepts; a wrong one is still refused by name.
+        rig = RigConfig(monitor=MONITOR, data_root="data")
+        with pytest.raises(ValueError, match="nothing to skip called rulr"):
+            run_measurements(rig, "rig.yaml", skip=("rulr",))
+
+    def test_the_summary_carries_the_number_the_tape_is_compared_against(self):
+        from alhazen.config.models import RigConfig
+        from alhazen.modes.measure import ruler_measurement
+
+        rig = RigConfig(monitor=MONITOR, data_root="data")
+        measurement = ruler_measurement(rig)
+
+        assert measurement.ok is None  # only a tape can judge it
+        expected_cm = SCREEN.deg2px(10.0) * MONITOR.width_cm / MONITOR.width_px
+        assert measurement.detail["expected_cm"] == pytest.approx(expected_cm)
+        assert f"{expected_cm:.2f} cm between the ticks" in measurement.summary
+        assert any("calibrate ruler" in note for note in measurement.detail["notes"])

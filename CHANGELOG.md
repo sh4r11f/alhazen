@@ -68,6 +68,13 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   numbers from the ones just given — a stale file under the same name, a
   unit converted on the way in — rather than leaving that for the next
   window to refuse.
+- **`--mode measure` ends by drawing the ruler.** It used to print what a
+  10-degree bar should measure and send the operator to run `alhazen
+  calibrate ruler` separately; one expected the bar and did not get one. The
+  bar is now the last measurement, drawn on the same window everything else
+  was measured through, with the centimetres to check between its ticks in
+  the report. Skippable with `--skip ruler`, since it is the one measurement
+  that needs a person holding a tape.
 
 ## 1.1.0 - 2026-09-09
 

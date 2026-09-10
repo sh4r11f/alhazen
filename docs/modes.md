@@ -338,6 +338,13 @@ reporting an accuracy it did not measure. When a target's press finds no gaze
 position, the prompt says why in the tracker's own words where it can — on a
 TRACKPixx3, whether the device has no calibration or the camera has no eye.
 
+The run ends with the **ruler**: the same 10-degree bar `alhazen calibrate
+ruler` draws, on the window everything else was measured through, with the
+centimetres to expect between its ticks printed and carried in the report as
+`display ruler`. The geometry measurement earlier in the run computes that
+number; this is the bar to hold a tape against. `--skip ruler` leaves it out,
+since it is the one measurement that needs a person holding something.
+
 Reports are written beside the **rig config**, timestamped and never
 overwritten. They describe the machine, they outlive the data, and a rig that
 has drifted is only visible by comparing two of them.

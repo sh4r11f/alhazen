@@ -21,6 +21,7 @@ import csv
 import logging
 import math
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -42,6 +43,7 @@ log = logging.getLogger(__name__)
 __all__ = [
     "GAMMA_FILENAME_SUFFIX",
     "draw_ruler",
+    "draw_ruler_on",
     "fit_gamma",
     "gamma_path",
     "load_gamma",
@@ -94,59 +96,69 @@ def draw_ruler(rig: RigConfig, size_dva: float = 10.0, windowed: bool = False) -
 
     from alhazen.display.psychopy_backend import PsychoPyDisplay
 
-    screen = Screen.from_monitor(rig.monitor)
-    width_px = screen.deg2px(size_dva)
     display = PsychoPyDisplay(rig.monitor, windowed=windowed)
     display.open()
     try:
-        from psychopy import event, visual
-
-        # A white bar of the computed width, plus end ticks, on black: the
-        # thing a tape measure is held against. Drawn in pixels, because the
-        # px<->cm question is exactly what is being checked.
-        bar = visual.Rect(
-            display.window,
-            units="pix",
-            width=width_px,
-            height=max(round(screen.height_px * 0.02), 4),
-            fillColor="white",
-            lineColor="white",
-        )
-        tick_height = max(round(screen.height_px * 0.10), 20)
-        ticks = [
-            visual.Rect(
-                display.window,
-                units="pix",
-                width=2,
-                height=tick_height,
-                pos=(offset, 0),
-                fillColor="white",
-                lineColor="white",
-            )
-            for offset in (-width_px / 2.0, width_px / 2.0)
-        ]
-        label = visual.TextStim(
-            display.window,
-            units="pix",
-            text=(
-                f"{size_dva:g} dva = {width_px:.1f} px\n"
-                f"measure between the ticks: it should be "
-                f"{width_px * rig.monitor.width_cm / rig.monitor.width_px:.2f} cm\n"
-                f"any key to close"
-            ),
-            pos=(0, -tick_height),
-            height=max(round(screen.height_px * 0.025), 12),
-            color="white",
-        )
-        while not event.getKeys():
-            bar.draw()
-            for tick in ticks:
-                tick.draw()
-            label.draw()
-            display.flip()
+        draw_ruler_on(display, rig, size_dva)
     finally:
         display.close()
     return report
+
+
+def draw_ruler_on(display: Any, rig: RigConfig, size_dva: float = 10.0) -> None:
+    """Draw the bar in an already-open display until a key is pressed.
+
+    The half of :func:`draw_ruler` that measure mode can reuse on the window
+    it already has: the same bar, ticks and label, without opening a second
+    display to draw them in.
+    """
+    from psychopy import event, visual
+
+    screen = Screen.from_monitor(rig.monitor)
+    width_px = screen.deg2px(size_dva)
+    # A white bar of the computed width, plus end ticks, on black: the
+    # thing a tape measure is held against. Drawn in pixels, because the
+    # px<->cm question is exactly what is being checked.
+    bar = visual.Rect(
+        display.window,
+        units="pix",
+        width=width_px,
+        height=max(round(screen.height_px * 0.02), 4),
+        fillColor="white",
+        lineColor="white",
+    )
+    tick_height = max(round(screen.height_px * 0.10), 20)
+    ticks = [
+        visual.Rect(
+            display.window,
+            units="pix",
+            width=2,
+            height=tick_height,
+            pos=(offset, 0),
+            fillColor="white",
+            lineColor="white",
+        )
+        for offset in (-width_px / 2.0, width_px / 2.0)
+    ]
+    label = visual.TextStim(
+        display.window,
+        units="pix",
+        text=(
+            f"{size_dva:g} dva = {width_px:.1f} px\n"
+            f"measure between the ticks: it should be "
+            f"{width_px * rig.monitor.width_cm / rig.monitor.width_px:.2f} cm\n"
+            f"any key to close"
+        ),
+        pos=(0, -tick_height),
+        height=max(round(screen.height_px * 0.025), 12),
+        color="white",
+    )
+    while not event.getKeys():
+        bar.draw()
+        for tick in ticks:
+            tick.draw()
+        label.draw()
+        display.flip()
 
 
 def read_measurements(path: Path | str) -> tuple[np.ndarray, np.ndarray]:

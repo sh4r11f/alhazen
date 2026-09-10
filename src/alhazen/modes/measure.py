@@ -450,9 +450,46 @@ def calibration_verdict(result: Any) -> tuple[bool, str]:
 
 # The measurements, in the order they run. Ordered by what an experimenter
 # should stop for: a display that drops frames makes every later number
-# meaningless, so it goes first, and the tracker — the slowest, and the one
-# needing a person in the chair — goes last.
-MEASUREMENTS = ("display", "geometry", "keys", "tracker")
+# meaningless, so it goes first; the tracker — the slowest, and the one
+# needing a person in the chair — comes after everything automatic; and the
+# ruler is last of all, because it is the one measurement that needs a
+# person holding something, and the number it checks was computed by
+# "geometry" earlier in the same run.
+MEASUREMENTS = ("display", "geometry", "keys", "tracker", "ruler")
+
+# The bar the ruler draws, in degrees. Ten is wide enough that a millimetre
+# of tape error is a fraction of a percent of the reading.
+RULER_DVA = 10.0
+
+
+def ruler_measurement(rig: RigConfig, size_dva: float = RULER_DVA) -> Measurement:
+    """What the bar on the screen should measure, as a Measurement.
+
+    Reported rather than judged, like geometry: only the tape can settle it,
+    and the number in the summary is the one the person holding the tape is
+    comparing against. Its whole reason to exist beside ``measure_geometry``
+    is that the bar is drawn in the same run, on the same window, right
+    after this is computed — an experimenter used to be told to go and run a
+    separate command, expected a bar, and did not get one.
+    """
+    screen = Screen.from_monitor(rig.monitor)
+    width_px = screen.deg2px(size_dva)
+    width_cm = width_px * rig.monitor.width_cm / rig.monitor.width_px
+    return Measurement(
+        "display ruler",
+        f"a {size_dva:g} dva bar was drawn: measure {width_cm:.2f} cm between the ticks",
+        None,
+        {
+            "size_dva": size_dva,
+            "width_px": width_px,
+            "expected_cm": width_cm,
+            "notes": [
+                "If the tape disagrees, fix monitor.width_cm or monitor.distance_cm in the "
+                "rig config: every stimulus size on this rig is scaled by that same error "
+                "until you do. The bar is the same one `alhazen calibrate ruler` draws."
+            ],
+        },
+    )
 
 
 def run_measurements(
@@ -523,6 +560,17 @@ def run_measurements(
                 )
             else:
                 report.measurements.append(_measure_tracker_on_rig(rig, display, screen, echo))
+
+        if "ruler" not in skip:
+            # Last, and on the window everything else was measured through:
+            # the bar whose expected length "geometry" reported, for a tape
+            # to be held against. Skippable, since it needs a person.
+            from alhazen.cli.calibrate import draw_ruler_on
+
+            measurement = ruler_measurement(rig)
+            echo(f"{measurement.summary}; any key when done")
+            draw_ruler_on(display, rig, RULER_DVA)
+            report.measurements.append(measurement)
     finally:
         display.close()
     return report
