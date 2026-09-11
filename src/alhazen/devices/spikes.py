@@ -66,6 +66,21 @@ _JS_NI, _JS_OBX, _JS_IMEC = 0, 1, 2
 # giant allocation.
 _MAX_FETCH_S = 1.0
 
+# How often a conformant sorted-spike publisher must re-announce 'units'
+# (docs/live-spikes.md). Every subscriber to a PUB socket is a late joiner —
+# check-rig always is — so the sample rate cannot ride on a single message at
+# startup and still be recoverable. One second is short against the 2 s
+# default heartbeat timeout (so a joiner sees an announcement inside one
+# silence budget) and long against the 200 ms heartbeat period (so
+# re-announcing costs one message in five).
+UNITS_REANNOUNCE_PERIOD_MS = 1000.0
+
+# How long a consumer tolerates timed messages before the first 'units':
+# two periods, so a single announcement dropped by the PUB socket is not a
+# fault. The source widens this to the stream's own silence budget when that
+# is longer, so a rig that widened that budget has not narrowed this one.
+UNITS_GRACE_MS = 2.0 * UNITS_REANNOUNCE_PERIOD_MS
+
 
 class SpikeBatch:
     """What one ``drain()`` returns: spikes on the session clock.
@@ -595,10 +610,17 @@ class SortedStreamSource:
     The wire contract is in ``docs/live-spikes.md``. Two of its rules are
     load-bearing here:
 
-    - the sample rate rides on the ``units`` message, which must arrive
-      before any message carrying a time, because ``StreamTimebase``
+    - the sample rate rides on the ``units`` message, which the publisher
+      must **re-announce** at least every
+      :data:`UNITS_REANNOUNCE_PERIOD_MS`, because ``StreamTimebase``
       refuses a rate of zero and a timebase built on one would place every
-      spike at the same instant;
+      spike at the same instant. A subscriber that joins mid-stream — and
+      every subscriber to a PUB socket does — therefore hears timed
+      messages before its first ``units``. Those are *held*, not refused:
+      they are replayed once the rate arrives, so nothing is lost and
+      nothing is placed on a clock that does not exist yet. Only a stream
+      that stays un-announced past the grace window is a fault, and that
+      one is genuinely non-conformant rather than merely early;
     - the publisher heartbeats even when nothing fires, so a sorter that
       died is distinguishable from a quiet brain. Silence past
       ``heartbeat_timeout_ms`` is a fault, re-raised on the session thread
@@ -629,6 +651,12 @@ class SortedStreamSource:
         self._covered: float | None = None
         self._fault: BaseException | None = None
         self._last_heard: float | None = None
+        # Timed messages heard before the first 'units', with the session
+        # time each arrived at, and when the wait started. Bounded by the
+        # grace window below: past it the stream faults, so this cannot grow
+        # without end.
+        self._deferred: list[tuple[str, dict[str, Any], list[bytes], float]] = []
+        self._awaiting_units_since: float | None = None
         self._last_seq: int | None = None
         self._seq_seen = False
         self._dropped = 0
@@ -652,6 +680,22 @@ class SortedStreamSource:
         publisher sends no sequence numbers and drops cannot be detected."""
         with self._lock:
             return self._dropped if self._seq_seen else None
+
+    @property
+    def awaiting_units(self) -> bool:
+        """Whether the stream is publishing but has not announced ``units``.
+
+        True only in the window between the first timed message and the
+        first ``units``; it is what lets ``check-rig`` say *the sorter never
+        re-announced units* rather than *nothing is publishing*, which are
+        different rig faults with different fixes.
+        """
+        with self._lock:
+            return self._awaiting_units_since is not None
+
+    @property
+    def _units_grace_ms(self) -> float:
+        return max(UNITS_GRACE_MS, self._cfg.heartbeat_timeout_ms)
 
     def configure(self, clock: Clock) -> None:
         self._clock = clock
@@ -730,6 +774,23 @@ class SortedStreamSource:
                     f"{silent_s:.1f} s (limit {self._cfg.heartbeat_timeout_ms:g} ms) — "
                     f"the sorter has stopped publishing"
                 )
+            if self._awaiting_units_since is not None and self._fault is None:
+                # The other half of the same argument: a stream that is
+                # publishing but never announces its sample rate is not
+                # silent, and must not read as a quiet brain either. It is a
+                # non-conformant sorter, and every spike it sends is
+                # unplaceable until it says so.
+                waited_s = now - self._awaiting_units_since
+                if waited_s * 1000.0 > self._units_grace_ms:
+                    self._fault = SpikeSourceError(
+                        f"the sorted stream at {self._cfg.address} has been publishing for "
+                        f"{waited_s:.1f} s without ever announcing 'units' (limit "
+                        f"{self._units_grace_ms:g} ms) — the sorter never re-announced units. "
+                        f"The contract requires a 'units' message at least every "
+                        f"{UNITS_REANNOUNCE_PERIOD_MS:g} ms because every subscriber joins "
+                        f"mid-stream; without one the sample rate is unknown and every spike "
+                        f"would land at the same instant (see docs/live-spikes.md)"
+                    )
 
     # -- one message ---------------------------------------------------
 
@@ -744,6 +805,7 @@ class SortedStreamSource:
         kind = header.get("type")
         if kind == "units":
             self._handle_units(header, now)
+            self._replay_deferred()
         elif kind in ("spikes", "heartbeat"):
             self._handle_timed(kind, header, frames, now)
         else:
@@ -762,7 +824,7 @@ class SortedStreamSource:
                 f"place the stream's sample rate is published"
             )
         with self._lock:
-            self._last_heard = now
+            self._note_heard(now)
             if self._timebase is None:
                 self._timebase = StreamTimebase(float(rate))
             elif float(rate) != self._timebase.rate_hz:
@@ -782,18 +844,28 @@ class SortedStreamSource:
     ) -> None:
         with self._lock:
             timebase = self._timebase
-        if timebase is None:
-            raise SpikeSourceError(
-                f"the sorted stream at {self._cfg.address} sent a {kind!r} message before "
-                f"any 'units' message. The sample rate rides on 'units', which the contract "
-                f"requires first; a timebase without one would place every spike at the "
-                f"same instant"
-            )
+            if timebase is None:
+                # A late joiner's normal first minutes, not an error. Hold the
+                # message with the time it arrived and wait for the sorter's
+                # next re-announcement; _replay_deferred puts these back
+                # through this method, in arrival order, once the rate is
+                # known. Nothing is placed on a clock that does not exist,
+                # and nothing is thrown away either. poll_once faults if the
+                # announcement never comes.
+                if self._awaiting_units_since is None:
+                    self._awaiting_units_since = now
+                self._note_heard(now)
+                if self._fault is None:
+                    # Once the grace has expired the stream is over; still
+                    # holding its messages would grow without bound until
+                    # somebody calls drain() and finds out.
+                    self._deferred.append((kind, header, frames, now))
+                return
         covered = int(header["covered_until_sample"])
         samples, units = self._decode_spikes(header, frames) if kind == "spikes" else (None, None)
 
         with self._lock:
-            self._last_heard = now
+            self._note_heard(now)
             self._note_sequence(header.get("seq"))
             try:
                 timebase.note_fetch(covered, now)
@@ -810,6 +882,29 @@ class SortedStreamSource:
                 # timebase holds now — the same rule the SpikeGLX backend
                 # follows, and the reason drain() re-sorts.
                 self._pending.append((timebase.to_session(samples), rows))
+
+    def _replay_deferred(self) -> None:
+        """Put the pre-``units`` messages back through the normal path.
+
+        In arrival order, each with the session time it actually arrived at,
+        so the offset estimator sees the same pairs of readings it would
+        have seen had the announcement come first — a replayed heartbeat is
+        not a fresh observation of the two clocks. Called right after a
+        ``units`` message, so the timebase exists and none of these can
+        defer again.
+        """
+        with self._lock:
+            deferred, self._deferred = self._deferred, []
+            self._awaiting_units_since = None
+        if not deferred:
+            return
+        log.info(
+            "sorted stream at %s: placing %d message(s) heard before its first 'units'",
+            self._cfg.address,
+            len(deferred),
+        )
+        for kind, header, frames, arrived in deferred:
+            self._handle_timed(kind, header, frames, arrived)
 
     def _decode_spikes(
         self, header: dict[str, Any], frames: list[bytes]
@@ -838,6 +933,18 @@ class SortedStreamSource:
                 f"{units.size} unit ids"
             )
         return samples, units
+
+    def _note_heard(self, now: float) -> None:
+        """Advance the silence watchdog — never backwards.
+
+        A replayed message carries the time it originally arrived, which is
+        older than the ``units`` message that released it. Letting that move
+        ``_last_heard`` back would make a stream that has been heartbeating
+        the whole time look as if it had gone quiet, on exactly the rigs
+        where the late-joiner path runs. Caller holds the lock.
+        """
+        if self._last_heard is None or now > self._last_heard:
+            self._last_heard = now
 
     def _note_sequence(self, seq: Any) -> None:
         """Count messages the publisher's sequence numbers say went missing.
@@ -906,8 +1013,10 @@ class SortedStreamSource:
             rate = self._timebase.rate_hz if self._timebase is not None else None
             units = len(self._ids)
             dropped = self._dropped if self._seq_seen else None
+            waiting = self._awaiting_units_since is not None
         if rate is None:
-            return f"sorted_stream at {self._cfg.address} — connected, no units message yet"
+            state = "publishing, waiting for it to re-announce units" if waiting else "connected"
+            return f"sorted_stream at {self._cfg.address} — {state}, no units message yet"
         drops = f"{dropped} dropped" if dropped is not None else "drops undetectable (no seq)"
         return f"sorted_stream at {self._cfg.address} — {units} units @ {rate:g} Hz, {drops}"
 

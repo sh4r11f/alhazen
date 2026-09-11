@@ -29,6 +29,19 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Changed
 
+- **A sorted-spike sorter must re-announce `units` at least every second,
+  and a late subscriber no longer fails.** The sample rate rides on the
+  `units` message, and announcing it once at startup made it unrecoverable
+  for anyone who joined later — which every subscriber to a `PUB` socket
+  does, `alhazen check-rig` always. A `spikes` or `heartbeat` arriving
+  before the first `units` is now *held* and placed once the rate arrives,
+  instead of being refused on the spot; only a stream that publishes for
+  2000 ms without ever announcing units is a fault, and it says the sorter
+  never re-announced units rather than that it sent a heartbeat first.
+  `check-rig` reports that case separately from an endpoint where nothing is
+  publishing at all. A sorter that announces only at startup is now
+  non-conformant: see the wire contract in
+  [docs/live-spikes.md](docs/live-spikes.md).
 - **Dashboard figures follow a journal's conventions.** Labels are in sentence
   case. Column and outcome names are written as words (`FIX_BREAK` is "Fix
   break", `saccade_latency_ms` is "Saccade latency (ms)"), with abbreviations

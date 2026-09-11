@@ -27,7 +27,7 @@ import numpy as np
 import pytest
 
 from alhazen.config.models import SpikeSourceConfig
-from alhazen.devices.spikes import SortedStreamSource, make_spikes
+from alhazen.devices.spikes import UNITS_GRACE_MS, SortedStreamSource, make_spikes
 from alhazen.errors import SpikeSourceError
 from alhazen.testing import FakeClock
 
@@ -208,23 +208,104 @@ class TestTimebase:
         assert batch.covered_until is None
 
 
-class TestProtocolErrors:
-    def test_spikes_before_units_is_a_protocol_error(self):
-        # No units message means no sample rate, and a timebase built on a
-        # rate of zero would place every spike at the same instant.
-        sub = FakeSubscriber()
-        source = make_source(sub)
-        sub.send(spikes_msg([30_000], [1], covered=30_100))
-        with pytest.raises(SpikeSourceError, match="units"):
-            source.poll_once()
+class TestLateJoiner:
+    """Every subscriber to a PUB socket joins a stream already in progress,
+    so timed messages before the first ``units`` are the normal case, not a
+    protocol error. They are held until the sample rate arrives — and the
+    sorter that never sends one is the real fault (docs/live-spikes.md)."""
 
-    def test_heartbeat_before_units_is_a_protocol_error(self):
+    def test_a_heartbeat_before_units_is_held_not_refused(self):
         sub = FakeSubscriber()
-        source = make_source(sub)
+        clock = FakeClock(10.0)
+        source = make_source(sub, clock)
         sub.send(heartbeat_msg(covered=30_000))
-        with pytest.raises(SpikeSourceError, match="units"):
-            source.poll_once()
+        source.poll_once()  # must not raise: this is a late joiner, not a bad sorter
+        assert source.awaiting_units
+        assert "waiting for it to re-announce units" in source.describe()
+        # Nothing can be placed yet, and the source says so rather than
+        # inventing a timebase.
+        assert source.drain().covered_until is None
 
+        clock.advance(0.1)
+        sub.send(units_msg([1]))
+        source.poll_once()
+        assert not source.awaiting_units
+        # The held heartbeat was placed once the rate was known, so coverage
+        # is available from the very first drain after the announcement —
+        # and it is the coverage that heartbeat carried, at the time that
+        # heartbeat arrived (10.0 s, one second of stream behind it).
+        assert source.drain().covered_until == pytest.approx(10.0)
+
+    def test_spikes_before_units_are_placed_once_units_arrives(self):
+        # Dropping them would undercount the first window of every session
+        # in which the sorter was started before alhazen was — silently,
+        # which is the failure mode this whole module is written against.
+        sub = FakeSubscriber()
+        clock = FakeClock(10.0)
+        source = make_source(sub, clock)
+        sub.send(spikes_msg([30_000, 30_030], [7, 3], covered=30_100))
+        source.poll_once()
+        assert source.drain().times.size == 0  # unplaceable, so not yet handed over
+
+        sub.send(units_msg([7, 3]))
+        source.poll_once()
+        batch = source.drain()
+        assert batch.times.size == 2
+        # Placed with the offset from the arrival time the messages actually
+        # had, not from the replay, and 1 ms apart as they were on the wire.
+        assert batch.times[1] - batch.times[0] == pytest.approx(30 / RATE)
+        assert batch.times[0] == pytest.approx(10.0 - 100 / RATE)
+        # And the rows follow first-seen order from the spikes themselves.
+        assert source.channel_ids == (7, 3)
+
+    def test_a_stream_that_never_announces_units_faults_after_the_grace(self):
+        sub = FakeSubscriber()
+        clock = FakeClock(0.0)
+        source = make_source(sub, clock, heartbeat_timeout_ms=100.0)
+        sub.send(heartbeat_msg(covered=30_000))
+        source.poll_once()
+        # Inside the grace this is still just a late joiner, even though it
+        # is well past the heartbeat timeout — silence is not the problem.
+        clock.advance(0.5)
+        sub.send(heartbeat_msg(covered=36_000))
+        source.poll_once()
+        source.drain()
+
+        clock.advance(UNITS_GRACE_MS / 1000.0)
+        sub.send(heartbeat_msg(covered=42_000))
+        source.poll_once()
+        with pytest.raises(SpikeSourceError, match="never re-announced units"):
+            source.drain()
+
+    def test_the_grace_fault_names_the_period_and_the_stakes(self):
+        # Heartbeats throughout, so the stream is demonstrably not silent
+        # and the fault that fires is the one about the contract.
+        sub = FakeSubscriber()
+        clock = FakeClock(0.0)
+        source = make_source(sub, clock, heartbeat_timeout_ms=100.0)
+        sub.send(heartbeat_msg(covered=30_000))
+        source.poll_once()
+        clock.advance(1.0 + UNITS_GRACE_MS / 1000.0)
+        sub.send(heartbeat_msg(covered=60_000))
+        source.poll_once()
+        with pytest.raises(SpikeSourceError, match=r"at least every 1000 ms.*same instant"):
+            source.drain()
+
+    def test_the_grace_is_never_shorter_than_the_silence_budget(self):
+        # A rig that widened heartbeat_timeout_ms has said its stream is
+        # slow, not that it wants announcements judged more harshly.
+        sub = FakeSubscriber()
+        clock = FakeClock(0.0)
+        source = make_source(sub, clock, heartbeat_timeout_ms=10_000.0)
+        sub.send(heartbeat_msg(covered=30_000))
+        source.poll_once()
+        clock.advance(UNITS_GRACE_MS / 1000.0 + 0.5)
+        sub.send(heartbeat_msg(covered=60_000))
+        source.poll_once()
+        source.drain()  # the default grace has passed; this stream's has not
+
+
+class TestProtocolErrors:
     def test_a_units_message_with_no_rate_is_refused(self):
         sub = FakeSubscriber()
         source = make_source(sub)
@@ -385,7 +466,7 @@ class TestThreadAndLifecycle:
         source = SortedStreamSource(cfg, subscriber_factory=lambda: sub)
         source.connect()
         source.configure(FakeClock(10.0))
-        sub.send(spikes_msg([30_000], [1], covered=30_100))  # spikes before units
+        sub.send([b"not json at all"])  # a protocol error, raised inside the thread
         source.start()
         try:
             deadline = time.monotonic() + 2.0
@@ -393,7 +474,7 @@ class TestThreadAndLifecycle:
                 try:
                     source.drain()
                 except SpikeSourceError as error:
-                    assert "units" in str(error)
+                    assert "JSON" in str(error)
                     break
                 time.sleep(0.005)
             else:  # pragma: no cover - only on a broken fault path
