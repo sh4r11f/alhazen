@@ -206,7 +206,15 @@ The **Eye tracker** section of the panels holds:
 - **Calibration** — the verdict (calibrated / NOT calibrated / aborted, or
   *result unknown* when the tracker reported nothing either way — an EyeLink
   Host PC that never ran one, or the scripted tracker in tests), layout,
-  target count, advance mode, eye, time, and the backend's note.
+  target count, advance mode, eye, time, and the backend's note. After a
+  TRACKPixx3 calibration that took, it is a **plot** like the validation's:
+  each target, and where the fitted gaze model puts each eye's fixation on it,
+  with each eye's mean and worst error. The session keeps the raw eye vectors
+  the device measured at each target and evaluates the polynomial the device
+  fitted on them, in VPixx's own form (pypixxlib's calibration example), so it
+  is the plot LabMaestro shows. A calibration is a fit to those very
+  fixations, so its errors flatter it; the validation measures the fit on
+  fresh ones. The CALIBRATION event carries the same per-target numbers.
 - **Validation** — targets and measured gaze positions on a degree grid at
   equal aspect, with mean and worst error, misses, and the verdict; the
   per-target errors under the plot.

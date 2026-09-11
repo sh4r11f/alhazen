@@ -204,6 +204,18 @@ class EyeTrackerMonitor:
                 "eye": result.eye,
                 "advance": result.advance,
                 "note": result.note,
+                # Each target's fitted gaze and error per eye, when the tracker
+                # can compute them (the TRACKPixx3); empty otherwise.
+                "targets": [
+                    {
+                        "target_px": list(target.target_px),
+                        "left_px": list(target.left_px) if target.left_px else None,
+                        "right_px": list(target.right_px) if target.right_px else None,
+                        "left_error_deg": target.left_error_deg,
+                        "right_error_deg": target.right_error_deg,
+                    }
+                    for target in result.targets
+                ],
             },
         )
         # No validation of a calibration that did not happen (aborted) or
@@ -510,6 +522,8 @@ class EyeTrackerMonitor:
         result = self.calibration
         if result is None:
             return {"form": "empty", "message": f"no calibration this session — {CALIBRATE_HINT}"}
+        if result.targets:
+            return self._calibration_plot(result)
         data: dict[str, Any] = {
             "form": "stat",
             "value": result.verdict,
@@ -521,6 +535,52 @@ class EyeTrackerMonitor:
         if result.ok is False:
             data["status"] = "critical"
         return data
+
+    def _calibration_plot(self, result: CalibrationResult) -> dict[str, Any]:
+        """The calibration as a plot, like the validation's: each target, and
+        where the fitted model puts each eye's fixation on it, with each eye's
+        mean and worst error. A calibration is a fit to these fixations, so
+        its errors flatter it; the note says so, and the validation is the
+        measure on fresh ones."""
+        deg = self._screen.px2deg
+        series = []
+        stats: list[dict[str, Any]] = [
+            {
+                "label": "verdict",
+                "value": result.verdict,
+                **({"status": "critical"} if result.ok is False else {}),
+            }
+        ]
+        for slot, eye in ((1, "left"), (2, "right")):
+            positions = [getattr(target, f"{eye}_px") for target in result.targets]
+            points = [[deg(p[0]), deg(p[1])] for p in positions if p is not None]
+            if points:
+                series.append({"name": f"{eye} eye", "slot": slot, "points": points})
+            errors = [
+                error
+                for target in result.targets
+                if (error := getattr(target, f"{eye}_error_deg")) is not None
+            ]
+            if errors:
+                stats.append({"label": f"{eye} mean", "value": f"{sum(errors) / len(errors):.2f}°"})
+                stats.append({"label": f"{eye} worst", "value": f"{max(errors):.2f}°"})
+        note = (
+            f"{result.layout} · {result.advance} · at {result.t:.0f} s · fitted gaze at each "
+            "target, which flatters the fit; the validation measures it on fresh fixations"
+        )
+        if result.note:
+            note += f" · {result.note}"
+        return {
+            "form": "scatter",
+            "series": series,
+            "targets": [[deg(t.target_px[0]), deg(t.target_px[1])] for t in result.targets],
+            "x_label": "Horizontal gaze position (°)",
+            "y_label": "Vertical gaze position (°)",
+            "equal_aspect": True,
+            "stats": stats,
+            "color_label": "",
+            "note": note,
+        }
 
     def _validation(self) -> dict[str, Any]:
         result = self.validation

@@ -95,6 +95,12 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   TRACKER_SETTING event, a new reserved event. `eyetracker.iris_size_px` sets
   the size when a session starts; left unset, the size the device holds is
   logged.
+- **The TRACKPixx3 calibration is plotted.** The Calibration panel was a
+  verdict tile. After a calibration that took, it is now a plot like the
+  validation's: each target and each eye's fitted gaze on it, with each eye's
+  mean and worst error, computed from the raw eye vectors the device measured
+  and the polynomial it fitted, as LabMaestro plots them. The CALIBRATION
+  event carries the same per-target numbers.
 
 ### Fixed
 

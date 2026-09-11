@@ -77,6 +77,7 @@ from alhazen.devices.eyetracker.guide import GUIDE_TITLE, calibration_guide
 from alhazen.devices.eyetracker.procedures import ABORT_KEY, ACCEPT_KEYS, REDO_KEY
 from alhazen.devices.eyetracker.protocol import (
     CalibrationResult,
+    CalibrationTarget,
     CameraFrame,
     GazeSample,
     HostShape,
@@ -326,6 +327,32 @@ def shrink_image(pixels: np.ndarray, max_px: int = CAMERA_MAX_PX) -> np.ndarray:
     longer = max(pixels.shape[:2])
     step = max(1, math.ceil(longer / max_px))
     return np.ascontiguousarray(pixels[::step, ::step])
+
+
+def evaluate_calibration(
+    x: float, y: float, cx: Sequence[float], cy: Sequence[float]
+) -> tuple[float, float]:
+    """The screen position a TRACKPixx3 calibration fit gives a raw eye vector.
+
+    The device fits, per eye and per screen axis, a polynomial with nine terms
+    in the raw vector (x, y):
+    b0 + b1·x + b2·y + b3·x² + b4·y² + b5·x³ + b6·xy + b7·x²y + b8·x²y².
+    The form and the term order are VPixx's own, from pypixxlib's
+    examples/TPxUtils.py ``evaluate_bestpoly``, which their calibration example
+    uses to plot a result. ``cx`` and ``cy`` are the nine coefficients of each
+    axis.
+    """
+    terms = (1.0, x, y, x * x, y * y, x**3, x * y, x * x * y, x * x * y * y)
+    return (
+        sum(c * t for c, t in zip(cx, terms, strict=True)),
+        sum(c * t for c, t in zip(cy, terms, strict=True)),
+    )
+
+
+def raw_eye_measured(x: float, y: float) -> bool:
+    """Did the device measure this eye? Its raw vector buffers start at zero,
+    so an exact (0, 0) or a non-finite value is "not measured"."""
+    return math.isfinite(x) and math.isfinite(y) and not (x == 0.0 and y == 0.0)
 
 
 def read_keys(event: Any, key_list: Sequence[str], wait_s: float) -> list[str] | None:
@@ -850,6 +877,94 @@ class ViewPixxTracker:
             if reader is not None:
                 reader.resume()
 
+    def _sample_calibration_target(self, x: float, y: float) -> list[float] | None:
+        """Hand one accepted target to the device, and keep the raw eye vectors
+        it measured there, ``[x_right, y_right, x_left, y_left]``; None when
+        this pypixxlib cannot return them.
+
+        VPixx's per-target calibration call has a twin that returns those
+        vectors (``TPxGetEyePositionDuringCalib_returnsRaw``), which their own
+        calibration example uses to plot the result. Without it the calibration
+        still runs through pypixxlib's usual call, and only the plot is missing
+        (_fitted_calibration says so).
+        """
+        sample = getattr(self._libdpx, "TPxGetEyePositionDuringCalib_returnsRaw", None)
+        with self._device_lock:
+            if sample is None:
+                self._tracker.getEyePositionDuringCalib(x, y, self._tracker.eye_to_verify)
+                return None
+            raw = [float(value) for value in sample(x, y, self._tracker.eye_to_verify)]
+            # libdpx's free functions do not raise; pypixxlib's wrapper for the
+            # usual call does, so this one has to be checked by hand.
+            fault = dpx_fault(self._libdpx)
+        if fault is not None:
+            raise TrackerError(
+                f"the TRACKPixx3 could not sample calibration target ({x:g}, {y:g}): {fault}"
+            )
+        return raw
+
+    def _fitted_calibration(
+        self,
+        targets: Sequence[tuple[float, float]],
+        raw_by_target: dict[int, list[float] | None],
+    ) -> tuple[tuple[CalibrationTarget, ...], str | None]:
+        """Each target's fitted gaze and error per eye, and why there is no plot
+        when there is none.
+
+        The device's fitted polynomial (TPxGetCalibCoeffs: nine coefficients
+        each for the right eye's x and y, then the left eye's) is evaluated on
+        the raw vectors measured at each target (evaluate_calibration), which
+        is how VPixx's own calibration example plots a result. A calibration is
+        a fit to these very fixations, so the errors flatter it; the validation
+        that follows measures the fit on fresh ones.
+
+        A plot that cannot be made never fails the calibration the device just
+        kept: the reason is logged as an error and returned for the result's
+        note, which the dashboard shows.
+        """
+        raws = [raw_by_target.get(index) for index in range(len(targets))]
+        if any(raw is None for raw in raws):
+            problem = (
+                "calibration plot unavailable: this pypixxlib cannot return the raw eye "
+                "vectors measured at each target"
+            )
+            log.warning("TRACKPixx3 %s", problem)
+            return (), problem
+        with self._device_lock:
+            coefficients = [float(value) for value in self._libdpx.TPxGetCalibCoeffs()]
+            fault = dpx_fault(self._libdpx)
+        if fault is not None or len(coefficients) != 36:
+            reason = fault if fault is not None else f"{len(coefficients)} coefficients, not 36"
+            problem = (
+                "calibration plot unavailable: the fitted coefficients could not be read "
+                f"({reason})"
+            )
+            log.error("TRACKPixx3 %s", problem)
+            return (), problem
+        fitted: list[CalibrationTarget] = []
+        for (tx, ty), raw in zip(targets, raws, strict=True):
+            assert raw is not None  # checked above
+            eyes: dict[str, tuple[tuple[float, float] | None, float | None]] = {}
+            for eye, (rx, ry), (cx, cy) in (
+                ("right", (raw[0], raw[1]), (coefficients[0:9], coefficients[9:18])),
+                ("left", (raw[2], raw[3]), (coefficients[18:27], coefficients[27:36])),
+            ):
+                if not raw_eye_measured(rx, ry):
+                    eyes[eye] = (None, None)
+                    continue
+                gx, gy = evaluate_calibration(rx, ry, cx, cy)
+                eyes[eye] = ((gx, gy), self._screen.px2deg(math.hypot(gx - tx, gy - ty)))
+            fitted.append(
+                CalibrationTarget(
+                    target_px=(tx, ty),
+                    left_px=eyes["left"][0],
+                    right_px=eyes["right"][0],
+                    left_error_deg=eyes["left"][1],
+                    right_error_deg=eyes["right"][1],
+                )
+            )
+        return tuple(fitted), None
+
     def _eye_status(self) -> tuple[tuple[bool, bool], str]:
         """One look at the camera: which eyes it sees, and the line that says so."""
         with self._device_lock:
@@ -931,7 +1046,13 @@ class ViewPixxTracker:
             units="pix",
         )
 
-        def result(ok: bool | None, note: str, *, aborted: bool = False) -> CalibrationResult:
+        def result(
+            ok: bool | None,
+            note: str,
+            *,
+            aborted: bool = False,
+            fitted: tuple[CalibrationTarget, ...] = (),
+        ) -> CalibrationResult:
             return CalibrationResult(
                 ok=ok,
                 layout=cfg.calibration_type,
@@ -941,6 +1062,7 @@ class ViewPixxTracker:
                 t=self._clock.now(),
                 note=note,
                 aborted=aborted,
+                targets=fitted,
             )
 
         if not self._show_guide(event, n):
@@ -951,6 +1073,9 @@ class ViewPixxTracker:
 
         auto = cfg.calibration_advance == "auto"
         index = 0
+        # The raw eye vectors the device measured at each accepted target, by
+        # target index: a redo overwrites, so each target keeps its last.
+        raw_by_target: dict[int, list[float] | None] = {}
         while index < n:
             x, y = targets[index]
             outer.pos = inner.pos = (x, y)
@@ -1018,8 +1143,7 @@ class ViewPixxTracker:
             # Screen coordinates here are the device's own frame — centered
             # px, y up — which is the frame the targets were drawn in, so the
             # position passes through unconverted.
-            with self._device_lock:
-                self._tracker.getEyePositionDuringCalib(x, y, self._tracker.eye_to_verify)
+            raw_by_target[index] = self._sample_calibration_target(x, y)
             index += 1
 
         with self._device_lock:
@@ -1028,7 +1152,9 @@ class ViewPixxTracker:
         window.flip()
         if calibrated:
             log.info("TRACKPixx3 calibrated over %d targets", n)
-            return result(True, "the device reports a calibration")
+            fitted, problem = self._fitted_calibration(targets, raw_by_target)
+            note = "the device reports a calibration"
+            return result(True, f"{note}; {problem}" if problem else note, fitted=fitted)
         # The fit was submitted and the device did not keep it — every gaze
         # read from here would be the tracking-lost sentinel, and a session
         # that looks calibrated but is not is exactly what must not happen

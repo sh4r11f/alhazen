@@ -53,6 +53,23 @@ class GazeSample:
 
 
 @dataclass(frozen=True)
+class CalibrationTarget:
+    """One calibration target, and where the fitted gaze model puts each eye's
+    fixation on it: one point of the plot LabMaestro shows after a calibration.
+
+    Positions are the device's own frame, centered px with y up, which is the
+    frame the target was drawn in. An eye the device did not measure at this
+    target has no fitted position and no error.
+    """
+
+    target_px: tuple[float, float]
+    left_px: tuple[float, float] | None
+    right_px: tuple[float, float] | None
+    left_error_deg: float | None
+    right_error_deg: float | None
+
+
+@dataclass(frozen=True)
 class CalibrationResult:
     """What a backend can say about the calibration it just ran.
 
@@ -74,6 +91,9 @@ class CalibrationResult:
     t: float  # session clock, when the procedure finished
     note: str = ""
     aborted: bool = False
+    # Each target's fitted gaze per eye, for a backend that can compute it
+    # (the TRACKPixx3); empty otherwise, and the panel is then a stat tile.
+    targets: tuple[CalibrationTarget, ...] = ()
 
     @property
     def verdict(self) -> str:

@@ -41,6 +41,7 @@ from alhazen.devices.eyetracker.viewpixx import (
     STATUS_REFRESH_S,
     TRACKING_LOST_PX,
     calibration_targets,
+    evaluate_calibration,
     eye_in_raw,
     eye_in_view,
     image_from_pointer,
@@ -81,6 +82,22 @@ class FakeLibdpx:
         self.positions: list[float] = [0.0, 0.0, 0.0, 0.0]
         self.raw_positions: list[float] = [1.5, -0.5, 1.4, -0.4]
         self.reads = 0
+        # The calibration sampling call that returns raw vectors records into
+        # the device's own list (FakeTrackPixx shares it), and answers with
+        # [x_right, y_right, x_left, y_left] for a target. With these
+        # coefficients the fit maps (raw - 1) x 100 back onto the screen, so
+        # raw = target / 100 + 1 is a perfect calibration. Never exactly zero:
+        # a zero raw vector is how the device reports an eye it did not measure.
+        # The device whose per-target method the raw-returning call goes
+        # through (set by FakeTrackPixx).
+        self.device = None
+        self.raw_at_target: Callable[[float, float], tuple[float, float, float, float]] = (
+            lambda x, y: (x / 100.0 + 1.0, y / 100.0 + 1.0, x / 100.0 + 1.0, y / 100.0 + 1.0)
+        )
+        identity_x = [-100.0, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        identity_y = [-100.0, 0.0, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        self.calibration_coefficients = identity_x + identity_y + identity_x + identity_y
+        self.coefficient_error: str | None = None
         # The expected iris size register, and the largest value it keeps: a
         # test lowers the cap to mimic a device that clamps what it cannot hold.
         self.iris_size = 90
@@ -107,6 +124,19 @@ class FakeLibdpx:
         )
         pointer = ctypes.cast(self._image_buffer, ctypes.POINTER(ctypes.c_byte))
         return pointer, height, width
+
+    def TPxGetEyePositionDuringCalib_returnsRaw(self, x, y, eye):  # noqa: N802 - vendor's
+        # The same device call as pypixxlib's wrapper, with the raw vectors
+        # handed back. Routed through the device's own method, so a test
+        # that patches that method (to mimic the device un-arming the
+        # sample ring) sees this call too, and every target is recorded once.
+        self.device.getEyePositionDuringCalib(x, y, eye)
+        return list(self.raw_at_target(x, y))
+
+    def TPxGetCalibCoeffs(self):  # noqa: N802 - vendor's name
+        if self.coefficient_error is not None:
+            self.error = self.coefficient_error
+        return list(self.calibration_coefficients)
 
     def TPxGetIrisExpectedSize(self) -> int:  # noqa: N802 - vendor's name
         return self.iris_size
@@ -185,6 +215,7 @@ class FakeTrackPixx:
         self.device_time = 100.0
         self.drains = 0
         self.calibration_points: list[tuple[float, float, int]] = []
+        self.libdpx.device = self
         self.finished_calibration = False
         # What the device answers after finishCalibration(); False is the
         # calibration-with-no-eye case seen on the rig.
@@ -1023,13 +1054,13 @@ class TestCalibrationKeys:
         target just accepted, would accept the next one before the subject had
         looked at it. The keyboard is cleared when each target appears."""
         tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
-        sample = fake_pypixxlib.getEyePositionDuringCalib
+        sample = fake_pypixxlib.libdpx.TPxGetEyePositionDuringCalib_returnsRaw
 
         def sample_while_pressed_again(x, y, eye):
-            sample(x, y, eye)
             fake_psychopy.buffered.append("space")
+            return sample(x, y, eye)
 
-        fake_pypixxlib.getEyePositionDuringCalib = sample_while_pressed_again
+        fake_pypixxlib.libdpx.TPxGetEyePositionDuringCalib_returnsRaw = sample_while_pressed_again
         fake_psychopy.keys.extend([START, "space", None, None, None])
         tracker.calibrate()
         assert len(fake_pypixxlib.calibration_points) == 1
@@ -1716,3 +1747,89 @@ class TestIrisSize:
             connected()
         assert fake_pypixxlib.libdpx.iris_size == 88
         assert "expected iris size is 88 camera px, as the device holds it" in caplog.text
+
+
+class TestCalibrationPlot:
+    """Each target's fitted gaze per eye after a calibration: the plot
+    LabMaestro shows, from the raw vectors the device measured and the
+    polynomial it fitted."""
+
+    def test_the_polynomial_is_vpixxs(self):
+        # b0 + b1 x + b2 y + b3 x² + b4 y² + b5 x³ + b6 xy + b7 x²y + b8 x²y², one
+        # coefficient at a time, at x = 2, y = 3.
+        terms = [1, 2, 3, 4, 9, 8, 6, 12, 36]
+        for index, term in enumerate(terms):
+            coefficients = [0.0] * 9
+            coefficients[index] = 1.0
+            assert evaluate_calibration(2.0, 3.0, coefficients, coefficients) == (term, term)
+
+    def test_each_eye_gets_its_fitted_gaze_and_error_at_every_target(
+        self, fake_pypixxlib, fake_psychopy
+    ):
+        tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
+        # Once fitted, the right eye lands 10 px right of every target.
+        fake_pypixxlib.libdpx.raw_at_target = lambda x, y: (
+            (x + 10.0) / 100.0 + 1.0,
+            y / 100.0 + 1.0,
+            x / 100.0 + 1.0,
+            y / 100.0 + 1.0,
+        )
+        fake_psychopy.keys.extend([START] + ["space"] * 5)
+        result = tracker.calibrate()
+        assert result.ok is True
+        expected = calibration_targets("HV5", SCREEN, tracker._cfg.calibration_area)
+        assert [target.target_px for target in result.targets] == expected
+        for target in result.targets:
+            assert target.left_px == pytest.approx(target.target_px)
+            assert target.left_error_deg == pytest.approx(0.0, abs=1e-9)
+            assert target.right_px == pytest.approx(
+                (target.target_px[0] + 10.0, target.target_px[1])
+            )
+            assert target.right_error_deg == pytest.approx(SCREEN.px2deg(10.0))
+
+    def test_an_eye_not_measured_at_a_target_has_no_fitted_gaze_there(
+        self, fake_pypixxlib, fake_psychopy
+    ):
+        tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
+        fake_pypixxlib.libdpx.raw_at_target = lambda x, y: (
+            x / 100.0 + 1.0,
+            y / 100.0 + 1.0,
+            0.0,
+            0.0,
+        )
+        fake_psychopy.keys.extend([START] + ["space"] * 5)
+        result = tracker.calibrate()
+        assert all(t.left_px is None and t.left_error_deg is None for t in result.targets)
+        assert all(t.right_px is not None for t in result.targets)
+
+    def test_a_calibration_that_did_not_take_has_no_plot(self, fake_pypixxlib, fake_psychopy):
+        tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
+        fake_pypixxlib.calibrated_after_finish = False
+        fake_psychopy.keys.extend([START] + ["space"] * 5)
+        result = tracker.calibrate()
+        assert result.ok is False and result.targets == ()
+
+    def test_a_pypixxlib_without_the_raw_call_still_calibrates(
+        self, fake_pypixxlib, fake_psychopy, monkeypatch, caplog
+    ):
+        monkeypatch.delattr(FakeLibdpx, "TPxGetEyePositionDuringCalib_returnsRaw")
+        tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
+        fake_psychopy.keys.extend([START] + ["space"] * 5)
+        with caplog.at_level(logging.WARNING, logger="alhazen.devices.eyetracker.viewpixx"):
+            result = tracker.calibrate()
+        assert result.ok is True and result.targets == ()
+        assert len(fake_pypixxlib.calibration_points) == 5
+        assert "calibration plot unavailable" in result.note
+        assert "calibration plot unavailable" in caplog.text
+
+    def test_unreadable_coefficients_cost_the_plot_not_the_calibration(
+        self, fake_pypixxlib, fake_psychopy, caplog
+    ):
+        tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
+        fake_pypixxlib.libdpx.coefficient_error = "DPX_ERR_USB"
+        fake_psychopy.keys.extend([START] + ["space"] * 5)
+        with caplog.at_level(logging.ERROR, logger="alhazen.devices.eyetracker.viewpixx"):
+            result = tracker.calibrate()
+        assert result.ok is True and result.targets == ()
+        assert "fitted coefficients could not be read (DPX_ERR_USB" in result.note
+        assert "fitted coefficients could not be read" in caplog.text

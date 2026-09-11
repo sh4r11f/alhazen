@@ -218,6 +218,7 @@ class TestCalibrate:
                     "eye": "left",
                     "advance": "manual",
                     "note": "Host PC: GOOD",
+                    "targets": [],
                 },
             )
         ]
@@ -683,6 +684,66 @@ class TestCalibrationPanel:
         s.monitor.calibrate()
         data = s.panel("Calibration")["data"]
         assert data["value"] == "result unknown" and "status" not in data
+
+
+class TestCalibrationPlotPanel:
+    """A calibration that carries its targets' fitted gaze is plotted like
+    the validation; one that does not stays a stat tile."""
+
+    @staticmethod
+    def fitted(session: Any) -> Any:
+        import dataclasses
+
+        from alhazen.devices.eyetracker.protocol import CalibrationTarget
+
+        s = session(validate_after_calibration=False)
+        centre = CalibrationTarget(
+            target_px=(0.0, 0.0),
+            left_px=(0.0, 0.0),
+            right_px=(30.0, 0.0),
+            left_error_deg=0.0,
+            right_error_deg=SCREEN.px2deg(30.0),
+        )
+        edge = CalibrationTarget(
+            target_px=(100.0, 0.0),
+            left_px=None,
+            right_px=(100.0, 0.0),
+            left_error_deg=None,
+            right_error_deg=0.0,
+        )
+        s.tracker.calibration = dataclasses.replace(result(True), targets=(centre, edge))
+        s.monitor.calibrate()
+        return s
+
+    def test_targets_and_each_eyes_fitted_gaze_on_a_degree_grid(self, session) -> None:
+        s = self.fitted(session)
+        data = s.panel("Calibration")["data"]
+        assert data["form"] == "scatter" and data["equal_aspect"] is True
+        assert data["targets"] == [[0.0, 0.0], [SCREEN.px2deg(100.0), 0.0]]
+        assert [series["name"] for series in data["series"]] == ["left eye", "right eye"]
+        # The left eye was not measured at the edge target: one point, not two.
+        assert len(data["series"][0]["points"]) == 1
+        assert len(data["series"][1]["points"]) == 2
+        stats = {stat["label"]: stat["value"] for stat in data["stats"]}
+        assert stats["verdict"] == "calibrated"
+        assert stats["left worst"] == "0.00°"
+        assert stats["right worst"] == f"{SCREEN.px2deg(30.0):.2f}°"
+        assert "flatters the fit" in data["note"]
+
+    def test_the_event_carries_the_same_numbers(self, session) -> None:
+        s = self.fitted(session)
+        ((name, payload),) = [event for event in s.events if event[0] == "CALIBRATION"]
+        assert [target["target_px"] for target in payload["targets"]] == [[0.0, 0.0], [100.0, 0.0]]
+        assert payload["targets"][0]["right_error_deg"] == SCREEN.px2deg(30.0)
+        assert payload["targets"][1]["left_px"] is None
+
+    def test_a_result_without_targets_stays_a_stat_tile(self, session) -> None:
+        s = session(validate_after_calibration=False)
+        s.tracker.calibration = result(True)
+        s.monitor.calibrate()
+        assert s.panel("Calibration")["data"]["form"] == "stat"
+        ((_name, payload),) = [event for event in s.events if event[0] == "CALIBRATION"]
+        assert payload["targets"] == []
 
 
 class TestValidationPanel:
