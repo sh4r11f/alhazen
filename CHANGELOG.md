@@ -61,6 +61,12 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   validation panel titles its axes "Horizontal gaze position (°)" and
   "Vertical gaze position (°)".
 
+- **The dashboard's camera image streams.** It used to move about once a
+  second, because each frame rode inside a full dashboard update that rebuilt
+  every panel. Frames now travel on their own channel, about fifteen a second
+  while paused and ten a second through a TRACKPixx3 calibration, and the page
+  redraws only the image, with its frame rate printed under it.
+
 ### Added
 
 - **Figure export.** Every chart panel saves as an SVG at 89 mm or 183 mm, or

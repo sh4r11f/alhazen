@@ -432,12 +432,32 @@ the camera image. Like the live-analysis panels they are computed in Python
 and delivered finished.
 
 The camera is the one panel that is a picture, and it introduces the
-`image` wire form: width, height and one grayscale byte per pixel,
-base64-encoded, drawn straight into a canvas with nearest-neighbour scaling
-(a blurred-up eye looks out of focus, and focus is one of the things being
-checked). It is read only while the session is paused or a procedure is
-running, refreshed about once a second through a pause, and left out of the
-copy saved to `figures/` — the saved panel says so in its place.
+`image` wire form: width, height and one grayscale byte per pixel, drawn
+straight into a canvas with nearest-neighbour scaling (a blurred-up eye looks
+out of focus, and focus is one of the things being checked). It is read only
+while the session is paused or a procedure is running, and left out of the
+copy saved to `figures/`; the saved panel says so in its place.
+
+On the live page the image **streams**. A state publish carries a session's
+worth of JSON and rebuilds every panel, so an image sent that way moved about
+once a second. Frames go on their own channel instead. The session sends one
+about fifteen times a second while paused (`CAMERA_STREAM_S` in
+`session/eyetracker.py`) and on every progress report of a procedure, which
+is ten a second through a TRACKPixx3 calibration. Each goes into a one-slot
+queue, where a newer frame replaces one the server has not collected. The page
+long-polls `/api/camera` for the frame after the last one it received, gets
+the raw bytes with the size and time in headers, and redraws only the canvas.
+The line under the image gives the frame rate, or says why no frame is
+arriving.
+
+```mermaid
+flowchart LR
+  L["pause loop pass /<br/>procedure progress report"] --> M["EyeTrackerMonitor.stream_camera()<br/>at most every 1/15 s"]
+  M -->|"tracker.camera_frame()"| F["CameraFrame<br/>8-bit grey"]
+  F --> Q["DashboardController.publish_camera()<br/>one-slot queue"]
+  Q --> C["server child: /api/camera<br/>long poll, raw bytes"]
+  C --> P["page: cameraLoop()<br/>redraws the canvas only"]
+```
 
 ## Frame-timing panel
 

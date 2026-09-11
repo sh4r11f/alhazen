@@ -1367,6 +1367,10 @@ function drawStat(legendHost, host, data) {
  * figures/), and says so in place of the picture.
  */
 function drawImage(legendHost, host, data) {
+  /* A live camera sends its frames on their own channel (cameraLoop), and the
+   * state says only that it streams: the picture is the newest frame that
+   * came, drawn at once so a rebuilt panel never blanks. */
+  if (data.stream) return drawCameraStream(host);
   /* The reason there is no picture is the panel's note, which buildPanel
    * already prints under the plot; the placeholder does not repeat it. */
   if (!data.pixels) return drawEmpty(host, 'No image');
@@ -1396,6 +1400,112 @@ function drawImage(legendHost, host, data) {
     image.data[4 * i + 3] = 255;
   }
   context.putImageData(image, 0, 0);
+}
+
+/* ------------------------------------------------------------------ */
+/* Live camera stream                                                  */
+/* ------------------------------------------------------------------ */
+
+/* The newest frame from the camera channel. Kept so a panel rebuilt by a
+ * state update shows the image at once instead of waiting for the next frame. */
+let cameraFrame = null;
+/* That frame's number: the server answers with the first frame after it. */
+let cameraSeq = 0;
+/* When recent frames arrived, for the rate printed under the image. */
+const cameraArrivals = [];
+/* Why frames are not arriving, when they are not; empty while all is well. */
+let cameraProblem = '';
+let cameraPaintQueued = false;
+
+/** The canvas a streamed camera panel draws into, and the line under it. */
+function drawCameraStream(host) {
+  const canvas = htmlEl('canvas', 'camera', null, host);
+  canvas.dataset.stream = '1';
+  htmlEl('div', 'camera-live', null, host);
+  paintCamera();
+}
+
+/** What the line under the image says: the frame rate over the last two
+ *  seconds, or why there is no rate to give. */
+function cameraRateText() {
+  const now = performance.now();
+  while (cameraArrivals.length && now - cameraArrivals[0] > 2000) cameraArrivals.shift();
+  if (cameraProblem) return cameraProblem;
+  if (!cameraFrame) return 'Waiting for the camera…';
+  if (!cameraArrivals.length) return 'No new frame: the image is live only while paused or calibrating';
+  return 'Live · ' + Math.round(cameraArrivals.length / 2) + ' frames/s';
+}
+
+/** Draw the newest frame into the streamed camera canvas, if one is on the page. */
+function paintCamera() {
+  cameraPaintQueued = false;
+  const canvas = document.querySelector('canvas.camera[data-stream]');
+  if (!canvas) return;
+  const line = canvas.parentElement.querySelector('.camera-live');
+  if (line) line.textContent = cameraRateText();
+  if (!cameraFrame) return;
+  const { width, height, bytes } = cameraFrame;
+  if (canvas.width !== width) canvas.width = width;
+  if (canvas.height !== height) canvas.height = height;
+  const context = canvas.getContext('2d');
+  const image = context.createImageData(width, height);
+  const rgba = image.data;
+  /* Grey in, RGBA out: the same byte on all three colour channels, opaque. */
+  for (let i = 0, j = 0; i < bytes.length; i += 1, j += 4) {
+    rgba[j] = bytes[i];
+    rgba[j + 1] = bytes[i];
+    rgba[j + 2] = bytes[i];
+    rgba[j + 3] = 255;
+  }
+  context.putImageData(image, 0, 0);
+}
+
+/** At most one paint per display frame, however fast frames arrive. */
+function queueCameraPaint() {
+  if (cameraPaintQueued) return;
+  cameraPaintQueued = true;
+  requestAnimationFrame(paintCamera);
+}
+
+/**
+ * Fetch camera frames for as long as the page is open, each request asking
+ * for the frame after the last one received. The server holds a request open
+ * until a newer frame exists or two seconds pass, so an idle camera costs a
+ * request every two seconds and a live frame arrives as soon as it is read.
+ * Only the canvas is redrawn: nothing here rebuilds the panels.
+ */
+async function cameraLoop() {
+  for (;;) {
+    let retryMs = 0;
+    try {
+      const response = await fetch('/api/camera?token=' + encodeURIComponent(token) +
+        '&after=' + cameraSeq + '&wait_ms=2000');
+      if (response.status === 200) {
+        const width = Number(response.headers.get('X-Frame-Width'));
+        const height = Number(response.headers.get('X-Frame-Height'));
+        const seq = Number(response.headers.get('X-Frame-Seq'));
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        if (!(width > 0 && height > 0) || bytes.length !== width * height) {
+          throw new Error('a frame of ' + bytes.length + ' bytes for ' +
+            width + '×' + height + ' pixels');
+        }
+        cameraSeq = seq;
+        cameraFrame = { width: width, height: height, bytes: bytes };
+        cameraArrivals.push(performance.now());
+        cameraProblem = '';
+      } else if (response.status !== 204) {
+        throw new Error('the server answered ' + response.status + ': ' + await response.text());
+      }
+    } catch (error) {
+      /* Said under the image and in the console, never swallowed: a frozen
+       * picture that looks live is the failure this panel must not have. */
+      console.error('camera stream failed', error);
+      cameraProblem = 'Camera stream failed: ' + error.message;
+      retryMs = 1000;
+    }
+    queueCameraPaint();
+    if (retryMs) await new Promise((resolve) => setTimeout(resolve, retryMs));
+  }
 }
 
 function drawEmpty(host, message) {
@@ -2050,4 +2160,5 @@ if (STATIC_STATE !== null) {
   render();
 } else {
   poll();
+  cameraLoop();
 }

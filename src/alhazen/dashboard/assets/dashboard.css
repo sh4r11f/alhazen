@@ -291,6 +291,13 @@ main { flex: 1 1 auto; min-width: 0; padding: 22px 28px 56px; }
   border-radius: 6px;
   image-rendering: pixelated;
 }
+/* Under a streamed image: its frame rate while it is live, or why it is not. */
+.camera-live {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
 
 /* Reserved whether or not this panel has a legend, so a panel that does not
  * sits at the same height as one that does. */

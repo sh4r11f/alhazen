@@ -322,6 +322,7 @@ class FakeDashboard:
 
     def __init__(self, poll_budget: int = 200) -> None:
         self.published: list[tuple[str, str | None]] = []
+        self.frames = 0
         self._polls = 0
         self._poll_budget = poll_budget
 
@@ -337,6 +338,9 @@ class FakeDashboard:
 
     def publish(self, state) -> None:
         self.published.append((state.get("status"), state.get("message")))
+
+    def publish_camera(self, pixels, t) -> None:
+        self.frames += 1
 
     def save(self, figures_dir, state) -> None:
         self.saved = state

@@ -62,6 +62,14 @@ SECTION = "Eye tracker"
 # needs redrawing.
 PROGRESS_PUBLISH_S = 0.5
 
+# How often a camera frame is sent to the dashboard while somebody is looking
+# at the image (paused, or a procedure running): about fifteen a second. A
+# frame travels on the dashboard's camera channel, not in a state publish, so
+# each one costs a device read and a copy of a few tens of kilobytes rather
+# than a rebuild of every panel. A TRACKPixx3 calibration reports every 0.1 s,
+# which caps the stream at ten a second while it runs.
+CAMERA_STREAM_S = 1.0 / 15.0
+
 # The dashboard status while any procedure runs. One word for all three: the
 # server refuses commands unless the status is "paused", so this is also what
 # keeps a second button press from landing mid-procedure.
@@ -78,6 +86,8 @@ DRIFT_HINT = "press D while paused, or the dashboard's Drift-correct button"
 Publisher = Callable[[str, str], object]
 # What a finished procedure emits: (event name, payload).
 Emitter = Callable[[str, dict[str, Any]], object]
+# Where streamed camera frames go: the dashboard's camera channel.
+CameraSink = Callable[[CameraFrame], object]
 
 
 def eye_stat(status: str) -> dict[str, Any]:
@@ -136,6 +146,10 @@ class EyeTrackerMonitor:
         # per distinct reason, not once per publish).
         self._frame: CameraFrame | None = None
         self._camera_fault: str | None = None
+        # Set by the runner when a dashboard is open: frames then stream to it
+        # (stream_camera), and state publishes stop carrying the pixels.
+        self.camera_sink: CameraSink | None = None
+        self._last_stream = float("-inf")
 
     # ------------------------------------------------------------------
     # Procedures
@@ -267,7 +281,13 @@ class EyeTrackerMonitor:
             self.publisher(PROCEDURE_STATUS, f"{stage}: {detail}")
 
     def _on_progress(self, stage: str, detail: str) -> None:
-        """A procedure's progress line, published at most every PROGRESS_PUBLISH_S."""
+        """A procedure's progress line, published at most every PROGRESS_PUBLISH_S.
+
+        The camera streams on every report, not only on the published ones: a
+        calibration is exactly when the experimenter is watching the eye, and
+        a report is the one moment the procedure hands control back.
+        """
+        self.stream_camera()
         now = self._clock.now()
         if now - self._last_publish < PROGRESS_PUBLISH_S:
             return
@@ -291,11 +311,13 @@ class EyeTrackerMonitor:
     def panels(self, *, camera: bool, image: bool = True) -> list[dict[str, Any]]:
         """The "Eye tracker" section: camera, calibration, validation, drift.
 
-        ``camera`` says whether to read a fresh frame now — true while the
-        session is paused or a procedure is running, when the device is not
-        busy with a trial and the image is what the experimenter is looking
-        for. ``image=False`` leaves the pixels out (the copy saved to disk
-        at teardown keeps the numbers, not a photograph of the subject).
+        ``camera`` says whether the image is live now — true while the session
+        is paused or a procedure is running, when the device is not busy with
+        a trial and the image is what the experimenter is looking for. Live,
+        the eye line is read, and so is a frame unless frames stream to an
+        open dashboard (stream_camera). ``image=False`` leaves the pixels out
+        (the copy saved to disk at teardown keeps the numbers, not a
+        photograph of the subject).
         """
         panels: list[dict[str, Any]] = []
         if self.has_camera:
@@ -306,36 +328,75 @@ class EyeTrackerMonitor:
         panels.append({"title": "Drift correction", "section": SECTION, "data": self._drift()})
         return panels
 
-    def _camera(self, read: bool, image: bool) -> dict[str, Any]:
-        if read:
+    def _camera(self, live: bool, image: bool) -> dict[str, Any]:
+        # With a dashboard open the frames stream on their own channel
+        # (stream_camera), so a state publish neither reads one nor carries
+        # its pixels: the panel says it streams, and the page draws the newest
+        # frame it received. The copy saved to disk is never a stream.
+        streaming = self.camera_sink is not None and image
+        if live and not streaming:
             self._read_camera()
-        if self._frame is None:
+        if self._frame is None and not (streaming and live):
             message = "no camera image yet — read while paused or calibrating"
             if self._camera_fault is not None:
                 message = f"camera image unavailable: {self._camera_fault}"
             return {"form": "empty", "message": message}
         frame = self._frame
-        height, width = frame.pixels.shape[:2]
         data: dict[str, Any] = {
             "form": "image",
-            "width": int(width),
-            "height": int(height),
-            "pixels": encode_image(frame.pixels) if image else "",
-            "stats": [{"label": "read at", "value": f"{frame.t:.1f} s"}],
+            "width": 0,
+            "height": 0,
+            "pixels": "",
+            "stats": [],
         }
+        if frame is not None:
+            height, width = frame.pixels.shape[:2]
+            data["width"], data["height"] = int(width), int(height)
+            data["stats"].append({"label": "read at", "value": f"{frame.t:.1f} s"})
+            if image and not streaming:
+                data["pixels"] = encode_image(frame.pixels)
+        if streaming:
+            data["stream"] = True
         status = getattr(self._tracker, "eye_status", None)
-        if status is not None and read:
+        if status is not None and live:
             try:
                 data["stats"].append(eye_stat(status()))
             except TrackerError as e:
                 data["stats"].append({"label": "eyes", "value": str(e), "status": "critical"})
-        note = "live while paused or calibrating" if read else "last frame; live again when paused"
+        note = "live while paused or calibrating" if live else "last frame; live again when paused"
         if self._camera_fault is not None:
-            note = f"last frame; the newest read failed: {self._camera_fault}"
+            # "Last frame" only when there is one: a stream whose very first
+            # read failed has nothing on screen to call the last.
+            note = (
+                f"last frame; the newest read failed: {self._camera_fault}"
+                if frame is not None
+                else f"camera image unavailable: {self._camera_fault}"
+            )
         if not image:
             note = "image left out of the saved copy"
         data["note"] = note
         return data
+
+    def stream_camera(self) -> None:
+        """Send the dashboard a fresh camera frame, if one is due.
+
+        Called on every pass of the pause loop and every progress report of a
+        procedure, and a no-op between frames (CAMERA_STREAM_S), so its
+        callers need not keep time. Nothing is read without a sink: a session
+        with no dashboard open reads no frames. A read that fails sends
+        nothing. Its reason goes to the log once and onto the panel at the
+        next state publish (_read_camera), and the page keeps its last frame
+        with the reason under it.
+        """
+        if self.camera_sink is None or not self.has_camera:
+            return
+        now = self._clock.now()
+        if now - self._last_stream < CAMERA_STREAM_S:
+            return
+        self._last_stream = now
+        self._read_camera()
+        if self._camera_fault is None and self._frame is not None:
+            self.camera_sink(self._frame)
 
     def _read_camera(self) -> None:
         """One frame from the tracker, or the reason there is none.

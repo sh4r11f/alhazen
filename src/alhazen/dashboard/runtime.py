@@ -60,6 +60,10 @@ class DashboardController:
     def __init__(self, *, port: int = 0, auto_open: bool = True) -> None:
         ctx = mp.get_context("spawn")
         self._updates: Any = ctx.Queue(maxsize=1)
+        # The camera's own one-slot queue, beside the state's: a frame reaches
+        # the page without a state publish, and a newer frame replaces one the
+        # child has not collected yet (publish_camera).
+        self._camera: Any = ctx.Queue(maxsize=1)
         self._commands: Any = ctx.Queue(maxsize=64)
         self._ready: Any = ctx.Queue(maxsize=1)
         self._stop: Any = ctx.Event()
@@ -68,6 +72,9 @@ class DashboardController:
         self._token = secrets.token_urlsafe(32)
         self._process: Any | None = None
         self.url: str | None = None
+        # Said once, not once per frame: publish_camera runs fifteen times a
+        # second while the image is live.
+        self._camera_down_reported = False
 
     def start(self, timeout_s: float = 20.0) -> str:
         """Spawn the server and wait for it to bind.
@@ -85,6 +92,7 @@ class DashboardController:
             target=_serve,
             args=(
                 self._updates,
+                self._camera,
                 self._commands,
                 self._ready,
                 self._stop,
@@ -143,6 +151,52 @@ class DashboardController:
             self._updates.put_nowait(snapshot)
         except queue.Full:
             log.warning("dashboard update queue remained full; dropping revision")
+
+    def publish_camera(self, pixels: Any, t: float) -> None:
+        """Replace any unread camera frame with this one.
+
+        The camera travels on its own channel so the page can redraw the image
+        alone. A state publish carries a session's worth of JSON and makes the
+        page rebuild every panel, which is why an image sent that way moved
+        about once a second; a frame here is its bytes, its size and its time.
+        Like publish(), it never blocks the session: an unread frame is
+        replaced by the newer one, the only frame worth drawing.
+
+        ``pixels`` is the tracker's frame, 8-bit grey of shape (height,
+        width). Anything else is refused: the page draws one byte per pixel,
+        and a frame laid out otherwise would come out as noise, not as an
+        error.
+        """
+        if self._process is not None and not self._process.is_alive():
+            if not self._camera_down_reported:
+                log.error("dashboard process exited; camera frames are no longer sent")
+                self._camera_down_reported = True
+            return
+        shape = tuple(getattr(pixels, "shape", ()))
+        if len(shape) != 2 or str(getattr(pixels, "dtype", "")) != "uint8":
+            raise ValueError(
+                "a camera frame is 8-bit grey of shape (height, width); got dtype "
+                f"{getattr(pixels, 'dtype', type(pixels).__name__)} and shape {shape}"
+            )
+        height, width = int(shape[0]), int(shape[1])
+        frame = (width, height, float(t), pixels.tobytes())
+        try:
+            self._camera.put_nowait(frame)
+            return
+        except queue.Full:
+            pass
+        # The child has not collected the previous frame: take it back and put
+        # this one in its place. If the child collected it in between, the slot
+        # is already free and the put below succeeds.
+        with suppress(queue.Empty):
+            self._camera.get_nowait()
+        try:
+            self._camera.put_nowait(frame)
+        except queue.Full:
+            # The slot refilled in that instant, with a frame at most a
+            # fifteenth of a second older than this one; the next frame
+            # replaces it.
+            log.debug("camera frame dropped: the queue refilled while it was being replaced")
 
     def poll_commands(self) -> list[DashboardCommand]:
         commands: list[DashboardCommand] = []
@@ -210,8 +264,70 @@ class _State:
             return self.payload
 
 
-def _serve(updates: Any, commands: Any, ready: Any, stop: Any, token: str, port: int) -> None:
+class _CameraState:
+    """The child's newest camera frame, numbered so a page can ask for the
+    frame after the one it already drew.
+
+    A frame is ``(width, height, t, pixels)``: its size, the session time it
+    was read at, and one grey byte per pixel, row-major, top row first.
+    """
+
+    def __init__(self) -> None:
+        self.seq = 0
+        self.frame: tuple[int, int, float, bytes] | None = None
+        self.condition = threading.Condition()
+
+    def set(self, frame: tuple[int, int, float, bytes]) -> None:
+        with self.condition:
+            self.seq += 1
+            self.frame = frame
+            self.condition.notify_all()
+
+    def wait_after(
+        self, seq: int, timeout: float
+    ) -> tuple[int, tuple[int, int, float, bytes]] | None:
+        """The newest frame and its number if it is newer than ``seq``,
+        waiting up to ``timeout`` seconds for one; None when none came."""
+        with self.condition:
+            if self.seq <= seq:
+                self.condition.wait(timeout)
+            if self.frame is None or self.seq <= seq:
+                return None
+            return self.seq, self.frame
+
+
+def _query_int(query: str, name: str, default: int) -> int:
+    """An integer query parameter, or ``default`` when it is absent.
+
+    A value that is present but not an integer raises ValueError: the page
+    sends these itself, so a malformed one is a bug to report, not to guess
+    around.
+    """
+    for pair in query.split("&"):
+        key, _, value = pair.partition("=")
+        if key == name:
+            return int(value)
+    return default
+
+
+# The longest a camera request may be held open waiting for a newer frame.
+# The page asks for two seconds: an idle camera (a session running trials,
+# when no frames are read) then costs a request every two seconds. The cap
+# keeps a request that asks for more from parking a server thread for minutes.
+_CAMERA_WAIT_MAX_MS = 5000
+
+
+def _serve(
+    updates: Any,
+    camera_updates: Any,
+    commands: Any,
+    ready: Any,
+    stop: Any,
+    token: str,
+    port: int,
+) -> None:
     state = _State()
+    camera = _CameraState()
     seen: set[str] = set()
 
     class Handler(BaseHTTPRequestHandler):
@@ -234,6 +350,38 @@ def _serve(updates: Any, commands: Any, ready: Any, stop: Any, token: str, port:
                             revision = int(pair.partition("=")[2])
                 payload = state.wait_after(revision)
                 self._send(HTTPStatus.OK, payload, "application/json")
+                return
+            if path == "/api/camera":
+                if not self._authorized(query):
+                    return
+                try:
+                    after = _query_int(query, "after", 0)
+                    wait_ms = _query_int(query, "wait_ms", 2000)
+                except ValueError:
+                    self._send(
+                        HTTPStatus.BAD_REQUEST, "after and wait_ms must be integers", "text/plain"
+                    )
+                    return
+                wait_s = min(max(wait_ms, 0), _CAMERA_WAIT_MAX_MS) / 1000.0
+                newest = camera.wait_after(after, wait_s)
+                if newest is None:
+                    # Nothing newer than the frame the page already drew: no
+                    # frames are being read (the session is running trials),
+                    # or none has arrived yet. The page asks again.
+                    self._send_bytes(HTTPStatus.NO_CONTENT, b"", "application/octet-stream")
+                    return
+                seq, (width, height, t, pixels) = newest
+                self._send_bytes(
+                    HTTPStatus.OK,
+                    pixels,
+                    "application/octet-stream",
+                    {
+                        "X-Frame-Seq": str(seq),
+                        "X-Frame-Width": str(width),
+                        "X-Frame-Height": str(height),
+                        "X-Frame-Time": f"{t:.3f}",
+                    },
+                )
                 return
             self._send(HTTPStatus.NOT_FOUND, "not found", "text/plain")
 
@@ -280,7 +428,15 @@ def _serve(updates: Any, commands: Any, ready: Any, stop: Any, token: str, port:
             return False
 
         def _send(self, status: HTTPStatus, body: str, content_type: str) -> None:
-            data = body.encode()
+            self._send_bytes(status, body.encode(), content_type)
+
+        def _send_bytes(
+            self,
+            status: HTTPStatus,
+            data: bytes,
+            content_type: str,
+            headers: dict[str, str] | None = None,
+        ) -> None:
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(data)))
@@ -289,6 +445,10 @@ def _serve(updates: Any, commands: Any, ready: Any, stop: Any, token: str, port:
                 "Content-Security-Policy",
                 "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'",
             )
+            # A camera frame's size and time ride in headers, so the body can
+            # be the pixels alone; the page reads both from one response.
+            for name, value in (headers or {}).items():
+                self.send_header(name, value)
             self.end_headers()
             self.wfile.write(data)
 
@@ -328,6 +488,19 @@ def _serve(updates: Any, commands: Any, ready: Any, stop: Any, token: str, port:
 
     thread = threading.Thread(target=pump, daemon=True)
     thread.start()
+
+    def pump_camera() -> None:
+        while not stop.is_set():
+            try:
+                frame = camera_updates.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            camera.set(frame)
+
+    # A thread of its own: a frame must not wait behind a state snapshot being
+    # handed over, or the image would move at the state's pace again.
+    camera_thread = threading.Thread(target=pump_camera, daemon=True)
+    camera_thread.start()
     while not stop.is_set():
         server.handle_request()
     server.server_close()

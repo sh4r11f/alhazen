@@ -26,6 +26,7 @@ from alhazen.devices.eyetracker.scripted import ScriptedTracker
 from alhazen.devices.eyetracker.viewpixx import eye_status_text
 from alhazen.errors import TrackerError
 from alhazen.session.eyetracker import (
+    CAMERA_STREAM_S,
     PROCEDURE_STATUS,
     PROGRESS_PUBLISH_S,
     SECTION,
@@ -570,6 +571,84 @@ class TestCameraPanel:
     def test_encode_image_is_row_major_bytes(self) -> None:
         pixels = np.array([[1, 2], [3, 4]], dtype=np.uint8)
         assert base64.b64decode(encode_image(pixels)) == b"\x01\x02\x03\x04"
+
+
+class TestCameraStream:
+    """With a dashboard open, frames stream on their own channel as often as
+    one is due, and the state's Camera panel stops carrying the pixels."""
+
+    @staticmethod
+    def streaming(session: Any) -> tuple[Any, list[CameraFrame]]:
+        s = session(CameraTracker)
+        frames: list[CameraFrame] = []
+        s.monitor.camera_sink = frames.append
+        return s, frames
+
+    def test_without_a_sink_nothing_is_read(self, session) -> None:
+        """A session with no dashboard open must not spend device reads on
+        frames nobody will see."""
+        s = session(CameraTracker)
+        s.monitor.stream_camera()
+        assert s.tracker.reads == 0
+
+    def test_a_frame_is_sent_at_most_once_per_interval(self, session) -> None:
+        s, frames = self.streaming(session)
+        s.monitor.stream_camera()
+        s.monitor.stream_camera()  # the same instant: not due
+        assert (s.tracker.reads, len(frames)) == (1, 1)
+        s.clock.advance(CAMERA_STREAM_S / 2)
+        s.monitor.stream_camera()
+        assert len(frames) == 1
+        s.clock.advance(CAMERA_STREAM_S / 2)
+        s.monitor.stream_camera()
+        assert len(frames) == 2
+        assert frames[1].t == pytest.approx(CAMERA_STREAM_S)
+
+    def test_a_failed_read_sends_nothing_and_says_why(self, session, caplog) -> None:
+        s, frames = self.streaming(session)
+        s.tracker.camera_error = TrackerError("device busy")
+        with caplog.at_level(logging.WARNING, logger="alhazen.session.eyetracker"):
+            s.monitor.stream_camera()
+        assert frames == []
+        assert "camera image not read: device busy" in caplog.text
+        data = s.panel("Camera", camera=True)["data"]
+        assert data["stream"] is True
+        assert data["note"] == "camera image unavailable: device busy"
+
+    def test_every_progress_report_streams_while_publishes_stay_throttled(self, session) -> None:
+        """A calibration is when the eye is watched: its 0.1 s reports each
+        carry a frame, and only every 0.5 s rebuilds the dashboard state."""
+        s, frames = self.streaming(session)
+        for _ in range(10):
+            s.monitor._on_progress("calibrating", "target 1 of 5")
+            s.clock.advance(0.1)
+        assert len(frames) == 10
+        assert len(s.published) == 2
+
+    def test_a_streaming_panel_carries_no_pixels_and_reads_no_frame(self, session) -> None:
+        s, _frames = self.streaming(session)
+        s.clock.advance(2.0)
+        s.monitor.stream_camera()
+        data = s.panel("Camera", camera=True)["data"]
+        assert data["stream"] is True and data["pixels"] == ""
+        assert (data["width"], data["height"]) == (4, 3)
+        assert data["stats"][0] == {"label": "read at", "value": "2.0 s"}
+        assert data["stats"][1] == {"label": "eyes", "value": "both tracked"}
+        assert s.tracker.reads == 1  # the stream's read, none of the panel's own
+
+    def test_before_the_first_frame_a_stream_waits_for_it(self, session) -> None:
+        s, _frames = self.streaming(session)
+        data = s.panel("Camera", camera=True)["data"]
+        assert data["form"] == "image" and data["stream"] is True
+        assert (data["width"], data["height"], data["pixels"]) == (0, 0, "")
+        assert s.tracker.reads == 0
+
+    def test_the_saved_copy_is_never_a_stream(self, session) -> None:
+        s, _frames = self.streaming(session)
+        s.monitor.stream_camera()
+        data = s.panel("Camera", camera=False, image=False)["data"]
+        assert "stream" not in data and data["pixels"] == ""
+        assert data["note"] == "image left out of the saved copy"
 
 
 class TestCalibrationPanel:

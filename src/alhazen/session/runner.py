@@ -43,6 +43,7 @@ from alhazen.data.manifest import write_manifest
 from alhazen.data.participants import ensure_participant
 from alhazen.data.paths import SessionPaths
 from alhazen.devices.eyetracker import EyeTracker, HostShape
+from alhazen.devices.eyetracker.protocol import CameraFrame
 from alhazen.devices.reward import RewardDispenser
 from alhazen.devices.spikes import SpikeSource
 from alhazen.devices.sync import SyncOutput
@@ -310,6 +311,12 @@ class SessionRunner:
             log.info("setup: %s", note)
         if self._dashboard is not None:
             log.info("live dashboard: %s", self._dashboard.url)
+            if self._eyetracker is not None:
+                # Camera frames stream to the page on their own channel while
+                # the session is paused or a procedure runs. Wired here, once
+                # the dashboard is known to be open, so a session without one
+                # never reads a frame nobody will see.
+                self._eyetracker.camera_sink = self._send_camera_frame
         self._publish_dashboard("running")
         try:
             if self._instructions:
@@ -1067,6 +1074,7 @@ class SessionRunner:
         # so the Eye tracker tab shows the eye as it is now, not as it was
         # when the pause began.
         live_camera = self._eyetracker is not None and self._eyetracker.has_camera
+        streaming = self._eyetracker if live_camera else None
         published_at = self._clock.now()
         # A rest that can resume by itself: the same deadline as the keyboard
         # path, cancelled by the first thing anybody does.
@@ -1074,6 +1082,11 @@ class SessionRunner:
         if resume_after_s is not None:
             deadline = self._clock.now() + resume_after_s
         while True:
+            # The image streams on its own channel as often as a frame is due
+            # (session/eyetracker.py CAMERA_STREAM_S). The refresh further down
+            # republishes only the panel's words, about once a second.
+            if streaming is not None:
+                streaming.stream_camera()
             actions = [command.name for command in dashboard.poll_commands()]
             actions += [
                 action
@@ -1204,6 +1217,11 @@ class SessionRunner:
         self._dashboard_message = message
         self._dashboard.publish(state)
         return state
+
+    def _send_camera_frame(self, frame: CameraFrame) -> None:
+        """The monitor's streamed camera frames, onto the dashboard's camera channel."""
+        if self._dashboard is not None:
+            self._dashboard.publish_camera(frame.pixels, frame.t)
 
     def _frame_timing_panel(self) -> dict[str, Any]:
         """The frame-interval histogram, from the monitor's own record: the
