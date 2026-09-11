@@ -71,12 +71,14 @@ goes flat at trial 260 says the subject stopped working, which no total can.
 flowchart LR
   R["DataRecorder<br/>trials + events"] --> S["dashboard_state()"]
   P["DashboardSpec<br/>resolved_panels"] --> S
-  S -->|"per panel, whole session"| C["panels.panel_payload()<br/>counts · bins · means<br/>SEM · Wilson CI · cumulative"]
-  C -->|"thinned to &le; 180 points"| W["one JSON snapshot"]
+  S -->|"per panel, whole session"| C["panels.panel_payload()<br/>counts · bins · means<br/>s.e.m. · Wilson CI · cumulative"]
+  C -->|"thinned to &le; 180 points"| N["panels.present()<br/>sentence case · ° · minus sign<br/>display twins"]
+  N --> W["one JSON snapshot"]
   S -->|"last max_rows rows"| W
   W --> Q(["queue (1 slot)"])
   Q --> H["child process<br/>HTTP + long poll"]
   H --> B["browser: dashboard.js<br/>scales · axes · marks · hover"]
+  B -->|"Export figure"| X["SVG 89 / 183 mm<br/>PNG 600 dpi"]
   W --> F["figures/dashboard.html<br/>figures/dashboard_state.json"]
 ```
 
@@ -85,6 +87,28 @@ bin edge, mean, error bar and running proportion is computed in
 `alhazen.dashboard.panels`, in Python, where it is unit-tested. A running
 accuracy that divides by the wrong denominator looks entirely plausible in a
 browser, and the page's JavaScript has no test in this suite.
+
+What the reader sees is decided once, after the numbers. `panels.present()`
+rewrites every payload in a journal figure's conventions: labels in sentence
+case, column and outcome names as words (`FIX_BREAK` is "Fix break",
+`saccade_latency_ms` is "Saccade latency (ms)"), abbreviations in their own
+case ("RT", "IQR", "s.e.m."), degrees of visual angle as "°", and a true minus
+sign. Prose (axis titles, notes, stat labels) is rewritten in place. Data
+values (a level, an outcome, a response key) keep their record form, because
+code that maps a panel back to its trials compares them with the record. Each
+gains a display twin beside it, and the page draws the twin:
+
+| raw, unchanged | display twin |
+| --- | --- |
+| `items[].label` | `items[].display_label` |
+| `series[].name` | `series[].display_name` |
+| `groups[].label` | `groups[].display_label` |
+| `groups[].series` | `groups[].display_series` |
+| `band.name` | `band.display_name` |
+| `maps[].name` | `maps[].display_name` |
+| `color_label` | `display_color_label` |
+
+A dashboard saved before the twins existed still draws, from the raw values.
 
 ### Reading them
 
@@ -112,9 +136,12 @@ thing wherever it appears.
   is milliseconds, `endpoint_x_dva` is degrees of visual angle — which is the
   convention a trial record already follows. Set `unit=` on the panel for a
   column named some other way.
-- **Error bars are the standard error of the mean**, and the number of trials
-  behind each one is printed under it. A group with a single trial gets a bare
-  dot: no spread was measured, and a zero-length bar would imply certainty.
+- **Error bars are defined on the panel.** A `grouped_mean` whisker is the
+  standard error of the mean and a `grouped_rate` whisker a 95% Wilson
+  interval, and the legend says which: a journal will not print an error bar
+  the figure does not define. The number of trials behind each bar is printed
+  under it, as *n* = 12. A group with a single trial gets no whisker: no
+  spread was measured, and a zero-length bar would imply certainty.
 - **The shaded band on `performance` is a 95% Wilson interval**, not the
   textbook normal one — which is badly wrong on the handful of trials where an
   experimenter is most tempted to read it, and can run past 0 or 1.
@@ -133,9 +160,13 @@ thing wherever it appears.
   screen as a degree up — with the screen centre marked.
 - **Every panel has a table view.** Whatever a hover readout shows is also
   reachable as text, under the plot.
-- **Spines and outward ticks, no gridlines.** The reading conventions of a
-  printed figure: the ink inside a plot is the data. Values a tick does not
-  carry are on a direct label, in the hover readout, or in the table.
+- **Spines and outward ticks, no gridlines, and every axis ends on a labelled
+  tick.** The reading conventions of a printed figure: the ink inside a plot
+  is the data, and an axis that stops at an unlabelled value leaves the reader
+  guessing what its end is worth. Values a tick does not carry are on a direct
+  label, in the hover readout, or in the table.
+- **Panels are lettered a, b, c** in the order they are shown, in bold
+  lowercase, the way a figure plate letters them.
 - **A mean marker appears only where a mean is a position.** With more than
   one target on screen, the mean landing falls between the clusters — where
   nothing landed — so the landing panel omits it.
@@ -190,10 +221,10 @@ layout.
 | `outcomes` | how do attempts end? | horizontal bars, count and share |
 | `responses` | which key is being pressed? | horizontal bars |
 | `histogram` | what does one measurement's distribution look like? | binned columns with the median marked |
-| `scatter` | where in space did the response land? | equal-aspect scatter with targets and the mean landing |
+| `scatter` | where in space did the response land? | equal-aspect scatter with targets, the mean landing, and any regions the task outlines |
 | `vectors` | how far, and which way, did the eye move? | every trial's displacement from one origin, on a polar grid |
 | `series` | how does one quantity drift? | per-trial points with a moving mean |
-| `grouped_mean` | does it differ across a condition? | group means ± SEM, with n |
+| `grouped_mean` | does it differ across a condition? | group means ± s.e.m., with *n*; several factors side by side or crossed |
 | `stat` | one number | the number |
 
 `performance` needs nothing declared: it reads the row's own `success` when
@@ -233,6 +264,33 @@ If no such column exists at all, the origin falls back to the screen centre —
 where this framework's fixation point sits — and the panel says so under the
 plot rather than assuming it silently. Point `origin_x`/`origin_y` at the
 target columns instead and the same panel becomes an endpoint-error plot.
+
+A landing is often judged against regions rather than a point, such as the
+inducers of an averaging display. Name a record column in `shapes` and the
+scatter outlines them:
+
+```python
+DashboardPanel(
+    kind="scatter",
+    title="Landings by separation",
+    x="landing_x_dva",
+    y="landing_y_dva",
+    color_by="separation",
+    shapes="inducer_shapes_dva",
+)
+```
+
+Each trial's value is a list of shapes, or that list as JSON text, in the
+panel's own x/y units: `{"kind": "circle", "x": cx, "y": cy, "r": radius}` or
+`{"kind": "rect", "x": cx, "y": cy, "width": w, "height": h}`. A rect is its
+centre and size, axis-aligned. A shape many trials carry is drawn once, as an
+outline under the points, in the colour of the one `color_by` level that
+showed it; a shape several levels share belongs to none of them and is drawn
+in grey. Shapes count toward the axis range and are never thinned with the
+points. Past 64 distinct outlines the panel draws the first 64 and says how
+many it left out. A malformed shape raises an error naming the trial and the
+column, rather than the panel drawing less than the task described. `shapes`
+on any kind other than `scatter` is refused when the panel is declared.
 
 Bin edges, group ordering and error bars are chosen for you. Numeric group
 labels sort as numbers — the string order `"0.2" < "0.4" < "10"` is wrong
@@ -295,6 +353,16 @@ a signed mean has no meaningful baseline to grow from, which is why the
 default is a dot. `grouped_rate` is bars unless you say otherwise, and its
 interval is Wilson's — asymmetric near 0 and 1, which is exactly where a level
 with a handful of trials puts it.
+
+A `grouped_mean` panel can take several factors. Side by side
+(`group=("alignment", "separation")`), each factor is averaged on its own over
+every trial, one colour per factor. Those are marginal means, and the panel
+says so under the plot, because bars for several factors on one axis look like
+the cells of a design. With `cross=True` it draws one bar per combination of
+levels instead ("near / static"), each over the trials that had exactly that
+combination and with its own *n*; a trial missing any of the factors sits in no
+cell. `cross=True` on a panel with fewer than two factors, or on any other
+kind, is refused when the panel is declared.
 
 ## Panel filters
 
@@ -388,6 +456,32 @@ median interval of 8.343 ms (119.9 Hz, perfect on paper) and 338 frames under
 4 ms; "308 dropped frames" hid it, and the histogram shows it as a second
 mode at a glance. That shape is the difference between a genuine vsync miss
 and a clock that is not locked to the panel.
+
+## Figures for publication
+
+Every chart panel has an **Export figure** row: an SVG at a journal's single
+column (89 mm) or double column (183 mm), or a PNG at 600 dpi. The figure is
+not a screenshot of the card. It is drawn again, off screen, in the light
+theme and at a scale that sets tick labels at about 7 pt and prints a 1 px
+line at 0.6 pt, whatever the reader's theme or window width. Each element's
+computed style is written onto it, so the SVG needs no stylesheet and opens the
+same in a vector editor as in a browser, and its text is set in Arial or
+Helvetica. The panel letter and the legend are drawn inside the figure, and a
+bar chart is cropped to its rows.
+
+```mermaid
+flowchart LR
+  P["panel payload<br/>(already presented)"] --> D["redraw off screen<br/>light theme · 400 px per 89 mm"]
+  D --> I["inline computed styles<br/>drop hover targets"]
+  I --> L["panel letter + legend<br/>drawn into the SVG"]
+  L --> S["SVG<br/>89 or 183 mm"]
+  S --> R["canvas at 600 dpi"]
+  R --> G["PNG"]
+```
+
+A failed export says so in the page, with the reason, rather than quietly
+saving nothing. File names carry the letter, the title and the width, such as
+`d-saccade-latency-89mm.svg`, so a folder of exports sorts into plate order.
 
 ## Saved output
 

@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from collections import Counter
 from collections.abc import Callable, Iterable, Sequence
 from typing import Any
@@ -69,8 +70,10 @@ _UNIT_SUFFIXES = {
     "s": "s",
     "us": "µs",
     "hz": "Hz",
-    "dva": "dva",
-    "deg": "deg",
+    # Degrees of visual angle are written as the degree sign, the convention
+    # of vision-science figures, not as the column suffix that means it.
+    "dva": "°",
+    "deg": "°",
     "px": "px",
     "mm": "mm",
     "cm": "cm",
@@ -184,12 +187,71 @@ def format_number(value: float) -> str:
     return f"{value:.3g}"
 
 
+# Abbreviations a figure writes in their conventional case, not as words. A
+# column named ``saccade_rt_ms`` is "saccade RT", never "saccade rt".
+_ABBREVIATIONS = {
+    "rt": "RT",
+    "iqr": "IQR",
+    "ci": "CI",
+    "sd": "SD",
+    "sem": "s.e.m.",
+    "id": "ID",
+    "isi": "ISI",
+    "iti": "ITI",
+    "soa": "SOA",
+    "rf": "RF",
+    "eeg": "EEG",
+    "lfp": "LFP",
+    "roi": "ROI",
+    "fov": "FOV",
+}
+
+
+def _field_words(tokens: list[str]) -> list[str]:
+    """Lowercase words from a column's underscore-separated parts, with
+    abbreviations in their conventional case and a leading ``n`` spelled out:
+    ``n_inducers`` is "number of inducers"."""
+    words = [_ABBREVIATIONS.get(token.lower(), token.lower()) for token in tokens if token]
+    if len(words) > 1 and words[0] == "n":
+        words = ["number", "of", *words[1:]]
+    return words
+
+
 def split_unit(field: str) -> tuple[str, str | None]:
-    """``'rt_ms'`` -> ``('rt', 'ms')``; ``'response_key'`` -> unchanged."""
+    """``'rt_ms'`` -> ``('RT', 'ms')``; ``'response_key'`` -> ``('response key', None)``.
+
+    The name comes back as the words a sentence would use mid-way, so it can
+    sit inside a message; :func:`display_name` gives it its capital.
+    """
     parts = field.split("_")
+    unit = None
     if len(parts) > 1 and parts[-1].lower() in _UNIT_SUFFIXES:
-        return " ".join(parts[:-1]), _UNIT_SUFFIXES[parts[-1].lower()]
-    return field.replace("_", " "), None
+        unit = _UNIT_SUFFIXES[parts[-1].lower()]
+        parts = parts[:-1]
+    return " ".join(_field_words(parts)), unit
+
+
+def sentence_start(text: str) -> str:
+    """Capitalise a label's first letter, and nothing else.
+
+    Journal figures write labels in sentence case. A first word that is
+    lowercase on purpose is left alone: the sample size ``n``, and ``x`` or
+    ``y`` naming a coordinate by itself.
+    """
+    if not text or not text[0].islower():
+        return text
+    first = re.split(r"[\s(]", text, maxsplit=1)[0]
+    if first in {"n", "x", "y"}:
+        return text
+    return text[0].upper() + text[1:]
+
+
+def display_name(field: str) -> str:
+    """A record column's name as a figure writes it, without its unit.
+
+    ``'saccade_latency_ms'`` -> ``'Saccade latency'``; ``'rt_ms'`` -> ``'RT'``.
+    """
+    return sentence_start(split_unit(field)[0])
 
 
 def axis_label(field: str | None, unit: str | None = None) -> str:
@@ -198,6 +260,7 @@ def axis_label(field: str | None, unit: str | None = None) -> str:
         return ""
     name, detected = split_unit(field)
     shown = unit or detected
+    name = sentence_start(name)
     return f"{name} ({shown})" if shown else name
 
 
@@ -281,6 +344,19 @@ def _level_order(labels: Iterable[str]) -> tuple[list[str], bool]:
         return sorted(unique, key=float), True
     except ValueError:
         return unique, False
+
+
+# The most distinct shapes one scatter outlines. A task describes a handful of
+# regions (two inducers per separation, say); hundreds means the column holds
+# something per trial that was never meant as an outline. Past this the panel
+# draws the first ones and says how many it left out.
+MAX_SHAPES = 64
+
+# The numbers each kind of shape is made of: its centre, then its size.
+_SHAPE_FIELDS: dict[str, tuple[str, ...]] = {
+    "circle": ("x", "y", "r"),
+    "rect": ("x", "y", "width", "height"),
+}
 
 
 def _colour_series(
@@ -502,6 +578,94 @@ def _histogram(panel: DashboardPanel, rows: list[dict[str, Any]]) -> dict[str, A
     return payload
 
 
+def _parse_shapes(value: Any, where: str) -> list[dict[str, Any]]:
+    """One record's shapes, checked.
+
+    Anything malformed raises, naming the record and the shape: an outline
+    quietly left off is a region the reader believes is not there.
+    """
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as error:
+            raise ValueError(f"{where}: shapes is not valid JSON ({error.msg})") from error
+    if not isinstance(value, list):
+        raise ValueError(f"{where}: shapes must be a list of shapes, got {type(value).__name__}")
+    shapes = []
+    for index, shape in enumerate(value):
+        label = f"{where}, shape {index}"
+        if not isinstance(shape, dict):
+            raise ValueError(f"{label}: expected an object, got {type(shape).__name__}")
+        kind = shape.get("kind")
+        if kind not in _SHAPE_FIELDS:
+            raise ValueError(f"{label}: kind must be 'circle' or 'rect', got {kind!r}")
+        numbers: dict[str, float] = {}
+        for key in _SHAPE_FIELDS[kind]:
+            number = shape.get(key)
+            # bool is a subclass of int, and a True radius is a bug, not a 1.
+            if (
+                isinstance(number, bool)
+                or not isinstance(number, int | float)
+                or not math.isfinite(number)
+            ):
+                raise ValueError(f"{label}: {key} must be a finite number, got {number!r}")
+            numbers[key] = float(number)
+        # The size fields, everything after the centre, must be positive: a
+        # zero radius draws nothing and a negative one is a sign error.
+        for key in _SHAPE_FIELDS[kind][2:]:
+            if numbers[key] <= 0:
+                raise ValueError(f"{label}: {key} must be > 0, got {numbers[key]:g}")
+        shapes.append({"kind": kind, **numbers})
+    return shapes
+
+
+def _scatter_shapes(
+    panel: DashboardPanel,
+    rows: list[dict[str, Any]],
+    series: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], str | None]:
+    """The distinct regions a scatter outlines, each tagged with its owner.
+
+    Every shape carries ``series``: the name of the one coloured series whose
+    trials showed it, or None, which the page draws in grey. None covers a
+    shape several levels showed (it belongs to none of them), one only a
+    folded or unlabelled group showed (those are grey already), and every
+    shape on a panel without ``color_by`` (there is no level to own it).
+    """
+    field = panel.shapes
+    if not field:
+        return [], None
+    # The levels that have a colour of their own.
+    coloured = {entry["name"] for entry in series if entry["name"] and not entry.get("muted")}
+    owners: dict[tuple[Any, ...], set[str | None]] = {}
+    distinct: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    for row in rows:
+        value = row.get(field)
+        # A record with nothing in the column has no regions. Not an error: a
+        # task may outline regions on only some of its trials.
+        if value is None or value == "" or (isinstance(value, float) and math.isnan(value)):
+            continue
+        where = f"trial {row.get('trial_index', '?')} {field}"
+        level = row.get(panel.color_by) if panel.color_by else None
+        owner = str(level) if level is not None and str(level) in coloured else None
+        for shape in _parse_shapes(value, where):
+            # A shape is its kind and its numbers, rounded far below any
+            # visible difference so float noise cannot split one shape in two.
+            key = (shape["kind"], *(round(shape[name], 9) for name in _SHAPE_FIELDS[shape["kind"]]))
+            if key not in owners:
+                owners[key] = set()
+                distinct.append((key, shape))
+            owners[key].add(owner)
+    drawn = []
+    for key, shape in distinct[:MAX_SHAPES]:
+        shared = owners[key]
+        drawn.append({**shape, "series": next(iter(shared)) if len(shared) == 1 else None})
+    note = None
+    if len(distinct) > MAX_SHAPES:
+        note = f"showing the first {MAX_SHAPES} of {len(distinct)} distinct outlines from {field}"
+    return drawn, note
+
+
 def _scatter(panel: DashboardPanel, rows: list[dict[str, Any]]) -> dict[str, Any]:
     x_field = _required(panel, "x")
     y_field = _required(panel, "y")
@@ -515,6 +679,7 @@ def _scatter(panel: DashboardPanel, rows: list[dict[str, Any]]) -> dict[str, Any
     if not points:
         return _empty(f"No {x_field}/{y_field} recorded yet")
     series, fold_note = _colour_series(rows, panel.color_by, landing)
+    shapes, shapes_note = _scatter_shapes(panel, rows, series)
 
     targets: list[list[float]] = []
     errors: list[float] = []
@@ -561,8 +726,14 @@ def _scatter(panel: DashboardPanel, rows: list[dict[str, Any]]) -> dict[str, Any
         "stats": stats,
         "color_label": panel.color_by,
     }
-    if fold_note:
-        payload["note"] = fold_note
+    if shapes:
+        payload["shapes"] = shapes
+        # Named in the legend as the column is ("Inducer shapes"): only the
+        # task knows what its regions are.
+        payload["shapes_label"] = display_name(panel.shapes or "")
+    notes = [note for note in (fold_note, shapes_note) if note]
+    if notes:
+        payload["note"] = " · ".join(notes)
     return payload
 
 
@@ -722,13 +893,25 @@ def _grouped_mean(panel: DashboardPanel, rows: list[dict[str, Any]]) -> dict[str
     fields = panel.group_fields
     if not fields:
         raise ValueError("grouped_mean panels require group")
+    # Crossing needs two factors; the spec refuses cross=True with fewer, so
+    # the length check only guards a panel built past its own validator.
+    crossed = panel.cross and len(fields) > 1
 
-    # Keyed by (factor, level) rather than by level alone. Two factors can name
-    # the same level — `near` under separation and `near` under anything else —
-    # and merging them would silently average unrelated trials together.
-    buckets: dict[tuple[str, str], list[float]] = {}
+    # Marginal buckets are keyed by (factor, level) rather than by level
+    # alone. Two factors can name the same level — `near` under separation and
+    # `near` under anything else — and merging them would silently average
+    # unrelated trials together. Crossed buckets are keyed by every factor's
+    # level at once, in the order the factors were declared.
+    buckets: dict[tuple[str, ...], list[float]] = {}
     for row in rows:
         if not _num(row.get(field)):
+            continue
+        if crossed:
+            levels = [row.get(group_field) for group_field in fields]
+            # A trial missing any one factor belongs to no cell.
+            if any(level is None for level in levels):
+                continue
+            buckets.setdefault(tuple(str(level) for level in levels), []).append(float(row[field]))
             continue
         for group_field in fields:
             key = row.get(group_field)
@@ -737,47 +920,73 @@ def _grouped_mean(panel: DashboardPanel, rows: list[dict[str, Any]]) -> dict[str
     if not buckets:
         return _empty(f"No {field} by {' / '.join(fields)} yet")
 
+    if crossed:
+        # Each factor's levels in their natural order, the first factor
+        # outermost, so the cells that share a level of it sit together.
+        ordered = sorted(buckets, key=lambda key: tuple(_group_order(level) for level in key))
+    else:
+        # Factors in the order they were declared, levels ordered within each,
+        # so the bars of one factor stay together and the reader compares
+        # within a colour before comparing across.
+        ordered = sorted(buckets, key=lambda key: (fields.index(key[0]), _group_order(key[1])))
+
     groups: list[dict[str, Any]] = []
     trials_shown = 0
-    # Factors in the order they were declared, levels ordered within each, so
-    # the bars of one factor stay together and the reader compares within a
-    # colour before comparing across.
-    ordered = sorted(buckets, key=lambda k: (fields.index(k[0]), _group_order(k[1])))
-    for group_field, label in ordered:
-        values = buckets[(group_field, label)]
+    for key in ordered:
+        values = buckets[key]
         trials_shown += len(values)
         sd = _sd(values)
-        groups.append(
-            {
-                "label": label,
-                "series": group_field.replace("_", " "),
-                "mean": _mean(values),
-                # Standard error of the mean: the error bar answers "how well
-                # is this mean pinned down", which is the question a group
-                # comparison asks. NaN travels as None for a single trial,
-                # where no spread was measured — better a bare dot than a
-                # zero-length bar implying certainty.
-                "sem": None if math.isnan(sd) else sd / math.sqrt(len(values)),
-                "n": len(values),
-            }
-        )
-    # One factor is a plain grouped panel and keeps its own axis label; several
-    # share one axis, and the label that matters is then on the legend.
-    return {
+        group: dict[str, Any] = {
+            # A cell is named by all its levels, "near / static"; a marginal
+            # bar by its one level, with its factor as the series.
+            "label": " / ".join(key) if crossed else key[1],
+            "mean": _mean(values),
+            # Standard error of the mean: the error bar answers "how well
+            # is this mean pinned down", which is the question a group
+            # comparison asks. NaN travels as None for a single trial,
+            # where no spread was measured — better a bare dot than a
+            # zero-length bar implying certainty.
+            "sem": None if math.isnan(sd) else sd / math.sqrt(len(values)),
+            "n": len(values),
+        }
+        if not crossed:
+            group["series"] = key[0].replace("_", " ")
+        groups.append(group)
+
+    if crossed:
+        # "Separation × motion": the factors a cell's label is made of, in the
+        # same order as its parts.
+        x_label = " × ".join(split_unit(group_field)[0] for group_field in fields)
+    elif len(fields) == 1:
+        x_label = axis_label(fields[0])
+    else:
+        # Several marginals share one axis, and the label that matters is then
+        # on the legend.
+        x_label = "condition"
+    payload: dict[str, Any] = {
         "form": "dots",
         "groups": groups,
         "style": panel.style or "dots",
-        "x_label": axis_label(fields[0]) if len(fields) == 1 else "condition",
+        "x_label": x_label,
         "y_label": axis_label(field, panel.unit),
-        "error_label": "± SEM",
+        "error_label": "Mean ± s.e.m.",
         "stats": [
             {"label": "groups", "value": str(len(groups))},
-            # `n` counts placements, not trials: with several factors every
-            # trial appears once per factor, and saying "trials" would overcount
-            # the session by exactly that multiple.
+            # Side by side, `n` counts placements, not trials: every trial
+            # appears once per factor, and saying "trials" would overcount the
+            # session by exactly that multiple. A crossed cell holds each
+            # trial once, so there the two are the same.
             {"label": "n", "value": f"{trials_shown:,}"},
         ],
     }
+    if len(fields) > 1 and not crossed:
+        # On the panel, not only in the spec: bars for several factors on one
+        # axis look like the cells of a design, and they are not.
+        payload["note"] = (
+            "each factor averaged separately over all trials (marginal means), "
+            "not by combination of levels"
+        )
+    return payload
 
 
 def _score(
@@ -1192,6 +1401,123 @@ def frame_intervals_panel(
     }
 
 
+# ----------------------------------------------------------------------
+# Presentation: every string a reader sees, in a journal figure's conventions
+# ----------------------------------------------------------------------
+
+# A record-style name leaking into prose: FIX_BREAK, cue_report_correct.
+_SNAKE_TOKEN = re.compile(r"\b[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+\b")
+# A hyphen standing in for a minus sign in front of a number.
+_HYPHEN_MINUS = re.compile(r"(?<![\w.])-(?=\d)")
+# The space a unit suffix leaves between a number and a degree sign.
+_SPACED_DEGREE = re.compile(r"(\d)\s+°")
+# The keys of a payload that are prose a reader sees.
+_PROSE_KEYS = (
+    "x_label",
+    "y_label",
+    "value_label",
+    "error_label",
+    "note",
+    "message",
+    "origin_label",
+)
+
+
+def display_value(value: Any) -> str:
+    """A level, outcome or response as a figure writes it.
+
+    Record constants (``LANDED_ON_FIGURE``) and lowercase levels (``aligned``)
+    become sentence case, with abbreviations kept in theirs. Numbers keep
+    their digits and gain a true minus sign. Anything written in mixed case on
+    purpose (``Kanizsa``, ``95% CI``) is left as written, and so is a short
+    all-caps abbreviation (``RT``, ``ESC``).
+    """
+    text = str(value).strip()
+    if not text:
+        return text
+    try:
+        float(text)
+    except ValueError:
+        pass
+    else:
+        return _HYPHEN_MINUS.sub("\u2212", text)
+    letters = [ch for ch in text if ch.isalpha()]
+    shouting = bool(letters) and all(ch.isupper() for ch in letters)
+    quiet = bool(letters) and all(ch.islower() for ch in letters)
+    if "_" in text or (shouting and len(letters) > 3) or quiet:
+        words = " ".join(_field_words(re.split(r"[_\s]+", text)))
+        return sentence_start(words)
+    return text
+
+
+def _prose(text: str) -> str:
+    """A label or sentence on a figure: record-style names spelled out as
+    words, a true minus sign, the degree sign against its number, and a
+    capital first letter."""
+    text = _SNAKE_TOKEN.sub(lambda match: split_unit(match.group(0))[0], text)
+    text = _HYPHEN_MINUS.sub("\u2212", text)
+    text = _SPACED_DEGREE.sub(r"\1°", text)
+    return sentence_start(text)
+
+
+def _stat_value(text: str) -> str:
+    """A number in the stats strip, or a one-word verdict (``FAILED``)."""
+    if any(ch.isdigit() for ch in text):
+        return _SPACED_DEGREE.sub(r"\1°", _HYPHEN_MINUS.sub("\u2212", text))
+    return display_value(text)
+
+
+def present(payload: dict[str, Any]) -> dict[str, Any]:
+    """Write every string in a payload the way a journal figure does.
+
+    The builders above name things in the record's terms, because that is
+    what their tests and their logic are about. What the reader sees is
+    decided here, once, for every panel: labels in sentence case, column and
+    outcome names as words, abbreviations in their usual case, degrees as the
+    degree sign, and a true minus sign. Prose (axis titles, notes, stat
+    labels) is rewritten in place; data values gain a ``display_*`` twin and
+    are otherwise left alone. Numbers the page draws are never touched.
+    Applying it twice changes nothing.
+    """
+    for key in _PROSE_KEYS:
+        if isinstance(payload.get(key), str):
+            payload[key] = _prose(payload[key])
+    if isinstance(payload.get("color_label"), str) and payload["color_label"]:
+        payload["display_color_label"] = display_name(payload["color_label"])
+    if isinstance(payload.get("label"), str):
+        payload["label"] = _prose(payload["label"])
+    if isinstance(payload.get("secondary"), str):
+        payload["secondary"] = _stat_value(payload["secondary"])
+    for stat in payload.get("stats") or []:
+        if isinstance(stat.get("label"), str):
+            stat["label"] = _prose(stat["label"])
+        if isinstance(stat.get("value"), str):
+            stat["value"] = _stat_value(stat["value"])
+    # Data values keep their record form: a level, an outcome, a response
+    # key, the column a factor lives in. Code that maps a panel back to its
+    # trials compares them with the record, and a sentence-cased "Occluder"
+    # would silently stop matching "occluder". What the reader sees travels
+    # beside each one as a ``display_*`` field, and the page draws that.
+    for item in payload.get("items") or []:
+        if isinstance(item.get("label"), str):
+            item["display_label"] = display_value(item["label"])
+    for series in payload.get("series") or []:
+        if isinstance(series.get("name"), str) and series["name"]:
+            series["display_name"] = display_value(series["name"])
+    band = payload.get("band")
+    if isinstance(band, dict) and isinstance(band.get("name"), str):
+        band["display_name"] = display_value(band["name"])
+    for group in payload.get("groups") or []:
+        if isinstance(group.get("label"), str):
+            group["display_label"] = display_value(group["label"])
+        if isinstance(group.get("series"), str) and group["series"]:
+            group["display_series"] = display_name(group["series"])
+    for one_map in payload.get("maps") or []:
+        if isinstance(one_map.get("name"), str) and one_map["name"]:
+            one_map["display_name"] = display_value(one_map["name"])
+    return payload
+
+
 _TRIAL_PANELS = {
     "outcomes": _outcomes,
     "responses": _responses,
@@ -1227,4 +1553,4 @@ def panel_payload(
         window = f"most recent {panel.rolling_window} trials"
         existing = payload.get("note")
         payload["note"] = f"{window} · {existing}" if existing else window
-    return payload
+    return present(payload)

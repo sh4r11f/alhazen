@@ -44,6 +44,11 @@ function plotHeight(width) {
  * taller than its neighbour costs more than a little air does. */
 const squarePlotHeight = plotHeight;
 
+/* True only while a panel is being redrawn for figure export. The charts that
+ * pad themselves out to the height every dashboard panel shares read it, so
+ * an exported figure is cropped to its content instead. */
+let exportMode = false;
+
 /** The height of the whole drawing, ticks and axis title included. Every
  *  chart uses it, including the ones with no axis to label, so two panels
  *  side by side end on the same line rather than nearly so. */
@@ -52,7 +57,7 @@ function chartHeight(width) {
 }
 
 const SANS = '"Helvetica Neue", Helvetica, Arial, "Liberation Sans", system-ui, sans-serif';
-const TICK_FONT = '11.5px ' + SANS;
+const TICK_FONT = '11px ' + SANS;
 const LABEL_FONT = '12px ' + SANS;
 
 /* ------------------------------------------------------------------ */
@@ -104,12 +109,49 @@ function seriesColor(series) {
 function fmt(value) {
   if (!isFinite(value)) return '—';
   const magnitude = Math.abs(value);
-  if (magnitude >= 1000) return value.toLocaleString(undefined, { maximumFractionDigits: 0 });
-  if (magnitude >= 100) return value.toFixed(0);
-  if (magnitude >= 10) return value.toFixed(1);
-  if (magnitude >= 1) return value.toFixed(2);
-  if (magnitude === 0) return '0';
-  return value.toPrecision(3);
+  let text;
+  if (magnitude >= 1000) text = value.toLocaleString(undefined, { maximumFractionDigits: 0 });
+  else if (magnitude >= 100) text = value.toFixed(0);
+  else if (magnitude >= 10) text = value.toFixed(1);
+  else if (magnitude >= 1) text = value.toFixed(2);
+  else if (magnitude === 0) text = '0';
+  else text = value.toPrecision(3);
+  return minus(text);
+}
+
+/** A true minus sign. A hyphen in front of a number is a typesetting error in
+ *  a figure, and the two glyphs are not even the same width. */
+function minus(text) {
+  return String(text).replace(/^-(?=\d)/, '\u2212');
+}
+
+/** A title's first letter in capitals and nothing else changed, so a task's
+ *  own wording ("P(occluder) by alignment") is kept as written. */
+/** What the reader sees for a data value: its display form when the session
+ *  sent one, the record's own value otherwise, so a dashboard saved before
+ *  display forms existed still draws. The raw values stay in the payload for
+ *  code that maps a panel back to its trials. */
+function shown(object, key) {
+  if (!object) return '';
+  const display = object['display_' + key];
+  return display !== undefined && display !== null && display !== '' ? display : object[key];
+}
+
+function sentenceStart(text) {
+  const value = String(text || '');
+  return value ? value[0].toUpperCase() + value.slice(1) : value;
+}
+
+/** a, b, … z, then aa, ab, …: how a plate with more panels than letters
+ *  keeps going. */
+function panelLetter(position) {
+  let text = '';
+  let n = position;
+  do {
+    text = String.fromCharCode(97 + (n % 26)) + text;
+    n = Math.floor(n / 26) - 1;
+  } while (n >= 0);
+  return text;
 }
 
 /* Text width without laying anything out: bar charts need to know how wide a
@@ -155,6 +197,45 @@ function niceTicks(lo, hi, target, integer) {
 }
 
 /**
+ * A domain that starts and ends on a tick, with the ticks that cover it.
+ *
+ * A journal figure's axis runs from one labelled value to another. An axis
+ * that stops at an unlabelled 1.08 leaves a stub of line past its last tick
+ * and the reader guessing what the stub is worth. The step is chosen from the
+ * data's own range, then each end is pushed outward to the nearest multiple
+ * of it; zero is a multiple of every step, so a baseline at zero stays there.
+ */
+function niceDomain(lo, hi, target, integer) {
+  if (!(hi > lo)) { lo -= 0.5; hi += 0.5; }
+  const inner = niceTicks(lo, hi, target, integer);
+  const step = inner.length > 1 ? inner[1] - inner[0] : hi - lo;
+  /* The 1e-9 keeps an end that already sits on a tick from being pushed a
+   * whole step further by floating-point dust. */
+  const start = Math.floor(lo / step + 1e-9) * step;
+  const end = Math.ceil(hi / step - 1e-9) * step;
+  const ticks = [];
+  for (let value = start; value <= end + step * 1e-9; value += step) {
+    ticks.push(Math.abs(value) < step * 1e-9 ? 0 : Number(value.toFixed(10)));
+  }
+  return { lo: ticks[0], hi: ticks[ticks.length - 1], ticks: ticks };
+}
+
+/** The unit an axis title ends with: "Saccade latency (ms)" -> "ms". Only a
+ *  short symbol counts, so a title like "Occluder landing (proportion)" does
+ *  not get "proportion" stapled onto its numbers. */
+function unitOf(label) {
+  const match = /\(([^()]+)\)\s*$/.exec(String(label || ''));
+  return match && match[1].length <= 5 ? match[1] : '';
+}
+
+/** A number with its unit, as print sets it: "199 ms", but "0.78°" and "12%"
+ *  with no space, because those symbols sit against their number. */
+function withUnit(text, unit) {
+  if (!unit) return text;
+  return unit === '°' || unit === '%' ? text + unit : text + ' ' + unit;
+}
+
+/**
  * How many decimals it takes to write `step` exactly. Deriving this from
  * log10 is off by one on the quarter steps a 0–1 axis is full of: it renders
  * 0.25 as "0.3", so an axis reads 0.0 / 0.3 / 0.5 / 0.8 / 1.0.
@@ -171,8 +252,8 @@ function decimalsFor(step) {
 /** Tick text with the decimals the step implies — never 0.30000000000000004. */
 function tickText(value, ticks) {
   const step = ticks.length > 1 ? Math.abs(ticks[1] - ticks[0]) : Math.abs(value) || 1;
-  if (Math.abs(value) >= 10000) return value.toLocaleString(undefined, { maximumFractionDigits: 0 });
-  return value.toFixed(decimalsFor(step));
+  if (Math.abs(value) >= 10000) return minus(value.toLocaleString(undefined, { maximumFractionDigits: 0 }));
+  return minus(value.toFixed(decimalsFor(step)));
 }
 
 /* ------------------------------------------------------------------ */
@@ -204,8 +285,16 @@ function drawFrame(svg, box, opts) {
       x: x, y: y1 + 19, class: 'tick-text', 'text-anchor': 'middle',
     }, svg).textContent = tickText(value, opts.xTicks);
   });
-  svgEl('line', { x1: x0, x2: x0, y1: y0, y2: y1, class: 'spine' }, svg);
-  svgEl('line', { x1: x0, x2: x1, y1: y1, y2: y1, class: 'spine' }, svg);
+  /* Each spine runs between its outermost ticks rather than the whole
+   * plotting box, so an axis always ends on a labelled value. An axis with
+   * fewer than two ticks (a grouped panel's category axis) keeps the box's
+   * full length, since there is no labelled extent to trim it to. */
+  const yTickPx = (opts.yTicks || []).map(opts.yScale);
+  const xTickPx = (opts.xTicks || []).map(opts.xScale);
+  const ySpan = yTickPx.length > 1 ? [Math.min(...yTickPx), Math.max(...yTickPx)] : [y0, y1];
+  const xSpan = xTickPx.length > 1 ? [Math.min(...xTickPx), Math.max(...xTickPx)] : [x0, x1];
+  svgEl('line', { x1: x0, x2: x0, y1: ySpan[0], y2: ySpan[1], class: 'spine' }, svg);
+  svgEl('line', { x1: xSpan[0], x2: xSpan[1], y1: y1, y2: y1, class: 'spine' }, svg);
   if (opts.xLabel) {
     svgEl('text', {
       x: (x0 + x1) / 2, y: y1 + 40, class: 'axis-text', 'text-anchor': 'middle',
@@ -297,13 +386,25 @@ function hideTip(host) {
 
 /** A legend whenever two or more things are drawn — identity is never left to
  *  colour-matching alone. One series needs none: the title already names it. */
-function drawLegend(parent, entries) {
-  if (entries.length < 2) return;
+function drawLegend(parent, entries, title) {
+  /* Kept on the host too, so a figure export can draw the same legend inside
+   * the SVG it writes rather than lose it with the page around the plot. */
+  parent._legend = { entries: entries, title: title || '' };
+  /* A lone series is left out, since the panel's title already names it. A
+   * definition is the exception: what an error bar means has to be stated
+   * even when it is the only thing the legend holds. */
+  if (entries.length < 2 && !entries.some((entry) => entry.shape === 'whisker')) return;
   const legend = htmlEl('div', 'legend', null, parent);
+  /* What the colours stand for, named before them: "Alignment", then the
+   * levels. Without it a legend is a set of words with no question. */
+  if (title) htmlEl('span', 'legend-title', title, legend);
   entries.forEach((entry) => {
     const item = htmlEl('span', null, null, legend);
     const swatch = htmlEl('i', entry.shape || 'line', null, item);
-    if (entry.shape === 'ring') swatch.style.borderColor = entry.color;
+    if (entry.shape === 'ring' || entry.shape === 'outline') swatch.style.borderColor = entry.color;
+    /* The error-bar glyph is drawn with borders and a gradient that all take
+     * the text colour, so one property colours every part of it. */
+    else if (entry.shape === 'whisker') swatch.style.color = entry.color;
     else swatch.style.background = entry.color;
     if (entry.shape === 'box') swatch.style.opacity = '0.28';
     htmlEl('span', null, entry.name, item);
@@ -332,26 +433,31 @@ function drawLineChart(legendHost, host, data) {
 
   let yLo;
   let yHi;
+  let yTicks;
   if (data.y_domain) {
     [yLo, yHi] = data.y_domain;
+    yTicks = niceTicks(yLo, yHi, 4);
   } else {
     const values = points.map((p) => p[1])
       .concat((data.band ? data.band.points : []).flatMap((p) => [p[1], p[2]]));
-    yLo = Math.min(...values);
-    yHi = Math.max(...values);
-    if (yHi === yLo) { yLo -= 0.5; yHi += 0.5; }
-    const margin = (yHi - yLo) * 0.08;
-    yLo -= margin;
-    yHi += margin;
+    /* Pushed out to the nearest ticks rather than padded by a fixed
+     * fraction, so the axis starts and stops on a labelled value. */
+    const domain = niceDomain(Math.min(...values), Math.max(...values), 4);
+    yLo = domain.lo;
+    yHi = domain.hi;
+    yTicks = domain.ticks;
   }
 
-  const yTicks = niceTicks(yLo, yHi, 4);
   const left = leftPad(yTicks);
   const plotH = plotHeight(width);
   const box = { x0: left, x1: width - PAD.right, y0: PAD.top, y1: PAD.top + plotH };
+  /* The trial axis the same way, in whole trials: 0 to 80, not 1 to 79. */
+  const xDomain = niceDomain(xLo, xHi, Math.max(2, Math.floor((box.x1 - box.x0) / 78)), true);
+  xLo = xDomain.lo;
+  xHi = xDomain.hi;
+  const xTicks = xDomain.ticks;
   const xScale = (v) => box.x0 + (v - xLo) / (xHi - xLo) * (box.x1 - box.x0);
   const yScale = (v) => box.y1 - (v - yLo) / (yHi - yLo) * (box.y1 - box.y0);
-  const xTicks = niceTicks(xLo, xHi, Math.max(2, Math.floor((box.x1 - box.x0) / 78)), true);
 
   const svg = svgEl('svg', { width: width, height: chartHeight(width) }, host);
   drawFrame(svg, box, {
@@ -397,6 +503,7 @@ function drawLineChart(legendHost, host, data) {
      * already is, and where it cannot collide with the data. */
     const last = pixels[pixels.length - 1];
     marker(svg, last[0], last[1], color, 3.5);
+    one._labelX = last[0];
     one._labelY = last[1];
   });
 
@@ -408,10 +515,21 @@ function drawLineChart(legendHost, host, data) {
     if (placed.some((other) => Math.abs(other - y) < 13)) return;
     placed.push(y);
     const value = one.points[one.points.length - 1][1];
+    const label = fmt(value);
+    /* Beside the series' own last point, not at the end of the axis: the
+     * trial axis runs on to a round number past the last trial, so a label
+     * parked at its end floats away from the line it names. To the right of
+     * the point, level with it, when the margin has room for the text;
+     * otherwise above the point and ending at it. */
+    const room = box.x1 + PAD.right - one._labelX - 8;
+    const fitsRight = textWidth(label, TICK_FONT) <= room;
     const text = svgEl('text', {
-      x: box.x1 - 2, y: y - 8, class: 'value-text', 'text-anchor': 'end',
+      x: fitsRight ? one._labelX + 8 : one._labelX - 6,
+      y: fitsRight ? y + 4 : y - 8,
+      class: 'value-text',
+      'text-anchor': fitsRight ? 'start' : 'end',
     }, svg);
-    text.textContent = fmt(value);
+    text.textContent = label;
   });
 
   /* Failed deliveries: a status mark, with its meaning in the legend and the
@@ -427,9 +545,9 @@ function drawLineChart(legendHost, host, data) {
     }, svg);
   });
 
-  const entries = series.map((one) => ({ name: one.name, color: slotColor(one.slot) }));
-  if (data.band) entries.push({ name: data.band.name || '95% CI', color: slotColor(data.band.slot), shape: 'box' });
-  if ((data.marks || []).length) entries.push({ name: 'delivery failed', color: 'var(--critical)', shape: 'dot' });
+  const entries = series.map((one) => ({ name: shown(one, 'name'), color: slotColor(one.slot) }));
+  if (data.band) entries.push({ name: shown(data.band, 'name') || '95% CI', color: slotColor(data.band.slot), shape: 'box' });
+  if ((data.marks || []).length) entries.push({ name: 'Delivery failed', color: 'var(--critical)', shape: 'dot' });
   drawLegend(legendHost, entries);
 
   /* Crosshair: the reader aims at a trial, never at a 2px line. */
@@ -455,7 +573,7 @@ function drawLineChart(legendHost, host, data) {
     hairline.setAttribute('opacity', 1);
     const rows = series.map((one) => {
       const near = one.points.reduce((a, b) => (Math.abs(b[0] - at) < Math.abs(a[0] - at) ? b : a));
-      return { name: one.name, value: fmt(near[1]), color: slotColor(one.slot) };
+      return { name: shown(one, 'name'), value: fmt(near[1]), color: slotColor(one.slot) };
     });
     showTip(host, xScale(at) , event.clientY - rect.top, (data.x_label || 'x') + ' ' + fmt(at), rows);
   };
@@ -472,7 +590,7 @@ function drawLineChart(legendHost, host, data) {
  * neighbour or gets rotated, and both are worse than reading it across.
  */
 function valueLabel(item) {
-  return item.value.toLocaleString() + ' · ' + (item.share * 100).toFixed(item.share < 0.1 ? 1 : 0) + '%';
+  return item.value.toLocaleString() + ' (' + (item.share * 100).toFixed(item.share < 0.1 ? 1 : 0) + '%)';
 }
 
 function drawBars(legendHost, host, data) {
@@ -480,18 +598,20 @@ function drawBars(legendHost, host, data) {
   if (!items.length) return drawEmpty(host, 'No data yet');
 
   const width = host.clientWidth || 380;
-  /* The same box every other panel gets, with the bars spread through it and
-   * centred. A bar chart sized to its own content leaves its card as a strip
-   * of plot above a field of nothing, and breaks the row it sits in. */
-  const height = chartHeight(width);
-  const band = Math.min(64, (height - PAD.bottom) / items.length);
+  /* Rows at a fixed pitch, each bar filling most of its row: thin bars in
+   * wide gutters read as a sketch, not a figure. On the dashboard the rows
+   * are centred in the height every panel shares, so a card with three
+   * categories still lines up with its neighbour; an exported figure is
+   * cropped to its rows. */
+  const band = Math.min(30, (chartHeight(width) - PAD.bottom) / items.length);
+  const thickness = Math.max(4, Math.round(band * 0.62));
+  const height = exportMode ? band * items.length + 8 : chartHeight(width);
   const top = (height - band * items.length) / 2;
-  const thickness = Math.min(24, band - 14);
   const labelFont = LABEL_FONT;
   let labelWidth = 0;
   let valueWidth = 0;
   items.forEach((item) => {
-    labelWidth = Math.max(labelWidth, textWidth(item.label, labelFont));
+    labelWidth = Math.max(labelWidth, textWidth(shown(item, 'label'), labelFont));
     valueWidth = Math.max(valueWidth, textWidth(valueLabel(item), labelFont));
   });
   /* A few pixels of slack: the canvas metric and the SVG's own layout can
@@ -505,7 +625,7 @@ function drawBars(legendHost, host, data) {
   const max = Math.max(...items.map((item) => item.value), 1);
   const scale = (v) => Math.max(0, (v / max) * Math.max(8, x1 - x0));
 
-  const svg = svgEl('svg', { width: width, height: chartHeight(width) }, host);
+  const svg = svgEl('svg', { width: width, height: height }, host);
   /* One hue for every bar: these categories have no order, so colouring them
    * by size would spend the identity channel re-encoding bar length. */
   const color = slotColor(1);
@@ -513,18 +633,14 @@ function drawBars(legendHost, host, data) {
   items.forEach((item, index) => {
     const y = top + index * band + (band - thickness) / 2;
     const length = scale(item.value);
-    const radius = Math.min(4, length);
-    /* Rounded at the data end, square at the baseline. */
-    svgEl('path', {
-      d: 'M' + x0 + ',' + y +
-         'H' + (x0 + length - radius) + 'Q' + (x0 + length) + ',' + y + ' ' + (x0 + length) + ',' + (y + radius) +
-         'V' + (y + thickness - radius) + 'Q' + (x0 + length) + ',' + (y + thickness) + ' ' + (x0 + length - radius) + ',' + (y + thickness) +
-         'H' + x0 + 'Z',
-      style: 'fill:' + color,
+    /* Square at both ends, as a printed figure draws a bar: its length is
+     * the value, and a rounded end leaves the reader guessing where it stops. */
+    svgEl('rect', {
+      x: x0, y: y, width: Math.max(0.5, length), height: thickness, style: 'fill:' + color,
     }, svg);
     svgEl('text', {
       x: x0 - 8, y: y + thickness / 2 + 4, class: 'value-text', 'text-anchor': 'end',
-    }, svg).textContent = ellipsize(item.label, labelCap - 10, labelFont);
+    }, svg).textContent = ellipsize(shown(item, 'label'), labelCap - 10, labelFont);
     svgEl('text', {
       x: x0 + length + 8, y: y + thickness / 2 + 4, class: 'value-text',
     }, svg).textContent = valueLabel(item);
@@ -535,9 +651,9 @@ function drawBars(legendHost, host, data) {
     }, svg);
     hit.addEventListener('pointermove', (event) => {
       const rect = svg.getBoundingClientRect();
-      showTip(host, event.clientX - rect.left, event.clientY - rect.top, item.label, [
+      showTip(host, event.clientX - rect.left, event.clientY - rect.top, shown(item, 'label'), [
         { name: data.value_label || '', value: item.value.toLocaleString(), color: color },
-        { name: 'of ' + data.total.toLocaleString(), value: (item.share * 100).toFixed(1) + '%' },
+        { name: 'Share of ' + data.total.toLocaleString(), value: (item.share * 100).toFixed(1) + '%' },
       ]);
     });
     hit.addEventListener('pointerleave', () => hideTip(host));
@@ -582,14 +698,7 @@ function drawHistogram(legendHost, host, data) {
     const w = Math.max(1, xScale(bin.x1) - xScale(bin.x0) - 2);
     const y = yScale(bin.count);
     const h = box.y1 - y;
-    const radius = Math.min(4, w / 2, h);
-    svgEl('path', {
-      d: 'M' + x + ',' + box.y1 + 'V' + (y + radius) +
-         'Q' + x + ',' + y + ' ' + (x + radius) + ',' + y +
-         'H' + (x + w - radius) + 'Q' + (x + w) + ',' + y + ' ' + (x + w) + ',' + (y + radius) +
-         'V' + box.y1 + 'Z',
-      style: 'fill:' + color,
-    }, svg);
+    svgEl('rect', { x: x, y: y, width: w, height: h, style: 'fill:' + color }, svg);
     const hit = svgEl('rect', { x: x - 1, y: box.y0, width: w + 2, height: box.y1 - box.y0, class: 'hit' }, svg);
     hit.addEventListener('pointermove', (event) => {
       const rect = svg.getBoundingClientRect();
@@ -604,7 +713,8 @@ function drawHistogram(legendHost, host, data) {
   if (isFinite(data.median)) {
     const x = xScale(data.median);
     svgEl('line', { x1: x, x2: x, y1: box.y0 - 2, y2: box.y1, class: 'rule' }, svg);
-    const label = 'median ' + fmt(data.median);
+    /* With its unit, as a direct label is set in print: "Median 199 ms". */
+    const label = 'Median ' + withUnit(fmt(data.median), unitOf(data.x_label));
     /* Above the bars, never across them; flipped inward where the median sits
      * near the right edge, so the text is never clipped by the card. */
     const flip = x + textWidth(label, TICK_FONT) + 8 > box.x1;
@@ -626,7 +736,16 @@ function drawScatter(legendHost, host, data) {
   const points = series.flatMap((one) => one.points);
 
   const width = host.clientWidth || 380;
-  const all = points.concat(data.targets || []);
+  const shapes = data.shapes || [];
+  /* Outlines count toward the extent: a region cut off by the frame hides the
+   * very edge a landing is judged against. Two corners per shape are enough
+   * to bound it. */
+  const shapeCorners = shapes.flatMap((shape) => {
+    const halfWidth = shape.kind === 'circle' ? shape.r : shape.width / 2;
+    const halfHeight = shape.kind === 'circle' ? shape.r : shape.height / 2;
+    return [[shape.x - halfWidth, shape.y - halfHeight], [shape.x + halfWidth, shape.y + halfHeight]];
+  });
+  const all = points.concat(data.targets || [], shapeCorners);
   let xLo = Math.min(...all.map((p) => p[0]));
   let xHi = Math.max(...all.map((p) => p[0]));
   let yLo = Math.min(...all.map((p) => p[1]));
@@ -669,9 +788,40 @@ function drawScatter(legendHost, host, data) {
   if (xLo < 0 && xHi > 0) svgEl('line', { x1: xScale(0), x2: xScale(0), y1: box.y0, y2: box.y1, class: 'rule' }, svg);
   if (yLo < 0 && yHi > 0) svgEl('line', { x1: box.x0, x2: box.x1, y1: yScale(0), y2: yScale(0), class: 'rule' }, svg);
 
+  /* Regions under the data, as outlines only: a filled region would hide the
+   * landings inside it. Each takes the colour of the one series whose trials
+   * showed it; a region several series share belongs to none of them, and is
+   * grey. Drawn as an ellipse in pixels so a circle stays a circle in data
+   * units even on a panel without equal aspect. */
+  shapes.forEach((shape) => {
+    const owner = shape.series === null || shape.series === undefined
+      ? null
+      : series.find((one) => one.name === shape.series);
+    const style = 'fill:none;stroke:' + (owner ? seriesColor(owner) : 'var(--muted)') + ';stroke-width:1.2';
+    if (shape.kind === 'circle') {
+      svgEl('ellipse', {
+        cx: xScale(shape.x), cy: yScale(shape.y),
+        rx: Math.abs(xScale(shape.x + shape.r) - xScale(shape.x)),
+        ry: Math.abs(yScale(shape.y + shape.r) - yScale(shape.y)),
+        style: style,
+      }, svg);
+      return;
+    }
+    /* A rect is its centre and size, axis-aligned. */
+    const left = xScale(shape.x - shape.width / 2);
+    const right = xScale(shape.x + shape.width / 2);
+    const upper = yScale(shape.y + shape.height / 2);
+    const lower = yScale(shape.y - shape.height / 2);
+    svgEl('rect', {
+      x: Math.min(left, right), y: Math.min(upper, lower),
+      width: Math.abs(right - left), height: Math.abs(lower - upper),
+      style: style,
+    }, svg);
+  });
+
   series.forEach((one) => {
     const color = seriesColor(one);
-    one.points.forEach((point) => marker(svg, xScale(point[0]), yScale(point[1]), color, 4));
+    one.points.forEach((point) => marker(svg, xScale(point[0]), yScale(point[1]), color, 3.5));
   });
 
   /* Drawn after the cloud, not under it: an open ring hides no data, and
@@ -709,15 +859,16 @@ function drawScatter(legendHost, host, data) {
 
   drawLegend(legendHost, [
     ...series.map((one) => ({
-      name: one.name || 'landing', color: seriesColor(one), shape: 'dot',
+      name: shown(one, 'name') || 'Landing', color: seriesColor(one), shape: 'dot',
     })),
     /* Only when one was drawn: a legend entry for a mark that is not on the
      * plot sends the reader looking for it. */
     ...(series.some((one) => one.centroid)
-      ? [{ name: 'mean landing', color: 'var(--ink-2)', shape: 'diamond' }]
+      ? [{ name: 'Mean landing', color: 'var(--ink-2)', shape: 'diamond' }]
       : []),
-    ...((data.targets || []).length ? [{ name: 'target', color: 'var(--ink-2)', shape: 'ring' }] : []),
-  ]);
+    ...((data.targets || []).length ? [{ name: 'Target', color: 'var(--ink-2)', shape: 'ring' }] : []),
+    ...(shapes.length ? [{ name: data.shapes_label || 'Regions', color: 'var(--muted)', shape: 'outline' }] : []),
+  ], shown(data, 'color_label'));
 
   /* Nearest-point hover: a 8px dot is a pinpoint nobody hits reliably, so the
    * pointer only has to be closest. */
@@ -741,8 +892,8 @@ function drawScatter(legendHost, host, data) {
       { name: data.x_label, value: fmt(best.point[0]), color: seriesColor(best.series) },
       { name: data.y_label, value: fmt(best.point[1]) },
     ];
-    if (best.series.name) rows.push({ name: data.color_label || '', value: best.series.name });
-    showTip(host, xScale(best.point[0]), yScale(best.point[1]), 'landing', rows);
+    if (best.series.name) rows.push({ name: shown(data, 'color_label') || '', value: shown(best.series, 'name') });
+    showTip(host, xScale(best.point[0]), yScale(best.point[1]), 'Landing', rows);
   });
   hit.addEventListener('pointerleave', () => hideTip(host));
 }
@@ -768,17 +919,13 @@ function drawVectors(legendHost, host, data) {
 
   const svg = svgEl('svg', { width: width, height: chartHeight(width) }, host);
 
+  /* The polar grid is reference, not data: light rules for the rings and
+   * the two lines through the origin, so the vectors are the darkest ink. */
   (data.rings || []).forEach((ring) => {
-    svgEl('circle', {
-      cx: cx, cy: cy, r: ring * scale, class: 'tick-mark', fill: 'none', 'stroke-opacity': 0.55,
-    }, svg);
-    /* Labelled once, on the horizontal, so the reader can put a number on an
-     * amplitude without counting rings — with a halo, because that horizontal
-     * is exactly where a leftward or rightward saccade puts its endpoints. */
-    haloText(svg, cx + ring * scale, cy - 4, tickText(ring, data.rings));
+    svgEl('circle', { cx: cx, cy: cy, r: ring * scale, class: 'rule', fill: 'none' }, svg);
   });
-  svgEl('line', { x1: cx - rPx, x2: cx + rPx, y1: cy, y2: cy, class: 'spine' }, svg);
-  svgEl('line', { x1: cx, x2: cx, y1: cy - rPx, y2: cy + rPx, class: 'spine' }, svg);
+  svgEl('line', { x1: cx - rPx, x2: cx + rPx, y1: cy, y2: cy, class: 'rule' }, svg);
+  svgEl('line', { x1: cx, x2: cx, y1: cy - rPx, y2: cy + rPx, class: 'rule' }, svg);
 
   /* The vectors themselves, faint: three hundred of them at full weight are a
    * solid wedge, and the endpoint cloud on top is what carries the detail. */
@@ -798,8 +945,21 @@ function drawVectors(legendHost, host, data) {
     });
   });
   drawLegend(legendHost, series.map((one) => ({
-    name: one.name || 'saccade', color: seriesColor(one), shape: 'dot',
-  })));
+    name: shown(one, 'name') || 'Saccade', color: seriesColor(one), shape: 'dot',
+  })), shown(data, 'color_label'));
+
+  /* Ring labels after the data, so no endpoint covers a number. Set up the
+   * vertical, just right of it, where tasks whose saccades run left and right
+   * leave the plot empty, and haloed for the tasks whose saccades go
+   * everywhere. The outermost ring carries the unit: "10°". */
+  const ringUnit = unitOf(data.x_label);
+  (data.rings || []).forEach((ring, index, rings) => {
+    const text = tickText(ring, rings);
+    haloText(
+      svg, cx + 4, cy - ring * scale - 3,
+      index === rings.length - 1 ? withUnit(text, ringUnit) : text, 'start',
+    );
+  });
 
   /* The origin, marked and named: a displacement plot without its zero is a
    * cloud of numbers nobody can anchor. */
@@ -807,7 +967,7 @@ function drawVectors(legendHost, host, data) {
     d: 'M' + (cx - 5) + ',' + cy + 'H' + (cx + 5) + 'M' + cx + ',' + (cy - 5) + 'V' + (cy + 5),
     style: 'stroke:var(--ink-2);stroke-width:1.6',
   }, svg);
-  haloText(svg, cx + 8, cy + 14, data.origin_label || 'origin', 'start');
+  haloText(svg, cx + 8, cy + 14, data.origin_label || 'Origin', 'start');
 
   if (data.x_label) {
     svgEl('text', {
@@ -815,9 +975,12 @@ function drawVectors(legendHost, host, data) {
     }, svg).textContent = data.x_label;
   }
   if (data.y_label) {
+    /* Beside the grid rather than at the card's edge: the grid is square and
+     * centred, so on a wide panel the edge is far from anything it labels. */
+    const titleX = Math.max(11, cx - rPx - 16);
     svgEl('text', {
-      x: 11, y: cy, class: 'axis-text', 'text-anchor': 'middle',
-      transform: 'rotate(-90 11 ' + cy + ')',
+      x: titleX, y: cy, class: 'axis-text', 'text-anchor': 'middle',
+      transform: 'rotate(-90 ' + titleX + ' ' + cy + ')',
     }, svg).textContent = data.y_label;
   }
 
@@ -842,11 +1005,11 @@ function drawVectors(legendHost, host, data) {
      * convention a saccade's direction is quoted in. */
     const angle = (Math.atan2(dy, dx) * 180) / Math.PI;
     const rows = [
-      { name: 'amplitude', value: fmt(Math.hypot(dx, dy)), color: seriesColor(best.series) },
-      { name: 'direction', value: fmt(angle) + '°' },
+      { name: 'Amplitude', value: fmt(Math.hypot(dx, dy)), color: seriesColor(best.series) },
+      { name: 'Direction', value: fmt(angle) + '°' },
     ];
-    if (best.series.name) rows.push({ name: data.color_label || '', value: best.series.name });
-    showTip(host, cx + dx * scale, cy - dy * scale, 'saccade', rows);
+    if (best.series.name) rows.push({ name: shown(data, 'color_label') || '', value: shown(best.series, 'name') });
+    showTip(host, cx + dx * scale, cy - dy * scale, 'Saccade', rows);
   });
   hit.addEventListener('pointerleave', () => hideTip(host));
 }
@@ -866,23 +1029,24 @@ function drawDots(legendHost, host, data) {
   const highOf = (g) => (g.high === undefined ? g.mean + (g.sem || 0) : g.high);
   let yLo;
   let yHi;
+  let yTicks;
   if (data.y_domain) {
     [yLo, yHi] = data.y_domain;
+    yTicks = niceTicks(yLo, yHi, 4);
   } else {
-    yLo = Math.min(...groups.map(lowOf));
-    yHi = Math.max(...groups.map(highOf));
+    let lo = Math.min(...groups.map(lowOf));
+    let hi = Math.max(...groups.map(highOf));
     /* A bar's length is the quantity, so it has to start at zero — a bar
      * chart cropped to its own range overstates every difference on it. */
-    if (bars) { yLo = Math.min(0, yLo); yHi = Math.max(0, yHi); }
-    if (yHi === yLo) { yLo -= 0.5; yHi += 0.5; }
-    const margin = (yHi - yLo) * 0.14;
-    /* Headroom goes above the data, never past the baseline: padding below a
-     * bar chart's zero lifts every bar off the axis it is measured from. */
-    yLo = bars && yLo >= 0 ? 0 : yLo - margin;
-    yHi = bars && yHi <= 0 ? 0 : yHi + margin;
+    if (bars) { lo = Math.min(0, lo); hi = Math.max(0, hi); }
+    /* Out to the nearest ticks. Zero is a multiple of every step, so a bar
+     * chart's baseline stays exactly at zero and its headroom goes above the
+     * longest whisker, never below the bars. */
+    const domain = niceDomain(lo, hi, 4);
+    yLo = domain.lo;
+    yHi = domain.hi;
+    yTicks = domain.ticks;
   }
-
-  const yTicks = niceTicks(yLo, yHi, 4);
   const left = leftPad(yTicks);
   const plotH = plotHeight(width);
   const box = { x0: left, x1: width - PAD.right, y0: PAD.top, y1: PAD.top + plotH };
@@ -906,33 +1070,43 @@ function drawDots(legendHost, host, data) {
    * which — the x labels are level names and several factors can share one. */
   const series = [];
   groups.forEach((g) => { if (g.series && !series.includes(g.series)) series.push(g.series); });
-  const colorOf = (g) => (series.length > 1 ? slotColor(series.indexOf(g.series)) : slotColor(1));
-  drawLegend(legendHost, series.map((name) => ({ name: name, color: slotColor(series.indexOf(name)) })));
+  /* Slots count from 1. Passing the 0-based index gave the first two factors
+   * slot 1 both, so they were drawn in the same blue. */
+  const colorOf = (g) => (series.length > 1 ? slotColor(series.indexOf(g.series) + 1) : slotColor(1));
+  /* A factor's display name, from any group that carries it. */
+  const seriesName = (raw) => {
+    const carrier = groups.find((g) => g.series === raw);
+    return (carrier && carrier.display_series) || raw;
+  };
+  /* One entry per factor when there are several, and the error bar's
+   * definition whenever a whisker is drawn: a journal will not print an error
+   * bar the figure does not define, and "Mean ± s.e.m." and "95% CI" are
+   * different claims about the same bar. */
+  const entries = series.length > 1
+    ? series.map((name) => ({ name: seriesName(name), color: slotColor(series.indexOf(name) + 1) }))
+    : [];
+  const drawsWhiskers = groups.some((g) => Math.abs(yScale(highOf(g)) - yScale(lowOf(g))) > 0.5);
+  if (data.error_label && drawsWhiskers) {
+    entries.push({ name: data.error_label, color: bars ? 'var(--axis)' : 'var(--ink-2)', shape: 'whisker' });
+  }
+  drawLegend(legendHost, entries);
   const zero = yScale(Math.min(Math.max(0, yLo), yHi));
-  const thickness = Math.min(24, Math.max(6, step - 26));
+  /* Half the slot, up to 40 px: wide enough to read as bars rather than
+   * stems, narrow enough to keep the gap that marks them as separate groups. */
+  const thickness = Math.max(6, Math.min(40, step * 0.5));
+  /* Caps in proportion to the bar, so a wide bar's whisker does not end in a
+   * pin head and a narrow bar's cap does not overhang it. */
+  const cap = Math.max(3, Math.min(7, thickness * 0.2));
   groups.forEach((group, index) => {
     const x = xAt(index);
     const y = yScale(group.mean);
     if (bars) {
-      /* Rounded at the data end, square at the baseline — and the rounding
-       * flips with the sign, so a negative mean reads as a bar hanging from
-       * zero rather than one standing on it. */
+      /* Square ends, hanging from zero for a negative mean and standing on it
+       * for a positive one. */
       const top = Math.min(y, zero);
       const height = Math.abs(zero - y);
-      const radius = Math.min(4, thickness / 2, height);
-      const up = y <= zero;
-      svgEl('path', {
-        d: up
-          ? 'M' + (x - thickness / 2) + ',' + zero + 'V' + (top + radius) +
-            'Q' + (x - thickness / 2) + ',' + top + ' ' + (x - thickness / 2 + radius) + ',' + top +
-            'H' + (x + thickness / 2 - radius) +
-            'Q' + (x + thickness / 2) + ',' + top + ' ' + (x + thickness / 2) + ',' + (top + radius) +
-            'V' + zero + 'Z'
-          : 'M' + (x - thickness / 2) + ',' + zero + 'V' + (y - radius) +
-            'Q' + (x - thickness / 2) + ',' + y + ' ' + (x - thickness / 2 + radius) + ',' + y +
-            'H' + (x + thickness / 2 - radius) +
-            'Q' + (x + thickness / 2) + ',' + y + ' ' + (x + thickness / 2) + ',' + (y - radius) +
-            'V' + zero + 'Z',
+      svgEl('rect', {
+        x: x - thickness / 2, y: top, width: thickness, height: Math.max(0.5, height),
         style: 'fill:' + colorOf(group),
       }, svg);
     }
@@ -940,29 +1114,36 @@ function drawDots(legendHost, host, data) {
     const bottom = yScale(lowOf(group));
     if (Math.abs(bottom - top) > 0.5) {
       svgEl('path', {
-        d: 'M' + x + ',' + top + 'V' + bottom + 'M' + (x - 4) + ',' + top + 'H' + (x + 4) +
-           'M' + (x - 4) + ',' + bottom + 'H' + (x + 4),
-        style: 'stroke:' + (bars ? 'var(--ink-2)' : colorOf(group)) + ';stroke-width:1.5',
+        d: 'M' + x + ',' + top + 'V' + bottom + 'M' + (x - cap) + ',' + top + 'H' + (x + cap) +
+           'M' + (x - cap) + ',' + bottom + 'H' + (x + cap),
+        /* Black over a bar, as a printed figure draws an error bar; the
+         * level's own colour on a dot, which has no fill around it to sit on. */
+        style: 'stroke:' + (bars ? 'var(--axis)' : colorOf(group)) + ';stroke-width:1.2',
       }, svg);
     }
     if (!bars) marker(svg, x, y, colorOf(group), 4.5);
     svgEl('text', {
       x: x, y: box.y1 + 15, class: 'tick-text', 'text-anchor': 'middle',
-    }, svg).textContent = group.label;
-    svgEl('text', {
-      x: x, y: box.y1 + 27, class: 'tick-text', 'text-anchor': 'middle', opacity: 0.75,
-    }, svg).textContent = 'n=' + group.n;
+    }, svg).textContent = shown(group, 'label');
+    /* "n = 12" with an italic n: the sample size as it is set in print. */
+    const count = svgEl('text', {
+      x: x, y: box.y1 + 27, class: 'tick-text', 'text-anchor': 'middle',
+    }, svg);
+    svgEl('tspan', { 'font-style': 'italic' }, count).textContent = 'n';
+    svgEl('tspan', {}, count).textContent = ' = ' + group.n;
 
     const hit = svgEl('rect', { x: x - step / 2, y: box.y0, width: step, height: box.y1 - box.y0, class: 'hit' }, svg);
     hit.addEventListener('pointermove', (event) => {
       const rect = svg.getBoundingClientRect();
-      const rows = [{ name: 'mean', value: fmt(group.mean), color: colorOf(group) }];
+      const rows = [{ name: 'Mean', value: fmt(group.mean), color: colorOf(group) }];
       rows.push({
-        name: data.error_label || 'interval',
+        name: data.error_label || 'Interval',
         value: fmt(lowOf(group)) + ' – ' + fmt(highOf(group)),
       });
-      rows.push({ name: 'trials', value: String(group.n) });
-      const title = series.length > 1 ? group.series + ': ' + group.label : group.label;
+      rows.push({ name: 'Trials', value: String(group.n) });
+      const title = series.length > 1
+        ? seriesName(group.series) + ': ' + shown(group, 'label')
+        : shown(group, 'label');
       showTip(host, event.clientX - rect.left, event.clientY - rect.top, title, rows);
     });
     hit.addEventListener('pointerleave', () => hideTip(host));
@@ -1059,7 +1240,7 @@ function drawHeatmap(legendHost, host, data) {
 
     svgEl('text', {
       x: tx + tileW / 2, y: ty + 11, class: 'tick-text', 'text-anchor': 'middle',
-    }, svg).textContent = one.name || '';
+    }, svg).textContent = shown(one, 'name') || '';
 
     for (let r = 0; r < rows; r += 1) {
       for (let c = 0; c < cols; c += 1) {
@@ -1088,7 +1269,7 @@ function drawHeatmap(legendHost, host, data) {
           if (data.flashes && data.flashes[r]) {
             readout.push({ name: 'flashes', value: String(data.flashes[r][c]) });
           }
-          if (one.name) readout.push({ name: 'map', value: one.name });
+          if (one.name) readout.push({ name: 'Map', value: shown(one, 'name') });
           showTip(host, event.clientX - rect.left, event.clientY - rect.top, head, readout);
         });
         cell.addEventListener('pointerleave', () => hideTip(host));
@@ -1231,17 +1412,17 @@ function drawEmpty(host, message) {
 function tableRows(data) {
   switch (data.form) {
     case 'bars':
-      return { head: ['category', data.value_label || 'count', 'share'],
-        rows: data.items.map((i) => [i.label, i.value.toLocaleString(), (i.share * 100).toFixed(1) + '%']) };
+      return { head: ['Category', data.value_label || 'Count', 'Share'],
+        rows: data.items.map((i) => [shown(i, 'label'), i.value.toLocaleString(), (i.share * 100).toFixed(1) + '%']) };
     case 'histogram':
-      return { head: ['bin', data.y_label || 'count'],
+      return { head: ['Bin', data.y_label || 'Count'],
         rows: data.bins.map((b) => [fmt(b.x0) + ' – ' + fmt(b.x1), String(b.count)]) };
     case 'line': {
       const series = data.series || [];
       const xs = [];
       series.forEach((s) => s.points.forEach((p) => { if (!xs.includes(p[0])) xs.push(p[0]); }));
       xs.sort((a, b) => a - b);
-      return { head: [data.x_label || 'x'].concat(series.map((s) => s.name)),
+      return { head: [data.x_label || 'x'].concat(series.map((s) => shown(s, 'name'))),
         rows: xs.map((x) => [fmt(x)].concat(series.map((s) => {
           const hit = s.points.find((p) => p[0] === x);
           return hit ? fmt(hit[1]) : '';
@@ -1249,24 +1430,24 @@ function tableRows(data) {
     }
     case 'scatter': {
       const named = (data.series || []).some((s) => s.name);
-      return { head: [...(named ? [data.color_label || 'series'] : []), data.x_label || 'x', data.y_label || 'y'],
+      return { head: [...(named ? [shown(data, 'color_label') || 'Series'] : []), data.x_label || 'x', data.y_label || 'y'],
         rows: (data.series || []).flatMap((s) => s.points.map((p) => [
-          ...(named ? [s.name] : []), fmt(p[0]), fmt(p[1]),
+          ...(named ? [shown(s, 'name')] : []), fmt(p[0]), fmt(p[1]),
         ])) };
     }
     case 'vectors': {
       const named = (data.series || []).some((s) => s.name);
-      return { head: [...(named ? [data.color_label || 'series'] : []), 'amplitude', 'direction (°)'],
+      return { head: [...(named ? [shown(data, 'color_label') || 'Series'] : []), 'Amplitude', 'Direction (°)'],
         rows: (data.series || []).flatMap((s) => s.points.map((p) => [
-          ...(named ? [s.name] : []),
+          ...(named ? [shown(s, 'name')] : []),
           fmt(Math.hypot(p[0], p[1])),
           fmt((Math.atan2(p[1], p[0]) * 180) / Math.PI),
         ])) };
     }
     case 'dots':
-      return { head: [data.x_label || 'group', 'mean', data.error_label || 'interval', 'n'],
+      return { head: [data.x_label || 'Group', 'Mean', data.error_label || 'Interval', 'n'],
         rows: (data.groups || []).map((g) => [
-          g.label,
+          shown(g, 'label'),
           fmt(g.mean),
           g.low === undefined
             ? (g.sem === null ? '—' : '± ' + fmt(g.sem))
@@ -1274,7 +1455,7 @@ function tableRows(data) {
           String(g.n),
         ]) };
     case 'stat':
-      return { head: [data.label || 'value', ''], rows: [[data.value + (data.unit ? ' ' + data.unit : ''), data.secondary || '']] };
+      return { head: [data.label || 'Value', ''], rows: [[data.value + (data.unit ? ' ' + data.unit : ''), data.secondary || '']] };
     case 'image':
       /* A picture has no rows; its numbers travel in the stats strip. */
       return null;
@@ -1295,7 +1476,7 @@ function tableRows(data) {
         }
       }
       return {
-        head: [data.x_label || 'x', data.y_label || 'y', 'flashes', ...maps.map((m) => m.name)],
+        head: [data.x_label || 'x', data.y_label || 'y', 'Flashes', ...maps.map((m) => shown(m, 'name'))],
         rows: rows,
       };
     }
@@ -1335,6 +1516,273 @@ function drawTable(card, data, index, open) {
 /* Panels and page                                                     */
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/* Figure export: a panel as a journal-ready SVG or PNG                */
+/* ------------------------------------------------------------------ */
+
+/* Journal column widths. Nature's single column is 89 mm and its double
+ * column 183 mm; most journals are within a millimetre or two of both. */
+const FIGURE_WIDTH_MM = { single: 89, double: 183 };
+/* The drawing scale for export, in CSS pixels per millimetre. 400 px across
+ * 89 mm sets the 11 px tick labels at 7 pt and the 12 px axis titles at
+ * 7.6 pt, inside the 5 to 7 pt most journals ask for, and prints a 1 px line
+ * at 0.6 pt. A double-column figure is drawn wider at the same scale, so its
+ * text is the same size in print. */
+const EXPORT_PX_PER_MM = 400 / 89;
+/* What journals ask of line art in a raster file. */
+const EXPORT_DPI = 600;
+/* A face every journal's typesetting has, whatever the reader's machine
+ * rendered the page in. */
+const EXPORT_FONT = 'Arial, Helvetica, "Liberation Sans", sans-serif';
+/* The forms drawn as SVG. A stat is a number and a camera image is a
+ * photograph; neither is a chart to export. */
+const EXPORTABLE = new Set(['line', 'bars', 'histogram', 'scatter', 'vectors', 'dots', 'heatmap']);
+
+/* Presentation properties copied from the page's computed style onto each
+ * exported element, so the file carries its own look instead of pointing at
+ * a stylesheet and theme variables it will not have. */
+const SHAPE_STYLE = ['fill', 'fill-opacity', 'stroke', 'stroke-width', 'stroke-opacity',
+  'stroke-linecap', 'stroke-linejoin', 'opacity', 'paint-order'];
+const TEXT_STYLE = ['font-size', 'font-weight', 'font-style'];
+
+/** A colour as a concrete value: the export resolves theme variables itself,
+ *  because the file it writes has no stylesheet to resolve them against. */
+function resolveColour(value) {
+  const match = /^var\((--[\w-]+)\)$/.exec(String(value || '').trim());
+  if (!match) return value;
+  return getComputedStyle(document.documentElement).getPropertyValue(match[1]).trim() || '#000000';
+}
+
+/** Write each element's computed look onto its copy, and drop what exists
+ *  only for the screen: hover targets and the hover crosshair. */
+function inlineStyles(original, copy) {
+  const sources = [original, ...original.querySelectorAll('*')];
+  const targets = [copy, ...copy.querySelectorAll('*')];
+  sources.forEach((source, index) => {
+    const target = targets[index];
+    const onlyForScreen = source.classList && (source.classList.contains('hit') || source.classList.contains('hairline'));
+    const computed = getComputedStyle(source);
+    SHAPE_STYLE.forEach((property) => {
+      const value = computed.getPropertyValue(property);
+      if (value && !(property === 'paint-order' && value === 'normal')) target.setAttribute(property, value);
+    });
+    if (source.tagName === 'text' || source.tagName === 'tspan') {
+      TEXT_STYLE.forEach((property) => target.setAttribute(property, computed.getPropertyValue(property)));
+      target.setAttribute('font-family', EXPORT_FONT);
+    }
+    target.removeAttribute('style');
+    target.removeAttribute('class');
+    if (onlyForScreen) target.setAttribute('data-screen-only', '1');
+  });
+  copy.querySelectorAll('[data-screen-only]').forEach((node) => node.remove());
+}
+
+/** Lay the legend out as rows of swatch-and-name inside the figure's width. */
+function legendRows(legend, widthPx) {
+  const empty = { height: 0, items: [], lineHeight: 16 };
+  /* The page legend's rule: a lone series is named by the title, but an
+   * error bar's definition is always drawn. */
+  if (!legend || (legend.entries.length < 2 && !legend.entries.some((e) => e.shape === 'whisker'))) return empty;
+  const font = '11px ' + EXPORT_FONT;
+  const items = [];
+  if (legend.title) {
+    items.push({ title: true, text: legend.title, width: textWidth(legend.title, '600 ' + font) + 12 });
+  }
+  legend.entries.forEach((entry) => {
+    items.push({ entry: entry, text: entry.name, width: 18 + textWidth(entry.name, font) + 14 });
+  });
+  let x = 8;
+  let row = 0;
+  items.forEach((item) => {
+    if (x > 8 && x + item.width > widthPx - 8) { row += 1; x = 8; }
+    item.x = x;
+    item.row = row;
+    x += item.width;
+  });
+  return { height: (row + 1) * empty.lineHeight + 10, items: items, lineHeight: empty.lineHeight };
+}
+
+/** Draw the laid-out legend into an SVG group, colours already resolved. */
+function drawLegendRows(group, layout) {
+  const ink = resolveColour('var(--ink)');
+  const ink2 = resolveColour('var(--ink-2)');
+  layout.items.forEach((item) => {
+    const baseline = 14 + item.row * layout.lineHeight;
+    const text = (x, content, weight) => {
+      const node = svgEl('text', {
+        x: x, y: baseline, 'font-family': EXPORT_FONT, 'font-size': '11px',
+        'font-weight': weight || 'normal', fill: weight ? ink : ink2,
+      }, group);
+      node.textContent = content;
+    };
+    if (item.title) { text(item.x, item.text, '600'); return; }
+    const colour = resolveColour(item.entry.color);
+    const cx = item.x + 6;
+    const cy = baseline - 4;
+    const shape = item.entry.shape || 'line';
+    if (shape === 'dot') svgEl('circle', { cx: cx, cy: cy, r: 3.5, fill: colour }, group);
+    else if (shape === 'ring') svgEl('circle', { cx: cx, cy: cy, r: 4, fill: 'none', stroke: colour, 'stroke-width': 1.2 }, group);
+    else if (shape === 'box') svgEl('rect', { x: cx - 5, y: cy - 5, width: 10, height: 10, fill: colour, 'fill-opacity': 0.28 }, group);
+    else if (shape === 'whisker') {
+      svgEl('path', {
+        d: 'M' + cx + ',' + (cy - 5.5) + 'V' + (cy + 5.5) +
+           'M' + (cx - 4) + ',' + (cy - 5.5) + 'H' + (cx + 4) +
+           'M' + (cx - 4) + ',' + (cy + 5.5) + 'H' + (cx + 4),
+        fill: 'none', stroke: colour, 'stroke-width': 1.2,
+      }, group);
+    }
+    else if (shape === 'outline') svgEl('rect', { x: cx - 5, y: cy - 5, width: 10, height: 10, fill: 'none', stroke: colour, 'stroke-width': 1.2 }, group);
+    else if (shape === 'diamond') svgEl('path', { d: 'M' + cx + ',' + (cy - 4.5) + 'L' + (cx + 4.5) + ',' + cy + 'L' + cx + ',' + (cy + 4.5) + 'L' + (cx - 4.5) + ',' + cy + 'Z', fill: colour }, group);
+    else svgEl('line', { x1: cx - 6, x2: cx + 6, y1: cy, y2: cy, stroke: colour, 'stroke-width': 2, 'stroke-linecap': 'round' }, group);
+    text(item.x + 18, item.text);
+  });
+}
+
+/** One panel as a standalone SVG document: white ground, panel letter, the
+ *  plot with its styles written on, and the legend beneath it. */
+function figureMarkup(plot, legend, letter, widthPx, widthMm) {
+  const plotHeight = Number(plot.getAttribute('height')) || 0;
+  const copy = plot.cloneNode(true);
+  inlineStyles(plot, copy);
+  const layout = legendRows(legend, widthPx);
+  const top = letter ? 20 : 0;
+  const height = top + plotHeight + layout.height;
+
+  const figure = document.createElementNS(SVG, 'svg');
+  figure.setAttribute('xmlns', SVG);
+  figure.setAttribute('width', widthMm + 'mm');
+  figure.setAttribute('height', (height / EXPORT_PX_PER_MM).toFixed(2) + 'mm');
+  figure.setAttribute('viewBox', '0 0 ' + widthPx + ' ' + height);
+  svgEl('rect', { x: 0, y: 0, width: widthPx, height: height, fill: '#ffffff' }, figure);
+  if (letter) {
+    svgEl('text', {
+      x: 2, y: 14, 'font-family': EXPORT_FONT, 'font-size': '14px', 'font-weight': '700',
+      fill: resolveColour('var(--ink)'),
+    }, figure).textContent = letter;
+  }
+  const body = svgEl('g', { transform: 'translate(0,' + top + ')' }, figure);
+  while (copy.firstChild) body.appendChild(copy.firstChild);
+  const legendGroup = svgEl('g', { transform: 'translate(0,' + (top + plotHeight) + ')' }, figure);
+  drawLegendRows(legendGroup, layout);
+  return {
+    text: '<?xml version="1.0" encoding="UTF-8"?>\n' + new XMLSerializer().serializeToString(figure),
+    width: widthPx,
+    height: height,
+  };
+}
+
+/** The SVG drawn onto a canvas at the journal's raster resolution. */
+function rasterize(markup, widthMm) {
+  const pixelsWide = Math.round((widthMm / 25.4) * EXPORT_DPI);
+  const scale = pixelsWide / markup.width;
+  return new Promise((resolve, reject) => {
+    /* A data: URL rather than a blob: URL. A saved dashboard opens from
+     * file://, where a blob: image can count as another origin and taint the
+     * canvas, and a tainted canvas refuses to hand its pixels back. */
+    const url = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(markup.text);
+    const image = new Image();
+    image.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = pixelsWide;
+      canvas.height = Math.round(markup.height * scale);
+      const context = canvas.getContext('2d');
+      context.fillStyle = '#ffffff';
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('the canvas produced no image'))), 'image/png');
+    };
+    image.onerror = () => reject(new Error('the browser could not draw the SVG'));
+    image.src = url;
+  });
+}
+
+/** Hand a file to the browser's download. */
+function saveBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = htmlEl('a', null, null, document.body);
+  link.href = url;
+  link.download = filename;
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+/** "b-saccade-landings-89mm": letter, title and width, so a folder of
+ *  exports sorts into the plate's order and says which column each fits. */
+function figureFileName(entry, columns) {
+  const slug = String(entry.title || 'panel').toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'panel';
+  const letter = entry.letter.textContent || '';
+  return (letter ? letter + '-' : '') + slug + '-' + FIGURE_WIDTH_MM[columns] + 'mm';
+}
+
+/**
+ * Save one panel as a figure. The panel is drawn again off-screen, in the
+ * light theme and at the export scale, rather than copied from the screen: a
+ * dark-theme copy, or one at whatever width the reader's window happened to
+ * give it, is not a figure. Anything that goes wrong is said, in the page, not
+ * only in the console.
+ */
+function exportFigure(entry, format, columns) {
+  const data = entry.data;
+  if (!EXPORTABLE.has(data.form)) return;
+  const widthMm = FIGURE_WIDTH_MM[columns];
+  const widthPx = Math.round(widthMm * EXPORT_PX_PER_MM);
+  const rootNode = document.documentElement;
+  const theme = rootNode.getAttribute('data-theme');
+  rootNode.setAttribute('data-theme', 'light');
+  const stage = htmlEl('div', 'export-stage', null, document.body);
+  stage.style.width = widthPx + 'px';
+  let markup;
+  /* Figure proportions for the length of the draw: bar charts crop to their
+   * rows instead of padding out to the dashboard's shared panel height. */
+  exportMode = true;
+  try {
+    const host = htmlEl('div', 'plot', null, stage);
+    const legendHost = htmlEl('div', 'legend-slot', null, stage);
+    DRAW[data.form](legendHost, host, data);
+    const plot = host.querySelector('svg');
+    if (!plot) throw new Error('this panel drew no chart to export');
+    markup = figureMarkup(plot, legendHost._legend, entry.letter.textContent, widthPx, widthMm);
+  } catch (error) {
+    console.error('figure export failed', error);
+    alert('Figure export failed: ' + error.message);
+    return;
+  } finally {
+    exportMode = false;
+    stage.remove();
+    if (theme === null) rootNode.removeAttribute('data-theme');
+    else rootNode.setAttribute('data-theme', theme);
+  }
+  const name = figureFileName(entry, columns);
+  if (format === 'svg') {
+    saveBlob(new Blob([markup.text], { type: 'image/svg+xml' }), name + '.svg');
+    return;
+  }
+  rasterize(markup, widthMm)
+    .then((blob) => saveBlob(blob, name + '-' + EXPORT_DPI + 'dpi.png'))
+    .catch((error) => {
+      console.error('PNG export failed', error);
+      alert('PNG export failed: ' + error.message);
+    });
+}
+
+/** The export row under a chart panel. */
+function addExportActions(entry) {
+  if (!EXPORTABLE.has(entry.data.form)) return;
+  const row = htmlEl('div', 'figure-export', null, entry.card);
+  htmlEl('span', null, 'Export figure', row);
+  [
+    ['svg', 'single', 'SVG, 89 mm'],
+    ['svg', 'double', 'SVG, 183 mm'],
+    ['png', 'single', 'PNG, 600 dpi'],
+  ].forEach(([format, columns, label]) => {
+    const button = htmlEl('button', null, label, row);
+    button.type = 'button';
+    button.onclick = () => exportFigure(entry, format, columns);
+  });
+}
+
 const DRAW = {
   line: drawLineChart,
   bars: drawBars,
@@ -1358,14 +1806,21 @@ const DRAW = {
  */
 function buildPanel(panel, index, openTables) {
   const card = htmlEl('section', 'panel');
-  htmlEl('h2', null, panel.title, card);
+  /* A bold lowercase letter before the title, as a journal figure labels its
+   * panels. Filled in once the panels on screen are known (render), so the
+   * letters run a, b, c through what the reader is actually looking at. */
+  const heading = htmlEl('h2', null, null, card);
+  const letter = htmlEl('span', 'panel-letter', null, heading);
+  htmlEl('span', null, sentenceStart(panel.title), heading);
   const data = panel.data || { form: 'empty', message: 'No data yet' };
 
   if (data.stats && data.stats.length) {
     const strip = htmlEl('div', 'stats', null, card);
     data.stats.forEach((stat) => {
       const cell = htmlEl('div', null, null, strip);
-      htmlEl('span', 'stat-label', stat.label, cell);
+      /* The sample size is an italic n, as it is everywhere in print. */
+      const label = htmlEl('span', 'stat-label', stat.label === 'n' ? null : stat.label, cell);
+      if (stat.label === 'n') htmlEl('i', null, 'n', label);
       const value = htmlEl('span', 'stat-value', stat.value, cell);
       if (stat.status) value.dataset.status = stat.status;
     });
@@ -1377,13 +1832,17 @@ function buildPanel(panel, index, openTables) {
   const legendHost = htmlEl('div', 'legend-slot', null, card);
   htmlEl('p', 'note', data.note || '', card);
   drawTable(card, data, index, openTables.has(index));
-  return {
+  const entry = {
     card: card,
     host: host,
     legendHost: legendHost,
     data: data,
     section: panel.section || 'Other',
+    letter: letter,
+    title: panel.title || '',
   };
+  addExportActions(entry);
+  return entry;
 }
 
 /** Draw (or redraw) one built panel, now that it has a real width. */
@@ -1491,6 +1950,7 @@ function render() {
    * shown ones: an element that is not in the document has no width, and a
    * chart drawn against that width would be drawn wrong. */
   panels = shown;
+  panels.forEach((entry, position) => { entry.letter.textContent = panelLetter(position); });
   panels.forEach(paintPanel);
 
   /* After painting, not before: the panels have their real heights only once

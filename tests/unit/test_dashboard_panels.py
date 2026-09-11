@@ -16,10 +16,15 @@ import pytest
 from alhazen.dashboard.panels import (
     MAX_CLASSES,
     MAX_POINTS,
+    MAX_SHAPES,
     axis_label,
+    display_name,
+    display_value,
     format_number,
     panel_payload,
+    present,
     select_rows,
+    sentence_start,
     split_unit,
 )
 from alhazen.dashboard.spec import DEFAULT_PANELS, DashboardPanel
@@ -51,17 +56,17 @@ class TestLabels:
     @pytest.mark.parametrize(
         ("field", "expected"),
         [
-            ("rt_ms", "rt (ms)"),
-            ("endpoint_x_dva", "endpoint x (dva)"),
-            ("response_key", "response key"),
-            ("coherence", "coherence"),
+            ("rt_ms", "RT (ms)"),
+            ("endpoint_x_dva", "Endpoint x (°)"),
+            ("response_key", "Response key"),
+            ("coherence", "Coherence"),
         ],
     )
     def test_units_are_read_off_the_column_name(self, field, expected):
         assert axis_label(field) == expected
 
     def test_an_explicit_unit_overrides_the_suffix(self):
-        assert axis_label("rt_ms", unit="s") == "rt (s)"
+        assert axis_label("rt_ms", unit="s") == "RT (s)"
         assert split_unit("gain") == ("gain", None)
 
     def test_numbers_carry_the_decimals_they_deserve(self):
@@ -90,7 +95,7 @@ class TestRowSelection:
     def test_the_window_is_announced_on_the_panel(self):
         rows = [trial(i, outcome="CORRECT") for i in range(1, 11)]
         panel = DashboardPanel(kind="outcomes", title="x", rolling_window=4)
-        assert payload(panel, rows)["note"] == "most recent 4 trials"
+        assert payload(panel, rows)["note"] == "Most recent 4 trials"
 
 
 class TestCategoryBars:
@@ -115,7 +120,7 @@ class TestCategoryBars:
 
     def test_missing_column_says_so_instead_of_drawing_nothing(self):
         data = payload(DashboardPanel(kind="responses", title="Responses", value="response_key"))
-        assert data == {"form": "empty", "message": "No response_key recorded yet"}
+        assert data == {"form": "empty", "message": "No response key recorded yet"}
 
 
 class TestHistogram:
@@ -128,7 +133,7 @@ class TestHistogram:
         assert 4 <= len(data["bins"]) <= 30
         edges = [b["x0"] for b in data["bins"]] + [data["bins"][-1]["x1"]]
         assert edges == sorted(edges)
-        assert data["x_label"] == "rt (ms)"
+        assert data["x_label"] == "RT (ms)"
 
     def test_one_outlier_does_not_squeeze_every_real_trial_into_one_bar(self):
         # The axis is clipped to a robust window, so a single 8-second trial
@@ -150,7 +155,7 @@ class TestHistogram:
         rows = [trial(i, rt_ms=300 + i) for i in range(60)] + [trial(99, rt_ms=8000)]
         panel = DashboardPanel(kind="histogram", title="RT", value="rt_ms", rolling_window=61)
         note = payload(panel, rows)["note"]
-        assert note.startswith("most recent 61 trials · ")
+        assert note.startswith("Most recent 61 trials · ")
         assert "outside the axis" in note
 
     def test_identical_values_produce_one_bin_not_a_division_by_zero(self):
@@ -165,7 +170,7 @@ class TestHistogram:
         rows = [trial(i, rt_ms=v) for i, v in enumerate([100, 200, 300])]
         data = payload(DashboardPanel(kind="histogram", title="RT", value="rt_ms"), rows)
         stats = {stat["label"]: stat["value"] for stat in data["stats"]}
-        assert stats["median"] == "200 ms"
+        assert stats["Median"] == "200 ms"
         assert stats["n"] == "3"
 
 
@@ -196,7 +201,7 @@ class TestScatter:
         assert sorted(data["targets"]) == [[-5.0, 0.0], [5.0, 0.0]]
         assert data["equal_aspect"] is True
         stats = {stat["label"]: stat["value"] for stat in data["stats"]}
-        assert stats["median error"] == "0.5 dva"
+        assert stats["Median error"] == "0.5°"
 
     def test_a_mean_landing_is_reported_only_where_it_is_a_position(self):
         # With one target the mean is where the responses cluster. With two it
@@ -262,7 +267,7 @@ class TestVectors:
         data = payload(self.panel(origin_x="fixation_x_dva", origin_y="fixation_y_dva"), rows)
 
         assert data["series"][0]["points"] == [[8.0, 0.0]]
-        assert data["note"] == "origin assumed at screen centre (fixation_x_dva is not recorded)"
+        assert data["note"] == "Origin assumed at screen centre (fixation x is not recorded)"
 
     def test_a_trial_whose_own_origin_is_missing_is_dropped(self):
         # Plotting it against somebody else's origin would be a guess.
@@ -288,14 +293,14 @@ class TestVectors:
         ]
         assert data["radius"] > 10.0
         stats = {stat["label"]: stat["value"] for stat in data["stats"]}
-        assert stats["median amplitude"] == "10.0 dva"
+        assert stats["Median amplitude"] == "10.0°"
         assert stats["n"] == "20"
 
     def test_the_axes_carry_the_units_of_the_columns(self):
         rows = [trial(1, endpoint_x_dva=8.0, endpoint_y_dva=0.0)]
         data = payload(self.panel(), rows)
-        assert data["x_label"] == "horizontal displacement (dva)"
-        assert data["y_label"] == "vertical displacement (dva)"
+        assert data["x_label"] == "Horizontal displacement (°)"
+        assert data["y_label"] == "Vertical displacement (°)"
 
 
 class TestSeries:
@@ -303,7 +308,7 @@ class TestSeries:
         rows = [trial(i, gain=float(i % 4)) for i in range(1, 41)]
         data = payload(DashboardPanel(kind="series", title="Gain", value="gain"), rows)
 
-        assert [s["name"] for s in data["series"]][0] == "gain"
+        assert [s["name"] for s in data["series"]][0] == "Gain"
         assert data["series"][0]["marker"] is True and data["series"][0]["line"] is False
         assert data["series"][1]["name"].startswith("moving mean")
         assert data["series"][1]["line"] is True
@@ -377,7 +382,7 @@ class TestPerformance:
         data = payload(self.panel(), rows)
         cumulative = data["series"][0]["points"]
 
-        assert data["y_label"] == "proportion correct"
+        assert data["y_label"] == "Proportion correct"
         assert [p[0] for p in cumulative] == [1, 3, 4]
         assert [p[1] for p in cumulative] == [1.0, 0.5, pytest.approx(2 / 3)]
         assert data["y_domain"] == [0.0, 1.0]
@@ -386,7 +391,7 @@ class TestPerformance:
         rows = [trial(1, completed=True), trial(2, completed=False), trial(3, completed=True)]
         data = payload(self.panel(), rows)
 
-        assert data["y_label"] == "proportion completed"
+        assert data["y_label"] == "Proportion completed"
         assert [round(p[1], 3) for p in data["series"][0]["points"]] == [1.0, 0.5, 0.667]
 
     def test_the_confidence_band_brackets_the_estimate_and_stays_in_range(self):
@@ -618,7 +623,7 @@ class TestGroupedRate:
         rows = [trial(i, side="left", completed=i % 2 == 0) for i in range(1, 11)]
         data = payload(self.panel(), rows)
 
-        assert data["y_label"] == "proportion completed"
+        assert data["y_label"] == "Proportion completed"
         assert data["groups"][0]["mean"] == pytest.approx(0.5)
 
     def test_trials_with_no_level_are_not_a_level(self):
@@ -745,7 +750,7 @@ def test_grouped_mean_over_several_factors_puts_them_on_one_axis():
     # Declared order is kept, so a factor's own bars stay side by side.
     assert [g["series"] for g in data["groups"]] == ["alignment"] * 2 + ["separation"] * 2
     # The x axis is no longer one factor's name, so it does not claim to be.
-    assert data["x_label"] == "condition"
+    assert data["x_label"] == "Condition"
 
 
 def test_one_factor_still_labels_its_own_axis():
@@ -755,7 +760,7 @@ def test_one_factor_still_labels_its_own_axis():
         kind="grouped_mean", title="P", value="hit", group="alignment", style="bars"
     )
     data = panel_payload(panel, _cells(), [])
-    assert data["x_label"] == "alignment"
+    assert data["x_label"] == "Alignment"
     assert [g["label"] for g in data["groups"]] == ["aligned", "rotated"]
 
 
@@ -893,3 +898,310 @@ class TestFrameIntervals:
         panel = self.panel([])
         assert panel["data"]["form"] == "empty"
         assert panel["section"] == "Session"
+
+
+# ----------------------------------------------------------------------
+# What the reader sees: a journal figure's conventions
+# ----------------------------------------------------------------------
+
+
+class TestPresentation:
+    """Every string a panel shows is written the way a journal figure writes
+    it, while the values code matches against the record keep their record
+    form beside a display twin."""
+
+    @pytest.mark.parametrize(
+        ("raw", "shown"),
+        [
+            ("LANDED_ON_FIGURE", "Landed on figure"),  # a record constant
+            ("fix_break", "Fix break"),
+            ("aligned", "Aligned"),  # a lowercase level
+            ("Kanizsa", "Kanizsa"),  # mixed case, written that way on purpose
+            ("ESC", "ESC"),  # a short all-caps abbreviation
+            ("TRUE", "True"),
+            ("-2.5", "\u22122.5"),  # a true minus sign, not a hyphen
+            ("10", "10"),
+            ("", ""),
+        ],
+    )
+    def test_a_data_value_as_the_reader_sees_it(self, raw, shown):
+        assert display_value(raw) == shown
+
+    @pytest.mark.parametrize(
+        ("field", "shown"),
+        [
+            ("saccade_latency_ms", "Saccade latency"),
+            ("rt_ms", "RT"),
+            ("n_inducers", "Number of inducers"),
+            ("inducer_shapes_dva", "Inducer shapes"),
+            ("iqr", "IQR"),
+        ],
+    )
+    def test_a_column_name_as_the_reader_sees_it(self, field, shown):
+        assert display_name(field) == shown
+
+    def test_sentence_case_leaves_a_symbol_that_is_lowercase_on_purpose(self):
+        assert sentence_start("saccade latency (ms)") == "Saccade latency (ms)"
+        assert sentence_start("n") == "n"  # the sample size
+        assert sentence_start("x (°)") == "x (°)"  # a coordinate named by itself
+        assert sentence_start("RT (ms)") == "RT (ms)"
+        assert sentence_start("") == ""
+
+    def test_prose_is_rewritten_and_data_values_gain_a_display_twin(self):
+        """Code that maps a panel back to its trials compares the raw values
+        ("near", "FIX_BREAK") with the record, so those stay as they were; the
+        page draws the twin beside each one."""
+        data = present(
+            {
+                "form": "bars",
+                "x_label": "saccade latency (ms)",
+                "note": "3 trials had no fixation_x_dva",
+                "stats": [{"label": "median error", "value": "-0.5 °"}],
+                "items": [{"label": "FIX_BREAK", "value": 3, "share": 1.0}],
+                "series": [{"name": "moving mean (5 trials)", "points": []}],
+                "band": {"name": "ci", "points": []},
+                "groups": [{"label": "near", "series": "separation_dva", "mean": 1.0, "n": 1}],
+                "maps": [{"name": "ON_RESPONSE", "matrix": []}],
+                "color_label": "block_task",
+            }
+        )
+        assert data["x_label"] == "Saccade latency (ms)"
+        assert data["note"] == "3 trials had no fixation x"
+        assert data["stats"] == [{"label": "Median error", "value": "\u22120.5°"}]
+        assert (data["items"][0]["label"], data["items"][0]["display_label"]) == (
+            "FIX_BREAK",
+            "Fix break",
+        )
+        assert (data["series"][0]["name"], data["series"][0]["display_name"]) == (
+            "moving mean (5 trials)",
+            "Moving mean (5 trials)",
+        )
+        assert data["band"]["display_name"] == "CI"
+        group = data["groups"][0]
+        assert (group["label"], group["display_label"]) == ("near", "Near")
+        assert (group["series"], group["display_series"]) == ("separation_dva", "Separation")
+        assert data["maps"][0]["display_name"] == "On response"
+        assert (data["color_label"], data["display_color_label"]) == ("block_task", "Block task")
+
+    def test_presenting_twice_changes_nothing(self):
+        once = present(
+            {
+                "x_label": "RT (ms)",
+                "note": "-3 ° off target",
+                "items": [{"label": "FIX_BREAK", "value": 1, "share": 1.0}],
+            }
+        )
+        assert once["note"] == "\u22123° off target"
+        assert present(json.loads(json.dumps(once))) == once
+
+    def test_a_spatial_panel_writes_degrees_as_the_degree_sign(self):
+        rows = [
+            trial(i, completed=True, endpoint_x_dva=float(i), endpoint_y_dva=0.0) for i in range(5)
+        ]
+        panel = DashboardPanel(
+            kind="scatter", title="Landings", x="endpoint_x_dva", y="endpoint_y_dva"
+        )
+        data = payload(panel, rows)
+        assert (data["x_label"], data["y_label"]) == ("Endpoint x (°)", "Endpoint y (°)")
+        assert "dva" not in json.dumps(data, ensure_ascii=False)
+
+
+# ----------------------------------------------------------------------
+# Scatter shapes
+# ----------------------------------------------------------------------
+
+
+class TestScatterShapes:
+    """Regions a task outlines on its landing plot, such as the inducers a
+    landing is judged against. Drawn once however many trials carry them, in
+    the colour of the one level that showed each, and never dropped quietly."""
+
+    CIRCLE = {"kind": "circle", "x": -5.0, "y": 0.0, "r": 1.5}
+    RECT = {"kind": "rect", "x": 5.0, "y": 0.0, "width": 2.0, "height": 4.0}
+
+    @staticmethod
+    def panel(**fields):
+        return DashboardPanel(
+            kind="scatter",
+            title="Landings",
+            x="endpoint_x_dva",
+            y="endpoint_y_dva",
+            shapes="inducer_shapes_dva",
+            **fields,
+        )
+
+    @staticmethod
+    def rows(shapes_by_trial, **columns):
+        """One completed trial per entry, carrying that entry as its shapes
+        and the i-th value of each extra column."""
+        return [
+            trial(
+                i,
+                completed=True,
+                endpoint_x_dva=float(i),
+                endpoint_y_dva=0.0,
+                inducer_shapes_dva=value,
+                **{name: values[i] for name, values in columns.items()},
+            )
+            for i, value in enumerate(shapes_by_trial)
+        ]
+
+    def test_a_list_and_its_json_text_are_the_same_shapes_drawn_once(self):
+        rows = self.rows(
+            [[self.CIRCLE, self.RECT], json.dumps([self.CIRCLE, self.RECT]), [self.CIRCLE]]
+        )
+        data = payload(self.panel(), rows)
+        # No color_by: no level owns a shape, so every one is grey.
+        assert data["shapes"] == [{**self.CIRCLE, "series": None}, {**self.RECT, "series": None}]
+        assert data["shapes_label"] == "Inducer shapes"
+
+    def test_a_shape_takes_the_colour_of_the_one_level_that_showed_it(self):
+        near = {"kind": "circle", "x": -3.0, "y": 0.0, "r": 1.0}
+        far = {"kind": "circle", "x": -8.0, "y": 0.0, "r": 1.0}
+        rows = self.rows([[near], [far], [near], [far]], separation=["near", "far", "near", "far"])
+        data = payload(self.panel(color_by="separation"), rows)
+        assert {shape["x"]: shape["series"] for shape in data["shapes"]} == {
+            -3.0: "near",
+            -8.0: "far",
+        }
+        # The owner is a series the page actually draws, matched by name.
+        assert {"near", "far"} <= {entry["name"] for entry in data["series"]}
+
+    def test_a_shape_several_levels_share_is_drawn_once_in_grey(self):
+        rows = self.rows(
+            [[self.CIRCLE]] * 4, alignment=["aligned", "rotated", "aligned", "rotated"]
+        )
+        data = payload(self.panel(color_by="alignment"), rows)
+        assert data["shapes"] == [{**self.CIRCLE, "series": None}]
+
+    def test_float_noise_does_not_split_one_shape_in_two(self):
+        nudged = {**self.CIRCLE, "x": self.CIRCLE["x"] + 1e-12}
+        data = payload(self.panel(), self.rows([[self.CIRCLE], [nudged]]))
+        assert len(data["shapes"]) == 1
+
+    def test_shapes_are_not_thinned_with_the_points(self):
+        """Points are capped for the page's sake; a region is not a point, and
+        losing one would misstate where a landing could have fallen."""
+        rows = self.rows(
+            [
+                [{"kind": "circle", "x": float(i % 40), "y": 0.0, "r": 1.0}]
+                for i in range(MAX_POINTS * 3)
+            ]
+        )
+        data = payload(self.panel(), rows)
+        assert len(data["shapes"]) == 40
+
+    def test_past_the_cap_the_panel_says_how_many_it_left_out(self):
+        rows = self.rows(
+            [[{"kind": "circle", "x": float(i), "y": 0.0, "r": 0.5}] for i in range(MAX_SHAPES + 6)]
+        )
+        data = payload(self.panel(), rows)
+        assert len(data["shapes"]) == MAX_SHAPES
+        assert data["note"] == (
+            f"Showing the first {MAX_SHAPES} of {MAX_SHAPES + 6} distinct outlines "
+            "from inducer shapes"
+        )
+
+    def test_a_trial_without_shapes_is_one_without_regions(self):
+        data = payload(self.panel(), self.rows([None, "", [self.CIRCLE], float("nan")]))
+        assert data["shapes"] == [{**self.CIRCLE, "series": None}]
+        assert "shapes" not in payload(self.panel(), self.rows([None, None]))
+
+    @pytest.mark.parametrize(
+        ("value", "message"),
+        [
+            ("[{not json", "not valid JSON"),
+            ({"kind": "circle"}, "must be a list of shapes"),
+            (["circle"], "expected an object"),
+            ([{"kind": "polygon", "x": 0, "y": 0}], "kind must be 'circle' or 'rect'"),
+            ([{"kind": "circle", "x": 0, "y": 0}], "r must be a finite number"),
+            ([{"kind": "circle", "x": 0, "y": 0, "r": True}], "r must be a finite number"),
+            ([{"kind": "circle", "x": float("nan"), "y": 0, "r": 1}], "x must be a finite number"),
+            ([{"kind": "rect", "x": 0, "y": 0, "width": 0, "height": 1}], "width must be > 0"),
+            ([{"kind": "circle", "x": 0, "y": 0, "r": -1}], "r must be > 0"),
+        ],
+    )
+    def test_a_malformed_shape_is_refused_and_named(self, value, message):
+        rows = self.rows([[self.CIRCLE], value])
+        with pytest.raises(ValueError, match=message) as raised:
+            payload(self.panel(), rows)
+        # The trial and the column, so the author can find the bad record.
+        assert "trial 1 inducer_shapes_dva" in str(raised.value)
+
+    def test_shapes_are_refused_on_a_panel_that_cannot_draw_them(self):
+        with pytest.raises(ValueError, match="shapes are drawn on scatter panels only"):
+            DashboardPanel(kind="vectors", title="V", x="a", y="b", shapes="regions")
+
+
+# ----------------------------------------------------------------------
+# Several factors: side by side, or crossed
+# ----------------------------------------------------------------------
+
+
+def _crossable():
+    """Two factors with every combination present, and one trial missing a
+    factor."""
+    return [
+        trial(0, completed=True, hit=1.0, separation="near", motion="static"),
+        trial(1, completed=True, hit=0.0, separation="near", motion="static"),
+        trial(2, completed=True, hit=1.0, separation="near", motion="moving"),
+        trial(3, completed=True, hit=0.0, separation="far", motion="static"),
+        trial(4, completed=True, hit=1.0, separation="far", motion="moving"),
+        trial(5, completed=True, hit=1.0, separation="far"),  # no motion: no cell
+    ]
+
+
+def test_crossing_two_factors_makes_one_bar_per_combination():
+    panel = DashboardPanel(
+        kind="grouped_mean",
+        title="P",
+        value="hit",
+        group=("separation", "motion"),
+        cross=True,
+        style="bars",
+    )
+    data = panel_payload(panel, _crossable(), [])
+    assert [(g["label"], g["mean"], g["n"]) for g in data["groups"]] == [
+        ("far / moving", 1.0, 1),
+        ("far / static", 0.0, 1),
+        ("near / moving", 1.0, 1),
+        ("near / static", 0.5, 2),
+    ]
+    assert [g["display_label"] for g in data["groups"]][0] == "Far / moving"
+    # One colour: a cell is not a factor, so there is no series to tell apart.
+    assert all("series" not in g for g in data["groups"])
+    assert data["x_label"] == "Separation × motion"
+    # Each trial sits in one cell, and the trial missing a factor in none.
+    assert {"label": "n", "value": "5"} in data["stats"]
+    assert "note" not in data
+
+
+def test_factors_side_by_side_say_they_are_averaged_separately():
+    """Bars for several factors on one axis read as the cells of a design
+    unless the panel says otherwise."""
+    panel = DashboardPanel(
+        kind="grouped_mean", title="P", value="hit", group=("separation", "motion")
+    )
+    data = panel_payload(panel, _crossable(), [])
+    assert data["note"] == (
+        "Each factor averaged separately over all trials (marginal means), "
+        "not by combination of levels"
+    )
+
+    one = DashboardPanel(kind="grouped_mean", title="P", value="hit", group="separation")
+    assert "note" not in panel_payload(one, _crossable(), [])
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        (
+            {"kind": "grouped_mean", "value": "hit", "group": "separation"},
+            "grouped_mean panel names 1",
+        ),
+        ({"kind": "grouped_rate", "group": "separation"}, "grouped_rate panel names 1"),
+    ],
+)
+def test_cross_is_refused_where_there_is_nothing_to_cross(fields, message):
+    with pytest.raises(ValueError, match=message):
+        DashboardPanel(title="P", cross=True, **fields)

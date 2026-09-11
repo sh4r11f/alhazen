@@ -412,7 +412,7 @@ class TestCameraThroughThePause:
         saved = json.loads((harness.paths.figures_dir / "dashboard_state.json").read_text())
         camera = self._camera(saved)
         assert camera["form"] == "image" and camera["pixels"] == ""
-        assert camera["note"] == "image left out of the saved copy"
+        assert camera["note"] == "Image left out of the saved copy"
         # The live pause page did carry the picture.
         live = next(s for s in dashboard.states if s["status"] == "paused")
         assert self._camera(live)["pixels"]
@@ -808,3 +808,59 @@ class TestTheChildDoesNotLeak:
             go()
 
         assert len(started) == 1 and len(stopped) == 1
+
+
+class TestFigureConventionsInTheRenderer:
+    """Checked against the assets rather than in a browser, like the scroll
+    test above: there is no JS test harness here, and each of these guards a
+    mistake that passes a quick look at the page."""
+
+    @staticmethod
+    def _asset(name):
+        from alhazen.dashboard import runtime
+
+        return (runtime._ASSETS / name).read_text(encoding="utf-8")
+
+    @staticmethod
+    def _function(script, name):
+        body = script[script.index(f"function {name}(") :]
+        return body[: body.index("\n}")]
+
+    def test_the_hover_crosshair_is_hidden_by_its_attribute_alone(self):
+        """A stylesheet `opacity` outranks the SVG attribute the script hides
+        the crosshair with, and left a stray vertical line at x = 0 on every
+        line chart."""
+        import re
+
+        css = self._asset("dashboard.css")
+        rule = re.search(r"\.hairline\s*\{([^}]*)\}", css)
+        assert rule is not None, "no .hairline rule"
+        assert not re.search(r"(^|[;\s])opacity\s*:", rule.group(1)), rule.group(1)
+
+    def test_each_factor_on_a_grouped_panel_gets_its_own_colour(self):
+        """Colour slots count from 1. Passing the 0-based index gave the first
+        two factors slot 1 both, so they were drawn in the same blue."""
+        dots = self._function(self._asset("dashboard.js"), "drawDots")
+        assert "slotColor(series.indexOf(g.series) + 1)" in dots
+        assert "slotColor(series.indexOf(name) + 1)" in dots
+
+    def test_error_bars_are_defined_on_the_panel(self):
+        """A journal will not print an error bar the figure does not define."""
+        dots = self._function(self._asset("dashboard.js"), "drawDots")
+        assert "shape: 'whisker'" in dots
+        assert "data.error_label" in dots
+
+    def test_spines_end_on_their_outermost_ticks(self):
+        frame = self._function(self._asset("dashboard.js"), "drawFrame")
+        assert "ySpan" in frame and "xSpan" in frame
+
+    def test_figures_are_exported_at_journal_column_widths(self):
+        script = self._asset("dashboard.js")
+        assert "const FIGURE_WIDTH_MM = { single: 89, double: 183 };" in script
+        assert "const EXPORT_DPI = 600;" in script
+        export = self._function(script, "exportFigure")
+        # Drawn light and in figure proportions, and both undone however the
+        # draw ends: a failed export must leave the page as it found it.
+        assert "setAttribute('data-theme', 'light')" in export
+        assert export.index("exportMode = true") < export.index("finally")
+        assert export.rindex("exportMode = false") > export.index("finally")

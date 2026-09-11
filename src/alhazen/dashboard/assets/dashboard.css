@@ -25,6 +25,7 @@
   --muted:       #6b7480;   /* axis titles, tick labels */
   --rule:        #d8dce1;   /* spines, borders, dividers */
   --tick:        #aab2bc;   /* tick marks */
+  --axis:        #1f2328;   /* spines and tick marks: a printed figure's black */
   --wash:        #eef0f3;   /* selected row, hover */
 
   --series-1:    #0072b2;   /* Okabe-Ito blue */
@@ -42,7 +43,7 @@
   --critical:    #d03b3b;   /* status: a delivery the hardware refused */
   --good:        #0ca30c;   /* status: running */
 
-  --radius: 8px;
+  --radius: 4px;
   --font: "Helvetica Neue", Helvetica, Arial, "Liberation Sans", system-ui, sans-serif;
   --sidebar: 224px;
 }
@@ -58,6 +59,7 @@
     --muted:       #8b939e;
     --rule:        #2b3038;
     --tick:        #5c646e;
+    --axis:        #c9ced6;
     --wash:        #20242a;
     /* The ramp's anchor flips: more is LIGHTER, because the step nearest the
      * surface is now the dark one. */
@@ -79,6 +81,7 @@
   --muted:       #8b939e;
   --rule:        #2b3038;
   --tick:        #5c646e;
+  --axis:        #c9ced6;
   --wash:        #20242a;
   --ramp-1:      #1f6fb2;
   --ramp-2:      #3a86c4;
@@ -253,26 +256,26 @@ main { flex: 1 1 auto; min-width: 0; padding: 22px 28px 56px; }
 
 .panel h2 {
   margin: 0;
-  font-size: 15px;
-  font-weight: 650;
-  letter-spacing: -0.005em;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0;
 }
+/* Panel letters, as a journal figure sets them: bold, lowercase, ahead of
+ * the title. */
+.panel h2 .panel-letter { margin-right: 0.5em; font-weight: 700; }
 
 /* The KPI strip: the numbers a chart should not have to be measured for. */
 .stats { display: flex; flex-wrap: wrap; gap: 22px; margin: 12px 0 2px; min-height: 40px; }
 .stat-label {
   display: block;
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-  color: var(--muted);
+  color: var(--ink-2);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0;
 }
 .stat-value {
-  font-size: 19px;
-  font-weight: 650;
-  letter-spacing: -0.01em;
-  color: var(--ink);
+  font-size: 16px;
+  font-weight: 600;
 }
 .stat-value[data-status="critical"] { color: var(--critical); }
 
@@ -300,6 +303,17 @@ main { flex: 1 1 auto; min-width: 0; padding: 22px 28px 56px; }
 .legend i.box { width: 11px; height: 11px; border-radius: 2px; opacity: 0.22; }
 .legend i.ring { width: 10px; height: 10px; border: 1.5px solid; border-radius: 50%; }
 .legend i.diamond { width: 9px; height: 9px; transform: rotate(45deg); }
+/* An error bar: a stem with a cap at each end, all in the text colour. */
+.legend i.whisker {
+  width: 9px;
+  height: 12px;
+  border-top: 1.5px solid;
+  border-bottom: 1.5px solid;
+  background: linear-gradient(currentColor, currentColor) center / 1.5px 100% no-repeat;
+}
+/* An unfilled square: a region outlined on the plot, not a datum. */
+.legend i.outline { width: 11px; height: 11px; border: 1.2px solid; }
+.legend .legend-title { color: var(--ink); font-weight: 600; }
 
 /* Always present, empty or not: a caveat on one panel must not push its
  * neighbour's footer out of line. */
@@ -348,13 +362,17 @@ details.table th { color: var(--muted); font-weight: 600; }
 /* Spines and outward ticks, no gridlines: the reading conventions of a
  * printed figure. Values the ticks do not carry are on the marks, in the
  * hover readout, and in the table. */
-.spine     { stroke: var(--rule); stroke-width: 1.25; }
-.tick-mark { stroke: var(--tick); stroke-width: 1.25; }
-.tick-text { fill: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
-.axis-text { fill: var(--ink-2); font-size: 12.5px; }
-.value-text { fill: var(--ink-2); font-size: 12px; font-variant-numeric: tabular-nums; }
-.rule      { stroke: var(--muted); stroke-width: 1; }
-.hairline  { stroke: var(--muted); stroke-width: 1; opacity: 0.5; }
+.spine     { stroke: var(--axis); stroke-width: 1; }
+.tick-mark { stroke: var(--axis); stroke-width: 1; }
+.tick-text { fill: var(--ink-2); font-size: 11px; font-variant-numeric: tabular-nums; }
+.axis-text { fill: var(--ink); font-size: 12px; }
+.value-text { fill: var(--ink-2); font-size: 11px; font-variant-numeric: tabular-nums; }
+.rule      { stroke: var(--tick); stroke-width: 1; }
+/* `stroke-opacity`, not `opacity`: a stylesheet property outranks the SVG
+ * attribute, so a CSS `opacity` here kept the hover crosshair visible as a
+ * stray vertical line at x = 0 on every line chart, where the script parks it
+ * hidden with `opacity="0"`. */
+.hairline  { stroke: var(--muted); stroke-width: 1; stroke-opacity: 0.5; }
 .hit       { fill: transparent; cursor: crosshair; }
 
 /* Chrome never intercepts the pointer. A spine or an axis title sitting on
@@ -385,7 +403,7 @@ details.table th { color: var(--muted); font-weight: 600; }
   font-size: 10.5px;
   font-weight: 600;
   letter-spacing: 0.08em;
-  text-transform: uppercase;
+  text-transform: none;
 }
 .tip .tip-row { display: flex; align-items: center; gap: 8px; margin-top: 5px; }
 .tip .tip-key { width: 14px; height: 2.5px; border-radius: 2px; flex: none; }
@@ -422,3 +440,33 @@ details.table th { color: var(--muted); font-weight: 600; }
   body { background: #ffffff; }
   .panel { break-inside: avoid; }
 }
+
+/* ------------------------------------------------------------------ */
+/* Figure export                                                       */
+/* ------------------------------------------------------------------ */
+
+/* Small text actions under a chart panel. */
+.figure-export {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.figure-export button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink-2);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.figure-export button:hover { color: var(--ink); }
+
+/* Where a panel is redrawn for export: laid out, so it can be measured, but
+ * never on screen. */
+.export-stage { position: absolute; top: 0; left: -100000px; }
