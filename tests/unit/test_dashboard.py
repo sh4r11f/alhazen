@@ -808,3 +808,31 @@ class TestTheChildDoesNotLeak:
             go()
 
         assert len(started) == 1 and len(stopped) == 1
+
+
+class TestFigureConventionsInTheRenderer:
+    """Checked against the assets rather than in a browser, like the scroll
+    test above: there is no JS test harness here, and each of these guards a
+    mistake that passes a quick look at the page."""
+
+    @staticmethod
+    def _asset(name):
+        from alhazen.dashboard import runtime
+
+        return (runtime._ASSETS / name).read_text(encoding="utf-8")
+
+    @staticmethod
+    def _function(script, name):
+        body = script[script.index(f"function {name}(") :]
+        return body[: body.index("\n}")]
+
+    def test_the_hover_crosshair_is_hidden_by_its_attribute_alone(self):
+        """A stylesheet `opacity` outranks the SVG attribute the script hides
+        the crosshair with, and left a stray vertical line at x = 0 on every
+        line chart."""
+        import re
+
+        css = self._asset("dashboard.css")
+        rule = re.search(r"\.hairline\s*\{([^}]*)\}", css)
+        assert rule is not None, "no .hairline rule"
+        assert not re.search(r"(^|[;\s])opacity\s*:", rule.group(1)), rule.group(1)

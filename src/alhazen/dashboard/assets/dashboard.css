@@ -358,7 +358,11 @@ details.table th { color: var(--muted); font-weight: 600; }
 .axis-text { fill: var(--ink); font-size: 12px; }
 .value-text { fill: var(--ink-2); font-size: 11px; font-variant-numeric: tabular-nums; }
 .rule      { stroke: var(--tick); stroke-width: 1; }
-.hairline  { stroke: var(--muted); stroke-width: 1; opacity: 0.5; }
+/* `stroke-opacity`, not `opacity`: a stylesheet property outranks the SVG
+ * attribute, so a CSS `opacity` here kept the hover crosshair visible as a
+ * stray vertical line at x = 0 on every line chart, where the script parks it
+ * hidden with `opacity="0"`. */
+.hairline  { stroke: var(--muted); stroke-width: 1; stroke-opacity: 0.5; }
 .hit       { fill: transparent; cursor: crosshair; }
 
 /* Chrome never intercepts the pointer. A spine or an axis title sitting on
