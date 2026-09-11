@@ -25,6 +25,50 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+### Changed
+
+- **Dashboard figures follow a journal's conventions.** Labels are in sentence
+  case. Column and outcome names are written as words (`FIX_BREAK` is "Fix
+  break", `saccade_latency_ms` is "Saccade latency (ms)"), with abbreviations
+  in their own case ("RT", "IQR", "s.e.m."). Degrees of visual angle are "°",
+  negative numbers carry a true minus sign, the sample size is an italic *n*,
+  and panels are lettered a, b, c. Axes are dark, with outward ticks, and end
+  on labelled ticks. Bars have square ends and read as bars rather than stems.
+  The polar grid is recessive, with its amplitudes labelled up the vertical.
+  Error bars are defined in the legend ("Mean ± s.e.m.", "95% CI").
+- **Panel payload text changed; raw values did not.** Prose (`x_label`,
+  `y_label`, `value_label`, `error_label`, `note`, `message`, `stats[].label`
+  and `stats[].value`) is rewritten in place, so a test asserting those strings
+  needs the new wording. Data values keep their record form and gain a display
+  twin: `items[].display_label`, `series[].display_name`,
+  `groups[].display_label`, `groups[].display_series`, `band.display_name`,
+  `maps[].display_name` and `display_color_label`. The eye tracker's
+  validation panel titles its axes "Horizontal gaze position (°)" and
+  "Vertical gaze position (°)".
+
+### Added
+
+- **Figure export.** Every chart panel saves as an SVG at 89 mm or 183 mm, or
+  as a PNG at 600 dpi, redrawn in the light theme with its styles, panel
+  letter and legend inside the file. See "Figures for publication" in
+  [docs/dashboard.md](docs/dashboard.md).
+- **`shapes` on scatter panels.** A record column of circles and rects in the
+  panel's units, outlined under the points: drawn once per distinct shape, in
+  the colour of the one `color_by` level that showed it, or grey when several
+  did. A malformed shape raises, naming the trial and the column.
+- **`cross=True` on `grouped_mean`.** One bar per combination of several
+  factors' levels, each with its own *n*.
+
+### Fixed
+
+- **A stray vertical line at the left edge of every line chart.** The hover
+  crosshair's stylesheet `opacity` outranked the attribute that hides it.
+- **A grouped panel drew its first two factors in the same colour.**
+- **Several factors side by side looked like the cells of a design.** The
+  panel now says they are marginal means.
+
 ## 1.4.4 - 2026-09-10
 
 ### Fixed
