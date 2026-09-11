@@ -613,7 +613,10 @@ class TestValidationPanel:
         s.monitor.validate()
         data = s.panel("Validation")["data"]
         assert data["form"] == "scatter" and data["equal_aspect"] is True
-        assert (data["x_label"], data["y_label"]) == ("x (deg)", "y (deg)")
+        assert (data["x_label"], data["y_label"]) == (
+            "Horizontal gaze position (°)",
+            "Vertical gaze position (°)",
+        )
         assert len(data["targets"]) == 5 and data["targets"][0] == [0.0, 0.0]
         [series] = data["series"]
         assert series["name"] == "gaze" and series["slot"] == 1

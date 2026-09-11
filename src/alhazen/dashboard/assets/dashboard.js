@@ -52,7 +52,7 @@ function chartHeight(width) {
 }
 
 const SANS = '"Helvetica Neue", Helvetica, Arial, "Liberation Sans", system-ui, sans-serif';
-const TICK_FONT = '11.5px ' + SANS;
+const TICK_FONT = '11px ' + SANS;
 const LABEL_FONT = '12px ' + SANS;
 
 /* ------------------------------------------------------------------ */
@@ -104,12 +104,49 @@ function seriesColor(series) {
 function fmt(value) {
   if (!isFinite(value)) return '—';
   const magnitude = Math.abs(value);
-  if (magnitude >= 1000) return value.toLocaleString(undefined, { maximumFractionDigits: 0 });
-  if (magnitude >= 100) return value.toFixed(0);
-  if (magnitude >= 10) return value.toFixed(1);
-  if (magnitude >= 1) return value.toFixed(2);
-  if (magnitude === 0) return '0';
-  return value.toPrecision(3);
+  let text;
+  if (magnitude >= 1000) text = value.toLocaleString(undefined, { maximumFractionDigits: 0 });
+  else if (magnitude >= 100) text = value.toFixed(0);
+  else if (magnitude >= 10) text = value.toFixed(1);
+  else if (magnitude >= 1) text = value.toFixed(2);
+  else if (magnitude === 0) text = '0';
+  else text = value.toPrecision(3);
+  return minus(text);
+}
+
+/** A true minus sign. A hyphen in front of a number is a typesetting error in
+ *  a figure, and the two glyphs are not even the same width. */
+function minus(text) {
+  return String(text).replace(/^-(?=\d)/, '\u2212');
+}
+
+/** A title's first letter in capitals and nothing else changed, so a task's
+ *  own wording ("P(occluder) by alignment") is kept as written. */
+/** What the reader sees for a data value: its display form when the session
+ *  sent one, the record's own value otherwise, so a dashboard saved before
+ *  display forms existed still draws. The raw values stay in the payload for
+ *  code that maps a panel back to its trials. */
+function shown(object, key) {
+  if (!object) return '';
+  const display = object['display_' + key];
+  return display !== undefined && display !== null && display !== '' ? display : object[key];
+}
+
+function sentenceStart(text) {
+  const value = String(text || '');
+  return value ? value[0].toUpperCase() + value.slice(1) : value;
+}
+
+/** a, b, … z, then aa, ab, …: how a plate with more panels than letters
+ *  keeps going. */
+function panelLetter(position) {
+  let text = '';
+  let n = position;
+  do {
+    text = String.fromCharCode(97 + (n % 26)) + text;
+    n = Math.floor(n / 26) - 1;
+  } while (n >= 0);
+  return text;
 }
 
 /* Text width without laying anything out: bar charts need to know how wide a
@@ -171,8 +208,8 @@ function decimalsFor(step) {
 /** Tick text with the decimals the step implies — never 0.30000000000000004. */
 function tickText(value, ticks) {
   const step = ticks.length > 1 ? Math.abs(ticks[1] - ticks[0]) : Math.abs(value) || 1;
-  if (Math.abs(value) >= 10000) return value.toLocaleString(undefined, { maximumFractionDigits: 0 });
-  return value.toFixed(decimalsFor(step));
+  if (Math.abs(value) >= 10000) return minus(value.toLocaleString(undefined, { maximumFractionDigits: 0 }));
+  return minus(value.toFixed(decimalsFor(step)));
 }
 
 /* ------------------------------------------------------------------ */
@@ -297,9 +334,15 @@ function hideTip(host) {
 
 /** A legend whenever two or more things are drawn — identity is never left to
  *  colour-matching alone. One series needs none: the title already names it. */
-function drawLegend(parent, entries) {
+function drawLegend(parent, entries, title) {
+  /* Kept on the host too, so a figure export can draw the same legend inside
+   * the SVG it writes rather than lose it with the page around the plot. */
+  parent._legend = { entries: entries, title: title || '' };
   if (entries.length < 2) return;
   const legend = htmlEl('div', 'legend', null, parent);
+  /* What the colours stand for, named before them: "Alignment", then the
+   * levels. Without it a legend is a set of words with no question. */
+  if (title) htmlEl('span', 'legend-title', title, legend);
   entries.forEach((entry) => {
     const item = htmlEl('span', null, null, legend);
     const swatch = htmlEl('i', entry.shape || 'line', null, item);
@@ -427,9 +470,9 @@ function drawLineChart(legendHost, host, data) {
     }, svg);
   });
 
-  const entries = series.map((one) => ({ name: one.name, color: slotColor(one.slot) }));
-  if (data.band) entries.push({ name: data.band.name || '95% CI', color: slotColor(data.band.slot), shape: 'box' });
-  if ((data.marks || []).length) entries.push({ name: 'delivery failed', color: 'var(--critical)', shape: 'dot' });
+  const entries = series.map((one) => ({ name: shown(one, 'name'), color: slotColor(one.slot) }));
+  if (data.band) entries.push({ name: shown(data.band, 'name') || '95% CI', color: slotColor(data.band.slot), shape: 'box' });
+  if ((data.marks || []).length) entries.push({ name: 'Delivery failed', color: 'var(--critical)', shape: 'dot' });
   drawLegend(legendHost, entries);
 
   /* Crosshair: the reader aims at a trial, never at a 2px line. */
@@ -455,7 +498,7 @@ function drawLineChart(legendHost, host, data) {
     hairline.setAttribute('opacity', 1);
     const rows = series.map((one) => {
       const near = one.points.reduce((a, b) => (Math.abs(b[0] - at) < Math.abs(a[0] - at) ? b : a));
-      return { name: one.name, value: fmt(near[1]), color: slotColor(one.slot) };
+      return { name: shown(one, 'name'), value: fmt(near[1]), color: slotColor(one.slot) };
     });
     showTip(host, xScale(at) , event.clientY - rect.top, (data.x_label || 'x') + ' ' + fmt(at), rows);
   };
@@ -472,7 +515,7 @@ function drawLineChart(legendHost, host, data) {
  * neighbour or gets rotated, and both are worse than reading it across.
  */
 function valueLabel(item) {
-  return item.value.toLocaleString() + ' · ' + (item.share * 100).toFixed(item.share < 0.1 ? 1 : 0) + '%';
+  return item.value.toLocaleString() + ' (' + (item.share * 100).toFixed(item.share < 0.1 ? 1 : 0) + '%)';
 }
 
 function drawBars(legendHost, host, data) {
@@ -486,12 +529,12 @@ function drawBars(legendHost, host, data) {
   const height = chartHeight(width);
   const band = Math.min(64, (height - PAD.bottom) / items.length);
   const top = (height - band * items.length) / 2;
-  const thickness = Math.min(24, band - 14);
+  const thickness = Math.min(16, Math.max(6, band - 18));
   const labelFont = LABEL_FONT;
   let labelWidth = 0;
   let valueWidth = 0;
   items.forEach((item) => {
-    labelWidth = Math.max(labelWidth, textWidth(item.label, labelFont));
+    labelWidth = Math.max(labelWidth, textWidth(shown(item, 'label'), labelFont));
     valueWidth = Math.max(valueWidth, textWidth(valueLabel(item), labelFont));
   });
   /* A few pixels of slack: the canvas metric and the SVG's own layout can
@@ -513,18 +556,14 @@ function drawBars(legendHost, host, data) {
   items.forEach((item, index) => {
     const y = top + index * band + (band - thickness) / 2;
     const length = scale(item.value);
-    const radius = Math.min(4, length);
-    /* Rounded at the data end, square at the baseline. */
-    svgEl('path', {
-      d: 'M' + x0 + ',' + y +
-         'H' + (x0 + length - radius) + 'Q' + (x0 + length) + ',' + y + ' ' + (x0 + length) + ',' + (y + radius) +
-         'V' + (y + thickness - radius) + 'Q' + (x0 + length) + ',' + (y + thickness) + ' ' + (x0 + length - radius) + ',' + (y + thickness) +
-         'H' + x0 + 'Z',
-      style: 'fill:' + color,
+    /* Square at both ends, as a printed figure draws a bar: its length is
+     * the value, and a rounded end leaves the reader guessing where it stops. */
+    svgEl('rect', {
+      x: x0, y: y, width: Math.max(0.5, length), height: thickness, style: 'fill:' + color,
     }, svg);
     svgEl('text', {
       x: x0 - 8, y: y + thickness / 2 + 4, class: 'value-text', 'text-anchor': 'end',
-    }, svg).textContent = ellipsize(item.label, labelCap - 10, labelFont);
+    }, svg).textContent = ellipsize(shown(item, 'label'), labelCap - 10, labelFont);
     svgEl('text', {
       x: x0 + length + 8, y: y + thickness / 2 + 4, class: 'value-text',
     }, svg).textContent = valueLabel(item);
@@ -535,9 +574,9 @@ function drawBars(legendHost, host, data) {
     }, svg);
     hit.addEventListener('pointermove', (event) => {
       const rect = svg.getBoundingClientRect();
-      showTip(host, event.clientX - rect.left, event.clientY - rect.top, item.label, [
+      showTip(host, event.clientX - rect.left, event.clientY - rect.top, shown(item, 'label'), [
         { name: data.value_label || '', value: item.value.toLocaleString(), color: color },
-        { name: 'of ' + data.total.toLocaleString(), value: (item.share * 100).toFixed(1) + '%' },
+        { name: 'Share of ' + data.total.toLocaleString(), value: (item.share * 100).toFixed(1) + '%' },
       ]);
     });
     hit.addEventListener('pointerleave', () => hideTip(host));
@@ -582,14 +621,7 @@ function drawHistogram(legendHost, host, data) {
     const w = Math.max(1, xScale(bin.x1) - xScale(bin.x0) - 2);
     const y = yScale(bin.count);
     const h = box.y1 - y;
-    const radius = Math.min(4, w / 2, h);
-    svgEl('path', {
-      d: 'M' + x + ',' + box.y1 + 'V' + (y + radius) +
-         'Q' + x + ',' + y + ' ' + (x + radius) + ',' + y +
-         'H' + (x + w - radius) + 'Q' + (x + w) + ',' + y + ' ' + (x + w) + ',' + (y + radius) +
-         'V' + box.y1 + 'Z',
-      style: 'fill:' + color,
-    }, svg);
+    svgEl('rect', { x: x, y: y, width: w, height: h, style: 'fill:' + color }, svg);
     const hit = svgEl('rect', { x: x - 1, y: box.y0, width: w + 2, height: box.y1 - box.y0, class: 'hit' }, svg);
     hit.addEventListener('pointermove', (event) => {
       const rect = svg.getBoundingClientRect();
@@ -604,7 +636,7 @@ function drawHistogram(legendHost, host, data) {
   if (isFinite(data.median)) {
     const x = xScale(data.median);
     svgEl('line', { x1: x, x2: x, y1: box.y0 - 2, y2: box.y1, class: 'rule' }, svg);
-    const label = 'median ' + fmt(data.median);
+    const label = 'Median ' + fmt(data.median);
     /* Above the bars, never across them; flipped inward where the median sits
      * near the right edge, so the text is never clipped by the card. */
     const flip = x + textWidth(label, TICK_FONT) + 8 > box.x1;
@@ -671,7 +703,7 @@ function drawScatter(legendHost, host, data) {
 
   series.forEach((one) => {
     const color = seriesColor(one);
-    one.points.forEach((point) => marker(svg, xScale(point[0]), yScale(point[1]), color, 4));
+    one.points.forEach((point) => marker(svg, xScale(point[0]), yScale(point[1]), color, 3.5));
   });
 
   /* Drawn after the cloud, not under it: an open ring hides no data, and
@@ -709,15 +741,15 @@ function drawScatter(legendHost, host, data) {
 
   drawLegend(legendHost, [
     ...series.map((one) => ({
-      name: one.name || 'landing', color: seriesColor(one), shape: 'dot',
+      name: shown(one, 'name') || 'Landing', color: seriesColor(one), shape: 'dot',
     })),
     /* Only when one was drawn: a legend entry for a mark that is not on the
      * plot sends the reader looking for it. */
     ...(series.some((one) => one.centroid)
-      ? [{ name: 'mean landing', color: 'var(--ink-2)', shape: 'diamond' }]
+      ? [{ name: 'Mean landing', color: 'var(--ink-2)', shape: 'diamond' }]
       : []),
-    ...((data.targets || []).length ? [{ name: 'target', color: 'var(--ink-2)', shape: 'ring' }] : []),
-  ]);
+    ...((data.targets || []).length ? [{ name: 'Target', color: 'var(--ink-2)', shape: 'ring' }] : []),
+  ], shown(data, 'color_label'));
 
   /* Nearest-point hover: a 8px dot is a pinpoint nobody hits reliably, so the
    * pointer only has to be closest. */
@@ -741,8 +773,8 @@ function drawScatter(legendHost, host, data) {
       { name: data.x_label, value: fmt(best.point[0]), color: seriesColor(best.series) },
       { name: data.y_label, value: fmt(best.point[1]) },
     ];
-    if (best.series.name) rows.push({ name: data.color_label || '', value: best.series.name });
-    showTip(host, xScale(best.point[0]), yScale(best.point[1]), 'landing', rows);
+    if (best.series.name) rows.push({ name: shown(data, 'color_label') || '', value: shown(best.series, 'name') });
+    showTip(host, xScale(best.point[0]), yScale(best.point[1]), 'Landing', rows);
   });
   hit.addEventListener('pointerleave', () => hideTip(host));
 }
@@ -798,8 +830,8 @@ function drawVectors(legendHost, host, data) {
     });
   });
   drawLegend(legendHost, series.map((one) => ({
-    name: one.name || 'saccade', color: seriesColor(one), shape: 'dot',
-  })));
+    name: shown(one, 'name') || 'Saccade', color: seriesColor(one), shape: 'dot',
+  })), shown(data, 'color_label'));
 
   /* The origin, marked and named: a displacement plot without its zero is a
    * cloud of numbers nobody can anchor. */
@@ -807,7 +839,7 @@ function drawVectors(legendHost, host, data) {
     d: 'M' + (cx - 5) + ',' + cy + 'H' + (cx + 5) + 'M' + cx + ',' + (cy - 5) + 'V' + (cy + 5),
     style: 'stroke:var(--ink-2);stroke-width:1.6',
   }, svg);
-  haloText(svg, cx + 8, cy + 14, data.origin_label || 'origin', 'start');
+  haloText(svg, cx + 8, cy + 14, data.origin_label || 'Origin', 'start');
 
   if (data.x_label) {
     svgEl('text', {
@@ -842,11 +874,11 @@ function drawVectors(legendHost, host, data) {
      * convention a saccade's direction is quoted in. */
     const angle = (Math.atan2(dy, dx) * 180) / Math.PI;
     const rows = [
-      { name: 'amplitude', value: fmt(Math.hypot(dx, dy)), color: seriesColor(best.series) },
-      { name: 'direction', value: fmt(angle) + '°' },
+      { name: 'Amplitude', value: fmt(Math.hypot(dx, dy)), color: seriesColor(best.series) },
+      { name: 'Direction', value: fmt(angle) + '°' },
     ];
-    if (best.series.name) rows.push({ name: data.color_label || '', value: best.series.name });
-    showTip(host, cx + dx * scale, cy - dy * scale, 'saccade', rows);
+    if (best.series.name) rows.push({ name: shown(data, 'color_label') || '', value: shown(best.series, 'name') });
+    showTip(host, cx + dx * scale, cy - dy * scale, 'Saccade', rows);
   });
   hit.addEventListener('pointerleave', () => hideTip(host));
 }
@@ -907,32 +939,24 @@ function drawDots(legendHost, host, data) {
   const series = [];
   groups.forEach((g) => { if (g.series && !series.includes(g.series)) series.push(g.series); });
   const colorOf = (g) => (series.length > 1 ? slotColor(series.indexOf(g.series)) : slotColor(1));
-  drawLegend(legendHost, series.map((name) => ({ name: name, color: slotColor(series.indexOf(name)) })));
+  /* A factor's display name, from any group that carries it. */
+  const seriesName = (raw) => {
+    const carrier = groups.find((g) => g.series === raw);
+    return (carrier && carrier.display_series) || raw;
+  };
+  drawLegend(legendHost, series.map((name) => ({ name: seriesName(name), color: slotColor(series.indexOf(name)) })));
   const zero = yScale(Math.min(Math.max(0, yLo), yHi));
-  const thickness = Math.min(24, Math.max(6, step - 26));
+  const thickness = Math.min(18, Math.max(6, step - 30));
   groups.forEach((group, index) => {
     const x = xAt(index);
     const y = yScale(group.mean);
     if (bars) {
-      /* Rounded at the data end, square at the baseline — and the rounding
-       * flips with the sign, so a negative mean reads as a bar hanging from
-       * zero rather than one standing on it. */
+      /* Square ends, hanging from zero for a negative mean and standing on it
+       * for a positive one. */
       const top = Math.min(y, zero);
       const height = Math.abs(zero - y);
-      const radius = Math.min(4, thickness / 2, height);
-      const up = y <= zero;
-      svgEl('path', {
-        d: up
-          ? 'M' + (x - thickness / 2) + ',' + zero + 'V' + (top + radius) +
-            'Q' + (x - thickness / 2) + ',' + top + ' ' + (x - thickness / 2 + radius) + ',' + top +
-            'H' + (x + thickness / 2 - radius) +
-            'Q' + (x + thickness / 2) + ',' + top + ' ' + (x + thickness / 2) + ',' + (top + radius) +
-            'V' + zero + 'Z'
-          : 'M' + (x - thickness / 2) + ',' + zero + 'V' + (y - radius) +
-            'Q' + (x - thickness / 2) + ',' + y + ' ' + (x - thickness / 2 + radius) + ',' + y +
-            'H' + (x + thickness / 2 - radius) +
-            'Q' + (x + thickness / 2) + ',' + y + ' ' + (x + thickness / 2) + ',' + (y - radius) +
-            'V' + zero + 'Z',
+      svgEl('rect', {
+        x: x - thickness / 2, y: top, width: thickness, height: Math.max(0.5, height),
         style: 'fill:' + colorOf(group),
       }, svg);
     }
@@ -940,29 +964,36 @@ function drawDots(legendHost, host, data) {
     const bottom = yScale(lowOf(group));
     if (Math.abs(bottom - top) > 0.5) {
       svgEl('path', {
-        d: 'M' + x + ',' + top + 'V' + bottom + 'M' + (x - 4) + ',' + top + 'H' + (x + 4) +
-           'M' + (x - 4) + ',' + bottom + 'H' + (x + 4),
-        style: 'stroke:' + (bars ? 'var(--ink-2)' : colorOf(group)) + ';stroke-width:1.5',
+        d: 'M' + x + ',' + top + 'V' + bottom + 'M' + (x - 3) + ',' + top + 'H' + (x + 3) +
+           'M' + (x - 3) + ',' + bottom + 'H' + (x + 3),
+        /* Black over a bar, as a printed figure draws an error bar; the
+         * level's own colour on a dot, which has no fill around it to sit on. */
+        style: 'stroke:' + (bars ? 'var(--axis)' : colorOf(group)) + ';stroke-width:1.2',
       }, svg);
     }
     if (!bars) marker(svg, x, y, colorOf(group), 4.5);
     svgEl('text', {
       x: x, y: box.y1 + 15, class: 'tick-text', 'text-anchor': 'middle',
-    }, svg).textContent = group.label;
-    svgEl('text', {
-      x: x, y: box.y1 + 27, class: 'tick-text', 'text-anchor': 'middle', opacity: 0.75,
-    }, svg).textContent = 'n=' + group.n;
+    }, svg).textContent = shown(group, 'label');
+    /* "n = 12" with an italic n: the sample size as it is set in print. */
+    const count = svgEl('text', {
+      x: x, y: box.y1 + 27, class: 'tick-text', 'text-anchor': 'middle',
+    }, svg);
+    svgEl('tspan', { 'font-style': 'italic' }, count).textContent = 'n';
+    svgEl('tspan', {}, count).textContent = ' = ' + group.n;
 
     const hit = svgEl('rect', { x: x - step / 2, y: box.y0, width: step, height: box.y1 - box.y0, class: 'hit' }, svg);
     hit.addEventListener('pointermove', (event) => {
       const rect = svg.getBoundingClientRect();
-      const rows = [{ name: 'mean', value: fmt(group.mean), color: colorOf(group) }];
+      const rows = [{ name: 'Mean', value: fmt(group.mean), color: colorOf(group) }];
       rows.push({
-        name: data.error_label || 'interval',
+        name: data.error_label || 'Interval',
         value: fmt(lowOf(group)) + ' – ' + fmt(highOf(group)),
       });
-      rows.push({ name: 'trials', value: String(group.n) });
-      const title = series.length > 1 ? group.series + ': ' + group.label : group.label;
+      rows.push({ name: 'Trials', value: String(group.n) });
+      const title = series.length > 1
+        ? seriesName(group.series) + ': ' + shown(group, 'label')
+        : shown(group, 'label');
       showTip(host, event.clientX - rect.left, event.clientY - rect.top, title, rows);
     });
     hit.addEventListener('pointerleave', () => hideTip(host));
@@ -1059,7 +1090,7 @@ function drawHeatmap(legendHost, host, data) {
 
     svgEl('text', {
       x: tx + tileW / 2, y: ty + 11, class: 'tick-text', 'text-anchor': 'middle',
-    }, svg).textContent = one.name || '';
+    }, svg).textContent = shown(one, 'name') || '';
 
     for (let r = 0; r < rows; r += 1) {
       for (let c = 0; c < cols; c += 1) {
@@ -1088,7 +1119,7 @@ function drawHeatmap(legendHost, host, data) {
           if (data.flashes && data.flashes[r]) {
             readout.push({ name: 'flashes', value: String(data.flashes[r][c]) });
           }
-          if (one.name) readout.push({ name: 'map', value: one.name });
+          if (one.name) readout.push({ name: 'Map', value: shown(one, 'name') });
           showTip(host, event.clientX - rect.left, event.clientY - rect.top, head, readout);
         });
         cell.addEventListener('pointerleave', () => hideTip(host));
@@ -1231,17 +1262,17 @@ function drawEmpty(host, message) {
 function tableRows(data) {
   switch (data.form) {
     case 'bars':
-      return { head: ['category', data.value_label || 'count', 'share'],
-        rows: data.items.map((i) => [i.label, i.value.toLocaleString(), (i.share * 100).toFixed(1) + '%']) };
+      return { head: ['Category', data.value_label || 'Count', 'Share'],
+        rows: data.items.map((i) => [shown(i, 'label'), i.value.toLocaleString(), (i.share * 100).toFixed(1) + '%']) };
     case 'histogram':
-      return { head: ['bin', data.y_label || 'count'],
+      return { head: ['Bin', data.y_label || 'Count'],
         rows: data.bins.map((b) => [fmt(b.x0) + ' – ' + fmt(b.x1), String(b.count)]) };
     case 'line': {
       const series = data.series || [];
       const xs = [];
       series.forEach((s) => s.points.forEach((p) => { if (!xs.includes(p[0])) xs.push(p[0]); }));
       xs.sort((a, b) => a - b);
-      return { head: [data.x_label || 'x'].concat(series.map((s) => s.name)),
+      return { head: [data.x_label || 'x'].concat(series.map((s) => shown(s, 'name'))),
         rows: xs.map((x) => [fmt(x)].concat(series.map((s) => {
           const hit = s.points.find((p) => p[0] === x);
           return hit ? fmt(hit[1]) : '';
@@ -1249,24 +1280,24 @@ function tableRows(data) {
     }
     case 'scatter': {
       const named = (data.series || []).some((s) => s.name);
-      return { head: [...(named ? [data.color_label || 'series'] : []), data.x_label || 'x', data.y_label || 'y'],
+      return { head: [...(named ? [shown(data, 'color_label') || 'Series'] : []), data.x_label || 'x', data.y_label || 'y'],
         rows: (data.series || []).flatMap((s) => s.points.map((p) => [
-          ...(named ? [s.name] : []), fmt(p[0]), fmt(p[1]),
+          ...(named ? [shown(s, 'name')] : []), fmt(p[0]), fmt(p[1]),
         ])) };
     }
     case 'vectors': {
       const named = (data.series || []).some((s) => s.name);
-      return { head: [...(named ? [data.color_label || 'series'] : []), 'amplitude', 'direction (°)'],
+      return { head: [...(named ? [shown(data, 'color_label') || 'Series'] : []), 'Amplitude', 'Direction (°)'],
         rows: (data.series || []).flatMap((s) => s.points.map((p) => [
-          ...(named ? [s.name] : []),
+          ...(named ? [shown(s, 'name')] : []),
           fmt(Math.hypot(p[0], p[1])),
           fmt((Math.atan2(p[1], p[0]) * 180) / Math.PI),
         ])) };
     }
     case 'dots':
-      return { head: [data.x_label || 'group', 'mean', data.error_label || 'interval', 'n'],
+      return { head: [data.x_label || 'Group', 'Mean', data.error_label || 'Interval', 'n'],
         rows: (data.groups || []).map((g) => [
-          g.label,
+          shown(g, 'label'),
           fmt(g.mean),
           g.low === undefined
             ? (g.sem === null ? '—' : '± ' + fmt(g.sem))
@@ -1274,7 +1305,7 @@ function tableRows(data) {
           String(g.n),
         ]) };
     case 'stat':
-      return { head: [data.label || 'value', ''], rows: [[data.value + (data.unit ? ' ' + data.unit : ''), data.secondary || '']] };
+      return { head: [data.label || 'Value', ''], rows: [[data.value + (data.unit ? ' ' + data.unit : ''), data.secondary || '']] };
     case 'image':
       /* A picture has no rows; its numbers travel in the stats strip. */
       return null;
@@ -1295,7 +1326,7 @@ function tableRows(data) {
         }
       }
       return {
-        head: [data.x_label || 'x', data.y_label || 'y', 'flashes', ...maps.map((m) => m.name)],
+        head: [data.x_label || 'x', data.y_label || 'y', 'Flashes', ...maps.map((m) => shown(m, 'name'))],
         rows: rows,
       };
     }
@@ -1358,14 +1389,21 @@ const DRAW = {
  */
 function buildPanel(panel, index, openTables) {
   const card = htmlEl('section', 'panel');
-  htmlEl('h2', null, panel.title, card);
+  /* A bold lowercase letter before the title, as a journal figure labels its
+   * panels. Filled in once the panels on screen are known (render), so the
+   * letters run a, b, c through what the reader is actually looking at. */
+  const heading = htmlEl('h2', null, null, card);
+  const letter = htmlEl('span', 'panel-letter', null, heading);
+  htmlEl('span', null, sentenceStart(panel.title), heading);
   const data = panel.data || { form: 'empty', message: 'No data yet' };
 
   if (data.stats && data.stats.length) {
     const strip = htmlEl('div', 'stats', null, card);
     data.stats.forEach((stat) => {
       const cell = htmlEl('div', null, null, strip);
-      htmlEl('span', 'stat-label', stat.label, cell);
+      /* The sample size is an italic n, as it is everywhere in print. */
+      const label = htmlEl('span', 'stat-label', stat.label === 'n' ? null : stat.label, cell);
+      if (stat.label === 'n') htmlEl('i', null, 'n', label);
       const value = htmlEl('span', 'stat-value', stat.value, cell);
       if (stat.status) value.dataset.status = stat.status;
     });
@@ -1383,6 +1421,8 @@ function buildPanel(panel, index, openTables) {
     legendHost: legendHost,
     data: data,
     section: panel.section || 'Other',
+    letter: letter,
+    title: panel.title || '',
   };
 }
 
@@ -1491,6 +1531,7 @@ function render() {
    * shown ones: an element that is not in the document has no width, and a
    * chart drawn against that width would be drawn wrong. */
   panels = shown;
+  panels.forEach((entry, position) => { entry.letter.textContent = panelLetter(position); });
   panels.forEach(paintPanel);
 
   /* After painting, not before: the panels have their real heights only once

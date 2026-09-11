@@ -412,7 +412,7 @@ class TestCameraThroughThePause:
         saved = json.loads((harness.paths.figures_dir / "dashboard_state.json").read_text())
         camera = self._camera(saved)
         assert camera["form"] == "image" and camera["pixels"] == ""
-        assert camera["note"] == "image left out of the saved copy"
+        assert camera["note"] == "Image left out of the saved copy"
         # The live pause page did carry the picture.
         live = next(s for s in dashboard.states if s["status"] == "paused")
         assert self._camera(live)["pixels"]

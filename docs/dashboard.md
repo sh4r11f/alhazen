@@ -71,8 +71,9 @@ goes flat at trial 260 says the subject stopped working, which no total can.
 flowchart LR
   R["DataRecorder<br/>trials + events"] --> S["dashboard_state()"]
   P["DashboardSpec<br/>resolved_panels"] --> S
-  S -->|"per panel, whole session"| C["panels.panel_payload()<br/>counts · bins · means<br/>SEM · Wilson CI · cumulative"]
-  C -->|"thinned to &le; 180 points"| W["one JSON snapshot"]
+  S -->|"per panel, whole session"| C["panels.panel_payload()<br/>counts · bins · means<br/>s.e.m. · Wilson CI · cumulative"]
+  C -->|"thinned to &le; 180 points"| N["panels.present()<br/>sentence case · ° · minus sign<br/>display twins"]
+  N --> W["one JSON snapshot"]
   S -->|"last max_rows rows"| W
   W --> Q(["queue (1 slot)"])
   Q --> H["child process<br/>HTTP + long poll"]
@@ -85,6 +86,28 @@ bin edge, mean, error bar and running proportion is computed in
 `alhazen.dashboard.panels`, in Python, where it is unit-tested. A running
 accuracy that divides by the wrong denominator looks entirely plausible in a
 browser, and the page's JavaScript has no test in this suite.
+
+What the reader sees is decided once, after the numbers. `panels.present()`
+rewrites every payload in a journal figure's conventions: labels in sentence
+case, column and outcome names as words (`FIX_BREAK` is "Fix break",
+`saccade_latency_ms` is "Saccade latency (ms)"), abbreviations in their own
+case ("RT", "IQR", "s.e.m."), degrees of visual angle as "°", and a true minus
+sign. Prose (axis titles, notes, stat labels) is rewritten in place. Data
+values (a level, an outcome, a response key) keep their record form, because
+code that maps a panel back to its trials compares them with the record. Each
+gains a display twin beside it, and the page draws the twin:
+
+| raw, unchanged | display twin |
+| --- | --- |
+| `items[].label` | `items[].display_label` |
+| `series[].name` | `series[].display_name` |
+| `groups[].label` | `groups[].display_label` |
+| `groups[].series` | `groups[].display_series` |
+| `band.name` | `band.display_name` |
+| `maps[].name` | `maps[].display_name` |
+| `color_label` | `display_color_label` |
+
+A dashboard saved before the twins existed still draws, from the raw values.
 
 ### Reading them
 
@@ -136,6 +159,8 @@ thing wherever it appears.
 - **Spines and outward ticks, no gridlines.** The reading conventions of a
   printed figure: the ink inside a plot is the data. Values a tick does not
   carry are on a direct label, in the hover readout, or in the table.
+- **Panels are lettered a, b, c** in the order they are shown, in bold
+  lowercase, the way a figure plate letters them.
 - **A mean marker appears only where a mean is a position.** With more than
   one target on screen, the mean landing falls between the clusters — where
   nothing landed — so the landing panel omits it.

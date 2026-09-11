@@ -24,7 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from alhazen.dashboard.panels import panel_payload
+from alhazen.dashboard.panels import panel_payload, present
 from alhazen.dashboard.spec import DashboardSpec
 from alhazen.errors import SessionError
 
@@ -405,7 +405,12 @@ def dashboard_state(
             # it, and an unfiled panel would vanish from every group. An
             # entry that names its own section (the eye tracker's do) keeps
             # it, because the entry's keys are spread second.
-            *({"section": "Live analysis", **panel} for panel in extra_panels),
+            # Through the same presentation pass as the trial panels, so an eye
+            # tracker's or a live analysis's panel reads like every other one.
+            *(
+                {"section": "Live analysis", **panel, "data": present(panel["data"])}
+                for panel in extra_panels
+            ),
         ],
         "training": training,
         "message": message,
