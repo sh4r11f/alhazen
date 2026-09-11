@@ -836,3 +836,10 @@ class TestFigureConventionsInTheRenderer:
         rule = re.search(r"\.hairline\s*\{([^}]*)\}", css)
         assert rule is not None, "no .hairline rule"
         assert not re.search(r"(^|[;\s])opacity\s*:", rule.group(1)), rule.group(1)
+
+    def test_each_factor_on_a_grouped_panel_gets_its_own_colour(self):
+        """Colour slots count from 1. Passing the 0-based index gave the first
+        two factors slot 1 both, so they were drawn in the same blue."""
+        dots = self._function(self._asset("dashboard.js"), "drawDots")
+        assert "slotColor(series.indexOf(g.series) + 1)" in dots
+        assert "slotColor(series.indexOf(name) + 1)" in dots

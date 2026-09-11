@@ -938,13 +938,15 @@ function drawDots(legendHost, host, data) {
    * which — the x labels are level names and several factors can share one. */
   const series = [];
   groups.forEach((g) => { if (g.series && !series.includes(g.series)) series.push(g.series); });
-  const colorOf = (g) => (series.length > 1 ? slotColor(series.indexOf(g.series)) : slotColor(1));
+  /* Slots count from 1. Passing the 0-based index gave the first two factors
+   * slot 1 both, so they were drawn in the same blue. */
+  const colorOf = (g) => (series.length > 1 ? slotColor(series.indexOf(g.series) + 1) : slotColor(1));
   /* A factor's display name, from any group that carries it. */
   const seriesName = (raw) => {
     const carrier = groups.find((g) => g.series === raw);
     return (carrier && carrier.display_series) || raw;
   };
-  drawLegend(legendHost, series.map((name) => ({ name: seriesName(name), color: slotColor(series.indexOf(name)) })));
+  drawLegend(legendHost, series.map((name) => ({ name: seriesName(name), color: slotColor(series.indexOf(name) + 1) })));
   const zero = yScale(Math.min(Math.max(0, yLo), yHi));
   const thickness = Math.min(18, Math.max(6, step - 30));
   groups.forEach((group, index) => {
