@@ -223,7 +223,7 @@ layout.
 | `scatter` | where in space did the response land? | equal-aspect scatter with targets, the mean landing, and any regions the task outlines |
 | `vectors` | how far, and which way, did the eye move? | every trial's displacement from one origin, on a polar grid |
 | `series` | how does one quantity drift? | per-trial points with a moving mean |
-| `grouped_mean` | does it differ across a condition? | group means ± SEM, with n |
+| `grouped_mean` | does it differ across a condition? | group means ± s.e.m., with *n*; several factors side by side or crossed |
 | `stat` | one number | the number |
 
 `performance` needs nothing declared: it reads the row's own `success` when
@@ -352,6 +352,16 @@ a signed mean has no meaningful baseline to grow from, which is why the
 default is a dot. `grouped_rate` is bars unless you say otherwise, and its
 interval is Wilson's — asymmetric near 0 and 1, which is exactly where a level
 with a handful of trials puts it.
+
+A `grouped_mean` panel can take several factors. Side by side
+(`group=("alignment", "separation")`), each factor is averaged on its own over
+every trial, one colour per factor. Those are marginal means, and the panel
+says so under the plot, because bars for several factors on one axis look like
+the cells of a design. With `cross=True` it draws one bar per combination of
+levels instead ("near / static"), each over the trials that had exactly that
+combination and with its own *n*; a trial missing any of the factors sits in no
+cell. `cross=True` on a panel with fewer than two factors, or on any other
+kind, is refused when the panel is declared.
 
 ## Panel filters
 

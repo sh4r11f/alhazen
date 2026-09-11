@@ -1131,3 +1131,77 @@ class TestScatterShapes:
     def test_shapes_are_refused_on_a_panel_that_cannot_draw_them(self):
         with pytest.raises(ValueError, match="shapes are drawn on scatter panels only"):
             DashboardPanel(kind="vectors", title="V", x="a", y="b", shapes="regions")
+
+
+# ----------------------------------------------------------------------
+# Several factors: side by side, or crossed
+# ----------------------------------------------------------------------
+
+
+def _crossable():
+    """Two factors with every combination present, and one trial missing a
+    factor."""
+    return [
+        trial(0, completed=True, hit=1.0, separation="near", motion="static"),
+        trial(1, completed=True, hit=0.0, separation="near", motion="static"),
+        trial(2, completed=True, hit=1.0, separation="near", motion="moving"),
+        trial(3, completed=True, hit=0.0, separation="far", motion="static"),
+        trial(4, completed=True, hit=1.0, separation="far", motion="moving"),
+        trial(5, completed=True, hit=1.0, separation="far"),  # no motion: no cell
+    ]
+
+
+def test_crossing_two_factors_makes_one_bar_per_combination():
+    panel = DashboardPanel(
+        kind="grouped_mean",
+        title="P",
+        value="hit",
+        group=("separation", "motion"),
+        cross=True,
+        style="bars",
+    )
+    data = panel_payload(panel, _crossable(), [])
+    assert [(g["label"], g["mean"], g["n"]) for g in data["groups"]] == [
+        ("far / moving", 1.0, 1),
+        ("far / static", 0.0, 1),
+        ("near / moving", 1.0, 1),
+        ("near / static", 0.5, 2),
+    ]
+    assert [g["display_label"] for g in data["groups"]][0] == "Far / moving"
+    # One colour: a cell is not a factor, so there is no series to tell apart.
+    assert all("series" not in g for g in data["groups"])
+    assert data["x_label"] == "Separation × motion"
+    # Each trial sits in one cell, and the trial missing a factor in none.
+    assert {"label": "n", "value": "5"} in data["stats"]
+    assert "note" not in data
+
+
+def test_factors_side_by_side_say_they_are_averaged_separately():
+    """Bars for several factors on one axis read as the cells of a design
+    unless the panel says otherwise."""
+    panel = DashboardPanel(
+        kind="grouped_mean", title="P", value="hit", group=("separation", "motion")
+    )
+    data = panel_payload(panel, _crossable(), [])
+    assert data["note"] == (
+        "Each factor averaged separately over all trials (marginal means), "
+        "not by combination of levels"
+    )
+
+    one = DashboardPanel(kind="grouped_mean", title="P", value="hit", group="separation")
+    assert "note" not in panel_payload(one, _crossable(), [])
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        (
+            {"kind": "grouped_mean", "value": "hit", "group": "separation"},
+            "grouped_mean panel names 1",
+        ),
+        ({"kind": "grouped_rate", "group": "separation"}, "grouped_rate panel names 1"),
+    ],
+)
+def test_cross_is_refused_where_there_is_nothing_to_cross(fields, message):
+    with pytest.raises(ValueError, match=message):
+        DashboardPanel(title="P", cross=True, **fields)

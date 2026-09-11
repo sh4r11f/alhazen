@@ -893,13 +893,25 @@ def _grouped_mean(panel: DashboardPanel, rows: list[dict[str, Any]]) -> dict[str
     fields = panel.group_fields
     if not fields:
         raise ValueError("grouped_mean panels require group")
+    # Crossing needs two factors; the spec refuses cross=True with fewer, so
+    # the length check only guards a panel built past its own validator.
+    crossed = panel.cross and len(fields) > 1
 
-    # Keyed by (factor, level) rather than by level alone. Two factors can name
-    # the same level — `near` under separation and `near` under anything else —
-    # and merging them would silently average unrelated trials together.
-    buckets: dict[tuple[str, str], list[float]] = {}
+    # Marginal buckets are keyed by (factor, level) rather than by level
+    # alone. Two factors can name the same level — `near` under separation and
+    # `near` under anything else — and merging them would silently average
+    # unrelated trials together. Crossed buckets are keyed by every factor's
+    # level at once, in the order the factors were declared.
+    buckets: dict[tuple[str, ...], list[float]] = {}
     for row in rows:
         if not _num(row.get(field)):
+            continue
+        if crossed:
+            levels = [row.get(group_field) for group_field in fields]
+            # A trial missing any one factor belongs to no cell.
+            if any(level is None for level in levels):
+                continue
+            buckets.setdefault(tuple(str(level) for level in levels), []).append(float(row[field]))
             continue
         for group_field in fields:
             key = row.get(group_field)
@@ -908,47 +920,73 @@ def _grouped_mean(panel: DashboardPanel, rows: list[dict[str, Any]]) -> dict[str
     if not buckets:
         return _empty(f"No {field} by {' / '.join(fields)} yet")
 
+    if crossed:
+        # Each factor's levels in their natural order, the first factor
+        # outermost, so the cells that share a level of it sit together.
+        ordered = sorted(buckets, key=lambda key: tuple(_group_order(level) for level in key))
+    else:
+        # Factors in the order they were declared, levels ordered within each,
+        # so the bars of one factor stay together and the reader compares
+        # within a colour before comparing across.
+        ordered = sorted(buckets, key=lambda key: (fields.index(key[0]), _group_order(key[1])))
+
     groups: list[dict[str, Any]] = []
     trials_shown = 0
-    # Factors in the order they were declared, levels ordered within each, so
-    # the bars of one factor stay together and the reader compares within a
-    # colour before comparing across.
-    ordered = sorted(buckets, key=lambda k: (fields.index(k[0]), _group_order(k[1])))
-    for group_field, label in ordered:
-        values = buckets[(group_field, label)]
+    for key in ordered:
+        values = buckets[key]
         trials_shown += len(values)
         sd = _sd(values)
-        groups.append(
-            {
-                "label": label,
-                "series": group_field.replace("_", " "),
-                "mean": _mean(values),
-                # Standard error of the mean: the error bar answers "how well
-                # is this mean pinned down", which is the question a group
-                # comparison asks. NaN travels as None for a single trial,
-                # where no spread was measured — better a bare dot than a
-                # zero-length bar implying certainty.
-                "sem": None if math.isnan(sd) else sd / math.sqrt(len(values)),
-                "n": len(values),
-            }
-        )
-    # One factor is a plain grouped panel and keeps its own axis label; several
-    # share one axis, and the label that matters is then on the legend.
-    return {
+        group: dict[str, Any] = {
+            # A cell is named by all its levels, "near / static"; a marginal
+            # bar by its one level, with its factor as the series.
+            "label": " / ".join(key) if crossed else key[1],
+            "mean": _mean(values),
+            # Standard error of the mean: the error bar answers "how well
+            # is this mean pinned down", which is the question a group
+            # comparison asks. NaN travels as None for a single trial,
+            # where no spread was measured — better a bare dot than a
+            # zero-length bar implying certainty.
+            "sem": None if math.isnan(sd) else sd / math.sqrt(len(values)),
+            "n": len(values),
+        }
+        if not crossed:
+            group["series"] = key[0].replace("_", " ")
+        groups.append(group)
+
+    if crossed:
+        # "Separation × motion": the factors a cell's label is made of, in the
+        # same order as its parts.
+        x_label = " × ".join(split_unit(group_field)[0] for group_field in fields)
+    elif len(fields) == 1:
+        x_label = axis_label(fields[0])
+    else:
+        # Several marginals share one axis, and the label that matters is then
+        # on the legend.
+        x_label = "condition"
+    payload: dict[str, Any] = {
         "form": "dots",
         "groups": groups,
         "style": panel.style or "dots",
-        "x_label": axis_label(fields[0]) if len(fields) == 1 else "condition",
+        "x_label": x_label,
         "y_label": axis_label(field, panel.unit),
         "error_label": "Mean ± s.e.m.",
         "stats": [
             {"label": "groups", "value": str(len(groups))},
-            # `n` counts placements, not trials: with several factors every
-            # trial appears once per factor, and saying "trials" would overcount
-            # the session by exactly that multiple.
+            # Side by side, `n` counts placements, not trials: every trial
+            # appears once per factor, and saying "trials" would overcount the
+            # session by exactly that multiple. A crossed cell holds each
+            # trial once, so there the two are the same.
             {"label": "n", "value": f"{trials_shown:,}"},
         ],
     }
+    if len(fields) > 1 and not crossed:
+        # On the panel, not only in the spec: bars for several factors on one
+        # axis look like the cells of a design, and they are not.
+        payload["note"] = (
+            "each factor averaged separately over all trials (marginal means), "
+            "not by combination of levels"
+        )
+    return payload
 
 
 def _score(
