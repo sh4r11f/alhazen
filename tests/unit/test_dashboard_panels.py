@@ -16,6 +16,7 @@ import pytest
 from alhazen.dashboard.panels import (
     MAX_CLASSES,
     MAX_POINTS,
+    MAX_SHAPES,
     axis_label,
     display_name,
     display_value,
@@ -1003,3 +1004,130 @@ class TestPresentation:
         data = payload(panel, rows)
         assert (data["x_label"], data["y_label"]) == ("Endpoint x (°)", "Endpoint y (°)")
         assert "dva" not in json.dumps(data, ensure_ascii=False)
+
+
+# ----------------------------------------------------------------------
+# Scatter shapes
+# ----------------------------------------------------------------------
+
+
+class TestScatterShapes:
+    """Regions a task outlines on its landing plot, such as the inducers a
+    landing is judged against. Drawn once however many trials carry them, in
+    the colour of the one level that showed each, and never dropped quietly."""
+
+    CIRCLE = {"kind": "circle", "x": -5.0, "y": 0.0, "r": 1.5}
+    RECT = {"kind": "rect", "x": 5.0, "y": 0.0, "width": 2.0, "height": 4.0}
+
+    @staticmethod
+    def panel(**fields):
+        return DashboardPanel(
+            kind="scatter",
+            title="Landings",
+            x="endpoint_x_dva",
+            y="endpoint_y_dva",
+            shapes="inducer_shapes_dva",
+            **fields,
+        )
+
+    @staticmethod
+    def rows(shapes_by_trial, **columns):
+        """One completed trial per entry, carrying that entry as its shapes
+        and the i-th value of each extra column."""
+        return [
+            trial(
+                i,
+                completed=True,
+                endpoint_x_dva=float(i),
+                endpoint_y_dva=0.0,
+                inducer_shapes_dva=value,
+                **{name: values[i] for name, values in columns.items()},
+            )
+            for i, value in enumerate(shapes_by_trial)
+        ]
+
+    def test_a_list_and_its_json_text_are_the_same_shapes_drawn_once(self):
+        rows = self.rows(
+            [[self.CIRCLE, self.RECT], json.dumps([self.CIRCLE, self.RECT]), [self.CIRCLE]]
+        )
+        data = payload(self.panel(), rows)
+        # No color_by: no level owns a shape, so every one is grey.
+        assert data["shapes"] == [{**self.CIRCLE, "series": None}, {**self.RECT, "series": None}]
+        assert data["shapes_label"] == "Inducer shapes"
+
+    def test_a_shape_takes_the_colour_of_the_one_level_that_showed_it(self):
+        near = {"kind": "circle", "x": -3.0, "y": 0.0, "r": 1.0}
+        far = {"kind": "circle", "x": -8.0, "y": 0.0, "r": 1.0}
+        rows = self.rows([[near], [far], [near], [far]], separation=["near", "far", "near", "far"])
+        data = payload(self.panel(color_by="separation"), rows)
+        assert {shape["x"]: shape["series"] for shape in data["shapes"]} == {
+            -3.0: "near",
+            -8.0: "far",
+        }
+        # The owner is a series the page actually draws, matched by name.
+        assert {"near", "far"} <= {entry["name"] for entry in data["series"]}
+
+    def test_a_shape_several_levels_share_is_drawn_once_in_grey(self):
+        rows = self.rows(
+            [[self.CIRCLE]] * 4, alignment=["aligned", "rotated", "aligned", "rotated"]
+        )
+        data = payload(self.panel(color_by="alignment"), rows)
+        assert data["shapes"] == [{**self.CIRCLE, "series": None}]
+
+    def test_float_noise_does_not_split_one_shape_in_two(self):
+        nudged = {**self.CIRCLE, "x": self.CIRCLE["x"] + 1e-12}
+        data = payload(self.panel(), self.rows([[self.CIRCLE], [nudged]]))
+        assert len(data["shapes"]) == 1
+
+    def test_shapes_are_not_thinned_with_the_points(self):
+        """Points are capped for the page's sake; a region is not a point, and
+        losing one would misstate where a landing could have fallen."""
+        rows = self.rows(
+            [
+                [{"kind": "circle", "x": float(i % 40), "y": 0.0, "r": 1.0}]
+                for i in range(MAX_POINTS * 3)
+            ]
+        )
+        data = payload(self.panel(), rows)
+        assert len(data["shapes"]) == 40
+
+    def test_past_the_cap_the_panel_says_how_many_it_left_out(self):
+        rows = self.rows(
+            [[{"kind": "circle", "x": float(i), "y": 0.0, "r": 0.5}] for i in range(MAX_SHAPES + 6)]
+        )
+        data = payload(self.panel(), rows)
+        assert len(data["shapes"]) == MAX_SHAPES
+        assert data["note"] == (
+            f"Showing the first {MAX_SHAPES} of {MAX_SHAPES + 6} distinct outlines "
+            "from inducer shapes"
+        )
+
+    def test_a_trial_without_shapes_is_one_without_regions(self):
+        data = payload(self.panel(), self.rows([None, "", [self.CIRCLE], float("nan")]))
+        assert data["shapes"] == [{**self.CIRCLE, "series": None}]
+        assert "shapes" not in payload(self.panel(), self.rows([None, None]))
+
+    @pytest.mark.parametrize(
+        ("value", "message"),
+        [
+            ("[{not json", "not valid JSON"),
+            ({"kind": "circle"}, "must be a list of shapes"),
+            (["circle"], "expected an object"),
+            ([{"kind": "polygon", "x": 0, "y": 0}], "kind must be 'circle' or 'rect'"),
+            ([{"kind": "circle", "x": 0, "y": 0}], "r must be a finite number"),
+            ([{"kind": "circle", "x": 0, "y": 0, "r": True}], "r must be a finite number"),
+            ([{"kind": "circle", "x": float("nan"), "y": 0, "r": 1}], "x must be a finite number"),
+            ([{"kind": "rect", "x": 0, "y": 0, "width": 0, "height": 1}], "width must be > 0"),
+            ([{"kind": "circle", "x": 0, "y": 0, "r": -1}], "r must be > 0"),
+        ],
+    )
+    def test_a_malformed_shape_is_refused_and_named(self, value, message):
+        rows = self.rows([[self.CIRCLE], value])
+        with pytest.raises(ValueError, match=message) as raised:
+            payload(self.panel(), rows)
+        # The trial and the column, so the author can find the bad record.
+        assert "trial 1 inducer_shapes_dva" in str(raised.value)
+
+    def test_shapes_are_refused_on_a_panel_that_cannot_draw_them(self):
+        with pytest.raises(ValueError, match="shapes are drawn on scatter panels only"):
+            DashboardPanel(kind="vectors", title="V", x="a", y="b", shapes="regions")

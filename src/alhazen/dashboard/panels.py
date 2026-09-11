@@ -346,6 +346,19 @@ def _level_order(labels: Iterable[str]) -> tuple[list[str], bool]:
         return unique, False
 
 
+# The most distinct shapes one scatter outlines. A task describes a handful of
+# regions (two inducers per separation, say); hundreds means the column holds
+# something per trial that was never meant as an outline. Past this the panel
+# draws the first ones and says how many it left out.
+MAX_SHAPES = 64
+
+# The numbers each kind of shape is made of: its centre, then its size.
+_SHAPE_FIELDS: dict[str, tuple[str, ...]] = {
+    "circle": ("x", "y", "r"),
+    "rect": ("x", "y", "width", "height"),
+}
+
+
 def _colour_series(
     rows: list[dict[str, Any]],
     field: str | None,
@@ -565,6 +578,94 @@ def _histogram(panel: DashboardPanel, rows: list[dict[str, Any]]) -> dict[str, A
     return payload
 
 
+def _parse_shapes(value: Any, where: str) -> list[dict[str, Any]]:
+    """One record's shapes, checked.
+
+    Anything malformed raises, naming the record and the shape: an outline
+    quietly left off is a region the reader believes is not there.
+    """
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as error:
+            raise ValueError(f"{where}: shapes is not valid JSON ({error.msg})") from error
+    if not isinstance(value, list):
+        raise ValueError(f"{where}: shapes must be a list of shapes, got {type(value).__name__}")
+    shapes = []
+    for index, shape in enumerate(value):
+        label = f"{where}, shape {index}"
+        if not isinstance(shape, dict):
+            raise ValueError(f"{label}: expected an object, got {type(shape).__name__}")
+        kind = shape.get("kind")
+        if kind not in _SHAPE_FIELDS:
+            raise ValueError(f"{label}: kind must be 'circle' or 'rect', got {kind!r}")
+        numbers: dict[str, float] = {}
+        for key in _SHAPE_FIELDS[kind]:
+            number = shape.get(key)
+            # bool is a subclass of int, and a True radius is a bug, not a 1.
+            if (
+                isinstance(number, bool)
+                or not isinstance(number, int | float)
+                or not math.isfinite(number)
+            ):
+                raise ValueError(f"{label}: {key} must be a finite number, got {number!r}")
+            numbers[key] = float(number)
+        # The size fields, everything after the centre, must be positive: a
+        # zero radius draws nothing and a negative one is a sign error.
+        for key in _SHAPE_FIELDS[kind][2:]:
+            if numbers[key] <= 0:
+                raise ValueError(f"{label}: {key} must be > 0, got {numbers[key]:g}")
+        shapes.append({"kind": kind, **numbers})
+    return shapes
+
+
+def _scatter_shapes(
+    panel: DashboardPanel,
+    rows: list[dict[str, Any]],
+    series: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], str | None]:
+    """The distinct regions a scatter outlines, each tagged with its owner.
+
+    Every shape carries ``series``: the name of the one coloured series whose
+    trials showed it, or None, which the page draws in grey. None covers a
+    shape several levels showed (it belongs to none of them), one only a
+    folded or unlabelled group showed (those are grey already), and every
+    shape on a panel without ``color_by`` (there is no level to own it).
+    """
+    field = panel.shapes
+    if not field:
+        return [], None
+    # The levels that have a colour of their own.
+    coloured = {entry["name"] for entry in series if entry["name"] and not entry.get("muted")}
+    owners: dict[tuple[Any, ...], set[str | None]] = {}
+    distinct: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    for row in rows:
+        value = row.get(field)
+        # A record with nothing in the column has no regions. Not an error: a
+        # task may outline regions on only some of its trials.
+        if value is None or value == "" or (isinstance(value, float) and math.isnan(value)):
+            continue
+        where = f"trial {row.get('trial_index', '?')} {field}"
+        level = row.get(panel.color_by) if panel.color_by else None
+        owner = str(level) if level is not None and str(level) in coloured else None
+        for shape in _parse_shapes(value, where):
+            # A shape is its kind and its numbers, rounded far below any
+            # visible difference so float noise cannot split one shape in two.
+            key = (shape["kind"], *(round(shape[name], 9) for name in _SHAPE_FIELDS[shape["kind"]]))
+            if key not in owners:
+                owners[key] = set()
+                distinct.append((key, shape))
+            owners[key].add(owner)
+    drawn = []
+    for key, shape in distinct[:MAX_SHAPES]:
+        shared = owners[key]
+        drawn.append({**shape, "series": next(iter(shared)) if len(shared) == 1 else None})
+    note = None
+    if len(distinct) > MAX_SHAPES:
+        note = f"showing the first {MAX_SHAPES} of {len(distinct)} distinct outlines from {field}"
+    return drawn, note
+
+
 def _scatter(panel: DashboardPanel, rows: list[dict[str, Any]]) -> dict[str, Any]:
     x_field = _required(panel, "x")
     y_field = _required(panel, "y")
@@ -578,6 +679,7 @@ def _scatter(panel: DashboardPanel, rows: list[dict[str, Any]]) -> dict[str, Any
     if not points:
         return _empty(f"No {x_field}/{y_field} recorded yet")
     series, fold_note = _colour_series(rows, panel.color_by, landing)
+    shapes, shapes_note = _scatter_shapes(panel, rows, series)
 
     targets: list[list[float]] = []
     errors: list[float] = []
@@ -624,8 +726,14 @@ def _scatter(panel: DashboardPanel, rows: list[dict[str, Any]]) -> dict[str, Any
         "stats": stats,
         "color_label": panel.color_by,
     }
-    if fold_note:
-        payload["note"] = fold_note
+    if shapes:
+        payload["shapes"] = shapes
+        # Named in the legend as the column is ("Inducer shapes"): only the
+        # task knows what its regions are.
+        payload["shapes_label"] = display_name(panel.shapes or "")
+    notes = [note for note in (fold_note, shapes_note) if note]
+    if notes:
+        payload["note"] = " · ".join(notes)
     return payload
 
 

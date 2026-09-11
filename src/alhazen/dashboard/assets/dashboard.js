@@ -396,7 +396,7 @@ function drawLegend(parent, entries, title) {
   entries.forEach((entry) => {
     const item = htmlEl('span', null, null, legend);
     const swatch = htmlEl('i', entry.shape || 'line', null, item);
-    if (entry.shape === 'ring') swatch.style.borderColor = entry.color;
+    if (entry.shape === 'ring' || entry.shape === 'outline') swatch.style.borderColor = entry.color;
     /* The error-bar glyph is drawn with borders and a gradient that all take
      * the text colour, so one property colours every part of it. */
     else if (entry.shape === 'whisker') swatch.style.color = entry.color;
@@ -730,7 +730,16 @@ function drawScatter(legendHost, host, data) {
   const points = series.flatMap((one) => one.points);
 
   const width = host.clientWidth || 380;
-  const all = points.concat(data.targets || []);
+  const shapes = data.shapes || [];
+  /* Outlines count toward the extent: a region cut off by the frame hides the
+   * very edge a landing is judged against. Two corners per shape are enough
+   * to bound it. */
+  const shapeCorners = shapes.flatMap((shape) => {
+    const halfWidth = shape.kind === 'circle' ? shape.r : shape.width / 2;
+    const halfHeight = shape.kind === 'circle' ? shape.r : shape.height / 2;
+    return [[shape.x - halfWidth, shape.y - halfHeight], [shape.x + halfWidth, shape.y + halfHeight]];
+  });
+  const all = points.concat(data.targets || [], shapeCorners);
   let xLo = Math.min(...all.map((p) => p[0]));
   let xHi = Math.max(...all.map((p) => p[0]));
   let yLo = Math.min(...all.map((p) => p[1]));
@@ -772,6 +781,37 @@ function drawScatter(legendHost, host, data) {
    * origin marked makes the reader count gridlines. */
   if (xLo < 0 && xHi > 0) svgEl('line', { x1: xScale(0), x2: xScale(0), y1: box.y0, y2: box.y1, class: 'rule' }, svg);
   if (yLo < 0 && yHi > 0) svgEl('line', { x1: box.x0, x2: box.x1, y1: yScale(0), y2: yScale(0), class: 'rule' }, svg);
+
+  /* Regions under the data, as outlines only: a filled region would hide the
+   * landings inside it. Each takes the colour of the one series whose trials
+   * showed it; a region several series share belongs to none of them, and is
+   * grey. Drawn as an ellipse in pixels so a circle stays a circle in data
+   * units even on a panel without equal aspect. */
+  shapes.forEach((shape) => {
+    const owner = shape.series === null || shape.series === undefined
+      ? null
+      : series.find((one) => one.name === shape.series);
+    const style = 'fill:none;stroke:' + (owner ? seriesColor(owner) : 'var(--muted)') + ';stroke-width:1.2';
+    if (shape.kind === 'circle') {
+      svgEl('ellipse', {
+        cx: xScale(shape.x), cy: yScale(shape.y),
+        rx: Math.abs(xScale(shape.x + shape.r) - xScale(shape.x)),
+        ry: Math.abs(yScale(shape.y + shape.r) - yScale(shape.y)),
+        style: style,
+      }, svg);
+      return;
+    }
+    /* A rect is its centre and size, axis-aligned. */
+    const left = xScale(shape.x - shape.width / 2);
+    const right = xScale(shape.x + shape.width / 2);
+    const upper = yScale(shape.y + shape.height / 2);
+    const lower = yScale(shape.y - shape.height / 2);
+    svgEl('rect', {
+      x: Math.min(left, right), y: Math.min(upper, lower),
+      width: Math.abs(right - left), height: Math.abs(lower - upper),
+      style: style,
+    }, svg);
+  });
 
   series.forEach((one) => {
     const color = seriesColor(one);
@@ -821,6 +861,7 @@ function drawScatter(legendHost, host, data) {
       ? [{ name: 'Mean landing', color: 'var(--ink-2)', shape: 'diamond' }]
       : []),
     ...((data.targets || []).length ? [{ name: 'Target', color: 'var(--ink-2)', shape: 'ring' }] : []),
+    ...(shapes.length ? [{ name: data.shapes_label || 'Regions', color: 'var(--muted)', shape: 'outline' }] : []),
   ], shown(data, 'color_label'));
 
   /* Nearest-point hover: a 8px dot is a pinpoint nobody hits reliably, so the

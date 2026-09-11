@@ -220,7 +220,7 @@ layout.
 | `outcomes` | how do attempts end? | horizontal bars, count and share |
 | `responses` | which key is being pressed? | horizontal bars |
 | `histogram` | what does one measurement's distribution look like? | binned columns with the median marked |
-| `scatter` | where in space did the response land? | equal-aspect scatter with targets and the mean landing |
+| `scatter` | where in space did the response land? | equal-aspect scatter with targets, the mean landing, and any regions the task outlines |
 | `vectors` | how far, and which way, did the eye move? | every trial's displacement from one origin, on a polar grid |
 | `series` | how does one quantity drift? | per-trial points with a moving mean |
 | `grouped_mean` | does it differ across a condition? | group means ± SEM, with n |
@@ -263,6 +263,33 @@ If no such column exists at all, the origin falls back to the screen centre —
 where this framework's fixation point sits — and the panel says so under the
 plot rather than assuming it silently. Point `origin_x`/`origin_y` at the
 target columns instead and the same panel becomes an endpoint-error plot.
+
+A landing is often judged against regions rather than a point, such as the
+inducers of an averaging display. Name a record column in `shapes` and the
+scatter outlines them:
+
+```python
+DashboardPanel(
+    kind="scatter",
+    title="Landings by separation",
+    x="landing_x_dva",
+    y="landing_y_dva",
+    color_by="separation",
+    shapes="inducer_shapes_dva",
+)
+```
+
+Each trial's value is a list of shapes, or that list as JSON text, in the
+panel's own x/y units: `{"kind": "circle", "x": cx, "y": cy, "r": radius}` or
+`{"kind": "rect", "x": cx, "y": cy, "width": w, "height": h}`. A rect is its
+centre and size, axis-aligned. A shape many trials carry is drawn once, as an
+outline under the points, in the colour of the one `color_by` level that
+showed it; a shape several levels share belongs to none of them and is drawn
+in grey. Shapes count toward the axis range and are never thinned with the
+points. Past 64 distinct outlines the panel draws the first 64 and says how
+many it left out. A malformed shape raises an error naming the trial and the
+column, rather than the panel drawing less than the task described. `shapes`
+on any kind other than `scatter` is refused when the panel is declared.
 
 Bin edges, group ordering and error bars are chosen for you. Numeric group
 labels sort as numbers — the string order `"0.2" < "0.4" < "10"` is wrong

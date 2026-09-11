@@ -311,6 +311,8 @@ main { flex: 1 1 auto; min-width: 0; padding: 22px 28px 56px; }
   border-bottom: 1.5px solid;
   background: linear-gradient(currentColor, currentColor) center / 1.5px 100% no-repeat;
 }
+/* An unfilled square: a region outlined on the plot, not a datum. */
+.legend i.outline { width: 11px; height: 11px; border: 1.2px solid; }
 .legend .legend-title { color: var(--ink); font-weight: 600; }
 
 /* Always present, empty or not: a caveat on one panel must not push its

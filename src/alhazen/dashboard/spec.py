@@ -108,6 +108,15 @@ class DashboardPanel(Model):
     # levels are ordered, so they take one hue light-to-dark; named levels are
     # not, so they take separate hues.
     color_by: str | None = None
+    # ``scatter`` only: a record column holding regions to outline on the
+    # plot, such as the inducers a landing is judged against. Each row's value
+    # is a list of shapes, or that list as JSON text, in the panel's own x/y
+    # coordinates: ``{"kind": "circle", "x": cx, "y": cy, "r": radius}`` or
+    # ``{"kind": "rect", "x": cx, "y": cy, "width": w, "height": h}`` (centre
+    # and size, axis-aligned). A shape many trials share is drawn once, in the
+    # colour of the one ``color_by`` level that showed it, or in grey when
+    # several did.
+    shapes: str | None = None
     # ``grouped_mean`` and ``grouped_rate``: dots-and-whiskers, or bars.
     style: GroupedStyle | None = None
     # Which sidebar group this panel is filed under. Left unset, it follows
@@ -157,6 +166,10 @@ class DashboardPanel(Model):
             )
         if self.kind in {"scatter", "vectors"} and (not self.x or not self.y):
             raise ValueError(f"{self.kind} panels require x and y")
+        if self.shapes is not None and self.kind != "scatter":
+            # Refused rather than ignored: regions the author asked for and
+            # never sees are a panel quietly drawing less than it was told to.
+            raise ValueError(f"shapes are drawn on scatter panels only, not on {self.kind}")
         if self.rolling_window is not None and self.rolling_window < 1:
             raise ValueError("rolling_window must be >= 1")
         return self
