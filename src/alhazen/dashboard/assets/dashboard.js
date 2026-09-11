@@ -192,6 +192,45 @@ function niceTicks(lo, hi, target, integer) {
 }
 
 /**
+ * A domain that starts and ends on a tick, with the ticks that cover it.
+ *
+ * A journal figure's axis runs from one labelled value to another. An axis
+ * that stops at an unlabelled 1.08 leaves a stub of line past its last tick
+ * and the reader guessing what the stub is worth. The step is chosen from the
+ * data's own range, then each end is pushed outward to the nearest multiple
+ * of it; zero is a multiple of every step, so a baseline at zero stays there.
+ */
+function niceDomain(lo, hi, target, integer) {
+  if (!(hi > lo)) { lo -= 0.5; hi += 0.5; }
+  const inner = niceTicks(lo, hi, target, integer);
+  const step = inner.length > 1 ? inner[1] - inner[0] : hi - lo;
+  /* The 1e-9 keeps an end that already sits on a tick from being pushed a
+   * whole step further by floating-point dust. */
+  const start = Math.floor(lo / step + 1e-9) * step;
+  const end = Math.ceil(hi / step - 1e-9) * step;
+  const ticks = [];
+  for (let value = start; value <= end + step * 1e-9; value += step) {
+    ticks.push(Math.abs(value) < step * 1e-9 ? 0 : Number(value.toFixed(10)));
+  }
+  return { lo: ticks[0], hi: ticks[ticks.length - 1], ticks: ticks };
+}
+
+/** The unit an axis title ends with: "Saccade latency (ms)" -> "ms". Only a
+ *  short symbol counts, so a title like "Occluder landing (proportion)" does
+ *  not get "proportion" stapled onto its numbers. */
+function unitOf(label) {
+  const match = /\(([^()]+)\)\s*$/.exec(String(label || ''));
+  return match && match[1].length <= 5 ? match[1] : '';
+}
+
+/** A number with its unit, as print sets it: "199 ms", but "0.78°" and "12%"
+ *  with no space, because those symbols sit against their number. */
+function withUnit(text, unit) {
+  if (!unit) return text;
+  return unit === '°' || unit === '%' ? text + unit : text + ' ' + unit;
+}
+
+/**
  * How many decimals it takes to write `step` exactly. Deriving this from
  * log10 is off by one on the quarter steps a 0–1 axis is full of: it renders
  * 0.25 as "0.3", so an axis reads 0.0 / 0.3 / 0.5 / 0.8 / 1.0.
@@ -241,8 +280,16 @@ function drawFrame(svg, box, opts) {
       x: x, y: y1 + 19, class: 'tick-text', 'text-anchor': 'middle',
     }, svg).textContent = tickText(value, opts.xTicks);
   });
-  svgEl('line', { x1: x0, x2: x0, y1: y0, y2: y1, class: 'spine' }, svg);
-  svgEl('line', { x1: x0, x2: x1, y1: y1, y2: y1, class: 'spine' }, svg);
+  /* Each spine runs between its outermost ticks rather than the whole
+   * plotting box, so an axis always ends on a labelled value. An axis with
+   * fewer than two ticks (a grouped panel's category axis) keeps the box's
+   * full length, since there is no labelled extent to trim it to. */
+  const yTickPx = (opts.yTicks || []).map(opts.yScale);
+  const xTickPx = (opts.xTicks || []).map(opts.xScale);
+  const ySpan = yTickPx.length > 1 ? [Math.min(...yTickPx), Math.max(...yTickPx)] : [y0, y1];
+  const xSpan = xTickPx.length > 1 ? [Math.min(...xTickPx), Math.max(...xTickPx)] : [x0, x1];
+  svgEl('line', { x1: x0, x2: x0, y1: ySpan[0], y2: ySpan[1], class: 'spine' }, svg);
+  svgEl('line', { x1: xSpan[0], x2: xSpan[1], y1: y1, y2: y1, class: 'spine' }, svg);
   if (opts.xLabel) {
     svgEl('text', {
       x: (x0 + x1) / 2, y: y1 + 40, class: 'axis-text', 'text-anchor': 'middle',
@@ -338,7 +385,10 @@ function drawLegend(parent, entries, title) {
   /* Kept on the host too, so a figure export can draw the same legend inside
    * the SVG it writes rather than lose it with the page around the plot. */
   parent._legend = { entries: entries, title: title || '' };
-  if (entries.length < 2) return;
+  /* A lone series is left out, since the panel's title already names it. A
+   * definition is the exception: what an error bar means has to be stated
+   * even when it is the only thing the legend holds. */
+  if (entries.length < 2 && !entries.some((entry) => entry.shape === 'whisker')) return;
   const legend = htmlEl('div', 'legend', null, parent);
   /* What the colours stand for, named before them: "Alignment", then the
    * levels. Without it a legend is a set of words with no question. */
@@ -347,6 +397,9 @@ function drawLegend(parent, entries, title) {
     const item = htmlEl('span', null, null, legend);
     const swatch = htmlEl('i', entry.shape || 'line', null, item);
     if (entry.shape === 'ring') swatch.style.borderColor = entry.color;
+    /* The error-bar glyph is drawn with borders and a gradient that all take
+     * the text colour, so one property colours every part of it. */
+    else if (entry.shape === 'whisker') swatch.style.color = entry.color;
     else swatch.style.background = entry.color;
     if (entry.shape === 'box') swatch.style.opacity = '0.28';
     htmlEl('span', null, entry.name, item);
@@ -375,26 +428,31 @@ function drawLineChart(legendHost, host, data) {
 
   let yLo;
   let yHi;
+  let yTicks;
   if (data.y_domain) {
     [yLo, yHi] = data.y_domain;
+    yTicks = niceTicks(yLo, yHi, 4);
   } else {
     const values = points.map((p) => p[1])
       .concat((data.band ? data.band.points : []).flatMap((p) => [p[1], p[2]]));
-    yLo = Math.min(...values);
-    yHi = Math.max(...values);
-    if (yHi === yLo) { yLo -= 0.5; yHi += 0.5; }
-    const margin = (yHi - yLo) * 0.08;
-    yLo -= margin;
-    yHi += margin;
+    /* Pushed out to the nearest ticks rather than padded by a fixed
+     * fraction, so the axis starts and stops on a labelled value. */
+    const domain = niceDomain(Math.min(...values), Math.max(...values), 4);
+    yLo = domain.lo;
+    yHi = domain.hi;
+    yTicks = domain.ticks;
   }
 
-  const yTicks = niceTicks(yLo, yHi, 4);
   const left = leftPad(yTicks);
   const plotH = plotHeight(width);
   const box = { x0: left, x1: width - PAD.right, y0: PAD.top, y1: PAD.top + plotH };
+  /* The trial axis the same way, in whole trials: 0 to 80, not 1 to 79. */
+  const xDomain = niceDomain(xLo, xHi, Math.max(2, Math.floor((box.x1 - box.x0) / 78)), true);
+  xLo = xDomain.lo;
+  xHi = xDomain.hi;
+  const xTicks = xDomain.ticks;
   const xScale = (v) => box.x0 + (v - xLo) / (xHi - xLo) * (box.x1 - box.x0);
   const yScale = (v) => box.y1 - (v - yLo) / (yHi - yLo) * (box.y1 - box.y0);
-  const xTicks = niceTicks(xLo, xHi, Math.max(2, Math.floor((box.x1 - box.x0) / 78)), true);
 
   const svg = svgEl('svg', { width: width, height: chartHeight(width) }, host);
   drawFrame(svg, box, {
@@ -440,6 +498,7 @@ function drawLineChart(legendHost, host, data) {
      * already is, and where it cannot collide with the data. */
     const last = pixels[pixels.length - 1];
     marker(svg, last[0], last[1], color, 3.5);
+    one._labelX = last[0];
     one._labelY = last[1];
   });
 
@@ -451,10 +510,21 @@ function drawLineChart(legendHost, host, data) {
     if (placed.some((other) => Math.abs(other - y) < 13)) return;
     placed.push(y);
     const value = one.points[one.points.length - 1][1];
+    const label = fmt(value);
+    /* Beside the series' own last point, not at the end of the axis: the
+     * trial axis runs on to a round number past the last trial, so a label
+     * parked at its end floats away from the line it names. To the right of
+     * the point, level with it, when the margin has room for the text;
+     * otherwise above the point and ending at it. */
+    const room = box.x1 + PAD.right - one._labelX - 8;
+    const fitsRight = textWidth(label, TICK_FONT) <= room;
     const text = svgEl('text', {
-      x: box.x1 - 2, y: y - 8, class: 'value-text', 'text-anchor': 'end',
+      x: fitsRight ? one._labelX + 8 : one._labelX - 6,
+      y: fitsRight ? y + 4 : y - 8,
+      class: 'value-text',
+      'text-anchor': fitsRight ? 'start' : 'end',
     }, svg);
-    text.textContent = fmt(value);
+    text.textContent = label;
   });
 
   /* Failed deliveries: a status mark, with its meaning in the legend and the
@@ -523,13 +593,14 @@ function drawBars(legendHost, host, data) {
   if (!items.length) return drawEmpty(host, 'No data yet');
 
   const width = host.clientWidth || 380;
-  /* The same box every other panel gets, with the bars spread through it and
-   * centred. A bar chart sized to its own content leaves its card as a strip
-   * of plot above a field of nothing, and breaks the row it sits in. */
+  /* Rows at a fixed pitch, each bar filling most of its row: thin bars in
+   * wide gutters read as a sketch, not a figure. The rows are centred in the
+   * height every panel shares, so a card with three categories still lines
+   * up with its neighbour. */
+  const band = Math.min(30, (chartHeight(width) - PAD.bottom) / items.length);
+  const thickness = Math.max(4, Math.round(band * 0.62));
   const height = chartHeight(width);
-  const band = Math.min(64, (height - PAD.bottom) / items.length);
   const top = (height - band * items.length) / 2;
-  const thickness = Math.min(16, Math.max(6, band - 18));
   const labelFont = LABEL_FONT;
   let labelWidth = 0;
   let valueWidth = 0;
@@ -548,7 +619,7 @@ function drawBars(legendHost, host, data) {
   const max = Math.max(...items.map((item) => item.value), 1);
   const scale = (v) => Math.max(0, (v / max) * Math.max(8, x1 - x0));
 
-  const svg = svgEl('svg', { width: width, height: chartHeight(width) }, host);
+  const svg = svgEl('svg', { width: width, height: height }, host);
   /* One hue for every bar: these categories have no order, so colouring them
    * by size would spend the identity channel re-encoding bar length. */
   const color = slotColor(1);
@@ -636,7 +707,8 @@ function drawHistogram(legendHost, host, data) {
   if (isFinite(data.median)) {
     const x = xScale(data.median);
     svgEl('line', { x1: x, x2: x, y1: box.y0 - 2, y2: box.y1, class: 'rule' }, svg);
-    const label = 'Median ' + fmt(data.median);
+    /* With its unit, as a direct label is set in print: "Median 199 ms". */
+    const label = 'Median ' + withUnit(fmt(data.median), unitOf(data.x_label));
     /* Above the bars, never across them; flipped inward where the median sits
      * near the right edge, so the text is never clipped by the card. */
     const flip = x + textWidth(label, TICK_FONT) + 8 > box.x1;
@@ -800,17 +872,13 @@ function drawVectors(legendHost, host, data) {
 
   const svg = svgEl('svg', { width: width, height: chartHeight(width) }, host);
 
+  /* The polar grid is reference, not data: light rules for the rings and
+   * the two lines through the origin, so the vectors are the darkest ink. */
   (data.rings || []).forEach((ring) => {
-    svgEl('circle', {
-      cx: cx, cy: cy, r: ring * scale, class: 'tick-mark', fill: 'none', 'stroke-opacity': 0.55,
-    }, svg);
-    /* Labelled once, on the horizontal, so the reader can put a number on an
-     * amplitude without counting rings — with a halo, because that horizontal
-     * is exactly where a leftward or rightward saccade puts its endpoints. */
-    haloText(svg, cx + ring * scale, cy - 4, tickText(ring, data.rings));
+    svgEl('circle', { cx: cx, cy: cy, r: ring * scale, class: 'rule', fill: 'none' }, svg);
   });
-  svgEl('line', { x1: cx - rPx, x2: cx + rPx, y1: cy, y2: cy, class: 'spine' }, svg);
-  svgEl('line', { x1: cx, x2: cx, y1: cy - rPx, y2: cy + rPx, class: 'spine' }, svg);
+  svgEl('line', { x1: cx - rPx, x2: cx + rPx, y1: cy, y2: cy, class: 'rule' }, svg);
+  svgEl('line', { x1: cx, x2: cx, y1: cy - rPx, y2: cy + rPx, class: 'rule' }, svg);
 
   /* The vectors themselves, faint: three hundred of them at full weight are a
    * solid wedge, and the endpoint cloud on top is what carries the detail. */
@@ -833,6 +901,19 @@ function drawVectors(legendHost, host, data) {
     name: shown(one, 'name') || 'Saccade', color: seriesColor(one), shape: 'dot',
   })), shown(data, 'color_label'));
 
+  /* Ring labels after the data, so no endpoint covers a number. Set up the
+   * vertical, just right of it, where tasks whose saccades run left and right
+   * leave the plot empty, and haloed for the tasks whose saccades go
+   * everywhere. The outermost ring carries the unit: "10°". */
+  const ringUnit = unitOf(data.x_label);
+  (data.rings || []).forEach((ring, index, rings) => {
+    const text = tickText(ring, rings);
+    haloText(
+      svg, cx + 4, cy - ring * scale - 3,
+      index === rings.length - 1 ? withUnit(text, ringUnit) : text, 'start',
+    );
+  });
+
   /* The origin, marked and named: a displacement plot without its zero is a
    * cloud of numbers nobody can anchor. */
   svgEl('path', {
@@ -847,9 +928,12 @@ function drawVectors(legendHost, host, data) {
     }, svg).textContent = data.x_label;
   }
   if (data.y_label) {
+    /* Beside the grid rather than at the card's edge: the grid is square and
+     * centred, so on a wide panel the edge is far from anything it labels. */
+    const titleX = Math.max(11, cx - rPx - 16);
     svgEl('text', {
-      x: 11, y: cy, class: 'axis-text', 'text-anchor': 'middle',
-      transform: 'rotate(-90 11 ' + cy + ')',
+      x: titleX, y: cy, class: 'axis-text', 'text-anchor': 'middle',
+      transform: 'rotate(-90 ' + titleX + ' ' + cy + ')',
     }, svg).textContent = data.y_label;
   }
 
@@ -898,23 +982,24 @@ function drawDots(legendHost, host, data) {
   const highOf = (g) => (g.high === undefined ? g.mean + (g.sem || 0) : g.high);
   let yLo;
   let yHi;
+  let yTicks;
   if (data.y_domain) {
     [yLo, yHi] = data.y_domain;
+    yTicks = niceTicks(yLo, yHi, 4);
   } else {
-    yLo = Math.min(...groups.map(lowOf));
-    yHi = Math.max(...groups.map(highOf));
+    let lo = Math.min(...groups.map(lowOf));
+    let hi = Math.max(...groups.map(highOf));
     /* A bar's length is the quantity, so it has to start at zero — a bar
      * chart cropped to its own range overstates every difference on it. */
-    if (bars) { yLo = Math.min(0, yLo); yHi = Math.max(0, yHi); }
-    if (yHi === yLo) { yLo -= 0.5; yHi += 0.5; }
-    const margin = (yHi - yLo) * 0.14;
-    /* Headroom goes above the data, never past the baseline: padding below a
-     * bar chart's zero lifts every bar off the axis it is measured from. */
-    yLo = bars && yLo >= 0 ? 0 : yLo - margin;
-    yHi = bars && yHi <= 0 ? 0 : yHi + margin;
+    if (bars) { lo = Math.min(0, lo); hi = Math.max(0, hi); }
+    /* Out to the nearest ticks. Zero is a multiple of every step, so a bar
+     * chart's baseline stays exactly at zero and its headroom goes above the
+     * longest whisker, never below the bars. */
+    const domain = niceDomain(lo, hi, 4);
+    yLo = domain.lo;
+    yHi = domain.hi;
+    yTicks = domain.ticks;
   }
-
-  const yTicks = niceTicks(yLo, yHi, 4);
   const left = leftPad(yTicks);
   const plotH = plotHeight(width);
   const box = { x0: left, x1: width - PAD.right, y0: PAD.top, y1: PAD.top + plotH };
@@ -946,9 +1031,25 @@ function drawDots(legendHost, host, data) {
     const carrier = groups.find((g) => g.series === raw);
     return (carrier && carrier.display_series) || raw;
   };
-  drawLegend(legendHost, series.map((name) => ({ name: seriesName(name), color: slotColor(series.indexOf(name) + 1) })));
+  /* One entry per factor when there are several, and the error bar's
+   * definition whenever a whisker is drawn: a journal will not print an error
+   * bar the figure does not define, and "Mean ± s.e.m." and "95% CI" are
+   * different claims about the same bar. */
+  const entries = series.length > 1
+    ? series.map((name) => ({ name: seriesName(name), color: slotColor(series.indexOf(name) + 1) }))
+    : [];
+  const drawsWhiskers = groups.some((g) => Math.abs(yScale(highOf(g)) - yScale(lowOf(g))) > 0.5);
+  if (data.error_label && drawsWhiskers) {
+    entries.push({ name: data.error_label, color: bars ? 'var(--axis)' : 'var(--ink-2)', shape: 'whisker' });
+  }
+  drawLegend(legendHost, entries);
   const zero = yScale(Math.min(Math.max(0, yLo), yHi));
-  const thickness = Math.min(18, Math.max(6, step - 30));
+  /* Half the slot, up to 40 px: wide enough to read as bars rather than
+   * stems, narrow enough to keep the gap that marks them as separate groups. */
+  const thickness = Math.max(6, Math.min(40, step * 0.5));
+  /* Caps in proportion to the bar, so a wide bar's whisker does not end in a
+   * pin head and a narrow bar's cap does not overhang it. */
+  const cap = Math.max(3, Math.min(7, thickness * 0.2));
   groups.forEach((group, index) => {
     const x = xAt(index);
     const y = yScale(group.mean);
@@ -966,8 +1067,8 @@ function drawDots(legendHost, host, data) {
     const bottom = yScale(lowOf(group));
     if (Math.abs(bottom - top) > 0.5) {
       svgEl('path', {
-        d: 'M' + x + ',' + top + 'V' + bottom + 'M' + (x - 3) + ',' + top + 'H' + (x + 3) +
-           'M' + (x - 3) + ',' + bottom + 'H' + (x + 3),
+        d: 'M' + x + ',' + top + 'V' + bottom + 'M' + (x - cap) + ',' + top + 'H' + (x + cap) +
+           'M' + (x - cap) + ',' + bottom + 'H' + (x + cap),
         /* Black over a bar, as a printed figure draws an error bar; the
          * level's own colour on a dot, which has no fill around it to sit on. */
         style: 'stroke:' + (bars ? 'var(--axis)' : colorOf(group)) + ';stroke-width:1.2',

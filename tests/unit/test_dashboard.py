@@ -843,3 +843,13 @@ class TestFigureConventionsInTheRenderer:
         dots = self._function(self._asset("dashboard.js"), "drawDots")
         assert "slotColor(series.indexOf(g.series) + 1)" in dots
         assert "slotColor(series.indexOf(name) + 1)" in dots
+
+    def test_error_bars_are_defined_on_the_panel(self):
+        """A journal will not print an error bar the figure does not define."""
+        dots = self._function(self._asset("dashboard.js"), "drawDots")
+        assert "shape: 'whisker'" in dots
+        assert "data.error_label" in dots
+
+    def test_spines_end_on_their_outermost_ticks(self):
+        frame = self._function(self._asset("dashboard.js"), "drawFrame")
+        assert "ySpan" in frame and "xSpan" in frame

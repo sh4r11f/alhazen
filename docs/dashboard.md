@@ -135,9 +135,12 @@ thing wherever it appears.
   is milliseconds, `endpoint_x_dva` is degrees of visual angle — which is the
   convention a trial record already follows. Set `unit=` on the panel for a
   column named some other way.
-- **Error bars are the standard error of the mean**, and the number of trials
-  behind each one is printed under it. A group with a single trial gets a bare
-  dot: no spread was measured, and a zero-length bar would imply certainty.
+- **Error bars are defined on the panel.** A `grouped_mean` whisker is the
+  standard error of the mean and a `grouped_rate` whisker a 95% Wilson
+  interval, and the legend says which: a journal will not print an error bar
+  the figure does not define. The number of trials behind each bar is printed
+  under it, as *n* = 12. A group with a single trial gets no whisker: no
+  spread was measured, and a zero-length bar would imply certainty.
 - **The shaded band on `performance` is a 95% Wilson interval**, not the
   textbook normal one — which is badly wrong on the handful of trials where an
   experimenter is most tempted to read it, and can run past 0 or 1.
@@ -156,9 +159,11 @@ thing wherever it appears.
   screen as a degree up — with the screen centre marked.
 - **Every panel has a table view.** Whatever a hover readout shows is also
   reachable as text, under the plot.
-- **Spines and outward ticks, no gridlines.** The reading conventions of a
-  printed figure: the ink inside a plot is the data. Values a tick does not
-  carry are on a direct label, in the hover readout, or in the table.
+- **Spines and outward ticks, no gridlines, and every axis ends on a labelled
+  tick.** The reading conventions of a printed figure: the ink inside a plot
+  is the data, and an axis that stops at an unlabelled value leaves the reader
+  guessing what its end is worth. Values a tick does not carry are on a direct
+  label, in the hover readout, or in the table.
 - **Panels are lettered a, b, c** in the order they are shown, in bold
   lowercase, the way a figure plate letters them.
 - **A mean marker appears only where a mean is a position.** With more than

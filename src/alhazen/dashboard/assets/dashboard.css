@@ -303,6 +303,14 @@ main { flex: 1 1 auto; min-width: 0; padding: 22px 28px 56px; }
 .legend i.box { width: 11px; height: 11px; border-radius: 2px; opacity: 0.22; }
 .legend i.ring { width: 10px; height: 10px; border: 1.5px solid; border-radius: 50%; }
 .legend i.diamond { width: 9px; height: 9px; transform: rotate(45deg); }
+/* An error bar: a stem with a cap at each end, all in the text colour. */
+.legend i.whisker {
+  width: 9px;
+  height: 12px;
+  border-top: 1.5px solid;
+  border-bottom: 1.5px solid;
+  background: linear-gradient(currentColor, currentColor) center / 1.5px 100% no-repeat;
+}
 .legend .legend-title { color: var(--ink); font-weight: 600; }
 
 /* Always present, empty or not: a caveat on one panel must not push its
