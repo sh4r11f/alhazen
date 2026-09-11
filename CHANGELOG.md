@@ -87,6 +87,14 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   did. A malformed shape raises, naming the trial and the column.
 - **`cross=True` on `grouped_mean`.** One bar per combination of several
   factors' levels, each with its own *n*.
+- **Iris size on the dashboard's camera panel.** The TRACKPixx3's expected
+  iris size, the setting LabMaestro adjusts when an eye keeps dropping out of
+  tracking, can be stepped or typed under the live camera image while the
+  session is paused or during a calibration. The session reads the device
+  back and shows what it holds. Each change is logged and recorded as a
+  TRACKER_SETTING event, a new reserved event. `eyetracker.iris_size_px` sets
+  the size when a session starts; left unset, the size the device holds is
+  logged.
 
 ### Fixed
 

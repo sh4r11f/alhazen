@@ -201,6 +201,63 @@ class TestRuntime:
         finally:
             controller.stop()
 
+    def test_tracker_settings_pass_while_paused_or_calibrating(self):
+        controller = DashboardController(auto_open=False)
+        url = controller.start()
+        token = url.partition("token=")[2]
+        root = url.partition("/?")[0]
+        try:
+            controller.publish(_state(1, "running"))
+            self._wait_for_revision(root, token, 1)
+            with pytest.raises(urllib.error.HTTPError) as running:
+                self._setting(root, token, "iris_size_px", 120, "s1")
+            assert running.value.code == 409
+
+            # Mid-calibration is when an eye drops out, so a setting passes
+            # then, as it does while paused.
+            controller.publish(_state(2, "calibrating"))
+            self._wait_for_revision(root, token, 2)
+            assert self._setting(root, token, "iris_size_px", 120, "s2") == 202
+            controller.publish(_state(3, "paused"))
+            self._wait_for_revision(root, token, 3)
+            assert self._setting(root, token, "iris_size_px", 130, "s3") == 202
+            assert self._setting(root, token, "iris_size_px", 130, "s3") == 202  # deduplicated
+
+            for index, (setting, value) in enumerate(
+                [
+                    ("iris_size_px", 0),
+                    ("iris_size_px", 513),
+                    ("iris_size_px", True),
+                    ("iris_size_px", 12.5),
+                    ("gain", 3),
+                ]
+            ):
+                with pytest.raises(urllib.error.HTTPError) as refused:
+                    self._setting(root, token, setting, value, f"bad{index}")
+                assert refused.value.code == 400, (setting, value)
+
+            settings: list[tuple[str, object]] = []
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline and len(settings) < 2:
+                settings += controller.poll_settings()
+                time.sleep(0.01)
+            assert settings == [("iris_size_px", 120), ("iris_size_px", 130)]
+        finally:
+            controller.stop()
+
+    @staticmethod
+    def _setting(root: str, token: str, setting: str, value: object, request_id: str) -> int:
+        request = urllib.request.Request(
+            f"{root}/api/tracker",
+            data=json.dumps(
+                {"setting": setting, "value": value, "request_id": request_id}
+            ).encode(),
+            headers={"Content-Type": "application/json", "X-Alhazen-Token": token},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=2) as response:
+            return response.status
+
     def test_a_camera_frame_must_be_8_bit_grey(self):
         controller = DashboardController(auto_open=False)
         with pytest.raises(ValueError, match="8-bit grey"):
@@ -252,6 +309,7 @@ class FakeDashboard:
         self.batches = list(batches)
         self.states: list[dict] = []
         self.frames: list[tuple] = []
+        self.setting_batches: list[list[tuple[str, object]]] = []
         self.stopped = False
         self.url = "http://127.0.0.1:0/"
 
@@ -260,6 +318,9 @@ class FakeDashboard:
 
     def publish_camera(self, pixels, t: float) -> None:
         self.frames.append((pixels.copy(), t))
+
+    def poll_settings(self) -> list[tuple[str, object]]:
+        return self.setting_batches.pop(0) if self.setting_batches else []
 
     def poll_commands(self) -> list[DashboardCommand]:
         names = self.batches.pop(0) if self.batches else []
@@ -419,6 +480,42 @@ class CameraScriptedTracker(ScriptedTracker):
     def camera_frame(self) -> CameraFrame:
         self.reads += 1
         return CameraFrame(np.full((3, 4), self.reads, dtype=np.uint8), t=self._clock.now())
+
+
+class IrisScriptedTracker(CameraScriptedTracker):
+    """A scripted camera tracker with the TRACKPixx3's iris size setting."""
+
+    def __init__(self, samples, clock: FakeClock) -> None:
+        super().__init__(samples, clock)
+        self.iris = 96
+
+    def iris_size(self) -> int:
+        return self.iris
+
+    def set_iris_size(self, px: int) -> int:
+        self.iris = px
+        return px
+
+
+class TestTrackerSettingsThroughThePause:
+    def test_a_setting_from_the_page_is_applied_reported_and_recorded(self, tmp_path: Path):
+        clock = FakeClock()
+        gaze = GazeSample(gx=SCREEN.width_px / 2, gy=SCREEN.height_px / 2, t=0.0)
+        tracker = IrisScriptedTracker([(0.0, gaze)], clock)
+        commands = ScriptedCommands([[Command.PAUSE]])
+        harness = SessionHarness(
+            tmp_path, n_trials=1, commands=commands, tracker=tracker, clock=clock
+        )
+        dashboard = FakeDashboard([[], [], ["resume"]])
+        dashboard.setting_batches = [[], [("iris_size_px", 124)]]
+        wire_dashboard(harness, dashboard)
+        harness.runner.run()
+
+        assert tracker.iris == 124
+        paused = [s["message"] for s in dashboard.states if s["status"] == "paused"]
+        assert "Iris size set to 124 px (was 96 px)." in paused, paused
+        settings = [e.payload for e in harness.collector.events if e.name == "TRACKER_SETTING"]
+        assert settings == [{"setting": "iris_size_px", "value": 124, "previous": 96}]
 
 
 class TestCameraThroughThePause:
@@ -968,3 +1065,25 @@ class TestLiveCameraInTheRenderer:
         loop = self._function("cameraLoop")
         assert "console.error" in loop
         assert "cameraProblem = 'Camera stream failed: '" in loop
+
+
+class TestTrackerControlsInTheRenderer:
+    """Checked against the asset, like the other renderer guards."""
+
+    @staticmethod
+    def _function(name):
+        from alhazen.dashboard import runtime
+
+        script = (runtime._ASSETS / "dashboard.js").read_text(encoding="utf-8")
+        body = script[script.index(f"function {name}(") :]
+        return body[: body.index("\n}")]
+
+    def test_a_setting_goes_to_its_own_endpoint_and_a_refusal_is_said(self):
+        send = self._function("sendTrackerSetting")
+        assert "/api/tracker" in send and "X-Alhazen-Token" in send
+        assert "not changed: " in send and "console.error" in send
+
+    def test_a_value_being_typed_survives_a_redraw(self):
+        render = self._function("render")
+        assert "dataset.setting" in render
+        assert render.index("dataset.setting") < render.index("panels.forEach(paintPanel)")

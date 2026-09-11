@@ -70,7 +70,7 @@ from typing import Any, TypeVar
 
 import numpy as np
 
-from alhazen.config.models import EyeTrackerConfig
+from alhazen.config.models import IRIS_SIZE_RANGE_PX, EyeTrackerConfig
 from alhazen.core.clock import Clock
 from alhazen.core.commands import DEFAULT_KEYMAP, Command
 from alhazen.devices.eyetracker.guide import GUIDE_TITLE, calibration_guide
@@ -740,6 +740,17 @@ class ViewPixxTracker:
             # the same division of labour as the EyeLink, whose camera setup
             # lives on the Host PC and not in alhazen's config.
             self._tracker.setLEDintensity(self._cfg.led_intensity)
+        # The expected iris size, the same way: applied when the rig asks,
+        # otherwise left as the device holds it, and written to the log either
+        # way, because it decides whether the device finds a pupil at all.
+        if self._cfg.iris_size_px is not None:
+            held = self.set_iris_size(self._cfg.iris_size_px)
+            log.info("TRACKPixx3 expected iris size set to %d camera px (rig config)", held)
+        else:
+            log.info(
+                "TRACKPixx3 expected iris size is %d camera px, as the device holds it",
+                self.iris_size(),
+            )
 
         # The device library picks its own filename inside whatever folder it
         # is given (``<folder>/data/TPx_<timestamp>.csv``), and the run
@@ -1136,6 +1147,50 @@ class ViewPixxTracker:
                 )
                 arm_recording(self._libdpx, self._tracker)
         return CameraFrame(pixels=shrink_image(pixels), t=self._clock.now())
+
+    def iris_size(self) -> int:
+        """The expected iris size the device holds now, in camera px.
+
+        Optional capability (protocol.py), for the dashboard's camera panel.
+        """
+        self._require_device("iris_size()")
+        with self._device_lock:
+            self._libdpx.DPxUpdateRegCache()
+            value = self._libdpx.TPxGetIrisExpectedSize()
+            fault = dpx_fault(self._libdpx)
+        if fault is not None:
+            raise TrackerError(f"the TRACKPixx3 iris size could not be read: {fault}")
+        return int(value)
+
+    def set_iris_size(self, px: int) -> int:
+        """Set the expected iris size, in camera px; returns what the device holds.
+
+        The diameter the device searches its camera image for when it fits
+        each pupil, which is LabMaestro's own setting. The value is read back
+        after writing, and a device that holds anything else is an error: a
+        register that clamped or wrapped the value would leave the
+        experimenter adjusting a number that is not the one in use.
+        """
+        low, high = IRIS_SIZE_RANGE_PX
+        if isinstance(px, bool) or not isinstance(px, int) or not low <= px <= high:
+            raise ValueError(
+                f"iris size must be a whole number of camera px in [{low}, {high}], got {px!r}"
+            )
+        self._require_device("set_iris_size()")
+        with self._device_lock:
+            self._libdpx.TPxSetIrisExpectedSize(px)
+            # Written to the register cache; the update sends it to the device
+            # and reads the registers back, so the get below is the device's.
+            self._libdpx.DPxUpdateRegCache()
+            fault = dpx_fault(self._libdpx)
+            held = None if fault is not None else int(self._libdpx.TPxGetIrisExpectedSize())
+        if fault is not None:
+            raise TrackerError(f"the TRACKPixx3 refused iris size {px} px: {fault}")
+        if held != px:
+            raise TrackerError(
+                f"asked the TRACKPixx3 for an iris size of {px} px; it holds {held} px"
+            )
+        return held
 
     # ------------------------------------------------------------------
     # Per trial

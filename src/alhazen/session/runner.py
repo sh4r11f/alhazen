@@ -334,6 +334,9 @@ class SessionRunner:
                 # the dashboard is known to be open, so a session without one
                 # never reads a frame nobody will see.
                 self._eyetracker.camera_sink = self._send_camera_frame
+                # And the tracker settings the page sends (the iris size),
+                # applied between frames, even while a procedure runs.
+                self._eyetracker.settings_source = self._poll_tracker_settings
         self._publish_dashboard("running")
         try:
             if self._instructions:
@@ -1136,7 +1139,7 @@ class SessionRunner:
         # so the Eye tracker tab shows the eye as it is now, not as it was
         # when the pause began.
         live_camera = self._eyetracker is not None and self._eyetracker.has_camera
-        streaming = self._eyetracker if live_camera else None
+        monitor = self._eyetracker
         published_at = self._clock.now()
         # A rest that can resume by itself: the same deadline as the keyboard
         # path, cancelled by the first thing anybody does.
@@ -1144,11 +1147,15 @@ class SessionRunner:
         if resume_after_s is not None:
             deadline = self._clock.now() + resume_after_s
         while True:
-            # The image streams on its own channel as often as a frame is due
-            # (session/eyetracker.py CAMERA_STREAM_S). The refresh further down
-            # republishes only the panel's words, about once a second.
-            if streaming is not None:
-                streaming.stream_camera()
+            # What the page asks of the tracker between clicks: a camera frame
+            # whenever one is due (session/eyetracker.py CAMERA_STREAM_S), and
+            # any tracker setting it sent, applied and reported in the notice.
+            # The refresh further down republishes the panel's words about once
+            # a second.
+            if monitor is not None:
+                for setting_line in monitor.service_dashboard():
+                    self._publish_dashboard("paused", setting_line)
+                    published_at = self._clock.now()
             actions = [command.name for command in dashboard.poll_commands()]
             actions += [
                 action
@@ -1275,6 +1282,10 @@ class SessionRunner:
         self._dashboard_message = message
         self._dashboard.publish(state)
         return state
+
+    def _poll_tracker_settings(self) -> list[tuple[str, object]]:
+        """The tracker settings the page sent, for the monitor to apply."""
+        return self._dashboard.poll_settings() if self._dashboard is not None else []
 
     def _send_camera_frame(self, frame: CameraFrame) -> None:
         """The monitor's streamed camera frames, onto the dashboard's camera channel."""

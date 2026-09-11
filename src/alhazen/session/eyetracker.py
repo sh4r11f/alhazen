@@ -35,7 +35,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from alhazen.config.models import EyeTrackerConfig
+from alhazen.config.models import IRIS_SIZE_RANGE_PX, EyeTrackerConfig
 from alhazen.core.clock import Clock
 from alhazen.devices.eyetracker.guide import TARGET_COUNTS
 from alhazen.devices.eyetracker.procedures import (
@@ -88,6 +88,14 @@ Publisher = Callable[[str, str], object]
 Emitter = Callable[[str, dict[str, Any]], object]
 # Where streamed camera frames go: the dashboard's camera channel.
 CameraSink = Callable[[CameraFrame], object]
+# Where the dashboard's tracker settings come from: (setting, value) pairs.
+SettingsSource = Callable[[], list[tuple[str, object]]]
+
+# The tracker setting the dashboard can change, by the name the page sends:
+# the TRACKPixx3's expected iris size (devices/eyetracker/viewpixx.py).
+IRIS_SIZE_SETTING = "iris_size_px"
+# How far the camera panel's − and + move it, in camera px.
+IRIS_SIZE_STEP_PX = 2
 
 
 def eye_stat(status: str) -> dict[str, Any]:
@@ -150,6 +158,11 @@ class EyeTrackerMonitor:
         # (stream_camera), and state publishes stop carrying the pixels.
         self.camera_sink: CameraSink | None = None
         self._last_stream = float("-inf")
+        # Set by the runner with the camera sink: the settings the page sent.
+        self.settings_source: SettingsSource | None = None
+        # The expected iris size the device holds, as last read or set; None
+        # until it has been read (the device is only asked between trials).
+        self.iris_size_px: int | None = None
 
     # ------------------------------------------------------------------
     # Procedures
@@ -287,13 +300,15 @@ class EyeTrackerMonitor:
         calibration is exactly when the experimenter is watching the eye, and
         a report is the one moment the procedure hands control back.
         """
-        self.stream_camera()
+        messages = self.service_dashboard()
         now = self._clock.now()
-        if now - self._last_publish < PROGRESS_PUBLISH_S:
+        # A setting the page sent is published at once, whatever the throttle
+        # says: the experimenter who pressed + is waiting to see it land.
+        if not messages and now - self._last_publish < PROGRESS_PUBLISH_S:
             return
         self._last_publish = now
         if self.publisher is not None:
-            self.publisher(PROCEDURE_STATUS, f"{stage}: {detail}")
+            self.publisher(PROCEDURE_STATUS, " · ".join([f"{stage}: {detail}", *messages]))
 
     def _emit(self, name: str, payload: dict[str, Any]) -> None:
         if self.emit is not None:
@@ -363,6 +378,24 @@ class EyeTrackerMonitor:
                 data["stats"].append(eye_stat(status()))
             except TrackerError as e:
                 data["stats"].append({"label": "eyes", "value": str(e), "status": "critical"})
+        if self.has_iris_size:
+            # Read once, between trials, and kept: only this session changes it.
+            if live and self.iris_size_px is None:
+                self._read_iris_size()
+            if self.iris_size_px is not None:
+                data["stats"].append({"label": "iris size", "value": f"{self.iris_size_px} px"})
+            low, high = IRIS_SIZE_RANGE_PX
+            data["controls"] = [
+                {
+                    "setting": IRIS_SIZE_SETTING,
+                    "label": "Iris size",
+                    "unit": "px",
+                    "value": self.iris_size_px,
+                    "min": low,
+                    "max": high,
+                    "step": IRIS_SIZE_STEP_PX,
+                }
+            ]
         note = "live while paused or calibrating" if live else "last frame; live again when paused"
         if self._camera_fault is not None:
             # "Last frame" only when there is one: a stream whose very first
@@ -376,6 +409,64 @@ class EyeTrackerMonitor:
             note = "image left out of the saved copy"
         data["note"] = note
         return data
+
+    @property
+    def has_iris_size(self) -> bool:
+        """Whether the tracker lets the session read and set its expected iris size."""
+        return hasattr(self._tracker, "iris_size") and hasattr(self._tracker, "set_iris_size")
+
+    def service_dashboard(self) -> list[str]:
+        """What the dashboard needs from the tracker between its other work:
+        the settings the page sent, applied in order, and a camera frame when
+        one is due. Returns one line per setting, for the caller to publish."""
+        requests = self.settings_source() if self.settings_source is not None else []
+        messages = [self._apply_setting(name, value) for name, value in requests]
+        self.stream_camera()
+        return messages
+
+    def _apply_setting(self, name: str, value: object) -> str:
+        if name == IRIS_SIZE_SETTING:
+            return self.set_iris_size(value)
+        log.error("the dashboard sent tracker setting %r, which this session does not have", name)
+        return f"No tracker setting called {name!r}; nothing changed."
+
+    def set_iris_size(self, px: object) -> str:
+        """Change the tracker's expected iris size; returns the line to show.
+
+        Every change is logged and recorded as a TRACKER_SETTING event with
+        the value before it, because from this moment on the device fits
+        pupils differently. A change the tracker refuses is logged as an error
+        and said on the page, and nothing is recorded, since nothing changed.
+        """
+        if not self.has_iris_size:
+            log.error("an iris size change was asked for, but this eye tracker has no such setting")
+            return "This eye tracker has no iris size setting; nothing changed."
+        previous = self.iris_size_px if self.iris_size_px is not None else self._read_iris_size()
+        try:
+            held = int(self._tracker.set_iris_size(px))  # type: ignore[attr-defined]
+        except (ValueError, TrackerError) as e:
+            log.error("iris size not changed: %s", e)
+            return f"Iris size not changed: {e}"
+        self.iris_size_px = held
+        log.info(
+            "eye tracker's expected iris size changed from %s to %d camera px",
+            previous if previous is not None else "an unread value",
+            held,
+        )
+        self._emit(
+            "TRACKER_SETTING", {"setting": IRIS_SIZE_SETTING, "value": held, "previous": previous}
+        )
+        was = f"{previous} px" if previous is not None else "unknown"
+        return f"Iris size set to {held} px (was {was})."
+
+    def _read_iris_size(self) -> int | None:
+        """Ask the tracker for its expected iris size and keep it; None, with a
+        warning, when it cannot say."""
+        try:
+            self.iris_size_px = int(self._tracker.iris_size())  # type: ignore[attr-defined]
+        except TrackerError as e:
+            log.warning("iris size not read: %s", e)
+        return self.iris_size_px
 
     def stream_camera(self) -> None:
         """Send the dashboard a fresh camera frame, if one is due.

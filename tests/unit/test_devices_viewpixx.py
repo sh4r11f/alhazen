@@ -81,6 +81,10 @@ class FakeLibdpx:
         self.positions: list[float] = [0.0, 0.0, 0.0, 0.0]
         self.raw_positions: list[float] = [1.5, -0.5, 1.4, -0.4]
         self.reads = 0
+        # The expected iris size register, and the largest value it keeps: a
+        # test lowers the cap to mimic a device that clamps what it cannot hold.
+        self.iris_size = 90
+        self.iris_register_max = 10_000
         # The camera image TPxGetImagePtr hands back: 8-bit grey, row-major.
         # None is the library's NULL pointer (no image available).
         self.image: np.ndarray | None = np.full((24, 32), 200, dtype=np.uint8)
@@ -103,6 +107,12 @@ class FakeLibdpx:
         )
         pointer = ctypes.cast(self._image_buffer, ctypes.POINTER(ctypes.c_byte))
         return pointer, height, width
+
+    def TPxGetIrisExpectedSize(self) -> int:  # noqa: N802 - vendor's name
+        return self.iris_size
+
+    def TPxSetIrisExpectedSize(self, size: int) -> None:  # noqa: N802 - vendor's name
+        self.iris_size = min(int(size), self.iris_register_max)
 
     def TPxSetBuff(self, base: int, size: int) -> None:  # noqa: N802 - vendor's name
         self.buffer_base = base
@@ -1652,3 +1662,57 @@ class TestVendorChatter:
         levels = {r.message: r.levelno for r in caplog.records}
         assert levels["pypixxlib printed: firmware 2.1 is out of date"] == logging.INFO
         assert any(level == logging.DEBUG for level in levels.values())
+
+
+class TestIrisSize:
+    """The expected iris size: the setting that decides whether the device
+    finds a pupil in its image, read and set from the session."""
+
+    def test_the_device_value_is_read(self, fake_pypixxlib):
+        tracker = connected()
+        fake_pypixxlib.libdpx.iris_size = 120
+        assert tracker.iris_size() == 120
+
+    def test_a_new_size_is_written_and_read_back(self, fake_pypixxlib):
+        tracker = connected()
+        updates = fake_pypixxlib.libdpx.cache_updates
+        assert tracker.set_iris_size(140) == 140
+        assert fake_pypixxlib.libdpx.iris_size == 140
+        assert fake_pypixxlib.libdpx.cache_updates > updates  # sent to the device
+
+    @pytest.mark.parametrize("value", [0, 513, True, 12.5, "100"])
+    def test_a_size_outside_the_range_never_reaches_the_device(self, fake_pypixxlib, value):
+        tracker = connected()
+        before = fake_pypixxlib.libdpx.iris_size
+        with pytest.raises(ValueError, match="iris size must be a whole number"):
+            tracker.set_iris_size(value)
+        assert fake_pypixxlib.libdpx.iris_size == before
+
+    def test_a_device_that_holds_something_else_is_an_error(self, fake_pypixxlib):
+        tracker = connected()
+        fake_pypixxlib.libdpx.iris_register_max = 255
+        with pytest.raises(TrackerError, match="it holds 255 px"):
+            tracker.set_iris_size(300)
+
+    def test_a_device_fault_is_an_error(self, fake_pypixxlib):
+        tracker = connected()
+        fake_pypixxlib.libdpx.error = "DPX_ERR_USB"
+        with pytest.raises(TrackerError, match="refused iris size 100 px"):
+            tracker.set_iris_size(100)
+
+    def test_before_connect_it_is_an_error(self, fake_pypixxlib):
+        with pytest.raises(TrackerError, match="before connect"):
+            make_viewpixx().iris_size()
+
+    def test_configure_applies_the_rig_value_and_logs_it(self, fake_pypixxlib, caplog):
+        with caplog.at_level(logging.INFO, logger="alhazen.devices.eyetracker.viewpixx"):
+            connected(iris_size_px=150)
+        assert fake_pypixxlib.libdpx.iris_size == 150
+        assert "expected iris size set to 150 camera px (rig config)" in caplog.text
+
+    def test_configure_logs_the_device_value_when_the_rig_is_silent(self, fake_pypixxlib, caplog):
+        fake_pypixxlib.libdpx.iris_size = 88
+        with caplog.at_level(logging.INFO, logger="alhazen.devices.eyetracker.viewpixx"):
+            connected()
+        assert fake_pypixxlib.libdpx.iris_size == 88
+        assert "expected iris size is 88 camera px, as the device holds it" in caplog.text

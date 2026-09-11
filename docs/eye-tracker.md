@@ -185,13 +185,24 @@ update.
 
 The **Eye tracker** section of the panels holds:
 
-- **Camera** (TRACKPixx3 only) — the eye image the tracker sees, read while
-  the session is paused or calibrating and refreshed about once a second
-  through a pause, with the *eyes:* status beside it. The EyeLink's camera
-  is on its Host PC. `eyetracker.camera_image: false` turns it off, and the
-  panel says so rather than showing nothing. The copy saved to `figures/`
-  at teardown leaves the pixels out: a photograph of the subject does not
-  belong in the run directory.
+- **Camera** (TRACKPixx3 only) — the eye image the tracker sees, live while
+  the session is paused or calibrating (about fifteen frames a second while
+  paused, ten through a calibration), with the *eyes:* status and the
+  expected iris size beside it. The EyeLink's camera is on its Host PC.
+  `eyetracker.camera_image: false` turns it off, and the panel says so rather
+  than showing nothing. The copy saved to `figures/` at teardown leaves the
+  pixels out: a photograph of the subject does not belong in the run
+  directory.
+
+  Under the image, **Iris size** sets the diameter, in camera px, that the
+  TRACKPixx3 searches its image for when it fits each pupil: the setting
+  LabMaestro adjusts from its camera view. When an eye keeps dropping out of
+  tracking, step it with − and + (2 px at a time) or type a value, while
+  paused or during a calibration, and watch the *eyes:* line. The session
+  reads the device back and shows what it holds. Every change is logged and
+  recorded as a TRACKER_SETTING event with the value and the one before it.
+  Set `eyetracker.iris_size_px` to start every session from a known size;
+  left unset, the session logs the size the device holds.
 - **Calibration** — the verdict (calibrated / NOT calibrated / aborted, or
   *result unknown* when the tracker reported nothing either way — an EyeLink
   Host PC that never ran one, or the scripted tracker in tests), layout,
@@ -241,6 +252,7 @@ devices:
     accuracy_max_deg: 1.0          # worst target error a validation may have
     drift_max_deg: 3.0             # largest offset a drift correction will apply
     camera_image: true             # TRACKPixx3 only: the dashboard's camera panel
+    iris_size_px: 120              # TRACKPixx3 only: expected iris size, camera px
 ```
 
 Every field is checked when the rig loads: a layout the EyeLink does not

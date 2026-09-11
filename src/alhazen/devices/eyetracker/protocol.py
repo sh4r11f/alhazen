@@ -12,7 +12,7 @@ compared against them with no epoch or unit conversion. The tracker's native
 clock reappears only offline, in the EDF, where the messages we write into it
 provide the alignment.
 
-Beyond the protocol, a backend may offer three *optional capabilities* that
+Beyond the protocol, a backend may offer *optional capabilities* that
 the session's eye-tracker monitor (session/eyetracker.py) looks for with
 ``hasattr`` and does without when absent. They are not protocol members on
 purpose: an experiment package's own fake tracker satisfies ``EyeTracker``
@@ -21,6 +21,11 @@ today, and must go on doing so without growing methods it has no use for.
 - ``camera_frame() -> CameraFrame``: the tracker's current eye image, for
   the dashboard. Raises ``TrackerError`` when the device cannot supply one.
 - ``eye_status() -> str``: one line saying which eyes the camera sees now.
+- ``iris_size() -> int`` and ``set_iris_size(px: int) -> int``: the expected
+  iris size, in camera px, that a camera tracker searches its image for (the
+  TRACKPixx3). The setter returns what the device holds afterwards; it raises
+  ``ValueError`` for a size outside the range and ``TrackerError`` when the
+  device refuses it or holds something else.
 - ``set_progress_hook(hook: ProgressHook | None)``: a callable the backend
   calls from inside its blocking ``calibrate()`` with ``(stage, detail)`` —
   ``("calibrating", "target 3 of 9 · eyes: both tracked")`` — so the

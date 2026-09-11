@@ -414,6 +414,9 @@ class FakeDashboard:
     def publish_camera(self, pixels, t) -> None:
         self.frames += 1
 
+    def poll_settings(self):
+        return []
+
     def save(self, figures_dir, state) -> None:
         self.saved = state
 

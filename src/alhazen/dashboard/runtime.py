@@ -24,6 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from alhazen.config.models import IRIS_SIZE_RANGE_PX
 from alhazen.dashboard.panels import panel_payload, present
 from alhazen.dashboard.spec import DashboardSpec
 from alhazen.errors import SessionError
@@ -47,6 +48,16 @@ _ALLOWED_COMMANDS = {
     "hold_stage",
 }
 
+# The tracker settings the page may change, with the range a value must lie in.
+# Checked here so a malformed request never reaches the session; the session
+# reads the device back and says what it then holds.
+_TRACKER_SETTINGS = {"iris_size_px": IRIS_SIZE_RANGE_PX}
+# When the server passes a setting on: while paused, and while an eye-tracker
+# procedure runs ("calibrating", session/eyetracker.py PROCEDURE_STATUS),
+# because an eye dropping out mid-calibration is exactly when the experimenter
+# needs to change one without abandoning the walk.
+_SETTING_STATUSES = frozenset({"paused", "calibrating"})
+
 
 @dataclass(frozen=True)
 class DashboardCommand:
@@ -65,6 +76,10 @@ class DashboardController:
         # child has not collected yet (publish_camera).
         self._camera: Any = ctx.Queue(maxsize=1)
         self._commands: Any = ctx.Queue(maxsize=64)
+        # Tracker settings from the page, kept apart from the commands: a
+        # setting is applied where it lands, even mid-procedure, and never
+        # taken for a pause-menu choice.
+        self._settings: Any = ctx.Queue(maxsize=64)
         self._ready: Any = ctx.Queue(maxsize=1)
         self._stop: Any = ctx.Event()
         self._port = port
@@ -94,6 +109,7 @@ class DashboardController:
                 self._updates,
                 self._camera,
                 self._commands,
+                self._settings,
                 self._ready,
                 self._stop,
                 self._token,
@@ -206,6 +222,16 @@ class DashboardController:
             except queue.Empty:
                 return commands
             commands.append(DashboardCommand(request_id=item["request_id"], name=item["name"]))
+
+    def poll_settings(self) -> list[tuple[str, object]]:
+        """The tracker settings the page sent since the last call, oldest first."""
+        settings: list[tuple[str, object]] = []
+        while True:
+            try:
+                item = self._settings.get_nowait()
+            except queue.Empty:
+                return settings
+            settings.append((item["setting"], item["value"]))
 
     def save(self, figures_dir: Path, state: dict[str, Any]) -> None:
         # Written as UTF-8 explicitly, never in whatever the platform prefers:
@@ -321,6 +347,7 @@ def _serve(
     updates: Any,
     camera_updates: Any,
     commands: Any,
+    settings: Any,
     ready: Any,
     stop: Any,
     token: str,
@@ -386,7 +413,13 @@ def _serve(
             self._send(HTTPStatus.NOT_FOUND, "not found", "text/plain")
 
         def do_POST(self) -> None:  # noqa: N802
-            if self.path != "/api/command" or self.headers.get("X-Alhazen-Token") != token:
+            if self.headers.get("X-Alhazen-Token") != token:
+                self._send(HTTPStatus.FORBIDDEN, "forbidden", "text/plain")
+                return
+            if self.path == "/api/tracker":
+                self._tracker_setting()
+                return
+            if self.path != "/api/command":
                 self._send(HTTPStatus.FORBIDDEN, "forbidden", "text/plain")
                 return
             try:
@@ -416,6 +449,53 @@ def _serve(
                 if len(seen) > 1024:
                     seen.clear()
                     seen.add(request_id)
+            self._send(HTTPStatus.ACCEPTED, "accepted", "text/plain")
+
+        def _tracker_setting(self) -> None:
+            """A tracker setting from the page: the camera panel's iris size.
+
+            Refused unless it names a setting this server knows, with a whole
+            number inside that setting's range, while the session is paused or
+            a procedure runs. Deduplicated by request id, like a command.
+            """
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                body = json.loads(self.rfile.read(length))
+                setting, value, request_id = body["setting"], body["value"], body["request_id"]
+            except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+                self._send(HTTPStatus.BAD_REQUEST, "invalid tracker setting", "text/plain")
+                return
+            bounds = _TRACKER_SETTINGS.get(setting) if isinstance(setting, str) else None
+            if bounds is None:
+                self._send(
+                    HTTPStatus.BAD_REQUEST, f"unknown tracker setting {setting!r}", "text/plain"
+                )
+                return
+            low, high = bounds
+            # bool is an int in Python, and JSON's true must not become 1 px.
+            if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+                self._send(
+                    HTTPStatus.BAD_REQUEST,
+                    f"{setting} must be a whole number from {low} to {high}",
+                    "text/plain",
+                )
+                return
+            if state.status not in _SETTING_STATUSES:
+                self._send(
+                    HTTPStatus.CONFLICT,
+                    "tracker settings can be changed only while paused or calibrating",
+                    "text/plain",
+                )
+                return
+            if request_id not in seen:
+                try:
+                    settings.put_nowait(
+                        {"setting": setting, "value": value, "request_id": request_id}
+                    )
+                except queue.Full:
+                    self._send(HTTPStatus.SERVICE_UNAVAILABLE, "setting queue full", "text/plain")
+                    return
+                seen.add(request_id)
             self._send(HTTPStatus.ACCEPTED, "accepted", "text/plain")
 
         def _authorized(self, query: str) -> bool:

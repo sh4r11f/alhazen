@@ -774,3 +774,96 @@ class TestDriftPanel:
         data = s.panel("Drift correction")["data"]
         assert data["value"] == "—" and data["label"] == "not applied"
         assert data["note"] == "aborted" and data["status"] == "critical"
+
+
+class IrisTracker(CameraTracker):
+    """A camera tracker with the TRACKPixx3's expected iris size setting."""
+
+    def __init__(self, clock: FakeClock) -> None:
+        super().__init__(clock)
+        self.iris = 90
+        self.iris_error: Exception | None = None
+
+    def iris_size(self) -> int:
+        return self.iris
+
+    def set_iris_size(self, px: int) -> int:
+        if self.iris_error is not None:
+            raise self.iris_error
+        self.iris = px
+        return px
+
+
+class TestIrisSizeFromTheDashboard:
+    """The iris size is changed from the dashboard and every change is on the
+    record; a change the tracker refuses is said, and recorded as nothing."""
+
+    def test_a_change_is_applied_logged_and_recorded(self, session, caplog) -> None:
+        s = session(IrisTracker)
+        with caplog.at_level(logging.INFO, logger="alhazen.session.eyetracker"):
+            message = s.monitor.set_iris_size(120)
+        assert message == "Iris size set to 120 px (was 90 px)."
+        assert s.tracker.iris == 120
+        assert s.events == [
+            ("TRACKER_SETTING", {"setting": "iris_size_px", "value": 120, "previous": 90})
+        ]
+        assert "expected iris size changed from 90 to 120 camera px" in caplog.text
+
+    def test_a_refused_change_is_said_and_not_recorded(self, session, caplog) -> None:
+        s = session(IrisTracker)
+        s.tracker.iris_error = TrackerError("the TRACKPixx3 refused iris size 120 px: DPX_ERR")
+        with caplog.at_level(logging.ERROR, logger="alhazen.session.eyetracker"):
+            message = s.monitor.set_iris_size(120)
+        assert message == "Iris size not changed: the TRACKPixx3 refused iris size 120 px: DPX_ERR"
+        assert s.events == []
+        assert "iris size not changed" in caplog.text
+
+    def test_a_tracker_without_the_setting_says_so(self, session) -> None:
+        s = session(CameraTracker)
+        assert s.monitor.set_iris_size(120) == (
+            "This eye tracker has no iris size setting; nothing changed."
+        )
+        assert s.events == []
+
+    def test_a_setting_lands_during_a_procedure_and_is_published_at_once(self, session) -> None:
+        """An eye dropping out mid-calibration is when the size is changed."""
+        s = session(IrisTracker)
+        queued = [[("iris_size_px", 110)]]
+        s.monitor.settings_source = lambda: queued.pop(0) if queued else []
+        s.monitor._on_progress("calibrating", "target 1 of 5 · eyes: left only")
+        s.monitor._on_progress("calibrating", "target 1 of 5 · eyes: both tracked")
+        assert s.tracker.iris == 110
+        # The report carrying the change is published even inside the throttle
+        # window; the report after it, with nothing new, is not.
+        assert s.published == [
+            (
+                "calibrating",
+                "calibrating: target 1 of 5 · eyes: left only"
+                " · Iris size set to 110 px (was 90 px).",
+            )
+        ]
+
+    def test_an_unknown_setting_is_refused_loudly(self, session, caplog) -> None:
+        s = session(IrisTracker)
+        s.monitor.settings_source = lambda: [("gain", 3)]
+        with caplog.at_level(logging.ERROR, logger="alhazen.session.eyetracker"):
+            messages = s.monitor.service_dashboard()
+        assert messages == ["No tracker setting called 'gain'; nothing changed."]
+        assert "tracker setting 'gain'" in caplog.text
+        assert s.tracker.iris == 90
+
+    def test_the_camera_panel_offers_the_setting_and_shows_the_value(self, session) -> None:
+        s = session(IrisTracker)
+        data = s.panel("Camera", camera=True)["data"]
+        assert data["controls"] == [
+            {
+                "setting": "iris_size_px",
+                "label": "Iris size",
+                "unit": "px",
+                "value": 90,
+                "min": 1,
+                "max": 512,
+                "step": 2,
+            }
+        ]
+        assert {"label": "iris size", "value": "90 px"} in data["stats"]

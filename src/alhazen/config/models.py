@@ -288,7 +288,13 @@ class DatabaseConfig(Model):
 # who wrote it believes they configured something, and nothing at runtime
 # would ever tell them otherwise. Fields absent from both maps are shared.
 EYELINK_ONLY_FIELDS = ("host_ip", "edf_host_filename")
-VIEWPIXX_ONLY_FIELDS = ("eye", "led_intensity", "camera_image")
+VIEWPIXX_ONLY_FIELDS = ("eye", "led_intensity", "camera_image", "iris_size_px")
+
+# The TRACKPixx3's expected iris size, in camera px: from 1 up to the height of
+# the camera image it is searched for in (512 px, pypixxlib's TPxGetEyeImage),
+# since an iris cannot be larger than the image. The rig config, the backend
+# and the dashboard server all check against these same bounds.
+IRIS_SIZE_RANGE_PX = (1, 512)
 
 # Target layouts alhazen can lay out itself, for backends whose calibration
 # it drives (viewpixx). The EyeLink accepts more of them, but its Host PC
@@ -366,6 +372,13 @@ class EyeTrackerConfig(Model):
     # panel, read while the session is paused or calibrating. The EyeLink's
     # camera lives on its Host PC, which has its own screen for it.
     camera_image: bool = True
+    # TRACKPixx3 expected iris size, in camera px: the diameter the device
+    # searches its camera image for when it fits each eye's pupil, the setting
+    # LabMaestro adjusts from its camera view. When an eye keeps dropping out
+    # of tracking, this is the setting to try first. None leaves whatever the
+    # device holds; the dashboard's camera panel can change it during a
+    # session, and every change is recorded as a TRACKER_SETTING event.
+    iris_size_px: int | None = None
 
     @model_validator(mode="after")
     def _valid(self) -> EyeTrackerConfig:
@@ -436,6 +449,12 @@ class EyeTrackerConfig(Model):
             )
         if self.led_intensity is not None and not 1 <= self.led_intensity <= 8:
             raise ValueError("led_intensity must be in 1-8 (the TRACKPixx3 illuminator range)")
+        low, high = IRIS_SIZE_RANGE_PX
+        if self.iris_size_px is not None and not low <= self.iris_size_px <= high:
+            raise ValueError(
+                f"iris_size_px must be in {low}-{high} (camera px; the TRACKPixx3 image is "
+                f"{high} px tall)"
+            )
 
 
 class RewardHwConfig(Model):

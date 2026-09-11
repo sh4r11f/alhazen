@@ -25,6 +25,7 @@
     "REWARD",
     "REWARD_FAILED",
     "STAGE_CHANGED",
+    "TRACKER_SETTING",
     "TRIAL_END",
     "TRIAL_START",
     "VALIDATION"

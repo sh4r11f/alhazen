@@ -1370,7 +1370,7 @@ function drawImage(legendHost, host, data) {
   /* A live camera sends its frames on their own channel (cameraLoop), and the
    * state says only that it streams: the picture is the newest frame that
    * came, drawn at once so a rebuilt panel never blanks. */
-  if (data.stream) return drawCameraStream(host);
+  if (data.stream) return drawCameraStream(host, data);
   /* The reason there is no picture is the panel's note, which buildPanel
    * already prints under the plot; the placeholder does not repeat it. */
   if (!data.pixels) return drawEmpty(host, 'No image');
@@ -1417,12 +1417,69 @@ const cameraArrivals = [];
 let cameraProblem = '';
 let cameraPaintQueued = false;
 
-/** The canvas a streamed camera panel draws into, and the line under it. */
-function drawCameraStream(host) {
+/** The canvas a streamed camera panel draws into, the line under it, and
+ *  the tracker settings it offers. */
+function drawCameraStream(host, data) {
   const canvas = htmlEl('canvas', 'camera', null, host);
   canvas.dataset.stream = '1';
   htmlEl('div', 'camera-live', null, host);
+  drawTrackerControls(host, data);
   paintCamera();
+}
+
+/**
+ * A row per tracker setting the panel offers (the iris size): its label, a −
+ * and a + that step it, the value itself to type into, and its unit. Live only
+ * while the session is paused or a procedure runs, the two states in which the
+ * server passes a setting on; the saved copy shows it inert.
+ */
+function drawTrackerControls(host, data) {
+  const live = STATIC_STATE === null && !!state &&
+    (state.status === 'paused' || state.status === 'calibrating');
+  (data.controls || []).forEach((control) => {
+    const row = htmlEl('div', 'tracker-control', null, host);
+    htmlEl('span', 'tracker-control-label', control.label, row);
+    const down = htmlEl('button', null, '−', row);
+    const input = htmlEl('input', null, null, row);
+    const up = htmlEl('button', null, '+', row);
+    htmlEl('span', null, control.unit, row);
+    down.type = 'button';
+    up.type = 'button';
+    input.type = 'number';
+    input.min = control.min;
+    input.max = control.max;
+    input.step = control.step;
+    input.value = control.value === null || control.value === undefined ? '' : control.value;
+    input.dataset.setting = control.setting;
+    down.onclick = () => sendTrackerSetting(control, Number(input.value) - control.step);
+    up.onclick = () => sendTrackerSetting(control, Number(input.value) + control.step);
+    input.onchange = () => sendTrackerSetting(control, Number(input.value));
+    [down, input, up].forEach((element) => { element.disabled = !live; });
+  });
+}
+
+/** Send one tracker setting. The session reads the device back and the
+ *  notice and the panel then say what it holds; a refusal is said in the
+ *  notice, never dropped. */
+async function sendTrackerSetting(control, value) {
+  if (!Number.isInteger(value) || value < control.min || value > control.max) {
+    byId('notice').textContent = control.label + ' must be a whole number from ' +
+      control.min + ' to ' + control.max + ' ' + control.unit + '.';
+    return;
+  }
+  try {
+    const response = await fetch('/api/tracker', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Alhazen-Token': token },
+      body: JSON.stringify({ setting: control.setting, value: value, request_id: crypto.randomUUID() }),
+    });
+    byId('notice').textContent = response.ok
+      ? control.label + ': ' + value + ' ' + control.unit + ' sent to the tracker…'
+      : control.label + ' not changed: ' + await response.text();
+  } catch (error) {
+    console.error('tracker setting failed', error);
+    byId('notice').textContent = control.label + ' not sent: ' + error;
+  }
 }
 
 /** What the line under the image says: the frame rate over the last two
@@ -2051,6 +2108,13 @@ function render() {
    * painted. */
   const scroller = document.scrollingElement || document.documentElement;
   const scrollTop = scroller.scrollTop;
+  /* A tracker setting being typed into, so the rebuild below does not take
+   * the half-typed number away: the state is republished about once a second
+   * while paused. */
+  const active = document.activeElement;
+  const editing = active && active.dataset && active.dataset.setting
+    ? { setting: active.dataset.setting, value: active.value }
+    : null;
 
   panels = (state.panels || []).map((panel, index) => buildPanel(panel, index, openTables));
   renderSections(panels);
@@ -2062,6 +2126,13 @@ function render() {
   panels = shown;
   panels.forEach((entry, position) => { entry.letter.textContent = panelLetter(position); });
   panels.forEach(paintPanel);
+  if (editing) {
+    const input = document.querySelector('input[data-setting="' + editing.setting + '"]');
+    if (input && !input.disabled) {
+      input.value = editing.value;
+      input.focus();
+    }
+  }
 
   /* After painting, not before: the panels have their real heights only once
    * they are drawn, and restoring against a half-laid-out document would
