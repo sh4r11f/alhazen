@@ -440,3 +440,33 @@ details.table th { color: var(--muted); font-weight: 600; }
   body { background: #ffffff; }
   .panel { break-inside: avoid; }
 }
+
+/* ------------------------------------------------------------------ */
+/* Figure export                                                       */
+/* ------------------------------------------------------------------ */
+
+/* Small text actions under a chart panel. */
+.figure-export {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.figure-export button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink-2);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.figure-export button:hover { color: var(--ink); }
+
+/* Where a panel is redrawn for export: laid out, so it can be measured, but
+ * never on screen. */
+.export-stage { position: absolute; top: 0; left: -100000px; }

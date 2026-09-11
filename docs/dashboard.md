@@ -78,6 +78,7 @@ flowchart LR
   W --> Q(["queue (1 slot)"])
   Q --> H["child process<br/>HTTP + long poll"]
   H --> B["browser: dashboard.js<br/>scales · axes · marks · hover"]
+  B -->|"Export figure"| X["SVG 89 / 183 mm<br/>PNG 600 dpi"]
   W --> F["figures/dashboard.html<br/>figures/dashboard_state.json"]
 ```
 
@@ -455,6 +456,32 @@ median interval of 8.343 ms (119.9 Hz, perfect on paper) and 338 frames under
 4 ms; "308 dropped frames" hid it, and the histogram shows it as a second
 mode at a glance. That shape is the difference between a genuine vsync miss
 and a clock that is not locked to the panel.
+
+## Figures for publication
+
+Every chart panel has an **Export figure** row: an SVG at a journal's single
+column (89 mm) or double column (183 mm), or a PNG at 600 dpi. The figure is
+not a screenshot of the card. It is drawn again, off screen, in the light
+theme and at a scale that sets tick labels at about 7 pt and prints a 1 px
+line at 0.6 pt, whatever the reader's theme or window width. Each element's
+computed style is written onto it, so the SVG needs no stylesheet and opens the
+same in a vector editor as in a browser, and its text is set in Arial or
+Helvetica. The panel letter and the legend are drawn inside the figure, and a
+bar chart is cropped to its rows.
+
+```mermaid
+flowchart LR
+  P["panel payload<br/>(already presented)"] --> D["redraw off screen<br/>light theme · 400 px per 89 mm"]
+  D --> I["inline computed styles<br/>drop hover targets"]
+  I --> L["panel letter + legend<br/>drawn into the SVG"]
+  L --> S["SVG<br/>89 or 183 mm"]
+  S --> R["canvas at 600 dpi"]
+  R --> G["PNG"]
+```
+
+A failed export says so in the page, with the reason, rather than quietly
+saving nothing. File names carry the letter, the title and the width, such as
+`d-saccade-latency-89mm.svg`, so a folder of exports sorts into plate order.
 
 ## Saved output
 

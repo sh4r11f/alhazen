@@ -44,6 +44,11 @@ function plotHeight(width) {
  * taller than its neighbour costs more than a little air does. */
 const squarePlotHeight = plotHeight;
 
+/* True only while a panel is being redrawn for figure export. The charts that
+ * pad themselves out to the height every dashboard panel shares read it, so
+ * an exported figure is cropped to its content instead. */
+let exportMode = false;
+
 /** The height of the whole drawing, ticks and axis title included. Every
  *  chart uses it, including the ones with no axis to label, so two panels
  *  side by side end on the same line rather than nearly so. */
@@ -594,12 +599,13 @@ function drawBars(legendHost, host, data) {
 
   const width = host.clientWidth || 380;
   /* Rows at a fixed pitch, each bar filling most of its row: thin bars in
-   * wide gutters read as a sketch, not a figure. The rows are centred in the
-   * height every panel shares, so a card with three categories still lines
-   * up with its neighbour. */
+   * wide gutters read as a sketch, not a figure. On the dashboard the rows
+   * are centred in the height every panel shares, so a card with three
+   * categories still lines up with its neighbour; an exported figure is
+   * cropped to its rows. */
   const band = Math.min(30, (chartHeight(width) - PAD.bottom) / items.length);
   const thickness = Math.max(4, Math.round(band * 0.62));
-  const height = chartHeight(width);
+  const height = exportMode ? band * items.length + 8 : chartHeight(width);
   const top = (height - band * items.length) / 2;
   const labelFont = LABEL_FONT;
   let labelWidth = 0;
@@ -1510,6 +1516,273 @@ function drawTable(card, data, index, open) {
 /* Panels and page                                                     */
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/* Figure export: a panel as a journal-ready SVG or PNG                */
+/* ------------------------------------------------------------------ */
+
+/* Journal column widths. Nature's single column is 89 mm and its double
+ * column 183 mm; most journals are within a millimetre or two of both. */
+const FIGURE_WIDTH_MM = { single: 89, double: 183 };
+/* The drawing scale for export, in CSS pixels per millimetre. 400 px across
+ * 89 mm sets the 11 px tick labels at 7 pt and the 12 px axis titles at
+ * 7.6 pt, inside the 5 to 7 pt most journals ask for, and prints a 1 px line
+ * at 0.6 pt. A double-column figure is drawn wider at the same scale, so its
+ * text is the same size in print. */
+const EXPORT_PX_PER_MM = 400 / 89;
+/* What journals ask of line art in a raster file. */
+const EXPORT_DPI = 600;
+/* A face every journal's typesetting has, whatever the reader's machine
+ * rendered the page in. */
+const EXPORT_FONT = 'Arial, Helvetica, "Liberation Sans", sans-serif';
+/* The forms drawn as SVG. A stat is a number and a camera image is a
+ * photograph; neither is a chart to export. */
+const EXPORTABLE = new Set(['line', 'bars', 'histogram', 'scatter', 'vectors', 'dots', 'heatmap']);
+
+/* Presentation properties copied from the page's computed style onto each
+ * exported element, so the file carries its own look instead of pointing at
+ * a stylesheet and theme variables it will not have. */
+const SHAPE_STYLE = ['fill', 'fill-opacity', 'stroke', 'stroke-width', 'stroke-opacity',
+  'stroke-linecap', 'stroke-linejoin', 'opacity', 'paint-order'];
+const TEXT_STYLE = ['font-size', 'font-weight', 'font-style'];
+
+/** A colour as a concrete value: the export resolves theme variables itself,
+ *  because the file it writes has no stylesheet to resolve them against. */
+function resolveColour(value) {
+  const match = /^var\((--[\w-]+)\)$/.exec(String(value || '').trim());
+  if (!match) return value;
+  return getComputedStyle(document.documentElement).getPropertyValue(match[1]).trim() || '#000000';
+}
+
+/** Write each element's computed look onto its copy, and drop what exists
+ *  only for the screen: hover targets and the hover crosshair. */
+function inlineStyles(original, copy) {
+  const sources = [original, ...original.querySelectorAll('*')];
+  const targets = [copy, ...copy.querySelectorAll('*')];
+  sources.forEach((source, index) => {
+    const target = targets[index];
+    const onlyForScreen = source.classList && (source.classList.contains('hit') || source.classList.contains('hairline'));
+    const computed = getComputedStyle(source);
+    SHAPE_STYLE.forEach((property) => {
+      const value = computed.getPropertyValue(property);
+      if (value && !(property === 'paint-order' && value === 'normal')) target.setAttribute(property, value);
+    });
+    if (source.tagName === 'text' || source.tagName === 'tspan') {
+      TEXT_STYLE.forEach((property) => target.setAttribute(property, computed.getPropertyValue(property)));
+      target.setAttribute('font-family', EXPORT_FONT);
+    }
+    target.removeAttribute('style');
+    target.removeAttribute('class');
+    if (onlyForScreen) target.setAttribute('data-screen-only', '1');
+  });
+  copy.querySelectorAll('[data-screen-only]').forEach((node) => node.remove());
+}
+
+/** Lay the legend out as rows of swatch-and-name inside the figure's width. */
+function legendRows(legend, widthPx) {
+  const empty = { height: 0, items: [], lineHeight: 16 };
+  /* The page legend's rule: a lone series is named by the title, but an
+   * error bar's definition is always drawn. */
+  if (!legend || (legend.entries.length < 2 && !legend.entries.some((e) => e.shape === 'whisker'))) return empty;
+  const font = '11px ' + EXPORT_FONT;
+  const items = [];
+  if (legend.title) {
+    items.push({ title: true, text: legend.title, width: textWidth(legend.title, '600 ' + font) + 12 });
+  }
+  legend.entries.forEach((entry) => {
+    items.push({ entry: entry, text: entry.name, width: 18 + textWidth(entry.name, font) + 14 });
+  });
+  let x = 8;
+  let row = 0;
+  items.forEach((item) => {
+    if (x > 8 && x + item.width > widthPx - 8) { row += 1; x = 8; }
+    item.x = x;
+    item.row = row;
+    x += item.width;
+  });
+  return { height: (row + 1) * empty.lineHeight + 10, items: items, lineHeight: empty.lineHeight };
+}
+
+/** Draw the laid-out legend into an SVG group, colours already resolved. */
+function drawLegendRows(group, layout) {
+  const ink = resolveColour('var(--ink)');
+  const ink2 = resolveColour('var(--ink-2)');
+  layout.items.forEach((item) => {
+    const baseline = 14 + item.row * layout.lineHeight;
+    const text = (x, content, weight) => {
+      const node = svgEl('text', {
+        x: x, y: baseline, 'font-family': EXPORT_FONT, 'font-size': '11px',
+        'font-weight': weight || 'normal', fill: weight ? ink : ink2,
+      }, group);
+      node.textContent = content;
+    };
+    if (item.title) { text(item.x, item.text, '600'); return; }
+    const colour = resolveColour(item.entry.color);
+    const cx = item.x + 6;
+    const cy = baseline - 4;
+    const shape = item.entry.shape || 'line';
+    if (shape === 'dot') svgEl('circle', { cx: cx, cy: cy, r: 3.5, fill: colour }, group);
+    else if (shape === 'ring') svgEl('circle', { cx: cx, cy: cy, r: 4, fill: 'none', stroke: colour, 'stroke-width': 1.2 }, group);
+    else if (shape === 'box') svgEl('rect', { x: cx - 5, y: cy - 5, width: 10, height: 10, fill: colour, 'fill-opacity': 0.28 }, group);
+    else if (shape === 'whisker') {
+      svgEl('path', {
+        d: 'M' + cx + ',' + (cy - 5.5) + 'V' + (cy + 5.5) +
+           'M' + (cx - 4) + ',' + (cy - 5.5) + 'H' + (cx + 4) +
+           'M' + (cx - 4) + ',' + (cy + 5.5) + 'H' + (cx + 4),
+        fill: 'none', stroke: colour, 'stroke-width': 1.2,
+      }, group);
+    }
+    else if (shape === 'outline') svgEl('rect', { x: cx - 5, y: cy - 5, width: 10, height: 10, fill: 'none', stroke: colour, 'stroke-width': 1.2 }, group);
+    else if (shape === 'diamond') svgEl('path', { d: 'M' + cx + ',' + (cy - 4.5) + 'L' + (cx + 4.5) + ',' + cy + 'L' + cx + ',' + (cy + 4.5) + 'L' + (cx - 4.5) + ',' + cy + 'Z', fill: colour }, group);
+    else svgEl('line', { x1: cx - 6, x2: cx + 6, y1: cy, y2: cy, stroke: colour, 'stroke-width': 2, 'stroke-linecap': 'round' }, group);
+    text(item.x + 18, item.text);
+  });
+}
+
+/** One panel as a standalone SVG document: white ground, panel letter, the
+ *  plot with its styles written on, and the legend beneath it. */
+function figureMarkup(plot, legend, letter, widthPx, widthMm) {
+  const plotHeight = Number(plot.getAttribute('height')) || 0;
+  const copy = plot.cloneNode(true);
+  inlineStyles(plot, copy);
+  const layout = legendRows(legend, widthPx);
+  const top = letter ? 20 : 0;
+  const height = top + plotHeight + layout.height;
+
+  const figure = document.createElementNS(SVG, 'svg');
+  figure.setAttribute('xmlns', SVG);
+  figure.setAttribute('width', widthMm + 'mm');
+  figure.setAttribute('height', (height / EXPORT_PX_PER_MM).toFixed(2) + 'mm');
+  figure.setAttribute('viewBox', '0 0 ' + widthPx + ' ' + height);
+  svgEl('rect', { x: 0, y: 0, width: widthPx, height: height, fill: '#ffffff' }, figure);
+  if (letter) {
+    svgEl('text', {
+      x: 2, y: 14, 'font-family': EXPORT_FONT, 'font-size': '14px', 'font-weight': '700',
+      fill: resolveColour('var(--ink)'),
+    }, figure).textContent = letter;
+  }
+  const body = svgEl('g', { transform: 'translate(0,' + top + ')' }, figure);
+  while (copy.firstChild) body.appendChild(copy.firstChild);
+  const legendGroup = svgEl('g', { transform: 'translate(0,' + (top + plotHeight) + ')' }, figure);
+  drawLegendRows(legendGroup, layout);
+  return {
+    text: '<?xml version="1.0" encoding="UTF-8"?>\n' + new XMLSerializer().serializeToString(figure),
+    width: widthPx,
+    height: height,
+  };
+}
+
+/** The SVG drawn onto a canvas at the journal's raster resolution. */
+function rasterize(markup, widthMm) {
+  const pixelsWide = Math.round((widthMm / 25.4) * EXPORT_DPI);
+  const scale = pixelsWide / markup.width;
+  return new Promise((resolve, reject) => {
+    /* A data: URL rather than a blob: URL. A saved dashboard opens from
+     * file://, where a blob: image can count as another origin and taint the
+     * canvas, and a tainted canvas refuses to hand its pixels back. */
+    const url = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(markup.text);
+    const image = new Image();
+    image.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = pixelsWide;
+      canvas.height = Math.round(markup.height * scale);
+      const context = canvas.getContext('2d');
+      context.fillStyle = '#ffffff';
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('the canvas produced no image'))), 'image/png');
+    };
+    image.onerror = () => reject(new Error('the browser could not draw the SVG'));
+    image.src = url;
+  });
+}
+
+/** Hand a file to the browser's download. */
+function saveBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = htmlEl('a', null, null, document.body);
+  link.href = url;
+  link.download = filename;
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+/** "b-saccade-landings-89mm": letter, title and width, so a folder of
+ *  exports sorts into the plate's order and says which column each fits. */
+function figureFileName(entry, columns) {
+  const slug = String(entry.title || 'panel').toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'panel';
+  const letter = entry.letter.textContent || '';
+  return (letter ? letter + '-' : '') + slug + '-' + FIGURE_WIDTH_MM[columns] + 'mm';
+}
+
+/**
+ * Save one panel as a figure. The panel is drawn again off-screen, in the
+ * light theme and at the export scale, rather than copied from the screen: a
+ * dark-theme copy, or one at whatever width the reader's window happened to
+ * give it, is not a figure. Anything that goes wrong is said, in the page, not
+ * only in the console.
+ */
+function exportFigure(entry, format, columns) {
+  const data = entry.data;
+  if (!EXPORTABLE.has(data.form)) return;
+  const widthMm = FIGURE_WIDTH_MM[columns];
+  const widthPx = Math.round(widthMm * EXPORT_PX_PER_MM);
+  const rootNode = document.documentElement;
+  const theme = rootNode.getAttribute('data-theme');
+  rootNode.setAttribute('data-theme', 'light');
+  const stage = htmlEl('div', 'export-stage', null, document.body);
+  stage.style.width = widthPx + 'px';
+  let markup;
+  /* Figure proportions for the length of the draw: bar charts crop to their
+   * rows instead of padding out to the dashboard's shared panel height. */
+  exportMode = true;
+  try {
+    const host = htmlEl('div', 'plot', null, stage);
+    const legendHost = htmlEl('div', 'legend-slot', null, stage);
+    DRAW[data.form](legendHost, host, data);
+    const plot = host.querySelector('svg');
+    if (!plot) throw new Error('this panel drew no chart to export');
+    markup = figureMarkup(plot, legendHost._legend, entry.letter.textContent, widthPx, widthMm);
+  } catch (error) {
+    console.error('figure export failed', error);
+    alert('Figure export failed: ' + error.message);
+    return;
+  } finally {
+    exportMode = false;
+    stage.remove();
+    if (theme === null) rootNode.removeAttribute('data-theme');
+    else rootNode.setAttribute('data-theme', theme);
+  }
+  const name = figureFileName(entry, columns);
+  if (format === 'svg') {
+    saveBlob(new Blob([markup.text], { type: 'image/svg+xml' }), name + '.svg');
+    return;
+  }
+  rasterize(markup, widthMm)
+    .then((blob) => saveBlob(blob, name + '-' + EXPORT_DPI + 'dpi.png'))
+    .catch((error) => {
+      console.error('PNG export failed', error);
+      alert('PNG export failed: ' + error.message);
+    });
+}
+
+/** The export row under a chart panel. */
+function addExportActions(entry) {
+  if (!EXPORTABLE.has(entry.data.form)) return;
+  const row = htmlEl('div', 'figure-export', null, entry.card);
+  htmlEl('span', null, 'Export figure', row);
+  [
+    ['svg', 'single', 'SVG, 89 mm'],
+    ['svg', 'double', 'SVG, 183 mm'],
+    ['png', 'single', 'PNG, 600 dpi'],
+  ].forEach(([format, columns, label]) => {
+    const button = htmlEl('button', null, label, row);
+    button.type = 'button';
+    button.onclick = () => exportFigure(entry, format, columns);
+  });
+}
+
 const DRAW = {
   line: drawLineChart,
   bars: drawBars,
@@ -1559,7 +1832,7 @@ function buildPanel(panel, index, openTables) {
   const legendHost = htmlEl('div', 'legend-slot', null, card);
   htmlEl('p', 'note', data.note || '', card);
   drawTable(card, data, index, openTables.has(index));
-  return {
+  const entry = {
     card: card,
     host: host,
     legendHost: legendHost,
@@ -1568,6 +1841,8 @@ function buildPanel(panel, index, openTables) {
     letter: letter,
     title: panel.title || '',
   };
+  addExportActions(entry);
+  return entry;
 }
 
 /** Draw (or redraw) one built panel, now that it has a real width. */

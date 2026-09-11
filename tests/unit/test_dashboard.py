@@ -853,3 +853,14 @@ class TestFigureConventionsInTheRenderer:
     def test_spines_end_on_their_outermost_ticks(self):
         frame = self._function(self._asset("dashboard.js"), "drawFrame")
         assert "ySpan" in frame and "xSpan" in frame
+
+    def test_figures_are_exported_at_journal_column_widths(self):
+        script = self._asset("dashboard.js")
+        assert "const FIGURE_WIDTH_MM = { single: 89, double: 183 };" in script
+        assert "const EXPORT_DPI = 600;" in script
+        export = self._function(script, "exportFigure")
+        # Drawn light and in figure proportions, and both undone however the
+        # draw ends: a failed export must leave the page as it found it.
+        assert "setAttribute('data-theme', 'light')" in export
+        assert export.index("exportMode = true") < export.index("finally")
+        assert export.rindex("exportMode = false") > export.index("finally")
