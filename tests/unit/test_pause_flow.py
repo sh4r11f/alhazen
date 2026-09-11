@@ -195,11 +195,83 @@ class TestAFailedProcedureIsSaidOnTheRigsOwnScreen:
         headings = [title for title, _body, _color in harness.display.menus]
         # The worst target is a far corner the subject never looks at, so the
         # number is large; what matters is that the verdict and the limit led.
-        assert any("VALIDATION FAILED" in h and "against the 1° limit" in h for h in headings), (
-            headings
+        from alhazen.session.pause import WARNING_COLOR
+
+        # How far over, and both ways on.
+        warned = [
+            (title, color)
+            for title, _body, color in harness.display.menus
+            if title.startswith("VALIDATION")
+        ]
+        assert warned, headings
+        assert all("ABOVE THE 1° LIMIT" in title for title, _color in warned), warned
+        assert all("SPACE resumes on it, C recalibrates" in title for title, _color in warned)
+        # A warning, not a fault: its own colour, and SPACE did resume.
+        assert all(color == WARNING_COLOR for _title, color in warned)
+        # Before the validation the menu carried no heading of its own.
+        assert not any("VALIDATION" in h for h in headings[:1])
+        # Resuming on it is recorded, with the numbers, and said in the log.
+        (resumed,) = [e for e in harness.collector.events if e.name == "RESUMED"]
+        shortfall = resumed.payload["on_failed_validation"]
+        assert shortfall["threshold_deg"] == 1.0
+        assert shortfall["max_error_deg"] == validation.max_error_deg
+        log = harness.paths.log_path.read_text(encoding="utf-8")
+        assert "resumed on a validation that did not pass" in log
+
+
+class TestAValidationThatDidNotPassIsAWarning:
+    """The heading says how the validation fell short and offers both ways
+    on; it is never a fault that tells the experimenter what they must do."""
+
+    @staticmethod
+    def validation(errors):
+        from alhazen.devices.eyetracker.procedures import TargetError, ValidationResult
+
+        return ValidationResult(
+            targets=tuple(
+                TargetError(
+                    target_px=(0.0, 0.0),
+                    gaze_px=None if error is None else (0.0, 0.0),
+                    error_deg=error,
+                    n_samples=0 if error is None else 10,
+                )
+                for error in errors
+            ),
+            threshold_deg=1.0,
+            t=1.0,
         )
-        # Before the validation the menu carried no fault at all.
-        assert not any("FAILED" in h for h in headings[:1])
+
+    def headings(self, tmp_path, errors):
+        harness = SessionHarness(tmp_path, n_trials=1)
+        runner = harness.runner
+        monitor = TestAProcedureThatSucceedsTakesTheHeadingBackDown.StubMonitor(
+            [self.validation(errors)]
+        )
+        monitor.validate()
+        runner._eyetracker = monitor
+        return runner._procedure_warning("validate"), runner._procedure_fault("validate")
+
+    def test_over_the_limit(self, tmp_path):
+        warning, fault = self.headings(tmp_path, (0.4, 1.3))
+        assert warning == (
+            "VALIDATION ABOVE THE 1° LIMIT — worst 1.30° — SPACE resumes on it, C recalibrates"
+        )
+        assert fault is None
+
+    def test_within_the_limit_but_a_target_missed(self, tmp_path):
+        warning, _fault = self.headings(tmp_path, (0.4, None))
+        assert warning == (
+            "VALIDATION INCOMPLETE — worst 0.40° within the 1° limit, 1 target(s) missed"
+            " — SPACE resumes on it, C recalibrates"
+        )
+
+    def test_nothing_measured(self, tmp_path):
+        warning, _fault = self.headings(tmp_path, (None, None))
+        assert warning == "VALIDATION MEASURED NO TARGET — SPACE resumes on it, C recalibrates"
+
+    def test_a_validation_that_passed_heads_nothing(self, tmp_path):
+        warning, fault = self.headings(tmp_path, (0.4, 0.6))
+        assert (warning, fault) == (None, None)
 
 
 class TestTheSessionTakesTheBlockBreak:
@@ -304,7 +376,7 @@ class TestAProcedureThatSucceedsTakesTheHeadingBackDown:
         # heading again, because the second validation passed.
         assert len(seen) == 3, seen
         assert "REST" in seen[0]
-        assert "VALIDATION FAILED" in seen[1] and "2.30°" in seen[1]
+        assert "VALIDATION ABOVE THE 1° LIMIT" in seen[1] and "2.30°" in seen[1]
         assert seen[2] == seen[0], seen
 
 

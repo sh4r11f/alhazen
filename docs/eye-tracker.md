@@ -138,6 +138,16 @@ not aborted and that the tracker did not itself call bad — there is nothing
 to measure against a calibration that did not take — unless
 `validate_after_calibration: false`.
 
+A validation that does not pass is a **warning**, not a stop. The pause menu
+comes back headed, in amber, with how it fell short (*VALIDATION ABOVE THE 1°
+LIMIT — worst 1.32°*, or *INCOMPLETE* with the targets missed) and both ways
+on: SPACE resumes on it, C recalibrates. Whether a calibration is good enough
+for this subject today is the experimenter's call. Whatever it is, it is on
+the record: the VALIDATION event carries every target's error whether the
+validation passed or not, the log lists them, and resuming on a validation
+that did not pass logs a WARNING and puts its numbers in the RESUMED event
+(`on_failed_validation`).
+
 **Drift correction** shows one target at the centre and measures the offset
 between it and the reported gaze. If the offset is within `drift_max_deg`
 (3.0°) it is *applied*: the `GazeCorrection` shifts by it, and the input

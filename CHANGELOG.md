@@ -67,6 +67,14 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   while paused and ten a second through a TRACKPixx3 calibration, and the page
   redraws only the image, with its frame rate printed under it.
 
+- **A validation that does not pass is a warning you can accept.** The pause
+  menu used to lead with *VALIDATION FAILED … recalibrate (C) before resuming*,
+  in the fault colour. It now leads, in amber, with how the validation fell
+  short and both ways on: SPACE resumes on it, C recalibrates. Resuming on it
+  logs a WARNING and records the validation's numbers in the RESUMED event
+  (`on_failed_validation`); the VALIDATION event and the per-target errors in
+  the log are written whether it passed or not, as before.
+
 ### Added
 
 - **Figure export.** Every chart panel saves as an SVG at 89 mm or 183 mm, or
