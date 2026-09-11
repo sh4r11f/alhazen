@@ -72,6 +72,7 @@ import numpy as np
 
 from alhazen.config.models import EyeTrackerConfig
 from alhazen.core.clock import Clock
+from alhazen.core.commands import DEFAULT_KEYMAP, Command
 from alhazen.devices.eyetracker.guide import GUIDE_TITLE, calibration_guide
 from alhazen.devices.eyetracker.procedures import ABORT_KEY, ACCEPT_KEYS, REDO_KEY
 from alhazen.devices.eyetracker.protocol import (
@@ -97,11 +98,22 @@ TRACKING_LOST_PX = 9000.0
 # the same three roles the EyeLink's own calibration screen uses, and the
 # same three the validation walk uses, so an experimenter learns one set.
 
+# The session's pause key (core/commands.py), honoured inside the walk too.
+# An experimenter who wants the pause menu mid-calibration presses the key
+# that means "pause" everywhere else in the session. The walk then stops
+# exactly as ESC stops it, keeping the previous calibration, and hands back to
+# the pause menu, where C starts again from the first target.
+PAUSE_KEYS = tuple(key for key, command in DEFAULT_KEYMAP.items() if command is Command.PAUSE)
+# Every key the walk answers to while a target is up.
+WALK_KEYS = (*ACCEPT_KEYS, REDO_KEY, ABORT_KEY, *PAUSE_KEYS)
+# How the stop keys are named on screen: "P or ESC".
+STOP_KEYS_LABEL = " or ".join([*(key.upper() for key in PAUSE_KEYS), "ESC"])
+
 # The walk's keys on the guide screen, in the experimenter's words.
 GUIDE_KEYS = (
     ("SPACE", "accept this target (refused while no eye is in the image)"),
     ("BACKSPACE", "go back one target"),
-    ("ESC", "abort — the previous calibration is kept"),
+    (STOP_KEYS_LABEL, "stop and go back to the pause menu — the previous calibration is kept"),
 )
 
 # Auto advance: a target is accepted once the camera has seen the eyes on
@@ -314,6 +326,21 @@ def shrink_image(pixels: np.ndarray, max_px: int = CAMERA_MAX_PX) -> np.ndarray:
     longer = max(pixels.shape[:2])
     step = max(1, math.ceil(longer / max_px))
     return np.ascontiguousarray(pixels[::step, ::step])
+
+
+def read_keys(event: Any, key_list: Sequence[str], wait_s: float) -> list[str] | None:
+    """Keys from ``key_list`` pressed since the keyboard was last cleared,
+    waiting up to ``wait_s`` for the first of them; None when none came.
+
+    Deliberately not ``event.waitKeys``'s default, which empties PsychoPy's
+    keyboard buffer every time it starts waiting. The calibration screens
+    wait in short slices, and between two slices they read the eye status,
+    flip, and tell the dashboard. A SPACE pressed during that work was thrown
+    away when the next slice began, so an experimenter had to press again and
+    again until a press happened to land inside a wait. The buffer is cleared
+    on purpose instead, once, when the guide or a new target first appears.
+    """
+    return event.waitKeys(maxWait=wait_s, keyList=list(key_list), clearEvents=False)
 
 
 # How old the newest gaze report may be before get_gaze() calls it "no
@@ -834,6 +861,7 @@ class ViewPixxTracker:
         assert self._display is not None  # calibrate() checked
         cfg = self._cfg
         window = self._display.window
+        first = True
         while True:
             _eyes, status = self._eye_status()
             body = calibration_guide(
@@ -848,10 +876,17 @@ class ViewPixxTracker:
                 advance=cfg.calibration_advance,
                 keys=GUIDE_KEYS,
                 status=status,
+                start_line=f"press SPACE to start, {STOP_KEYS_LABEL} to go back to the pause menu",
             )
             self._display.show_menu(GUIDE_TITLE, body, color=TERMINAL_GREEN)
+            if first:
+                # A press from before the guide appeared (the C that opened
+                # it) is not an answer to it. Cleared once, here, and never
+                # again while the guide waits (read_keys).
+                event.clearEvents("keyboard")
+                first = False
             self._report("calibration guide", status)
-            keys = event.waitKeys(maxWait=STATUS_REFRESH_S, keyList=[ACCEPT_KEYS[0], ABORT_KEY])
+            keys = read_keys(event, [ACCEPT_KEYS[0], ABORT_KEY, *PAUSE_KEYS], STATUS_REFRESH_S)
             if keys:
                 return keys[0] == ACCEPT_KEYS[0]
             if getattr(window, "_closed", False):
@@ -912,6 +947,7 @@ class ViewPixxTracker:
             steady = 0  # auto mode: consecutive refreshes with the configured eye in view
             pressed: str | None = None
             eyes = (False, False)
+            shown = False
             while pressed is None:
                 eyes, status = self._eye_status()
                 status_line.text = status
@@ -919,10 +955,17 @@ class ViewPixxTracker:
                 inner.draw()
                 status_line.draw()
                 window.flip()
+                if not shown:
+                    # The target is on screen now. A press from before it
+                    # appeared belongs to the previous target (an impatient
+                    # second SPACE while the device sampled that one), and
+                    # would accept this target before the subject has looked
+                    # at it. Cleared once per target, never again while it
+                    # waits (read_keys).
+                    event.clearEvents("keyboard")
+                    shown = True
                 self._report("calibrating", f"target {index + 1} of {n} · {status}")
-                keys = event.waitKeys(
-                    maxWait=STATUS_REFRESH_S, keyList=[*ACCEPT_KEYS, REDO_KEY, ABORT_KEY]
-                )
+                keys = read_keys(event, WALK_KEYS, STATUS_REFRESH_S)
                 if keys:
                     pressed = keys[0]
                 elif getattr(window, "_closed", False):
@@ -937,10 +980,10 @@ class ViewPixxTracker:
                     steady = steady + 1 if settled and eye_in_view(eyes, cfg.eye) else 0
                     if steady >= AUTO_STEADY_REFRESHES:
                         pressed = ACCEPT_KEYS[0]
-            if pressed == ABORT_KEY:
+            if pressed == ABORT_KEY or pressed in PAUSE_KEYS:
+                how = "stopped for the pause menu" if pressed in PAUSE_KEYS else "aborted"
                 note = (
-                    f"aborted at target {index + 1} of {n}; "
-                    "the device keeps its previous calibration"
+                    f"{how} at target {index + 1} of {n}; the device keeps its previous calibration"
                 )
                 log.warning("TRACKPixx3 calibration %s", note)
                 window.flip()

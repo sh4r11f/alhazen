@@ -71,11 +71,11 @@ advance   MANUAL — press SPACE when the subject is fixating each target
 keys
 SPACE       accept this target (refused while no eye is in the image)
 BACKSPACE   go back one target
-ESC         abort — the previous calibration is kept
+P or ESC    stop and go back to the pause menu — the previous calibration is kept
 
 eyes: both tracked
 
-press SPACE to start, ESC to abort
+press SPACE to start, P or ESC to go back to the pause menu
 ```
 
 The lines are facts from the rig config and the device, composed by each
@@ -101,6 +101,14 @@ backend from `devices/eyetracker/guide.py`:
 During the TRACKPixx3 walk the same eye line stays under the target, and
 SPACE is refused while no eye is in the image — a target accepted blind is
 the one mistake a calibration cannot recover from.
+
+One press of SPACE is enough. A key pressed while the walk is busy between
+two refreshes (reading the eye status, drawing, updating the dashboard) is
+kept, not thrown away, and the keyboard is cleared once when each target
+appears, so a press meant for the previous target never accepts the next.
+P, the session's pause key, stops the walk just as ESC does: the previous
+calibration is kept and the pause menu comes back, where C starts again from
+the first target.
 
 ## Validation and drift correction
 

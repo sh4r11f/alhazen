@@ -82,6 +82,15 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Fixed
 
+- **A SPACE pressed during a TRACKPixx3 calibration is no longer lost.** The
+  calibration screens waited for keys with PsychoPy's `waitKeys`, which empties
+  the keyboard buffer each time it starts waiting. A press made while the walk
+  was reading the eye status, flipping or updating the dashboard was thrown
+  away, so SPACE had to be pressed again and again, and the extra presses then
+  accepted the next target at once. Keys are now read without emptying the
+  buffer, which is cleared once when the guide or each target appears. P, the
+  session's pause key, now stops the walk and goes back to the pause menu, as
+  ESC does.
 - **A stray vertical line at the left edge of every line chart.** The hover
   crosshair's stylesheet `opacity` outranked the attribute that hides it.
 - **A grouped panel drew its first two factors in the same colour.**

@@ -698,7 +698,23 @@ def fake_psychopy(monkeypatch):
     # the way a real waitKeys(maxWait=STATUS_REFRESH_S) spends that long.
     clocks: list[FakeClock] = []
 
-    def wait_keys(maxWait=None, keyList=None):  # noqa: N803 - psychopy's own parameter names
+    # Presses that arrived while the walk was busy between two waits. PsychoPy
+    # keeps them in its buffer until something empties it: waitKeys does when
+    # it starts waiting (unless told not to), and so does clearEvents.
+    buffered: list[str] = []
+    clears: list[str | None] = []
+    waits: list[bool] = []  # each wait's clearEvents argument
+
+    def clear_events(eventType=None):  # noqa: N803 - psychopy's own parameter name
+        clears.append(eventType)
+        buffered.clear()
+
+    def wait_keys(maxWait=None, keyList=None, clearEvents=True):  # noqa: N803 - psychopy's names
+        waits.append(clearEvents)
+        if clearEvents:
+            buffered.clear()
+        if buffered:
+            return [buffered.pop(0)]
         for clock in clocks:
             clock.advance(STATUS_REFRESH_S)
         if keys:
@@ -714,6 +730,7 @@ def fake_psychopy(monkeypatch):
 
     event_module = types.ModuleType("psychopy.event")
     event_module.waitKeys = wait_keys  # type: ignore[attr-defined]
+    event_module.clearEvents = clear_events  # type: ignore[attr-defined]
 
     def make_circle(window, **kwargs):
         if window not in windows:
@@ -737,7 +754,14 @@ def fake_psychopy(monkeypatch):
     monkeypatch.setitem(sys.modules, "psychopy.event", event_module)
     monkeypatch.setitem(sys.modules, "psychopy.visual", visual_module)
     return types.SimpleNamespace(
-        keys=keys, circles=circles, texts=texts, windows=windows, clocks=clocks
+        keys=keys,
+        circles=circles,
+        texts=texts,
+        windows=windows,
+        clocks=clocks,
+        buffered=buffered,
+        clears=clears,
+        waits=waits,
     )
 
 
@@ -954,6 +978,86 @@ class TestCalibrationWalk:
         assert fake_pypixxlib.calibration_points == []
         assert not fake_pypixxlib.finished_calibration
         assert result.aborted
+
+
+class TestCalibrationKeys:
+    """A key pressed during the walk reaches it once, for the target it was
+    pressed at, however busy the walk was when it came."""
+
+    def test_a_press_made_while_the_walk_was_busy_is_kept(self, fake_pypixxlib, fake_psychopy):
+        """PsychoPy's waitKeys empties the keyboard buffer when it starts
+        waiting, by default. Between waits the walk reads the eye status,
+        flips, and reports progress; a SPACE pressed then was thrown away, and
+        the experimenter pressed again and again until one landed in a wait."""
+        tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
+        pressed_at: set[str] = set()
+
+        def press_while_busy(stage: str, detail: str) -> None:
+            # The report runs between the flip and the wait, exactly when a
+            # press used to be lost. One press per target, and none at a wait.
+            target = detail.split(" · ")[0]
+            if stage == "calibrating" and target not in pressed_at:
+                pressed_at.add(target)
+                fake_psychopy.buffered.append("space")
+
+        tracker.set_progress_hook(press_while_busy)
+        fake_psychopy.keys.extend([START] + [None] * 10)
+        result = tracker.calibrate()
+        assert len(fake_pypixxlib.calibration_points) == 5
+        assert result.ok is True
+
+    def test_a_press_from_the_previous_target_does_not_accept_the_next(
+        self, fake_pypixxlib, fake_psychopy
+    ):
+        """An impatient second SPACE, pressed while the device sampled the
+        target just accepted, would accept the next one before the subject had
+        looked at it. The keyboard is cleared when each target appears."""
+        tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
+        sample = fake_pypixxlib.getEyePositionDuringCalib
+
+        def sample_while_pressed_again(x, y, eye):
+            sample(x, y, eye)
+            fake_psychopy.buffered.append("space")
+
+        fake_pypixxlib.getEyePositionDuringCalib = sample_while_pressed_again
+        fake_psychopy.keys.extend([START, "space", None, None, None])
+        tracker.calibrate()
+        assert len(fake_pypixxlib.calibration_points) == 1
+
+    def test_the_keyboard_is_cleared_once_as_each_screen_appears(
+        self, fake_pypixxlib, fake_psychopy
+    ):
+        tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
+        fake_psychopy.keys.extend([START, None, None] + ["space"] * 5)
+        tracker.calibrate()
+        # The guide once, and each of the five targets once, however many
+        # refreshes each took; no wait empties the buffer on its own.
+        assert fake_psychopy.clears == ["keyboard"] * 6
+        assert fake_psychopy.waits and not any(fake_psychopy.waits)
+
+    def test_the_pause_key_stops_the_walk_for_the_pause_menu(self, fake_pypixxlib, fake_psychopy):
+        tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
+        fake_psychopy.keys.extend([START, "space", "p"])
+        result = tracker.calibrate()
+        assert len(fake_pypixxlib.calibration_points) == 1
+        assert not fake_pypixxlib.finished_calibration
+        assert result.aborted and result.ok is None
+        assert "stopped for the pause menu at target 2 of 5" in result.note
+
+    def test_the_pause_key_at_the_guide_goes_back_too(self, fake_pypixxlib, fake_psychopy):
+        tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
+        fake_psychopy.keys.extend(["p", "space"])
+        result = tracker.calibrate()
+        assert result.aborted
+        assert fake_pypixxlib.calibration_points == []
+
+    def test_the_guide_names_the_pause_key(self, fake_pypixxlib, fake_psychopy):
+        tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
+        fake_psychopy.keys.extend(["escape"])
+        tracker.calibrate()
+        body = guide_body(tracker)
+        assert "P or ESC" in body
+        assert "go back to the pause menu" in body
 
 
 class TestAutoAdvance:
