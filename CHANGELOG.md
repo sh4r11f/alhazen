@@ -61,6 +61,20 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   validation panel titles its axes "Horizontal gaze position (°)" and
   "Vertical gaze position (°)".
 
+- **The dashboard's camera image streams.** It used to move about once a
+  second, because each frame rode inside a full dashboard update that rebuilt
+  every panel. Frames now travel on their own channel, about fifteen a second
+  while paused and ten a second through a TRACKPixx3 calibration, and the page
+  redraws only the image, with its frame rate printed under it.
+
+- **A validation that does not pass is a warning you can accept.** The pause
+  menu used to lead with *VALIDATION FAILED … recalibrate (C) before resuming*,
+  in the fault colour. It now leads, in amber, with how the validation fell
+  short and both ways on: SPACE resumes on it, C recalibrates. Resuming on it
+  logs a WARNING and records the validation's numbers in the RESUMED event
+  (`on_failed_validation`); the VALIDATION event and the per-target errors in
+  the log are written whether it passed or not, as before.
+
 ### Added
 
 - **Figure export.** Every chart panel saves as an SVG at 89 mm or 183 mm, or
@@ -73,9 +87,32 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   did. A malformed shape raises, naming the trial and the column.
 - **`cross=True` on `grouped_mean`.** One bar per combination of several
   factors' levels, each with its own *n*.
+- **Iris size on the dashboard's camera panel.** The TRACKPixx3's expected
+  iris size, the setting LabMaestro adjusts when an eye keeps dropping out of
+  tracking, can be stepped or typed under the live camera image while the
+  session is paused or during a calibration. The session reads the device
+  back and shows what it holds. Each change is logged and recorded as a
+  TRACKER_SETTING event, a new reserved event. `eyetracker.iris_size_px` sets
+  the size when a session starts; left unset, the size the device holds is
+  logged.
+- **The TRACKPixx3 calibration is plotted.** The Calibration panel was a
+  verdict tile. After a calibration that took, it is now a plot like the
+  validation's: each target and each eye's fitted gaze on it, with each eye's
+  mean and worst error, computed from the raw eye vectors the device measured
+  and the polynomial it fitted, as LabMaestro plots them. The CALIBRATION
+  event carries the same per-target numbers.
 
 ### Fixed
 
+- **A SPACE pressed during a TRACKPixx3 calibration is no longer lost.** The
+  calibration screens waited for keys with PsychoPy's `waitKeys`, which empties
+  the keyboard buffer each time it starts waiting. A press made while the walk
+  was reading the eye status, flipping or updating the dashboard was thrown
+  away, so SPACE had to be pressed again and again, and the extra presses then
+  accepted the next target at once. Keys are now read without emptying the
+  buffer, which is cleared once when the guide or each target appears. P, the
+  session's pause key, now stops the walk and goes back to the pause menu, as
+  ESC does.
 - **A stray vertical line at the left edge of every line chart.** The hover
   crosshair's stylesheet `opacity` outranked the attribute that hides it.
 - **A grouped panel drew its first two factors in the same colour.**

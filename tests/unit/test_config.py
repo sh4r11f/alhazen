@@ -242,6 +242,16 @@ class TestDeviceModels:
             EyeTrackerConfig(backend="viewpixx", led_intensity=9)
         assert EyeTrackerConfig(backend="viewpixx", led_intensity=8).led_intensity == 8
 
+    def test_the_iris_size_is_a_viewpixx_setting_within_the_image(self):
+        assert EyeTrackerConfig(backend="viewpixx").iris_size_px is None
+        assert EyeTrackerConfig(backend="viewpixx", iris_size_px=512).iris_size_px == 512
+        with pytest.raises(ValueError, match="iris_size_px"):
+            EyeTrackerConfig(backend="viewpixx", iris_size_px=0)
+        with pytest.raises(ValueError, match="iris_size_px"):
+            EyeTrackerConfig(backend="viewpixx", iris_size_px=513)
+        with pytest.raises(ValueError, match="ignores iris_size_px"):
+            EyeTrackerConfig(backend="eyelink", iris_size_px=100)
+
     def test_the_eye_a_binocular_tracker_reports_is_stated_not_guessed(self):
         assert EyeTrackerConfig(backend="viewpixx").eye == "left"
         assert EyeTrackerConfig(backend="viewpixx", eye="average").eye == "average"

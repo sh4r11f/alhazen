@@ -70,12 +70,14 @@ from typing import Any, TypeVar
 
 import numpy as np
 
-from alhazen.config.models import EyeTrackerConfig
+from alhazen.config.models import IRIS_SIZE_RANGE_PX, EyeTrackerConfig
 from alhazen.core.clock import Clock
+from alhazen.core.commands import DEFAULT_KEYMAP, Command
 from alhazen.devices.eyetracker.guide import GUIDE_TITLE, calibration_guide
 from alhazen.devices.eyetracker.procedures import ABORT_KEY, ACCEPT_KEYS, REDO_KEY
 from alhazen.devices.eyetracker.protocol import (
     CalibrationResult,
+    CalibrationTarget,
     CameraFrame,
     GazeSample,
     HostShape,
@@ -97,11 +99,22 @@ TRACKING_LOST_PX = 9000.0
 # the same three roles the EyeLink's own calibration screen uses, and the
 # same three the validation walk uses, so an experimenter learns one set.
 
+# The session's pause key (core/commands.py), honoured inside the walk too.
+# An experimenter who wants the pause menu mid-calibration presses the key
+# that means "pause" everywhere else in the session. The walk then stops
+# exactly as ESC stops it, keeping the previous calibration, and hands back to
+# the pause menu, where C starts again from the first target.
+PAUSE_KEYS = tuple(key for key, command in DEFAULT_KEYMAP.items() if command is Command.PAUSE)
+# Every key the walk answers to while a target is up.
+WALK_KEYS = (*ACCEPT_KEYS, REDO_KEY, ABORT_KEY, *PAUSE_KEYS)
+# How the stop keys are named on screen: "P or ESC".
+STOP_KEYS_LABEL = " or ".join([*(key.upper() for key in PAUSE_KEYS), "ESC"])
+
 # The walk's keys on the guide screen, in the experimenter's words.
 GUIDE_KEYS = (
     ("SPACE", "accept this target (refused while no eye is in the image)"),
     ("BACKSPACE", "go back one target"),
-    ("ESC", "abort — the previous calibration is kept"),
+    (STOP_KEYS_LABEL, "stop and go back to the pause menu — the previous calibration is kept"),
 )
 
 # Auto advance: a target is accepted once the camera has seen the eyes on
@@ -314,6 +327,47 @@ def shrink_image(pixels: np.ndarray, max_px: int = CAMERA_MAX_PX) -> np.ndarray:
     longer = max(pixels.shape[:2])
     step = max(1, math.ceil(longer / max_px))
     return np.ascontiguousarray(pixels[::step, ::step])
+
+
+def evaluate_calibration(
+    x: float, y: float, cx: Sequence[float], cy: Sequence[float]
+) -> tuple[float, float]:
+    """The screen position a TRACKPixx3 calibration fit gives a raw eye vector.
+
+    The device fits, per eye and per screen axis, a polynomial with nine terms
+    in the raw vector (x, y):
+    b0 + b1·x + b2·y + b3·x² + b4·y² + b5·x³ + b6·xy + b7·x²y + b8·x²y².
+    The form and the term order are VPixx's own, from pypixxlib's
+    examples/TPxUtils.py ``evaluate_bestpoly``, which their calibration example
+    uses to plot a result. ``cx`` and ``cy`` are the nine coefficients of each
+    axis.
+    """
+    terms = (1.0, x, y, x * x, y * y, x**3, x * y, x * x * y, x * x * y * y)
+    return (
+        sum(c * t for c, t in zip(cx, terms, strict=True)),
+        sum(c * t for c, t in zip(cy, terms, strict=True)),
+    )
+
+
+def raw_eye_measured(x: float, y: float) -> bool:
+    """Did the device measure this eye? Its raw vector buffers start at zero,
+    so an exact (0, 0) or a non-finite value is "not measured"."""
+    return math.isfinite(x) and math.isfinite(y) and not (x == 0.0 and y == 0.0)
+
+
+def read_keys(event: Any, key_list: Sequence[str], wait_s: float) -> list[str] | None:
+    """Keys from ``key_list`` pressed since the keyboard was last cleared,
+    waiting up to ``wait_s`` for the first of them; None when none came.
+
+    Deliberately not ``event.waitKeys``'s default, which empties PsychoPy's
+    keyboard buffer every time it starts waiting. The calibration screens
+    wait in short slices, and between two slices they read the eye status,
+    flip, and tell the dashboard. A SPACE pressed during that work was thrown
+    away when the next slice began, so an experimenter had to press again and
+    again until a press happened to land inside a wait. The buffer is cleared
+    on purpose instead, once, when the guide or a new target first appears.
+    """
+    return event.waitKeys(maxWait=wait_s, keyList=list(key_list), clearEvents=False)
 
 
 # How old the newest gaze report may be before get_gaze() calls it "no
@@ -713,6 +767,17 @@ class ViewPixxTracker:
             # the same division of labour as the EyeLink, whose camera setup
             # lives on the Host PC and not in alhazen's config.
             self._tracker.setLEDintensity(self._cfg.led_intensity)
+        # The expected iris size, the same way: applied when the rig asks,
+        # otherwise left as the device holds it, and written to the log either
+        # way, because it decides whether the device finds a pupil at all.
+        if self._cfg.iris_size_px is not None:
+            held = self.set_iris_size(self._cfg.iris_size_px)
+            log.info("TRACKPixx3 expected iris size set to %d camera px (rig config)", held)
+        else:
+            log.info(
+                "TRACKPixx3 expected iris size is %d camera px, as the device holds it",
+                self.iris_size(),
+            )
 
         # The device library picks its own filename inside whatever folder it
         # is given (``<folder>/data/TPx_<timestamp>.csv``), and the run
@@ -812,6 +877,94 @@ class ViewPixxTracker:
             if reader is not None:
                 reader.resume()
 
+    def _sample_calibration_target(self, x: float, y: float) -> list[float] | None:
+        """Hand one accepted target to the device, and keep the raw eye vectors
+        it measured there, ``[x_right, y_right, x_left, y_left]``; None when
+        this pypixxlib cannot return them.
+
+        VPixx's per-target calibration call has a twin that returns those
+        vectors (``TPxGetEyePositionDuringCalib_returnsRaw``), which their own
+        calibration example uses to plot the result. Without it the calibration
+        still runs through pypixxlib's usual call, and only the plot is missing
+        (_fitted_calibration says so).
+        """
+        sample = getattr(self._libdpx, "TPxGetEyePositionDuringCalib_returnsRaw", None)
+        with self._device_lock:
+            if sample is None:
+                self._tracker.getEyePositionDuringCalib(x, y, self._tracker.eye_to_verify)
+                return None
+            raw = [float(value) for value in sample(x, y, self._tracker.eye_to_verify)]
+            # libdpx's free functions do not raise; pypixxlib's wrapper for the
+            # usual call does, so this one has to be checked by hand.
+            fault = dpx_fault(self._libdpx)
+        if fault is not None:
+            raise TrackerError(
+                f"the TRACKPixx3 could not sample calibration target ({x:g}, {y:g}): {fault}"
+            )
+        return raw
+
+    def _fitted_calibration(
+        self,
+        targets: Sequence[tuple[float, float]],
+        raw_by_target: dict[int, list[float] | None],
+    ) -> tuple[tuple[CalibrationTarget, ...], str | None]:
+        """Each target's fitted gaze and error per eye, and why there is no plot
+        when there is none.
+
+        The device's fitted polynomial (TPxGetCalibCoeffs: nine coefficients
+        each for the right eye's x and y, then the left eye's) is evaluated on
+        the raw vectors measured at each target (evaluate_calibration), which
+        is how VPixx's own calibration example plots a result. A calibration is
+        a fit to these very fixations, so the errors flatter it; the validation
+        that follows measures the fit on fresh ones.
+
+        A plot that cannot be made never fails the calibration the device just
+        kept: the reason is logged as an error and returned for the result's
+        note, which the dashboard shows.
+        """
+        raws = [raw_by_target.get(index) for index in range(len(targets))]
+        if any(raw is None for raw in raws):
+            problem = (
+                "calibration plot unavailable: this pypixxlib cannot return the raw eye "
+                "vectors measured at each target"
+            )
+            log.warning("TRACKPixx3 %s", problem)
+            return (), problem
+        with self._device_lock:
+            coefficients = [float(value) for value in self._libdpx.TPxGetCalibCoeffs()]
+            fault = dpx_fault(self._libdpx)
+        if fault is not None or len(coefficients) != 36:
+            reason = fault if fault is not None else f"{len(coefficients)} coefficients, not 36"
+            problem = (
+                "calibration plot unavailable: the fitted coefficients could not be read "
+                f"({reason})"
+            )
+            log.error("TRACKPixx3 %s", problem)
+            return (), problem
+        fitted: list[CalibrationTarget] = []
+        for (tx, ty), raw in zip(targets, raws, strict=True):
+            assert raw is not None  # checked above
+            eyes: dict[str, tuple[tuple[float, float] | None, float | None]] = {}
+            for eye, (rx, ry), (cx, cy) in (
+                ("right", (raw[0], raw[1]), (coefficients[0:9], coefficients[9:18])),
+                ("left", (raw[2], raw[3]), (coefficients[18:27], coefficients[27:36])),
+            ):
+                if not raw_eye_measured(rx, ry):
+                    eyes[eye] = (None, None)
+                    continue
+                gx, gy = evaluate_calibration(rx, ry, cx, cy)
+                eyes[eye] = ((gx, gy), self._screen.px2deg(math.hypot(gx - tx, gy - ty)))
+            fitted.append(
+                CalibrationTarget(
+                    target_px=(tx, ty),
+                    left_px=eyes["left"][0],
+                    right_px=eyes["right"][0],
+                    left_error_deg=eyes["left"][1],
+                    right_error_deg=eyes["right"][1],
+                )
+            )
+        return tuple(fitted), None
+
     def _eye_status(self) -> tuple[tuple[bool, bool], str]:
         """One look at the camera: which eyes it sees, and the line that says so."""
         with self._device_lock:
@@ -834,6 +987,7 @@ class ViewPixxTracker:
         assert self._display is not None  # calibrate() checked
         cfg = self._cfg
         window = self._display.window
+        first = True
         while True:
             _eyes, status = self._eye_status()
             body = calibration_guide(
@@ -848,10 +1002,17 @@ class ViewPixxTracker:
                 advance=cfg.calibration_advance,
                 keys=GUIDE_KEYS,
                 status=status,
+                start_line=f"press SPACE to start, {STOP_KEYS_LABEL} to go back to the pause menu",
             )
             self._display.show_menu(GUIDE_TITLE, body, color=TERMINAL_GREEN)
+            if first:
+                # A press from before the guide appeared (the C that opened
+                # it) is not an answer to it. Cleared once, here, and never
+                # again while the guide waits (read_keys).
+                event.clearEvents("keyboard")
+                first = False
             self._report("calibration guide", status)
-            keys = event.waitKeys(maxWait=STATUS_REFRESH_S, keyList=[ACCEPT_KEYS[0], ABORT_KEY])
+            keys = read_keys(event, [ACCEPT_KEYS[0], ABORT_KEY, *PAUSE_KEYS], STATUS_REFRESH_S)
             if keys:
                 return keys[0] == ACCEPT_KEYS[0]
             if getattr(window, "_closed", False):
@@ -885,7 +1046,13 @@ class ViewPixxTracker:
             units="pix",
         )
 
-        def result(ok: bool | None, note: str, *, aborted: bool = False) -> CalibrationResult:
+        def result(
+            ok: bool | None,
+            note: str,
+            *,
+            aborted: bool = False,
+            fitted: tuple[CalibrationTarget, ...] = (),
+        ) -> CalibrationResult:
             return CalibrationResult(
                 ok=ok,
                 layout=cfg.calibration_type,
@@ -895,6 +1062,7 @@ class ViewPixxTracker:
                 t=self._clock.now(),
                 note=note,
                 aborted=aborted,
+                targets=fitted,
             )
 
         if not self._show_guide(event, n):
@@ -905,6 +1073,9 @@ class ViewPixxTracker:
 
         auto = cfg.calibration_advance == "auto"
         index = 0
+        # The raw eye vectors the device measured at each accepted target, by
+        # target index: a redo overwrites, so each target keeps its last.
+        raw_by_target: dict[int, list[float] | None] = {}
         while index < n:
             x, y = targets[index]
             outer.pos = inner.pos = (x, y)
@@ -912,6 +1083,7 @@ class ViewPixxTracker:
             steady = 0  # auto mode: consecutive refreshes with the configured eye in view
             pressed: str | None = None
             eyes = (False, False)
+            shown = False
             while pressed is None:
                 eyes, status = self._eye_status()
                 status_line.text = status
@@ -919,10 +1091,17 @@ class ViewPixxTracker:
                 inner.draw()
                 status_line.draw()
                 window.flip()
+                if not shown:
+                    # The target is on screen now. A press from before it
+                    # appeared belongs to the previous target (an impatient
+                    # second SPACE while the device sampled that one), and
+                    # would accept this target before the subject has looked
+                    # at it. Cleared once per target, never again while it
+                    # waits (read_keys).
+                    event.clearEvents("keyboard")
+                    shown = True
                 self._report("calibrating", f"target {index + 1} of {n} · {status}")
-                keys = event.waitKeys(
-                    maxWait=STATUS_REFRESH_S, keyList=[*ACCEPT_KEYS, REDO_KEY, ABORT_KEY]
-                )
+                keys = read_keys(event, WALK_KEYS, STATUS_REFRESH_S)
                 if keys:
                     pressed = keys[0]
                 elif getattr(window, "_closed", False):
@@ -937,10 +1116,10 @@ class ViewPixxTracker:
                     steady = steady + 1 if settled and eye_in_view(eyes, cfg.eye) else 0
                     if steady >= AUTO_STEADY_REFRESHES:
                         pressed = ACCEPT_KEYS[0]
-            if pressed == ABORT_KEY:
+            if pressed == ABORT_KEY or pressed in PAUSE_KEYS:
+                how = "stopped for the pause menu" if pressed in PAUSE_KEYS else "aborted"
                 note = (
-                    f"aborted at target {index + 1} of {n}; "
-                    "the device keeps its previous calibration"
+                    f"{how} at target {index + 1} of {n}; the device keeps its previous calibration"
                 )
                 log.warning("TRACKPixx3 calibration %s", note)
                 window.flip()
@@ -964,8 +1143,7 @@ class ViewPixxTracker:
             # Screen coordinates here are the device's own frame — centered
             # px, y up — which is the frame the targets were drawn in, so the
             # position passes through unconverted.
-            with self._device_lock:
-                self._tracker.getEyePositionDuringCalib(x, y, self._tracker.eye_to_verify)
+            raw_by_target[index] = self._sample_calibration_target(x, y)
             index += 1
 
         with self._device_lock:
@@ -974,7 +1152,9 @@ class ViewPixxTracker:
         window.flip()
         if calibrated:
             log.info("TRACKPixx3 calibrated over %d targets", n)
-            return result(True, "the device reports a calibration")
+            fitted, problem = self._fitted_calibration(targets, raw_by_target)
+            note = "the device reports a calibration"
+            return result(True, f"{note}; {problem}" if problem else note, fitted=fitted)
         # The fit was submitted and the device did not keep it — every gaze
         # read from here would be the tracking-lost sentinel, and a session
         # that looks calibrated but is not is exactly what must not happen
@@ -1093,6 +1273,50 @@ class ViewPixxTracker:
                 )
                 arm_recording(self._libdpx, self._tracker)
         return CameraFrame(pixels=shrink_image(pixels), t=self._clock.now())
+
+    def iris_size(self) -> int:
+        """The expected iris size the device holds now, in camera px.
+
+        Optional capability (protocol.py), for the dashboard's camera panel.
+        """
+        self._require_device("iris_size()")
+        with self._device_lock:
+            self._libdpx.DPxUpdateRegCache()
+            value = self._libdpx.TPxGetIrisExpectedSize()
+            fault = dpx_fault(self._libdpx)
+        if fault is not None:
+            raise TrackerError(f"the TRACKPixx3 iris size could not be read: {fault}")
+        return int(value)
+
+    def set_iris_size(self, px: int) -> int:
+        """Set the expected iris size, in camera px; returns what the device holds.
+
+        The diameter the device searches its camera image for when it fits
+        each pupil, which is LabMaestro's own setting. The value is read back
+        after writing, and a device that holds anything else is an error: a
+        register that clamped or wrapped the value would leave the
+        experimenter adjusting a number that is not the one in use.
+        """
+        low, high = IRIS_SIZE_RANGE_PX
+        if isinstance(px, bool) or not isinstance(px, int) or not low <= px <= high:
+            raise ValueError(
+                f"iris size must be a whole number of camera px in [{low}, {high}], got {px!r}"
+            )
+        self._require_device("set_iris_size()")
+        with self._device_lock:
+            self._libdpx.TPxSetIrisExpectedSize(px)
+            # Written to the register cache; the update sends it to the device
+            # and reads the registers back, so the get below is the device's.
+            self._libdpx.DPxUpdateRegCache()
+            fault = dpx_fault(self._libdpx)
+            held = None if fault is not None else int(self._libdpx.TPxGetIrisExpectedSize())
+        if fault is not None:
+            raise TrackerError(f"the TRACKPixx3 refused iris size {px} px: {fault}")
+        if held != px:
+            raise TrackerError(
+                f"asked the TRACKPixx3 for an iris size of {px} px; it holds {held} px"
+            )
+        return held
 
     # ------------------------------------------------------------------
     # Per trial

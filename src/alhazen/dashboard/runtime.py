@@ -24,6 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from alhazen.config.models import IRIS_SIZE_RANGE_PX
 from alhazen.dashboard.panels import panel_payload, present
 from alhazen.dashboard.spec import DashboardSpec
 from alhazen.errors import SessionError
@@ -47,6 +48,16 @@ _ALLOWED_COMMANDS = {
     "hold_stage",
 }
 
+# The tracker settings the page may change, with the range a value must lie in.
+# Checked here so a malformed request never reaches the session; the session
+# reads the device back and says what it then holds.
+_TRACKER_SETTINGS = {"iris_size_px": IRIS_SIZE_RANGE_PX}
+# When the server passes a setting on: while paused, and while an eye-tracker
+# procedure runs ("calibrating", session/eyetracker.py PROCEDURE_STATUS),
+# because an eye dropping out mid-calibration is exactly when the experimenter
+# needs to change one without abandoning the walk.
+_SETTING_STATUSES = frozenset({"paused", "calibrating"})
+
 
 @dataclass(frozen=True)
 class DashboardCommand:
@@ -60,7 +71,15 @@ class DashboardController:
     def __init__(self, *, port: int = 0, auto_open: bool = True) -> None:
         ctx = mp.get_context("spawn")
         self._updates: Any = ctx.Queue(maxsize=1)
+        # The camera's own one-slot queue, beside the state's: a frame reaches
+        # the page without a state publish, and a newer frame replaces one the
+        # child has not collected yet (publish_camera).
+        self._camera: Any = ctx.Queue(maxsize=1)
         self._commands: Any = ctx.Queue(maxsize=64)
+        # Tracker settings from the page, kept apart from the commands: a
+        # setting is applied where it lands, even mid-procedure, and never
+        # taken for a pause-menu choice.
+        self._settings: Any = ctx.Queue(maxsize=64)
         self._ready: Any = ctx.Queue(maxsize=1)
         self._stop: Any = ctx.Event()
         self._port = port
@@ -68,6 +87,9 @@ class DashboardController:
         self._token = secrets.token_urlsafe(32)
         self._process: Any | None = None
         self.url: str | None = None
+        # Said once, not once per frame: publish_camera runs fifteen times a
+        # second while the image is live.
+        self._camera_down_reported = False
 
     def start(self, timeout_s: float = 20.0) -> str:
         """Spawn the server and wait for it to bind.
@@ -85,7 +107,9 @@ class DashboardController:
             target=_serve,
             args=(
                 self._updates,
+                self._camera,
                 self._commands,
+                self._settings,
                 self._ready,
                 self._stop,
                 self._token,
@@ -144,6 +168,52 @@ class DashboardController:
         except queue.Full:
             log.warning("dashboard update queue remained full; dropping revision")
 
+    def publish_camera(self, pixels: Any, t: float) -> None:
+        """Replace any unread camera frame with this one.
+
+        The camera travels on its own channel so the page can redraw the image
+        alone. A state publish carries a session's worth of JSON and makes the
+        page rebuild every panel, which is why an image sent that way moved
+        about once a second; a frame here is its bytes, its size and its time.
+        Like publish(), it never blocks the session: an unread frame is
+        replaced by the newer one, the only frame worth drawing.
+
+        ``pixels`` is the tracker's frame, 8-bit grey of shape (height,
+        width). Anything else is refused: the page draws one byte per pixel,
+        and a frame laid out otherwise would come out as noise, not as an
+        error.
+        """
+        if self._process is not None and not self._process.is_alive():
+            if not self._camera_down_reported:
+                log.error("dashboard process exited; camera frames are no longer sent")
+                self._camera_down_reported = True
+            return
+        shape = tuple(getattr(pixels, "shape", ()))
+        if len(shape) != 2 or str(getattr(pixels, "dtype", "")) != "uint8":
+            raise ValueError(
+                "a camera frame is 8-bit grey of shape (height, width); got dtype "
+                f"{getattr(pixels, 'dtype', type(pixels).__name__)} and shape {shape}"
+            )
+        height, width = int(shape[0]), int(shape[1])
+        frame = (width, height, float(t), pixels.tobytes())
+        try:
+            self._camera.put_nowait(frame)
+            return
+        except queue.Full:
+            pass
+        # The child has not collected the previous frame: take it back and put
+        # this one in its place. If the child collected it in between, the slot
+        # is already free and the put below succeeds.
+        with suppress(queue.Empty):
+            self._camera.get_nowait()
+        try:
+            self._camera.put_nowait(frame)
+        except queue.Full:
+            # The slot refilled in that instant, with a frame at most a
+            # fifteenth of a second older than this one; the next frame
+            # replaces it.
+            log.debug("camera frame dropped: the queue refilled while it was being replaced")
+
     def poll_commands(self) -> list[DashboardCommand]:
         commands: list[DashboardCommand] = []
         while True:
@@ -152,6 +222,16 @@ class DashboardController:
             except queue.Empty:
                 return commands
             commands.append(DashboardCommand(request_id=item["request_id"], name=item["name"]))
+
+    def poll_settings(self) -> list[tuple[str, object]]:
+        """The tracker settings the page sent since the last call, oldest first."""
+        settings: list[tuple[str, object]] = []
+        while True:
+            try:
+                item = self._settings.get_nowait()
+            except queue.Empty:
+                return settings
+            settings.append((item["setting"], item["value"]))
 
     def save(self, figures_dir: Path, state: dict[str, Any]) -> None:
         # Written as UTF-8 explicitly, never in whatever the platform prefers:
@@ -210,8 +290,71 @@ class _State:
             return self.payload
 
 
-def _serve(updates: Any, commands: Any, ready: Any, stop: Any, token: str, port: int) -> None:
+class _CameraState:
+    """The child's newest camera frame, numbered so a page can ask for the
+    frame after the one it already drew.
+
+    A frame is ``(width, height, t, pixels)``: its size, the session time it
+    was read at, and one grey byte per pixel, row-major, top row first.
+    """
+
+    def __init__(self) -> None:
+        self.seq = 0
+        self.frame: tuple[int, int, float, bytes] | None = None
+        self.condition = threading.Condition()
+
+    def set(self, frame: tuple[int, int, float, bytes]) -> None:
+        with self.condition:
+            self.seq += 1
+            self.frame = frame
+            self.condition.notify_all()
+
+    def wait_after(
+        self, seq: int, timeout: float
+    ) -> tuple[int, tuple[int, int, float, bytes]] | None:
+        """The newest frame and its number if it is newer than ``seq``,
+        waiting up to ``timeout`` seconds for one; None when none came."""
+        with self.condition:
+            if self.seq <= seq:
+                self.condition.wait(timeout)
+            if self.frame is None or self.seq <= seq:
+                return None
+            return self.seq, self.frame
+
+
+def _query_int(query: str, name: str, default: int) -> int:
+    """An integer query parameter, or ``default`` when it is absent.
+
+    A value that is present but not an integer raises ValueError: the page
+    sends these itself, so a malformed one is a bug to report, not to guess
+    around.
+    """
+    for pair in query.split("&"):
+        key, _, value = pair.partition("=")
+        if key == name:
+            return int(value)
+    return default
+
+
+# The longest a camera request may be held open waiting for a newer frame.
+# The page asks for two seconds: an idle camera (a session running trials,
+# when no frames are read) then costs a request every two seconds. The cap
+# keeps a request that asks for more from parking a server thread for minutes.
+_CAMERA_WAIT_MAX_MS = 5000
+
+
+def _serve(
+    updates: Any,
+    camera_updates: Any,
+    commands: Any,
+    settings: Any,
+    ready: Any,
+    stop: Any,
+    token: str,
+    port: int,
+) -> None:
     state = _State()
+    camera = _CameraState()
     seen: set[str] = set()
 
     class Handler(BaseHTTPRequestHandler):
@@ -235,10 +378,48 @@ def _serve(updates: Any, commands: Any, ready: Any, stop: Any, token: str, port:
                 payload = state.wait_after(revision)
                 self._send(HTTPStatus.OK, payload, "application/json")
                 return
+            if path == "/api/camera":
+                if not self._authorized(query):
+                    return
+                try:
+                    after = _query_int(query, "after", 0)
+                    wait_ms = _query_int(query, "wait_ms", 2000)
+                except ValueError:
+                    self._send(
+                        HTTPStatus.BAD_REQUEST, "after and wait_ms must be integers", "text/plain"
+                    )
+                    return
+                wait_s = min(max(wait_ms, 0), _CAMERA_WAIT_MAX_MS) / 1000.0
+                newest = camera.wait_after(after, wait_s)
+                if newest is None:
+                    # Nothing newer than the frame the page already drew: no
+                    # frames are being read (the session is running trials),
+                    # or none has arrived yet. The page asks again.
+                    self._send_bytes(HTTPStatus.NO_CONTENT, b"", "application/octet-stream")
+                    return
+                seq, (width, height, t, pixels) = newest
+                self._send_bytes(
+                    HTTPStatus.OK,
+                    pixels,
+                    "application/octet-stream",
+                    {
+                        "X-Frame-Seq": str(seq),
+                        "X-Frame-Width": str(width),
+                        "X-Frame-Height": str(height),
+                        "X-Frame-Time": f"{t:.3f}",
+                    },
+                )
+                return
             self._send(HTTPStatus.NOT_FOUND, "not found", "text/plain")
 
         def do_POST(self) -> None:  # noqa: N802
-            if self.path != "/api/command" or self.headers.get("X-Alhazen-Token") != token:
+            if self.headers.get("X-Alhazen-Token") != token:
+                self._send(HTTPStatus.FORBIDDEN, "forbidden", "text/plain")
+                return
+            if self.path == "/api/tracker":
+                self._tracker_setting()
+                return
+            if self.path != "/api/command":
                 self._send(HTTPStatus.FORBIDDEN, "forbidden", "text/plain")
                 return
             try:
@@ -270,6 +451,53 @@ def _serve(updates: Any, commands: Any, ready: Any, stop: Any, token: str, port:
                     seen.add(request_id)
             self._send(HTTPStatus.ACCEPTED, "accepted", "text/plain")
 
+        def _tracker_setting(self) -> None:
+            """A tracker setting from the page: the camera panel's iris size.
+
+            Refused unless it names a setting this server knows, with a whole
+            number inside that setting's range, while the session is paused or
+            a procedure runs. Deduplicated by request id, like a command.
+            """
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                body = json.loads(self.rfile.read(length))
+                setting, value, request_id = body["setting"], body["value"], body["request_id"]
+            except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+                self._send(HTTPStatus.BAD_REQUEST, "invalid tracker setting", "text/plain")
+                return
+            bounds = _TRACKER_SETTINGS.get(setting) if isinstance(setting, str) else None
+            if bounds is None:
+                self._send(
+                    HTTPStatus.BAD_REQUEST, f"unknown tracker setting {setting!r}", "text/plain"
+                )
+                return
+            low, high = bounds
+            # bool is an int in Python, and JSON's true must not become 1 px.
+            if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+                self._send(
+                    HTTPStatus.BAD_REQUEST,
+                    f"{setting} must be a whole number from {low} to {high}",
+                    "text/plain",
+                )
+                return
+            if state.status not in _SETTING_STATUSES:
+                self._send(
+                    HTTPStatus.CONFLICT,
+                    "tracker settings can be changed only while paused or calibrating",
+                    "text/plain",
+                )
+                return
+            if request_id not in seen:
+                try:
+                    settings.put_nowait(
+                        {"setting": setting, "value": value, "request_id": request_id}
+                    )
+                except queue.Full:
+                    self._send(HTTPStatus.SERVICE_UNAVAILABLE, "setting queue full", "text/plain")
+                    return
+                seen.add(request_id)
+            self._send(HTTPStatus.ACCEPTED, "accepted", "text/plain")
+
         def _authorized(self, query: str) -> bool:
             query_token = next(
                 (p.partition("=")[2] for p in query.split("&") if p.startswith("token=")), ""
@@ -280,7 +508,15 @@ def _serve(updates: Any, commands: Any, ready: Any, stop: Any, token: str, port:
             return False
 
         def _send(self, status: HTTPStatus, body: str, content_type: str) -> None:
-            data = body.encode()
+            self._send_bytes(status, body.encode(), content_type)
+
+        def _send_bytes(
+            self,
+            status: HTTPStatus,
+            data: bytes,
+            content_type: str,
+            headers: dict[str, str] | None = None,
+        ) -> None:
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(data)))
@@ -289,6 +525,10 @@ def _serve(updates: Any, commands: Any, ready: Any, stop: Any, token: str, port:
                 "Content-Security-Policy",
                 "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'",
             )
+            # A camera frame's size and time ride in headers, so the body can
+            # be the pixels alone; the page reads both from one response.
+            for name, value in (headers or {}).items():
+                self.send_header(name, value)
             self.end_headers()
             self.wfile.write(data)
 
@@ -328,6 +568,19 @@ def _serve(updates: Any, commands: Any, ready: Any, stop: Any, token: str, port:
 
     thread = threading.Thread(target=pump, daemon=True)
     thread.start()
+
+    def pump_camera() -> None:
+        while not stop.is_set():
+            try:
+                frame = camera_updates.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            camera.set(frame)
+
+    # A thread of its own: a frame must not wait behind a state snapshot being
+    # handed over, or the image would move at the state's pace again.
+    camera_thread = threading.Thread(target=pump_camera, daemon=True)
+    camera_thread.start()
     while not stop.is_set():
         server.handle_request()
     server.server_close()

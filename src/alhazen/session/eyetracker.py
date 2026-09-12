@@ -35,7 +35,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from alhazen.config.models import EyeTrackerConfig
+from alhazen.config.models import IRIS_SIZE_RANGE_PX, EyeTrackerConfig
 from alhazen.core.clock import Clock
 from alhazen.devices.eyetracker.guide import TARGET_COUNTS
 from alhazen.devices.eyetracker.procedures import (
@@ -62,6 +62,14 @@ SECTION = "Eye tracker"
 # needs redrawing.
 PROGRESS_PUBLISH_S = 0.5
 
+# How often a camera frame is sent to the dashboard while somebody is looking
+# at the image (paused, or a procedure running): about fifteen a second. A
+# frame travels on the dashboard's camera channel, not in a state publish, so
+# each one costs a device read and a copy of a few tens of kilobytes rather
+# than a rebuild of every panel. A TRACKPixx3 calibration reports every 0.1 s,
+# which caps the stream at ten a second while it runs.
+CAMERA_STREAM_S = 1.0 / 15.0
+
 # The dashboard status while any procedure runs. One word for all three: the
 # server refuses commands unless the status is "paused", so this is also what
 # keeps a second button press from landing mid-procedure.
@@ -78,6 +86,16 @@ DRIFT_HINT = "press D while paused, or the dashboard's Drift-correct button"
 Publisher = Callable[[str, str], object]
 # What a finished procedure emits: (event name, payload).
 Emitter = Callable[[str, dict[str, Any]], object]
+# Where streamed camera frames go: the dashboard's camera channel.
+CameraSink = Callable[[CameraFrame], object]
+# Where the dashboard's tracker settings come from: (setting, value) pairs.
+SettingsSource = Callable[[], list[tuple[str, object]]]
+
+# The tracker setting the dashboard can change, by the name the page sends:
+# the TRACKPixx3's expected iris size (devices/eyetracker/viewpixx.py).
+IRIS_SIZE_SETTING = "iris_size_px"
+# How far the camera panel's − and + move it, in camera px.
+IRIS_SIZE_STEP_PX = 2
 
 
 def eye_stat(status: str) -> dict[str, Any]:
@@ -136,6 +154,15 @@ class EyeTrackerMonitor:
         # per distinct reason, not once per publish).
         self._frame: CameraFrame | None = None
         self._camera_fault: str | None = None
+        # Set by the runner when a dashboard is open: frames then stream to it
+        # (stream_camera), and state publishes stop carrying the pixels.
+        self.camera_sink: CameraSink | None = None
+        self._last_stream = float("-inf")
+        # Set by the runner with the camera sink: the settings the page sent.
+        self.settings_source: SettingsSource | None = None
+        # The expected iris size the device holds, as last read or set; None
+        # until it has been read (the device is only asked between trials).
+        self.iris_size_px: int | None = None
 
     # ------------------------------------------------------------------
     # Procedures
@@ -177,6 +204,18 @@ class EyeTrackerMonitor:
                 "eye": result.eye,
                 "advance": result.advance,
                 "note": result.note,
+                # Each target's fitted gaze and error per eye, when the tracker
+                # can compute them (the TRACKPixx3); empty otherwise.
+                "targets": [
+                    {
+                        "target_px": list(target.target_px),
+                        "left_px": list(target.left_px) if target.left_px else None,
+                        "right_px": list(target.right_px) if target.right_px else None,
+                        "left_error_deg": target.left_error_deg,
+                        "right_error_deg": target.right_error_deg,
+                    }
+                    for target in result.targets
+                ],
             },
         )
         # No validation of a calibration that did not happen (aborted) or
@@ -267,13 +306,21 @@ class EyeTrackerMonitor:
             self.publisher(PROCEDURE_STATUS, f"{stage}: {detail}")
 
     def _on_progress(self, stage: str, detail: str) -> None:
-        """A procedure's progress line, published at most every PROGRESS_PUBLISH_S."""
+        """A procedure's progress line, published at most every PROGRESS_PUBLISH_S.
+
+        The camera streams on every report, not only on the published ones: a
+        calibration is exactly when the experimenter is watching the eye, and
+        a report is the one moment the procedure hands control back.
+        """
+        messages = self.service_dashboard()
         now = self._clock.now()
-        if now - self._last_publish < PROGRESS_PUBLISH_S:
+        # A setting the page sent is published at once, whatever the throttle
+        # says: the experimenter who pressed + is waiting to see it land.
+        if not messages and now - self._last_publish < PROGRESS_PUBLISH_S:
             return
         self._last_publish = now
         if self.publisher is not None:
-            self.publisher(PROCEDURE_STATUS, f"{stage}: {detail}")
+            self.publisher(PROCEDURE_STATUS, " · ".join([f"{stage}: {detail}", *messages]))
 
     def _emit(self, name: str, payload: dict[str, Any]) -> None:
         if self.emit is not None:
@@ -291,11 +338,13 @@ class EyeTrackerMonitor:
     def panels(self, *, camera: bool, image: bool = True) -> list[dict[str, Any]]:
         """The "Eye tracker" section: camera, calibration, validation, drift.
 
-        ``camera`` says whether to read a fresh frame now — true while the
-        session is paused or a procedure is running, when the device is not
-        busy with a trial and the image is what the experimenter is looking
-        for. ``image=False`` leaves the pixels out (the copy saved to disk
-        at teardown keeps the numbers, not a photograph of the subject).
+        ``camera`` says whether the image is live now — true while the session
+        is paused or a procedure is running, when the device is not busy with
+        a trial and the image is what the experimenter is looking for. Live,
+        the eye line is read, and so is a frame unless frames stream to an
+        open dashboard (stream_camera). ``image=False`` leaves the pixels out
+        (the copy saved to disk at teardown keeps the numbers, not a
+        photograph of the subject).
         """
         panels: list[dict[str, Any]] = []
         if self.has_camera:
@@ -306,36 +355,151 @@ class EyeTrackerMonitor:
         panels.append({"title": "Drift correction", "section": SECTION, "data": self._drift()})
         return panels
 
-    def _camera(self, read: bool, image: bool) -> dict[str, Any]:
-        if read:
+    def _camera(self, live: bool, image: bool) -> dict[str, Any]:
+        # With a dashboard open the frames stream on their own channel
+        # (stream_camera), so a state publish neither reads one nor carries
+        # its pixels: the panel says it streams, and the page draws the newest
+        # frame it received. The copy saved to disk is never a stream.
+        streaming = self.camera_sink is not None and image
+        if live and not streaming:
             self._read_camera()
-        if self._frame is None:
+        if self._frame is None and not (streaming and live):
             message = "no camera image yet — read while paused or calibrating"
             if self._camera_fault is not None:
                 message = f"camera image unavailable: {self._camera_fault}"
             return {"form": "empty", "message": message}
         frame = self._frame
-        height, width = frame.pixels.shape[:2]
         data: dict[str, Any] = {
             "form": "image",
-            "width": int(width),
-            "height": int(height),
-            "pixels": encode_image(frame.pixels) if image else "",
-            "stats": [{"label": "read at", "value": f"{frame.t:.1f} s"}],
+            "width": 0,
+            "height": 0,
+            "pixels": "",
+            "stats": [],
         }
+        if frame is not None:
+            height, width = frame.pixels.shape[:2]
+            data["width"], data["height"] = int(width), int(height)
+            data["stats"].append({"label": "read at", "value": f"{frame.t:.1f} s"})
+            if image and not streaming:
+                data["pixels"] = encode_image(frame.pixels)
+        if streaming:
+            data["stream"] = True
         status = getattr(self._tracker, "eye_status", None)
-        if status is not None and read:
+        if status is not None and live:
             try:
                 data["stats"].append(eye_stat(status()))
             except TrackerError as e:
                 data["stats"].append({"label": "eyes", "value": str(e), "status": "critical"})
-        note = "live while paused or calibrating" if read else "last frame; live again when paused"
+        if self.has_iris_size:
+            # Read once, between trials, and kept: only this session changes it.
+            if live and self.iris_size_px is None:
+                self._read_iris_size()
+            if self.iris_size_px is not None:
+                data["stats"].append({"label": "iris size", "value": f"{self.iris_size_px} px"})
+            low, high = IRIS_SIZE_RANGE_PX
+            data["controls"] = [
+                {
+                    "setting": IRIS_SIZE_SETTING,
+                    "label": "Iris size",
+                    "unit": "px",
+                    "value": self.iris_size_px,
+                    "min": low,
+                    "max": high,
+                    "step": IRIS_SIZE_STEP_PX,
+                }
+            ]
+        note = "live while paused or calibrating" if live else "last frame; live again when paused"
         if self._camera_fault is not None:
-            note = f"last frame; the newest read failed: {self._camera_fault}"
+            # "Last frame" only when there is one: a stream whose very first
+            # read failed has nothing on screen to call the last.
+            note = (
+                f"last frame; the newest read failed: {self._camera_fault}"
+                if frame is not None
+                else f"camera image unavailable: {self._camera_fault}"
+            )
         if not image:
             note = "image left out of the saved copy"
         data["note"] = note
         return data
+
+    @property
+    def has_iris_size(self) -> bool:
+        """Whether the tracker lets the session read and set its expected iris size."""
+        return hasattr(self._tracker, "iris_size") and hasattr(self._tracker, "set_iris_size")
+
+    def service_dashboard(self) -> list[str]:
+        """What the dashboard needs from the tracker between its other work:
+        the settings the page sent, applied in order, and a camera frame when
+        one is due. Returns one line per setting, for the caller to publish."""
+        requests = self.settings_source() if self.settings_source is not None else []
+        messages = [self._apply_setting(name, value) for name, value in requests]
+        self.stream_camera()
+        return messages
+
+    def _apply_setting(self, name: str, value: object) -> str:
+        if name == IRIS_SIZE_SETTING:
+            return self.set_iris_size(value)
+        log.error("the dashboard sent tracker setting %r, which this session does not have", name)
+        return f"No tracker setting called {name!r}; nothing changed."
+
+    def set_iris_size(self, px: object) -> str:
+        """Change the tracker's expected iris size; returns the line to show.
+
+        Every change is logged and recorded as a TRACKER_SETTING event with
+        the value before it, because from this moment on the device fits
+        pupils differently. A change the tracker refuses is logged as an error
+        and said on the page, and nothing is recorded, since nothing changed.
+        """
+        if not self.has_iris_size:
+            log.error("an iris size change was asked for, but this eye tracker has no such setting")
+            return "This eye tracker has no iris size setting; nothing changed."
+        previous = self.iris_size_px if self.iris_size_px is not None else self._read_iris_size()
+        try:
+            held = int(self._tracker.set_iris_size(px))  # type: ignore[attr-defined]
+        except (ValueError, TrackerError) as e:
+            log.error("iris size not changed: %s", e)
+            return f"Iris size not changed: {e}"
+        self.iris_size_px = held
+        log.info(
+            "eye tracker's expected iris size changed from %s to %d camera px",
+            previous if previous is not None else "an unread value",
+            held,
+        )
+        self._emit(
+            "TRACKER_SETTING", {"setting": IRIS_SIZE_SETTING, "value": held, "previous": previous}
+        )
+        was = f"{previous} px" if previous is not None else "unknown"
+        return f"Iris size set to {held} px (was {was})."
+
+    def _read_iris_size(self) -> int | None:
+        """Ask the tracker for its expected iris size and keep it; None, with a
+        warning, when it cannot say."""
+        try:
+            self.iris_size_px = int(self._tracker.iris_size())  # type: ignore[attr-defined]
+        except TrackerError as e:
+            log.warning("iris size not read: %s", e)
+        return self.iris_size_px
+
+    def stream_camera(self) -> None:
+        """Send the dashboard a fresh camera frame, if one is due.
+
+        Called on every pass of the pause loop and every progress report of a
+        procedure, and a no-op between frames (CAMERA_STREAM_S), so its
+        callers need not keep time. Nothing is read without a sink: a session
+        with no dashboard open reads no frames. A read that fails sends
+        nothing. Its reason goes to the log once and onto the panel at the
+        next state publish (_read_camera), and the page keeps its last frame
+        with the reason under it.
+        """
+        if self.camera_sink is None or not self.has_camera:
+            return
+        now = self._clock.now()
+        if now - self._last_stream < CAMERA_STREAM_S:
+            return
+        self._last_stream = now
+        self._read_camera()
+        if self._camera_fault is None and self._frame is not None:
+            self.camera_sink(self._frame)
 
     def _read_camera(self) -> None:
         """One frame from the tracker, or the reason there is none.
@@ -358,6 +522,8 @@ class EyeTrackerMonitor:
         result = self.calibration
         if result is None:
             return {"form": "empty", "message": f"no calibration this session — {CALIBRATE_HINT}"}
+        if result.targets:
+            return self._calibration_plot(result)
         data: dict[str, Any] = {
             "form": "stat",
             "value": result.verdict,
@@ -369,6 +535,52 @@ class EyeTrackerMonitor:
         if result.ok is False:
             data["status"] = "critical"
         return data
+
+    def _calibration_plot(self, result: CalibrationResult) -> dict[str, Any]:
+        """The calibration as a plot, like the validation's: each target, and
+        where the fitted model puts each eye's fixation on it, with each eye's
+        mean and worst error. A calibration is a fit to these fixations, so
+        its errors flatter it; the note says so, and the validation is the
+        measure on fresh ones."""
+        deg = self._screen.px2deg
+        series = []
+        stats: list[dict[str, Any]] = [
+            {
+                "label": "verdict",
+                "value": result.verdict,
+                **({"status": "critical"} if result.ok is False else {}),
+            }
+        ]
+        for slot, eye in ((1, "left"), (2, "right")):
+            positions = [getattr(target, f"{eye}_px") for target in result.targets]
+            points = [[deg(p[0]), deg(p[1])] for p in positions if p is not None]
+            if points:
+                series.append({"name": f"{eye} eye", "slot": slot, "points": points})
+            errors = [
+                error
+                for target in result.targets
+                if (error := getattr(target, f"{eye}_error_deg")) is not None
+            ]
+            if errors:
+                stats.append({"label": f"{eye} mean", "value": f"{sum(errors) / len(errors):.2f}°"})
+                stats.append({"label": f"{eye} worst", "value": f"{max(errors):.2f}°"})
+        note = (
+            f"{result.layout} · {result.advance} · at {result.t:.0f} s · fitted gaze at each "
+            "target, which flatters the fit; the validation measures it on fresh fixations"
+        )
+        if result.note:
+            note += f" · {result.note}"
+        return {
+            "form": "scatter",
+            "series": series,
+            "targets": [[deg(t.target_px[0]), deg(t.target_px[1])] for t in result.targets],
+            "x_label": "Horizontal gaze position (°)",
+            "y_label": "Vertical gaze position (°)",
+            "equal_aspect": True,
+            "stats": stats,
+            "color_label": "",
+            "note": note,
+        }
 
     def _validation(self) -> dict[str, Any]:
         result = self.validation

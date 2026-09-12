@@ -150,6 +150,127 @@ class TestRuntime:
             controller.stop()
         assert not controller.alive()
 
+    def test_camera_frames_stream_on_their_own_channel(self):
+        controller = DashboardController(auto_open=False)
+        url = controller.start()
+        token = url.partition("token=")[2]
+        root = url.partition("/?")[0]
+        try:
+            first = np.arange(12, dtype=np.uint8).reshape(3, 4)
+            controller.publish_camera(first, 1.5)
+            status, headers, body = self._camera(root, token, after=0, wait_ms=3000)
+            assert status == 200
+            assert (headers["X-Frame-Width"], headers["X-Frame-Height"]) == ("4", "3")
+            assert headers["X-Frame-Time"] == "1.500"
+            assert body == first.tobytes()
+            seq = int(headers["X-Frame-Seq"])
+
+            # Nothing newer than the frame already received: an empty answer
+            # once the wait is over, never the same frame again.
+            status, _headers, body = self._camera(root, token, after=seq, wait_ms=50)
+            assert (status, body) == (204, b"")
+
+            # A burst, then the stream goes quiet. The page is never handed a
+            # frame older than one it already has, and the frame a quiet stream
+            # ended on always arrives. Inside a burst, a frame published while
+            # the slot is being refilled can be replaced unseen: in a real
+            # stream the next one follows within a fifteenth of a second.
+            for value in range(10, 30):
+                controller.publish_camera(np.full((3, 4), value, dtype=np.uint8), float(value))
+            time.sleep(0.3)
+            controller.publish_camera(np.full((3, 4), 99, dtype=np.uint8), 99.0)
+            received: list[int] = []
+            deadline = time.monotonic() + 5
+            while not received or received[-1] != 99:
+                assert time.monotonic() < deadline, f"the newest frame never arrived: {received}"
+                status, headers, body = self._camera(root, token, after=seq, wait_ms=1000)
+                if status == 200:
+                    assert int(headers["X-Frame-Seq"]) > seq
+                    seq = int(headers["X-Frame-Seq"])
+                    received.append(body[0])
+            assert received == sorted(received), received
+
+            # Guarded like the state, and a malformed request is refused
+            # rather than guessed at.
+            with pytest.raises(urllib.error.HTTPError) as forbidden:
+                urllib.request.urlopen(f"{root}/api/camera?after=0", timeout=2)
+            assert forbidden.value.code == 403
+            with pytest.raises(urllib.error.HTTPError) as malformed:
+                urllib.request.urlopen(f"{root}/api/camera?token={token}&after=x", timeout=2)
+            assert malformed.value.code == 400
+        finally:
+            controller.stop()
+
+    def test_tracker_settings_pass_while_paused_or_calibrating(self):
+        controller = DashboardController(auto_open=False)
+        url = controller.start()
+        token = url.partition("token=")[2]
+        root = url.partition("/?")[0]
+        try:
+            controller.publish(_state(1, "running"))
+            self._wait_for_revision(root, token, 1)
+            with pytest.raises(urllib.error.HTTPError) as running:
+                self._setting(root, token, "iris_size_px", 120, "s1")
+            assert running.value.code == 409
+
+            # Mid-calibration is when an eye drops out, so a setting passes
+            # then, as it does while paused.
+            controller.publish(_state(2, "calibrating"))
+            self._wait_for_revision(root, token, 2)
+            assert self._setting(root, token, "iris_size_px", 120, "s2") == 202
+            controller.publish(_state(3, "paused"))
+            self._wait_for_revision(root, token, 3)
+            assert self._setting(root, token, "iris_size_px", 130, "s3") == 202
+            assert self._setting(root, token, "iris_size_px", 130, "s3") == 202  # deduplicated
+
+            for index, (setting, value) in enumerate(
+                [
+                    ("iris_size_px", 0),
+                    ("iris_size_px", 513),
+                    ("iris_size_px", True),
+                    ("iris_size_px", 12.5),
+                    ("gain", 3),
+                ]
+            ):
+                with pytest.raises(urllib.error.HTTPError) as refused:
+                    self._setting(root, token, setting, value, f"bad{index}")
+                assert refused.value.code == 400, (setting, value)
+
+            settings: list[tuple[str, object]] = []
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline and len(settings) < 2:
+                settings += controller.poll_settings()
+                time.sleep(0.01)
+            assert settings == [("iris_size_px", 120), ("iris_size_px", 130)]
+        finally:
+            controller.stop()
+
+    @staticmethod
+    def _setting(root: str, token: str, setting: str, value: object, request_id: str) -> int:
+        request = urllib.request.Request(
+            f"{root}/api/tracker",
+            data=json.dumps(
+                {"setting": setting, "value": value, "request_id": request_id}
+            ).encode(),
+            headers={"Content-Type": "application/json", "X-Alhazen-Token": token},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=2) as response:
+            return response.status
+
+    def test_a_camera_frame_must_be_8_bit_grey(self):
+        controller = DashboardController(auto_open=False)
+        with pytest.raises(ValueError, match="8-bit grey"):
+            controller.publish_camera(np.zeros((3, 4, 3), dtype=np.uint8), 0.0)
+        with pytest.raises(ValueError, match="8-bit grey"):
+            controller.publish_camera(np.zeros((3, 4), dtype=np.float32), 0.0)
+
+    @staticmethod
+    def _camera(root: str, token: str, *, after: int, wait_ms: int) -> tuple[int, dict, bytes]:
+        request = f"{root}/api/camera?token={token}&after={after}&wait_ms={wait_ms}"
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return response.status, dict(response.headers), response.read()
+
     def test_save_is_self_contained(self, tmp_path: Path):
         controller = DashboardController(auto_open=False)
         state = _state(3, "complete")
@@ -187,11 +308,19 @@ class FakeDashboard:
     def __init__(self, batches: list[list[str]]) -> None:
         self.batches = list(batches)
         self.states: list[dict] = []
+        self.frames: list[tuple] = []
+        self.setting_batches: list[list[tuple[str, object]]] = []
         self.stopped = False
         self.url = "http://127.0.0.1:0/"
 
     def publish(self, state: dict) -> None:
         self.states.append(state)
+
+    def publish_camera(self, pixels, t: float) -> None:
+        self.frames.append((pixels.copy(), t))
+
+    def poll_settings(self) -> list[tuple[str, object]]:
+        return self.setting_batches.pop(0) if self.setting_batches else []
 
     def poll_commands(self) -> list[DashboardCommand]:
         names = self.batches.pop(0) if self.batches else []
@@ -283,7 +412,7 @@ class TestRunnerIntegration:
         # And the rig's own screen led with the failure when the menu came
         # back, not only the browser's notice line.
         headings = [title for title, _body, _color in harness.display.menus]
-        assert any(h.startswith("VALIDATION FAILED") for h in headings), headings
+        assert any(h.startswith("VALIDATION ABOVE THE") for h in headings), headings
 
     def test_a_calibrate_click_reports_the_verdict_in_the_notice(self, tmp_path: Path):
         clock = FakeClock()
@@ -353,10 +482,47 @@ class CameraScriptedTracker(ScriptedTracker):
         return CameraFrame(np.full((3, 4), self.reads, dtype=np.uint8), t=self._clock.now())
 
 
+class IrisScriptedTracker(CameraScriptedTracker):
+    """A scripted camera tracker with the TRACKPixx3's iris size setting."""
+
+    def __init__(self, samples, clock: FakeClock) -> None:
+        super().__init__(samples, clock)
+        self.iris = 96
+
+    def iris_size(self) -> int:
+        return self.iris
+
+    def set_iris_size(self, px: int) -> int:
+        self.iris = px
+        return px
+
+
+class TestTrackerSettingsThroughThePause:
+    def test_a_setting_from_the_page_is_applied_reported_and_recorded(self, tmp_path: Path):
+        clock = FakeClock()
+        gaze = GazeSample(gx=SCREEN.width_px / 2, gy=SCREEN.height_px / 2, t=0.0)
+        tracker = IrisScriptedTracker([(0.0, gaze)], clock)
+        commands = ScriptedCommands([[Command.PAUSE]])
+        harness = SessionHarness(
+            tmp_path, n_trials=1, commands=commands, tracker=tracker, clock=clock
+        )
+        dashboard = FakeDashboard([[], [], ["resume"]])
+        dashboard.setting_batches = [[], [("iris_size_px", 124)]]
+        wire_dashboard(harness, dashboard)
+        harness.runner.run()
+
+        assert tracker.iris == 124
+        paused = [s["message"] for s in dashboard.states if s["status"] == "paused"]
+        assert "Iris size set to 124 px (was 96 px)." in paused, paused
+        settings = [e.payload for e in harness.collector.events if e.name == "TRACKER_SETTING"]
+        assert settings == [{"setting": "iris_size_px", "value": 124, "previous": 96}]
+
+
 class TestCameraThroughThePause:
-    """A tracker with a camera has its image refreshed while the session is
-    paused, about once a second, so the Eye tracker tab shows the eye as it
-    is now — and the saved copy never carries the picture."""
+    """A tracker with a camera streams its image while the session is paused,
+    about fifteen frames a second, beside a state that republishes the panel's
+    words about once a second — and the saved copy never carries the
+    picture."""
 
     def _run(self, tmp_path: Path, batches: list[list[str]]):
         clock = FakeClock()
@@ -375,22 +541,29 @@ class TestCameraThroughThePause:
     def _camera(state: dict) -> dict:
         return next(p["data"] for p in state["panels"] if p["title"] == "Camera")
 
-    def test_the_image_is_read_again_about_once_a_second(self, tmp_path: Path):
+    def test_the_image_streams_while_the_words_refresh_about_once_a_second(self, tmp_path: Path):
+        from alhazen.session.eyetracker import CAMERA_STREAM_S
+
         # The pause loop waits 10 ms of simulated time per poll: 250 empty
-        # polls are 2.5 s of pause, long enough for two refreshes at 1 Hz.
+        # polls are 2.5 s of pause.
         harness, tracker, dashboard = self._run(tmp_path, [[]] * 250 + [["resume"]])
 
+        # Frames stream on their own channel, about fifteen a second, each a
+        # fresh read: the loop's 10 ms steps put them 70 ms apart.
+        times = [t for _pixels, t in dashboard.frames]
+        assert 30 <= len(times) <= 45, len(times)
+        gaps = [later - earlier for earlier, later in zip(times, times[1:], strict=False)]
+        assert min(gaps) >= CAMERA_STREAM_S - 1e-9
+        assert max(gaps) <= CAMERA_STREAM_S + 0.011
+        assert len({int(pixels[0, 0]) for pixels, _t in dashboard.frames}) == len(times)
+
+        # The state still republishes the panel's words about once a second,
+        # and says the image streams instead of carrying it.
         paused = [s for s in dashboard.states if s["status"] == "paused"]
         assert len(paused) == 3, [s["message"] for s in paused]
-        read_at = [self._camera(s)["stats"][0]["value"] for s in paused]
-        assert len(set(read_at)) == 3, read_at  # three different frames
-        # The refresh republishes the standing notice, not a new one.
+        cameras = [self._camera(s) for s in paused]
+        assert all(c["stream"] is True and c["pixels"] == "" for c in cameras)
         assert {s["message"] for s in paused} == {"Paused — browser controls are enabled."}
-        # About a second apart in the session's own clock.
-        times = [float(v.removesuffix(" s")) for v in read_at]
-        assert times[1] - times[0] == pytest.approx(1.0, abs=0.02)
-        assert times[2] - times[1] == pytest.approx(1.0, abs=0.02)
-        assert all(self._camera(s)["pixels"] for s in paused)
         assert dashboard.states[-1]["status"] == "complete"
 
     def test_a_rig_without_a_camera_is_not_republished(self, tmp_path: Path):
@@ -413,9 +586,10 @@ class TestCameraThroughThePause:
         camera = self._camera(saved)
         assert camera["form"] == "image" and camera["pixels"] == ""
         assert camera["note"] == "Image left out of the saved copy"
-        # The live pause page did carry the picture.
+        # The live pause page did show the picture, streamed beside the state.
         live = next(s for s in dashboard.states if s["status"] == "paused")
-        assert self._camera(live)["pixels"]
+        assert self._camera(live)["stream"] is True
+        assert dashboard.frames
 
 
 class TestStaleCommandsAreDiscarded:
@@ -864,3 +1038,52 @@ class TestFigureConventionsInTheRenderer:
         assert "setAttribute('data-theme', 'light')" in export
         assert export.index("exportMode = true") < export.index("finally")
         assert export.rindex("exportMode = false") > export.index("finally")
+
+
+class TestLiveCameraInTheRenderer:
+    """Checked against the asset, like the renderer guards above: there is no
+    JS test harness here, and these are the two properties the stream exists
+    for."""
+
+    @staticmethod
+    def _function(name):
+        from alhazen.dashboard import runtime
+
+        script = (runtime._ASSETS / "dashboard.js").read_text(encoding="utf-8")
+        body = script[script.index(f"function {name}(") :]
+        return body[: body.index("\n}")]
+
+    def test_a_frame_redraws_only_the_canvas(self):
+        """A frame that rebuilt the panels would bring back the lag the stream
+        removes, and throw away the reader's scroll and hover every time."""
+        loop = self._function("cameraLoop")
+        assert "/api/camera" in loop
+        assert "render(" not in loop
+        assert "render(" not in self._function("paintCamera")
+
+    def test_a_failed_stream_is_said_under_the_image(self):
+        loop = self._function("cameraLoop")
+        assert "console.error" in loop
+        assert "cameraProblem = 'Camera stream failed: '" in loop
+
+
+class TestTrackerControlsInTheRenderer:
+    """Checked against the asset, like the other renderer guards."""
+
+    @staticmethod
+    def _function(name):
+        from alhazen.dashboard import runtime
+
+        script = (runtime._ASSETS / "dashboard.js").read_text(encoding="utf-8")
+        body = script[script.index(f"function {name}(") :]
+        return body[: body.index("\n}")]
+
+    def test_a_setting_goes_to_its_own_endpoint_and_a_refusal_is_said(self):
+        send = self._function("sendTrackerSetting")
+        assert "/api/tracker" in send and "X-Alhazen-Token" in send
+        assert "not changed: " in send and "console.error" in send
+
+    def test_a_value_being_typed_survives_a_redraw(self):
+        render = self._function("render")
+        assert "dataset.setting" in render
+        assert render.index("dataset.setting") < render.index("panels.forEach(paintPanel)")

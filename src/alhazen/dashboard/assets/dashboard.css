@@ -291,6 +291,36 @@ main { flex: 1 1 auto; min-width: 0; padding: 22px 28px 56px; }
   border-radius: 6px;
   image-rendering: pixelated;
 }
+/* Under a streamed image: its frame rate while it is live, or why it is not. */
+.camera-live {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+/* A tracker setting under the live image: label, − value +, unit. */
+.tracker-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  color: var(--ink-2);
+  font-size: 12.5px;
+}
+.tracker-control-label { min-width: 64px; }
+.tracker-control button,
+.tracker-control input {
+  height: 26px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+}
+.tracker-control button { width: 28px; cursor: pointer; }
+.tracker-control input { width: 68px; padding: 0 6px; text-align: right; font-variant-numeric: tabular-nums; }
+.tracker-control button:disabled,
+.tracker-control input:disabled { opacity: 0.42; cursor: not-allowed; }
 
 /* Reserved whether or not this panel has a legend, so a panel that does not
  * sits at the same height as one that does. */

@@ -189,3 +189,27 @@ class TestARestThatResumesByItselfSaysSo:
 
         menu = build_pause_menu(rest="BLOCK 1 OF 3 COMPLETE — REST")
         assert "resumes by itself" not in menu.render()
+
+
+class TestAWarningHeadsItsOwnPause:
+    def test_a_warning_leads_in_its_own_colour_and_keeps_every_control(self):
+        from alhazen.session.pause import WARNING_COLOR, build_pause_menu
+
+        menu = build_pause_menu(
+            has_tracker=True, warning="VALIDATION ABOVE THE 1° LIMIT — worst 1.30°"
+        )
+        assert menu.title.startswith("VALIDATION ABOVE THE 1° LIMIT")
+        assert menu.color == WARNING_COLOR
+        actions = menu.actions()
+        assert actions["SPACE"] == "resume"
+        assert actions["C"] == "calibrate"
+
+    def test_a_pause_has_one_heading(self):
+        import pytest
+
+        from alhazen.session.pause import build_pause_menu
+
+        with pytest.raises(ValueError, match="warning heads its own pause"):
+            build_pause_menu(warning="over the limit", fault="PUMP FAILED")
+        with pytest.raises(ValueError, match="warning heads its own pause"):
+            build_pause_menu(warning="over the limit", rest="BLOCK 1 OF 2 COMPLETE — REST")

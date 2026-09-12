@@ -43,6 +43,8 @@ from alhazen.data.manifest import write_manifest
 from alhazen.data.participants import ensure_participant
 from alhazen.data.paths import SessionPaths
 from alhazen.devices.eyetracker import EyeTracker, HostShape
+from alhazen.devices.eyetracker.procedures import ValidationResult
+from alhazen.devices.eyetracker.protocol import CameraFrame
 from alhazen.devices.reward import RewardDispenser
 from alhazen.devices.spikes import SpikeSource
 from alhazen.devices.sync import SyncOutput
@@ -138,6 +140,22 @@ CAMERA_REFRESH_S = 1.0
 # The statuses during which a camera frame is read for the dashboard: when
 # the device is not busy with a trial and somebody is looking at the image.
 CAMERA_STATUSES = frozenset({"paused", PROCEDURE_STATUS})
+
+
+def _validation_shortfall(validation: ValidationResult) -> str:
+    """How a validation that did not pass fell short, as a heading says it:
+    over the limit, or complete only in part, or measuring nothing at all."""
+    worst = validation.max_error_deg
+    if worst is None:
+        return "VALIDATION MEASURED NO TARGET"
+    limit = f"{validation.threshold_deg:g}°"
+    if worst > validation.threshold_deg:
+        line = f"VALIDATION ABOVE THE {limit} LIMIT — worst {worst:.2f}°"
+    else:
+        line = f"VALIDATION INCOMPLETE — worst {worst:.2f}° within the {limit} limit"
+    if validation.n_missed:
+        line += f", {validation.n_missed} target(s) missed"
+    return line
 
 
 class SessionRunner:
@@ -310,6 +328,15 @@ class SessionRunner:
             log.info("setup: %s", note)
         if self._dashboard is not None:
             log.info("live dashboard: %s", self._dashboard.url)
+            if self._eyetracker is not None:
+                # Camera frames stream to the page on their own channel while
+                # the session is paused or a procedure runs. Wired here, once
+                # the dashboard is known to be open, so a session without one
+                # never reads a frame nobody will see.
+                self._eyetracker.camera_sink = self._send_camera_frame
+                # And the tracker settings the page sends (the iris size),
+                # applied between frames, even while a procedure runs.
+                self._eyetracker.settings_source = self._poll_tracker_settings
         self._publish_dashboard("running")
         try:
             if self._instructions:
@@ -791,6 +818,7 @@ class SessionRunner:
         fault: str | None = None,
         rest: str | None = None,
         resumes_in_s: float | None = None,
+        warning: str | None = None,
     ) -> PauseMenu:
         """The menu for this session, built from what is actually wired.
 
@@ -807,6 +835,7 @@ class SessionRunner:
             fault=fault,
             rest=rest,
             resumes_in_s=resumes_in_s,
+            warning=warning,
         )
 
     def _show_pause_menu(self, menu: PauseMenu) -> None:
@@ -912,11 +941,7 @@ class SessionRunner:
             # stays up after the recalibration that fixed it, and the pause's
             # own heading (a block break's REST) never comes back.
             if action in PROCEDURE_ACTIONS:
-                failed = self._procedure_fault(action)
-                menu = self._pause_menu(
-                    fault=failed if failed is not None else fault,
-                    rest=rest if failed is None else None,
-                )
+                menu = self._menu_after_procedure(action, fault=fault, rest=rest)
 
     def _next_menu_action_before(self, menu: PauseMenu, deadline: float) -> str | None:
         """Draw the menu and poll the keyboard until a key picks an action or
@@ -990,41 +1015,88 @@ class SessionRunner:
             return monitor.validate().summary()
         return monitor.drift_correct().summary()
 
+    def _menu_after_procedure(
+        self, action: str, *, fault: str | None, rest: str | None
+    ) -> PauseMenu:
+        """The pause menu to show once a procedure has run.
+
+        A procedure that failed heads it as a fault, and a validation that did
+        not pass heads it as a warning; either replaces the pause's own
+        heading while it stands. After a procedure that succeeded, the pause's
+        own heading comes back: a block break's REST, or the fault that
+        opened the pause.
+        """
+        failed = self._procedure_fault(action)
+        if failed is not None:
+            return self._pause_menu(fault=failed)
+        warned = self._procedure_warning(action)
+        if warned is not None:
+            return self._pause_menu(warning=warned)
+        return self._pause_menu(fault=fault, rest=rest)
+
     def _procedure_fault(self, action: str) -> str | None:
         """The heading the pause screen leads with after a procedure that
-        did not succeed, or None after one that did.
+        failed, or None.
 
         The verdict already goes to the dashboard's notice line and the log.
         Neither is the screen the experimenter is looking at while they stand
-        at the rig, and a validation that failed there without a word — with
-        the session about to resume on a calibration the design rejects — is
-        how every landing of a block inherits an error nobody saw.
+        at the rig, so a calibration the tracker did not take, or a drift
+        correction it refused, leads the menu that comes back. A validation
+        that did not pass is a warning instead (_procedure_warning).
         """
         monitor = self._eyetracker
         if monitor is None or action not in PROCEDURE_ACTIONS:
             return None
-        calibration, validation, drift = monitor.calibration, monitor.validation, monitor.drift
+        calibration, drift = monitor.calibration, monitor.drift
         if action == "calibrate" and calibration is not None and calibration.ok is False:
             return f"CALIBRATION FAILED — {calibration.note or 'the tracker reports none'}"
-        if (
-            action in ("calibrate", "validate")
-            and validation is not None
-            and not validation.accepted
-            and not validation.aborted
-        ):
-            worst = validation.max_error_deg
-            measured = f"worst {worst:.2f}°" if worst is not None else "no target measured"
-            return (
-                f"VALIDATION FAILED — {measured} against the {validation.threshold_deg:g}° "
-                f"limit; recalibrate (C) before resuming"
-            )
         if action == "drift_correct" and drift is not None and not drift.applied:
             return f"DRIFT CORRECTION REFUSED — {drift.note or drift.summary()}"
         return None
 
+    def _procedure_warning(self, action: str) -> str | None:
+        """The heading after a validation that did not pass, or None.
+
+        A warning, not a fault. Whether a calibration is good enough is the
+        experimenter's call: a validation a little over its limit can be the
+        best a subject manages that day, and a heading that said "recalibrate
+        before resuming" kept an experimenter recalibrating a subject who was
+        not going to do better. So the heading says how the validation fell
+        short and offers both ways on. Resuming on it is recorded (_resumed).
+        """
+        monitor = self._eyetracker
+        if monitor is None or action not in ("calibrate", "validate"):
+            return None
+        validation = monitor.validation
+        if validation is None or validation.accepted or validation.aborted:
+            return None
+        return f"{_validation_shortfall(validation)} — SPACE resumes on it, C recalibrates"
+
     def _resumed(self) -> bool:
+        payload: dict[str, Any] = {}
+        monitor = self._eyetracker
+        validation = monitor.validation if monitor is not None else None
+        if validation is not None and not validation.accepted and not validation.aborted:
+            # The session is going on under a validation that did not pass.
+            # That is the experimenter's decision to make, and it is recorded
+            # where an analysis and a later reader will look: in this event,
+            # with the numbers, and in the log, in words. The VALIDATION event
+            # and its per-target errors were written when it ran.
+            payload["on_failed_validation"] = {
+                "t": validation.t,
+                "mean_error_deg": validation.mean_error_deg,
+                "max_error_deg": validation.max_error_deg,
+                "threshold_deg": validation.threshold_deg,
+                "n_missed": validation.n_missed,
+            }
+            log.warning(
+                "resumed on a validation that did not pass, as the experimenter chose: %s",
+                validation.summary(),
+            )
         self._bus.emit(
-            Event(name="RESUMED", t=self._clock.now(), trial_index=self._trial_index, payload={})
+            Event(
+                name="RESUMED", t=self._clock.now(), trial_index=self._trial_index, payload=payload
+            )
         )
         return True
 
@@ -1067,6 +1139,7 @@ class SessionRunner:
         # so the Eye tracker tab shows the eye as it is now, not as it was
         # when the pause began.
         live_camera = self._eyetracker is not None and self._eyetracker.has_camera
+        monitor = self._eyetracker
         published_at = self._clock.now()
         # A rest that can resume by itself: the same deadline as the keyboard
         # path, cancelled by the first thing anybody does.
@@ -1074,6 +1147,15 @@ class SessionRunner:
         if resume_after_s is not None:
             deadline = self._clock.now() + resume_after_s
         while True:
+            # What the page asks of the tracker between clicks: a camera frame
+            # whenever one is due (session/eyetracker.py CAMERA_STREAM_S), and
+            # any tracker setting it sent, applied and reported in the notice.
+            # The refresh further down republishes the panel's words about once
+            # a second.
+            if monitor is not None:
+                for setting_line in monitor.service_dashboard():
+                    self._publish_dashboard("paused", setting_line)
+                    published_at = self._clock.now()
             actions = [command.name for command in dashboard.poll_commands()]
             actions += [
                 action
@@ -1107,11 +1189,7 @@ class SessionRunner:
                     # Rebuilt after every procedure, so a heading that a
                     # failure put up comes back down when a later procedure
                     # succeeds, and the pause's own heading returns with it.
-                    failed = self._procedure_fault(action)
-                    menu = self._pause_menu(
-                        fault=failed if failed is not None else fault,
-                        rest=rest if failed is None else None,
-                    )
+                    menu = self._menu_after_procedure(action, fault=fault, rest=rest)
                 self._show_pause_menu(menu)
                 if action in PROCEDURE_ACTIONS:
                     # A procedure runs for seconds to minutes, and the browser
@@ -1204,6 +1282,15 @@ class SessionRunner:
         self._dashboard_message = message
         self._dashboard.publish(state)
         return state
+
+    def _poll_tracker_settings(self) -> list[tuple[str, object]]:
+        """The tracker settings the page sent, for the monitor to apply."""
+        return self._dashboard.poll_settings() if self._dashboard is not None else []
+
+    def _send_camera_frame(self, frame: CameraFrame) -> None:
+        """The monitor's streamed camera frames, onto the dashboard's camera channel."""
+        if self._dashboard is not None:
+            self._dashboard.publish_camera(frame.pixels, frame.t)
 
     def _frame_timing_panel(self) -> dict[str, Any]:
         """The frame-interval histogram, from the monitor's own record: the

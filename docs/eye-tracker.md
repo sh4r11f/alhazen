@@ -71,11 +71,11 @@ advance   MANUAL — press SPACE when the subject is fixating each target
 keys
 SPACE       accept this target (refused while no eye is in the image)
 BACKSPACE   go back one target
-ESC         abort — the previous calibration is kept
+P or ESC    stop and go back to the pause menu — the previous calibration is kept
 
 eyes: both tracked
 
-press SPACE to start, ESC to abort
+press SPACE to start, P or ESC to go back to the pause menu
 ```
 
 The lines are facts from the rig config and the device, composed by each
@@ -101,6 +101,14 @@ backend from `devices/eyetracker/guide.py`:
 During the TRACKPixx3 walk the same eye line stays under the target, and
 SPACE is refused while no eye is in the image — a target accepted blind is
 the one mistake a calibration cannot recover from.
+
+One press of SPACE is enough. A key pressed while the walk is busy between
+two refreshes (reading the eye status, drawing, updating the dashboard) is
+kept, not thrown away, and the keyboard is cleared once when each target
+appears, so a press meant for the previous target never accepts the next.
+P, the session's pause key, stops the walk just as ESC does: the previous
+calibration is kept and the pause menu comes back, where C starts again from
+the first target.
 
 ## Validation and drift correction
 
@@ -129,6 +137,16 @@ whole session gets wrong. It runs by itself after every calibration that was
 not aborted and that the tracker did not itself call bad — there is nothing
 to measure against a calibration that did not take — unless
 `validate_after_calibration: false`.
+
+A validation that does not pass is a **warning**, not a stop. The pause menu
+comes back headed, in amber, with how it fell short (*VALIDATION ABOVE THE 1°
+LIMIT — worst 1.32°*, or *INCOMPLETE* with the targets missed) and both ways
+on: SPACE resumes on it, C recalibrates. Whether a calibration is good enough
+for this subject today is the experimenter's call. Whatever it is, it is on
+the record: the VALIDATION event carries every target's error whether the
+validation passed or not, the log lists them, and resuming on a validation
+that did not pass logs a WARNING and puts its numbers in the RESUMED event
+(`on_failed_validation`).
 
 **Drift correction** shows one target at the centre and measures the offset
 between it and the reported gaze. If the offset is within `drift_max_deg`
@@ -167,17 +185,36 @@ update.
 
 The **Eye tracker** section of the panels holds:
 
-- **Camera** (TRACKPixx3 only) — the eye image the tracker sees, read while
-  the session is paused or calibrating and refreshed about once a second
-  through a pause, with the *eyes:* status beside it. The EyeLink's camera
-  is on its Host PC. `eyetracker.camera_image: false` turns it off, and the
-  panel says so rather than showing nothing. The copy saved to `figures/`
-  at teardown leaves the pixels out: a photograph of the subject does not
-  belong in the run directory.
+- **Camera** (TRACKPixx3 only) — the eye image the tracker sees, live while
+  the session is paused or calibrating (about fifteen frames a second while
+  paused, ten through a calibration), with the *eyes:* status and the
+  expected iris size beside it. The EyeLink's camera is on its Host PC.
+  `eyetracker.camera_image: false` turns it off, and the panel says so rather
+  than showing nothing. The copy saved to `figures/` at teardown leaves the
+  pixels out: a photograph of the subject does not belong in the run
+  directory.
+
+  Under the image, **Iris size** sets the diameter, in camera px, that the
+  TRACKPixx3 searches its image for when it fits each pupil: the setting
+  LabMaestro adjusts from its camera view. When an eye keeps dropping out of
+  tracking, step it with − and + (2 px at a time) or type a value, while
+  paused or during a calibration, and watch the *eyes:* line. The session
+  reads the device back and shows what it holds. Every change is logged and
+  recorded as a TRACKER_SETTING event with the value and the one before it.
+  Set `eyetracker.iris_size_px` to start every session from a known size;
+  left unset, the session logs the size the device holds.
 - **Calibration** — the verdict (calibrated / NOT calibrated / aborted, or
   *result unknown* when the tracker reported nothing either way — an EyeLink
   Host PC that never ran one, or the scripted tracker in tests), layout,
-  target count, advance mode, eye, time, and the backend's note.
+  target count, advance mode, eye, time, and the backend's note. After a
+  TRACKPixx3 calibration that took, it is a **plot** like the validation's:
+  each target, and where the fitted gaze model puts each eye's fixation on it,
+  with each eye's mean and worst error. The session keeps the raw eye vectors
+  the device measured at each target and evaluates the polynomial the device
+  fitted on them, in VPixx's own form (pypixxlib's calibration example), so it
+  is the plot LabMaestro shows. A calibration is a fit to those very
+  fixations, so its errors flatter it; the validation measures the fit on
+  fresh ones. The CALIBRATION event carries the same per-target numbers.
 - **Validation** — targets and measured gaze positions on a degree grid at
   equal aspect, with mean and worst error, misses, and the verdict; the
   per-target errors under the plot.
@@ -223,6 +260,7 @@ devices:
     accuracy_max_deg: 1.0          # worst target error a validation may have
     drift_max_deg: 3.0             # largest offset a drift correction will apply
     camera_image: true             # TRACKPixx3 only: the dashboard's camera panel
+    iris_size_px: 120              # TRACKPixx3 only: expected iris size, camera px
 ```
 
 Every field is checked when the rig loads: a layout the EyeLink does not

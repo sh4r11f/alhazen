@@ -47,6 +47,11 @@ FAULT_COLOR = (1.0, -0.30, -0.55)
 # subject looking at the screen during a break must not be looking at the
 # colour that means something went wrong.
 REST_COLOR = (-0.20, 0.90, 0.10)
+# A warning: something to look at and decide on, such as a validation over its
+# limit, that the experimenter may accept and resume on. Amber, yellower than
+# the pause's orange and well clear of the fault's red, so it reads as "decide"
+# rather than "stopped".
+WARNING_COLOR = (1.0, 0.62, -0.85)
 
 
 @dataclass(frozen=True)
@@ -165,6 +170,7 @@ def build_pause_menu(
     has_dashboard: bool = False,
     fault: str | None = None,
     rest: str | None = None,
+    warning: str | None = None,
     keymap: dict[str, Command] | None = None,
     resumes_in_s: float | None = None,
 ) -> PauseMenu:
@@ -180,6 +186,10 @@ def build_pause_menu(
     know which key resumes it. ``rest`` is the scheduled break between blocks,
     headed with how far the session has got and drawn in its own colour, so a
     subject resting is never looking at the screen a fault puts up.
+    ``warning`` heads the menu with something to decide rather than a fault,
+    such as a validation over its limit, in its own amber and with every
+    control kept: resuming on it is allowed, and is the experimenter's call.
+    A pause has one heading, so a warning comes without a fault or a rest.
     """
     keymap = DEFAULT_KEYMAP if keymap is None else keymap
     present = {"reward": has_reward, "training": has_training}
@@ -226,6 +236,8 @@ def build_pause_menu(
 
     if fault is not None and rest is not None:
         raise ValueError("a pause is a fault or a rest, not both")
+    if warning is not None and (fault is not None or rest is not None):
+        raise ValueError("a warning heads its own pause, without a fault or a rest")
     subtitle = "the session is paused — nothing is being recorded"
     if rest is not None:
         subtitle = "between blocks — nothing is being recorded; SPACE when the subject is ready"
@@ -238,11 +250,19 @@ def build_pause_menu(
     if has_dashboard:
         subtitle += "\nthe dashboard's buttons are live too"
     return PauseMenu(
-        title=fault or rest or "PAUSED",
+        title=fault or warning or rest or "PAUSED",
         subtitle=subtitle,
         now=now,
         in_trial=in_trial,
-        color=FAULT_COLOR if fault else REST_COLOR if rest else PAUSE_COLOR,
+        color=(
+            FAULT_COLOR
+            if fault
+            else WARNING_COLOR
+            if warning
+            else REST_COLOR
+            if rest
+            else PAUSE_COLOR
+        ),
     )
 
 

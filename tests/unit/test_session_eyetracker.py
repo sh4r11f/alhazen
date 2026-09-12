@@ -26,6 +26,7 @@ from alhazen.devices.eyetracker.scripted import ScriptedTracker
 from alhazen.devices.eyetracker.viewpixx import eye_status_text
 from alhazen.errors import TrackerError
 from alhazen.session.eyetracker import (
+    CAMERA_STREAM_S,
     PROCEDURE_STATUS,
     PROGRESS_PUBLISH_S,
     SECTION,
@@ -217,6 +218,7 @@ class TestCalibrate:
                     "eye": "left",
                     "advance": "manual",
                     "note": "Host PC: GOOD",
+                    "targets": [],
                 },
             )
         ]
@@ -572,6 +574,84 @@ class TestCameraPanel:
         assert base64.b64decode(encode_image(pixels)) == b"\x01\x02\x03\x04"
 
 
+class TestCameraStream:
+    """With a dashboard open, frames stream on their own channel as often as
+    one is due, and the state's Camera panel stops carrying the pixels."""
+
+    @staticmethod
+    def streaming(session: Any) -> tuple[Any, list[CameraFrame]]:
+        s = session(CameraTracker)
+        frames: list[CameraFrame] = []
+        s.monitor.camera_sink = frames.append
+        return s, frames
+
+    def test_without_a_sink_nothing_is_read(self, session) -> None:
+        """A session with no dashboard open must not spend device reads on
+        frames nobody will see."""
+        s = session(CameraTracker)
+        s.monitor.stream_camera()
+        assert s.tracker.reads == 0
+
+    def test_a_frame_is_sent_at_most_once_per_interval(self, session) -> None:
+        s, frames = self.streaming(session)
+        s.monitor.stream_camera()
+        s.monitor.stream_camera()  # the same instant: not due
+        assert (s.tracker.reads, len(frames)) == (1, 1)
+        s.clock.advance(CAMERA_STREAM_S / 2)
+        s.monitor.stream_camera()
+        assert len(frames) == 1
+        s.clock.advance(CAMERA_STREAM_S / 2)
+        s.monitor.stream_camera()
+        assert len(frames) == 2
+        assert frames[1].t == pytest.approx(CAMERA_STREAM_S)
+
+    def test_a_failed_read_sends_nothing_and_says_why(self, session, caplog) -> None:
+        s, frames = self.streaming(session)
+        s.tracker.camera_error = TrackerError("device busy")
+        with caplog.at_level(logging.WARNING, logger="alhazen.session.eyetracker"):
+            s.monitor.stream_camera()
+        assert frames == []
+        assert "camera image not read: device busy" in caplog.text
+        data = s.panel("Camera", camera=True)["data"]
+        assert data["stream"] is True
+        assert data["note"] == "camera image unavailable: device busy"
+
+    def test_every_progress_report_streams_while_publishes_stay_throttled(self, session) -> None:
+        """A calibration is when the eye is watched: its 0.1 s reports each
+        carry a frame, and only every 0.5 s rebuilds the dashboard state."""
+        s, frames = self.streaming(session)
+        for _ in range(10):
+            s.monitor._on_progress("calibrating", "target 1 of 5")
+            s.clock.advance(0.1)
+        assert len(frames) == 10
+        assert len(s.published) == 2
+
+    def test_a_streaming_panel_carries_no_pixels_and_reads_no_frame(self, session) -> None:
+        s, _frames = self.streaming(session)
+        s.clock.advance(2.0)
+        s.monitor.stream_camera()
+        data = s.panel("Camera", camera=True)["data"]
+        assert data["stream"] is True and data["pixels"] == ""
+        assert (data["width"], data["height"]) == (4, 3)
+        assert data["stats"][0] == {"label": "read at", "value": "2.0 s"}
+        assert data["stats"][1] == {"label": "eyes", "value": "both tracked"}
+        assert s.tracker.reads == 1  # the stream's read, none of the panel's own
+
+    def test_before_the_first_frame_a_stream_waits_for_it(self, session) -> None:
+        s, _frames = self.streaming(session)
+        data = s.panel("Camera", camera=True)["data"]
+        assert data["form"] == "image" and data["stream"] is True
+        assert (data["width"], data["height"], data["pixels"]) == (0, 0, "")
+        assert s.tracker.reads == 0
+
+    def test_the_saved_copy_is_never_a_stream(self, session) -> None:
+        s, _frames = self.streaming(session)
+        s.monitor.stream_camera()
+        data = s.panel("Camera", camera=False, image=False)["data"]
+        assert "stream" not in data and data["pixels"] == ""
+        assert data["note"] == "image left out of the saved copy"
+
+
 class TestCalibrationPanel:
     def test_result_as_a_stat_tile(self, session) -> None:
         s = session(validate_after_calibration=False)
@@ -604,6 +684,66 @@ class TestCalibrationPanel:
         s.monitor.calibrate()
         data = s.panel("Calibration")["data"]
         assert data["value"] == "result unknown" and "status" not in data
+
+
+class TestCalibrationPlotPanel:
+    """A calibration that carries its targets' fitted gaze is plotted like
+    the validation; one that does not stays a stat tile."""
+
+    @staticmethod
+    def fitted(session: Any) -> Any:
+        import dataclasses
+
+        from alhazen.devices.eyetracker.protocol import CalibrationTarget
+
+        s = session(validate_after_calibration=False)
+        centre = CalibrationTarget(
+            target_px=(0.0, 0.0),
+            left_px=(0.0, 0.0),
+            right_px=(30.0, 0.0),
+            left_error_deg=0.0,
+            right_error_deg=SCREEN.px2deg(30.0),
+        )
+        edge = CalibrationTarget(
+            target_px=(100.0, 0.0),
+            left_px=None,
+            right_px=(100.0, 0.0),
+            left_error_deg=None,
+            right_error_deg=0.0,
+        )
+        s.tracker.calibration = dataclasses.replace(result(True), targets=(centre, edge))
+        s.monitor.calibrate()
+        return s
+
+    def test_targets_and_each_eyes_fitted_gaze_on_a_degree_grid(self, session) -> None:
+        s = self.fitted(session)
+        data = s.panel("Calibration")["data"]
+        assert data["form"] == "scatter" and data["equal_aspect"] is True
+        assert data["targets"] == [[0.0, 0.0], [SCREEN.px2deg(100.0), 0.0]]
+        assert [series["name"] for series in data["series"]] == ["left eye", "right eye"]
+        # The left eye was not measured at the edge target: one point, not two.
+        assert len(data["series"][0]["points"]) == 1
+        assert len(data["series"][1]["points"]) == 2
+        stats = {stat["label"]: stat["value"] for stat in data["stats"]}
+        assert stats["verdict"] == "calibrated"
+        assert stats["left worst"] == "0.00°"
+        assert stats["right worst"] == f"{SCREEN.px2deg(30.0):.2f}°"
+        assert "flatters the fit" in data["note"]
+
+    def test_the_event_carries_the_same_numbers(self, session) -> None:
+        s = self.fitted(session)
+        ((name, payload),) = [event for event in s.events if event[0] == "CALIBRATION"]
+        assert [target["target_px"] for target in payload["targets"]] == [[0.0, 0.0], [100.0, 0.0]]
+        assert payload["targets"][0]["right_error_deg"] == SCREEN.px2deg(30.0)
+        assert payload["targets"][1]["left_px"] is None
+
+    def test_a_result_without_targets_stays_a_stat_tile(self, session) -> None:
+        s = session(validate_after_calibration=False)
+        s.tracker.calibration = result(True)
+        s.monitor.calibrate()
+        assert s.panel("Calibration")["data"]["form"] == "stat"
+        ((_name, payload),) = [event for event in s.events if event[0] == "CALIBRATION"]
+        assert payload["targets"] == []
 
 
 class TestValidationPanel:
@@ -695,3 +835,96 @@ class TestDriftPanel:
         data = s.panel("Drift correction")["data"]
         assert data["value"] == "—" and data["label"] == "not applied"
         assert data["note"] == "aborted" and data["status"] == "critical"
+
+
+class IrisTracker(CameraTracker):
+    """A camera tracker with the TRACKPixx3's expected iris size setting."""
+
+    def __init__(self, clock: FakeClock) -> None:
+        super().__init__(clock)
+        self.iris = 90
+        self.iris_error: Exception | None = None
+
+    def iris_size(self) -> int:
+        return self.iris
+
+    def set_iris_size(self, px: int) -> int:
+        if self.iris_error is not None:
+            raise self.iris_error
+        self.iris = px
+        return px
+
+
+class TestIrisSizeFromTheDashboard:
+    """The iris size is changed from the dashboard and every change is on the
+    record; a change the tracker refuses is said, and recorded as nothing."""
+
+    def test_a_change_is_applied_logged_and_recorded(self, session, caplog) -> None:
+        s = session(IrisTracker)
+        with caplog.at_level(logging.INFO, logger="alhazen.session.eyetracker"):
+            message = s.monitor.set_iris_size(120)
+        assert message == "Iris size set to 120 px (was 90 px)."
+        assert s.tracker.iris == 120
+        assert s.events == [
+            ("TRACKER_SETTING", {"setting": "iris_size_px", "value": 120, "previous": 90})
+        ]
+        assert "expected iris size changed from 90 to 120 camera px" in caplog.text
+
+    def test_a_refused_change_is_said_and_not_recorded(self, session, caplog) -> None:
+        s = session(IrisTracker)
+        s.tracker.iris_error = TrackerError("the TRACKPixx3 refused iris size 120 px: DPX_ERR")
+        with caplog.at_level(logging.ERROR, logger="alhazen.session.eyetracker"):
+            message = s.monitor.set_iris_size(120)
+        assert message == "Iris size not changed: the TRACKPixx3 refused iris size 120 px: DPX_ERR"
+        assert s.events == []
+        assert "iris size not changed" in caplog.text
+
+    def test_a_tracker_without_the_setting_says_so(self, session) -> None:
+        s = session(CameraTracker)
+        assert s.monitor.set_iris_size(120) == (
+            "This eye tracker has no iris size setting; nothing changed."
+        )
+        assert s.events == []
+
+    def test_a_setting_lands_during_a_procedure_and_is_published_at_once(self, session) -> None:
+        """An eye dropping out mid-calibration is when the size is changed."""
+        s = session(IrisTracker)
+        queued = [[("iris_size_px", 110)]]
+        s.monitor.settings_source = lambda: queued.pop(0) if queued else []
+        s.monitor._on_progress("calibrating", "target 1 of 5 · eyes: left only")
+        s.monitor._on_progress("calibrating", "target 1 of 5 · eyes: both tracked")
+        assert s.tracker.iris == 110
+        # The report carrying the change is published even inside the throttle
+        # window; the report after it, with nothing new, is not.
+        assert s.published == [
+            (
+                "calibrating",
+                "calibrating: target 1 of 5 · eyes: left only"
+                " · Iris size set to 110 px (was 90 px).",
+            )
+        ]
+
+    def test_an_unknown_setting_is_refused_loudly(self, session, caplog) -> None:
+        s = session(IrisTracker)
+        s.monitor.settings_source = lambda: [("gain", 3)]
+        with caplog.at_level(logging.ERROR, logger="alhazen.session.eyetracker"):
+            messages = s.monitor.service_dashboard()
+        assert messages == ["No tracker setting called 'gain'; nothing changed."]
+        assert "tracker setting 'gain'" in caplog.text
+        assert s.tracker.iris == 90
+
+    def test_the_camera_panel_offers_the_setting_and_shows_the_value(self, session) -> None:
+        s = session(IrisTracker)
+        data = s.panel("Camera", camera=True)["data"]
+        assert data["controls"] == [
+            {
+                "setting": "iris_size_px",
+                "label": "Iris size",
+                "unit": "px",
+                "value": 90,
+                "min": 1,
+                "max": 512,
+                "step": 2,
+            }
+        ]
+        assert {"label": "iris size", "value": "90 px"} in data["stats"]
