@@ -40,8 +40,9 @@ src/alhazen/
 ├── data/           # naming, SessionPaths, manifest, participants registry
 ├── dashboard/      # isolated local HTTP process, panel statistics, and the browser page
 ├── testing/        # PUBLIC fakes: FakeClock/FakeDisplay/FakeStimulus/Scripted*/EventCollector
+│                  # and SortedSpikePublisher, the sorter that lives outside this repo
 ├── _scaffold/      # the template `alhazen new` renders
-└── cli/            # new · run · validate · check-rig · calibrate · report
+└── cli/            # new · run · validate · check-rig · sim-sorter · calibrate · report
 ```
 
 Layering is enforced by import-linter (pyproject `[tool.importlinter]`),
@@ -303,8 +304,8 @@ records its white/black trace into `states` instead of drawing.
 ### 4.6 `alhazen check-rig`
 
 `check_rig(rig, pulse)` returns one `CheckResult` per component (config,
-data_root, eyetracker, reward, sync); the CLI prints them and exits 1 if any
-failed. Every check runs even after one fails — whoever came to check the
+monitor, data_root, eyetracker, reward, sync, recording, spikes); the CLI
+prints them and exits 1 if any failed. Every check runs even after one fails — whoever came to check the
 whole rig wants the complete picture from one invocation. It constructs the
 *same* backend objects a session would (`make_tracker` / `make_reward` /
 `make_sync`), so a clean check predicts a working session instead of
@@ -312,6 +313,17 @@ exercising a parallel code path. With `--pulse` it fires one 50 ms reward
 pulse and one pulse per mapped sync line, because constructing a backend only
 proves the SDK imports. It never opens a window, and says so rather than
 implying the display was verified.
+
+One check depends on something no repository here contains: `sorted_stream`
+spikes come from a real-time sorter, somebody else's program on somebody
+else's machine, so `FAIL spikes` was the one line an experimenter could not
+have seen before the morning it mattered. `testing/sorter.py` closes that
+gap — it publishes the `docs/live-spikes.md` contract (and, under `fault`,
+each of the ways that contract gets broken), so the whole checkout including
+its failures is rehearsable against `examples/rig-rehearsal.yaml` with no
+hardware. It belongs in `testing/` rather than `devices/` for the same reason
+`FakeDisplay` does: it is the *other side* of a seam, not a backend a session
+ever constructs.
 
 ### 4.7 Two eye trackers behind one seam
 
@@ -952,6 +964,7 @@ parallel implementation is a tool whose OK means nothing.
 | `alhazen run --task ...` | run one session of an installed task, found through the `alhazen.tasks` entry-point group; picks the next free run number, prompts for subject and session if omitted |
 | `alhazen validate --rig` | is this config file well-formed? |
 | `alhazen check-rig --rig` | is this rig actually wired? Constructs the real backends; `--pulse` fires the pump and the sync lines |
+| `alhazen sim-sorter` | publish the sorted-spike wire contract, so `check-rig` can be rehearsed with no sorter and no probe; `--fault` publishes a named non-conformance instead |
 | `alhazen calibrate ruler\|gamma` | draw a bar of a known angular size on the rig's own display and say what it should measure; fit and store a gamma curve from photometer readings |
 | `alhazen report --run` | what happened, and does the data check out? With `--neural`, aligns the clocks and measures display latency |
 

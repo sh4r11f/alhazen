@@ -77,6 +77,20 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Added
 
+- **`alhazen sim-sorter`, and a rig config that rehearses the whole
+  checkout.** The sorted-spike sorter is the one device `check-rig` depends
+  on that no repository here contains — it is somebody else's program, on
+  somebody else's machine — which made `FAIL spikes` the one line an
+  experimenter met for the first time on the morning it mattered. The new
+  command publishes the `docs/live-spikes.md` wire contract over ZeroMQ, so
+  `alhazen check-rig --pulse` runs end to end with no probe in anything, and
+  `--fault silent|announce_once|never_units|no_seq` publishes the specific
+  non-conformances the contract names, so the failures can be rehearsed too
+  rather than trusted. `examples/rig-rehearsal.yaml` wires every device in
+  simulation and lists exactly which lines become the lab rig. The spikes are
+  Poisson noise with no receptive fields: it simulates the transport, not the
+  brain, and says so on every startup. See
+  [docs/pre-session-checkout.md](docs/pre-session-checkout.md).
 - **Figure export.** Every chart panel saves as an SVG at 89 mm or 183 mm, or
   as a PNG at 600 dpi, redrawn in the light theme with its styles, panel
   letter and legend inside the file. See "Figures for publication" in
