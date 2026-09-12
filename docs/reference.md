@@ -200,6 +200,13 @@ The public fakes an experiment package uses to test its own task.
 
 ::: alhazen.testing
 
+The sorted-spike publisher is a fake of a different kind: not a device a
+session builds, but the external sorter a session *subscribes to*. See
+[docs/pre-session-checkout.md](pre-session-checkout.md) for the rehearsal it
+makes possible.
+
+::: alhazen.testing.sorter
+
 ## Errors
 
 ::: alhazen.errors

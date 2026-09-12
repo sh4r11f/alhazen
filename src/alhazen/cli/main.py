@@ -4,6 +4,7 @@
     alhazen run --task ...    run one session of an installed task
     alhazen validate --rig    is this config file well-formed?
     alhazen check-rig --rig   is this rig actually wired? (before the subject)
+    alhazen sim-sorter        stand in for the real-time spike sorter (no rig)
     alhazen calibrate ...     verify the monitor's geometry and gamma
     alhazen monitor ...       tell PsychoPy about this rig's monitor
     alhazen report --run      what happened, and does the data check out?
@@ -30,6 +31,7 @@ from alhazen.config.loader import load_rig
 from alhazen.errors import AlhazenError, ConfigError
 from alhazen.modes import Mode, flag_refusal
 from alhazen.session.checks import check_rig, format_result
+from alhazen.testing.sorter import FAULTS
 from alhazen.version import get_version
 
 
@@ -98,6 +100,54 @@ def main(argv: list[str] | None = None) -> int:
         "--pulse",
         action="store_true",
         help="also fire one real reward pulse and one pulse per mapped sync line",
+    )
+
+    sorter = sub.add_parser(
+        "sim-sorter",
+        help="publish a simulated sorted-spike stream, to rehearse check-rig with no rig",
+    )
+    sorter.add_argument(
+        "--address",
+        default="tcp://127.0.0.1:5556",
+        help="ZeroMQ endpoint to publish on (default: %(default)s)",
+    )
+    sorter.add_argument(
+        "--units", type=int, default=4, help="how many units to publish (default: %(default)s)"
+    )
+    sorter.add_argument(
+        "--firing-hz",
+        type=float,
+        default=20.0,
+        help="mean firing rate per unit (default: %(default)s)",
+    )
+    sorter.add_argument(
+        "--sample-rate-hz",
+        type=float,
+        default=30000.0,
+        help="the acquisition sample rate this stream claims (default: %(default)s)",
+    )
+    sorter.add_argument(
+        "--heartbeat-ms",
+        type=float,
+        default=200.0,
+        help="how often to publish coverage; this is what sets the lag check-rig reports "
+        "(default: %(default)s)",
+    )
+    sorter.add_argument(
+        "--seed", type=int, default=0, help="spike-train seed (default: %(default)s)"
+    )
+    sorter.add_argument(
+        "--seconds",
+        type=float,
+        default=None,
+        help="stop after this long (default: run until interrupted)",
+    )
+    sorter.add_argument(
+        "--fault",
+        default="none",
+        choices=list(FAULTS),
+        help="publish a specific non-conformance instead, to rehearse the failure "
+        "(default: %(default)s)",
     )
 
     args = parser.parse_args(argv)
@@ -176,6 +226,9 @@ def main(argv: list[str] | None = None) -> int:
         # than omitted, so nobody reads a clean run as "everything works".
         print("     display: untested (needs a real session)")
         return 0 if all(r.ok for r in results) else 1
+
+    if args.command == "sim-sorter":
+        return _sim_sorter(args)
     return 0
 
 
@@ -697,6 +750,65 @@ def _monitor(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     except DisplayError as e:
         print(f"CANNOT REGISTER: {e}", file=sys.stderr)
         return 1
+
+
+def _sim_sorter(args: argparse.Namespace) -> int:
+    """Stand in for the real-time spike sorter, so check-rig can be rehearsed.
+
+    The sorted-spike sorter is the one thing a rig check depends on that no
+    repository here contains: it is a separate program on a separate machine.
+    That makes ``FAIL spikes`` the one line an experimenter meets for the
+    first time on the morning it matters. This command removes that excuse —
+    run it in one terminal, point a rig config's ``sorted_stream`` address at
+    it, and run the real ``alhazen check-rig --pulse`` in another.
+
+    ``--fault`` publishes a named non-conformance instead, so the failures can
+    be rehearsed too. Both of check-rig's failure messages, and the difference
+    between them, are things worth having seen before.
+    """
+    from alhazen.testing.sorter import SortedSpikePublisher, SorterSim, describe_fault
+
+    cfg = SorterSim(
+        address=args.address,
+        n_units=args.units,
+        sample_rate_hz=args.sample_rate_hz,
+        firing_hz=args.firing_hz,
+        heartbeat_period_ms=args.heartbeat_ms,
+        seed=args.seed,
+        fault=args.fault,
+    )
+    publisher = SortedSpikePublisher(cfg)
+    try:
+        address = publisher.bind()
+    except AlhazenError as e:
+        print(f"CANNOT PUBLISH: {e}", file=sys.stderr)
+        return 1
+
+    print(f"simulated sorter publishing on {address}")
+    print(
+        f"  {cfg.n_units} unit(s) {list(cfg.unit_ids)} @ {cfg.sample_rate_hz:g} Hz, "
+        f"{cfg.firing_hz:g} Hz each, seed {cfg.seed}"
+    )
+    print(f"  fault={cfg.fault}: {describe_fault(cfg.fault)}")
+    # Said every time, not buried in the docs: these spikes are Poisson noise
+    # with no receptive fields and no stimulus coupling. Somebody will
+    # eventually point an analysis at this stream, and they should be told
+    # here rather than discover it in a result.
+    print("  NOT science: Poisson noise, no receptive fields, no stimulus coupling —")
+    print("  it simulates the transport, not the brain. Nothing is written to disk.")
+    print("\n  point a rig at it:")
+    print("    devices: {spikes: {backend: sorted_stream, address: " + address + "}}")
+    print("    alhazen check-rig --rig <yaml> --pulse")
+    print("\n  Ctrl-C to stop.")
+    try:
+        publisher.run(duration_s=args.seconds)
+    except KeyboardInterrupt:
+        # An expected way to end a process whose job is to run until told to
+        # stop; a traceback here would read as a fault and is not one.
+        print("\nstopped")
+    finally:
+        publisher.close()
+    return 0
 
 
 if __name__ == "__main__":

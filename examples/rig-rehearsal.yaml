@@ -1,0 +1,92 @@
+# MACHINE: none. This is the lab rig with every device stood down.
+#
+# Its purpose is to make `alhazen check-rig --pulse` runnable end to end on a
+# machine with no probe, no solenoid, no DAQ and no acquisition host — so the
+# pre-session checkout (docs/pre-session-checkout.md) is a procedure somebody
+# has already done, rather than one they read for the first time with a
+# subject in the chair.
+#
+#   # terminal 1 — stand in for the real-time sorter
+#   alhazen sim-sorter --address tcp://127.0.0.1:5556
+#   # terminal 2
+#   alhazen check-rig --rig examples/rig-rehearsal.yaml --pulse
+#
+# Every device this framework supports is configured here, so every check
+# runs and every line is exercised. What a clean run proves is that the
+# config, the data root, the device construction, the pulse paths and the
+# whole sorted-spike wire contract work. What it proves about the rig is
+# NOTHING: no valve opened, no TTL reached a recorder, no probe was read.
+# Those need the real config on the real machine.
+#
+# TO BECOME THE LAB RIG, change these and nothing else:
+#   display.backend       simulated -> psychopy      (and fill in the monitor)
+#   eyetracker.backend    mouse_sim -> eyelink / viewpixx
+#   reward.backend        simulated -> nidaq         (check device/channel)
+#   sync.backend          simulated -> nidaq         (check every line)
+#   recording.backend     simulated -> spikeglx      (data_dir = the share)
+#   spikes.address        127.0.0.1 -> the sorter's machine
+# The event names under sync.event_lines belong to the experiment, not to
+# the rig, and are validated against the task's EventSchema when the session
+# is built — so they change with the task, not with this list.
+monitor:
+  # Geometry a real rig must measure. Left at plausible numbers here because
+  # nothing in a rehearsal depends on them; on the lab rig they decide what a
+  # degree of visual angle is, and every stimulus size with it.
+  name: rehearsal
+  width_px: 1920
+  height_px: 1080
+  width_cm: 52.0
+  distance_cm: 57.0
+  refresh_rate_hz: 120.0
+  fullscreen: false
+display:
+  # simulated, so check-rig's monitor line reports that no psychopy
+  # registration is needed rather than failing on a machine that has no
+  # psychopy monitor database. The lab rig uses psychopy and must be
+  # registered: `alhazen monitor register --rig <yaml>`.
+  backend: simulated
+  frame_qa:
+    policy: warn
+dashboard:
+  enabled: false
+  auto_open: false
+  port: 0
+devices:
+  eyetracker:
+    # The only tracker with no hardware behind it. check-rig never constructs
+    # it (it needs a window, and a window is a session), so this line reads
+    # OK with "no hardware to check" — the one device the rehearsal cannot
+    # say anything about.
+    backend: mouse_sim
+  reward:
+    # --pulse fires one 50 ms pulse through this. Simulated, so it is logged,
+    # not delivered: the pulse path runs, the solenoid does not exist.
+    backend: simulated
+    device: Dev1
+    channel: ao0
+  sync:
+    # --pulse fires one pulse per distinct line below. Three lines, so the
+    # check should report "pulsed 3 line(s)" — count that against the
+    # wiring diagram on the real rig.
+    backend: simulated
+    pulse_ms: 2.0
+    event_lines:
+      TRIAL_START: Dev1/port0/line0
+      STIM_ON: Dev1/port0/line1
+      REWARD: Dev1/port0/line2
+  recording:
+    # Checks that the acquisition host's directory is reachable — on the lab
+    # rig that is a mounted share, and a share that did not mount is the
+    # failure this line exists to catch before a session rather than after.
+    backend: simulated
+    data_dir: data-rehearsal/recording
+    run_glob: "*_g0"
+  spikes:
+    # The one check that needs something outside this repository: a real-time
+    # sorter publishing sorted units. `alhazen sim-sorter` is that something,
+    # for a rehearsal. Point this at the sorter's own machine on the lab rig.
+    backend: sorted_stream
+    address: tcp://127.0.0.1:5556
+    fetch_interval_ms: 20
+    heartbeat_timeout_ms: 2000
+data_root: data-rehearsal

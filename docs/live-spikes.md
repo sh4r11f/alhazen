@@ -172,6 +172,17 @@ it is a late joiner by construction — and reports the unit count, the
 sample rate and the covered-until lag, which is the number that decides
 whether a between-trials decode can finish in time.
 
+`alhazen sim-sorter` publishes this contract, so a consumer — check-rig
+included — can be exercised with no sorter and no probe, and so a sorter
+being written against this page has something to be compared against. Point
+the same consumer at both: if the simulated one works and yours does not, the
+difference is in your publisher. `--fault` makes it break each rule on
+purpose (`silent`, `announce_once`, `never_units`, `no_seq`), which is how
+the failures below get rehearsed rather than trusted. It is a *transport*
+simulator: the spike times are Poisson noise with no receptive fields and no
+stimulus coupling, and `backend: simulated` above is the one that models
+responses.
+
 It distinguishes the two ways that wait can end badly, because they send
 the experimenter to different places:
 

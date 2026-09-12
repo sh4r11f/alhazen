@@ -74,10 +74,55 @@ Any device left out of the rig YAML's `devices:` block reports OK with "not
 configured on this rig" — that's expected, not a check that was skipped. A
 rig without a probe today has no `spikes:`/`recording:` block at all.
 
-## If you can't run this on the rig
+## Rehearsing it, away from the rig
 
-A `--pulse` run against `backend: simulated` (or a rig with `devices: {}`)
-still exercises the config, the monitor registration and the data root, and
-is useful for confirming those before you're at the rig. It proves nothing
-about the solenoid, the DAQ, SpikeGLX or the sorter — those need this run on
-the actual machine, with everything physically connected.
+Do this once before you do it for real. Every device in the list above has a
+simulated backend, and `alhazen sim-sorter` stands in for the one piece that
+comes from outside these repositories — so the whole checkout runs, end to
+end, on a laptop:
+
+```bash
+# terminal 1 — stand in for the real-time sorter
+alhazen sim-sorter --address tcp://127.0.0.1:5556
+```
+
+```bash
+# terminal 2
+alhazen check-rig --rig examples/rig-rehearsal.yaml --pulse
+```
+
+That prints an `OK` on every line, including `spikes`, for real reasons: the
+sorter really is publishing, over a real socket, in the real wire format, and
+check-rig really is listening for it.
+
+**Rehearse the failures too**, because those are the lines you will actually
+have to read. `--fault` makes the simulated sorter misbehave in the specific
+ways the contract names:
+
+| `--fault` | what check-rig says |
+|---|---|
+| `none` | `OK spikes: ... N units @ 30000 Hz, 0 dropped, lag 15 ms` |
+| `no_seq` | `OK`, but `drops undetectable (no seq)` — the sorter sends no sequence numbers, so a dropped message cannot be noticed at all |
+| `silent` | `FAIL ... is the real-time sorter running and publishing?` — nothing on that endpoint |
+| `announce_once` | `FAIL ... the sorter never re-announced units` — it is running and publishing, and announced its units only at startup |
+| `never_units` | same `FAIL` — it never announces units at all |
+
+The last two matter most: `silent` sends you to the sorter process,
+`announce_once` sends you to [docs/live-spikes.md](live-spikes.md), and they
+are easy to confuse if you have never seen them side by side. `announce_once`
+is also the bug a lab writing its own sorter is most likely to ship, because
+it works perfectly for whoever watched the sorter start and is invisible to
+everyone else.
+
+The lag in the `OK` line tracks how often the sorter publishes coverage
+(`--heartbeat-ms`), and it is the number that decides whether a
+between-trials decode can finish in time. Compare it against the real
+sorter's.
+
+**What a clean rehearsal proves, and what it does not.** It proves the
+config, the data root, the device construction, the pulse code paths and the
+whole sorted-spike wire contract. It proves *nothing* about your rig: no
+valve opened, no TTL reached a recorder, no probe was read, and the
+simulated sorter's spikes are Poisson noise with no receptive fields and no
+relationship to anything on a screen. Everything in the list above still has
+to be run on the actual machine, with everything physically connected.
