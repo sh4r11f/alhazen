@@ -77,6 +77,25 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Added
 
+- **`alhazen check-rig --record <path>`: the checkout leaves a written
+  record.** Until now a pre-session checkout existed only as scrollback in
+  whichever terminal was open at the rig, so nothing about it could be
+  compared with the next one — and a rig that has been degrading for a
+  fortnight passes every check on the morning it finally breaks. `--record`
+  writes what each device *did*, per device: the reward pulse commanded and
+  measured, every sync line by name with what was sent on it and which events
+  it carries, what the recorder returned, how long the tracker took to
+  answer, and the sorter's measured lag, units and dropped messages — plus
+  the rig file, the alhazen version and git revision, and a timestamp. JSON
+  at the path you name (sorted keys, so two runs diff line by line) and a
+  readable rendering at `.txt` beside it; both written on a FAIL as well as a
+  PASS, because the failing record is the one that says how far each device
+  got. `CheckResult` gained an `evidence` mapping, and
+  `alhazen.session.checkout` has `read_record` and `differences` for holding
+  one checkout against another. **Nothing about the verdict changed**: `OK`,
+  `FAIL` and the exit code are still decided by the checks alone. The exact
+  command to type at the rig is in
+  [docs/pre-session-checkout.md](docs/pre-session-checkout.md).
 - **`alhazen sim-sorter`, and a rig config that rehearses the whole
   checkout.** The sorted-spike sorter is the one device `check-rig` depends
   on that no repository here contains — it is somebody else's program, on

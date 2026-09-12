@@ -167,6 +167,10 @@ cython_debug/
 /examples/*/data/
 # examples/rig-rehearsal.yaml writes here, from wherever the rehearsal is run.
 /data-rehearsal/
+# `check-rig --record` from a rehearsal in this repo. On a real rig the
+# checkouts live in the experiment package and are worth committing — it is
+# only this clone's rehearsals that are throwaway.
+/checkouts/
 *.sqlite3
 *.sqlite3-shm
 *.sqlite3-wal

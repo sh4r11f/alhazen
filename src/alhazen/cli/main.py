@@ -101,6 +101,13 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="also fire one real reward pulse and one pulse per mapped sync line",
     )
+    check.add_argument(
+        "--record",
+        default=None,
+        metavar="PATH",
+        help="write what each device did to PATH (JSON), with a readable summary "
+        "beside it as PATH.txt; written whether the check passes or fails",
+    )
 
     sorter = sub.add_parser(
         "sim-sorter",
@@ -225,6 +232,16 @@ def main(argv: list[str] | None = None) -> int:
         # means opening a window, which is a session. Said out loud rather
         # than omitted, so nobody reads a clean run as "everything works".
         print("     display: untested (needs a real session)")
+        if args.record:
+            from alhazen.session.checkout import build_record
+
+            record, summary = build_record(args.rig, results, pulse=args.pulse).write(args.record)
+            # After the lines, not instead of them, and unconditionally: the
+            # failing checkout is the one whose evidence is worth keeping, so
+            # the record is never skipped on a FAIL.
+            print(f"record:  {record}")
+            print(f"summary: {summary}")
+        # Unchanged by the record: a checkout passes on the checks alone.
         return 0 if all(r.ok for r in results) else 1
 
     if args.command == "sim-sorter":

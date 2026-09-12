@@ -36,6 +36,10 @@ The names an experiment imports directly.
 
 ::: alhazen.session.checks
 
+::: alhazen.session.checkout
+    options:
+      members: [CheckoutRecord, build_record, read_record, differences]
+
 ::: alhazen.session.database
 
 ::: alhazen.session.eyetracker

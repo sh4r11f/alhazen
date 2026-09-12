@@ -314,6 +314,14 @@ pulse and one pulse per mapped sync line, because constructing a backend only
 proves the SDK imports. It never opens a window, and says so rather than
 implying the display was verified.
 
+Each check also carries `evidence`: what that device did, in numbers. `ok`
+answers "may the session start" and is gone as soon as the terminal scrolls;
+the evidence is what makes today's checkout comparable with last week's, and
+`session/checkout.py` writes it to a file the caller names (JSON, plus a
+readable rendering beside it) on every run, passing or failing. It is
+deliberately not a gate: a record that could fail a rig would be a second,
+quieter set of thresholds living in a file nobody reads.
+
 One check depends on something no repository here contains: `sorted_stream`
 spikes come from a real-time sorter, somebody else's program on somebody
 else's machine, so `FAIL spikes` was the one line an experimenter could not

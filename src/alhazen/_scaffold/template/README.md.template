@@ -51,13 +51,16 @@ is why there is one rig file per machine.
 ## On the rig
 
 ```bash
-alhazen check-rig --rig configs/rig-lab.yaml --pulse   # before the subject arrives
+alhazen check-rig --rig configs/rig-lab.yaml --pulse --record "checkouts/$$(date +%F-%H%M).json"
 alhazen run --task $task_name --rig configs/rig-lab.yaml --sub s01 --ses 1
 ```
 
 `check-rig` constructs the same device backends a session would, so a clean
 check predicts a working session. `--pulse` fires one reward pulse and one
-pulse per sync line, so you can hear the pump and see the lines.
+pulse per sync line, so you can hear the pump and see the lines. `--record`
+writes down what each device did — the pulse commanded and measured, each
+sync line by name, the sorter's lag — so this morning's checkout can be held
+against last week's instead of scrolling out of the terminal.
 
 The lab config enables the live browser dashboard. It updates after each
 trial but remains read-only while the task is running. Press `P` on the
