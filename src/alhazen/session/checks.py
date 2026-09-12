@@ -9,13 +9,22 @@ thing that cannot be checked without becoming a session.
 Every check runs, always, even after one fails: whoever came to check the
 whole rig wants the complete picture from one invocation, not to fix one
 problem, re-run, and only then discover a second.
+
+Each result also carries ``evidence``: what that device actually *did*, in
+numbers — the pulse width that was commanded and the one that was measured,
+every sync line by name, what the recorder returned, the lag the sorter is
+running at. ``ok`` answers "may the session start"; the evidence is what
+makes today's checkout comparable with last week's, and it is the half that
+cannot be reconstructed from scrollback. :mod:`alhazen.session.checkout`
+writes it down; nothing here decides a pass on it.
 """
 
 from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from alhazen.config.models import RewardPulses, RigConfig
@@ -42,9 +51,18 @@ CHECK_PULSE = RewardPulses(n_pulses=1, pulse_ms=50, inter_pulse_ms=0)
 
 @dataclass(frozen=True)
 class CheckResult:
+    """One device's verdict, and what it did to earn it.
+
+    ``evidence`` is JSON-serializable and per-device: keys mean whatever that
+    device's check measured, and it is written whether the check passed or
+    failed — a failure's evidence is the more useful of the two, because it
+    says how far the device got before it stopped.
+    """
+
     name: str
     ok: bool
     detail: str
+    evidence: dict[str, Any] = field(default_factory=dict)
 
 
 def check_rig(rig: RigConfig, pulse: bool = False) -> list[CheckResult]:
@@ -89,6 +107,11 @@ def _check_config(rig: RigConfig) -> CheckResult:
         True,
         f"valid — {rig.display.backend} display, devices: "
         f"{', '.join(configured) if configured else 'none configured'}",
+        {
+            "display_backend": rig.display.backend,
+            "configured": configured,
+            "data_root": str(rig.data_root),
+        },
     )
 
 
@@ -100,9 +123,21 @@ def _check_monitor(rig: RigConfig) -> CheckResult:
     rig config is exactly what stops the window from opening at all, half an
     hour later, with a subject already in the chair.
     """
+    evidence: dict[str, Any] = {
+        "name": rig.monitor.name,
+        "display_backend": rig.display.backend,
+        "width_px": rig.monitor.width_px,
+        "height_px": rig.monitor.height_px,
+        "width_cm": rig.monitor.width_cm,
+        "distance_cm": rig.monitor.distance_cm,
+        "refresh_rate_hz": rig.monitor.refresh_rate_hz,
+    }
     if rig.display.backend != "psychopy":
         return CheckResult(
-            "monitor", True, f"no psychopy registration needed ({rig.display.backend} display)"
+            "monitor",
+            True,
+            f"no psychopy registration needed ({rig.display.backend} display)",
+            {**evidence, "registered": None},
         )
     try:
         registration = monitor_registry.lookup(rig.monitor.name)
@@ -110,8 +145,9 @@ def _check_monitor(rig: RigConfig) -> CheckResult:
         # A rig config that asks for the psychopy backend on a machine without
         # psychopy cannot run a session at all, so this is a rig fault, not a
         # missing niceness.
-        return CheckResult("monitor", False, str(e))
+        return CheckResult("monitor", False, str(e), {**evidence, "error": str(e)})
 
+    evidence["registered"] = registration.registered
     if not registration.registered:
         # Not a failure: sessions run unregistered, using the config's own
         # geometry. They just have no stored calibration to inherit, which is
@@ -122,18 +158,24 @@ def _check_monitor(rig: RigConfig) -> CheckResult:
             f"{rig.monitor.name!r} is not registered with psychopy — sessions will use this "
             f"config's geometry and no stored calibration "
             f"(alhazen monitor register --rig <yaml> to add it)",
+            evidence,
         )
     drift = monitor_registry.differences(rig.monitor, registration)
+    evidence["differences"] = list(drift)
     if drift:
         return CheckResult(
             "monitor",
             False,
             f"{rig.monitor.name!r} disagrees with this config ({'; '.join(drift)}) — "
             f"re-register it with `alhazen monitor register --rig <yaml>`",
+            evidence,
         )
     gamma = monitor_registry.format_gamma(registration.gamma)
     return CheckResult(
-        "monitor", True, f"{rig.monitor.name!r} registered with psychopy, gamma {gamma}"
+        "monitor",
+        True,
+        f"{rig.monitor.name!r} registered with psychopy, gamma {gamma}",
+        {**evidence, "gamma": gamma},
     )
 
 
@@ -142,31 +184,52 @@ def _check_data_root(rig: RigConfig) -> CheckResult:
     the session's only copy of its data is still in memory."""
     root = rig.data_root
     probe = root / ".alhazen-write-check"
+    evidence: dict[str, Any] = {"path": str(root), "probe": probe.name}
     try:
         root.mkdir(parents=True, exist_ok=True)
         probe.write_text("ok", encoding="utf-8")
         probe.unlink()
     except OSError as e:
-        return CheckResult("data_root", False, f"{root} is not writable: {e}")
-    return CheckResult("data_root", True, f"{root} is writable")
+        return CheckResult(
+            "data_root", False, f"{root} is not writable: {e}", {**evidence, "error": str(e)}
+        )
+    return CheckResult("data_root", True, f"{root} is writable", {**evidence, "written": True})
 
 
 def _check_eyetracker(rig: RigConfig) -> CheckResult:
     cfg = rig.devices.eyetracker
     if cfg is None:
-        return CheckResult("eyetracker", True, "not configured on this rig")
+        return CheckResult("eyetracker", True, "not configured on this rig", {"configured": False})
+    evidence: dict[str, Any] = {
+        "configured": True,
+        "backend": cfg.backend,
+        "host_ip": cfg.host_ip if cfg.backend == "eyelink" else None,
+        "simulated": cfg.backend == "mouse_sim",
+    }
     if cfg.backend == "mouse_sim":
         # Never constructed here: it needs a real window to read the mouse
         # from, and check-rig must not open one. There is no hardware behind
         # it to verify anyway.
-        return CheckResult("eyetracker", True, "mouse_sim — no hardware to check (simulated)")
+        return CheckResult(
+            "eyetracker",
+            True,
+            "mouse_sim — no hardware to check (simulated)",
+            {**evidence, "connected": None, "connect_ms": None},
+        )
 
     # display=None is safe: connect() and shutdown() — the only methods
     # called here — never touch the window; only configure() does, and
     # calibration graphics need a real session.
     tracker = make_tracker(cfg, None, Screen.from_monitor(rig.monitor), MonotonicClock())
+    started = time.perf_counter()
     try:
         tracker.connect()
+        # How long the tracker took to answer, which is the tracker's actual
+        # response and not a restatement of "it did not raise": a link that
+        # connects in 4 s today and 40 ms last week is a network or a host
+        # that has changed, and only a written number shows it.
+        evidence["connect_ms"] = round(1000.0 * (time.perf_counter() - started), 1)
+        evidence["connected"] = True
         # Release the device again: this is a smoke test, not a session, and
         # nothing should be left connected behind it. No destination — no
         # trial ran, so there is no recording to hand back.
@@ -174,49 +237,107 @@ def _check_eyetracker(rig: RigConfig) -> CheckResult:
     except AlhazenError as e:
         # Only alhazen's own device errors are a rig fault; anything else is
         # a bug here and keeps its traceback.
-        return CheckResult("eyetracker", False, str(e))
+        evidence["connected"] = False
+        evidence["connect_ms"] = round(1000.0 * (time.perf_counter() - started), 1)
+        return CheckResult("eyetracker", False, str(e), {**evidence, "error": str(e)})
     # Named by what the experimenter would have to go and check: an EyeLink
     # is reached over the network, so the IP is the useful half of the
     # message; a TRACKPixx3 is inside the display chassis and has no address
     # to get wrong, so printing one would be noise at best and misleading at
     # worst.
     where = f" at {cfg.host_ip}" if cfg.backend == "eyelink" else ""
-    return CheckResult("eyetracker", True, f"{cfg.backend}{where} responded")
+    # The console line is unchanged: how long the link took to answer is a
+    # number to compare between checkouts, not something to read out loud at
+    # the rig. It goes in the record.
+    return CheckResult("eyetracker", True, f"{cfg.backend}{where} responded", evidence)
 
 
 def _check_reward(rig: RigConfig, pulse: bool) -> CheckResult:
     cfg = rig.devices.reward
     if cfg is None:
-        return CheckResult("reward", True, "not configured on this rig")
+        return CheckResult("reward", True, "not configured on this rig", {"configured": False})
     simulated = " (simulated)" if cfg.backend == "simulated" else ""
+    evidence: dict[str, Any] = {
+        "configured": True,
+        "backend": cfg.backend,
+        "device": cfg.device,
+        "channel": cfg.channel,
+        "voltage": cfg.voltage,
+        "simulated": cfg.backend == "simulated",
+        "pulsed": pulse,
+        "n_pulses": CHECK_PULSE.n_pulses if pulse else 0,
+        "commanded_ms": float(CHECK_PULSE.pulse_ms) if pulse else None,
+        "measured_ms": None,
+    }
     try:
         reward = make_reward(cfg)
         if pulse:
+            # Wall-clock across the delivery call. On the NI-DAQ backend that
+            # call writes the buffer and blocks until the device says it has
+            # played out, so the number is the pulse the hardware ran — which
+            # is what sets the volume the subject got. It is NOT an
+            # independent measurement of the valve: a measured 50 ms with a
+            # disconnected solenoid still reads 50 ms. On a simulated backend
+            # nothing is played out at all, so it reads ~0 and says so.
+            started = time.perf_counter()
             reward.deliver(CHECK_PULSE)
+            evidence["measured_ms"] = round(1000.0 * (time.perf_counter() - started), 1)
         reward.close()
     except AlhazenError as e:
-        return CheckResult("reward", False, str(e))
+        return CheckResult("reward", False, str(e), {**evidence, "error": str(e)})
     fired = f", fired one {CHECK_PULSE.pulse_ms} ms pulse" if pulse else ""
     return CheckResult(
-        "reward", True, f"{cfg.backend} on {cfg.device}/{cfg.channel}{fired}{simulated}"
+        "reward", True, f"{cfg.backend} on {cfg.device}/{cfg.channel}{fired}{simulated}", evidence
     )
 
 
 def _check_sync(rig: RigConfig, pulse: bool) -> CheckResult:
     cfg = rig.devices.sync
     if cfg is None:
-        return CheckResult("sync", True, "not configured on this rig")
+        return CheckResult("sync", True, "not configured on this rig", {"configured": False})
     simulated = " (simulated)" if cfg.backend in ("simulated", "none") else ""
     # "none" wires nothing at all, so there is nothing to pulse either.
     lines = sorted(set(cfg.event_lines.values())) if cfg.backend != "none" else []
+    # Every line by name, with the events mapped onto it: the record has to be
+    # checkable against the wiring diagram line by line, and a count of three
+    # cannot be. Events are listed because a line is only as good as what the
+    # session will actually send down it.
+    events_by_line: dict[str, list[str]] = {line: [] for line in lines}
+    for event, line in sorted(cfg.event_lines.items()):
+        if line in events_by_line:
+            events_by_line[line].append(event)
+    per_line: list[dict[str, Any]] = [
+        {
+            "line": line,
+            "events": events_by_line[line],
+            "pulsed": False,
+            "commanded_ms": float(cfg.pulse_ms),
+            "measured_ms": None,
+        }
+        for line in lines
+    ]
+    evidence: dict[str, Any] = {
+        "configured": True,
+        "backend": cfg.backend,
+        "simulated": cfg.backend in ("simulated", "none"),
+        "pulse_requested": pulse,
+        "lines": per_line,
+    }
     sync: SyncOutput | None = None
     try:
         sync = make_sync(cfg)
         if pulse:
-            for line in lines:
-                sync.pulse(line)
+            for entry in per_line:
+                started = time.perf_counter()
+                sync.pulse(entry["line"])
+                # The NI-DAQ backend holds the line high for cfg.pulse_ms with
+                # a sleep, so measured-vs-commanded here is how much the host
+                # overshot — a line measured at 8 ms against a commanded 2 ms
+                # is a pulse a recorder may read as a different event.
+                entry["measured_ms"] = round(1000.0 * (time.perf_counter() - started), 1)
+                entry["pulsed"] = True
     except AlhazenError as e:
-        return CheckResult("sync", False, str(e))
+        return CheckResult("sync", False, str(e), {**evidence, "error": str(e)})
     finally:
         # A real sync backend holds its digital-output tasks open for its
         # whole life; leaking them from a short CLI invocation would block
@@ -224,7 +345,7 @@ def _check_sync(rig: RigConfig, pulse: bool) -> CheckResult:
         if sync is not None:
             sync.close()
     fired = f", pulsed {len(lines)}" if pulse else f", {len(lines)}"
-    return CheckResult("sync", True, f"{cfg.backend}{fired} line(s){simulated}")
+    return CheckResult("sync", True, f"{cfg.backend}{fired} line(s){simulated}", evidence)
 
 
 def _check_recording(rig: RigConfig) -> CheckResult:
@@ -236,15 +357,27 @@ def _check_recording(rig: RigConfig) -> CheckResult:
     """
     cfg = rig.devices.recording
     if cfg is None:
-        return CheckResult("recording", True, "not configured on this rig")
+        return CheckResult("recording", True, "not configured on this rig", {"configured": False})
     simulated = " (simulated)" if cfg.backend == "simulated" else ""
+    data_dir = Path(cfg.data_dir)
+    evidence: dict[str, Any] = {
+        "configured": True,
+        "backend": cfg.backend,
+        "data_dir": str(cfg.data_dir),
+        "run_glob": cfg.run_glob,
+        "exists": data_dir.exists(),
+        # What check() handed back, verbatim: None is the recorder saying
+        # nothing is wrong, and a sentence is the recorder saying what is.
+        "returned": None,
+    }
     try:
         problem = make_recording(cfg).check()
     except AlhazenError as e:
-        return CheckResult("recording", False, str(e))
+        return CheckResult("recording", False, str(e), {**evidence, "error": str(e)})
+    evidence["returned"] = problem
     if problem is not None:
-        return CheckResult("recording", False, problem)
-    return CheckResult("recording", True, f"{cfg.backend} at {cfg.data_dir}{simulated}")
+        return CheckResult("recording", False, problem, evidence)
+    return CheckResult("recording", True, f"{cfg.backend} at {cfg.data_dir}{simulated}", evidence)
 
 
 def _check_spikes(rig: RigConfig) -> CheckResult:
@@ -263,28 +396,46 @@ def _check_spikes(rig: RigConfig) -> CheckResult:
     """
     cfg = rig.devices.spikes
     if cfg is None:
-        return CheckResult("spikes", True, "not configured on this rig")
+        return CheckResult("spikes", True, "not configured on this rig", {"configured": False})
+    evidence: dict[str, Any] = {
+        "configured": True,
+        "backend": cfg.backend,
+        "address": cfg.address if cfg.backend == "sorted_stream" else None,
+        "simulated": cfg.backend == "simulated",
+        "connected": False,
+        "units": None,
+        "lag_ms": None,
+        "dropped_messages": None,
+        "listened_s": None,
+        "publishing": None,
+        "units_announced": None,
+        "reported": None,
+    }
     source = make_spikes(cfg)
     try:
         source.connect()
+        evidence["connected"] = True
         detail = (
-            _listen_for_units(source, cfg) if cfg.backend == "sorted_stream" else source.describe()
+            _listen_for_units(source, cfg, evidence)
+            if cfg.backend == "sorted_stream"
+            else source.describe()
         )
+        evidence["reported"] = detail
     except AlhazenError as e:
         # One path for every way this can go wrong, including a stream that
         # is publishing but unusable. A listen that returned its error as a
         # detail string would report it under an OK, which is the exact
         # false clean bill of health this backend's check exists to refuse.
-        return CheckResult("spikes", False, str(e))
+        return CheckResult("spikes", False, str(e), {**evidence, "error": str(e)})
     finally:
         # Nothing must be left holding the command-server connection or the
         # socket: the session that is about to start needs both.
         source.close()
     simulated = " (simulated)" if cfg.backend == "simulated" else ""
-    return CheckResult("spikes", True, f"{detail}{simulated}")
+    return CheckResult("spikes", True, f"{detail}{simulated}", evidence)
 
 
-def _listen_for_units(source: Any, cfg: Any) -> str:
+def _listen_for_units(source: Any, cfg: Any, evidence: dict[str, Any]) -> str:
     """Wait for the sorter to announce ``units``, then report the lag.
 
     check-rig is *by definition* a late joiner: the sorter has been
@@ -307,7 +458,10 @@ def _listen_for_units(source: Any, cfg: Any) -> str:
 
     Raises ``SpikeSourceError`` for every failure, including nothing
     arriving at all, so the caller has one path to report rather than a
-    string it has to inspect.
+    string it has to inspect. ``evidence`` is filled in as the listen
+    proceeds, so a raise still leaves behind how long it listened and whether
+    anything was publishing — which is the whole difference between the two
+    failures, written down instead of only said.
     """
     clock = MonotonicClock()
     source.configure(clock)
@@ -327,6 +481,11 @@ def _listen_for_units(source: Any, cfg: Any) -> str:
         if source.awaiting_units:
             budget_s = units_budget_s
         time.sleep(0.02)
+    evidence["listened_s"] = round(time.monotonic() - started, 2)
+    # Two separate facts, and the pair is what names the fault: something on
+    # the endpoint at all, and a timebase from it.
+    evidence["publishing"] = bool(source.n_channels or source.awaiting_units)
+    evidence["units_announced"] = bool(source.n_channels)
     if not source.n_channels:
         if source.awaiting_units:
             # The distinction worth making: something IS publishing, so the
@@ -355,7 +514,10 @@ def _listen_for_units(source: Any, cfg: Any) -> str:
         covered = source.drain().covered_until
     lag = "lag unknown (no timed message yet)"
     if covered is not None:
-        lag = f"lag {1000.0 * (clock.now() - covered):.0f} ms"
+        evidence["lag_ms"] = round(1000.0 * (clock.now() - covered), 1)
+        lag = f"lag {evidence['lag_ms']:.0f} ms"
+    evidence["units"] = source.n_channels
+    evidence["dropped_messages"] = source.dropped_messages
     return f"{source.describe()}, {lag}"
 
 
