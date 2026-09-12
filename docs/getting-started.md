@@ -157,4 +157,6 @@ Every session built from that config applies it when the display opens.
 `check-rig` constructs the same device objects a session would, so a clean
 check actually predicts a working session. `--pulse` fires one reward pulse
 and one pulse per sync line, so you can hear the pump and see the lines on a
-scope before an animal is in the chair.
+scope before an animal is in the chair. See
+[docs/pre-session-checkout.md](pre-session-checkout.md) for what each line of
+its output means and what to physically verify against it.
