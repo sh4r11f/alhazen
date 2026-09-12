@@ -161,7 +161,9 @@ class TestWhatTheRecordSaysEachDeviceDid:
         # None is the recorder saying nothing is wrong — kept verbatim,
         # because "OK" alone does not say which directory it looked at.
         assert recording["returned"] is None
-        assert recording["data_dir"].endswith("data-rehearsal/recording")
+        # By parts, not by suffix: the record writes the path as this machine
+        # spells it, and the rig that matters most here is the Windows one.
+        assert Path(recording["data_dir"]).parts[-2:] == ("data-rehearsal", "recording")
         # And the pairing this exists to expose: the simulated recorder
         # reported nothing wrong about a directory that is not there. On the
         # lab rig the spikeglx backend would have said so; here the OK is the
