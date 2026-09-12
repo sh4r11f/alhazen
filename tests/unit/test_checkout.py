@@ -337,9 +337,7 @@ class TestTheCommandTheExperimenterTypes:
         assert "OK   reward:" in out and "display: untested" in out
         assert read_record(destination)["devices"]["reward"]["evidence"]["measured_ms"] is not None
 
-    def test_the_command_the_doc_tells_the_experimenter_to_type_still_works(
-        self, tmp_path, capsys
-    ):
+    def test_the_command_the_doc_gives_still_works(self, tmp_path, capsys):
         """The doc names one exact command. This runs *that* command — its
         own tokens, off the page — so it cannot rot into an option that no
         longer exists while every test here stays green."""
