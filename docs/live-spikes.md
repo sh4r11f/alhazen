@@ -109,7 +109,8 @@ The sorter is a ZeroMQ `PUB` socket; alhazen subscribes. Every message is
 a multipart frame whose first frame is a JSON header. Three types:
 
 ```jsonc
-// "units" — MUST be the first message, and repeated whenever the set changes.
+// "units" — MUST be sent first, whenever the set changes, AND at least
+// once a second thereafter even when nothing has changed.
 {"type": "units", "unit_ids": [3, 9, 14], "labels": ["good", "good", "mua"],
  "sample_rate_hz": 30000}
 
@@ -126,11 +127,30 @@ a multipart frame whose first frame is a JSON header. Three types:
 Four rules the consumer enforces, each because the alternative fails
 quietly:
 
-- **The sample rate rides on `units`, which must come first.** Nothing can
-  be placed on a clock without it, and a timebase built on a rate of zero
-  would stack every spike at one instant. A `spikes` or `heartbeat`
-  arriving before any `units` is refused by name, and so is a rate that
-  changes mid-session.
+- **The sample rate rides on `units`, which must be re-announced at least
+  every 1000 ms.** Nothing can be placed on a clock without it, and a
+  timebase built on a rate of zero would stack every spike at one instant.
+  Announcing it once at startup is not enough, because *every* subscriber to
+  a `PUB` socket joins a stream already in progress — `alhazen check-rig`
+  always does, and a session's own source does whenever the sorter was
+  started first. A contract met only by the first message would make a
+  `FAIL spikes` on a perfectly healthy rig the normal outcome. So the
+  announcement is periodic, and the consumer treats timed messages arriving
+  before it as normal: it **holds** them, and places them once the rate
+  arrives, so a late joiner loses nothing and nothing is placed on a clock
+  that does not exist yet. A stream that publishes for **2000 ms** — two
+  periods, so one announcement dropped by the socket is not a fault, and
+  never less than this stream's own `heartbeat_timeout_ms` — while never
+  announcing `units` is refused by name, as a sorter that never re-announced
+  units. A rate that changes mid-session is refused too.
+
+  *Why 1000 ms:* short against the 2000 ms default `heartbeat_timeout_ms`,
+  so a joiner hears an announcement inside one silence budget and check-rig
+  hears one, usually two, inside its own wait; long against the 200 ms
+  heartbeat period, so re-announcing costs one message in five and a few
+  tens of bytes a second. A sorter with a large unit set may send `labels`
+  only when the set actually changes; `unit_ids` and `sample_rate_hz` are
+  what the periodic message exists to carry.
 - **`covered_until_sample` is on every timed message**, including
   heartbeats. It is what lets a consumer wait for a window to be complete
   instead of counting early, and a silent stretch must still make
@@ -147,10 +167,20 @@ quietly:
 `alhazen check-rig` **listens** for this backend rather than only opening
 the socket: a SUB socket connects successfully to an endpoint nobody is
 publishing on, so a connect-only check would give a dead sorter a clean
-bill of health. It waits up to `heartbeat_timeout_ms` for a `units`
-message and reports the unit count, the sample rate and the covered-until
-lag — which is the number that decides whether a between-trials decode can
-finish in time.
+bill of health. It waits for a `units` message — a *re-announcement*, since
+it is a late joiner by construction — and reports the unit count, the
+sample rate and the covered-until lag, which is the number that decides
+whether a between-trials decode can finish in time.
+
+It distinguishes the two ways that wait can end badly, because they send
+the experimenter to different places:
+
+- nothing arrives at all within `heartbeat_timeout_ms` (floor 0.5 s) — the
+  sorter is not running, or nothing is bound to that endpoint;
+- messages arrive but no `units` within 2000 ms (or the silence budget, if
+  that is longer) — the sorter is running and publishing, and is
+  non-conformant: it never re-announced units, so no subscriber that did not
+  witness its startup can recover the timebase.
 
 ## The live-analysis seam: `Task.live_analysis`
 

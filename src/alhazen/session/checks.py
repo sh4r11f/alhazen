@@ -23,7 +23,11 @@ from alhazen.core.clock import MonotonicClock
 from alhazen.devices.eyetracker import make_tracker
 from alhazen.devices.recording import make_recording
 from alhazen.devices.reward import make_reward
-from alhazen.devices.spikes import make_spikes
+from alhazen.devices.spikes import (
+    UNITS_GRACE_MS,
+    UNITS_REANNOUNCE_PERIOD_MS,
+    make_spikes,
+)
 from alhazen.devices.sync import SyncOutput, make_sync
 from alhazen.display import monitors as monitor_registry
 from alhazen.display.screen import Screen
@@ -281,7 +285,15 @@ def _check_spikes(rig: RigConfig) -> CheckResult:
 
 
 def _listen_for_units(source: Any, cfg: Any) -> str:
-    """Wait for the sorter's first ``units`` message, then report the lag.
+    """Wait for the sorter to announce ``units``, then report the lag.
+
+    check-rig is *by definition* a late joiner: the sorter has been
+    publishing since long before anyone ran a check. So this waits for a
+    re-announcement, not for a first announcement — the contract requires
+    one at least every ``UNITS_REANNOUNCE_PERIOD_MS`` precisely so that this
+    wait terminates on a healthy rig (docs/live-spikes.md). Timed messages
+    arriving first are held by the source, not refused; if they were
+    refused, a FAIL here would be the normal outcome on a working sorter.
 
     Polls synchronously rather than starting the background thread, for the
     same reason every other check avoids one: a check that leaves a thread
@@ -299,17 +311,40 @@ def _listen_for_units(source: Any, cfg: Any) -> str:
     """
     clock = MonotonicClock()
     source.configure(clock)
-    budget_s = max(cfg.heartbeat_timeout_ms / 1000.0, 0.5)
-    deadline = time.monotonic() + budget_s
-    while time.monotonic() < deadline:
+    # Two budgets, because there are two failures. Silence is judged against
+    # the stream's own silence budget. A stream that is talking but has not
+    # announced itself is judged against the announcement grace instead,
+    # which has nothing to do with heartbeats and must not be shortened by a
+    # rig that tightened them.
+    silence_budget_s = max(cfg.heartbeat_timeout_ms / 1000.0, 0.5)
+    units_budget_s = max(silence_budget_s, UNITS_GRACE_MS / 1000.0)
+    started = time.monotonic()
+    budget_s = silence_budget_s
+    while time.monotonic() < started + budget_s:
         source.poll_once()
         if source.n_channels:
             break
+        if source.awaiting_units:
+            budget_s = units_budget_s
         time.sleep(0.02)
     if not source.n_channels:
+        if source.awaiting_units:
+            # The distinction worth making: something IS publishing, so the
+            # endpoint and the sorter are alive; what is missing is the one
+            # message carrying the sample rate. Saying "nothing is
+            # publishing" here would send the experimenter to restart a
+            # sorter that is running fine.
+            raise SpikeSourceError(
+                f"the sorted stream at {cfg.address} is publishing, but the sorter never "
+                f"re-announced units within {units_budget_s:g} s. check-rig joins a stream "
+                f"already in progress, so the contract requires a 'units' message at least "
+                f"every {UNITS_REANNOUNCE_PERIOD_MS / 1000.0:g} s (docs/live-spikes.md); "
+                f"without one the sample rate and timebase are unrecoverable for any late "
+                f"subscriber, and every spike would land at the same instant"
+            )
         raise SpikeSourceError(
             f"no units message from the sorted stream at {cfg.address} within "
-            f"{budget_s:g} s — is the real-time sorter running and publishing?"
+            f"{silence_budget_s:g} s — is the real-time sorter running and publishing?"
         )
     # One more poll so a heartbeat that arrived just after the units message
     # has a chance to set coverage; without it the lag reads as unknown on a
