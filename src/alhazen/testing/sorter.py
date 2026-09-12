@@ -146,6 +146,9 @@ class SortedSpikePublisher:
         # stream's clock and the consumer's clock two readings of the same
         # elapsed time rather than two unrelated numbers.
         self._t0: float | None = None
+        # The last time step() was given, so a clock that ran backwards is
+        # refused rather than quietly publishing a regressed coverage.
+        self._last_step = float("-inf")
         self._last_units: float | None = None
         self._last_beat: float | None = None
         self._covered_sample = 0
@@ -198,6 +201,18 @@ class SortedSpikePublisher:
             raise AlhazenError("bind() the publisher before stepping it")
         if self._t0 is None:
             self._t0 = now
+        if now < self._last_step:
+            # Refused rather than clamped. A clock that went backwards would
+            # publish a coverage that regressed, which the consumer's
+            # timebase refuses as "the acquisition restarted" — so a caller
+            # who made this mistake would be debugging the consumer instead
+            # of their own clock. run() passes time.monotonic(), which never
+            # does this; a test driving step() by hand can.
+            raise AlhazenError(
+                f"step() went backwards in time ({self._last_step:g} -> {now:g}); "
+                f"the stream's coverage is measured from the first step and must not regress"
+            )
+        self._last_step = now
         # "silent" binds and says nothing: the endpoint exists, so a SUB
         # socket connects happily, and only a check that listens notices.
         if self._cfg.fault == "silent":

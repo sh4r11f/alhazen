@@ -282,6 +282,15 @@ class TestRefusals:
         with pytest.raises(AlhazenError):
             SorterSim(**overrides)
 
+    def test_a_clock_that_runs_backwards_is_refused(self):
+        # Clamping instead would publish a coverage that regressed, and the
+        # consumer refuses that as "the acquisition restarted" — sending
+        # whoever made the mistake to debug the wrong program.
+        pub, _socket = publisher()
+        pub.step(100.0)
+        with pytest.raises(AlhazenError, match="backwards in time"):
+            pub.step(99.0)
+
     def test_stepping_before_binding_is_refused(self):
         pub = SortedSpikePublisher(SorterSim())
         with pytest.raises(AlhazenError, match="bind"):
