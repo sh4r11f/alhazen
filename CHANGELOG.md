@@ -40,11 +40,14 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   `1)`, then a space) keeps its break and its indentation, so an indented key
   list or a Markdown list is left as laid out. `show_message(text,
   reflow=False)` keeps every break exactly. The TRACKPixx3's
-  `Calibration FAILED` notice and the deprecated `pause_menu` seam pass it;
-  the pause menu proper (`show_menu`) never reflows. **A display backend of
-  your own** must accept `reflow` as a keyword-only argument defaulting to
-  `True`: alhazen now passes it. Instructions that relied on unindented line
-  breaks (a list of keys) should indent those lines.
+  `Calibration FAILED` notice is now two paragraphs, so reflow keeps its two
+  sentences apart; the pause menu proper (`show_menu`) never reflows. **A
+  display backend of your own** keeps working unchanged: it should accept
+  `reflow` as a keyword-only argument defaulting to `True` to support it, and
+  alhazen never passes `reflow` to a backend that does not take it (the
+  deprecated `pause_menu` seam checks the signature first). Instructions
+  that relied on unindented line breaks (a list of keys) should indent those
+  lines.
 
 - **A sorted-spike sorter must re-announce `units` at least every second,
   and a late subscriber no longer fails.** The sample rate rides on the

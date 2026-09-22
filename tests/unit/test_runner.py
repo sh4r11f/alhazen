@@ -134,6 +134,21 @@ class TestInstructions:
 
         assert harness.display.message_calls[0] == ("Look at the\ndot.\n\nPress SPACE.", True)
 
+    def test_a_display_without_reflow_still_shows_them(self, tmp_path):
+        """A display backend written before ``reflow`` existed takes the text
+        alone. The runner relies on the default rather than passing the
+        argument, so such a backend keeps working."""
+        harness = SessionHarness(tmp_path, n_trials=1)
+        shown: list[str] = []
+        # An instance attribute shadows FakeDisplay's method: this display's
+        # show_message has the pre-reflow, one-argument signature.
+        harness.display.show_message = shown.append  # type: ignore[method-assign]
+        harness.runner._instructions = "Look at the\ndot."
+        harness.runner._await_start = lambda: False
+        harness.runner.run()
+
+        assert shown == ["Look at the\ndot."]
+
 
 class TestParadigmSummary:
     def test_a_scheduler_with_a_summary_writes_it(self, tmp_path):

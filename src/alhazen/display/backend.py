@@ -48,9 +48,15 @@ class DisplayBackend(Protocol):
         (``alhazen.display.text.reflow`` has the exact rule). Without it,
         hard-wrapped instructions are wrapped a second time at the display's
         own measure. ``reflow=False`` keeps every line break exactly as given,
-        for text laid out line by line. Every backend accepts the argument,
-        and one with no visible surface records it, so a caller's choice is
-        never lost on the way to the screen.
+        for text laid out line by line. Every built-in backend accepts the
+        argument, and one with no visible surface records it, so a caller's
+        choice is never lost on the way to the screen.
+
+        A backend written before ``reflow`` existed takes the text alone and
+        keeps working: framework code never passes ``reflow=`` to a backend
+        it did not build (a message whose lines must stay apart is written as
+        paragraphs instead), and the deprecated ``pause_menu`` seam checks the
+        signature before it does.
         """
         ...
 

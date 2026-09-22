@@ -960,7 +960,8 @@ a pure function with no renderer behind it:
 flowchart LR
     SRC["instructions.md<br/>(hard-wrapped)"] --> RUN["SessionRunner"]
     RUN -->|"show_message(text)"| BE["display backend"]
-    CAL["TRACKPixx3: Calibration FAILED<br/>(two deliberate lines)"] -->|"show_message(text, reflow=False)"| BE
+    CAL["TRACKPixx3: Calibration FAILED<br/>(two paragraphs)"] -->|"show_message(text)"| BE
+    PM["deprecated pause_menu seam<br/>(key rows)"] -->|"show_message(text, reflow=False)<br/>only if it takes reflow"| BE
     BE -->|"reflow=True"| RF["display.text.reflow<br/>(pure string work)"]
     RF --> LAY["layout: wrap at the measure,<br/>size the box, shrink if too tall"]
     BE -->|"reflow=False"| LAY
@@ -982,13 +983,17 @@ after an indented one joins it, just as a list item's wrapped text joins the
 item. It is idempotent, so a caller that already reflowed loses nothing.
 
 Reflow is on by default because nearly every message is prose. Text whose
-every break is meaningful passes `reflow=False` and is drawn exactly as given:
-the TRACKPixx3's calibration-failed notice (what happened, then what to do),
-and the deprecated `pause_menu` seam, whose unindented key rows would
-otherwise run together (it passes `reflow=False` to any `show_message` that
-takes it). The real pause menu goes through `show_menu`, which never
-reflows. Every backend takes the argument the same way — keyword-only,
-default `True` — and the ones with no screen keep it: `SimulatedDisplay` and
+every break is meaningful can pass `reflow=False` and is drawn exactly as
+given. **Framework code never passes `reflow=` to a backend it did not build
+itself**, so a display backend written before the argument existed, taking
+the text alone, keeps working. The two messages with deliberate breaks get
+them another way: the TRACKPixx3's calibration-failed notice is two
+paragraphs (what happened, then what to do), which reflow keeps apart; the
+deprecated `pause_menu` seam, whose unindented key rows would otherwise run
+together, passes `reflow=False` only to a `show_message` whose signature
+takes it. The real pause menu goes through `show_menu`, which never reflows.
+The built-in backends take the argument the same way — keyword-only, default
+`True` — and the ones with no screen keep it: `SimulatedDisplay` and
 `testing.FakeDisplay` record `(text, reflow)` in `message_calls`, and the
 simulated display logs the text as it would have been drawn.
 

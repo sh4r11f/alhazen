@@ -127,4 +127,6 @@ after, so there is exactly one clock and one stamping site.
 `show_message(text, *, reflow=True)` takes `reflow` keyword-only, defaulting
 to `True`: when it is set, pass the text through `alhazen.display.reflow`
 before laying it out; with `reflow=False`, draw every line break as given.
-A backend with no screen records the flag rather than dropping it.
+A backend with no screen records the flag rather than dropping it. A backend
+that predates the argument still works — alhazen never passes `reflow` to a
+`show_message` that does not take it — but its messages are drawn unreflowed.
