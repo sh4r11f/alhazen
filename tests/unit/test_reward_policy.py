@@ -290,3 +290,149 @@ class TestNoReward:
         with harness.paths.trials_path.open() as handle:
             (row,) = list(csv.DictReader(handle))
         assert float(row["t_no_reward"]) > 0
+
+
+class TestARecycledTrialIsPaidForTheResponse:
+    """Frame QA's `recycle_trial` discards a trial whose display dropped too
+    many frames and serves its condition again. That is a verdict on the
+    data, not on the subject: feedback and reward follow what the subject
+    did. Paying on the recycled outcome paid a correct response nothing and
+    wrote no NO_REWARD either, right after its feedback said it was right."""
+
+    CORRECT = Outcome("CORRECT", completed=True, success=True)
+    WRONG = Outcome("WRONG", completed=True, success=False)
+    FIX_BREAK = Outcome("FIX_BREAK", completed=False)
+
+    def session(self, tmp_path, plan, reward=None):
+        """A session whose trials run a measuring phase, then TrialFeedback.
+
+        ``plan`` holds ``(slow, outcome)`` per trial served, in order; a slow
+        trial overruns every frame of its measuring phase, far past frame
+        QA's 10% budget. The feedback verdict is the outcome's own success,
+        so what the subject is shown is exactly what their response was.
+        """
+        from alhazen.config.models import FrameQAConfig
+        from alhazen.display.frames import FrameMonitor
+        from alhazen.stimuli.base import NullStimulus
+        from alhazen.task.phases import TrialFeedback
+        from support import FRAME_S
+
+        served = iter(plan)
+        box = {}
+
+        class Slow(RunForFrames):
+            def on_frame(self, ctx):
+                box["harness"].display.next_flip_extra = FRAME_S
+                return super().on_frame(ctx)
+
+        def build(setup):
+            slow, outcome = next(served)
+            measure = (Slow if slow else RunForFrames)(6, outcome)
+            feedback = TrialFeedback(
+                verdict=lambda ctx: outcome.success is True,
+                then=outcome,
+                duration_s=2 * FRAME_S,
+            )
+            return TrialPlan(
+                phases=[measure, feedback], stimuli={"fixation": NullStimulus("fixation")}
+            )
+
+        # The session ends after this many completed trials that frame QA
+        # kept; every other trial is served again.
+        n_kept = sum(1 for slow, outcome in plan if outcome.completed and not slow)
+        harness = SessionHarness(
+            tmp_path,
+            n_trials=n_kept,
+            build_trial=build,
+            reward=reward if reward is not None else SimulatedReward(),
+            reward_policy=RewardPolicy(by_outcome={"CORRECT": PAID}),
+        )
+        box["harness"] = harness
+        monitor = FrameMonitor(
+            FrameQAConfig(
+                policy="recycle_trial", max_dropped_fraction=0.10, max_consecutive_recycles=50
+            ),
+            1 / FRAME_S,
+        )
+        harness.engine._frame_monitor = monitor
+        harness.runner._frame_monitor = monitor
+        harness.runner._on_pause = lambda menu: "resume"
+        harness.runner.run()
+        return harness
+
+    def rows(self, harness):
+        with harness.paths.trials_path.open() as f:
+            return list(csv.DictReader(f))
+
+    def events(self, harness, trial_index):
+        return [e for e in harness.collector.events if e.trial_index == trial_index]
+
+    def test_a_correct_response_is_paid_though_its_trial_is_served_again(self, tmp_path):
+        reward = SimulatedReward()
+        harness = self.session(tmp_path, [(True, self.CORRECT), (False, self.CORRECT)], reward)
+
+        first, second = self.rows(harness)
+        # Data quality follows the display: discarded and served again.
+        assert first["outcome"] == "DROPPED_FRAMES"
+        assert first["completed"] == "False"
+        assert first["outcome_before_frame_qa"] == "CORRECT"
+        assert (first["attempt"], second["attempt"]) == ("1", "2")
+        assert second["outcome"] == "CORRECT"
+        # What the subject was shown and paid follows the response.
+        assert first["feedback"] == "success"
+        assert first["rewarded"] == "True"
+        assert reward.deliveries == [PAID, PAID]
+        (paid,) = [e for e in self.events(harness, 1) if e.name == "REWARD"]
+        assert paid.payload == {
+            "manual": False,
+            "outcome": "CORRECT",
+            "pulses": PAID.model_dump(mode="json"),
+        }
+        assert "NO_REWARD" not in [e.name for e in self.events(harness, 1)]
+
+    def test_a_wrong_response_is_marked_unrewarded_though_its_trial_is_served_again(self, tmp_path):
+        reward = SimulatedReward()
+        harness = self.session(tmp_path, [(True, self.WRONG), (False, self.WRONG)], reward)
+
+        first, _second = self.rows(harness)
+        assert first["outcome"] == "DROPPED_FRAMES"
+        assert first["outcome_before_frame_qa"] == "WRONG"
+        assert first["feedback"] == "failure"
+        assert reward.deliveries == []
+        names = [e.name for e in self.events(harness, 1)]
+        assert "REWARD" not in names
+        (declined,) = [e for e in self.events(harness, 1) if e.name == "NO_REWARD"]
+        assert declined.payload == {"outcome": "WRONG"}
+
+    def test_a_pump_failure_on_a_recycled_trial_is_a_pump_failure(self, tmp_path):
+        """REWARD_FAILED and the pause flow behave as on any paid trial."""
+        reward = BrokenReward(fail_on=1)
+        harness = self.session(tmp_path, [(True, self.CORRECT), (False, self.CORRECT)], reward)
+
+        first, _second = self.rows(harness)
+        assert first["outcome"] == "DROPPED_FRAMES"
+        assert first["rewarded"] == "False"
+        names = [e.name for e in self.events(harness, 1)]
+        assert "REWARD_FAILED" in names
+        assert "REWARD" not in names
+        assert any("REWARD FAILURE" in message for message in harness.display.messages)
+        # The re-served trial was paid once the pump was back.
+        assert reward.deliveries == [PAID]
+
+    def test_an_incomplete_trial_on_a_failing_display_is_unaffected(self, tmp_path):
+        """Frame QA only recycles a completed trial. A fixation break is being
+        served again for its own reason, earned nothing because it produced
+        nothing, and gets neither REWARD nor NO_REWARD — as on a clean display."""
+        reward = SimulatedReward()
+        harness = self.session(tmp_path, [(True, self.FIX_BREAK), (False, self.CORRECT)], reward)
+
+        first, second = self.rows(harness)
+        assert first["outcome"] == "FIX_BREAK"
+        assert "outcome_before_frame_qa" not in first
+        assert first["feedback"] == "failure"
+        assert first.get("rewarded", "") == ""
+        names = [e.name for e in self.events(harness, 1)]
+        assert not {"REWARD", "NO_REWARD", "REWARD_FAILED"} & set(names)
+        # The clean trial that followed was paid as usual.
+        assert second["outcome"] == "CORRECT"
+        assert reward.deliveries == [PAID]

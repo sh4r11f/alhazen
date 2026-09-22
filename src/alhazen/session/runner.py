@@ -407,7 +407,18 @@ class SessionRunner:
 
                 # Reward before recording, so record["rewarded"] states what
                 # actually happened at the pump rather than what was owed.
-                reward_failed = self._deliver_reward(ctx, outcome)
+                #
+                # Paid on what the subject's response earned, not on the
+                # outcome the scheduler sees. They differ on one kind of trial
+                # only: one frame QA recycled into DROPPED_FRAMES because the
+                # display dropped frames. That trial is still served again
+                # (its measurement is discarded), but the subject did the
+                # trial and was shown its feedback, and a display fault must
+                # never cost them the reward — nor go unrecorded as a
+                # NO_REWARD when the response did not pay. A task cannot fix
+                # that by paying DROPPED_FRAMES: that would pay a recycled
+                # wrong answer too.
+                reward_failed = self._deliver_reward(ctx, result.response_outcome)
 
                 record = result.record
                 if outcome.name != "PAUSED":
@@ -608,6 +619,12 @@ class SessionRunner:
     def _deliver_reward(self, ctx: TrialContext, outcome: Any) -> bool:
         """Pay out what this outcome earned. Returns True if the hardware
         failed, which the caller turns into a pause.
+
+        ``outcome`` is the subject's response outcome
+        (``TrialResult.response_outcome``), which on a trial frame QA recycled
+        is the one it replaced — so the REWARD / NO_REWARD / REWARD_FAILED
+        payloads name what was paid for, and the row's
+        ``outcome_before_frame_qa`` says the same.
 
         The one deliberate catch in this file. Everywhere else a device fault
         aborts loudly, but here the trial's measurement already exists and is

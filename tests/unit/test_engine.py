@@ -281,11 +281,24 @@ class TestFrameQAIntegration:
         (end,) = events_named(harness, "TRIAL_END")
         assert end.payload == {"outcome": "DROPPED_FRAMES", "completed": False}
 
+    def test_a_recycled_result_carries_the_outcome_the_response_earned(self):
+        """The scheduler sees DROPPED_FRAMES; the reward path needs the Outcome
+        the subject's response ended as — the object, because NO_REWARD turns
+        on its `completed` flag and the runner has no outcome set to look a
+        name up in."""
+        result, _ = self._run_with_drops(9, {1, 2, 3}, COMPLETED, max_dropped_fraction=0.2)
+        assert result.outcome.name == "DROPPED_FRAMES"
+        assert result.outcome_before_frame_qa is COMPLETED
+        assert result.response_outcome is COMPLETED
+
     def test_recycle_trial_keeps_a_trial_within_its_budget(self):
         result, _ = self._run_with_drops(29, {1, 2}, COMPLETED, max_dropped_fraction=0.1)
         assert result.outcome is COMPLETED
         assert result.record["n_dropped_frames"] == 2
         assert "outcome_before_frame_qa" not in result.record
+        # Nothing was replaced, so the response outcome is the outcome.
+        assert result.outcome_before_frame_qa is None
+        assert result.response_outcome is COMPLETED
 
     def test_recycle_trial_leaves_an_incomplete_outcome_alone(self):
         """FAILED is already re-served, and PAUSED drives the runner's pause
@@ -294,6 +307,26 @@ class TestFrameQAIntegration:
         assert result.outcome is FAILED
         assert result.record["n_dropped_frames"] == 3
         assert "frame_qa_reason" not in result.record
+        assert result.outcome_before_frame_qa is None
+        assert result.response_outcome is FAILED
+
+    def test_a_pause_is_its_own_response_outcome(self):
+        """PAUSED is reserved and drives the runner's pause flow; frame QA
+        never touches it, so nothing downstream may read it as anything else."""
+        harness = EngineHarness(
+            commands=ScriptedCommands([[], [Command.PAUSE]]),
+            frame_qa=FrameQAConfig(policy="recycle_trial", max_dropped_fraction=0.1),
+        )
+
+        class AlwaysSlow(RunForFrames):
+            def on_frame(self, ctx):
+                harness.display.next_flip_extra = FRAME_S
+                return super().on_frame(ctx)
+
+        result = harness.engine.run_trial(harness.ctx(), [AlwaysSlow(5, COMPLETED)])
+        assert result.outcome.name == "PAUSED"
+        assert result.outcome_before_frame_qa is None
+        assert result.response_outcome is result.outcome
 
     def test_incomplete_trials_never_add_up_to_the_recycle_abort(self):
         """The monitor counts recycles in a row and aborts the run at the

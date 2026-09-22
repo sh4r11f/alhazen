@@ -98,8 +98,15 @@ command source, and the bus:
    `outcome_before_frame_qa`; `max_consecutive_recycles` in a row abort the
    run naming the display. Only a COMPLETED trial can be recycled: one that
    already ended in a fixation break or a pause is being re-served for its
-   own reason. Under every marking policy `n_dropped_frames` is `0` on a
-   clean trial, never absent. On a simulated display the policy is stood
+   own reason. **The verdict governs data quality only — never what the
+   subject is told or paid.** It arrives after the closing phase has already
+   judged the subject's own outcome (`TrialFeedback` sees the pre-QA outcome,
+   by design), and `TrialResult` carries the replaced Outcome as
+   `outcome_before_frame_qa`, with `response_outcome` resolving to it, so the
+   runner pays on the response (§5.3). A correct trial the display recycles
+   is shown as a success, paid, and served again; a display fault never
+   costs the subject anything. Under every marking policy `n_dropped_frames`
+   is `0` on a clean trial, never absent. On a simulated display the policy is stood
    down to `log` at build time — the flip times there measure how accurately
    the host can wait, not whether a panel is holding its refresh)
 9. emit the events the phase queued via `ctx.emit_on_flip`, stamped now —
@@ -452,6 +459,25 @@ event — again its own event rather than the absence of `REWARD`, because a
 missing event is indistinguishable from one that failed to be written. An
 *incomplete* trial gets neither: it earned nothing because it produced
 nothing, which is a different statement.
+
+**Reward follows the subject's response, not frame QA.** The runner pays
+`pulses_for(result.response_outcome.name)`, and decides `NO_REWARD` on that
+outcome's `completed` flag. On every trial but one kind this is the trial's
+outcome. The exception is a trial frame QA recycled into `DROPPED_FRAMES`
+(§2, step 8): the subject did that trial and was shown its feedback, so it is
+paid — or marked `NO_REWARD` — as the response it was, the event payload
+naming that outcome (the row's `outcome_before_frame_qa`), while the
+scheduler still serves the condition again for its data. `REWARD_FAILED`
+and `rewarded` behave as on any paid trial. A task cannot get this by
+paying `DROPPED_FRAMES`: that would pay recycled wrong answers too.
+
+The same split holds elsewhere. What describes what the subject received
+or was told — feedback, its tone, the reward events and the dashboard's
+reward panel built from them — follows the response. What decides the
+schedule and the data — re-serving, adaptive schedulers, `alhazen report`'s
+outcome counts — follows the recycle. The failure streak that pauses a
+session (`max_consecutive_failures`, §10) counts a recycled trial as the
+completed trial it was.
 
 ### 5.4 Schedulers (`paradigms/`)
 
