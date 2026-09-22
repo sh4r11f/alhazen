@@ -687,6 +687,42 @@ Three rules:
   confident-looking transform. It refits offset and scale on the **final**
   match set, since a loop that stops on its iteration cap holds a match set
   one round newer than its last fit.
+- **The seed search reaches past a late start.** A seed pairs one of the
+  first few events with one of the first 8 pulses, and one of the last few
+  events with one of the last 8; each double pairing fixes offset and scale
+  exactly, and a scale outside 0.99–1.01 is discarded. Anchoring only the
+  very first and last event, as it once did, refused any recording that
+  started late or stopped early: that event has no pulse, so every seed tied
+  it to another event's. How many events is set by the matched threshold —
+  with 80% of 500 required, up to 100 may go unmatched, so events 0–100 are
+  tried at each end; any later start is refused whatever the seed — and
+  capped at `MAX_SEED_EVENTS` (128). Both refusals say how many events and
+  pulses were compared at each end, so a late start is recognisable.
+- **Cost stays bounded.** Seeds that draw the same line (event *i* with pulse
+  *a* and event *i+1* with pulse *a+1*) are scored once; every seed is
+  screened against 64 events spread over the session, and only the best 256
+  are scored against all of them. A 500-event session aligns in about a
+  tenth of a second; a 5000-event one missing its first 120 in a few.
+- **A tie is refused, not broken by luck.** On a perfectly regular train
+  with an end pulse missing, pulses 0–4 fit events 1–5 exactly as well as
+  events 0–4. When a second map that places events more than a tolerance
+  away explains as many events, and the winner does not fit at least twice
+  as closely, the fit refuses and says the events are too evenly spaced.
+  Real sessions vary from trial to trial; ±20 ms of variation against 0.1 ms
+  of clock noise is already decisive.
+
+```mermaid
+graph LR
+    EV["first / last N events<br/>(N = unmatched budget + 1, ≤ 128)"] --> SEED["every pairing with the<br/>first / last 8 pulses<br/>scale within 0.99–1.01"]
+    PU["first / last 8 pulses"] --> SEED
+    SEED --> DEDUP["one seed per distinct line"]
+    DEDUP --> SCREEN["screen on 64 spread events<br/>keep the best 256"]
+    SCREEN --> SCORE["score on every event<br/>most matched, then closest"]
+    SCORE --> REFINE["match ↔ refit, then final refit"]
+    REFINE -->|"matched < threshold"| R1["refused: too few matched"]
+    REFINE -->|"an equally good different map"| R2["refused: too evenly spaced"]
+    REFINE --> OK["AlignmentFit"]
+```
 - **The fit is an artifact.** `alignment_<system>.yaml` beside the data,
   because an alignment recomputed next year with a different tolerance is a
   different alignment.

@@ -137,6 +137,19 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Fixed
 
+- **A recording that started late or stopped early can be aligned.**
+  `fit_alignment` anchored its seed search on the very first and last
+  event, so when either had no pulse — the recorder started a few minutes
+  after the session, or stopped before it ended — every seed tied that event
+  to another event's pulse, and the fit was refused as a different session.
+  It now also tries the first and last few events, as many as the matched
+  threshold lets go unmatched (101 of 500 at the default 80%, never more
+  than 128). The 0.99–1.01 scale bound and the matched-fraction refusal are
+  unchanged, so a different session is still refused, and both refusals now
+  say how many events and pulses were compared at each end. A perfectly
+  regular train missing an end pulse, where a one-trial shift fits exactly
+  as well, is now refused as too evenly spaced instead of returning either
+  map.
 - **A SPACE pressed during a TRACKPixx3 calibration is no longer lost.** The
   calibration screens waited for keys with PsychoPy's `waitKeys`, which empties
   the keyboard buffer each time it starts waiting. A press made while the walk
