@@ -38,9 +38,20 @@ class DisplayBackend(Protocol):
         nominal rate (config.resolve_refresh checks they agree)."""
         ...
 
-    def show_message(self, text: str) -> None:
+    def show_message(self, text: str, *, reflow: bool = True) -> None:
         """Present a short operator/subject message and flip. Backends with
-        no visible surface log it instead."""
+        no visible surface log it instead.
+
+        ``reflow`` (the default) treats the text as prose: a single newline
+        inside a paragraph becomes a space and a blank line separates
+        paragraphs, with indented lines and list items keeping their breaks
+        (``alhazen.display.text.reflow`` has the exact rule). Without it,
+        hard-wrapped instructions are wrapped a second time at the display's
+        own measure. ``reflow=False`` keeps every line break exactly as given,
+        for text laid out line by line. Every backend accepts the argument,
+        and one with no visible surface records it, so a caller's choice is
+        never lost on the way to the screen.
+        """
         ...
 
     def show_menu(self, title: str, body: str, *, color: tuple[float, float, float]) -> None:

@@ -823,11 +823,14 @@ class FakeDisplay:
     def __init__(self) -> None:
         self.window = FakeWindow()
         self.messages: list[str] = []
+        # Whether each message asked for its line breaks to be kept.
+        self.reflows: list[bool] = []
         # (title, body, colour) of every menu-style panel — the guide.
         self.menus: list[tuple[str, str, tuple[float, float, float]]] = []
 
-    def show_message(self, text: str) -> None:
+    def show_message(self, text: str, *, reflow: bool = True) -> None:
         self.messages.append(text)
+        self.reflows.append(reflow)
 
     def show_menu(self, title: str, body: str, *, color: tuple[float, float, float]) -> None:
         self.menus.append((title, body, color))
@@ -1399,6 +1402,8 @@ class TestCalibrationRecording:
         assert tracker._display is not None
         messages = tracker._display.messages  # type: ignore[attr-defined]
         assert messages and "FAILED" in messages[0]
+        # What happened, then what to do: two lines, kept as two lines.
+        assert tracker._display.reflows == [False]  # type: ignore[attr-defined]
         # And the result says so, for the dashboard and the log.
         assert result.ok is False and not result.aborted
         assert result.verdict == "NOT calibrated"

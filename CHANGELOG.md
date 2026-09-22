@@ -29,6 +29,23 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Changed
 
+- **`show_message` reflows prose, so hard-wrapped instructions are no longer
+  wrapped twice.** It drew its text with every newline kept, and the message
+  box then wrapped it again at its own measure (the smaller of 80% of the
+  screen's width and 34 letter heights): an `instructions.md` wrapped at 80
+  columns came out ragged, with orphaned words, and taller than it needed —
+  tall enough, since 1.4.4, to shrink the letters to fit. Now a single newline
+  inside a paragraph becomes a space and a blank line separates paragraphs; a
+  line that starts with whitespace or a list marker (`-`, `*`, `+`, `•`, `1.`,
+  `1)`, then a space) keeps its break and its indentation, so an indented key
+  list or a Markdown list is left as laid out. `show_message(text,
+  reflow=False)` keeps every break exactly. The TRACKPixx3's
+  `Calibration FAILED` notice and the deprecated `pause_menu` seam pass it;
+  the pause menu proper (`show_menu`) never reflows. **A display backend of
+  your own** must accept `reflow` as a keyword-only argument defaulting to
+  `True`: alhazen now passes it. Instructions that relied on unindented line
+  breaks (a list of keys) should indent those lines.
+
 - **A sorted-spike sorter must re-announce `units` at least every second,
   and a late subscriber no longer fails.** The sample rate rides on the
   `units` message, and announcing it once at startup made it unrecoverable
@@ -76,6 +93,17 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   the log are written whether it passed or not, as before.
 
 ### Added
+
+- **`alhazen.display.reflow(text)`**, the rule `show_message` applies, as a
+  pure function with no display behind it — for an experiment that wants to
+  see its instructions as the subject will, and in place of the
+  line-joining each experiment's `run.py` carried its own copy of. Edge
+  cases (`\r\n` endings, runs of blank lines, whitespace at either end,
+  indented lines and list items) are in its docstring and in
+  [docs/architecture.md](docs/architecture.md) §10.1.
+- **`message_calls` on `SimulatedDisplay` and `testing.FakeDisplay`**: every
+  `show_message` call as `(text, reflow)`, exactly as given, so a test can
+  pin whether a caller kept its line breaks. `messages` is unchanged.
 
 - **`alhazen check-rig --record <path>`: the checkout leaves a written
   record.** Until now a pre-session checkout existed only as scrollback in

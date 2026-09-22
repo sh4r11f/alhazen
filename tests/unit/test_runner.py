@@ -122,6 +122,19 @@ class TestSessionLogStructure:
         assert "session end: cancelled — 0 trials served" in self.read_log(harness)[-1]
 
 
+class TestInstructions:
+    def test_the_instructions_are_shown_as_prose(self, tmp_path):
+        """Instructions are hard-wrapped prose (an instructions.md), so they
+        go to the display as given with reflow on, and the display joins the
+        wrapped lines — rather than wrapping them a second time."""
+        harness = SessionHarness(tmp_path, n_trials=1)
+        harness.runner._instructions = "Look at the\ndot.\n\nPress SPACE."
+        harness.runner._await_start = lambda: False
+        harness.runner.run()
+
+        assert harness.display.message_calls[0] == ("Look at the\ndot.\n\nPress SPACE.", True)
+
+
 class TestParadigmSummary:
     def test_a_scheduler_with_a_summary_writes_it(self, tmp_path):
         import numpy as np

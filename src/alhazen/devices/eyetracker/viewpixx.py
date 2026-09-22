@@ -1166,9 +1166,12 @@ class ViewPixxTracker:
             "calibrate again.",
             n,
         )
+        # reflow=False: the break is deliberate — what happened on one line,
+        # what to do on the next — not a hard wrap to be joined.
         self._display.show_message(
             "Calibration FAILED: the tracker reports no calibration.\n"
-            "Check the camera sees the eyes (position, focus, LED), then calibrate again."
+            "Check the camera sees the eyes (position, focus, LED), then calibrate again.",
+            reflow=False,
         )
         event.waitKeys(maxWait=CALIBRATION_FAIL_HOLD_S, keyList=[*ACCEPT_KEYS, ABORT_KEY])
         return result(False, "the device reports NO calibration after the walk — calibrate again")
