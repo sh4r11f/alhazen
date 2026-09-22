@@ -77,6 +77,29 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Added
 
+- **Mid-trial reward: a phase can ask for a juice drop while the trial
+  runs.** A task that declares `mid_trial_reward = True` (next to `reward`)
+  may call `ctx.request_reward(pulses, reason)` from a phase. The request only
+  queues; after the next flip the engine hands it to the rig's dispenser,
+  which delivers on a worker thread (`QueuedReward`), so a pulse train never
+  stalls the frame loop, and emits `REWARD` stamped with that flip, carrying
+  `{pulses, reason, frame}` and `queued_behind` when earlier drops were still
+  delivering. The delivery's end follows as a new reserved event,
+  `REWARD_DELIVERED`, or as `REWARD_FAILED` with the same `reason`; a failure
+  lets the trial finish and then takes the same pause flow an end-of-trial
+  failure does. Every delivery in such a session — drops, the manual key,
+  the end-of-trial pay — goes through the one worker, in order, and the
+  runner waits for the drops before it pays the outcome, so no two pulse
+  trains overlap. Rows gain `n_mid_trial_rewards` and
+  `n_mid_trial_reward_failures`, and `rewarded` is True when any juice
+  reached the subject during the trial; a trial that earned drops gets no
+  `NO_REWARD`. Such a task is refused at build on a rig with no dispenser;
+  `--mode test` and `--mode simulate` stand a simulated one in. A request
+  from a task that did not declare it raises the new `RewardRequestError`.
+  `alhazen.testing.ScriptedReward` holds and fails deliveries on a test's
+  say-so, for deterministic threading tests. Nothing changes for a task that
+  does not declare it. See "Mid-trial reward" in
+  [docs/architecture.md](docs/architecture.md).
 - **`alhazen check-rig --record <path>`: the checkout leaves a written
   record.** Until now a pre-session checkout existed only as scrollback in
   whichever terminal was open at the rig, so nothing about it could be

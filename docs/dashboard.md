@@ -231,8 +231,8 @@ layout.
 the task scores its outcomes, and falls back to the completion rate when it
 does not — labelling the axis with whichever it used, never quietly swapping
 one for the other. `rewards` reads the event stream, so it also counts manual
-deliveries, unrewarded completions (`NO_REWARD`) and hardware failures
-(`REWARD_FAILED`).
+deliveries, mid-trial drops (each once, when its `REWARD_DELIVERED` arrives),
+unrewarded completions (`NO_REWARD`) and hardware failures (`REWARD_FAILED`).
 
 `scatter` and `vectors` are two questions about the same endpoints. `scatter`
 plots them where they landed, with the targets marked, and answers *did it hit

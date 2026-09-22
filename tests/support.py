@@ -86,6 +86,7 @@ class EngineHarness:
         declared_events: tuple[str, ...] = ("FIX_ON", "STIM_ON"),
         on_manual_reward: Callable[[], None] | None = None,
         overlay: Callable[[TrialContext], None] | None = None,
+        reward_requests: Any = None,
     ) -> None:
         self.clock = FakeClock()
         self.display = FakeDisplay(self.clock, FRAME_S)
@@ -106,6 +107,7 @@ class EngineHarness:
             health_checks=health_checks,
             on_manual_reward=on_manual_reward,
             overlay=overlay,
+            reward_requests=reward_requests,
         )
 
     def ctx(self, trial_index: int = 1, **kwargs: Any) -> TrialContext:
@@ -143,6 +145,34 @@ class RunForFrames:
         return PhaseAction.CONTINUE
 
 
+class RequestRewardOnFrames(RunForFrames):
+    """RunForFrames that asks for a mid-trial drop on the listed frames of
+    the phase (0 = its first on_frame call) — a pursuit phase paying while
+    gaze stays in its window, reduced to the part the engine sees."""
+
+    name = "request_reward_on_frames"
+
+    def __init__(
+        self,
+        n_frames: int,
+        then: Any,
+        on_frames: tuple[int, ...],
+        pulses: RewardPulses | None = None,
+        reason: str = "hold",
+    ) -> None:
+        super().__init__(n_frames, then)
+        self._on_frames = set(on_frames)
+        self._pulses = pulses or RewardPulses(n_pulses=1, pulse_ms=50, inter_pulse_ms=0)
+        self._reason = reason
+        self._frame = 0
+
+    def on_frame(self, ctx: TrialContext) -> Any:
+        if self._frame in self._on_frames:
+            ctx.request_reward(self._pulses, self._reason)
+        self._frame += 1
+        return super().on_frame(ctx)
+
+
 COMPLETED = Outcome("COMPLETED", completed=True, success=True)
 FAILED = Outcome("FAILED", completed=False)
 
@@ -170,8 +200,10 @@ class SessionHarness:
         declared_outcomes: Any = None,
         use_pause_menu: bool = False,
         dashboard: Any = None,
+        mid_trial_reward: bool = False,
     ) -> None:
         from alhazen.data.paths import SessionPaths
+        from alhazen.devices.reward import QueuedReward
         from alhazen.paradigms.base import Condition, SimpleSequence
         from alhazen.session.eyetracker import EyeTrackerMonitor
         from alhazen.session.pause import run_pause_menu
@@ -189,7 +221,16 @@ class SessionHarness:
         # Subscription order mirrors the builder's: tracker messages, sync
         # pulses, then the recorder.
         self.tracker = tracker
+        # The device itself, whatever the session delivers through: a test
+        # asserts on what reached the valve.
         self.reward = reward
+        # A mid-trial-reward session wraps its dispenser the way the builder
+        # does, and every delivery — requests, manual key, end-of-trial pay —
+        # goes through the wrapper.
+        self.queued_reward = (
+            QueuedReward(reward) if mid_trial_reward and reward is not None else None
+        )
+        session_reward = self.queued_reward if self.queued_reward is not None else reward
         self.sync = sync
         if tracker is not None:
             self.bus.subscribe(TrackerMessageSubscriber(tracker))
@@ -236,9 +277,12 @@ class SessionHarness:
             ),
             health_checks=((make_tracker_health_check(tracker),) if tracker is not None else ()),
             on_manual_reward=(
-                (lambda: reward.deliver(RewardPulses())) if reward is not None else None
+                (lambda: session_reward.deliver(RewardPulses()))
+                if session_reward is not None
+                else None
             ),
             overlay=overlay,
+            reward_requests=self.queued_reward,
         )
         self.source = source or SimpleSequence(
             [Condition({"condition": "a"})],
@@ -282,7 +326,7 @@ class SessionHarness:
                 else None
             ),
             tracker=tracker,
-            reward=reward,
+            reward=session_reward,
             sync=sync,
             reward_policy=reward_policy,
             eyetracker=self.eyetracker,

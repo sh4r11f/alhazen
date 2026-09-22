@@ -28,6 +28,14 @@ RESERVED_EVENTS = frozenset(
         "TRIAL_END",
         "REWARD",
         "REWARD_FAILED",
+        # A mid-trial reward (TrialContext.request_reward) finished delivering.
+        # Its REWARD was emitted when the drop was commanded, because that is
+        # the frame an analysis masks around; the pulse train runs on a worker
+        # thread and ends frames later, so its end is its own event, carrying
+        # the same {pulses, reason, frame} as the REWARD it completes.
+        # End-of-trial and manual deliveries have no such event: they run on
+        # the session thread and their REWARD is emitted after the pump is done.
+        "REWARD_DELIVERED",
         "PAUSED",
         "RESUMED",
         # A curriculum moved the subject between stages. Reserved rather than

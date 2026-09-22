@@ -50,8 +50,8 @@ trial one:
 | mode | what it drives | what it substitutes, and says so |
 |---|---|---|
 | `run` | the rig, exactly as written | nothing |
-| `test` | the rig, with a person in the chair | on a rig with no tracker, the mouse cursor stands in for gaze; `--mouse` asks for that on a rig whose tracker is off |
-| `simulate` | nothing that acts on or reads a subject | the task's autopilot for the tracker; the pump and the sync lines are logged rather than fired; the recorder is marked absent; a live spike stream is dropped; `--headless` takes the window and the browser away too |
+| `test` | the rig, with a person in the chair | on a rig with no tracker, the mouse cursor stands in for gaze; `--mouse` asks for that on a rig whose tracker is off; on a rig with no pump, a task that pays mid-trial gets a simulated one |
+| `simulate` | nothing that acts on or reads a subject | the task's autopilot for the tracker; the pump and the sync lines are logged rather than fired (and a task that pays mid-trial gets a simulated pump on a rig with none); the recorder is marked absent; a live spike stream is dropped; `--headless` takes the window and the browser away too |
 | `measure`, `demo`, `movie` | the panel (`movie`: not even that) | nothing |
 
 ```mermaid
@@ -202,8 +202,11 @@ a subject or reads one is driven: the rig's tracker stands down for the
 autopilot, a `nidaq` pump and sync lines become `simulated` (deliveries and
 pulses logged, not fired), a `spikeglx` recorder becomes `simulated` (the run
 is marked as having no recording attached) and a live spike stream is
-dropped. Each substitution is a line in the summary printed before trial
-one:
+dropped. A task that asks for reward mid-trial (`mid_trial_reward = True`)
+is refused by `run` on a rig with no pump at all; `simulate` and `test` stand
+a simulated one in, so the rehearsal still builds and every drop is still
+requested, queued and recorded. Each substitution is a line in the summary
+printed before trial one:
 
 ```
 mode: simulate — the whole session, driven by a simulated subject

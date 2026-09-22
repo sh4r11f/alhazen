@@ -8,7 +8,8 @@ place a display backend or a device backend is selected by its config name.
 
 Devices reach the engine only as narrow hooks derived here: gaze becomes an
 input provider, "is it still recording" becomes a health check, the reward
-dispenser becomes the manual-reward callback, and tracker messages and sync
+dispenser becomes the manual-reward callback (and, for a task that asks for
+reward mid-trial, the engine's reward-request sink), and tracker messages and sync
 pulses become bus subscribers. That is what keeps every layer below this one
 free of hardware.
 """
@@ -48,7 +49,7 @@ from alhazen.devices.eyetracker.messages import MessageMap
 from alhazen.devices.eyetracker.procedures import GazeCorrection
 from alhazen.devices.recording import make_recording
 from alhazen.devices.response import ResponseDevice, SubjectKeyboard
-from alhazen.devices.reward import RewardDispenser, make_reward
+from alhazen.devices.reward import QueuedReward, RewardDispenser, make_reward
 from alhazen.devices.spikes import SpikeSource, make_spikes
 from alhazen.devices.sync import SyncOutput, make_sync, make_sync_subscriber
 from alhazen.display.backend import DisplayBackend
@@ -227,6 +228,7 @@ def build_session(
         score = score if score is not None else task.score
         reward_policy = task.reward
         dashboard_spec = task.dashboard or DashboardSpec()
+    mid_trial_reward = task.mid_trial_reward if task is not None else False
     missing = [
         name
         for name, value in (
@@ -282,6 +284,18 @@ def build_session(
     # is the one thing the snapshot exists to prevent.
     cfg = build_session_config(rig_cfg, info, task_params, sources or {})
 
+    # Refused here, before a run directory exists or a window opens, rather
+    # than at the first drop: a task that pays during the trial on a rig with
+    # nothing to pay with would run a subject through trials it believes are
+    # rewarded. Simulate and test modes substitute a simulated dispenser
+    # (modes/session.py), so a rehearsal on a laptop still builds.
+    if mid_trial_reward and reward is None and rig_cfg.devices.reward is None:
+        raise ConfigError(
+            f"task {task_name!r} declares mid_trial_reward = True, but the rig has no "
+            f"reward dispenser (devices.reward). Add one to the rig config, or rehearse with "
+            f"--mode simulate or --mode test, which stand in a simulated one."
+        )
+
     # Paths first: refusing to overwrite an existing run must fail before a
     # window ever opens or a device is touched.
     paths = SessionPaths.create(rig_cfg.data_root, subject, session, run, task_name, date_yyyymmdd)
@@ -324,6 +338,9 @@ def build_session(
     # event name the rig maps but the task never declares — any of those left
     # a server running with nothing driving it, and the next session's port
     # already taken.
+    #
+    # Bound before the guard so its cleanup can test it whatever step failed.
+    queued_reward: QueuedReward | None = None
     try:
         display.open()
 
@@ -506,6 +523,16 @@ def build_session(
                 name for name, _ in ctx.pending_flip_events
             )
 
+        # A task that asks for reward mid-trial gets its dispenser wrapped in
+        # a worker thread, and from here on EVERY delivery goes through that
+        # wrapper — the task's requests, the manual key, the end-of-trial pay
+        # — so no two ever overlap on the valve. Any other task keeps the
+        # device itself: all its deliveries already run on the session thread.
+        if mid_trial_reward:
+            assert reward is not None  # refused above when the rig has none
+            queued_reward = QueuedReward(reward)
+            reward = queued_reward
+
         manual_pulses = reward_pulses if reward_pulses is not None else RewardPulses()
         on_manual_reward = (lambda: reward.deliver(manual_pulses)) if reward is not None else None
 
@@ -532,6 +559,7 @@ def build_session(
             # running, by which time the name is bound.
             on_session_command=(lambda command: runner.on_session_command(command)),
             on_frame_input=frame_inputs.note,
+            reward_requests=queued_reward,
         )
 
         streams = spawn_streams(resolved_seed)
@@ -603,6 +631,15 @@ def build_session(
     except Exception:
         if dashboard_controller is not None:
             dashboard_controller.stop()
+        # The reward worker is a thread holding the dispenser. Same rule as
+        # the spike source below: the thread is stopped and the dispenser
+        # closed, and a failure to do so is logged rather than raised over
+        # the build failure itself.
+        if queued_reward is not None:
+            try:
+                queued_reward.close()
+            except Exception:
+                log.exception("could not close the reward worker while aborting the build")
         # The spike source may already hold a connection and a background
         # thread; a build that fails after starting it must not leak either.
         # Logged rather than raised: the build failure propagating below is

@@ -463,6 +463,36 @@ class TestReward:
         assert data["series"][0]["points"][-1][1] == 2
         assert "no pulse train" in data["note"]
 
+    def test_a_mid_trial_drop_is_counted_once_when_it_arrives(self):
+        # A mid-trial REWARD marks the frame the drop was commanded on; its
+        # REWARD_DELIVERED is the delivery. Counting both paid every drop
+        # twice, and counting the REWARD of a drop that then failed paid for
+        # juice that never came.
+        pulses = {"n_pulses": 1, "pulse_ms": 100}
+        drop = {"pulses": pulses, "reason": "hold", "frame": 12}
+        events = [
+            {"trial_index": 1, "event": "REWARD", "t": 1.0, "payload_json": json.dumps(drop)},
+            {
+                "trial_index": 1,
+                "event": "REWARD_DELIVERED",
+                "t": 1.2,
+                "payload_json": json.dumps(drop),
+            },
+            {"trial_index": 2, "event": "REWARD", "t": 2.0, "payload_json": json.dumps(drop)},
+            {
+                "trial_index": 2,
+                "event": "REWARD_FAILED",
+                "t": 2.2,
+                "payload_json": json.dumps({**drop, "error": "RewardError: no"}),
+            },
+        ]
+        data = payload(self.panel(), events=events)
+        stats = {stat["label"]: stat["value"] for stat in data["stats"]}
+
+        assert stats["deliveries"] == "1"
+        assert stats["failed"] == "1"
+        assert stats["total"] == "0.1 s"
+
     def test_no_reward_yet_is_a_message(self):
         events = [{"trial_index": 1, "event": "TRIAL_END", "t": 0.0}]
         assert payload(self.panel(), events=events) == {
