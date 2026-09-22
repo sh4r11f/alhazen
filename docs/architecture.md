@@ -697,7 +697,10 @@ Three rules:
   with 80% of 500 required, up to 100 may go unmatched, so events 0–100 are
   tried at each end; any later start is refused whatever the seed — and
   capped at `MAX_SEED_EVENTS` (128). Both refusals say how many events and
-  pulses were compared at each end, so a late start is recognisable.
+  pulses were compared at each end, so a late start is recognisable, and the
+  matched-fraction refusal writes the fraction with as many decimals as it
+  takes to be visibly below the threshold — "79.8% < 80%", never
+  "80% < 80%".
 - **Cost stays bounded.** Seeds that draw the same line (event *i* with pulse
   *a* and event *i+1* with pulse *a+1*) are scored once; every seed is
   screened against 64 events spread over the session, and only the best 256
@@ -709,7 +712,10 @@ Three rules:
   away explains as many events, and the winner does not fit at least twice
   as closely, the fit refuses and says the events are too evenly spaced.
   Real sessions vary from trial to trial; ±20 ms of variation against 0.1 ms
-  of clock noise is already decisive.
+  of clock noise is already decisive. Ranking by closeness is also what
+  keeps a stray pulse one trial-gap before the session from moving the whole
+  map by a trial: both maps then explain every event, and only the right one
+  fits to the clock noise.
 
 ```mermaid
 graph LR

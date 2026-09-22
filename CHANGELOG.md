@@ -149,7 +149,14 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   say how many events and pulses were compared at each end. A perfectly
   regular train missing an end pulse, where a one-trial shift fits exactly
   as well, is now refused as too evenly spaced instead of returning either
-  map.
+  map. A stray pulse about one trial-gap before the session could
+  previously shift the whole map by one trial without complaint — every
+  event still matched, and the one extra pulse was reported at the far end;
+  the closer-fitting map now wins.
+- **The matched-fraction refusal no longer reads "80% < 80%".** Both numbers
+  were rounded to whole percents, so 399 of 500 against the 80% threshold
+  seemed to contradict itself. The fraction now carries as many decimals as
+  it takes to be visibly below the threshold: "79.8% < 80%".
 - **A SPACE pressed during a TRACKPixx3 calibration is no longer lost.** The
   calibration screens waited for keys with PsychoPy's `waitKeys`, which empties
   the keyboard buffer each time it starts waiting. A press made while the walk

@@ -12,6 +12,7 @@ from alhazen.analysis.sync import (
     MAX_SEED_EVENTS,
     AlignmentFit,
     _seed_window,
+    _shortfall_percents,
     bit_index_for_line,
     event_bit_map,
     fit_alignment,
@@ -199,6 +200,39 @@ class TestEndPulsesMissing:
         assert first.to_dict() | {"written": None} == second.to_dict() | {"written": None}
 
 
+class TestAStrayPulseOneTrialEarly:
+    """A stray pulse one trial-gap before the first event, on a train whose
+    intervals vary by ±20 ms. The map shifted by one trial (event 0 on the
+    stray, event k on event k-1's pulse) puts every event within tolerance
+    too, since neighbouring intervals differ by at most 40 ms. The old search
+    kept the first seed that explained the most events, and that seed
+    anchored event 0 on the stray: the whole map moved by a trial, every
+    event still "matched", and the one extra pulse was reported at the far
+    end, where nothing looked wrong."""
+
+    @pytest.mark.parametrize("clock_noise_s", [0.0, 1e-4])
+    def test_event_0_is_mapped_to_its_own_pulse(self, clock_noise_s):
+        behavior, pulses = varied(500, 7.2, variation=0.02)
+        pulses = pulses + np.random.default_rng(1).normal(0.0, clock_noise_s, pulses.shape)
+        stray = pulses[0] - (pulses[1] - pulses[0])
+        fit = fit_alignment("TRIAL_START", behavior, np.concatenate([[stray], pulses]))
+        # Both maps explain every event, so only closeness of fit tells them
+        # apart: the right one fits to the clock noise, the shift carries
+        # the ±20 ms variation.
+        assert fit.n_matched == 500
+        assert fit.n_extra_pulses == 1
+        assert float(fit.to_neural(behavior[0])) == pytest.approx(pulses[0], abs=1e-3)
+        assert fit.offset_s == pytest.approx(12.5, abs=1e-3)
+
+    def test_on_a_perfectly_regular_train_it_is_refused(self):
+        # With no variation at all the two maps fit equally well, and
+        # nothing in the data says which pulse is the stray.
+        behavior, pulses = planted(n=500, spacing=7.2)
+        stray = pulses[0] - (pulses[1] - pulses[0])
+        with pytest.raises(DataError, match="too evenly spaced"):
+            fit_alignment("TRIAL_START", behavior, np.concatenate([[stray], pulses]))
+
+
 class TestStillRefused:
     """Widening the seed search must not let two records of different
     sessions, or a pairing that could be off by whole trials, through."""
@@ -314,6 +348,44 @@ class TestSeedWindow:
     def test_a_permissive_threshold_is_capped(self):
         assert _seed_window(100_000, 0.0) == MAX_SEED_EVENTS
         assert _seed_window(10, 0.0) == 10
+
+
+class TestRefusalPercentages:
+    """The matched-fraction refusal once rounded both numbers to whole
+    percents, so 399 of 500 against 80% read "(80% < 80%)" — a refusal that
+    seemed to contradict itself. The fraction now carries as many decimals as
+    it takes to be visibly below the threshold."""
+
+    def test_399_of_500_reads_as_below_80_percent(self):
+        # 101 pulses lost mid-session: the ends anchor the right map, and it
+        # matches 399 of 500 — 79.8%, a fifth of a percent short.
+        behavior, pulses = varied(500, 7.2)
+        with pytest.raises(DataError, match=r"only 399 of 500 .*\(79\.8% < 80%\)"):
+            fit_alignment("TRIAL_START", behavior, np.delete(pulses, np.arange(200, 301)))
+
+    @pytest.mark.parametrize(
+        ("fraction", "threshold", "shown"),
+        [
+            # The boundary case, one decimal.
+            (399 / 500, 0.8, ("79.8%", "80%")),
+            # A clear miss keeps whole percents.
+            (16 / 500, 0.8, ("3%", "80%")),
+            # One decimal rounds UP to "80.0", so it takes two.
+            (0.7995, 0.8, ("79.95%", "80%")),
+            # A threshold with a decimal of its own is written with it.
+            (0.85, 0.855, ("85%", "85.5%")),
+            # 0.55 × 100 is 55.00000000000001; the threshold still reads 55%.
+            (0.5499, 0.55, ("54.99%", "55%")),
+            (99_999 / 100_000, 1.0, ("99.999%", "100%")),
+        ],
+    )
+    def test_the_fraction_is_written_visibly_below_the_threshold(self, fraction, threshold, shown):
+        assert _shortfall_percents(fraction, threshold) == shown
+
+    def test_a_threshold_a_rounding_error_away_falls_back_to_full_precision(self):
+        # 3 of 10 against 0.1 + 0.2 = 0.30000000000000004: refused, and no
+        # number of decimals separates them as percents. Full precision does.
+        assert _shortfall_percents(0.3, 0.1 + 0.2) == ("0.3", "0.30000000000000004")
 
 
 class TestLineMap:

@@ -376,9 +376,10 @@ def fit_alignment(
     n_matched = int(matched.sum())
     fraction = n_matched / len(behavior)
     if fraction < min_matched_fraction:
+        shown_fraction, shown_threshold = _shortfall_percents(fraction, min_matched_fraction)
         raise DataError(
             f"only {n_matched} of {len(behavior)} {event!r} events matched a pulse "
-            f"({fraction:.0%} < {min_matched_fraction:.0%}), from {len(pulses)} pulses; "
+            f"({shown_fraction} < {shown_threshold}), from {len(pulses)} pulses; "
             f"the seed search {compared}. "
             f"Either these are different sessions, or pulses were dropped — an alignment "
             f"fitted from this would be confidently wrong, so it is refused."
@@ -413,6 +414,49 @@ def fit_alignment(
         residual_max_ms=float(np.max(np.abs(residuals_ms))),
         residuals_ms=residuals_ms,
     )
+
+
+def _shortfall_percents(fraction: float, threshold: float) -> tuple[str, str]:
+    """``fraction`` and ``threshold`` written so the first is visibly the smaller.
+
+    Rounded to whole percents, 399 of 500 matched against an 80% threshold
+    read "80% < 80%": a refusal that seemed to contradict itself, and hid how
+    close the fit came. So the threshold is written with the fewest decimals
+    that state it (0.8 → "80%", 0.855 → "85.5%"), and the fraction with the
+    fewest that keep it below that ("79.8%"). A clear miss still reads
+    "3% < 80%". The caller refuses only when ``fraction < threshold``.
+    """
+    threshold_pct = threshold * 100
+    # Up to six decimals. The 1e-9 absorbs the float noise of the scaling
+    # (0.55 × 100 is 55.00000000000001), which is not part of what was set.
+    threshold_text = next(
+        (
+            text
+            for text in (f"{threshold_pct:.{places}f}" for places in range(7))
+            if abs(float(text) - threshold_pct) < 1e-9
+        ),
+        f"{threshold_pct:.6f}",
+    )
+    fraction_pct = fraction * 100
+    # Compared as the text that will be printed, not the float behind it, so
+    # the check is on exactly what the reader sees. Rounding can carry the
+    # fraction UP to the threshold (79.95 → "80.0"), which is why this counts
+    # decimals up rather than fixing one. A count of events never needs
+    # twelve; the bound only guarantees the search ends.
+    fraction_text = next(
+        (
+            text
+            for text in (f"{fraction_pct:.{places}f}" for places in range(13))
+            if float(text) < float(threshold_text)
+        ),
+        None,
+    )
+    if fraction_text is None:
+        # Only a threshold within a rounding error of the fraction gets here
+        # (0.1 + 0.2 against 3 of 10). Both at full precision, unscaled —
+        # scaling by 100 could make the two floats equal.
+        return repr(fraction), repr(threshold)
+    return f"{fraction_text}%", f"{threshold_text}%"
 
 
 def _seed_window(n_behavior: int, min_matched_fraction: float) -> int:
