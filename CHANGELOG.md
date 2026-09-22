@@ -77,6 +77,18 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Added
 
+- **`InputFrame.gaze_t`: when the gaze sample was taken.** Seconds on the
+  session clock, `None` whenever `gaze` is `None`. A display frame that brings
+  no new tracker sample repeats the previous position, and until now a phase
+  had no way to know: a speed computed across the repeat reads as zero, so a
+  rule that waits for the eye to slow down could stop mid-saccade. A repeat
+  now carries the same `gaze_t`, and the gap between two new samples is their
+  real spacing rather than the nominal frame period. The EyeLink backend
+  keeps a sample's first-read time for as long as the link hands back the
+  same sample, where it used to restamp every read with "now"; the other
+  backends already did the equivalent. A fake tracker that returns its own
+  sample objects needs a `t` on them, as `GazeSample` always required. See
+  [docs/architecture.md](docs/architecture.md) §2.1.
 - **`alhazen check-rig --record <path>`: the checkout leaves a written
   record.** Until now a pre-session checkout existed only as scrollback in
   whichever terminal was open at the rig, so nothing about it could be

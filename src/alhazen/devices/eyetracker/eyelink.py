@@ -103,6 +103,13 @@ class EyeLinkTracker:
         self._pylink: Any = None  # the lazily-imported module itself
         self._eye_index = 0  # 0=left, 1=right; re-resolved every trial
         self._recording = False
+        # The newest link sample's own timestamp (tracker ms) and the session
+        # time it was first read at. get_gaze() is called once per display
+        # frame, and getNewestSample() hands back the same sample until a
+        # newer one arrives; keeping the first-read time for it is what makes
+        # a repeat recognisable as a repeat (protocol.py, GazeSample.t).
+        self._sample_tracker_time: float | None = None
+        self._sample_session_t = 0.0
         # Where calibrate() reports its stages (the dashboard, via the
         # session's monitor); None until someone asks to be told.
         self._progress: ProgressHook | None = None
@@ -393,6 +400,14 @@ class EyeLinkTracker:
         sample = self._tracker.getNewestSample()
         if sample is None:
             return None
+        # Stamped the first time this sample is seen, and never restamped:
+        # the tracker's clock says whether it is new, the session clock says
+        # when. Mixing the two online would break invariant 2, so the
+        # tracker's time is only compared, never reported.
+        tracker_time = sample.getTime()
+        if tracker_time != self._sample_tracker_time:
+            self._sample_tracker_time = tracker_time
+            self._sample_session_t = self._clock.now()
 
         # isLeftSample()/isRightSample() can be False even when the getter
         # still hands back a non-None (stale) struct, so this is a different
@@ -410,7 +425,7 @@ class EyeLinkTracker:
         missing = getattr(self._pylink, "MISSING_DATA", MISSING_DATA)
         if is_missing_gaze(gx, gy, missing):
             return None  # a blink: data arrived, and it says "no eye"
-        return GazeSample(gx=gx, gy=gy, t=self._clock.now())
+        return GazeSample(gx=gx, gy=gy, t=self._sample_session_t)
 
     def send_message(self, text: str) -> None:
         # Forwarded verbatim: what the text says is the message subscriber's

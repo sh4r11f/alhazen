@@ -267,7 +267,7 @@ class TestGazeInputProvider:
         clock = FakeClock()
         tracker = ScriptedTracker([(0.0, GazeSample(gx=960.0, gy=440.0, t=0.0))], clock)
         provide = make_gaze_input_provider(tracker, SCREEN)
-        assert provide() == InputFrame(gaze=(0.0, 100.0))
+        assert provide() == InputFrame(gaze=(0.0, 100.0), gaze_t=0.0)
 
     def test_no_sample_stays_none(self):
         provide = make_gaze_input_provider(ScriptedTracker([], FakeClock()), SCREEN)
@@ -290,6 +290,46 @@ class TestGazeInputProvider:
         tracker = ScriptedTracker([], clock)
         provide = make_input_provider(SCREEN, tracker=tracker, correction=correction)
         assert provide().gaze is None
+
+    def test_the_samples_own_time_rides_along(self):
+        # gaze_t is the time the tracker took the sample, not the time the
+        # frame asked for it: a frame that brings no new sample repeats the
+        # previous one with the SAME time, which is the only way a phase can
+        # tell a repeat (a false zero speed) from a sample of a still eye.
+        clock = FakeClock()
+        tracker = ScriptedTracker(
+            [
+                (0.0, GazeSample(gx=960.0, gy=540.0, t=0.0)),
+                (0.010, GazeSample(gx=970.0, gy=540.0, t=0.010)),
+            ],
+            clock,
+        )
+        provide = make_gaze_input_provider(tracker, SCREEN)
+        assert provide().gaze_t == 0.0
+        clock.advance(0.005)  # a frame, but no new sample yet
+        assert provide().gaze_t == 0.0
+        clock.advance(0.010)
+        frame = provide()
+        assert frame.gaze == (10.0, 0.0) and frame.gaze_t == pytest.approx(0.010)
+
+    def test_a_blink_carries_no_time(self):
+        # None whenever gaze is None: a time without a position would let a
+        # phase count a blink as a sample.
+        clock = FakeClock()
+        tracker = ScriptedTracker(
+            [(0.0, GazeSample(gx=960.0, gy=540.0, t=0.0)), (0.01, None)], clock
+        )
+        provide = make_gaze_input_provider(tracker, SCREEN)
+        clock.advance(0.02)
+        assert provide() == InputFrame(gaze=None, gaze_t=None)
+
+    def test_the_drift_correction_moves_the_position_not_the_time(self):
+        clock = FakeClock(start=2.5)
+        tracker = ScriptedTracker([(0.0, GazeSample(gx=980.0, gy=540.0, t=2.25))], clock)
+        correction = GazeCorrection()
+        correction.shift_by(-20.0, 0.0, clock.now())
+        provide = make_input_provider(SCREEN, tracker=tracker, correction=correction)
+        assert provide() == InputFrame(gaze=(0.0, 0.0), gaze_t=2.25)
 
     def test_health_check_reports_a_stopped_tracker(self):
         tracker = ScriptedTracker([], FakeClock())

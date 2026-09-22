@@ -132,6 +132,7 @@ is the whole of what they get.
 | `gaze` | `tuple[float, float] \| None` | Where the subject is looking, in **centered px, y up**. `None` means unverifiable — a blink, a track loss, or no tracker at all. |
 | `keys` | `tuple[str, ...]` | The **subject's** key presses since the previous frame, oldest first. A tuple, not one key: a fast double-press inside a frame must not be silently dropped. Distinct from the experimenter's keys (`core/commands.py`) — different person, different keys, different consequences. |
 | `wheel` | `float` | Scroll-wheel movement over that frame, positive up — an adjustment task's knob. |
+| `gaze_t` | `float \| None` | When the tracker took the sample behind `gaze`, in **seconds on the session clock**; `None` whenever `gaze` is `None`. A display frame that brings no new tracker sample repeats the previous one *with the same* `gaze_t`, so equal times mean one sample seen twice — a speed computed across it is a false zero — and the gap between two new samples is their real spacing, not the nominal frame period. |
 
 Two rules the fields carry:
 
@@ -143,6 +144,13 @@ Two rules the fields carry:
 - **`None` passes straight through as `None`.** An unverifiable position is
   never replaced by the last known one, and `CircleRegion.contains(None)` is
   False, so no region ever credits fixation that cannot be verified.
+- **A sample keeps its own time.** Every backend stamps `GazeSample.t` on
+  the session clock when the sample was taken or first read, never simply
+  "now": the EyeLink backend keeps the first-read time for as long as the
+  link's newest sample has the same tracker timestamp, and the TRACKPixx3
+  reader's time is when it read the device. The provider copies it into
+  `gaze_t` untouched — time is not a coordinate, so the one conversion site
+  stays the one conversion site.
 
 Fields are only ever **appended**, with defaults, so a phase or a test that
 reads one of them is unaffected by the others.

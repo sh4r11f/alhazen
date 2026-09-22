@@ -48,6 +48,7 @@ class FakeEyeLink:
         self.result_message = "GOOD"
         self.result_error: Exception | None = None
         self.eye = -1  # eyeAvailable(): no sample to answer from until recording
+        self.newest: FakeSample | None = None  # what getNewestSample() hands back
 
     def openDataFile(self, name: str) -> None:  # noqa: N802 - pylink's names
         self.data_file = name
@@ -82,6 +83,31 @@ class FakeEyeLink:
 
     def eyeAvailable(self) -> int:  # noqa: N802
         return self.eye
+
+    def getNewestSample(self) -> FakeSample | None:  # noqa: N802
+        return self.newest
+
+
+class FakeSample:
+    """A pylink link sample: the left eye's gaze, and the tracker's own
+    timestamp in ms — which, like the real one, repeats for as long as no
+    newer sample has arrived."""
+
+    def __init__(self, gx: float, gy: float, tracker_ms: float) -> None:
+        self._gaze = (gx, gy)
+        self._time = tracker_ms
+
+    def getTime(self) -> float:  # noqa: N802
+        return self._time
+
+    def isLeftSample(self) -> bool:  # noqa: N802
+        return True
+
+    def isRightSample(self) -> bool:  # noqa: N802
+        return False
+
+    def getLeftEye(self) -> types.SimpleNamespace:  # noqa: N802
+        return types.SimpleNamespace(getGaze=lambda: self._gaze)
 
 
 class FakeWindow:
@@ -364,3 +390,46 @@ class TestHostResult:
         assert result.aborted and result.ok is None
         assert result.note == "aborted on the Host PC (ESC pressed)"
         assert "aborted by the experimenter" in caplog.text
+
+
+class TestGazeSampleTimes:
+    """``GazeSample.t`` must say which sample this is (protocol.py): stamped
+    when the sample is first read, and kept for as long as the link hands the
+    same sample back. Restamped on every frame, a repeat would look like an
+    eye that had stopped dead, and a velocity-ended landing would end
+    mid-saccade."""
+
+    def connected(self, fake_pylink, clock: FakeClock) -> tuple[EyeLinkTracker, FakeEyeLink]:
+        tracker = EyeLinkTracker(EyeTrackerConfig(backend="eyelink"), None, SCREEN, clock)
+        tracker.connect()
+        (connection,) = fake_pylink.connections
+        return tracker, connection
+
+    def test_a_repeated_sample_keeps_the_time_it_was_first_read(self, fake_pylink):
+        clock = FakeClock(start=1.0)
+        tracker, connection = self.connected(fake_pylink, clock)
+        connection.newest = FakeSample(100.0, 200.0, tracker_ms=5000.0)
+        first = tracker.get_gaze()
+        clock.advance(0.008)  # the next frame, and the link has nothing newer
+        again = tracker.get_gaze()
+        assert first is not None and again is not None
+        assert first.t == again.t == 1.0
+
+    def test_a_new_sample_is_stamped_on_the_session_clock(self, fake_pylink):
+        clock = FakeClock(start=1.0)
+        tracker, connection = self.connected(fake_pylink, clock)
+        connection.newest = FakeSample(100.0, 200.0, tracker_ms=5000.0)
+        tracker.get_gaze()
+        clock.advance(0.008)
+        connection.newest = FakeSample(110.0, 200.0, tracker_ms=5008.0)
+        sample = tracker.get_gaze()
+        # The session clock's time, never the tracker's 5008 ms: the two
+        # clocks are aligned offline, not mixed online (invariant 2).
+        assert sample is not None
+        assert (sample.gx, sample.t) == (110.0, pytest.approx(1.008))
+
+    def test_a_blink_is_still_none(self, fake_pylink):
+        clock = FakeClock()
+        tracker, connection = self.connected(fake_pylink, clock)
+        connection.newest = FakeSample(-32768.0, -32768.0, tracker_ms=1.0)
+        assert tracker.get_gaze() is None
