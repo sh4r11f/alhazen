@@ -607,6 +607,9 @@ def _trial_session(args: argparse.Namespace, rig: Any, task: Any, params: Any, m
             open_dashboard=False if args.no_dashboard_browser else None,
             headless=args.headless,
             mouse=args.mouse,
+            # run.py's own override (run_experiment's `instructions=`), or
+            # None — `alhazen run` never sets it — in which case the session
+            # builder shows what the task declares (Task.instructions).
             instructions=getattr(args, "instructions", None),
             sources={"rig": str(args.rig), "task": str(args.params or "<defaults>")},
         )

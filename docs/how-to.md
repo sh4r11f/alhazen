@@ -130,3 +130,39 @@ before laying it out; with `reflow=False`, draw every line break as given.
 A backend with no screen records the flag rather than dropping it. A backend
 that predates the argument still works — alhazen never passes `reflow` to a
 `show_message` that does not take it — but its messages are drawn unreflowed.
+
+## Say what the subject reads before trial one
+
+Override `Task.instructions`. Every way of starting a session shows what it
+returns — `alhazen run --task`, the experiment's `run.py`,
+`build_session(task=...)` — so this is the one place the wording lives:
+
+```python
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[2]   # src/<package>/task.py -> the repository
+
+
+class MyTask(Task):
+    def instructions(self) -> str | None:
+        # A file under review, so what the subject reads cannot drift from
+        # what was agreed. Read as UTF-8 by name: on a Windows rig the
+        # default code page turns every em-dash into three wrong characters.
+        return (REPO / "instructions.md").read_text(encoding="utf-8")
+```
+
+- **Return `None` for a task with nothing to show** — an animal subject. That
+  is a declaration, not an omission: leave the method out altogether and
+  `--mode run` logs a WARNING naming it, because a task that forgot looks
+  exactly like one that decided.
+- **Declare it once on a shared base** when a family of tasks answers the
+  same way; every task under the base inherits the answer.
+- **Hard-wrapped text is fine.** The display reflows prose: a single newline
+  inside a paragraph becomes a space, a blank line separates paragraphs, and
+  an indented line or a list item keeps its break.
+- **It may quote the params.** It is called once per session, after a
+  curriculum has set the stage's values, so `self.params` is what the session
+  runs at.
+- **Fail loudly.** A missing file raises its own error before the run
+  directory is created; empty text is refused, since shown it would be a
+  blank screen waiting for SPACE.

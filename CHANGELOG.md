@@ -25,6 +25,39 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+### Added
+
+- **A task says what its subject reads: `Task.instructions()`.** It returns
+  the text shown before trial one, or `None` to declare that the task has
+  none (an animal subject); declared on a shared base class, it covers every
+  task under it. Every way of starting a session shows it — `alhazen run
+  --task`, an experiment's `run.py` through `run_experiment`,
+  `build_mode_session` and `build_session(task=...)` — because the task is
+  the one thing all of them are handed. `run` and `test` wait on it for
+  SPACE; `simulate` shows it and starts by itself two seconds later (at once
+  with `--headless`), as it did for a `run.py` that passed its wording. It is
+  asked once, after a curriculum has set the stage's params and before the
+  run directory exists; text that is not a string, or is empty, is refused
+  there. `instructions=` given to `run_experiment`, `build_mode_session` or
+  `build_session` still works and **takes precedence** over the task's;
+  `instructions=""` turns the screen off. A task that does not override the
+  method behaves exactly as before — except that `--mode run` now logs a
+  WARNING naming it, and prints and records `instructions: none — …` before
+  trial one, so a task that forgot is not mistaken for one that decided. See
+  "What the subject reads first" in [docs/architecture.md](docs/architecture.md)
+  §5.1 and [docs/modes.md](docs/modes.md).
+
+### Fixed
+
+- **`alhazen run --task` showed the subject no instructions.** Only an
+  experiment's `run.py` was ever handed the subject's wording, so a real
+  session started with `alhazen run` put trial one in front of the subject
+  with no instruction screen, no SPACE to wait for, and nothing saying so.
+  With `Task.instructions()` implemented, both entry points show the same
+  screen.
+
 ## 1.5.0 - 2026-09-23
 
 ### Changed

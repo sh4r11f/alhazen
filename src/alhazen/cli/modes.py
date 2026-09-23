@@ -6,12 +6,15 @@ an argument parser, a next-run-number counter, a rehearsal path, a guard
 against autopilotting a real rig. Two experiments had already written it
 twice, identically, including the same off-by-one in the run counter.
 
-What is genuinely per-experiment is two things — which task class to run, and
-where the subject-facing wording comes from — so those are the arguments, and
+What is genuinely per-experiment is which task class to run, and which rig and
+params file it starts from by default, so those are the arguments, and
 everything else is shared with ``alhazen run``. Literally shared: both go
 through ``add_mode_arguments`` and the same dispatch, because two entry points
 that drifted apart would mean a flag that behaves one way at the rig and
-another way in a script.
+another way in a script. The subject-facing wording used to be an argument
+too; a task now declares it itself (``Task.instructions``), so ``alhazen run``
+shows it as well, and the argument remains for a run.py that wants to
+override it.
 """
 
 from __future__ import annotations
@@ -34,11 +37,14 @@ def run_experiment(
 ) -> int:
     """Parse ``argv`` and run this experiment in the mode it names.
 
-    ``instructions`` is a callable rather than a string so an experiment that
-    reads its wording from a file — which both of alhazen's do, so that what a
-    subject hears cannot drift from what was reviewed — pays for the read only
-    when a session is actually going to show it, and fails at that point with
-    its own error rather than at import.
+    ``instructions`` is optional: a task that implements
+    ``Task.instructions`` has its wording shown by every entry point, this one
+    included, with nothing passed here. **Given, it takes precedence** over
+    the task's own for sessions started through this run.py — ``alhazen run``
+    still shows the task's. It is a callable rather than a string so an
+    experiment that reads its wording from a file pays for the read only when
+    this is called, and fails at that point with its own error rather than at
+    import.
 
     ``params_hook(params, args)`` is the one place an experiment may derive
     its parameters from how it was invoked. A task receives only its params
@@ -62,7 +68,9 @@ def run_experiment(
     )
     args = parser.parse_args(argv)
 
-    # Resolved here rather than inside the dispatch: an experiment's wording
-    # is its own business, and the dispatch has no way to find it.
+    # Resolved here rather than inside the dispatch: this is run.py's own
+    # override, and the dispatch knows only the task. None leaves the
+    # instruction screen to the task (Task.instructions), which the session
+    # builder asks — the same path `alhazen run` takes.
     args.instructions = instructions() if instructions is not None else None
     return _run_session(args, task_class=task_class, params_hook=params_hook)

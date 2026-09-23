@@ -409,6 +409,7 @@ class SaccadeTask(alhazen.Task):
     def conditions(self, rng): ...      # default: one nameless condition
     def build_trial(self, setup): ...   # the one method every task writes
     def score(self, record): ...        # default: identity
+    def instructions(self): ...         # what the subject reads first; None: nothing, on purpose
 ```
 
 The declarations are checked in `__init_subclass__`, at class-definition
@@ -416,9 +417,65 @@ time: a task missing its outcomes is a programming error the author should
 meet while writing the file, not with a subject waiting. `make_source` reads
 a `SchedulerConfig` from the params (§5.4) unless the task overrides it, and
 `build_session(task=...)` fills in name, params, events, trial builder,
-scheduler, score and reward policy — while the explicit parameters still work
-and still win when both are given, which is what a test overriding one piece
-of a real task needs.
+scheduler, score, reward policy and the subject's instructions — while the
+explicit parameters still work and still win when both are given, which is
+what a test overriding one piece of a real task needs.
+
+#### What the subject reads first
+
+A session can be started four ways — `alhazen run --task`, an experiment's
+`run.py` (`run_experiment`), `build_mode_session` and `build_session(task=...)`
+— and the task is the one thing all four are handed. So the wording shown
+before trial one is the task's own: `instructions()` returns the text, and
+`build_session` asks for it once, after a curriculum has set the stage's
+params (the text may quote them) and before the run directory exists (a
+missing file fails without leaving an empty run behind). Before this, only
+`run.py` was handed the wording, and a real session started with
+`alhazen run` showed the subject nothing.
+
+```mermaid
+flowchart LR
+    AR["alhazen run --task"] --> RS["cli dispatch<br/>(_run_session)"]
+    RP["run.py<br/>run_experiment()"] --> RS
+    RS --> BMS["build_mode_session(mode)"]
+    OWN["an experiment's own<br/>test or script"] --> BS
+    BMS --> BS["build_session(task=...)"]
+    BMS -. "run mode, and the task<br/>never said" .-> W["WARNING, and a line<br/>before trial one"]
+    BS --> Q{"instructions=<br/>given?"}
+    Q -- "yes: run.py's own,<br/>or an example's" --> T["that text"]
+    Q -- "no" --> TI["task.instructions()"]
+    TI --> T
+    T --> G{"_start_gate"}
+    G -- "run, test:<br/>a real display" --> SP["waits for SPACE<br/>(ESC cancels)"]
+    G -- "simulate:<br/>a real display" --> AU["shown for 2 s,<br/>then starts by itself"]
+    G -- "a simulated display" --> LG["logged,<br/>starts at once"]
+```
+
+The method has three states, and they are told apart without calling it:
+
+| the task | the session | `--mode run` |
+|---|---|---|
+| returns text | shows it | — |
+| returns `None` | shows nothing: the task has declared it has none (an animal subject) | — |
+| does not override it | shows nothing, as every task did before the hook existed | logs a WARNING naming `instructions()`, and prints and records `instructions: none — …` before trial one |
+
+The third state exists so that a task that *forgot* is never mistaken for
+one that *decided*. Only run mode warns — a pilot is run mode with a shorter
+params file — because it is the session a subject actually sits through;
+test mode rehearses whatever the task declares, and simulate has nobody to
+read anything. A shared base class that returns `None` declares it for every
+task under it. Returned text is checked when the session is built: a
+non-string (a `Path` instead of the file's contents) is a `TypeError`, and
+empty text a `ConfigError`, because shown it would be a blank screen waiting
+for SPACE. A value written where the method belongs (`instructions = "..."`)
+is refused when the class is defined.
+
+An explicit `instructions=` — to `build_session`, `build_mode_session` or
+`run_experiment` — still works and takes precedence over the task's, and
+`instructions=""` turns the screen off whatever the task declares. What
+decides the gate after the text is `session/builder.py` `_start_gate`, a
+function of the display kind and `auto_start` alone, so the rule is pinned by
+tests without a renderer.
 
 ### 5.2 The phase library (`task/phases/`)
 
@@ -1205,8 +1262,9 @@ every backend precisely so a backend cannot quietly reach for
 read as the record of the session's *structure*, so what it carries at INFO
 is exactly that: `session start` (identity and seed), a `devices:` line naming
 each device's backend, one `setup:` line per thing the mode decided before
-trial 1 (`ModeSession.describe()` — reductions, stood-down devices; the
-terminal is not part of the run directory), `block N of M starts/ends` from
+trial 1 (`ModeSession.describe()` — reductions, stood-down devices, a
+run-mode task that never declared its instructions; the terminal is not part
+of the run directory), `block N of M starts/ends` from
 `BlockPlan`, every calibration / validation (with per-target errors) / drift
 correction verdict, one line per trial (`trial 12 attempt 1: CORRECT`, with
 the abort or frame-QA reason where there is one), one line per trial that
@@ -1312,7 +1370,7 @@ parallel implementation is a tool whose OK means nothing.
 | | |
 |---|---|
 | `alhazen new <name>` | scaffold an experiment package: a Task, two rig configs, a task config, tests and a runner. Its tests pass and its session runs before anything is edited |
-| `alhazen run --task ...` | run one session of an installed task, found through the `alhazen.tasks` entry-point group; picks the next free run number, prompts for subject and session if omitted |
+| `alhazen run --task ...` | run one session of an installed task, found through the `alhazen.tasks` entry-point group; picks the next free run number, prompts for subject and session if omitted, and shows the subject the task's own instructions (§5.1) |
 | `alhazen validate --rig` | is this config file well-formed? |
 | `alhazen check-rig --rig` | is this rig actually wired? Constructs the real backends; `--pulse` fires the pump and the sync lines |
 | `alhazen sim-sorter` | publish the sorted-spike wire contract, so `check-rig` can be rehearsed with no sorter and no probe; `--fault` publishes a named non-conformance instead |

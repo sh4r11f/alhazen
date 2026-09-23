@@ -118,6 +118,36 @@ rehearsing anything.
 `demo`, `movie` and `measure` are separate programs because none of them runs
 a trial — and `movie` never even opens a window.
 
+## What the subject reads first
+
+The instruction screen is part of the session, so all three trial modes show
+the same one, and it comes from the task: `Task.instructions()` returns the
+text, or `None` to declare that there is none (an animal subject). Whoever
+starts the session — `alhazen run --task`, the experiment's `run.py`, a
+script calling `build_mode_session` — the subject reads the same words.
+
+| mode | the instruction screen |
+|---|---|
+| `run` | shown; waits for SPACE, and ESC cancels the session before trial one |
+| `test` | the same, for the person rehearsing it |
+| `simulate` | shown with `AUTOMATED DEMO — starting automatically...` under it, and the session starts two seconds later by itself; with `--headless` there is no window, so the text goes to `session.log` and the session starts at once |
+
+A task that never overrides `instructions()` shows nothing, as before — and in
+`run` mode that is said out loud. A WARNING names the method and the two ways
+to answer it, and a line before trial one says the same, so a task that
+forgot is not mistaken for one that decided:
+
+```
+mode: run — the experiment
+data: data
+instructions: none — MyTask does not declare instructions(), so the subject is shown nothing before trial one
+```
+
+Returning `None` is the answer for a task with nothing to show, and silences
+it. An experiment's `run.py` may still pass its own wording
+(`run_experiment(instructions=...)`); given, it takes precedence for the
+sessions that `run.py` starts.
+
 ## `test` — the whole experiment, shorter
 
 Sit through the experiment once before a subject does: every phase, every
@@ -417,8 +447,8 @@ redesigns the experiment: the snapshot records the numbers that ran.
 ## Starting an experiment
 
 An experiment package ships a `run.py` so it can be started without installing
-anything. It needs to say two things — which task, and where the subject's
-wording comes from:
+anything. It needs to say which task, and which rig and params file to start
+from when the command line names none:
 
 ```python
 from alhazen.cli.modes import run_experiment
@@ -428,17 +458,28 @@ raise SystemExit(
         task_class=MyTask,
         default_rig=HERE / "configs" / "rig-mac.yaml",
         default_params=HERE / "configs" / "task.yaml",
-        instructions=lambda: subject_instructions(HERE / "instructions.md"),
         argv=sys.argv[1:],
     )
 )
 ```
 
-`subject_instructions` stands for however the experiment reads its wording;
-reading the file is enough. The display joins hard-wrapped lines into
-paragraphs itself (`show_message` reflows by default), so the file can stay
-wrapped at 80 columns and needs no joining of its own. An indented line or a
-list item keeps its break.
+The subject's wording is not here: it is the task's own
+([What the subject reads first](#what-the-subject-reads-first)), so that
+`alhazen run --task` shows it too. Reading it from a file the experiment
+keeps under review is the usual way:
+
+```python
+class MyTask(Task):
+    def instructions(self) -> str | None:
+        return (REPO / "instructions.md").read_text(encoding="utf-8")
+```
+
+The display joins hard-wrapped lines into paragraphs itself (`show_message`
+reflows by default), so the file can stay wrapped at 80 columns and needs no
+joining of its own. An indented line or a list item keeps its break. A
+`run.py` written before tasks could say this still works:
+`run_experiment(instructions=lambda: ...)` is honoured, and given, it takes
+precedence over the task's own for the sessions that `run.py` starts.
 
 The flags are shared with `alhazen run` through the same code, because two
 entry points that drifted apart would mean a flag behaving one way at the rig
