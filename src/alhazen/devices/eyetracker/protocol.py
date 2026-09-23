@@ -12,6 +12,13 @@ compared against them with no epoch or unit conversion. The tracker's native
 clock reappears only offline, in the EDF, where the messages we write into it
 provide the alignment.
 
+``t`` also names *which* sample this is: it is when the sample was taken, or
+failing that when the backend first read it — never simply "now". A tracker
+whose newest sample has not changed since the last call hands back the same
+``t``, which is what lets a phase that measures speed count only new
+samples. A backend that restamped a repeat with the current time would make
+every repeat look like a sample at zero speed.
+
 Beyond the protocol, a backend may offer *optional capabilities* that
 the session's eye-tracker monitor (session/eyetracker.py) looks for with
 ``hasattr`` and does without when absent. They are not protocol members on

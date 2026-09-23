@@ -97,6 +97,43 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Added
 
+- **`LandingSample`: a landing phase that records where the saccade ended.**
+  `LandingCheck` ends on the first frame gaze is inside the target region,
+  which for any usable window is mid-flight: with a 3° window a 5° saccade is
+  recorded 2–3° short of where it lands, biasing every analysis that filters
+  on landing error. `LandingSample` (in `alhazen.task.phases`) ignores the
+  region until the movement is over and judges the last valid sample once.
+  It ends after a fixed dwell from saccade onset (`dwell_s`), or at saccade
+  offset (`settle_speed_dva_per_s` with a `max_wait_s` cap): the first new
+  sample slower than the threshold, where repeated samples are not counted
+  and a blink is never settled. Onset is the flip-stamped `RESPONSE_ONSET`
+  by default (`onset_event=`), the reference position may be a callable for a
+  figure that moves, and either verdict may be `PhaseAction.ADVANCE`. It
+  writes the familiar `endpoint_*` columns plus `endpoint_measured` (False,
+  with no position, when no valid sample arrived), `endpoint_latency_ms`,
+  `endpoint_reference_x/y_dva` and, in the saccade-offset mode,
+  `endpoint_settled`. `depart_region="fixation"` makes it wait for the eye to
+  leave that window: a blink counts as departure under the blink rule, so a
+  blink at the cue stamps the onset with the eye still at fixation, and the
+  first slow sample there would otherwise end the trial as a miss at
+  fixation. With it, a sample still inside the window is never the endpoint
+  and never settles, and an eye that has not left by the dwell or the cap is
+  recorded as not measured. **`LandingCheck` is unchanged**, and its
+  docstring now warns that its endpoint is where gaze entered the window. See
+  [docs/architecture.md](docs/architecture.md) §5.2.
+- **`InputFrame.gaze_t`: when the gaze sample was taken.** Seconds on the
+  session clock, `None` whenever `gaze` is `None`. A display frame that brings
+  no new tracker sample repeats the previous position, and until now a phase
+  had no way to know: a speed computed across the repeat reads as zero, so a
+  rule that waits for the eye to slow down could stop mid-saccade. A repeat
+  now carries the same `gaze_t`, and the gap between two new samples is their
+  real spacing rather than the nominal frame period. The EyeLink backend
+  keeps a sample's first-read time for as long as the link hands back the
+  same sample, where it used to restamp every read with "now"; the other
+  backends already did the equivalent. A fake tracker that returns its own
+  sample objects needs a `t` on them, as `GazeSample` always required. See
+  [docs/architecture.md](docs/architecture.md) §2.1.
+
 - **`alhazen.display.reflow(text)`**, the rule `show_message` applies, as a
   pure function with no display behind it — for an experiment that wants to
   see its instructions as the subject will, and in place of the

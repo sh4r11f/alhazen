@@ -1401,6 +1401,9 @@ class ViewPixxTracker:
         # boundary, so nothing downstream has to know which backend produced
         # a sample.
         gx, gy = self._screen.centered_to_screen(*chosen)
+        # ``t`` is when the reader took this report, not now: a frame that
+        # finds no newer read gets the same report with the same time, so it
+        # reads as the repeat it is (protocol.py, GazeSample.t).
         return GazeSample(gx=gx, gy=gy, t=t)
 
     def send_message(self, text: str) -> None:

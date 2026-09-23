@@ -128,7 +128,11 @@ class ScriptedCommands:
 
 class ScriptedInputs:
     """Serves scripted InputFrames, one per call; the last one repeats once
-    the script runs out (a subject who keeps looking where they looked)."""
+    the script runs out (a subject who keeps looking where they looked).
+
+    A frame is served exactly as scripted, ``gaze_t`` included, so a test of
+    a phase that counts new samples scripts the times itself: the same
+    ``gaze_t`` on two frames is one sample repeated, not two."""
 
     def __init__(self, frames: list[InputFrame]) -> None:
         self._frames = list(frames)
