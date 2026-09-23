@@ -40,7 +40,7 @@ from alhazen.core.commands import CommandSource, KeyboardCommands, NullCommands
 from alhazen.core.engine import TrialEngine
 from alhazen.core.events import EventBus, EventSchema
 from alhazen.core.rng import resolve_seed, spawn_streams
-from alhazen.core.trial import InputFrame, TrialContext
+from alhazen.core.trial import FAULT_TRACKER_STOPPED, InputFrame, TrialContext
 from alhazen.dashboard.runtime import DashboardController
 from alhazen.dashboard.spec import DashboardSpec
 from alhazen.data.paths import SessionPaths
@@ -144,10 +144,13 @@ def make_tracker_health_check(tracker: EyeTracker) -> Callable[[], str | None]:
 
     A trial that runs on while its tracker has dropped out produces a record
     that looks like a normal trial but has no eye data behind it — worse than
-    an abort, because nothing in the data says so. The reason string lands in
-    the trial record as ``abort_reason``.
+    an abort, because nothing in the data says so. The reason string,
+    ``FAULT_TRACKER_STOPPED``, lands in the trial record as ``abort_reason``
+    and as the row's ``fault``: a tracker that stops is a system fault, not
+    the subject's (core/trial.py). During the trial's closing phase, after
+    the measurement, the engine flags it without aborting.
     """
-    return lambda: None if tracker.is_recording() else "tracker_stopped"
+    return lambda: None if tracker.is_recording() else FAULT_TRACKER_STOPPED
 
 
 def validate_event_names(

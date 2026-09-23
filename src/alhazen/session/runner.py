@@ -36,7 +36,7 @@ from alhazen.core.clock import Clock
 from alhazen.core.commands import Command, CommandSource
 from alhazen.core.engine import QuitRequested, TrialEngine
 from alhazen.core.events import Event, EventBus
-from alhazen.core.trial import CircleRegion, TrialContext
+from alhazen.core.trial import NO_FAULT, CircleRegion, TrialContext
 from alhazen.dashboard.panels import frame_intervals_panel
 from alhazen.dashboard.runtime import DashboardController, dashboard_state
 from alhazen.dashboard.spec import DashboardSpec
@@ -529,6 +529,11 @@ class SessionRunner:
             detail = f" ({record['abort_reason']})"
         elif record.get("frame_qa_reason"):
             detail = f" (was {record.get('outcome_before_frame_qa')}: {record['frame_qa_reason']})"
+        elif record.get("fault", NO_FAULT) != NO_FAULT:
+            # Neither an abort nor a recycle, yet a fault on the row: a device
+            # stopped during the closing phase, after the measurement. The
+            # engine flagged it and let the outcome stand (core/engine.py).
+            detail = f" (fault {record['fault']} during its closing phase — the outcome stands)"
         log.info(
             "trial %d attempt %d: %s%s%s",
             self._trial_index,

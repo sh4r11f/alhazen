@@ -25,6 +25,43 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+### Added
+
+- **Every trial row names the system fault that hit it, in a new `fault`
+  column.** Two failures are the rig's, never the subject's: the display
+  dropping frames (frame QA's `recycle_trial` turned the trial into
+  `DROPPED_FRAMES`: `fault` is `dropped_frames`), and the eye tracker
+  stopping recording (the tracker health check fired: `fault` is
+  `tracker_stopped`). Every other row says `none` — a value, never an empty
+  cell, so a clean trial can be selected on (`trials.fault != "none"`). The
+  experimenter's skip is not a fault. The trials table lists `fault` among
+  its leading columns, right after `abort_reason`, and the trial-column
+  baseline in `tests/fixtures/contracts.json` gains it; nothing was removed
+  or renamed. See [docs/architecture.md](docs/architecture.md) §2.2.
+- **`lost_to_fault(outcome_name, record)`** in `alhazen.core`, and
+  `TrialResult.lost_to_fault`: the system fault a trial's measurement was
+  lost to, or None. A row names the fault that hit its trial; this says
+  whether the fault cost the trial its outcome (`DROPPED_FRAMES`, or
+  `ABORTED` by the health check — not the skip). It reads the row alone, so
+  the same rule applies to trials.csv offline. `NO_FAULT`,
+  `FAULT_DROPPED_FRAMES` and `FAULT_TRACKER_STOPPED` name the column's
+  values.
+
+### Fixed
+
+- **A tracker that stops during feedback no longer throws away the trial.**
+  The health check aborted even the closing phase (`TrialFeedback`), which
+  measures nothing. When the closing phase was the one deciding the outcome
+  (a `LandingCheck` that ADVANCEs into `TrialFeedback(then=...)`), a
+  finished measurement came back `ABORTED` and was served again; when an
+  earlier phase had decided it, the feedback was cut off before it was drawn
+  and the row carried an `abort_reason` for a trial that was not aborted.
+  Now the row is flagged `fault: tracker_stopped`, a WARNING is logged, the
+  feedback runs to its end, and the trial keeps its outcome — paid,
+  scheduled and counted by it.
+
 ## 1.5.0 - 2026-09-23
 
 ### Changed
