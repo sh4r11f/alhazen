@@ -48,6 +48,36 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   the same rule applies to trials.csv offline. `NO_FAULT`,
   `FAULT_DROPPED_FRAMES` and `FAULT_TRACKER_STOPPED` name the column's
   values.
+- **A trial lost to a system fault is paid, and logged.** Both kinds are
+  served again, as before. A dropped-frames trial is paid for the subject's
+  response, as in 1.5.0. A tracker-stopped trial, usually cut off before
+  any response, is paid the task's new **`RewardPolicy.on_fault`**
+  (`RewardPulses`, scaled by `scale` like every delivery), and its REWARD or
+  REWARD_FAILED payload carries `fault` beside `outcome`. `on_fault`
+  defaults to `None`, which pays nothing, so a task that does not set it is
+  paid as before. Each lost trial gets one WARNING in `session.log` naming
+  the trial, the cause, what the subject was paid (or that the task sets no
+  `on_fault`), and that it will be served again. A mid-trial drop delivered
+  before the fault stays delivered and counted, and the line says how many.
+  The experimenter's skip and a pause are never paid `on_fault`. See "System
+  faults" in [docs/architecture.md](docs/architecture.md) §5.3.
+
+### Changed
+
+- **Training criteria leave out a trial lost to a system fault.** A
+  dropped-frames trial and a tracker-stopped trial no longer enter the
+  criteria window: no metric, no `min_trials` count and no ramp sees them,
+  as a paused trial was already left out. Counted, a display dropping frames
+  pulled `completed_rate` down and could demote a subject for the rig's
+  failure.
+- **A trial the eye tracker cut short neither counts toward a failure streak
+  nor ends one** (`max_consecutive_failures`), as a pause does not. It used
+  to count, so a tracker dropping out between fixation breaks could send the
+  operator to recalibrate the subject. A dropped-frames trial still ends the
+  streak, as in 1.5.0, and the experimenter's skip still counts.
+- **`by_outcome` is not consulted for a tracker-stopped trial.** Its
+  `ABORTED` is the rig's, so it pays `on_fault` or nothing; an `ABORTED`
+  entry in `by_outcome` now pays the experimenter's skip only.
 
 ### Fixed
 

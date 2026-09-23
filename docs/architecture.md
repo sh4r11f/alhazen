@@ -215,7 +215,7 @@ question, answered from the row alone by
 whose `abort_reason` is its `fault` — the engine writes both from the one
 failed check, and that pairing is what tells a tracker abort from a skip.
 `TrialResult.lost_to_fault` carries the answer, and an analysis applies the
-same rule to trials.csv.
+same rule to trials.csv. What the session does about a lost trial is §5.3.
 
 **A tracker that stops after the measurement.** A stop during the closing
 phase — feedback on screen, everything already measured — used to be handled
@@ -353,9 +353,10 @@ sequenceDiagram
 ```
 
 A tracker that stops recording mid-trial fails the `is_recording()` health
-check: the engine aborts the trial (`ABORTED`, `tracker_stopped`) and it
-is served again — or, in the trial's closing phase, the row is only flagged
-(§2.2). The next trial's `start_trial` opens a fresh segment as usual.
+check: the engine aborts the trial (`ABORTED`, `tracker_stopped`) and the
+runner pays it the task's fault reward and serves it again — or, in the
+trial's closing phase, the row is only flagged (§2.2; §5.3, "System
+faults"). The next trial's `start_trial` opens a fresh segment as usual.
 
 `stop_trial()` is idempotent and guaranteed by a `finally`: a tracker left
 believing it is still recording writes the next trial's samples into this
@@ -616,13 +617,20 @@ flip — "50 ms after onset" is a wish, "frame 3" is what happens.
 ### 5.3 Reward policy is data
 
 ```python
-RewardPolicy(by_outcome={"CORRECT": RewardPulses(n_pulses=2)}, scale=1.0)
+RewardPolicy(
+    by_outcome={"CORRECT": RewardPulses(n_pulses=2)},
+    on_fault=RewardPulses(n_pulses=1),  # a trial the eye tracker cut short
+    scale=1.0,
+)
 ```
 
 An outcome absent from the table earns nothing, so a typo fails safe rather
 than paying out on the wrong trials. `scale` multiplies the pulse *count*
 only — pulse width is the pump's calibration, not a measure of how generous
-this session is — and is the dial a training stage turns.
+this session is — and is the dial a training stage turns. `on_fault` is what
+a trial pays when the eye tracker stopped before its outcome was decided
+(below, "System faults"); it defaults to `None`, which pays nothing, and it
+is scaled like everything else.
 
 The runner delivers after the trial ends and before the row is written, so
 `record["rewarded"]` says what happened at the pump rather than what was
@@ -661,6 +669,51 @@ schedule and the data — re-serving, adaptive schedulers, `alhazen report`'s
 outcome counts — follows the recycle. The failure streak that pauses a
 session (`max_consecutive_failures`, §10) counts a recycled trial as the
 completed trial it was.
+
+#### System faults: failures that are not the subject's
+
+The rule: **a subject is rewarded when a trial fails through no fault of
+theirs, but the trial repeats, and is logged and flagged in the data.**
+Exactly two failures are the rig's rather than the subject's — the two the
+engine flags in the row's `fault` (§2.2) — and a trial *lost* to one of them
+(`TrialResult.lost_to_fault`) is handled like this:
+
+| | The display dropped frames | The eye tracker stopped recording |
+|---|---|---|
+| Detected by | frame QA's `recycle_trial`, after the trial ran to its end (§2 step 8) | the tracker health check, while the trial was still measuring (§2 step 2) |
+| Row | `outcome: DROPPED_FRAMES`, the response kept as `outcome_before_frame_qa`, `fault: dropped_frames` | `outcome: ABORTED`, `abort_reason: tracker_stopped`, `fault: tracker_stopped` |
+| Served again | yes: `completed=False` | yes: `completed=False` |
+| Paid | for the subject's response, as on any trial — `by_outcome` of `outcome_before_frame_qa`, or `NO_REWARD` for a completed response that pays nothing | the task's `RewardPolicy.on_fault`, scaled; nothing when the task sets none. Its REWARD (or REWARD_FAILED) payload carries `fault` beside `outcome: ABORTED` |
+| Failure streak | **ends it** — the subject completed the trial, and ending a streak never counts against anyone | **neither counts nor ends it**, like `PAUSED` |
+| Training criteria | left out of the window | left out of the window |
+| `session.log` | one WARNING: the trial, the cause, what was paid, that it is served again | the same |
+
+The experimenter's skip (`ABORTED`, `skipped_by_user`) and a pause are not
+faults: never flagged, never paid `on_fault`, counted as they always were.
+
+```mermaid
+flowchart TB
+    TRIAL["a trial ends, and its row is written"] --> Q{"what ended it?"}
+    Q -->|"DROPPED_FRAMES"| DF["lost to dropped_frames<br/>paid for the response<br/>ends the failure streak"]
+    Q -->|"ABORTED, abort_reason = fault"| TS["lost to tracker_stopped<br/>paid RewardPolicy.on_fault<br/>streak neither counted nor ended"]
+    Q -->|"ABORTED, skipped_by_user"| SK["the experimenter's skip<br/>paid by_outcome, counted in the streak<br/>and the criteria, as before"]
+    Q -->|"any other outcome"| OWN["the subject's own outcome<br/>paid, scheduled and counted by it<br/>(fault may name a closing-phase stop)"]
+    DF --> LOST["served again, flagged in fault,<br/>WARNING in session.log,<br/>left out of the training window"]
+    TS --> LOST
+```
+
+A trial whose tracker stopped only during its closing phase is not lost (it
+kept its outcome, §2.2), so none of this applies to it: it is paid,
+scheduled and counted by its own outcome, and only its row's `fault` and the
+engine's WARNING say what happened. The runner and the training supervisor
+ask the same function, `core.trial.lost_to_fault`, so they cannot disagree
+about which trials these are.
+
+`by_outcome` is never consulted for a tracker-stopped trial: its `ABORTED` is
+the rig's, not a result the subject earned. An `ABORTED` entry in
+`by_outcome` still pays the experimenter's skip. A health check added later
+would be paid `on_fault` too — a failed check is always a device that
+stopped.
 
 #### Mid-trial reward
 
@@ -752,7 +805,10 @@ sequenceDiagram
   subject this trial*: True once any drop or the end-of-trial pay is
   delivered, False when deliveries were attempted and none arrived, absent
   when none was attempted — which, for a task that does not ask for
-  mid-trial reward, is exactly what it always meant.
+  mid-trial reward, is exactly what it always meant. On a trial lost to a
+  system fault the drops delivered before it stay delivered and counted, and
+  a tracker-stopped trial's `on_fault` is paid after them, through the same
+  worker; the fault's WARNING line says how many drops came first.
 - **`NO_REWARD`** still means "a completed trial that earned nothing". A
   trial whose phases asked for a drop earned it, so it gets no `NO_REWARD`
   even when its outcome pays nothing at the end — whether or not the pump
@@ -900,6 +956,14 @@ afternoon. Built in: `completed_rate` (engagement — completed ÷ all
 attempts), `success_rate` (accuracy among *completed* trials only, since a
 broken fixation is not a wrong answer), `mean_rt_ms`. `register_metric` adds
 more.
+
+The attempts are the *subject's*. Neither a paused attempt nor one lost to a
+system fault (§5.3 — frame QA recycled it, or the eye tracker stopped before
+its outcome was decided) ever enters the window, so no metric, no
+`min_trials` count and no ramp sees it. Counted, a display dropping frames
+would pull `completed_rate` down and demote a subject for the rig's failure.
+A trial whose tracker stopped only during its closing phase kept its own
+outcome, and counts like any other.
 
 Nothing is decided until the window holds `min_trials` attempts. Demotion is
 checked first and any single demote criterion fires it; promotion needs all
@@ -1259,7 +1323,11 @@ every backend precisely so a backend cannot quietly reach for
    with the count and the last outcome as its heading, because a subject
    who is not seeing the stimulus — a calibration that passed but sits at
    the edge of the fixation window — otherwise looks like a session that
-   is simply running. A `BlockPlan` leaves a break when a block ends and
+   is simply running. The streak is the subject's: a completed trial ends
+   it, and so does a `DROPPED_FRAMES` trial (the subject completed it); a
+   `PAUSED` trial and a trial the eye tracker cut short neither count nor
+   end it; the experimenter's skip counts (§5.3, "System faults"). A
+   `BlockPlan` leaves a break when a block ends and
    another follows (`take_block_break`), and the runner takes it before
    the next block's first trial: the pause screen headed `BLOCK 3 OF 6
    COMPLETE — REST`, in its own colour, until SPACE — a rest is never the
@@ -1278,8 +1346,10 @@ terminal is not part of the run directory), `block N of M starts/ends` from
 correction verdict, one line per trial (`trial 12 attempt 1: CORRECT`, with
 the abort or frame-QA reason where there is one, or the fault a closing
 phase flagged), one line per trial that dropped frames (per-frame drops are
-DEBUG; the frame log holds every interval), and a `session end:` line with
-the status and outcome counts —
+DEBUG; the frame log holds every interval), one WARNING per trial lost to a
+system fault (the cause, what the subject was paid — or that the task sets
+no `on_fault` — and that the trial will be served again), and a
+`session end:` line with the status and outcome counts —
 or `session end: FAILED … <exception>` at ERROR, so a log that merely stops is
 a crash and one that ends is a session.
 
