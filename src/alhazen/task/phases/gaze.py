@@ -396,13 +396,41 @@ class LandingSample:
     gaze leaves the fixation window. ``onset_event=None`` times from this
     phase's own start instead.
 
+    ``depart_region`` names the window the saccade starts from (usually
+    ``"fixation"``), and makes the phase wait for the eye to leave it. Under
+    the blink rule a blink at the cue reads as departure, so it stamps the
+    onset while the eye is still at fixation; without this option the first
+    slow sample after the blink "settles" there and the trial ends as a miss
+    at fixation. With it, a valid sample inside the window has not left yet:
+
+    - it is never the endpoint — the endpoint is the last valid sample
+      *outside* the window, and when there is none ``<prefix>_measured`` is
+      False, exactly as when no valid sample arrived at all;
+    - it never settles, however still the eye is;
+    - it *does* stay in the speed chain, as the previous sample for the next
+      one: the speed from inside the window to outside it is the saccade's
+      own speed, so the first sample outside is judged on it rather than
+      excused for having no predecessor.
+
+    The dwell and the cap still run from the stamped onset: an eye that has
+    not left by then is not measured, never a landing at fixation. Where the
+    two windows overlap, a sample in the overlap has not left. Refused, since
+    no landing could ever be a hit: a departure window that is the target
+    itself (at construction), and one that contains the point the verdict is
+    centred on — the target's centre or a fixed reference — when the trial
+    starts. A moving figure's position is only known at the landing, so a
+    callable reference is not checked. A name the trial has no region for is
+    refused when the trial starts, too. ``None``, the default, leaves every
+    sample eligible.
+
     Records, under ``record_prefix`` (default ``endpoint``, the same names
     :class:`LandingCheck` writes, so an analysis reads either):
 
-    - ``<prefix>_measured``: False when no valid sample arrived at all. Then
-      nothing else about the endpoint is written — a trial whose landing is
-      unknown must read as unknown, not as the centre of the screen — and the
-      verdict is a miss (the blink rule).
+    - ``<prefix>_measured``: False when no valid sample arrived at all (with
+      ``depart_region``, none outside it). Then nothing else about the
+      endpoint is written — a trial whose landing is unknown must read as
+      unknown, not as the centre of the screen — and the verdict is a miss
+      (the blink rule).
     - ``<prefix>_in_target``: the verdict.
     - ``<prefix>_x_dva`` / ``_y_dva`` / ``_error_dva``: the endpoint, and its
       distance from the reference.
@@ -411,8 +439,9 @@ class LandingSample:
       from — for a moving figure, the only record of where it was.
     - ``<prefix>_settled`` (saccade-offset mode only): False when the phase
       ended at ``max_wait_s`` rather than on a settled sample; the endpoint is
-      then the last valid sample, judged the same way, and this column is
-      what lets an analysis exclude it.
+      then the last valid sample (outside ``depart_region``, when given),
+      judged the same way, and this column is what lets an analysis exclude
+      it.
 
     ``reference`` is where the landing is measured from, in centered px, or a
     callable taking the ``TrialContext`` for a figure that moves. It defaults
@@ -433,6 +462,7 @@ class LandingSample:
         settle_speed_dva_per_s: float | None = None,
         max_wait_s: float | None = None,
         onset_event: str | None = "RESPONSE_ONSET",
+        depart_region: str | None = None,
         reference: Reference | None = None,
         stimulus_keys: list[str] | None = None,
         landed_event: str | None = "LANDED",
@@ -444,6 +474,16 @@ class LandingSample:
         # the next phase to run rather than this one ending the trial.
         self._on_hit = _landing_verdict("on_hit", on_hit)
         self._on_miss = _landing_verdict("on_miss", on_miss)
+        # The window the eye leaves and the window it should land in are two
+        # different places. Named as one, every sample on the target would
+        # count as "not left yet", and no landing could ever be a hit.
+        if depart_region is not None and depart_region == region:
+            raise ValueError(
+                f"depart_region={depart_region!r} is the target region itself: every sample on "
+                "the target would count as the eye not having left yet, so no landing could "
+                "ever be a hit. Name the window the saccade starts from (usually 'fixation'), "
+                "or leave depart_region=None"
+            )
         # Exactly one way of ending. Both given would leave it undecided which
         # one wins; neither would leave the phase with no end at all.
         if (dwell_s is None) == (settle_speed_dva_per_s is None):
@@ -480,6 +520,7 @@ class LandingSample:
         self._settle_speed = settle_speed_dva_per_s
         self._max_wait_s = max_wait_s
         self._onset_event = onset_event
+        self._depart_region = depart_region
         self._reference = reference
         self._stimulus_keys = list(stimulus_keys or [])
         self._landed_event = landed_event
@@ -502,36 +543,82 @@ class LandingSample:
                     "this phase's start"
                 )
             self._onset_t = float(onset_t)
-        # The last valid sample and its time: the endpoint, whenever the
-        # phase ends.
+        self._check_depart_region(ctx)
+        # The last valid sample that has left the departure window, and its
+        # time: the endpoint, whenever the phase ends.
         self._endpoint: tuple[tuple[float, float], float] | None = None
         # Saccade-offset mode only: the previous NEW sample, the other end of
         # the next speed measurement.
         self._previous: tuple[tuple[float, float], float] | None = None
 
+    def _check_depart_region(self, ctx: TrialContext) -> None:
+        """Refuse, before the first frame, a departure window this trial
+        cannot use: one it does not have, or one no landing could leave."""
+        if self._depart_region is None:
+            return
+        depart = ctx.regions.get(self._depart_region)
+        if depart is None:
+            # Checked here rather than left to a KeyError on some later
+            # frame: the list of what the trial does have is what makes a
+            # typo obvious.
+            raise ValueError(
+                f"LandingSample(depart_region={self._depart_region!r}) names a region this trial "
+                f"does not have; its regions are {sorted(ctx.regions)}. Fix the name, or add "
+                "the region in build_trial"
+            )
+        # Where the verdict is centred, when that is known before the landing:
+        # the target's centre, or a fixed reference. A moving figure is only
+        # read when the landing is judged, so it cannot be checked here.
+        if callable(self._reference):
+            return
+        centre = self._reference_px(ctx)
+        if depart.contains(centre):
+            raise ValueError(
+                f"LandingSample's verdict is centred at {centre} px, inside depart_region "
+                f"{self._depart_region!r} (centre {depart.center}, radius {depart.radius} px): "
+                "an eye that landed there would count as never having left, so no landing "
+                "could be a hit. Use a departure window that leaves the target outside it, or "
+                "depart_region=None"
+            )
+
+    def _has_left(self, ctx: TrialContext, gaze: tuple[float, float] | None) -> bool:
+        """True for a valid sample that is outside the departure window (or
+        any valid sample, when there is none): one that can be a landing."""
+        if gaze is None:
+            return False  # the blink rule: an unverifiable eye has landed nowhere
+        if self._depart_region is None:
+            return True
+        return not ctx.regions[self._depart_region].contains(gaze)
+
     def on_frame(self, ctx: TrialContext) -> str | Outcome:
         _draw(ctx, self._stimulus_keys)
         now = ctx.clock.now()
         gaze, gaze_t = ctx.inputs.gaze, ctx.inputs.gaze_t
-        if gaze is not None:
-            if gaze_t is None and self._settle_speed is not None:
-                raise ValueError(
-                    "LandingSample(settle_speed_dva_per_s=...) needs InputFrame.gaze_t to tell a "
-                    "new gaze sample from a repeated one, and this frame has a position without "
-                    "a time. The session's input provider sets it; a hand-built provider or a "
-                    "scripted InputFrame must set gaze_t too"
-                )
-            # Latched on every frame, the region ignored: the endpoint is
-            # wherever the eye was last seen when the phase ends. A dwell
-            # has no use for sample times, so the frame's time stands in when
-            # a provider supplies none.
+        if gaze is not None and gaze_t is None and self._settle_speed is not None:
+            raise ValueError(
+                "LandingSample(settle_speed_dva_per_s=...) needs InputFrame.gaze_t to tell a "
+                "new gaze sample from a repeated one, and this frame has a position without "
+                "a time. The session's input provider sets it; a hand-built provider or a "
+                "scripted InputFrame must set gaze_t too"
+            )
+        # Whether this sample can be a landing at all. Without a departure
+        # window, any valid sample can; with one, a sample still inside it
+        # cannot — a blink or a drift stamped the onset, and the saccade is
+        # still to come.
+        has_left = self._has_left(ctx, gaze)
+        if has_left:
+            assert gaze is not None  # _has_left is False for a blink
+            # Latched on every frame, the target region ignored: the endpoint
+            # is wherever the eye was last seen (having left) when the phase
+            # ends. A dwell has no use for sample times, so the frame's time
+            # stands in when a provider supplies none.
             self._endpoint = (gaze, gaze_t if gaze_t is not None else now)
 
         if self._settle_speed is not None:
             assert self._max_wait_s is not None  # the constructor guarantees it
             # Settle before the cap: a sample that settles on the very frame
             # the cap expires is still a real saccade offset.
-            if self._settles(ctx, gaze, gaze_t):
+            if self._settles(ctx, gaze, gaze_t, has_left):
                 return self._finish(ctx, settled=True)
             if now - self._onset_t >= self._max_wait_s:
                 return self._finish(ctx, settled=False)
@@ -543,9 +630,14 @@ class LandingSample:
         return PhaseAction.CONTINUE
 
     def _settles(
-        self, ctx: TrialContext, gaze: tuple[float, float] | None, gaze_t: float | None
+        self,
+        ctx: TrialContext,
+        gaze: tuple[float, float] | None,
+        gaze_t: float | None,
+        has_left: bool,
     ) -> bool:
-        """True when this frame carries a NEW sample slower than the threshold."""
+        """True when this frame carries a NEW sample, outside the departure
+        window, slower than the threshold."""
         if gaze is None or gaze_t is None:
             # The blink rule: an unverifiable eye is never settled. The
             # previous sample is dropped too — the next valid one has nothing
@@ -564,9 +656,17 @@ class LandingSample:
                     "InputFrame.gaze_t must be the sample's time on the session clock, which "
                     "only moves forward. Check the tracker backend or input provider"
                 )
+        # Every new valid sample joins the chain, including one still inside
+        # the departure window: the speed from the last sample inside it to
+        # the first outside is the saccade's own speed, the honest measure
+        # for that first sample.
         self._previous = (gaze, gaze_t)
         if previous is None:
             return False  # a speed needs two samples
+        if not has_left:
+            # Still inside the departure window: the eye has not landed,
+            # however still it is.
+            return False
         threshold = self._settle_speed
         assert threshold is not None  # only called in saccade-offset mode
         (x0, y0), t0 = previous

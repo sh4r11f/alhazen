@@ -34,15 +34,17 @@ HIT = Outcome("HIT", completed=True, success=True)
 MISS = Outcome("MISS", completed=True, success=False)
 
 
-def run(phases, inputs, declared=("FIX_ON", "FIX_ACQUIRED", "STIM_ON", "LANDED")):
-    """Run one trial through the real engine with scripted gaze."""
+def run(phases, inputs, declared=("FIX_ON", "FIX_ACQUIRED", "STIM_ON", "LANDED"), regions=None):
+    """Run one trial through the real engine with scripted gaze. ``regions``
+    replaces the default fixation and target windows, for a test about
+    their geometry."""
     harness = EngineHarness(
         input_provider=ScriptedInputs(inputs),
         declared_events=(*declared, "SACCADE_ONSET", "RESPONSE_ONSET"),
     )
     ctx = harness.ctx(
         stimuli={"fixation": FakeStimulus("fix"), "target": FakeStimulus("target")},
-        regions={"fixation": FIX, "target": TARGET},
+        regions=regions or {"fixation": FIX, "target": TARGET},
     )
     result = harness.engine.run_trial(ctx, list(phases))
     return harness, result
@@ -600,6 +602,173 @@ class TestLandingSampleOnset:
         assert result.record["endpoint_latency_ms"] == pytest.approx(3 * FRAME_S * 1000)
 
 
+class TestLandingSampleDepartRegion:
+    """``depart_region``: a valid sample still inside the window the saccade
+    starts from has not left, so it is never the endpoint and never settles —
+    but it stays in the speed chain."""
+
+    # A blink at the cue. StimulusResponse reads it as departure (the blink
+    # rule) and stamps the onset while the eye is still at fixation; the eye
+    # comes back there, holds still (1 px a frame, 1.5 deg/s), and only then
+    # makes the real saccade to the target at 400 px.
+    BLINK_AT_THE_CUE = [
+        LAUNCH,
+        BLINK,
+        at(2.0, 2 * FRAME_S),
+        at(3.0, 3 * FRAME_S),
+        at(4.0, 4 * FRAME_S),
+        at(200.0, 5 * FRAME_S),
+        at(390.0, 6 * FRAME_S),
+        at(400.0, 7 * FRAME_S),
+    ]
+
+    def test_without_it_a_blink_at_the_cue_settles_at_fixation(self):
+        # The failure the option exists for — and the default, unchanged: the
+        # first slow sample after the blink "settles" at fixation, and the
+        # trial ends as a miss there.
+        _harness, result = run([onset(), offset_phase()], self.BLINK_AT_THE_CUE)
+        assert result.outcome is MISS
+        assert result.record["endpoint_settled"] is True
+        assert result.record["endpoint_x_dva"] == pytest.approx(3.0 / 40.0)
+
+    def test_with_it_the_phase_waits_for_the_real_saccade(self):
+        harness, result = run(
+            [onset(), offset_phase(depart_region="fixation")], self.BLINK_AT_THE_CUE
+        )
+        assert result.outcome is HIT
+        assert result.record["endpoint_measured"] is True
+        assert result.record["endpoint_settled"] is True
+        assert result.record["endpoint_x_dva"] == pytest.approx(10.0)
+        # Settled on the sample taken at 7 frame periods, 6 after the onset
+        # flip — not on any of the still samples at fixation before it.
+        assert result.record["endpoint_latency_ms"] == pytest.approx(6 * FRAME_S * 1000)
+        assert "LANDED" in harness.collector.names()
+
+    def test_an_eye_that_never_leaves_before_the_cap_is_not_measured(self):
+        # Still at fixation throughout: no landing to record, rather than a
+        # landing at fixation. Settled False, measured False, a miss.
+        still = [at(2.0 + k, k * FRAME_S) for k in range(1, 10)]
+        harness, result = run(
+            [onset(), offset_phase(depart_region="fixation", max_wait_s=3.5 * FRAME_S)],
+            [LAUNCH, *still],
+        )
+        assert result.outcome is MISS
+        assert result.record["endpoint_measured"] is False
+        assert result.record["endpoint_settled"] is False
+        assert result.record["endpoint_in_target"] is False
+        for column in ("x_dva", "y_dva", "error_dva", "latency_ms"):
+            assert f"endpoint_{column}" not in result.record
+        assert "LANDED" not in harness.collector.names()
+
+    def test_the_last_sample_inside_times_the_first_one_outside(self):
+        # The speed chain runs through the departure window: the last sample
+        # inside it is the previous sample for the first one outside. An eye
+        # drifting slowly across the edge (4 px a frame, 6 deg/s) has left and
+        # is at rest, so it settles on its first sample outside, at 42 px —
+        # it is not excused for having no predecessor and carried on to the
+        # samples at 400 px that follow.
+        _harness, result = run(
+            [onset(), offset_phase(depart_region="fixation")],
+            [
+                LAUNCH,
+                at(34.0, FRAME_S),
+                at(38.0, 2 * FRAME_S),
+                at(42.0, 3 * FRAME_S),
+                at(400.0, 4 * FRAME_S),
+                at(400.0, 5 * FRAME_S),
+            ],
+        )
+        assert result.outcome is MISS
+        assert result.record["endpoint_settled"] is True
+        assert result.record["endpoint_x_dva"] == pytest.approx(42.0 / 40.0)
+
+    def test_in_a_dwell_the_endpoint_is_the_last_sample_outside(self):
+        # Out to the target, then back to fixation before the dwell ends. The
+        # samples back inside have not landed anywhere: the endpoint is the
+        # last one outside, on the target.
+        harness, result = run(
+            [onset(), dwell_phase(depart_region="fixation")],
+            [
+                LAUNCH,
+                at(390.0, FRAME_S),
+                at(400.0, 2 * FRAME_S),
+                at(5.0, 3 * FRAME_S),
+                at(2.0, 4 * FRAME_S),
+            ],
+        )
+        assert result.outcome is HIT
+        assert result.record["endpoint_x_dva"] == pytest.approx(10.0)
+        assert result.record["endpoint_latency_ms"] == pytest.approx(FRAME_S * 1000)
+        assert "LANDED" in harness.collector.names()
+
+    def test_in_a_dwell_an_eye_that_never_left_is_not_measured(self):
+        harness, result = run(
+            [onset(), dwell_phase(depart_region="fixation")],
+            [LAUNCH, *(at(1.0 + k, k * FRAME_S) for k in range(1, 5))],
+        )
+        assert result.outcome is MISS
+        assert result.record["endpoint_measured"] is False
+        assert "endpoint_x_dva" not in result.record
+        assert "LANDED" not in harness.collector.names()
+
+    def test_where_the_windows_overlap_the_eye_has_not_left(self):
+        # A target near enough that its window overlaps the fixation window
+        # (centre 90 px, radius 60: the overlap runs from 30 to 40 px). An eye
+        # resting at 35 px is inside the target's window, but it has not
+        # left fixation, so it is not a landing.
+        regions = {"fixation": FIX, "target": CircleRegion((90.0, 0.0), 60.0)}
+        _harness, result = run(
+            [onset(), dwell_phase(depart_region="fixation")],
+            [LAUNCH, *(at(35.0, k * FRAME_S) for k in range(1, 5))],
+            regions=regions,
+        )
+        assert result.record["endpoint_measured"] is False
+        assert result.outcome is MISS
+
+    def test_an_unknown_region_is_named_beside_the_ones_there_are(self):
+        with pytest.raises(ValueError, match=r"'fixaton'.*\['fixation', 'target'\]"):
+            run([onset(), dwell_phase(depart_region="fixaton")], [LAUNCH, ON_TARGET])
+
+    def test_a_departure_window_around_the_target_centre_is_refused(self):
+        # A target whose centre is inside the fixation window: an eye landing
+        # exactly on it would count as never having left, so it could never
+        # be a hit. Refused when the trial starts, not discovered in the data.
+        regions = {
+            "fixation": CircleRegion((0.0, 0.0), 120.0),
+            "target": CircleRegion((100.0, 0.0), 60.0),
+        }
+        with pytest.raises(ValueError, match="inside depart_region 'fixation'"):
+            run(
+                [onset(), dwell_phase(depart_region="fixation")],
+                [LAUNCH, ON_TARGET],
+                regions=regions,
+            )
+
+    def test_so_is_one_around_a_fixed_reference(self):
+        with pytest.raises(ValueError, match="inside depart_region 'fixation'"):
+            run(
+                [onset(), dwell_phase(depart_region="fixation", reference=(10.0, 0.0))],
+                [LAUNCH, ON_TARGET],
+            )
+
+    def test_a_moving_reference_is_still_read_only_at_the_landing(self):
+        # Where a moving figure will be cannot be checked when the phase
+        # starts, and the figure is not asked early: it is read once, on the
+        # frame the landing is judged.
+        seen = []
+
+        def figure(ctx):
+            seen.append(ctx.clock.now())
+            return (400.0, 0.0)
+
+        _harness, result = run(
+            [onset(), dwell_phase(depart_region="fixation", reference=figure)],
+            [LAUNCH, at(400.0, FRAME_S)],
+        )
+        assert result.outcome is HIT
+        assert seen == [pytest.approx(4 * FRAME_S)]
+
+
 class TestConstructorGuards:
     def test_phases_refuse_to_be_built_without_their_outcomes(self):
         # A phase with no outcome to return would fail mid-trial, with a
@@ -633,6 +802,12 @@ class TestConstructorGuards:
             (
                 dict(on_hit=HIT, on_miss=MISS, settle_speed_dva_per_s=30.0, max_wait_s=0.0),
                 "needs max_wait_s",
+            ),
+            # The window the eye leaves named as the one it should land in:
+            # every sample on the target would be "not left yet".
+            (
+                dict(on_hit=HIT, on_miss=MISS, dwell_s=0.2, depart_region="target"),
+                "is the target region itself",
             ),
         ],
     )

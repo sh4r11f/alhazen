@@ -406,7 +406,7 @@ of a real task needs.
 | `HoldFixation` | the jittered duration elapses; any excursion is a break | `hold_duration_s` |
 | `StimulusResponse` | gaze leaves the depart-region, or the deadline passes | `rt_ms`, `<depart_region>_x/y_dva` (where the eye left from — measured, never assumed to be the fixation point) |
 | `LandingCheck` | gaze enters the target region, or the window times out. **Records where gaze first crossed into the region — mid-flight for any usable window — not where the saccade ended**; use `LandingSample` for landing error | `endpoint_x/y_dva`, `endpoint_error_dva`, `endpoint_in_target` |
-| `LandingSample` | a fixed dwell after saccade onset (`dwell_s`), **or** saccade offset: the first *new* sample slower than `settle_speed_dva_per_s`, capped at `max_wait_s`. The region is ignored until then; the last valid sample is the endpoint, judged once | `endpoint_measured`, `endpoint_in_target`, `endpoint_x/y_dva`, `endpoint_error_dva`, `endpoint_latency_ms`, `endpoint_reference_x/y_dva`; `endpoint_settled` in the saccade-offset mode |
+| `LandingSample` | a fixed dwell after saccade onset (`dwell_s`), **or** saccade offset: the first *new* sample slower than `settle_speed_dva_per_s`, capped at `max_wait_s`. The region is ignored until then; the last valid sample is the endpoint, judged once. With `depart_region` (the fixation window), a sample still inside that window is never the endpoint and never settles — a blink at the cue counts as departure, and would otherwise end the trial as a miss at fixation | `endpoint_measured`, `endpoint_in_target`, `endpoint_x/y_dva`, `endpoint_error_dva`, `endpoint_latency_ms`, `endpoint_reference_x/y_dva`; `endpoint_settled` in the saccade-offset mode |
 | `ResponseWindow` | a bound key is pressed, or the deadline passes | `response_key`, `rt_ms` |
 | `AdjustmentLoop` | the commit key is pressed, or the deadline passes | `adjusted_value`, `adjustment_turns` |
 | `FrameSequence` | a compiled `FrameTimeline` finishes | `sequence_frames` |
@@ -439,15 +439,15 @@ valid gaze sample on every frame, and tests that one endpoint once.
 ```mermaid
 stateDiagram-v2
     [*] --> Waiting: on_enter reads onset from t_response_onset (missing raises ValueError)
-    Waiting --> Waiting: every frame, draw and keep the last valid sample
+    Waiting --> Waiting: every frame, draw and keep the last valid sample outside depart_region
     state ends <<choice>>
     Waiting --> ends
     ends --> Judge: dwell mode, now − onset ≥ dwell_s
-    ends --> Judge: offset mode, a NEW sample slower than the threshold (settled)
+    ends --> Judge: offset mode, a NEW sample outside depart_region slower than the threshold (settled)
     ends --> Judge: offset mode, now − onset ≥ max_wait_s (not settled)
     ends --> Waiting: none of these yet
     Judge --> Hit: endpoint within the region radius of the reference
-    Judge --> Miss: outside it, or no valid sample (measured = False)
+    Judge --> Miss: outside it, or no valid sample outside depart_region (measured = False)
     Hit --> [*]: on_hit (an Outcome, or ADVANCE)
     Miss --> [*]: on_miss (an Outcome, or ADVANCE)
 ```
@@ -463,7 +463,9 @@ The saccade-offset rule is where the input layer matters. The rule:
   breaks the chain: the next valid sample has no honest predecessor, so it
   cannot settle either;
 - a speed needs two samples, so the first new sample in the phase cannot
-  settle.
+  settle;
+- with `depart_region`, a sample still inside that window never settles
+  (below).
 
 A 30 Hz tracker behind a 60 Hz display, at 40 px per degree and a 30 °/s
 threshold — every other frame repeats the previous sample:
@@ -495,6 +497,27 @@ the verdict off the record. When no valid sample arrived at all,
 `endpoint_measured` is False, nothing else about the endpoint is written, and
 the verdict is a miss. `LandingCheck` is kept unchanged because experiments
 depend on its timing and columns; its docstring says loudly what it measures.
+
+**Waiting for the eye to leave: `depart_region`.** Under the blink rule a
+blink counts as leaving the fixation window, so a blink at the cue makes
+`StimulusResponse` stamp the onset while the eye is still at fixation.
+Without more, the first slow sample after the blink "settles" there and the
+trial ends as a miss at fixation. `depart_region="fixation"` makes the phase
+wait for the real saccade: a valid sample still inside that window has not
+left, so it is never the endpoint — the endpoint is the last valid sample
+*outside* it — and it never settles. It does stay in the speed chain: the
+speed from the last sample inside to the first one outside is the saccade's
+own speed, so that first sample is judged on it rather than excused for
+having no predecessor. The dwell and the cap still run from the stamped
+onset, and an eye that has not left by then gives `endpoint_measured` False
+(and `endpoint_settled` False, in the offset mode), a miss, and no `LANDED` —
+never a landing at fixation. Where the two windows overlap, a sample in the
+overlap has not left. Nonsense is refused loudly: a departure window that is
+the target itself at construction; and, when the trial starts, a name the
+trial has no region for (listing the ones it has), or a window that contains
+the verdict's centre — the target's centre or a fixed reference — since no
+landing there could ever be a hit. The default, `None`, leaves every sample
+eligible, as before.
 
 `FrameTimeline` (in `display/frames.py`) is the schedule `FrameSequence`
 plays: keyframes, linear ramps, visibility spans and events, all indexed by

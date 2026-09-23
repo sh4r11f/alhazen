@@ -92,8 +92,14 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   writes the familiar `endpoint_*` columns plus `endpoint_measured` (False,
   with no position, when no valid sample arrived), `endpoint_latency_ms`,
   `endpoint_reference_x/y_dva` and, in the saccade-offset mode,
-  `endpoint_settled`. **`LandingCheck` is unchanged**, and its docstring now
-  warns that its endpoint is where gaze entered the window. See
+  `endpoint_settled`. `depart_region="fixation"` makes it wait for the eye to
+  leave that window: a blink counts as departure under the blink rule, so a
+  blink at the cue stamps the onset with the eye still at fixation, and the
+  first slow sample there would otherwise end the trial as a miss at
+  fixation. With it, a sample still inside the window is never the endpoint
+  and never settles, and an eye that has not left by the dwell or the cap is
+  recorded as not measured. **`LandingCheck` is unchanged**, and its
+  docstring now warns that its endpoint is where gaze entered the window. See
   [docs/architecture.md](docs/architecture.md) §5.2.
 - **`InputFrame.gaze_t`: when the gaze sample was taken.** Seconds on the
   session clock, `None` whenever `gaze` is `None`. A display frame that brings
