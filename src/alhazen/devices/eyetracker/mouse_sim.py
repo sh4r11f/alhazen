@@ -72,6 +72,8 @@ class MouseSimTracker:
         # produced a sample.
         x, y = self._mouse.getPos()
         gx, gy = self._screen.centered_to_screen(x, y)
+        # Stamped now, and rightly: the cursor is read afresh on every call,
+        # so every call is a new sample (protocol.py, GazeSample.t).
         return GazeSample(gx=gx, gy=gy, t=self._clock.now())
 
     def send_message(self, text: str) -> None:

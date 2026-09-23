@@ -282,7 +282,19 @@ on purpose, and the three panel colours alone say what kind of screen is up:
 | orange (`session.pause.PAUSE_COLOR`) | the pause menu |
 | red (`session.pause.FAULT_COLOR`) | the pause menu when nobody asked for the pause — the one a reward failure opens |
 
+A message's text is treated as prose: hard-wrapped lines inside a paragraph
+are joined and re-wrapped at the box's own width, a blank line starts a new
+paragraph, and an indented line or a list item (`- `, `* `, `1. `) keeps its
+line break. So an `instructions.md` wrapped at 80 columns reads as paragraphs
+rather than as lines broken twice; to keep a table or a key list laid out,
+indent its rows, or separate lines with a blank line, as the
+`Calibration FAILED` notice does. A caller whose every line break matters
+can pass `show_message(text, reflow=False)`.
+`alhazen.display.reflow` is the same rule as a function, for checking what a
+text will look like without a display.
+
 A simulated display records every panel it is asked to draw — the message
-box in `FakeDisplay.messages` (the text), the pause menu in
-`FakeDisplay.menus` as `(title, body)` — which is how the tests assert what a
-subject would have seen.
+box in `FakeDisplay.messages` (the text) and `FakeDisplay.message_calls` (the
+text and its `reflow` flag, as given), the pause menu in `FakeDisplay.menus`
+as `(title, body)` — which is how the tests assert what a subject would have
+seen.

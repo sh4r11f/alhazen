@@ -431,6 +431,12 @@ raise SystemExit(
 )
 ```
 
+`subject_instructions` stands for however the experiment reads its wording;
+reading the file is enough. The display joins hard-wrapped lines into
+paragraphs itself (`show_message` reflows by default), so the file can stay
+wrapped at 80 columns and needs no joining of its own. An indented line or a
+list item keeps its break.
+
 The flags are shared with `alhazen run` through the same code, because two
 entry points that drifted apart would mean a flag behaving one way at the rig
 and another way in a script.

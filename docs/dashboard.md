@@ -342,10 +342,10 @@ dashboard nobody can take in at a glance has stopped being monitoring; declare
 the rest explicitly when you want them.
 
 The landing panel groups `endpoint_error_dva` — how far the response fell from
-the target it was given, which `LandingCheck` records — rather than the
-endpoint's coordinate. A task with left and right targets averages its
-endpoint x to roughly zero, and a panel reporting that would be reporting
-perfect aim.
+the target it was given, which `LandingSample` and `LandingCheck` record —
+rather than the endpoint's coordinate. A task with left and right targets
+averages its endpoint x to roughly zero, and a panel reporting that would be
+reporting perfect aim.
 
 Grouped panels draw as dots with whiskers by default, or as bars with
 `style="bars"`. Bars grow from zero, so they suit a proportion or a distance;

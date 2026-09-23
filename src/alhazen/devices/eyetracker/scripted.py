@@ -25,6 +25,11 @@ class ScriptedTracker:
     call behaves; it never interpolates and never returns something from the
     future. A ``None`` entry is a scripted blink or track loss: real signal,
     not an error, and the blink rule turns it into "outside every region".
+
+    Each entry's ``GazeSample.t`` is handed back as scripted, on every call
+    that lands on that entry — which is how a real tracker's repeated newest
+    sample looks. A script whose samples should read as new gives each one
+    its own ``t`` (usually its entry time).
     """
 
     def __init__(self, samples: list[tuple[float, GazeSample | None]], clock: Clock) -> None:

@@ -1166,8 +1166,12 @@ class ViewPixxTracker:
             "calibrate again.",
             n,
         )
+        # Two paragraphs, not two lines: what happened, then what to do. A
+        # blank line is a break that survives the display's prose reflow, so
+        # this needs no `reflow=False` — which a display backend written
+        # outside alhazen, before the argument existed, could not accept.
         self._display.show_message(
-            "Calibration FAILED: the tracker reports no calibration.\n"
+            "Calibration FAILED: the tracker reports no calibration.\n\n"
             "Check the camera sees the eyes (position, focus, LED), then calibrate again."
         )
         event.waitKeys(maxWait=CALIBRATION_FAIL_HOLD_S, keyList=[*ACCEPT_KEYS, ABORT_KEY])
@@ -1397,6 +1401,9 @@ class ViewPixxTracker:
         # boundary, so nothing downstream has to know which backend produced
         # a sample.
         gx, gy = self._screen.centered_to_screen(*chosen)
+        # ``t`` is when the reader took this report, not now: a frame that
+        # finds no newer read gets the same report with the same time, so it
+        # reads as the repeat it is (protocol.py, GazeSample.t).
         return GazeSample(gx=gx, gy=gy, t=t)
 
     def send_message(self, text: str) -> None:

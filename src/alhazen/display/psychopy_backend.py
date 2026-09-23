@@ -18,6 +18,7 @@ from typing import Any
 from alhazen.config.models import MonitorConfig
 from alhazen.display.monitors import resolve as resolve_monitor
 from alhazen.display.palette import TERMINAL_FILL, TERMINAL_GREEN, TERMINAL_TEXT
+from alhazen.display.text import reflow as reflow_text
 from alhazen.errors import DisplayError
 
 log = logging.getLogger(__name__)
@@ -310,7 +311,7 @@ class PsychoPyDisplay:
             )
         return float(rate)
 
-    def show_message(self, text: str) -> None:
+    def show_message(self, text: str, *, reflow: bool = True) -> None:
         """Draw the message in a terminal-style box over the session, and flip.
 
         The box is what makes a message read as the session *saying*
@@ -318,9 +319,22 @@ class PsychoPyDisplay:
         sized to the text, outlined in green, with the text in a monospace
         face — the look of a terminal, on purpose, and in a colour that is
         neither the pause menu's orange nor a fault's red.
+
+        With ``reflow`` (the default) hard-wrapped prose is joined into
+        paragraphs before it is laid out; ``reflow=False`` keeps every line
+        break as given (DisplayBackend.show_message).
         """
         self._require_open()
         from psychopy import visual
+
+        # Reflowed before anything is measured, so the box, the shrink-to-fit
+        # and the line-count estimate all see the text that is actually drawn.
+        # Left as given, a source line longer than the measure below wraps
+        # into a full line and a stub, so a hard-wrapped page came out ragged
+        # and taller than it needs — tall enough, sometimes, to shrink the
+        # letters.
+        if reflow:
+            text = reflow_text(text)
 
         # A fresh TextStim per call: messages appear a handful of times per
         # session, nowhere near the per-frame hot path.
