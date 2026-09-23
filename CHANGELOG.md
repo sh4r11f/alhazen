@@ -108,6 +108,18 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   `show_message` call as `(text, reflow)`, exactly as given, so a test can
   pin whether a caller kept its line breaks. `messages` is unchanged.
 
+- **`TrialFeedback(keep_drawing=...)` keeps other stimuli on screen during
+  feedback.** Feedback drew only the fixation point, so whatever the last
+  measuring phase showed vanished on the frame feedback started — a figure the
+  subject had just saccaded to blinked off at the moment they were told
+  whether they reached it. `keep_drawing=("figure",)` names stimuli that are
+  updated and drawn every frame, before the fixation point so the recoloured
+  point stays on top; only the fixation point changes colour. A name the
+  trial has no stimulus for fails when the phase starts, naming it, and
+  naming the feedback stimulus itself is refused at construction. A trial
+  that ended early with a non-completed outcome (a fixation break) keeps
+  nothing, since the figure may never have been shown. The default is empty,
+  which is the old behaviour.
 - **`alhazen check-rig --record <path>`: the checkout leaves a written
   record.** Until now a pre-session checkout existed only as scrollback in
   whichever terminal was open at the rig, so nothing about it could be

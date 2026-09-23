@@ -147,6 +147,19 @@ class TrialFeedback:
 
     The stimulus under ``stimulus_key`` must offer ``set_color``; the
     fixation point does, and the simulated stand-in records it.
+
+    **Everything else goes off unless it is named in ``keep_drawing``.** By
+    default the phase draws only the feedback stimulus, so whatever the last
+    measuring phase showed vanishes on the frame feedback starts — a figure
+    the subject just saccaded to blinks off at the moment they are told
+    whether they reached it. ``keep_drawing=("figure",)`` keeps it up: each
+    named stimulus is updated and drawn every frame, *before* the feedback
+    stimulus, so the recoloured point stays on top of it. Only the feedback
+    stimulus changes colour. This does not bend the rule above: the phase is
+    still the trial's last and nothing is measured during it. A kept stimulus
+    is not drawn on a trial that ended early with a non-completed outcome — a
+    fixation break can end a trial before the figure was ever shown, and
+    feedback must not be the first time the subject sees it.
     """
 
     name = "trial_feedback"
@@ -162,9 +175,18 @@ class TrialFeedback:
         failure_color: tuple[float, float, float] = FAILURE_COLOR,
         record_key: str = "feedback",
         feedback_event: str = "FEEDBACK",
+        keep_drawing: tuple[str, ...] = (),
     ) -> None:
         if duration_s < 0:
             raise ValueError(f"feedback duration must be >= 0 s, got {duration_s}")
+        # Naming the feedback stimulus here too would draw it twice a frame,
+        # the second time on top of itself; harmless on screen, but it means
+        # the caller misread what the option is for, so say so now.
+        if stimulus_key in keep_drawing:
+            raise ValueError(
+                f"keep_drawing names the feedback stimulus {stimulus_key!r}; it is always "
+                f"drawn. List only the other stimuli that should stay on screen."
+            )
         self._verdict = verdict
         self._then = then
         self._duration_s = duration_s
@@ -173,8 +195,27 @@ class TrialFeedback:
         self._failure_color = failure_color
         self._record_key = record_key
         self._feedback_event = feedback_event
+        # A tuple, copied: the caller's sequence cannot change what is drawn
+        # after the phase is built.
+        self._keep_drawing = tuple(keep_drawing)
+        # Decided in on_enter, per trial: this phase object may be reused.
+        self._drawn_keys: tuple[str, ...] = ()
 
     def on_enter(self, ctx: TrialContext) -> None:
+        # Every kept name is checked before anything else happens — before
+        # the record is written, the point recoloured or FEEDBACK queued — so
+        # a typo fails the trial at the phase's start with the name in the
+        # message, rather than as a bare KeyError on the first frame after
+        # the subject has already been shown a colour. Checked on every trial,
+        # including those that ended early and will not draw them: a typo
+        # must not hide until the first trial that happens to complete.
+        missing = [key for key in self._keep_drawing if key not in ctx.stimuli]
+        if missing:
+            raise KeyError(
+                f"TrialFeedback keep_drawing names {missing} but the trial has no such "
+                f"stimulus; it has {sorted(ctx.stimuli)}. Fix the name, or add the "
+                f"stimulus in build_trial."
+            )
         # `ctx.outcome` is set by the engine when the trial ended before this
         # phase — a fixation break, a saccade that never came. Those are
         # failures by definition and the task's predicate is not asked: it
@@ -192,12 +233,21 @@ class TrialFeedback:
             )
         set_color(self._success_color if good else self._failure_color)
         ctx.emit_on_flip(self._feedback_event, {"success": good})
+        # The kept stimuli come first so the feedback stimulus is drawn last,
+        # on top: a figure that overlaps the fixation point must not cover
+        # the colour the subject is meant to read. A trial that ended early
+        # without a measurement may never have shown them, so it keeps
+        # nothing (see the class docstring).
+        kept = () if ended_early else self._keep_drawing
+        self._drawn_keys = (*kept, self._stimulus_key)
         self._t0 = ctx.clock.now()
 
     def on_frame(self, ctx: TrialContext) -> str | Outcome:
-        stimulus = ctx.stimuli[self._stimulus_key]
-        stimulus.update(ctx.dt)
-        stimulus.draw()
+        # Updated then drawn, in order, like every other phase's stimuli.
+        for key in self._drawn_keys:
+            stimulus = ctx.stimuli[key]
+            stimulus.update(ctx.dt)
+            stimulus.draw()
         if ctx.clock.now() - self._t0 >= self._duration_s:
             # Discarded by the engine when the trial already had an outcome;
             # returned rather than skipped so the phase ends the same way in
