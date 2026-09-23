@@ -474,12 +474,12 @@ sequenceDiagram
     participant F as Display frames (60 Hz)
     participant L as LandingSample
     T->>F: sample 200 px, t=33 ms
-    F->>L: frame: 200 px, gaze_t=33 ms → new; 150 °/s, moving
+    F->>L: frame: 200 px, gaze_t=33 ms → new, 150 °/s, moving
     F->>L: frame: 200 px, gaze_t=33 ms → repeat, skipped (not "0 °/s")
     T->>F: sample 390 px, t=67 ms
-    F->>L: frame: 390 px, gaze_t=67 ms → new; 143 °/s, moving
+    F->>L: frame: 390 px, gaze_t=67 ms → new, 143 °/s, moving
     T->>F: sample 400 px, t=100 ms
-    F->>L: frame: 400 px, gaze_t=100 ms → new; 7.5 °/s < threshold → settled
+    F->>L: frame: 400 px, gaze_t=100 ms → new, 7.5 °/s < threshold → settled
     L->>L: endpoint = 400 px, judged against the reference
 ```
 
