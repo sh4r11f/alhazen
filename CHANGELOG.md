@@ -241,6 +241,27 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Fixed
 
+- **A recording that started late or stopped early can be aligned.**
+  `fit_alignment` anchored its seed search on the very first and last
+  event, so when either had no pulse — the recorder started a few minutes
+  after the session, or stopped before it ended — every seed tied that event
+  to another event's pulse, and the fit was refused as a different session.
+  It now also tries the first and last few events, as many as the matched
+  threshold lets go unmatched (101 of 500 at the default 80%, never more
+  than 128). The 0.99–1.01 scale bound and the matched-fraction refusal are
+  unchanged, so a different session is still refused, and both refusals now
+  say how many events and pulses were compared at each end. A perfectly
+  regular train missing an end pulse, where a one-trial shift fits exactly
+  as well, is now refused as too evenly spaced instead of returning either
+  map. A stray pulse about one trial-gap before the session could
+  previously shift the whole map by one trial without complaint — every
+  event still matched, and the one extra pulse was reported at the far end;
+  the closer-fitting map now wins.
+- **The matched-fraction refusal no longer reads "80% < 80%".** Both numbers
+  were rounded to whole percents, so 399 of 500 against the 80% threshold
+  seemed to contradict itself. The fraction now carries as many decimals as
+  it takes to be visibly below the threshold: "79.8% < 80%".
+
 - **A trial that frame QA recycles is paid for what the subject did.** Under
   `frame_qa.policy: recycle_trial`, a trial whose display dropped too many
   frames becomes `DROPPED_FRAMES` and is served again. Its feedback already
