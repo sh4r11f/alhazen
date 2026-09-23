@@ -13,7 +13,9 @@ earned — it only plays out the pulse train it is handed.
 :class:`QueuedReward` wraps a backend for a task that asks for reward while a
 trial runs: it serialises every delivery onto one worker thread, so a
 mid-trial drop never blocks the frame loop and never overlaps another
-delivery on the valve.
+delivery on the valve. The experimenter's manual reward goes ahead of the
+drops still waiting (``QueuedReward.deliver_next``); a pulse train already on
+the valve always finishes.
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ from __future__ import annotations
 import logging
 import queue
 import threading
+from collections import deque
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -151,11 +154,11 @@ _WAIT_WARNING_S = 5.0
 
 @dataclass
 class _Job:
-    """One delivery on the worker's queue.
+    """One delivery, waiting in the worker's line or on the valve.
 
     ``request`` is set for a mid-trial request (reported back through the
     completion queue, drained by the session thread). ``finished`` is set for
-    a synchronous delivery (manual key, end-of-trial pay), whose caller is
+    a synchronous delivery (manual reward, end-of-trial pay), whose caller is
     blocked on it and gets any error re-raised on its own thread.
     """
 
@@ -170,18 +173,28 @@ class QueuedReward:
 
     Wraps the rig's dispenser for a task that asks for reward mid-trial
     (``Task.mid_trial_reward``). Every delivery the session makes goes through
-    it, in the order asked for, so none ever overlaps another on the valve:
+    it, so none ever overlaps another on the valve:
 
     - ``submit(request)`` — a mid-trial drop, from the engine. Returns at once
       with how many deliveries are ahead of it, because an 8 s pursuit at
       120 Hz cannot absorb a 200 ms pulse train inside a frame. Its outcome
       comes back through ``completed()``. Requests that arrive while one is
       delivering wait their turn; none is dropped or merged.
-    - ``deliver(pulses)`` — the manual key and the end-of-trial pay. Waits
-      behind whatever is queued, then for its own delivery, and re-raises a
-      failure on the caller's thread — the same contract as any
-      ``RewardDispenser``, which is why the runner and the manual-reward hook
-      need not know they hold this rather than the device itself.
+    - ``deliver(pulses)`` — the end-of-trial pay. Waits behind whatever is
+      queued, then for its own delivery, and re-raises a failure on the
+      caller's thread — the same contract as any ``RewardDispenser``, which
+      is why the runner need not know it holds this rather than the device.
+    - ``deliver_next(pulses)`` — the experimenter's manual reward (the ``r``
+      key during a trial, R in the pause menu). The same synchronous contract
+      as ``deliver``, but it overrides the queue: it goes on the valve as soon
+      as the delivery already there finishes, ahead of every drop still
+      waiting.
+
+    So the order at the valve is: the delivery on it finishes (it is never
+    cut short — ``deliver_next`` says why); then the oldest waiting
+    ``deliver_next``; then the oldest of everything else. Going ahead moves
+    nothing else: the drops still waiting keep their order and are all
+    delivered after it.
 
     Threading: the worker only calls the dispenser and puts plain-data
     completions on a thread-safe queue. It never touches the event bus, the
@@ -192,14 +205,30 @@ class QueuedReward:
 
     def __init__(self, dispenser: RewardDispenser) -> None:
         self.dispenser = dispenser
-        self._jobs: queue.Queue[_Job | None] = queue.Queue()
         self._done: queue.Queue[RewardCompletion] = queue.Queue()
-        # Guards _outstanding and _closed. _outstanding counts deliveries
-        # submitted and not yet finished (queued or on the valve), which is
-        # both the queued_behind a new request reports and what wait_idle
-        # waits to reach zero.
+        # One lock guards everything the session thread and the worker share:
+        # both parts of the line below, _outstanding and _closed. One lock,
+        # not one per structure, so a count taken while a job joins the line
+        # always agrees with where the job was put: the worker cannot take a
+        # job, or finish one, in between.
         self._lock = threading.Lock()
+        # Two conditions on that one lock, each with its own kind of waiter:
+        # the worker waits on _wakeup for a job to arrive (or for close()),
+        # and wait_idle waits on _idle for the last delivery to finish.
+        self._wakeup = threading.Condition(self._lock)
         self._idle = threading.Condition(self._lock)
+        # The jobs waiting for the valve: one line in two parts, each first
+        # in, first out. deliver_next joins the end of _front, which is ahead
+        # of everything in _back; submit and deliver join the end of _back.
+        # The worker empties _front before it takes anything from _back
+        # (_take). A job leaves the line when the worker takes it, so neither
+        # part ever holds the delivery that is on the valve.
+        self._front: deque[_Job] = deque()
+        self._back: deque[_Job] = deque()
+        # Deliveries asked for and not yet finished: everything in the line
+        # plus the one on the valve. What a new drop reports as queued_behind
+        # (all of it goes before a job joining the back) and what wait_idle
+        # waits to reach zero.
         self._outstanding = 0
         self._closed = False
         # A daemon, so a process exiting after a crash is never held open by
@@ -213,19 +242,59 @@ class QueuedReward:
     # ------------------------------------------------------------------
 
     def submit(self, request: RewardRequest) -> int:
-        """Queue a mid-trial drop; return how many deliveries are ahead of it."""
-        return self._enqueue(_Job(pulses=request.pulses, request=request))
+        """Queue a mid-trial drop; return how many deliveries are ahead of it.
+
+        Exact when taken: everything outstanding goes before a new drop — the
+        delivery on the valve, a manual reward still waiting, the drops
+        queued earlier. A manual reward asked for *after* this drop goes
+        before it too; that one is on record as its own manual REWARD.
+        """
+        return self._enqueue(_Job(pulses=request.pulses, request=request), front=False)
 
     def deliver(self, pulses: RewardPulses) -> None:
-        """Deliver now, after everything already queued, and wait for it."""
-        job = _Job(pulses=pulses, finished=threading.Event())
-        self._enqueue(job)
-        assert job.finished is not None
-        # No timeout: the worker sets this whatever the dispenser does, and
-        # a real dispenser bounds its own hardware wait (NidaqReward).
-        job.finished.wait()
-        if job.error is not None:
-            raise job.error
+        """Deliver after everything already queued, and wait for it.
+
+        The end-of-trial pay. It never jumps the queue: the runner pays
+        between trials, where no frame is waiting on it, and only after
+        ``settle_rewards`` has waited for every drop — so it finds the queue
+        empty anyway, and follows the trial's drops at the valve.
+        """
+        self._deliver_and_wait(pulses, front=False)
+
+    def deliver_next(self, pulses: RewardPulses) -> None:
+        """Deliver ahead of every queued delivery, as soon as the valve is
+        free, and wait for it.
+
+        The experimenter's manual reward. Its caller is the session thread:
+        the ``r`` key blocks the frame it was pressed on until the pump is
+        done, so that the manual REWARD is emitted after the delivery it
+        records. Behind the queue that wait could be every queued drop's
+        pulse train, with the reward the experimenter asked for arriving
+        late. Ahead of it, the wait is at most the rest of the train already
+        on the valve plus this one's own. The drops it overtakes are neither
+        dropped nor merged: they stay queued and follow it, in their order.
+        Several calls go in the order made, all ahead of the queue (a session
+        makes one at a time: the key is synchronous).
+
+        The train already on the valve is not cut short, for two reasons:
+
+        - The dose. Pulse width is what sets the volume delivered — it is the
+          pump's calibration — so a train stopped part-way delivers an amount
+          nobody measured, and that drop's REWARD_DELIVERED could not say
+          what the subject received.
+        - The line. ``NidaqReward`` plays a finite buffered waveform, and an
+          analog-output task leaves its last generated sample on the line
+          when it stops; that is why ``build_reward_waveform`` always ends at
+          0 V. Stopping it mid-pulse — reaching, from this thread, into a
+          task the worker owns — would leave the valve open until a second
+          write drove the line to 0 V, and a failure of that write would
+          flood the subject.
+
+        Interrupting would save at most one train's wait. A failure is
+        re-raised here, on the caller's thread; the worker carries on with
+        the queue.
+        """
+        self._deliver_and_wait(pulses, front=True)
 
     def completed(self) -> list[RewardCompletion]:
         """Every mid-trial completion reported since the last call, oldest
@@ -261,11 +330,12 @@ class QueuedReward:
         with self._lock:
             if self._closed:
                 return
+            # Nothing can join the line from here on (_enqueue refuses), so
+            # the worker delivers what is already in it and then stops: _take
+            # returns None only once both parts of the line are empty.
             self._closed = True
+            self._wakeup.notify()
         try:
-            # After every queued job, because nothing can be enqueued once
-            # _closed is set: the worker finishes the queue, then stops.
-            self._jobs.put(None)
             while self._thread.is_alive():
                 self._thread.join(timeout=_WAIT_WARNING_S)
                 if self._thread.is_alive():
@@ -286,7 +356,27 @@ class QueuedReward:
         finally:
             self.dispenser.close()
 
-    def _enqueue(self, job: _Job) -> int:
+    def _deliver_and_wait(self, pulses: RewardPulses, *, front: bool) -> None:
+        """Put a synchronous delivery in line — at the end of the front part
+        or of the back — and block until the worker has delivered it,
+        re-raising its failure on this thread."""
+        job = _Job(pulses=pulses, finished=threading.Event())
+        self._enqueue(job, front=front)
+        assert job.finished is not None
+        # No timeout: the worker sets this whatever the dispenser does, and
+        # a real dispenser bounds its own hardware wait (NidaqReward).
+        job.finished.wait()
+        if job.error is not None:
+            raise job.error
+
+    def _enqueue(self, job: _Job, *, front: bool) -> int:
+        """Put a job in line and wake the worker; return how many deliveries
+        are ahead of it (on the valve or earlier in the line).
+
+        Everything happens under the one lock, so the count is exact: the
+        worker cannot take a job, or finish one, between the count and the
+        append.
+        """
         with self._lock:
             if self._closed:
                 raise RewardError("reward delivery requested after the reward worker was closed")
@@ -295,20 +385,60 @@ class QueuedReward:
                 # the thread itself was killed. Queuing onto it would wait
                 # forever for a delivery nobody makes.
                 raise RewardError("the reward worker thread is no longer running")
-            ahead = self._outstanding
+            if front:
+                # It overtakes the whole back part. Still ahead of it: the
+                # delivery on the valve, which always finishes, and any
+                # earlier front job — which is everything outstanding except
+                # the back part.
+                overtaken = len(self._back)
+                ahead = self._outstanding - overtaken
+                self._front.append(job)
+            else:
+                # Everything outstanding goes before a job joining the back.
+                overtaken = 0
+                ahead = self._outstanding
+                self._back.append(job)
             self._outstanding += 1
-            # Put under the lock, so the order jobs reach the valve is the
-            # order their `ahead` counts were taken in.
-            self._jobs.put(job)
+            # notify(), not notify_all(): the worker is the only thread that
+            # ever waits on _wakeup.
+            self._wakeup.notify()
+        if overtaken:
+            # Said, because the drops it overtook are now delivered one
+            # delivery later than the queued_behind on their REWARD events.
+            log.info(
+                "reward %s goes to the valve ahead of %d queued delivery(ies), "
+                "which follow it in their order",
+                job.pulses,
+                overtaken,
+            )
         return ahead
 
     # ------------------------------------------------------------------
     # The worker thread
     # ------------------------------------------------------------------
 
+    def _take(self) -> _Job | None:
+        """The next job for the valve, or None once close() has been called
+        and the line is empty. Blocks while there is nothing to deliver.
+
+        The front part first, then the back: this is the one place the
+        order at the valve is decided.
+        """
+        with self._wakeup:
+            while True:
+                if self._front:
+                    return self._front.popleft()
+                if self._back:
+                    return self._back.popleft()
+                if self._closed:
+                    return None
+                # Releases the lock while it waits, so the session thread
+                # can add to the line; re-checked on every wake-up.
+                self._wakeup.wait()
+
     def _run(self) -> None:
         while True:
-            job = self._jobs.get()
+            job = self._take()
             if job is None:
                 return
             error: BaseException | None = None

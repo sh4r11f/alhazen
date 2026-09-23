@@ -302,14 +302,15 @@ the base name in that path are a promise; the suffix belongs to the backend
 **Reward policy is not here.** Inside a trial the device layer is reached two
 ways. The experimenter's manual-reward key: the engine delivers, *then* emits
 `REWARD{manual: true}` — in that order, because an event claiming a reward
-the pump never gave is a lie in the data. And, for a task that declares
-`mid_trial_reward`, a phase's `ctx.request_reward`, which the engine hands to
-the reward worker after the flip (§5.3). Between trials the runner waits for
-that worker to go idle (`engine.settle_rewards`) *inside* the tracker's
-recording segment, so the eye data covers the last drop's whole delivery,
-and before it pays the outcome. Teardown settles once more — as its own step,
-before the recorder writes — for a trial a quit or a fault cut short, and
-`reward.close` then joins the worker before releasing the device.
+the pump never gave is a lie in the data. (For a task with mid-trial reward
+the key's delivery goes ahead of any queued drop, §5.3.) And, for a task that
+declares `mid_trial_reward`, a phase's `ctx.request_reward`, which the engine
+hands to the reward worker after the flip (§5.3). Between trials the runner
+waits for that worker to go idle (`engine.settle_rewards`) *inside* the
+tracker's recording segment, so the eye data covers the last drop's whole
+delivery, and before it pays the outcome. Teardown settles once more — as its
+own step, before the recorder writes — for a trial a quit or a fault cut
+short, and `reward.close` then joins the worker before releasing the device.
 
 ### 4.4 Config that names events
 
@@ -637,6 +638,18 @@ sequenceDiagram
     Note over E,Q: between trials: settle_rewards() waits for idle, drains the rest,<br/>then the runner pays the outcome through the same worker
 ```
 
+Which delivery goes on the valve next:
+
+```mermaid
+graph LR
+    MAN["manual reward<br/>deliver_next()"] --> FRONT["front of the line<br/>first in, first out"]
+    DROPS["phase drops<br/>submit()"] --> BACK["back of the line<br/>first in, first out"]
+    PAY["end-of-trial pay<br/>deliver()"] --> BACK
+    FRONT -->|"taken first"| W["worker thread"]
+    BACK -->|"taken when the front is empty"| W
+    W -->|"one train at a time, never cut short"| V["dispenser.deliver(pulses)"]
+```
+
 - **Declared, and checked at build.** `mid_trial_reward` is a class
   attribute beside `reward`. `build_session` refuses such a task on a rig
   with no `devices.reward` — before a run directory or a window exists —
@@ -650,17 +663,45 @@ sequenceDiagram
   `QueuedReward`, whose worker thread delivers; `submit` returns at once. An
   8 s pursuit at 120 Hz cannot absorb a 200 ms pulse train inside a frame.
 - **One path, one valve, one delivery at a time.** Every delivery of such a
-  session goes through the same worker, in the order asked for: the task's
-  drops, the manual key and the end-of-trial pay (`deliver()` waits its turn
-  and re-raises a failure on the caller's thread). Requests that arrive while
-  one is delivering queue up; none is dropped or merged. A drop requested
-  behind others carries `queued_behind: <count>` on its REWARD, so a rig
-  whose pulse train is longer than the task's drop interval shows in the
-  data that it delivered late. Between trials the runner calls
-  `engine.settle_rewards(ctx)`, which waits for the worker to go idle, *then*
-  pays the outcome — so the end-of-trial pulse train never overlaps a drop.
-  The manual key pressed mid-trial waits behind queued drops on the session
-  thread, exactly as it always blocked the frame it was pressed on.
+  session goes through the same worker: the task's drops, the manual reward
+  and the end-of-trial pay. None ever overlaps another on the valve, and none
+  is dropped or merged. Drops and the end-of-trial pay go in the order asked
+  for (`deliver()` waits its turn and re-raises a failure on the caller's
+  thread); requests that arrive while one is delivering queue up. A drop
+  requested behind others carries `queued_behind: <count>` on its REWARD —
+  every delivery ahead of it when it was commanded, a manual reward still
+  waiting included — so a rig whose pulse train is longer than the task's
+  drop interval shows in the data that it delivered late. Between trials the
+  runner calls `engine.settle_rewards(ctx)`, which waits for the worker to go
+  idle, *then* pays the outcome — so the end-of-trial pulse train never
+  overlaps a drop.
+- **The manual reward goes next.** The experimenter's reward — `r` during a
+  trial, R in the pause menu or the dashboard's button, all one hook that
+  the builder's `make_manual_reward` routes to `QueuedReward.deliver_next` —
+  overrides the queue: it goes on the valve as soon as the train already
+  there finishes, ahead of every queued drop, and the drops follow it in
+  their order. It stays synchronous, so its `REWARD {manual: true}` is
+  still emitted after the pump and it still blocks the frame it was pressed
+  on — but for **at most the rest of the train on the valve plus its own**.
+  Behind the queue it would wait for every queued drop's train as well, and
+  the reward would arrive late. A drop already queued when the key is
+  pressed is delivered one delivery later than its `queued_behind` says: the
+  manual REWARD between that drop's REWARD and its REWARD_DELIVERED in
+  events.csv is the delivery it waited for. While the key waits the frame
+  loop is not running, so a drop that finishes meanwhile is drained, and its
+  REWARD_DELIVERED stamped, after the manual REWARD. The end-of-trial pay
+  never jumps the queue: no frame waits on it, and `settle_rewards` has
+  emptied the queue before it anyway. Between trials the queue is empty, so
+  the pause menu's reward goes straight to the valve.
+- **A train on the valve is never cut short.** Pulse width is what sets the
+  volume delivered (it is the pump's calibration), so a train stopped
+  part-way delivers an amount nobody measured, and its REWARD_DELIVERED
+  could not say what arrived. And `NidaqReward` plays a finite buffered
+  waveform: an analog-output task leaves its last generated sample on the
+  line when it stops — the reason every waveform ends at 0 V — so stopping
+  it mid-pulse would leave the valve open until a second write drove the
+  line to 0 V, and a failure of that write would flood the subject.
+  Interrupting would save at most one train's wait.
 - **The worker never touches the bus.** It calls the dispenser and puts a
   plain-data completion on a thread-safe queue. The engine drains that queue
   on the session thread — every frame, and in `settle_rewards` — and emits
@@ -676,8 +717,9 @@ sequenceDiagram
   The delivery's end is its own event: `REWARD_DELIVERED` (reserved for this;
   an end-of-trial or manual REWARD is already emitted after the pump) or
   `REWARD_FAILED` with the request's `reason` and the `error`. Both are
-  stamped when drained, within a frame of the pump finishing, and carry the
-  same `frame` as the REWARD they complete. The dashboard's reward panel
+  stamped when drained, within a frame of the pump finishing (later only
+  when a manual reward held that frame, as above), and carry the same
+  `frame` as the REWARD they complete. The dashboard's reward panel
   counts a drop at its `REWARD_DELIVERED`, not at its REWARD.
 - **Accounting.** A task that declares `mid_trial_reward` writes
   `n_mid_trial_rewards` and `n_mid_trial_reward_failures` on every row — 0,

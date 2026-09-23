@@ -25,6 +25,30 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+### Changed
+
+- **The manual reward goes ahead of queued mid-trial drops.** In a session
+  whose task declares `mid_trial_reward`, the experimenter's reward — `r`
+  during a trial, R in the pause menu, the dashboard's Give reward — waited
+  behind every drop still queued, holding the frame loop for all of their
+  pulse trains and arriving late. It now goes on the valve as soon as the
+  train already there finishes; the queued drops stay queued and follow it
+  in their order, none dropped or merged. A train on the valve is never cut
+  short: a partial train is a dose nobody measured, and an NI-DAQ output
+  task stopped mid-pulse leaves the valve line high. The key is still
+  synchronous and its `REWARD {manual: true}` is still emitted after the
+  pump, but it now blocks for at most the train on the valve plus its own.
+  A drop's `queued_behind` counts a manual reward waiting ahead of it; a
+  drop already queued when the key is pressed arrives one delivery later
+  than its `queued_behind` says, with the manual `REWARD` between its
+  `REWARD` and its `REWARD_DELIVERED`. The end-of-trial pay still takes its
+  turn behind the queue. The manual path is the new
+  `QueuedReward.deliver_next(pulses)`. Nothing changes for a task that does
+  not declare `mid_trial_reward`. See "Mid-trial reward" in
+  [docs/architecture.md](docs/architecture.md).
+
 ## 1.5.0 - 2026-09-23
 
 ### Changed

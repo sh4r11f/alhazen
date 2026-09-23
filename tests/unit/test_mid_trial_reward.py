@@ -11,6 +11,9 @@ What is pinned here, in the order a drop lives through it:
   up and say so (``queued_behind``), and none is dropped or merged;
 - the delivery's end comes back as REWARD_DELIVERED or REWARD_FAILED, on the
   session thread, counted on the trial's record;
+- the experimenter's manual reward goes on the valve next, ahead of every
+  queued drop (which all follow it, in order) but never cutting short the
+  train already there; the end-of-trial pay takes its turn;
 - between trials the runner waits for every drop before it pays the outcome,
   so no two pulse trains ever overlap, and a failure takes the pause flow;
 - a session for such a task is refused at build on a rig with no dispenser,
@@ -48,7 +51,7 @@ from alhazen.errors import ConfigError, RewardError, RewardRequestError
 from alhazen.modes import Mode
 from alhazen.modes.session import build_mode_session
 from alhazen.paradigms.base import Condition, SimpleSequence
-from alhazen.session.builder import build_session
+from alhazen.session.builder import build_session, make_manual_reward
 from alhazen.task.reward_policy import RewardPolicy
 from alhazen.testing import ScriptedCommands, ScriptedReward
 from support import (
@@ -63,16 +66,26 @@ from support import (
 
 DROP = RewardPulses(n_pulses=1, pulse_ms=50, inter_pulse_ms=0)
 END_PAY = RewardPulses(n_pulses=3, pulse_ms=100, inter_pulse_ms=50)
+# Drops told apart by their width, and two manual rewards, so the order they
+# reached the valve in reads straight off the device's `attempts`.
+D1 = RewardPulses(n_pulses=1, pulse_ms=51, inter_pulse_ms=0)
+D2 = RewardPulses(n_pulses=1, pulse_ms=52, inter_pulse_ms=0)
+D3 = RewardPulses(n_pulses=1, pulse_ms=53, inter_pulse_ms=0)
+MANUAL = RewardPulses(n_pulses=2, pulse_ms=80, inter_pulse_ms=40)
+MANUAL_2 = RewardPulses(n_pulses=2, pulse_ms=90, inter_pulse_ms=40)
 
 
 @pytest.fixture
 def queued():
-    """A QueuedReward over a ScriptedReward, closed after the test whatever
+    """A QueuedReward over a ScriptedReward (a fresh one built from the
+    keyword arguments, or the one passed in), closed after the test whatever
     happened — a worker thread left running would outlive the test."""
     made: list[QueuedReward] = []
 
-    def make(**scripted) -> tuple[QueuedReward, ScriptedReward]:
-        device = ScriptedReward(**scripted)
+    def make(
+        device: ScriptedReward | None = None, **scripted
+    ) -> tuple[QueuedReward, ScriptedReward]:
+        device = device if device is not None else ScriptedReward(**scripted)
         wrapper = QueuedReward(device)
         made.append(wrapper)
         return wrapper, device
@@ -80,14 +93,16 @@ def queued():
     yield make
     for wrapper in made:
         # A held device would keep close() waiting on its queue: let
-        # everything through first.
+        # everything through first — past the door too, for a gated one.
         if isinstance(wrapper.dispenser, ScriptedReward):
             wrapper.dispenser.release(1000)
+        if isinstance(wrapper.dispenser, GatedReward):
+            wrapper.dispenser.open_door()
         wrapper.close()
 
 
-def request(reason: str = "hold", frame: int = 0) -> RewardRequest:
-    return RewardRequest(pulses=DROP, reason=reason, frame=frame)
+def request(reason: str = "hold", frame: int = 0, pulses: RewardPulses = DROP) -> RewardRequest:
+    return RewardRequest(pulses=pulses, reason=reason, frame=frame)
 
 
 def events_named(collector, name: str):
@@ -114,6 +129,113 @@ class SettleOnFrame(RequestRewardOnFrames):
             self._wrapper.wait_idle()
         self._frames_done += 1
         return super().on_frame(ctx)
+
+
+class DropsWithTheFirstOnTheValve(RequestRewardOnFrames):
+    """Asks for drops on the listed frames, and on its frame 1 waits until
+    the device has started a delivery — frame 0's drop, handed over after
+    frame 0's flip. Everything asked for from then on (a drop, the manual
+    key) meets that drop already on the valve, rather than racing the worker
+    for it. Test-only: a real phase never touches the dispenser."""
+
+    def __init__(self, n_frames, then, device: ScriptedReward, on_frames: tuple[int, ...]):
+        super().__init__(n_frames, then, on_frames=on_frames)
+        self._device = device
+        self._frames_done = 0
+
+    def on_frame(self, ctx: TrialContext):
+        if self._frames_done == 1:
+            self._device.wait_for_attempts(1)
+        self._frames_done += 1
+        return super().on_frame(ctx)
+
+
+class GatedReward(ScriptedReward):
+    """A ScriptedReward whose deliveries after the first ``admit`` wait at a
+    door until the test calls ``open_door()`` — before the device counts them
+    as started.
+
+    ScriptedReward's hold keeps a delivery on the valve, where it already
+    counts as started (it is in ``attempts``). Asserting that a delivery had
+    NOT started at some moment needs the worker kept from handing it over at
+    all, and the door is where it waits. Only the worker thread calls
+    ``deliver``, one delivery at a time, so the count needs no lock."""
+
+    def __init__(self, admit: int, **scripted):
+        super().__init__(**scripted)
+        self._admit = admit
+        self._arrived = 0
+        self._door = threading.Event()
+
+    def deliver(self, pulses: RewardPulses) -> None:
+        self._arrived += 1
+        if self._arrived > self._admit and not self._door.wait(timeout=5.0):
+            raise TimeoutError("GatedReward: the test never opened the door")
+        super().deliver(pulses)
+
+    def open_door(self) -> None:
+        self._door.set()
+
+
+def signal_on_enqueue(wrapper: QueuedReward) -> threading.Semaphore:
+    """A semaphore released once for every delivery that joins the worker's
+    line from now on.
+
+    A ``deliver_next`` caller blocks until its delivery is done, so a test
+    that must act once that delivery is *in line* — let the valve go, so
+    that the worker's next pick is the one under test — needs to know that
+    moment, and the device cannot tell it: nothing reaches the device until
+    the worker takes the job. So this wraps the one private method every
+    delivery joins the line through."""
+    joined = threading.Semaphore(0)
+    enqueue = wrapper._enqueue
+
+    def signalling(job, *, front):
+        ahead = enqueue(job, front=front)
+        joined.release()
+        return ahead
+
+    wrapper._enqueue = signalling  # type: ignore[method-assign]
+    return joined
+
+
+def wait_joined(joined: threading.Semaphore, n: int = 1) -> None:
+    """Block until ``n`` more deliveries have joined the line — failing
+    rather than hanging when one never does."""
+    for _ in range(n):
+        if not joined.acquire(timeout=5.0):
+            raise TimeoutError("a delivery never joined the reward worker's line")
+
+
+class Caller:
+    """A blocking reward call on a thread of its own — the session thread,
+    in a real session — so the test can drive the valve while it waits.
+
+    Keeps what the call raised, on that thread, and what the device had
+    started at the moment the call returned."""
+
+    def __init__(self, call, device: ScriptedReward | None = None) -> None:
+        self.error: BaseException | None = None
+        self.started_when_returned: list[RewardPulses] | None = None
+        self._call = call
+        self._device = device
+        self._thread = threading.Thread(target=self._run, name="test-reward-caller")
+        self._thread.start()
+
+    def _run(self) -> None:
+        try:
+            self._call()
+        except BaseException as e:  # kept for the test to assert on
+            self.error = e
+        # Taken first thing after the return, before the test can release
+        # anything else.
+        if self._device is not None:
+            self.started_when_returned = list(self._device.attempts)
+
+    def join(self) -> None:
+        self._thread.join(timeout=5.0)
+        if self._thread.is_alive():
+            raise TimeoutError("the reward call never returned")
 
 
 # ---------------------------------------------------------------------------
@@ -212,8 +334,8 @@ class TestQueuedReward:
         assert wrapper.completed() == []
 
     def test_a_synchronous_delivery_waits_its_turn(self, queued):
-        # The manual key and the end-of-trial pay call deliver(); it must go
-        # on the valve only after the drops already queued, never beside one.
+        # The end-of-trial pay calls deliver(); it must go on the valve only
+        # after the drops already queued, never beside one.
         wrapper, device = queued(hold=True)
         wrapper.submit(request("drop"))
         device.wait_for_attempts(1)
@@ -261,6 +383,8 @@ class TestQueuedReward:
             wrapper.submit(request())
         with pytest.raises(RewardError, match="after the reward worker was closed"):
             wrapper.deliver(DROP)
+        with pytest.raises(RewardError, match="after the reward worker was closed"):
+            wrapper.deliver_next(DROP)
 
     def test_a_completion_nobody_reported_is_said_at_close(self, queued, caplog):
         wrapper, _ = queued(fail=[1])
@@ -274,20 +398,220 @@ class TestQueuedReward:
         ), [record.getMessage() for record in caplog.records]
 
     def test_the_device_is_closed_even_when_stopping_the_worker_fails(self, queued):
-        wrapper, device = queued()
+        # Stopping the worker means waiting for it to finish the line, and
+        # that wait can end in an exception (a Ctrl-C while a stuck delivery
+        # is still on the valve). The device is released anyway.
+        wrapper, device = queued(hold=True)
+        wrapper.submit(request())
+        device.wait_for_attempts(1)  # held on the valve: close() must wait for it
 
-        def broken_put(item):
-            raise RuntimeError("queue gone")
+        def broken_join(timeout=None):
+            raise RuntimeError("wait interrupted")
 
-        wrapper._jobs.put = broken_put  # type: ignore[method-assign]
-        with pytest.raises(RuntimeError, match="queue gone"):
+        wrapper._thread.join = broken_join  # type: ignore[method-assign]
+        with pytest.raises(RuntimeError, match="wait interrupted"):
             wrapper.close()
         assert device.closed
-        # Stop the worker the broken put left waiting, so no thread outlives
-        # the test.
-        del wrapper._jobs.put
-        wrapper._jobs.put(None)
+        # Let the held delivery finish and the worker stop, so no thread
+        # outlives the test.
+        del wrapper._thread.join
+        device.release()
         wrapper._thread.join()
+
+
+class TestTheManualRewardGoesNext:
+    """deliver_next, the experimenter's manual reward, overrides the queue:
+    it is the next delivery once the one on the valve finishes, ahead of
+    every queued drop, and the drops all follow it in their order.
+
+    Each test puts the worker in the state it is about: one drop held on the
+    valve (``wait_for_attempts(1)``), the others queued behind it, and the
+    manual delivery in line (``wait_joined``) — only then is the valve let
+    go, so which delivery goes next is the worker's choice, never a race."""
+
+    def queue_three_drops(self, wrapper: QueuedReward, device: ScriptedReward) -> None:
+        """D1 on the valve (held), D2 and D3 queued behind it."""
+        wrapper.submit(request("d1", pulses=D1))
+        device.wait_for_attempts(1)
+        wrapper.submit(request("d2", pulses=D2))
+        wrapper.submit(request("d3", pulses=D3))
+
+    def test_it_goes_ahead_of_the_queued_drops_and_none_is_lost(self, queued, caplog):
+        wrapper, device = queued(hold=True)
+        self.queue_three_drops(wrapper, device)
+        joined = signal_on_enqueue(wrapper)
+
+        with caplog.at_level(logging.INFO, logger="alhazen.devices.reward"):
+            manual = Caller(lambda: wrapper.deliver_next(MANUAL))
+            wait_joined(joined)
+            # Everything may finish now: what is left to decide is the order.
+            device.release(4)
+            manual.join()
+            wrapper.wait_idle()
+
+        assert manual.error is None
+        # D1 was already on the valve and finished; the manual delivery went
+        # next; D2 and D3 followed, in their order.
+        assert device.attempts == [D1, MANUAL, D2, D3]
+        # None dropped, none merged, never two on the valve at once.
+        assert device.deliveries == [D1, MANUAL, D2, D3]
+        assert device.max_on_valve == 1
+        # Each drop reports once, in its own order; the manual delivery
+        # reports to its caller, not to the completion queue.
+        assert [done.request.reason for done in wrapper.completed()] == ["d1", "d2", "d3"]
+        # The log says what it overtook: those drops arrive a delivery later
+        # than the queued_behind on their REWARD events.
+        assert any(
+            "ahead of 2 queued delivery(ies)" in record.getMessage() for record in caplog.records
+        ), [record.getMessage() for record in caplog.records]
+
+    def test_its_caller_waits_only_for_the_train_on_the_valve_and_its_own(self, queued):
+        # D1 and the manual delivery reach the device; whatever comes after
+        # them waits at the door, where it has not started. A caller that
+        # waited for D2 or D3 would never return.
+        wrapper, device = queued(GatedReward(admit=2, hold=True))
+        self.queue_three_drops(wrapper, device)
+        joined = signal_on_enqueue(wrapper)
+
+        manual = Caller(lambda: wrapper.deliver_next(MANUAL), device=device)
+        wait_joined(joined)
+        device.release(2)  # exactly two trains: the one on the valve, and its own
+        manual.join()
+
+        assert manual.error is None
+        # When it returned, D2 and D3 had not started.
+        assert manual.started_when_returned == [D1, MANUAL]
+        # And they were not lost: let through, they follow in their order.
+        assert isinstance(device, GatedReward)
+        device.open_door()
+        device.release(2)
+        wrapper.wait_idle()
+        assert device.deliveries == [D1, MANUAL, D2, D3]
+
+    def test_a_failure_is_raised_on_the_callers_thread_and_the_queue_carries_on(self, queued):
+        wrapper, device = queued(hold=True, fail=[2])  # delivery 2 is the manual one
+        self.queue_three_drops(wrapper, device)
+        joined = signal_on_enqueue(wrapper)
+
+        manual = Caller(lambda: wrapper.deliver_next(MANUAL))
+        wait_joined(joined)
+        device.release(4)
+        manual.join()
+        wrapper.wait_idle()
+
+        # Raised out of deliver_next, on the calling thread...
+        assert isinstance(manual.error, RewardError)
+        assert "scripted failure on delivery 2" in str(manual.error)
+        # ...while the worker went on to deliver every queued drop.
+        assert device.attempts == [D1, MANUAL, D2, D3]
+        assert device.deliveries == [D1, D2, D3]
+        assert [(done.request.reason, done.error) for done in wrapper.completed()] == [
+            ("d1", None),
+            ("d2", None),
+            ("d3", None),
+        ]
+
+    def test_a_drop_asked_for_while_it_waits_counts_it_ahead(self, queued):
+        # submit()'s count is the queued_behind on the drop's REWARD. The
+        # manual delivery waiting for the valve goes before the new drop, so
+        # the count must include it.
+        wrapper, device = queued(hold=True)
+        assert wrapper.submit(request("d1", pulses=D1)) == 0
+        device.wait_for_attempts(1)
+        joined = signal_on_enqueue(wrapper)
+        manual = Caller(lambda: wrapper.deliver_next(MANUAL))
+        wait_joined(joined)
+
+        # D1 on the valve and the manual delivery waiting: two ahead.
+        assert wrapper.submit(request("d2", pulses=D2)) == 2
+
+        device.release(3)
+        manual.join()
+        wrapper.wait_idle()
+        assert device.attempts == [D1, MANUAL, D2]  # which is where it went
+
+    def test_several_go_in_the_order_asked_all_ahead_of_the_queue(self, queued):
+        wrapper, device = queued(hold=True)
+        wrapper.submit(request("d1", pulses=D1))
+        device.wait_for_attempts(1)
+        wrapper.submit(request("d2", pulses=D2))
+        joined = signal_on_enqueue(wrapper)
+        first = Caller(lambda: wrapper.deliver_next(MANUAL))
+        wait_joined(joined)
+        second = Caller(lambda: wrapper.deliver_next(MANUAL_2))
+        wait_joined(joined)
+
+        device.release(4)
+        first.join()
+        second.join()
+        wrapper.wait_idle()
+        assert device.attempts == [D1, MANUAL, MANUAL_2, D2]
+
+    def test_with_nothing_queued_it_goes_straight_to_the_valve(self, queued, caplog):
+        wrapper, device = queued()
+        with caplog.at_level(logging.INFO, logger="alhazen.devices.reward"):
+            wrapper.deliver_next(MANUAL)
+        assert device.deliveries == [MANUAL]
+        # Counted finished before it returned: not ahead of the next drop.
+        assert wrapper.submit(request()) == 0
+        # Nothing was overtaken, so nothing is said about overtaking.
+        assert not any("ahead of" in record.getMessage() for record in caplog.records)
+
+    def test_the_end_of_trial_pay_does_not_jump_the_queue(self, queued):
+        wrapper, device = queued(hold=True)
+        wrapper.submit(request("d1", pulses=D1))
+        device.wait_for_attempts(1)
+        wrapper.submit(request("d2", pulses=D2))
+        joined = signal_on_enqueue(wrapper)
+
+        pay = Caller(lambda: wrapper.deliver(END_PAY))
+        wait_joined(joined)
+        device.release(3)
+        pay.join()
+
+        assert pay.error is None
+        assert device.attempts == [D1, D2, END_PAY]
+
+
+class TestTheManualRewardHook:
+    """make_manual_reward: the one closure behind the ``r`` key and the
+    pause menu's R, as build_session wires it."""
+
+    def test_no_dispenser_means_no_hook(self):
+        assert make_manual_reward(None, MANUAL) is None
+
+    def test_a_device_on_its_own_is_called_on_the_callers_thread(self):
+        # A task that does not ask for reward mid-trial: the device itself,
+        # exactly as before there was a worker.
+        threads: list[threading.Thread] = []
+
+        class Recording(SimulatedReward):
+            def deliver(self, pulses: RewardPulses) -> None:
+                threads.append(threading.current_thread())
+                super().deliver(pulses)
+
+        device = Recording()
+        hook = make_manual_reward(device, MANUAL)
+        assert hook is not None
+        hook()
+        assert device.deliveries == [MANUAL]
+        assert threads == [threading.current_thread()]
+
+    def test_through_the_worker_it_goes_ahead_of_the_queue(self, queued):
+        wrapper, device = queued(hold=True)
+        hook = make_manual_reward(wrapper, MANUAL)
+        assert hook is not None
+        wrapper.submit(request("d1", pulses=D1))
+        device.wait_for_attempts(1)
+        wrapper.submit(request("d2", pulses=D2))
+        joined = signal_on_enqueue(wrapper)
+
+        manual = Caller(hook)
+        wait_joined(joined)
+        device.release(3)
+        manual.join()
+        wrapper.wait_idle()
+        assert device.attempts == [D1, MANUAL, D2]
 
 
 # ---------------------------------------------------------------------------
@@ -576,18 +900,25 @@ class TestInASession:
         assert row["rewarded"] == "True"
         assert row["n_mid_trial_rewards"] == "1"
 
-    def test_the_manual_key_waits_behind_a_drop(self, tmp_path):
+    def test_the_manual_key_waits_for_the_drop_on_the_valve(self, tmp_path):
+        # A train already on the valve is never cut short: the manual
+        # delivery goes after it, never beside it or into it.
         device = ScriptedReward(hold=True)
         harness = session(
             tmp_path,
             device,
-            phases=lambda: [RequestRewardOnFrames(3, COMPLETED, on_frames=(0,))],
-            # Frame 0 asks for a drop; the experimenter's key lands on frame 1.
-            commands=ScriptedCommands([[], [Command.MANUAL_REWARD]]),
+            # Frame 0 asks for a drop, which is on the valve by frame 1; the
+            # experimenter's key lands on frame 2.
+            phases=lambda: [DropsWithTheFirstOnTheValve(4, COMPLETED, device, on_frames=(0,))],
+            commands=ScriptedCommands([[], [], [Command.MANUAL_REWARD]]),
         )
+        assert harness.queued_reward is not None
+        joined = signal_on_enqueue(harness.queued_reward)
 
         def operator():
-            device.wait_for_attempts(1)
+            # The drop, then the manual delivery, in line before the valve
+            # is let go.
+            wait_joined(joined, 2)
             device.release(2)
 
         releaser = threading.Thread(target=operator)
@@ -599,6 +930,97 @@ class TestInASession:
         # valve after the drop, never beside it.
         assert device.attempts == [DROP, RewardPulses()]
         assert device.max_on_valve == 1
+
+    def test_the_manual_key_goes_ahead_of_the_queued_drops(self, tmp_path):
+        device = ScriptedReward(hold=True)
+        harness = session(
+            tmp_path,
+            device,
+            # Drops on frames 0, 1 and 2: the first on the valve by frame 1,
+            # the other two queued behind it. The key lands on frame 3.
+            phases=lambda: [DropsWithTheFirstOnTheValve(5, COMPLETED, device, on_frames=(0, 1, 2))],
+            commands=ScriptedCommands([[], [], [], [Command.MANUAL_REWARD]]),
+        )
+        assert harness.queued_reward is not None
+        joined = signal_on_enqueue(harness.queued_reward)
+
+        def operator():
+            # Three drops, then the manual delivery, all in line while the
+            # first drop is still held on the valve.
+            wait_joined(joined, 4)
+            device.release(1000)
+
+        releaser = threading.Thread(target=operator)
+        releaser.start()
+        harness.runner.run()
+        releaser.join()
+
+        # The key's delivery went next after the drop on the valve; the two
+        # queued drops followed it, and were not lost.
+        assert device.attempts == [DROP, RewardPulses(), DROP, DROP]
+        assert device.max_on_valve == 1
+        rewards = events_named(harness.collector, "REWARD")
+        drops = [event for event in rewards if not event.payload["manual"]]
+        # Each drop's count of what was ahead of it when it was commanded.
+        assert [event.payload.get("queued_behind") for event in drops] == [None, 1, 2]
+
+        # Where the manual REWARD sits in the event stream, as documented:
+        # between each drop's REWARD and its REWARD_DELIVERED. For the two
+        # queued drops it is the delivery they waited for; the drop on the
+        # valve finished first, but the key held the frame loop, so its
+        # completion was drained after the manual REWARD too.
+        events = harness.collector.events
+        (manual_at,) = [
+            index
+            for index, event in enumerate(events)
+            if event.name == "REWARD" and event.payload["manual"]
+        ]
+        commanded = {
+            event.payload["frame"]: index
+            for index, event in enumerate(events)
+            if event.name == "REWARD" and not event.payload["manual"]
+        }
+        delivered = {
+            event.payload["frame"]: index
+            for index, event in enumerate(events)
+            if event.name == "REWARD_DELIVERED"
+        }
+        assert sorted(delivered) == [0, 1, 2]
+        for frame in (0, 1, 2):
+            assert commanded[frame] < manual_at < delivered[frame]
+        (row,) = read_trials(harness)
+        assert row["n_mid_trial_rewards"] == "3"
+        assert row["n_mid_trial_reward_failures"] == "0"
+
+    def test_the_pause_menu_reward_still_works_between_trials(self, tmp_path):
+        # Between trials settle_rewards has emptied the queue, so the pause
+        # menu's reward goes straight to the valve, through the same worker.
+        device = ScriptedReward()
+        harness = session(
+            tmp_path,
+            device,
+            n_trials=2,
+            phases=lambda: [RequestRewardOnFrames(2, COMPLETED, on_frames=(0,))],
+            # Trial 1 runs its three frames; the pause lands on trial 2's first.
+            commands=ScriptedCommands([[], [], [], [Command.PAUSE]]),
+        )
+        # The pause menu holds the engine's hook, as build_session wires it.
+        harness.runner._manual_reward = harness.engine._on_manual_reward
+        choices = iter(["manual_reward", "resume"])
+        harness.runner._on_pause = lambda menu: next(choices)
+        harness.runner.run()
+
+        # Trial 1's drop, the pause menu's reward, then the re-served trial's
+        # drop.
+        assert device.attempts == [DROP, RewardPulses(), DROP]
+        names = harness.collector.names()
+        (manual,) = [
+            index
+            for index, event in enumerate(harness.collector.events)
+            if event.name == "REWARD" and event.payload.get("manual")
+        ]
+        assert names.index("PAUSED") < manual < names.index("RESUMED")
+        assert [row["outcome"] for row in read_trials(harness)] == ["COMPLETED", "COMPLETED"]
 
     def test_a_failed_drop_takes_the_pause_flow_after_the_trial(self, tmp_path):
         paused: list = []
@@ -807,6 +1229,45 @@ class TestBuild:
             rig_reward=RewardHwConfig(backend="simulated"),
         )
         assert isinstance(runner._reward, SimulatedReward)
+
+    def test_the_manual_reward_goes_ahead_of_the_queue(self, tmp_path):
+        # Wired by build_session itself: the engine's r key and the pause
+        # menu hold one hook, and it overtakes the queued drops.
+        device = ScriptedReward(hold=True)
+        runner = build(tmp_path, Pursuit(Params()), reward=device)
+        wrapper = runner._reward
+        assert isinstance(wrapper, QueuedReward)
+        try:
+            assert runner._manual_reward is not None
+            assert runner._engine._on_manual_reward is runner._manual_reward
+            wrapper.submit(request("d1", pulses=D1))
+            device.wait_for_attempts(1)
+            wrapper.submit(request("d2", pulses=D2))
+            joined = signal_on_enqueue(wrapper)
+
+            manual = Caller(runner._manual_reward)
+            wait_joined(joined)
+            device.release(3)
+            manual.join()
+            wrapper.wait_idle()
+            # RewardPulses() is build_session's manual reward by default.
+            assert device.attempts == [D1, RewardPulses(), D2]
+        finally:
+            # The session never ran, so its teardown will not stop the worker.
+            device.release(1000)
+            wrapper.close()
+
+    def test_without_it_the_manual_reward_reaches_the_device_itself(self, tmp_path):
+        runner = build(
+            tmp_path,
+            Undeclared(Params()),
+            rig_reward=RewardHwConfig(backend="simulated"),
+        )
+        assert runner._manual_reward is not None
+        assert runner._engine._on_manual_reward is runner._manual_reward
+        runner._manual_reward()
+        assert isinstance(runner._reward, SimulatedReward)
+        assert runner._reward.deliveries == [RewardPulses()]
 
     def test_a_request_from_a_task_that_did_not_declare_it_is_loud(self, tmp_path):
         runner = build(

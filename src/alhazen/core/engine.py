@@ -393,6 +393,10 @@ class TrialEngine:
                 # (session/builder.py); the event is the permanent record.
                 # Hardware first, then the event: an event claiming a reward
                 # the pump never delivered is the one ordering that lies.
+                # So this frame waits for the pump. For a task with mid-trial
+                # reward the hook goes ahead of the queued drops, which bounds
+                # that wait by the train already on the valve plus its own
+                # (devices/reward.py, QueuedReward.deliver_next).
                 if self._on_manual_reward is not None:
                     self._on_manual_reward()
                 self._emit(ctx, "REWARD", {"manual": True, **self._manual_reward_payload})
