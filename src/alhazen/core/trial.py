@@ -190,11 +190,20 @@ class InputFrame:
     ``wheel`` the scroll-wheel movement over that frame (an adjustment
     task's knob). Fields only ever get appended, with defaults, so a phase
     or a test that cares about one of them is unaffected by the others.
+
+    ``gaze_t`` is when the tracker took the sample behind ``gaze``, on the
+    session clock — None whenever ``gaze`` is None. Display frames and
+    tracker samples do not arrive in step: a frame that brings no new sample
+    repeats the previous one, *with the same* ``gaze_t``. That is how a phase
+    tells a new sample from a repeat (a speed computed across a repeat is a
+    false zero), and the spacing between two new samples is the real time
+    between them, not the nominal frame period.
     """
 
     gaze: tuple[float, float] | None = None
     keys: tuple[str, ...] = ()
     wheel: float = 0.0
+    gaze_t: float | None = None
 
 
 # ---------------------------------------------------------------------------

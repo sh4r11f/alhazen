@@ -112,8 +112,10 @@ class FakeTracker:
 
 
 class Sample:
-    def __init__(self, gx, gy):
-        self.gx, self.gy = gx, gy
+    """A GazeSample's shape: screen px, and the session time it was taken."""
+
+    def __init__(self, gx, gy, t=0.0):
+        self.gx, self.gy, self.t = gx, gy, t
 
 
 class TestInputProviderMergesTheDevices:

@@ -98,7 +98,8 @@ def make_input_provider(
     at a pause takes effect on the next trial's first frame.
 
     ``None`` gaze passes straight through as ``None``: an unverifiable
-    position stays unverifiable (the blink rule), never a guess. Returns None
+    position stays unverifiable (the blink rule), never a guess. The sample's
+    time rides along as ``InputFrame.gaze_t``, unconverted. Returns None
     when the rig has no input devices at all, so the engine keeps its own
     empty-frame default.
     """
@@ -107,17 +108,25 @@ def make_input_provider(
 
     def provide() -> InputFrame:
         gaze = None
+        gaze_t = None
         if tracker is not None:
             sample = tracker.get_gaze()
             if sample is not None:
                 gaze = screen.screen_to_centered(sample.gx, sample.gy)
                 if correction is not None:
                     gaze = correction.apply(gaze)
+                # The sample's own time, passed through untouched: it is
+                # already on the session clock (GazeSample's contract), and it
+                # is the only way a phase can tell a new sample from the
+                # previous one repeated. Set only beside a position, so a
+                # blink carries no time either.
+                gaze_t = sample.t
         hands = response.poll() if response is not None else None
         return InputFrame(
             gaze=gaze,
             keys=hands.keys if hands is not None else (),
             wheel=hands.wheel if hands is not None else 0.0,
+            gaze_t=gaze_t,
         )
 
     return provide

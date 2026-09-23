@@ -15,7 +15,8 @@ reward policy as data, and the scheduler library.
 src/alhazen/
 ├── errors.py       # shared exceptions; outside the layer contract (anything may import)
 ├── core/           # clock, rng streams, events+bus, commands, trial vocabulary, TrialEngine
-├── display/        # DisplayBackend protocol, simulated + psychopy backends, Screen, FrameMonitor
+├── display/        # DisplayBackend protocol, simulated + psychopy backends, Screen, FrameMonitor,
+│                   #   text.reflow (hard-wrapped prose → paragraphs, for show_message)
 ├── stimuli/        # Stimulus protocol, NullStimulus, FixationPoint, PhotodiodePatch
 ├── scenes/         # illusion-studio scenes: expressions, loader, headless renderer
 ├── devices/        # EyeTracker (eyelink/viewpixx/mouse_sim/scripted), RewardDispenser,
@@ -98,8 +99,15 @@ command source, and the bus:
    `outcome_before_frame_qa`; `max_consecutive_recycles` in a row abort the
    run naming the display. Only a COMPLETED trial can be recycled: one that
    already ended in a fixation break or a pause is being re-served for its
-   own reason. Under every marking policy `n_dropped_frames` is `0` on a
-   clean trial, never absent. On a simulated display the policy is stood
+   own reason. **The verdict governs data quality only — never what the
+   subject is told or paid.** It arrives after the closing phase has already
+   judged the subject's own outcome (`TrialFeedback` sees the pre-QA outcome,
+   by design), and `TrialResult` carries the replaced Outcome as
+   `outcome_before_frame_qa`, with `response_outcome` resolving to it, so the
+   runner pays on the response (§5.3). A correct trial the display recycles
+   is shown as a success, paid, and served again; a display fault never
+   costs the subject anything. Under every marking policy `n_dropped_frames`
+   is `0` on a clean trial, never absent. On a simulated display the policy is stood
    down to `log` at build time — the flip times there measure how accurately
    the host can wait, not whether a panel is holding its refresh)
 9. emit the events the phase queued via `ctx.emit_on_flip`, stamped now —
@@ -137,6 +145,7 @@ is the whole of what they get.
 | `gaze` | `tuple[float, float] \| None` | Where the subject is looking, in **centered px, y up**. `None` means unverifiable — a blink, a track loss, or no tracker at all. |
 | `keys` | `tuple[str, ...]` | The **subject's** key presses since the previous frame, oldest first. A tuple, not one key: a fast double-press inside a frame must not be silently dropped. Distinct from the experimenter's keys (`core/commands.py`) — different person, different keys, different consequences. |
 | `wheel` | `float` | Scroll-wheel movement over that frame, positive up — an adjustment task's knob. |
+| `gaze_t` | `float \| None` | When the tracker took the sample behind `gaze`, in **seconds on the session clock**; `None` whenever `gaze` is `None`. A display frame that brings no new tracker sample repeats the previous one *with the same* `gaze_t`, so equal times mean one sample seen twice — a speed computed across it is a false zero — and the gap between two new samples is their real spacing, not the nominal frame period. |
 
 Two rules the fields carry:
 
@@ -148,6 +157,13 @@ Two rules the fields carry:
 - **`None` passes straight through as `None`.** An unverifiable position is
   never replaced by the last known one, and `CircleRegion.contains(None)` is
   False, so no region ever credits fixation that cannot be verified.
+- **A sample keeps its own time.** Every backend stamps `GazeSample.t` on
+  the session clock when the sample was taken or first read, never simply
+  "now": the EyeLink backend keeps the first-read time for as long as the
+  link's newest sample has the same tracker timestamp, and the TRACKPixx3
+  reader's time is when it read the device. The provider copies it into
+  `gaze_t` untouched — time is not a coordinate, so the one conversion site
+  stays the one conversion site.
 
 Fields are only ever **appended**, with defaults, so a phase or a test that
 reads one of them is unaffected by the others.
@@ -411,12 +427,13 @@ of a real task needs.
 | `AcquireFixation` | gaze holds the window for `hold_s` (timer **resets** on any excursion) or times out | `acquire_latency_s` |
 | `HoldFixation` | the jittered duration elapses; any excursion is a break | `hold_duration_s` |
 | `StimulusResponse` | gaze leaves the depart-region, or the deadline passes | `rt_ms`, `<depart_region>_x/y_dva` (where the eye left from — measured, never assumed to be the fixation point) |
-| `LandingCheck` | gaze enters the target region, or the window times out | `endpoint_x/y_dva`, `endpoint_error_dva`, `endpoint_in_target` |
+| `LandingCheck` | gaze enters the target region, or the window times out. **Records where gaze first crossed into the region — mid-flight for any usable window — not where the saccade ended**; use `LandingSample` for landing error | `endpoint_x/y_dva`, `endpoint_error_dva`, `endpoint_in_target` |
+| `LandingSample` | a fixed dwell after saccade onset (`dwell_s`), **or** saccade offset: the first *new* sample slower than `settle_speed_dva_per_s`, capped at `max_wait_s`. The region is ignored until then; the last valid sample is the endpoint, judged once. With `depart_region` (the fixation window), a sample still inside that window is never the endpoint and never settles — a blink at the cue counts as departure, and would otherwise end the trial as a miss at fixation | `endpoint_measured`, `endpoint_in_target`, `endpoint_x/y_dva`, `endpoint_error_dva`, `endpoint_latency_ms`, `endpoint_reference_x/y_dva`; `endpoint_settled` in the saccade-offset mode |
 | `ResponseWindow` | a bound key is pressed, or the deadline passes | `response_key`, `rt_ms` |
 | `AdjustmentLoop` | the commit key is pressed, or the deadline passes | `adjusted_value`, `adjustment_turns` |
 | `FrameSequence` | a compiled `FrameTimeline` finishes | `sequence_frames` |
 | `Blank` / `Feedback` | a fixed duration elapses | — |
-| `TrialFeedback` | a fixed duration elapses; **must be the trial's last phase**, and the engine refuses it anywhere else. As the trial's *closing* phase it runs whatever the trial ended as, so a fixation break gets feedback too — but never on `PAUSED` or `ABORTED`, which are not trial results, and it cannot change an outcome the trial already had | `feedback` (`success`/`failure`) from the task's own `verdict` predicate over the record, or `failure` without asking the predicate when the trial ended with a non-completed outcome — beside the outcome, never derived from it: a saccade that missed is still a completed, scored measurement. Recolours the fixation point, emits `FEEDBACK`; the session's `FeedbackSounder` beeps, because a phase touches no hardware |
+| `TrialFeedback` | a fixed duration elapses; **must be the trial's last phase**, and the engine refuses it anywhere else. As the trial's *closing* phase it runs whatever the trial ended as, so a fixation break gets feedback too — but never on `PAUSED` or `ABORTED`, which are not trial results, and it cannot change an outcome the trial already had | `feedback` (`success`/`failure`) from the task's own `verdict` predicate over the record, or `failure` without asking the predicate when the trial ended with a non-completed outcome — beside the outcome, never derived from it: a saccade that missed is still a completed, scored measurement. Recolours the fixation point, emits `FEEDBACK`; the session's `FeedbackSounder` beeps, because a phase touches no hardware. Draws only the fixation point unless `keep_drawing` names other stimuli to stay on screen (the figure just saccaded to): those are updated and drawn every frame *before* the point, so the colour stays on top, and are never recoloured. A name the trial has no stimulus for fails when the phase starts, naming it; a trial that ended with a non-completed outcome keeps nothing, because what it names may never have been shown |
 
 Every constructor takes plain values — seconds, region names, stimulus keys,
 Outcomes — and never a config model: resolving a `Duration` against the
@@ -431,6 +448,98 @@ Two rules recur and are load-bearing:
   frame of a hold is a break rather than a lucky pass;
 - reaction times run from the **flip** that showed the onset event
   (`ctx.record["t_<event>"]`), not from the call that drew it.
+
+#### Where a saccade lands: `LandingSample`
+
+`LandingCheck` ends on the first frame gaze is inside the target region, so it
+answers "did the eye pass through the target?". With a 3° window a 5° saccade
+crosses in mid-flight, 2–3° short of where it comes to rest, and that crossing
+is what it records. `LandingSample` records where the movement came to rest
+instead: it ignores the region until the saccade is over, keeps the last
+valid gaze sample on every frame, and tests that one endpoint once.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Waiting: on_enter reads onset from t_response_onset (missing raises ValueError)
+    Waiting --> Waiting: every frame, draw and keep the last valid sample outside depart_region
+    state ends <<choice>>
+    Waiting --> ends
+    ends --> Judge: dwell mode, now − onset ≥ dwell_s
+    ends --> Judge: offset mode, a NEW sample outside depart_region slower than the threshold (settled)
+    ends --> Judge: offset mode, now − onset ≥ max_wait_s (not settled)
+    ends --> Waiting: none of these yet
+    Judge --> Hit: endpoint within the region radius of the reference
+    Judge --> Miss: outside it, or no valid sample outside depart_region (measured = False)
+    Hit --> [*]: on_hit (an Outcome, or ADVANCE)
+    Miss --> [*]: on_miss (an Outcome, or ADVANCE)
+```
+
+The saccade-offset rule is where the input layer matters. The rule:
+
+- only a frame carrying a **new** sample (a `gaze_t` later than the previous
+  one's, §2.1) is tested; a repeat carries no information, and a speed
+  computed across it is a false zero that would end the phase mid-saccade;
+- speed is the distance between two consecutive new samples, in degrees,
+  over the **real** time between them — never the nominal frame period;
+- a missing sample (blink, track loss) is **never settled**, and it also
+  breaks the chain: the next valid sample has no honest predecessor, so it
+  cannot settle either;
+- a speed needs two samples, so the first new sample in the phase cannot
+  settle;
+- with `depart_region`, a sample still inside that window never settles
+  (below).
+
+A 30 Hz tracker behind a 60 Hz display, at 40 px per degree and a 30 °/s
+threshold — every other frame repeats the previous sample:
+
+```mermaid
+sequenceDiagram
+    participant T as Tracker (30 Hz)
+    participant F as Display frames (60 Hz)
+    participant L as LandingSample
+    T->>F: sample 200 px, t=33 ms
+    F->>L: frame: 200 px, gaze_t=33 ms → new, 150 °/s, moving
+    F->>L: frame: 200 px, gaze_t=33 ms → repeat, skipped (not "0 °/s")
+    T->>F: sample 390 px, t=67 ms
+    F->>L: frame: 390 px, gaze_t=67 ms → new, 143 °/s, moving
+    T->>F: sample 400 px, t=100 ms
+    F->>L: frame: 400 px, gaze_t=100 ms → new, 7.5 °/s < threshold → settled
+    L->>L: endpoint = 400 px, judged against the reference
+```
+
+Saccade onset is the flip-stamped `t_<onset_event>` — by default
+`RESPONSE_ONSET`, which `StimulusResponse` emits when gaze leaves the
+fixation window; `onset_event=None` times from the phase's own start. The
+reference the error is measured from defaults to the region's centre, and may
+be a callable of the `TrialContext` for a figure that moves: it is read on the
+frame the landing is judged, and the verdict becomes "within the region's
+radius of the reference". Either verdict may be `PhaseAction.ADVANCE`, for a
+trial whose next phase (feedback, a pursuit that starts at the landing) reads
+the verdict off the record. When no valid sample arrived at all,
+`endpoint_measured` is False, nothing else about the endpoint is written, and
+the verdict is a miss. `LandingCheck` is kept unchanged because experiments
+depend on its timing and columns; its docstring says loudly what it measures.
+
+**Waiting for the eye to leave: `depart_region`.** Under the blink rule a
+blink counts as leaving the fixation window, so a blink at the cue makes
+`StimulusResponse` stamp the onset while the eye is still at fixation.
+Without more, the first slow sample after the blink "settles" there and the
+trial ends as a miss at fixation. `depart_region="fixation"` makes the phase
+wait for the real saccade: a valid sample still inside that window has not
+left, so it is never the endpoint — the endpoint is the last valid sample
+*outside* it — and it never settles. It does stay in the speed chain: the
+speed from the last sample inside to the first one outside is the saccade's
+own speed, so that first sample is judged on it rather than excused for
+having no predecessor. The dwell and the cap still run from the stamped
+onset, and an eye that has not left by then gives `endpoint_measured` False
+(and `endpoint_settled` False, in the offset mode), a miss, and no `LANDED` —
+never a landing at fixation. Where the two windows overlap, a sample in the
+overlap has not left. Nonsense is refused loudly: a departure window that is
+the target itself at construction; and, when the trial starts, a name the
+trial has no region for (listing the ones it has), or a window that contains
+the verdict's centre — the target's centre or a fixed reference — since no
+landing there could ever be a hit. The default, `None`, leaves every sample
+eligible, as before.
 
 `FrameTimeline` (in `display/frames.py`) is the schedule `FrameSequence`
 plays: keyframes, linear ramps, visibility spans and events, all indexed by
@@ -466,6 +575,25 @@ event — again its own event rather than the absence of `REWARD`, because a
 missing event is indistinguishable from one that failed to be written. An
 *incomplete* trial gets neither: it earned nothing because it produced
 nothing, which is a different statement.
+
+**Reward follows the subject's response, not frame QA.** The runner pays
+`pulses_for(result.response_outcome.name)`, and decides `NO_REWARD` on that
+outcome's `completed` flag. On every trial but one kind this is the trial's
+outcome. The exception is a trial frame QA recycled into `DROPPED_FRAMES`
+(§2, step 8): the subject did that trial and was shown its feedback, so it is
+paid — or marked `NO_REWARD` — as the response it was, the event payload
+naming that outcome (the row's `outcome_before_frame_qa`), while the
+scheduler still serves the condition again for its data. `REWARD_FAILED`
+and `rewarded` behave as on any paid trial. A task cannot get this by
+paying `DROPPED_FRAMES`: that would pay recycled wrong answers too.
+
+The same split holds elsewhere. What describes what the subject received
+or was told — feedback, its tone, the reward events and the dashboard's
+reward panel built from them — follows the response. What decides the
+schedule and the data — re-serving, adaptive schedulers, `alhazen report`'s
+outcome counts — follows the recycle. The failure streak that pauses a
+session (`max_consecutive_failures`, §10) counts a recycled trial as the
+completed trial it was.
 
 #### Mid-trial reward
 
@@ -1062,6 +1190,59 @@ module-level `np.random` is never used.
 Durations: `Duration(ms=…)` or `Duration(frames=…)`, resolved once against
 the **measured** refresh rate (warm-up flips at build time; `resolve_refresh`
 errors loudly if measured and nominal disagree).
+
+### 10.1 Messages are prose unless they say otherwise
+
+`show_message(text, *, reflow=True)` is how the session talks to the subject
+— the instructions, `stage: 2`, `REWARD FAILURE — check the pump`. The text a
+caller writes is usually hard-wrapped (an `instructions.md` at 80 columns),
+and the display wraps it again at its own measure, the smaller of 80% of the
+screen's width and 34 letter heights. Left as given, every source line longer
+than that measure became a full line and a stub: ragged text, orphaned words,
+and a block tall enough to trip the shrink-to-fit that keeps a message on the
+screen. So each backend first passes the text through `display.text.reflow`,
+a pure function with no renderer behind it:
+
+```mermaid
+flowchart LR
+    SRC["instructions.md<br/>(hard-wrapped)"] --> RUN["SessionRunner"]
+    RUN -->|"show_message(text)"| BE["display backend"]
+    CAL["TRACKPixx3: Calibration FAILED<br/>(two paragraphs)"] -->|"show_message(text)"| BE
+    PM["deprecated pause_menu seam<br/>(key rows)"] -->|"show_message(text, reflow=False)<br/>only if it takes reflow"| BE
+    BE -->|"reflow=True"| RF["display.text.reflow<br/>(pure string work)"]
+    RF --> LAY["layout: wrap at the measure,<br/>size the box, shrink if too tall"]
+    BE -->|"reflow=False"| LAY
+```
+
+The rule, after `\r\n` and `\r` become `\n`:
+
+- a blank (or whitespace-only) line separates paragraphs; a run of them is one
+  break, and blank lines at either end are dropped;
+- inside a paragraph a line joins the one before it with a single space —
+  unless it starts with whitespace or a list marker (`-`, `*`, `+`, `•`,
+  `1.`, `1)`, then a space), in which case it keeps its break and its text
+  exactly, so an indented key list or a Markdown list survives;
+- trailing whitespace goes; spaces inside a line stay, because they align
+  columns.
+
+The rule looks at each line alone, which keeps it predictable: a plain line
+after an indented one joins it, just as a list item's wrapped text joins the
+item. It is idempotent, so a caller that already reflowed loses nothing.
+
+Reflow is on by default because nearly every message is prose. Text whose
+every break is meaningful can pass `reflow=False` and is drawn exactly as
+given. **Framework code never passes `reflow=` to a backend it did not build
+itself**, so a display backend written before the argument existed, taking
+the text alone, keeps working. The two messages with deliberate breaks get
+them another way: the TRACKPixx3's calibration-failed notice is two
+paragraphs (what happened, then what to do), which reflow keeps apart; the
+deprecated `pause_menu` seam, whose unindented key rows would otherwise run
+together, passes `reflow=False` only to a `show_message` whose signature
+takes it. The real pause menu goes through `show_menu`, which never reflows.
+The built-in backends take the argument the same way — keyword-only, default
+`True` — and the ones with no screen keep it: `SimulatedDisplay` and
+`testing.FakeDisplay` record `(text, reflow)` in `message_calls`, and the
+simulated display logs the text as it would have been drawn.
 
 ## 11. Extending
 

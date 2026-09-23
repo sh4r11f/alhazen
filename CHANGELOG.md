@@ -29,6 +29,26 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Changed
 
+- **`show_message` reflows prose, so hard-wrapped instructions are no longer
+  wrapped twice.** It drew its text with every newline kept, and the message
+  box then wrapped it again at its own measure (the smaller of 80% of the
+  screen's width and 34 letter heights): an `instructions.md` wrapped at 80
+  columns came out ragged, with orphaned words, and taller than it needed —
+  tall enough, since 1.4.4, to shrink the letters to fit. Now a single newline
+  inside a paragraph becomes a space and a blank line separates paragraphs; a
+  line that starts with whitespace or a list marker (`-`, `*`, `+`, `•`, `1.`,
+  `1)`, then a space) keeps its break and its indentation, so an indented key
+  list or a Markdown list is left as laid out. `show_message(text,
+  reflow=False)` keeps every break exactly. The TRACKPixx3's
+  `Calibration FAILED` notice is now two paragraphs, so reflow keeps its two
+  sentences apart; the pause menu proper (`show_menu`) never reflows. **A
+  display backend of your own** keeps working unchanged: it should accept
+  `reflow` as a keyword-only argument defaulting to `True` to support it, and
+  alhazen never passes `reflow` to a backend that does not take it (the
+  deprecated `pause_menu` seam checks the signature first). Instructions
+  that relied on unindented line breaks (a list of keys) should indent those
+  lines.
+
 - **A sorted-spike sorter must re-announce `units` at least every second,
   and a late subscriber no longer fails.** The sample rate rides on the
   `units` message, and announcing it once at startup made it unrecoverable
@@ -100,6 +120,67 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   say-so, for deterministic threading tests. Nothing changes for a task that
   does not declare it. See "Mid-trial reward" in
   [docs/architecture.md](docs/architecture.md).
+
+- **`LandingSample`: a landing phase that records where the saccade ended.**
+  `LandingCheck` ends on the first frame gaze is inside the target region,
+  which for any usable window is mid-flight: with a 3° window a 5° saccade is
+  recorded 2–3° short of where it lands, biasing every analysis that filters
+  on landing error. `LandingSample` (in `alhazen.task.phases`) ignores the
+  region until the movement is over and judges the last valid sample once.
+  It ends after a fixed dwell from saccade onset (`dwell_s`), or at saccade
+  offset (`settle_speed_dva_per_s` with a `max_wait_s` cap): the first new
+  sample slower than the threshold, where repeated samples are not counted
+  and a blink is never settled. Onset is the flip-stamped `RESPONSE_ONSET`
+  by default (`onset_event=`), the reference position may be a callable for a
+  figure that moves, and either verdict may be `PhaseAction.ADVANCE`. It
+  writes the familiar `endpoint_*` columns plus `endpoint_measured` (False,
+  with no position, when no valid sample arrived), `endpoint_latency_ms`,
+  `endpoint_reference_x/y_dva` and, in the saccade-offset mode,
+  `endpoint_settled`. `depart_region="fixation"` makes it wait for the eye to
+  leave that window: a blink counts as departure under the blink rule, so a
+  blink at the cue stamps the onset with the eye still at fixation, and the
+  first slow sample there would otherwise end the trial as a miss at
+  fixation. With it, a sample still inside the window is never the endpoint
+  and never settles, and an eye that has not left by the dwell or the cap is
+  recorded as not measured. **`LandingCheck` is unchanged**, and its
+  docstring now warns that its endpoint is where gaze entered the window. See
+  [docs/architecture.md](docs/architecture.md) §5.2.
+- **`InputFrame.gaze_t`: when the gaze sample was taken.** Seconds on the
+  session clock, `None` whenever `gaze` is `None`. A display frame that brings
+  no new tracker sample repeats the previous position, and until now a phase
+  had no way to know: a speed computed across the repeat reads as zero, so a
+  rule that waits for the eye to slow down could stop mid-saccade. A repeat
+  now carries the same `gaze_t`, and the gap between two new samples is their
+  real spacing rather than the nominal frame period. The EyeLink backend
+  keeps a sample's first-read time for as long as the link hands back the
+  same sample, where it used to restamp every read with "now"; the other
+  backends already did the equivalent. A fake tracker that returns its own
+  sample objects needs a `t` on them, as `GazeSample` always required. See
+  [docs/architecture.md](docs/architecture.md) §2.1.
+
+- **`alhazen.display.reflow(text)`**, the rule `show_message` applies, as a
+  pure function with no display behind it — for an experiment that wants to
+  see its instructions as the subject will, and in place of the
+  line-joining each experiment's `run.py` carried its own copy of. Edge
+  cases (`\r\n` endings, runs of blank lines, whitespace at either end,
+  indented lines and list items) are in its docstring and in
+  [docs/architecture.md](docs/architecture.md) §10.1.
+- **`message_calls` on `SimulatedDisplay` and `testing.FakeDisplay`**: every
+  `show_message` call as `(text, reflow)`, exactly as given, so a test can
+  pin whether a caller kept its line breaks. `messages` is unchanged.
+
+- **`TrialFeedback(keep_drawing=...)` keeps other stimuli on screen during
+  feedback.** Feedback drew only the fixation point, so whatever the last
+  measuring phase showed vanished on the frame feedback started — a figure the
+  subject had just saccaded to blinked off at the moment they were told
+  whether they reached it. `keep_drawing=("figure",)` names stimuli that are
+  updated and drawn every frame, before the fixation point so the recoloured
+  point stays on top; only the fixation point changes colour. A name the
+  trial has no stimulus for fails when the phase starts, naming it, and
+  naming the feedback stimulus itself is refused at construction. A trial
+  that ended early with a non-completed outcome (a fixation break) keeps
+  nothing, since the figure may never have been shown. The default is empty,
+  which is the old behaviour.
 - **`alhazen check-rig --record <path>`: the checkout leaves a written
   record.** Until now a pre-session checkout existed only as scrollback in
   whichever terminal was open at the rig, so nothing about it could be
@@ -160,6 +241,17 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Fixed
 
+- **A trial that frame QA recycles is paid for what the subject did.** Under
+  `frame_qa.policy: recycle_trial`, a trial whose display dropped too many
+  frames becomes `DROPPED_FRAMES` and is served again. Its feedback already
+  showed the subject's own result, but the reward was then decided on
+  `DROPPED_FRAMES`: a correct response was paid nothing, and no `NO_REWARD`
+  event said so. Reward now follows the response — the outcome kept as
+  `outcome_before_frame_qa` — so a correct trial is paid (`REWARD`, or
+  `REWARD_FAILED` if the pump fails) and a completed wrong one gets
+  `NO_REWARD`, with the event naming that outcome. The trial is still served
+  again for its data. `TrialResult` gains `outcome_before_frame_qa` and
+  `response_outcome`. Frame QA judges the data, never the subject.
 - **A SPACE pressed during a TRACKPixx3 calibration is no longer lost.** The
   calibration screens waited for keys with PsychoPy's `waitKeys`, which empties
   the keyboard buffer each time it starts waiting. A press made while the walk

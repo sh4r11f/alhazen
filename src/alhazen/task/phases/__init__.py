@@ -11,6 +11,7 @@ from alhazen.task.phases.gaze import (
     AcquireFixation,
     HoldFixation,
     LandingCheck,
+    LandingSample,
     StimulusResponse,
 )
 from alhazen.task.phases.response import AdjustmentLoop, ResponseWindow
@@ -25,6 +26,7 @@ __all__ = [
     "FrameSequence",
     "HoldFixation",
     "LandingCheck",
+    "LandingSample",
     "ResponseWindow",
     "StimulusResponse",
     "TrialFeedback",
