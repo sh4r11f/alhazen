@@ -10,6 +10,7 @@ small contracts defined in this module.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
@@ -44,16 +45,85 @@ class Outcome:
 # Framework-reserved outcomes, produced by the engine (never by a phase):
 # all are non-completed by definition. PAUSED and ABORTED ended the trial
 # before its measurement existed; PAUSED additionally writes no trials row
-# (the runner enforces that split; see session/runner.py). DROPPED_FRAMES is
-# different in kind: the trial ran to its own end, but the display dropped
-# more frames than the rig's frame QA allows (display/frames.py, policy
-# ``recycle_trial``), so what the subject saw was not the stimulus the config
-# describes and the measurement is discarded. The trial's own outcome is
-# kept on the record as ``outcome_before_frame_qa``.
+# (the runner enforces that split; see session/runner.py). ABORTED has two
+# causes, told apart by the row's ``abort_reason``: the experimenter's skip
+# key (``skipped_by_user``), or a device health check that failed mid-trial
+# (the check's own reason — ``tracker_stopped`` when the eye tracker stopped
+# recording). DROPPED_FRAMES is different in kind: the trial ran to its own
+# end, but the display dropped more frames than the rig's frame QA allows
+# (display/frames.py, policy ``recycle_trial``), so what the subject saw was
+# not the stimulus the config describes and the measurement is discarded. The
+# trial's own outcome is kept on the record as ``outcome_before_frame_qa``.
+#
+# A health-check abort and DROPPED_FRAMES are SYSTEM FAULTS: the rig failed,
+# not the subject. See NO_FAULT below for how a row says so.
 PAUSED = Outcome("PAUSED", completed=False)
 ABORTED = Outcome("ABORTED", completed=False)
 DROPPED_FRAMES = Outcome("DROPPED_FRAMES", completed=False)
 _RESERVED_OUTCOMES = {"PAUSED": PAUSED, "ABORTED": ABORTED, "DROPPED_FRAMES": DROPPED_FRAMES}
+
+
+# The values of the ``fault`` column: which system fault — the rig failing,
+# never the subject — hit a trial. The engine writes it on EVERY row, NO_FAULT
+# on a trial nothing happened to, for the reason ``n_dropped_frames`` is 0
+# rather than absent on a clean trial: an empty cell reads back as NaN, and
+# "no fault" has to be a value a reader can select on, never the absence of
+# one. The string "none" rather than an empty one for the same reason.
+#
+# Exactly two faults are recognised — the failures that are the rig's, never
+# the subject's. What the session does about a trial lost to one is
+# session/runner.py's business.
+#
+# - FAULT_DROPPED_FRAMES: frame QA recycled the trial into DROPPED_FRAMES.
+# - FAULT_TRACKER_STOPPED: the eye tracker stopped recording. It is the
+#   reason the session's tracker health check reports
+#   (session/builder.py); the engine writes whatever reason a failed health
+#   check gives, and that check is the only one there is.
+#
+# Which fault a row names and whether it cost the trial its measurement are
+# two questions — see lost_to_fault.
+NO_FAULT = "none"
+FAULT_DROPPED_FRAMES = "dropped_frames"
+FAULT_TRACKER_STOPPED = "tracker_stopped"
+
+
+def lost_to_fault(outcome_name: str, record: Mapping[str, Any]) -> str | None:
+    """The system fault that cost a trial its measurement, or None.
+
+    A trial is lost to a fault in exactly two ways, and its row says which:
+
+    - frame QA recycled it: the outcome is ``DROPPED_FRAMES`` (and the row's
+      ``fault`` is ``"dropped_frames"``);
+    - a device health check aborted it before its outcome was decided — the
+      eye tracker stopped recording: the outcome is ``ABORTED`` and the row's
+      ``abort_reason`` is the same reason its ``fault`` names
+      (``"tracker_stopped"``). The engine writes both from the one failed
+      check, which is what ties the abort to the fault.
+
+    Everything else is None, including two rows that do name a fault:
+
+    - the experimenter's skip is ``ABORTED`` for its own reason
+      (``skipped_by_user``), even on a trial whose tracker had already
+      stopped during its closing phase;
+    - a trial whose tracker stopped only during its closing phase — after its
+      measurement, while feedback was on screen — keeps its own outcome: the
+      fault is flagged on the row, but it cost the trial nothing.
+
+    It reads only what a trials.csv row holds, so an analysis can apply the
+    same rule offline: ``lost_to_fault(row["outcome"], row)``. A row written
+    before the ``fault`` column existed can only be recognised as a
+    dropped-frames loss.
+    """
+    if outcome_name == DROPPED_FRAMES.name:
+        return FAULT_DROPPED_FRAMES
+    fault = record.get("fault")
+    if (
+        outcome_name == ABORTED.name
+        and fault not in (None, "", NO_FAULT)
+        and record.get("abort_reason") == fault
+    ):
+        return str(fault)
+    return None
 
 
 # The columns the framework itself writes into a trial record, as against the
@@ -71,9 +141,9 @@ _RESERVED_OUTCOMES = {"PAUSED": PAUSED, "ABORTED": ABORTED, "DROPPED_FRAMES": DR
 # `rewarded` only where a pump is wired and a delivery was attempted, the two
 # `n_mid_trial_*` counts only for a task that declares mid-trial reward, the
 # two frame-QA columns only on a recycled trial, `success` only where the
-# outcome defines one. Every emitted event also mirrors its time as
-# `t_<event name lowercased>`, which is a pattern rather than a fixed name and
-# so is not listed.
+# outcome defines one. `fault` IS on every row. Every emitted event also
+# mirrors its time as `t_<event name lowercased>`, which is a pattern rather
+# than a fixed name and so is not listed.
 #
 # tests/unit/test_contracts.py drives real trials through the engine and the
 # runner and checks the names they produce against this tuple, so a rename at
@@ -101,6 +171,11 @@ TRIAL_RECORD_COLUMNS: tuple[str, ...] = (
     # from it, because the two are different questions — a saccade that
     # missed is still a completed, scored measurement.
     "feedback",
+    # The system fault that hit the trial — "dropped_frames" or
+    # "tracker_stopped" — or "none", on every row (see NO_FAULT). The one
+    # column that says a trial failed, or was flagged, because the rig did;
+    # whether that cost the trial its measurement is `lost_to_fault`.
+    "fault",
 )
 
 

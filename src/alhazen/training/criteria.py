@@ -6,7 +6,10 @@ using; an experiment registers its own for anything else.
 
 The window holds *attempts*, not measurements: "how often does this subject
 actually complete a trial" is the first thing a shaping protocol asks, and it
-is unanswerable from completed trials alone.
+is unanswerable from completed trials alone. It holds the *subject's*
+attempts, though: a paused one, and one lost to a system fault (dropped
+frames, a tracker that stopped), never reach it — the supervisor leaves them
+out (training/supervisor.py ``observe``), so no metric here ever sees one.
 """
 
 from __future__ import annotations

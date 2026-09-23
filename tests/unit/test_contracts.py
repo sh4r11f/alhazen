@@ -42,7 +42,12 @@ from alhazen.config.models import FrameQAConfig, RewardPulses
 from alhazen.core.commands import Command
 from alhazen.core.events import RESERVED_EVENTS
 from alhazen.core.rng import STREAMS, spawn_streams
-from alhazen.core.trial import TRIAL_RECORD_COLUMNS
+from alhazen.core.trial import (
+    FAULT_DROPPED_FRAMES,
+    FAULT_TRACKER_STOPPED,
+    NO_FAULT,
+    TRIAL_RECORD_COLUMNS,
+)
 from alhazen.data import manifest
 from alhazen.data.paths import SessionPaths
 from alhazen.devices import recording
@@ -251,6 +256,17 @@ class TestTrialRecordColumns:
             f"it in TRIAL_RECORD_COLUMNS. A column downstream cannot discover is a column it "
             f"will type by hand and get wrong."
         )
+
+    def test_fault_is_on_every_record(self, tmp_path):
+        """`fault` is promised on EVERY row — "none" when nothing failed — so
+        a reader can select on it rather than on the absence of a value. Every
+        scenario above, clean or not, has to carry it with a named value."""
+        records = self.engine_records()
+        records += [self.session_record(tmp_path), self.mid_trial_record(tmp_path)]
+        values = {NO_FAULT, FAULT_DROPPED_FRAMES, FAULT_TRACKER_STOPPED}
+        assert [record.get("fault") in values for record in records] == [True] * len(records)
+        # The recycle scenario is the one that names a fault.
+        assert FAULT_DROPPED_FRAMES in {record["fault"] for record in records}
 
     def test_no_recorded_column_was_dropped(self):
         missing = set(BASELINE["trial_record_columns"]) - set(TRIAL_RECORD_COLUMNS)
