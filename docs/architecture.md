@@ -15,7 +15,8 @@ reward policy as data, and the scheduler library.
 src/alhazen/
 ├── errors.py       # shared exceptions; outside the layer contract (anything may import)
 ├── core/           # clock, rng streams, events+bus, commands, trial vocabulary, TrialEngine
-├── display/        # DisplayBackend protocol, simulated + psychopy backends, Screen, FrameMonitor
+├── display/        # DisplayBackend protocol, simulated + psychopy backends, Screen, FrameMonitor,
+│                   #   text.reflow (hard-wrapped prose → paragraphs, for show_message)
 ├── stimuli/        # Stimulus protocol, NullStimulus, FixationPoint, PhotodiodePatch
 ├── scenes/         # illusion-studio scenes: expressions, loader, headless renderer
 ├── devices/        # EyeTracker (eyelink/viewpixx/mouse_sim/scripted), RewardDispenser,
@@ -942,6 +943,59 @@ module-level `np.random` is never used.
 Durations: `Duration(ms=…)` or `Duration(frames=…)`, resolved once against
 the **measured** refresh rate (warm-up flips at build time; `resolve_refresh`
 errors loudly if measured and nominal disagree).
+
+### 10.1 Messages are prose unless they say otherwise
+
+`show_message(text, *, reflow=True)` is how the session talks to the subject
+— the instructions, `stage: 2`, `REWARD FAILURE — check the pump`. The text a
+caller writes is usually hard-wrapped (an `instructions.md` at 80 columns),
+and the display wraps it again at its own measure, the smaller of 80% of the
+screen's width and 34 letter heights. Left as given, every source line longer
+than that measure became a full line and a stub: ragged text, orphaned words,
+and a block tall enough to trip the shrink-to-fit that keeps a message on the
+screen. So each backend first passes the text through `display.text.reflow`,
+a pure function with no renderer behind it:
+
+```mermaid
+flowchart LR
+    SRC["instructions.md<br/>(hard-wrapped)"] --> RUN["SessionRunner"]
+    RUN -->|"show_message(text)"| BE["display backend"]
+    CAL["TRACKPixx3: Calibration FAILED<br/>(two paragraphs)"] -->|"show_message(text)"| BE
+    PM["deprecated pause_menu seam<br/>(key rows)"] -->|"show_message(text, reflow=False)<br/>only if it takes reflow"| BE
+    BE -->|"reflow=True"| RF["display.text.reflow<br/>(pure string work)"]
+    RF --> LAY["layout: wrap at the measure,<br/>size the box, shrink if too tall"]
+    BE -->|"reflow=False"| LAY
+```
+
+The rule, after `\r\n` and `\r` become `\n`:
+
+- a blank (or whitespace-only) line separates paragraphs; a run of them is one
+  break, and blank lines at either end are dropped;
+- inside a paragraph a line joins the one before it with a single space —
+  unless it starts with whitespace or a list marker (`-`, `*`, `+`, `•`,
+  `1.`, `1)`, then a space), in which case it keeps its break and its text
+  exactly, so an indented key list or a Markdown list survives;
+- trailing whitespace goes; spaces inside a line stay, because they align
+  columns.
+
+The rule looks at each line alone, which keeps it predictable: a plain line
+after an indented one joins it, just as a list item's wrapped text joins the
+item. It is idempotent, so a caller that already reflowed loses nothing.
+
+Reflow is on by default because nearly every message is prose. Text whose
+every break is meaningful can pass `reflow=False` and is drawn exactly as
+given. **Framework code never passes `reflow=` to a backend it did not build
+itself**, so a display backend written before the argument existed, taking
+the text alone, keeps working. The two messages with deliberate breaks get
+them another way: the TRACKPixx3's calibration-failed notice is two
+paragraphs (what happened, then what to do), which reflow keeps apart; the
+deprecated `pause_menu` seam, whose unindented key rows would otherwise run
+together, passes `reflow=False` only to a `show_message` whose signature
+takes it. The real pause menu goes through `show_menu`, which never reflows.
+The built-in backends take the argument the same way — keyword-only, default
+`True` — and the ones with no screen keep it: `SimulatedDisplay` and
+`testing.FakeDisplay` record `(text, reflow)` in `message_calls`, and the
+simulated display logs the text as it would have been drawn.
 
 ## 11. Extending
 

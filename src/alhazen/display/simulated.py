@@ -17,6 +17,8 @@ import sys
 import time
 from collections.abc import Callable
 
+from alhazen.display.text import reflow as reflow_text
+
 log = logging.getLogger(__name__)
 
 # How much of each frame's wait is spun rather than slept. A sleep returns
@@ -56,6 +58,11 @@ class SimulatedDisplay:
         self.window = _RecordingWindow()
         self.flip_count = 0
         self.messages: list[str] = []
+        # (text, reflow) per show_message call, exactly as given. `messages`
+        # keeps only the text (and menu titles) for the callers that already
+        # read it; this is where a test asks whether a caller kept its line
+        # breaks.
+        self.message_calls: list[tuple[str, bool]] = []
         # (title, body) per menu shown. Kept apart from `messages` so a test
         # or a log reader can ask "did this session ever stop?" without
         # pattern-matching message text.
@@ -106,9 +113,14 @@ class SimulatedDisplay:
             return self._nominal_hz
         return 1.0 / self._period
 
-    def show_message(self, text: str) -> None:
+    def show_message(self, text: str, *, reflow: bool = True) -> None:
         self.messages.append(text)
-        log.info("display message: %s", text)
+        self.message_calls.append((text, reflow))
+        # Logged as a real display would draw it, reflowed when asked: the log
+        # is the only place an unattended session's messages can be read, and
+        # running the reflow here means a simulated session exercises the same
+        # text path the rig does.
+        log.info("display message: %s", reflow_text(text) if reflow else text)
 
     def show_menu(self, title: str, body: str, *, color: tuple[float, float, float]) -> None:
         """Log the menu and keep it, headline first.
