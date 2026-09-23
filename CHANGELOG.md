@@ -217,6 +217,17 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Fixed
 
+- **A trial that frame QA recycles is paid for what the subject did.** Under
+  `frame_qa.policy: recycle_trial`, a trial whose display dropped too many
+  frames becomes `DROPPED_FRAMES` and is served again. Its feedback already
+  showed the subject's own result, but the reward was then decided on
+  `DROPPED_FRAMES`: a correct response was paid nothing, and no `NO_REWARD`
+  event said so. Reward now follows the response — the outcome kept as
+  `outcome_before_frame_qa` — so a correct trial is paid (`REWARD`, or
+  `REWARD_FAILED` if the pump fails) and a completed wrong one gets
+  `NO_REWARD`, with the event naming that outcome. The trial is still served
+  again for its data. `TrialResult` gains `outcome_before_frame_qa` and
+  `response_outcome`. Frame QA judges the data, never the subject.
 - **A SPACE pressed during a TRACKPixx3 calibration is no longer lost.** The
   calibration screens waited for keys with PsychoPy's `waitKeys`, which empties
   the keyboard buffer each time it starts waiting. A press made while the walk

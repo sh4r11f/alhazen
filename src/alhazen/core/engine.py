@@ -52,6 +52,28 @@ class QuitRequested(Exception):
 class TrialResult:
     outcome: Outcome
     record: dict[str, Any]
+    # The outcome the subject's own response ended the trial as, when frame
+    # QA then recycled it into DROPPED_FRAMES; None on every other trial. The
+    # Outcome object rather than only its name (the record keeps the name as
+    # `outcome_before_frame_qa`): the runner needs its `completed` flag to
+    # decide NO_REWARD, and it has no outcome set to look a name up in.
+    outcome_before_frame_qa: Outcome | None = None
+
+    @property
+    def response_outcome(self) -> Outcome:
+        """What the subject's response earned, whatever the display did.
+
+        Two questions share a trial and can get different answers. Whether
+        the measurement is kept — and so whether the condition is served
+        again — follows ``outcome``, which frame QA may have replaced with
+        DROPPED_FRAMES. What the subject was told and what they are paid
+        follow this: a display fault is not something the subject did, and
+        must never cost them a reward they earned. Identical to ``outcome``
+        on every trial frame QA left alone, including PAUSED and ABORTED.
+        """
+        if self.outcome_before_frame_qa is not None:
+            return self.outcome_before_frame_qa
+        return self.outcome
 
 
 def _null_inputs() -> InputFrame:
@@ -177,6 +199,15 @@ class TrialEngine:
             # What the trial ended as, readable by the closing phase; None
             # when the body ran to its end and the closing phase is the one
             # that decides.
+            #
+            # Always the subject's own outcome, never frame QA's: the closing
+            # phase runs before the frame-QA verdict below, on purpose.
+            # Feedback tells the subject what THEY did, and a display that
+            # dropped frames is not something they did — a correct trial the
+            # display then recycles is still shown as a success, and the
+            # runner pays it the same way (TrialResult.response_outcome).
+            # The verdict cannot come first anyway: the closing phase's own
+            # frames are part of the trial frame QA judges.
             ctx.outcome = outcome
             closing_outcome = self._run_phase(closing, ctx)
             # A closing phase decides the outcome only when nothing else
@@ -194,6 +225,7 @@ class TrialEngine:
         # trial's setup — while the record claims the trial ended.
         self._display.flip()
 
+        before_frame_qa: Outcome | None = None
         if self._frame_monitor is not None:
             # The monitor is told whether the trial completed, because that
             # decides whether a recycle is even on the table — and the
@@ -211,12 +243,19 @@ class TrialEngine:
                 # was already non-completed is already being re-served, and
                 # PAUSED in particular drives the runner's pause flow, so the
                 # monitor returns no verdict for either.
+                #
+                # The verdict governs data quality only. The Outcome it
+                # replaces travels on the result as well as on the row, so
+                # the runner can still pay what the response earned.
+                before_frame_qa = outcome
                 ctx.record["outcome_before_frame_qa"] = outcome.name
                 ctx.record["frame_qa_reason"] = frames.reason
                 outcome = DROPPED_FRAMES
 
         self._finalize(ctx, outcome)
-        return TrialResult(outcome=outcome, record=ctx.record)
+        return TrialResult(
+            outcome=outcome, record=ctx.record, outcome_before_frame_qa=before_frame_qa
+        )
 
     # ------------------------------------------------------------------
     # Per-phase frame loop

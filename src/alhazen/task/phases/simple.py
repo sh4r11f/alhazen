@@ -98,6 +98,12 @@ class TrialFeedback:
     quit — and telling a subject they failed a trial they were still in the
     middle of would be a lie.
 
+    **It judges the response, never the display.** Frame QA's verdict comes
+    after this phase, so a correct trial that frame QA then recycles into
+    ``DROPPED_FRAMES`` is still shown as a success — and is paid as one
+    (session/runner.py). The trial is served again for its data, not held
+    against the subject.
+
     Two things are deliberately separate here, because an experiment's
     first use of this would have been wrong either way:
 

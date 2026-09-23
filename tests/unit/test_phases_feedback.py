@@ -176,6 +176,65 @@ class TestFeedbackOnTheTrialsThatEndedEarly:
         assert not [e for e in harness.collector.events if e.name == "FEEDBACK"]
 
 
+class TestFeedbackFollowsTheResponseNotTheDisplay:
+    """Frame QA's `recycle_trial` verdict arrives after the closing phase, and
+    feedback judges what the subject did. A display that dropped frames is
+    not something the subject did: the trial is served again for its data,
+    but what the subject was shown stands."""
+
+    def run_recycled(self, outcome, verdict):
+        from alhazen.config.models import FrameQAConfig
+
+        harness = EngineHarness(
+            frame_qa=FrameQAConfig(policy="recycle_trial", max_dropped_fraction=0.2)
+        )
+
+        class Slow(RunForFrames):
+            # Every frame of the measuring phase overruns by a whole frame,
+            # far past the 20% budget.
+            def on_frame(self, ctx):
+                harness.display.next_flip_extra = FRAME_S
+                return super().on_frame(ctx)
+
+        seen = []
+
+        def judged(ctx):
+            # What the closing phase could read when it judged the trial.
+            seen.append((ctx.outcome, ctx.record.get("outcome")))
+            return verdict(ctx)
+
+        fixation = NullStimulus("fixation")
+        ctx = harness.ctx(stimuli={"fixation": fixation})
+        phases = [
+            Slow(6, outcome),
+            TrialFeedback(verdict=judged, then=COMPLETED, duration_s=2 * FRAME_S),
+        ]
+        return harness.engine.run_trial(ctx, phases), fixation, harness, seen
+
+    def test_a_correct_trial_the_display_recycles_is_shown_as_a_success(self):
+        result, fixation, harness, seen = self.run_recycled(COMPLETED, lambda ctx: True)
+
+        # Recycled for its data...
+        assert result.outcome.name == "DROPPED_FRAMES"
+        assert result.record["outcome_before_frame_qa"] == "COMPLETED"
+        # ...but the subject was told they got it right.
+        assert fixation.colors == [SUCCESS_COLOR]
+        assert result.record["feedback"] == "success"
+        (event,) = [e for e in harness.collector.events if e.name == "FEEDBACK"]
+        assert event.payload == {"success": True}
+        # The closing phase saw only the subject's own outcome: frame QA had
+        # not ruled yet, and no outcome was on the record.
+        assert seen == [(COMPLETED, None)]
+
+    def test_a_wrong_trial_the_display_recycles_is_shown_as_a_failure(self):
+        result, fixation, _, _ = self.run_recycled(MISSED, lambda ctx: False)
+
+        assert result.outcome.name == "DROPPED_FRAMES"
+        assert result.record["outcome_before_frame_qa"] == "MISSED"
+        assert fixation.colors == [FAILURE_COLOR]
+        assert result.record["feedback"] == "failure"
+
+
 class TestFeedbackIsNeverOnScreenDuringAMeasurement:
     def test_the_engine_refuses_feedback_anywhere_but_last(self):
         harness = EngineHarness()
