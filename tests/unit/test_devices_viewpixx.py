@@ -826,6 +826,8 @@ class FakeDisplay:
         # (title, body, colour) of every menu-style panel — the guide.
         self.menus: list[tuple[str, str, tuple[float, float, float]]] = []
 
+    # Deliberately without `reflow`: a display backend written outside
+    # alhazen before the argument existed. The tracker must never pass it.
     def show_message(self, text: str) -> None:
         self.messages.append(text)
 
@@ -1399,6 +1401,15 @@ class TestCalibrationRecording:
         assert tracker._display is not None
         messages = tracker._display.messages  # type: ignore[attr-defined]
         assert messages and "FAILED" in messages[0]
+        # What happened, then what to do: two paragraphs, so the display's
+        # prose reflow keeps them apart without being asked (and this fake,
+        # which takes no `reflow`, would have raised had it been asked).
+        from alhazen.display import reflow
+
+        assert reflow(messages[0]).split("\n\n") == [
+            "Calibration FAILED: the tracker reports no calibration.",
+            "Check the camera sees the eyes (position, focus, LED), then calibrate again.",
+        ]
         # And the result says so, for the dashboard and the log.
         assert result.ok is False and not result.aborted
         assert result.verdict == "NOT calibrated"

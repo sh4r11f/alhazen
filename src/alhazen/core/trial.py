@@ -15,8 +15,10 @@ from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 
+from alhazen.config.models import RewardPulses
 from alhazen.core.clock import Clock
 from alhazen.display.screen import Screen, within_radius
+from alhazen.errors import RewardRequestError
 
 # ---------------------------------------------------------------------------
 # Outcomes
@@ -66,10 +68,12 @@ _RESERVED_OUTCOMES = {"PAUSED": PAUSED, "ABORTED": ABORTED, "DROPPED_FRAMES": DR
 # how a reader stops guessing.
 #
 # Not every column is on every row: `abort_reason` only on an abort,
-# `rewarded` only where a pump is wired, the two frame-QA columns only on a
-# recycled trial, `success` only where the outcome defines one. Every emitted
-# event also mirrors its time as `t_<event name lowercased>`, which is a
-# pattern rather than a fixed name and so is not listed.
+# `rewarded` only where a pump is wired and a delivery was attempted, the two
+# `n_mid_trial_*` counts only for a task that declares mid-trial reward, the
+# two frame-QA columns only on a recycled trial, `success` only where the
+# outcome defines one. Every emitted event also mirrors its time as
+# `t_<event name lowercased>`, which is a pattern rather than a fixed name and
+# so is not listed.
 #
 # tests/unit/test_contracts.py drives real trials through the engine and the
 # runner and checks the names they produce against this tuple, so a rename at
@@ -85,6 +89,13 @@ TRIAL_RECORD_COLUMNS: tuple[str, ...] = (
     "outcome_before_frame_qa",
     "frame_qa_reason",
     "rewarded",
+    # Mid-trial reward (TrialContext.request_reward): how many of the drops a
+    # phase asked for during this trial the pump delivered, and how many it
+    # failed. Written — as 0 on a trial that asked for none — on every trial
+    # of a task declaring ``mid_trial_reward``, and absent otherwise, so a
+    # zero is "none this trial" and never "not a mid-trial task".
+    "n_mid_trial_rewards",
+    "n_mid_trial_reward_failures",
     # "success" or "failure": what the subject was told at the end of the
     # trial (task/phases TrialFeedback). Beside the outcome, never derived
     # from it, because the two are different questions — a saccade that
@@ -179,11 +190,20 @@ class InputFrame:
     ``wheel`` the scroll-wheel movement over that frame (an adjustment
     task's knob). Fields only ever get appended, with defaults, so a phase
     or a test that cares about one of them is unaffected by the others.
+
+    ``gaze_t`` is when the tracker took the sample behind ``gaze``, on the
+    session clock — None whenever ``gaze`` is None. Display frames and
+    tracker samples do not arrive in step: a frame that brings no new sample
+    repeats the previous one, *with the same* ``gaze_t``. That is how a phase
+    tells a new sample from a repeat (a speed computed across a repeat is a
+    false zero), and the spacing between two new samples is the real time
+    between them, not the nominal frame period.
     """
 
     gaze: tuple[float, float] | None = None
     keys: tuple[str, ...] = ()
     wheel: float = 0.0
+    gaze_t: float | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +232,49 @@ class Phase(Protocol):
     def on_enter(self, ctx: TrialContext) -> None: ...
 
     def on_frame(self, ctx: TrialContext) -> str | Outcome: ...
+
+
+# ---------------------------------------------------------------------------
+# Mid-trial reward
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RewardRequest:
+    """One juice drop a phase asked for while the trial runs.
+
+    Built by ``TrialContext.request_reward`` with ``frame`` unset; the engine
+    fills ``frame`` in when it hands the request to the dispenser, right
+    after the flip that follows the request — the frame the drop was
+    commanded on, which is what the REWARD event and the completion that
+    follows it both carry.
+    """
+
+    pulses: RewardPulses
+    reason: str
+    frame: int | None = None
+
+    def payload(self) -> dict[str, Any]:
+        """The fields every event about this request carries, so a REWARD and
+        the REWARD_DELIVERED or REWARD_FAILED that follows it can be matched
+        up in events.csv by ``frame`` and ``reason``."""
+        return {
+            "pulses": self.pulses.model_dump(mode="json"),
+            "reason": self.reason,
+            "frame": self.frame,
+        }
+
+
+@dataclass(frozen=True)
+class RewardCompletion:
+    """How one handed-over request ended: ``error`` is None when the pump
+    delivered it, else the failure's message. Crosses back from the reward
+    worker thread to the session thread, so it is immutable and carries only
+    plain data — never the exception object, whose traceback the worker has
+    already logged."""
+
+    request: RewardRequest
+    error: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -247,9 +310,60 @@ class TrialContext:
     # see what happened, and the record does not carry the outcome until the
     # trial is finalized, which is after every phase has run.
     outcome: Outcome | None = None
+    # Mid-trial reward requests queued this frame, handed to the dispenser by
+    # the engine after the next flip — the same queue-then-drain shape as
+    # pending_flip_events, and for the same reason: a phase never touches
+    # hardware.
+    pending_reward_requests: list[RewardRequest] = field(default_factory=list)
+    # Set by the engine at the start of every trial: True only when the
+    # session's task declared ``mid_trial_reward`` and a dispenser is wired to
+    # take the requests. False makes request_reward raise.
+    accepts_reward_requests: bool = False
 
     def emit_on_flip(self, name: str, payload: dict | None = None) -> None:
         """Queue an event to be emitted right after the next flip, stamped
         with the flip's time — the photon-honest timestamp for anything
         visual. The engine drains this queue; phases never emit directly."""
         self.pending_flip_events.append((name, payload or {}))
+
+    def request_reward(self, pulses: RewardPulses, reason: str) -> None:
+        """Ask for a juice drop now, mid-trial — from a phase's ``on_frame``
+        (or ``on_enter``).
+
+        Only queues. After the next flip the engine hands the request to the
+        session's reward dispenser, whose worker thread delivers it without
+        blocking the frame loop, and emits REWARD stamped with that flip and
+        carrying ``{pulses, reason, frame}``. REWARD_DELIVERED or
+        REWARD_FAILED follows when the pump is done. ``reason`` is the task's
+        own label ("pursuit_hold", "end_bonus") and comes back on every one
+        of those events.
+
+        Raises RewardRequestError when the task never declared
+        ``mid_trial_reward = True`` — never ignored, because a task that
+        believes it is paying and a subject who is not is a silent training
+        failure — and for a request that could not open the valve.
+        """
+        if not self.accepts_reward_requests:
+            raise RewardRequestError(
+                f"a phase requested a mid-trial reward ({reason!r}), but this session's task "
+                f"does not declare `mid_trial_reward = True`. Declare it on the Task class "
+                f"(next to `reward`) so the session is built with a reward worker — and "
+                f"refused on a rig that has no dispenser."
+            )
+        if not isinstance(pulses, RewardPulses):
+            raise RewardRequestError(
+                f"request_reward takes a RewardPulses, got {type(pulses).__name__} ({pulses!r})"
+            )
+        if pulses.n_pulses < 1 or pulses.pulse_ms < 1:
+            # A zero-pulse request would be logged as a drop the valve never
+            # opened for. Refused here, where the task's arithmetic went
+            # wrong, rather than recorded as a REWARD that delivered nothing.
+            raise RewardRequestError(
+                f"request_reward({pulses!r}) delivers nothing: n_pulses and pulse_ms must be >= 1"
+            )
+        if not isinstance(reason, str) or not reason:
+            raise RewardRequestError(
+                f"request_reward needs a non-empty reason string, got {reason!r}: it is "
+                f"what tells the drops apart in events.csv"
+            )
+        self.pending_reward_requests.append(RewardRequest(pulses=pulses, reason=reason))

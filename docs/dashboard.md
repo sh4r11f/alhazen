@@ -231,8 +231,8 @@ layout.
 the task scores its outcomes, and falls back to the completion rate when it
 does not — labelling the axis with whichever it used, never quietly swapping
 one for the other. `rewards` reads the event stream, so it also counts manual
-deliveries, unrewarded completions (`NO_REWARD`) and hardware failures
-(`REWARD_FAILED`).
+deliveries, mid-trial drops (each once, when its `REWARD_DELIVERED` arrives),
+unrewarded completions (`NO_REWARD`) and hardware failures (`REWARD_FAILED`).
 
 `scatter` and `vectors` are two questions about the same endpoints. `scatter`
 plots them where they landed, with the targets marked, and answers *did it hit
@@ -342,10 +342,10 @@ dashboard nobody can take in at a glance has stopped being monitoring; declare
 the rest explicitly when you want them.
 
 The landing panel groups `endpoint_error_dva` — how far the response fell from
-the target it was given, which `LandingCheck` records — rather than the
-endpoint's coordinate. A task with left and right targets averages its
-endpoint x to roughly zero, and a panel reporting that would be reporting
-perfect aim.
+the target it was given, which `LandingSample` and `LandingCheck` record —
+rather than the endpoint's coordinate. A task with left and right targets
+averages its endpoint x to roughly zero, and a panel reporting that would be
+reporting perfect aim.
 
 Grouped panels draw as dots with whiskers by default, or as bars with
 `style="bars"`. Bars grow from zero, so they suit a proportion or a distance;

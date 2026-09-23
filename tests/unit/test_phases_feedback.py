@@ -176,6 +176,65 @@ class TestFeedbackOnTheTrialsThatEndedEarly:
         assert not [e for e in harness.collector.events if e.name == "FEEDBACK"]
 
 
+class TestFeedbackFollowsTheResponseNotTheDisplay:
+    """Frame QA's `recycle_trial` verdict arrives after the closing phase, and
+    feedback judges what the subject did. A display that dropped frames is
+    not something the subject did: the trial is served again for its data,
+    but what the subject was shown stands."""
+
+    def run_recycled(self, outcome, verdict):
+        from alhazen.config.models import FrameQAConfig
+
+        harness = EngineHarness(
+            frame_qa=FrameQAConfig(policy="recycle_trial", max_dropped_fraction=0.2)
+        )
+
+        class Slow(RunForFrames):
+            # Every frame of the measuring phase overruns by a whole frame,
+            # far past the 20% budget.
+            def on_frame(self, ctx):
+                harness.display.next_flip_extra = FRAME_S
+                return super().on_frame(ctx)
+
+        seen = []
+
+        def judged(ctx):
+            # What the closing phase could read when it judged the trial.
+            seen.append((ctx.outcome, ctx.record.get("outcome")))
+            return verdict(ctx)
+
+        fixation = NullStimulus("fixation")
+        ctx = harness.ctx(stimuli={"fixation": fixation})
+        phases = [
+            Slow(6, outcome),
+            TrialFeedback(verdict=judged, then=COMPLETED, duration_s=2 * FRAME_S),
+        ]
+        return harness.engine.run_trial(ctx, phases), fixation, harness, seen
+
+    def test_a_correct_trial_the_display_recycles_is_shown_as_a_success(self):
+        result, fixation, harness, seen = self.run_recycled(COMPLETED, lambda ctx: True)
+
+        # Recycled for its data...
+        assert result.outcome.name == "DROPPED_FRAMES"
+        assert result.record["outcome_before_frame_qa"] == "COMPLETED"
+        # ...but the subject was told they got it right.
+        assert fixation.colors == [SUCCESS_COLOR]
+        assert result.record["feedback"] == "success"
+        (event,) = [e for e in harness.collector.events if e.name == "FEEDBACK"]
+        assert event.payload == {"success": True}
+        # The closing phase saw only the subject's own outcome: frame QA had
+        # not ruled yet, and no outcome was on the record.
+        assert seen == [(COMPLETED, None)]
+
+    def test_a_wrong_trial_the_display_recycles_is_shown_as_a_failure(self):
+        result, fixation, _, _ = self.run_recycled(MISSED, lambda ctx: False)
+
+        assert result.outcome.name == "DROPPED_FRAMES"
+        assert result.record["outcome_before_frame_qa"] == "MISSED"
+        assert fixation.colors == [FAILURE_COLOR]
+        assert result.record["feedback"] == "failure"
+
+
 class TestFeedbackIsNeverOnScreenDuringAMeasurement:
     def test_the_engine_refuses_feedback_anywhere_but_last(self):
         harness = EngineHarness()
@@ -229,6 +288,142 @@ class TestFeedbackIsNeverOnScreenDuringAMeasurement:
     def test_a_landing_check_still_needs_both_answers(self):
         with pytest.raises(ValueError, match="needs both on_hit and on_miss"):
             LandingCheck(on_hit=PhaseAction.ADVANCE)
+
+
+class OrderedStimulus(NullStimulus):
+    """A NullStimulus that also writes its name into a shared list on every
+    update and draw, so a test can read the order stimuli were drawn in."""
+
+    def __init__(self, name: str, log: list[tuple[str, str]]) -> None:
+        super().__init__(name)
+        self._log = log
+
+    def update(self, dt: float) -> None:
+        super().update(dt)
+        self._log.append(("update", self.name))
+
+    def draw(self) -> None:
+        super().draw()
+        self._log.append(("draw", self.name))
+
+
+class TestKeepDrawing:
+    """Issue #40: the figure the last measuring phase showed stays up while
+    the fixation point is recoloured, instead of blinking off the moment the
+    subject is told whether they reached it."""
+
+    def run(self, keep_drawing=(), first=PhaseAction.ADVANCE, duration_s=2 * FRAME_S):
+        log: list[tuple[str, str]] = []
+        harness = EngineHarness()
+        stimuli = {
+            "fixation": OrderedStimulus("fixation", log),
+            "figure": OrderedStimulus("figure", log),
+            "mask": OrderedStimulus("mask", log),
+        }
+        ctx = harness.ctx(stimuli=stimuli)
+        phases = [
+            RunForFrames(1, first),
+            TrialFeedback(
+                verdict=lambda c: True,
+                then=COMPLETED,
+                duration_s=duration_s,
+                keep_drawing=keep_drawing,
+            ),
+        ]
+        result = harness.engine.run_trial(ctx, phases)
+        return result, stimuli, log
+
+    def test_by_default_only_the_feedback_stimulus_is_drawn(self):
+        """The option defaults to empty, and empty is today's behaviour."""
+        result, stimuli, _ = self.run()
+
+        assert stimuli["fixation"].draw_count == 3
+        assert stimuli["figure"].draw_count == 0
+        assert stimuli["figure"].updates == []
+        assert result.outcome is COMPLETED
+
+    def test_a_kept_stimulus_is_updated_and_drawn_every_frame(self):
+        _, stimuli, _ = self.run(keep_drawing=("figure",))
+
+        figure, fixation = stimuli["figure"], stimuli["fixation"]
+        assert figure.draw_count == fixation.draw_count == 3
+        assert figure.updates == pytest.approx([FRAME_S] * 3)
+        # Only the stimuli named are kept; the rest still go off.
+        assert stimuli["mask"].draw_count == 0
+
+    def test_kept_stimuli_are_drawn_before_the_feedback_stimulus(self):
+        """Drawn last is drawn on top: the recoloured point must not be
+        covered by a figure that overlaps it."""
+        _, _, log = self.run(keep_drawing=("figure", "mask"))
+
+        one_frame = [
+            ("update", "figure"),
+            ("draw", "figure"),
+            ("update", "mask"),
+            ("draw", "mask"),
+            ("update", "fixation"),
+            ("draw", "fixation"),
+        ]
+        assert log == one_frame * 3
+
+    def test_only_the_feedback_stimulus_changes_colour(self):
+        _, stimuli, _ = self.run(keep_drawing=("figure",))
+
+        assert stimuli["fixation"].colors == [SUCCESS_COLOR]
+        assert stimuli["figure"].colors == []
+
+    def test_a_missing_name_is_refused_when_the_phase_starts_naming_it(self):
+        with pytest.raises(KeyError, match="'figur'"):
+            self.run(keep_drawing=("figur",))
+
+    def test_a_missing_name_is_refused_before_anything_is_shown(self):
+        """The check runs before the recolour and the FEEDBACK event, so a
+        typo never reaches the subject as a coloured point."""
+        harness = EngineHarness()
+        fixation = NullStimulus("fixation")
+        ctx = harness.ctx(stimuli={"fixation": fixation})
+        feedback = TrialFeedback(
+            verdict=lambda c: True, then=COMPLETED, duration_s=0.0, keep_drawing=("figure",)
+        )
+        with pytest.raises(KeyError, match="no such stimulus"):
+            harness.engine.run_trial(ctx, [RunForFrames(1, PhaseAction.ADVANCE), feedback])
+        assert fixation.colors == []
+        assert "feedback" not in ctx.record
+        assert "FEEDBACK" not in harness.collector.names()
+
+    def test_a_missing_name_is_refused_on_a_trial_that_ended_early_too(self):
+        """A typo must not wait for the first trial that happens to complete."""
+        with pytest.raises(KeyError, match="'figur'"):
+            self.run(keep_drawing=("figur",), first=Outcome("FIX_BREAK", completed=False))
+
+    def test_naming_the_feedback_stimulus_is_refused(self):
+        with pytest.raises(ValueError, match="names the feedback stimulus 'fixation'"):
+            TrialFeedback(
+                verdict=lambda c: True,
+                then=COMPLETED,
+                duration_s=0.0,
+                keep_drawing=("fixation",),
+            )
+
+    def test_a_fixation_break_does_not_reveal_the_kept_stimulus(self):
+        """A break can end the trial before the figure was ever shown;
+        feedback must not be the first time the subject sees it."""
+        result, stimuli, _ = self.run(
+            keep_drawing=("figure",), first=Outcome("FIX_BREAK", completed=False)
+        )
+
+        assert stimuli["figure"].draw_count == 0
+        assert stimuli["fixation"].colors == [FAILURE_COLOR]
+        assert stimuli["fixation"].draw_count == 3
+        assert result.outcome.name == "FIX_BREAK"
+
+    def test_a_completed_outcome_from_an_earlier_phase_keeps_it(self):
+        """Ended early but measured: the figure was up for the measurement,
+        so it stays up for the feedback."""
+        result, stimuli, _ = self.run(keep_drawing=("figure",), first=MISSED)
+
+        assert stimuli["figure"].draw_count == 3
+        assert result.outcome is MISSED
 
 
 class FakeSound:

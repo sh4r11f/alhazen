@@ -25,6 +25,7 @@ menu, because it is believed.
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -317,7 +318,29 @@ def pause_menu(
     menu = build_pause_menu(has_tracker=True)
     return run_pause_menu(
         menu,
-        lambda m: show_message(f"{m.title}\n\n{m.render()}"),
+        lambda m: _show_laid_out(show_message, f"{m.title}\n\n{m.render()}"),
         raw_keys,
         wait,
     )
+
+
+def _show_laid_out(show_message: Callable[..., None], text: str) -> None:
+    """Hand ``text`` to a ``show_message`` callable with its line breaks kept.
+
+    The menu's rows are one key per line and unindented, which is exactly what
+    a display's prose reflow joins into a paragraph — so a caller that passed
+    ``display.show_message`` would see its key list run together. A callable
+    that takes ``reflow`` gets ``reflow=False``. One that does not cannot be
+    reflowing on its own say-so, so it is called with the text alone, as this
+    seam always called it.
+    """
+    try:
+        takes_reflow = "reflow" in inspect.signature(show_message).parameters
+    except (TypeError, ValueError):
+        # No inspectable signature (some builtins): call it the way this seam
+        # always has.
+        takes_reflow = False
+    if takes_reflow:
+        show_message(text, reflow=False)
+    else:
+        show_message(text)

@@ -40,7 +40,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from alhazen.config.models import EyeTrackerConfig, RigConfig
+from alhazen.config.models import EyeTrackerConfig, RewardHwConfig, RigConfig
 from alhazen.errors import ConfigError
 from alhazen.modes import Mode, flag_refusal
 from alhazen.modes.rehearsal import Reduction, rehearsal_root, shrink_params
@@ -227,6 +227,27 @@ def rig_for_mode(
     return rig, notes
 
 
+def _stand_in_reward(mode: Mode, rig: RigConfig, task: Task, notes: list[str]) -> RigConfig:
+    """A simulated dispenser for a mid-trial-reward task rehearsed on a rig
+    that has none.
+
+    ``build_session`` refuses such a task on a rig with no dispenser, because
+    a real session would run a subject through trials it believes are paid.
+    A rehearsal pays nobody, so test and simulate modes stand a simulated
+    dispenser in — every drop is still requested, queued, logged and
+    recorded — and say so with a note, like every other substitution. Run
+    mode is left alone: there the refusal is the point.
+    """
+    if mode is Mode.RUN or not task.mid_trial_reward or rig.devices.reward is not None:
+        return rig
+    notes.append(
+        "reward: simulated — this task asks for reward mid-trial and the rig has no "
+        "dispenser, so drops are logged, not pumped"
+    )
+    devices = rig.devices.model_copy(update={"reward": RewardHwConfig(backend="simulated")})
+    return rig.model_copy(update={"devices": devices})
+
+
 # How long simulate mode's break between blocks waits for somebody before it
 # resumes by itself. A rehearsal on a real display has a keyboard wired, so
 # the break used to wait for a SPACE that nobody watching a dry run had a
@@ -278,6 +299,7 @@ def build_mode_session(
     # the mouse standing in for a missing tracker in test — decided before
     # anything else, so a flag the mode refuses is refused first.
     rig, notes = rig_for_mode(mode, rig, headless=headless, mouse=mouse)
+    rig = _stand_in_reward(mode, rig, task, notes)
 
     params = task.params
     reductions: list[Reduction] = []

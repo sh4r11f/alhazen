@@ -8,7 +8,8 @@ Contract, in order:
    in this run's ``session.log``.
 3. Loop: ask the paradigm for a condition, build the trial through the
    task's ``build_trial``, open the tracker's recording segment (and close it
-   in a ``finally``), run it through the engine, tell the scheduler how it
+   in a ``finally``), run it through the engine and let its mid-trial reward
+   deliveries finish, tell the scheduler how it
    went (for **every** outcome — the scheduler alone decides re-queueing),
    record the measurement (for every outcome except PAUSED, which produced
    none), wait out the ITI.
@@ -158,6 +159,12 @@ def _validation_shortfall(validation: ValidationResult) -> str:
     return line
 
 
+def _earned_mid_trial(record: dict[str, Any]) -> bool:
+    """Did a phase ask for a mid-trial drop this trial? Delivered or failed —
+    either way the trial earned it."""
+    return (record.get("n_mid_trial_rewards", 0) + record.get("n_mid_trial_reward_failures", 0)) > 0
+
+
 class SessionRunner:
     def __init__(
         self,
@@ -272,8 +279,10 @@ class SessionRunner:
         self._tracker = tracker
         self._reward = reward
         self._sync = sync
-        # What each outcome earns. None (or no reward device) means the only
-        # live reward path is the experimenter's manual key.
+        # What each outcome earns. None (or no reward device) means nothing
+        # pays at the end of a trial: what is left is the experimenter's
+        # manual key and, for a task that declares mid_trial_reward, the drops
+        # its phases ask for during the trial.
         self._reward_policy = reward_policy
         # The curriculum, if this session runs under one. It owns the task's
         # current parameters; the runner only asks it what to stamp on a
@@ -307,6 +316,10 @@ class SessionRunner:
 
         self._trial_index = 0
         self._attempt_counts: Counter = Counter()
+        # The most recent trial's context. Teardown settles its mid-trial
+        # reward deliveries: a quit or a fault leaves the loop before the
+        # between-trials settle, and those drops still happened.
+        self._last_ctx: TrialContext | None = None
 
     # ------------------------------------------------------------------
 
@@ -375,6 +388,7 @@ class SessionRunner:
                 self._trial_index += 1
 
                 ctx, phases = self._assemble_trial(condition, attempt)
+                self._last_ctx = ctx
                 try:
                     # Inside the try, not before it: opening the recording
                     # segment can fail partway through (a tracker that starts
@@ -382,6 +396,14 @@ class SessionRunner:
                     # finally below is what stops it again.
                     self._start_tracker_trial(ctx, attempt)
                     result = self._engine.run_trial(ctx, phases)
+                    # Every mid-trial drop finishes and is counted before
+                    # anything else: before the outcome's own pay, so the two
+                    # pulse trains never overlap on the valve, and before the
+                    # row is written, so its counts are final. Inside the
+                    # tracker's recording segment, so the eye data covers the
+                    # last drop's whole delivery. A no-op for a task that
+                    # does not ask for reward mid-trial.
+                    self._engine.settle_rewards(ctx)
                 except QuitRequested:
                     log.info("session terminated by experimenter on trial %d", self._trial_index)
                     break
@@ -407,7 +429,24 @@ class SessionRunner:
 
                 # Reward before recording, so record["rewarded"] states what
                 # actually happened at the pump rather than what was owed.
-                reward_failed = self._deliver_reward(ctx, outcome)
+                #
+                # Paid on what the subject's response earned, not on the
+                # outcome the scheduler sees. They differ on one kind of trial
+                # only: one frame QA recycled into DROPPED_FRAMES because the
+                # display dropped frames. That trial is still served again
+                # (its measurement is discarded), but the subject did the
+                # trial and was shown its feedback, and a display fault must
+                # never cost them the reward — nor go unrecorded as a
+                # NO_REWARD when the response did not pay. A task cannot fix
+                # that by paying DROPPED_FRAMES: that would pay a recycled
+                # wrong answer too.
+                reward_failed = self._deliver_reward(ctx, result.response_outcome)
+                # A mid-trial drop that failed takes the same pause flow as
+                # an end-of-trial failure. Held until now rather than
+                # stopping the trial: the measurement was still being made,
+                # and it is recorded below before a human looks at the pump.
+                if ctx.record.get("n_mid_trial_reward_failures", 0) > 0:
+                    reward_failed = True
 
                 record = result.record
                 if outcome.name != "PAUSED":
@@ -609,6 +648,12 @@ class SessionRunner:
         """Pay out what this outcome earned. Returns True if the hardware
         failed, which the caller turns into a pause.
 
+        ``outcome`` is the subject's response outcome
+        (``TrialResult.response_outcome``), which on a trial frame QA recycled
+        is the one it replaced — so the REWARD / NO_REWARD / REWARD_FAILED
+        payloads name what was paid for, and the row's
+        ``outcome_before_frame_qa`` says the same.
+
         The one deliberate catch in this file. Everywhere else a device fault
         aborts loudly, but here the trial's measurement already exists and is
         about to be written: letting a pump failure propagate would throw away
@@ -623,15 +668,19 @@ class SessionRunner:
             # A completed trial that earned nothing is a fact the subject
             # experienced. Marked with its own event rather than left as the
             # absence of REWARD, which is indistinguishable from a REWARD that
-            # failed to be written.
-            if outcome.completed:
+            # failed to be written. "Nothing" includes the trial itself: one
+            # whose phases asked for mid-trial drops earned those, so it gets
+            # no NO_REWARD even when its outcome pays nothing at the end.
+            if outcome.completed and not _earned_mid_trial(ctx.record):
                 self._emit(ctx, "NO_REWARD", {"outcome": outcome.name})
             return False
         try:
             self._reward.deliver(pulses)
         except Exception:
             log.exception("reward delivery failed on trial %d", self._trial_index)
-            ctx.record["rewarded"] = False
+            # False unless a mid-trial drop already arrived: `rewarded` says
+            # whether any juice reached the subject this trial.
+            ctx.record.setdefault("rewarded", False)
             self._emit(ctx, "REWARD_FAILED", {"outcome": outcome.name})
             self._display.show_message("REWARD FAILURE — check the pump")
             return True
@@ -1336,6 +1385,12 @@ class SessionRunner:
                 log.exception("teardown step %r failed", name)
                 errors.append(e)
 
+        # Before the recorder writes: a trial cut short by a quit or a fault
+        # left the loop before its between-trials settle, and its drops'
+        # completions belong in events.csv like any other.
+        if self._last_ctx is not None:
+            last_ctx = self._last_ctx
+            step("reward.settle", lambda: self._engine.settle_rewards(last_ctx))
         step("recorder.write", self._recorder.write)
         # Its own step, and early: a subject's place in its curriculum is
         # weeks of work, and must be written even if something later in

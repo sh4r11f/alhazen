@@ -8,7 +8,8 @@ frames), then emit whatever events that frame queued — stamped with the flip's
 time, because a visual event's timestamp must correspond to the frame that
 actually showed it, not to the Python call that requested it. Those
 timestamps are what let analysis line up behavior with device recordings
-afterwards.
+afterwards. A phase's mid-trial reward requests are handed to the dispenser
+at that same moment, so their REWARD events carry the same flip.
 
 The engine is the only code that touches the display, the command source,
 and the bus. Phases stay dumb (core/trial.py). Device-specific side effects
@@ -22,7 +23,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from alhazen.core.clock import Clock
 from alhazen.core.commands import Command, CommandSource
@@ -34,6 +35,8 @@ from alhazen.core.trial import (
     InputFrame,
     Outcome,
     PhaseAction,
+    RewardCompletion,
+    RewardRequest,
     TrialContext,
 )
 from alhazen.display.backend import DisplayBackend
@@ -52,6 +55,53 @@ class QuitRequested(Exception):
 class TrialResult:
     outcome: Outcome
     record: dict[str, Any]
+    # The outcome the subject's own response ended the trial as, when frame
+    # QA then recycled it into DROPPED_FRAMES; None on every other trial. The
+    # Outcome object rather than only its name (the record keeps the name as
+    # `outcome_before_frame_qa`): the runner needs its `completed` flag to
+    # decide NO_REWARD, and it has no outcome set to look a name up in.
+    outcome_before_frame_qa: Outcome | None = None
+
+    @property
+    def response_outcome(self) -> Outcome:
+        """What the subject's response earned, whatever the display did.
+
+        Two questions share a trial and can get different answers. Whether
+        the measurement is kept — and so whether the condition is served
+        again — follows ``outcome``, which frame QA may have replaced with
+        DROPPED_FRAMES. What the subject was told and what they are paid
+        follow this: a display fault is not something the subject did, and
+        must never cost them a reward they earned. Identical to ``outcome``
+        on every trial frame QA left alone, including PAUSED and ABORTED.
+        """
+        if self.outcome_before_frame_qa is not None:
+            return self.outcome_before_frame_qa
+        return self.outcome
+
+
+class RewardRequestSink(Protocol):
+    """Where the engine hands mid-trial reward requests, and hears back how
+    they ended.
+
+    The engine sees only this, never a device — the same narrow-hook rule as
+    ``on_manual_reward``. The session's implementation is
+    ``devices.reward.QueuedReward``, which delivers on a worker thread, so
+    nothing the engine calls on it inside a trial waits for the pump.
+    """
+
+    def submit(self, request: RewardRequest) -> int:
+        """Queue a delivery and return at once, with how many deliveries were
+        already ahead of it (running or queued)."""
+        ...
+
+    def completed(self) -> list[RewardCompletion]:
+        """Every completion reported since the last call, oldest first.
+        Never blocks."""
+        ...
+
+    def wait_idle(self) -> None:
+        """Block until nothing is running or queued."""
+        ...
 
 
 def _null_inputs() -> InputFrame:
@@ -86,6 +136,7 @@ class TrialEngine:
         overlay: Callable[[TrialContext], None] | None = None,
         on_session_command: Callable[[Command], None] | None = None,
         on_frame_input: Callable[[int, int, float, InputFrame], None] | None = None,
+        reward_requests: RewardRequestSink | None = None,
     ) -> None:
         self._display = display
         self._clock = clock
@@ -112,6 +163,10 @@ class TrialEngine:
         # when they take effect.
         self._on_session_command = on_session_command
         self._on_frame_input = on_frame_input
+        # Where ctx.request_reward's requests go. None unless the task
+        # declared mid_trial_reward (the builder refuses such a task on a rig
+        # with no dispenser); with None, a request is a loud error at the call.
+        self._reward_requests = reward_requests
         self._frame_index = 0
 
     # ------------------------------------------------------------------
@@ -128,6 +183,13 @@ class TrialEngine:
                 # NaN, and NaN is what made a column mean overstate drops by
                 # a third and `astype(int)` raise on the rig's own data.
                 ctx.record["n_dropped_frames"] = 0
+        ctx.accepts_reward_requests = self._reward_requests is not None
+        if self._reward_requests is not None:
+            # Zero from the start, like n_dropped_frames and for the same
+            # reason: a trial that asked for no drops must write 0, not leave
+            # an empty cell that reads back as NaN.
+            ctx.record["n_mid_trial_rewards"] = 0
+            ctx.record["n_mid_trial_reward_failures"] = 0
 
         # A phase that declares it must be last — trial feedback, which must
         # never be on screen while something is still being measured — is
@@ -177,6 +239,15 @@ class TrialEngine:
             # What the trial ended as, readable by the closing phase; None
             # when the body ran to its end and the closing phase is the one
             # that decides.
+            #
+            # Always the subject's own outcome, never frame QA's: the closing
+            # phase runs before the frame-QA verdict below, on purpose.
+            # Feedback tells the subject what THEY did, and a display that
+            # dropped frames is not something they did — a correct trial the
+            # display then recycles is still shown as a success, and the
+            # runner pays it the same way (TrialResult.response_outcome).
+            # The verdict cannot come first anyway: the closing phase's own
+            # frames are part of the trial frame QA judges.
             ctx.outcome = outcome
             closing_outcome = self._run_phase(closing, ctx)
             # A closing phase decides the outcome only when nothing else
@@ -194,6 +265,7 @@ class TrialEngine:
         # trial's setup — while the record claims the trial ended.
         self._display.flip()
 
+        before_frame_qa: Outcome | None = None
         if self._frame_monitor is not None:
             # The monitor is told whether the trial completed, because that
             # decides whether a recycle is even on the table — and the
@@ -211,12 +283,19 @@ class TrialEngine:
                 # was already non-completed is already being re-served, and
                 # PAUSED in particular drives the runner's pause flow, so the
                 # monitor returns no verdict for either.
+                #
+                # The verdict governs data quality only. The Outcome it
+                # replaces travels on the result as well as on the row, so
+                # the runner can still pay what the response earned.
+                before_frame_qa = outcome
                 ctx.record["outcome_before_frame_qa"] = outcome.name
                 ctx.record["frame_qa_reason"] = frames.reason
                 outcome = DROPPED_FRAMES
 
         self._finalize(ctx, outcome)
-        return TrialResult(outcome=outcome, record=ctx.record)
+        return TrialResult(
+            outcome=outcome, record=ctx.record, outcome_before_frame_qa=before_frame_qa
+        )
 
     # ------------------------------------------------------------------
     # Per-phase frame loop
@@ -268,6 +347,12 @@ class TrialEngine:
             # true photon-onset time, the one that must line up with sync
             # pulses in device recordings.
             self._flush_flip_events(ctx)
+            # This frame's reward requests go to the dispenser now, stamped
+            # with the flip that just followed them; then whatever the
+            # dispenser finished since the last frame is reported. Neither
+            # waits for the pump.
+            self._hand_over_reward_requests(ctx, frame=self._frame_index - 1)
+            self._report_reward_completions(ctx)
 
             if step == PhaseAction.CONTINUE:
                 continue
@@ -338,6 +423,105 @@ class TrialEngine:
         queued, ctx.pending_flip_events = ctx.pending_flip_events, []
         for name, payload in queued:
             self._emit(ctx, name, payload)
+
+    # ------------------------------------------------------------------
+    # Mid-trial reward
+    # ------------------------------------------------------------------
+
+    def _hand_over_reward_requests(self, ctx: TrialContext, frame: int) -> None:
+        """Submit this frame's requests and emit a REWARD for each.
+
+        Runs right after the flip, so each REWARD is stamped with the flip
+        that followed the request — the frame the drop was commanded on,
+        which is what events.csv and the tracker's messages must say, since
+        an analysis masks vergence and pupil transients around it. Submitted
+        before the event is emitted (the manual key's hardware-then-event
+        order), but submit only queues: the pump runs on the dispenser's own
+        thread, and its end is reported later as REWARD_DELIVERED or
+        REWARD_FAILED.
+        """
+        if not ctx.pending_reward_requests:
+            return
+        # request_reward only queues when accepts_reward_requests is True,
+        # and run_trial sets that only when a sink is wired.
+        assert self._reward_requests is not None
+        queued, ctx.pending_reward_requests = ctx.pending_reward_requests, []
+        for request in queued:
+            stamped = RewardRequest(pulses=request.pulses, reason=request.reason, frame=frame)
+            ahead = self._reward_requests.submit(stamped)
+            payload: dict[str, Any] = {"manual": False, **stamped.payload()}
+            if ahead:
+                # Only when something is ahead of it: a rig whose pulse train
+                # is longer than the task's drop interval shows here that its
+                # drops are delivered late, and behind how many deliveries.
+                payload["queued_behind"] = ahead
+            self._emit(ctx, "REWARD", payload)
+
+    def _report_reward_completions(self, ctx: TrialContext) -> None:
+        """Emit an event for every mid-trial delivery that has finished, and
+        count it on the trial's record.
+
+        Called on the session thread only. The dispenser's worker thread never
+        touches the bus or the record — it leaves completions in a queue that
+        this drains. The events are stamped when drained, within a frame of
+        the pump finishing: they are not visual events, and the REWARD they
+        complete already carries the frame the drop was commanded on.
+
+        A failure does not stop the trial. The measurement is still being
+        made and a pump fault is no reason to discard it; the runner hands
+        the failure to the pause flow once the trial is over, exactly as it
+        does an end-of-trial failure.
+        """
+        if self._reward_requests is None:
+            return
+        for done in self._reward_requests.completed():
+            if done.error is None:
+                ctx.record["n_mid_trial_rewards"] = ctx.record.get("n_mid_trial_rewards", 0) + 1
+                # Any pulse delivered this trial makes it a rewarded trial.
+                ctx.record["rewarded"] = True
+                self._emit(ctx, "REWARD_DELIVERED", done.request.payload())
+            else:
+                ctx.record["n_mid_trial_reward_failures"] = (
+                    ctx.record.get("n_mid_trial_reward_failures", 0) + 1
+                )
+                # False only if nothing else paid: a drop that did arrive
+                # earlier in the trial still makes it a rewarded trial.
+                ctx.record.setdefault("rewarded", False)
+                log.error(
+                    "mid-trial reward %r failed on trial %d: %s",
+                    done.request.reason,
+                    ctx.trial_index,
+                    done.error,
+                )
+                self._emit(ctx, "REWARD_FAILED", {**done.request.payload(), "error": done.error})
+
+    def settle_rewards(self, ctx: TrialContext) -> None:
+        """Wait for every mid-trial delivery to finish, and report them all.
+
+        The runner calls this between trials — after ``run_trial`` returns and
+        before it pays the outcome's reward — so the end-of-trial pulse train
+        never overlaps a mid-trial one on the same valve, and every drop of
+        the trial is counted on its record before the row is written. It is
+        also called at teardown, for a trial that a quit or a fault cut
+        short. A no-op for a session with no mid-trial reward.
+        """
+        if self._reward_requests is None:
+            return
+        if ctx.pending_reward_requests:
+            # Queued in a phase's on_enter, and then the trial ended before
+            # the next flip (a skip, a pause, a failed health check). With no
+            # flip to stamp them they were never commanded — said in the log,
+            # never dropped without a word.
+            log.warning(
+                "trial %d ended before the flip that would have commanded %d mid-trial "
+                "reward request(s) (%s); they were not delivered",
+                ctx.trial_index,
+                len(ctx.pending_reward_requests),
+                ", ".join(request.reason for request in ctx.pending_reward_requests),
+            )
+            ctx.pending_reward_requests = []
+        self._reward_requests.wait_idle()
+        self._report_reward_completions(ctx)
 
     # ------------------------------------------------------------------
     # Finalize

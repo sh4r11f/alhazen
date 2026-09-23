@@ -32,9 +32,9 @@ class Task:
     """Subclass per experiment task.
 
     Required class attributes: ``name``, ``events``, ``outcomes``,
-    ``params_model``. Optional: ``reward``. Required override:
-    ``build_trial``. Everything else has a default that does the obvious
-    thing for a single-condition task.
+    ``params_model``. Optional: ``reward``, ``mid_trial_reward``. Required
+    override: ``build_trial``. Everything else has a default that does the
+    obvious thing for a single-condition task.
     """
 
     name: ClassVar[str]
@@ -42,6 +42,13 @@ class Task:
     outcomes: ClassVar[OutcomeSet]
     params_model: ClassVar[type[Model]]
     reward: ClassVar[RewardPolicy | None] = None
+    # Whether a phase asks for juice while a trial runs
+    # (``ctx.request_reward``), on top of what ``reward`` pays at its end.
+    # Declared rather than discovered at the first drop: a session for such a
+    # task is refused when it is built on a rig with no dispenser, instead of
+    # failing minutes into the session with a subject waiting. And a request
+    # from a task that did not declare it is a loud error, not a no-op.
+    mid_trial_reward: ClassVar[bool] = False
     dashboard: ClassVar[DashboardSpec | None] = None
 
     # The params field a default make_source reads its scheduler from. A task
@@ -61,6 +68,13 @@ class Task:
                     f"task {cls.__name__} declares 'name' but not '{attribute}'; a task "
                     f"must declare name, events, outcomes and params_model"
                 )
+        if not isinstance(cls.mid_trial_reward, bool):
+            # Only a real bool: `"no"` is truthy, so a string would switch
+            # mid-trial reward on while reading as if it switched it off.
+            raise TypeError(
+                f"task {cls.__name__} declares mid_trial_reward = {cls.mid_trial_reward!r}; "
+                f"it must be True or False"
+            )
         if not cls.name.islower() or not all(c.isalnum() or c == "-" for c in cls.name):
             raise ValueError(
                 f"task name {cls.name!r} must be lowercase alphanumeric/hyphen — it becomes "
