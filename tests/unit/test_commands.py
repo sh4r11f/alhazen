@@ -118,6 +118,36 @@ class TestPauseMenuThroughTheRealSource:
         assert pause_menu(messages.append, commands.poll_raw_keys, lambda _s: None) == choice
         assert messages and "PAUSED" in messages[0]
 
+    @pytest.mark.filterwarnings("ignore::DeprecationWarning")
+    def test_a_display_keeps_the_menu_rows_on_their_own_lines(self):
+        """The menu's rows are unindented, one key per line — exactly what a
+        display's prose reflow would join into a paragraph. A show_message
+        that takes ``reflow`` is asked to keep the breaks."""
+        from alhazen.testing import FakeClock, FakeDisplay
+
+        display = FakeDisplay(FakeClock())
+        commands = KeyboardCommands(key_getter=RecordingGetter([[("space", {})]]))
+
+        assert pause_menu(display.show_message, commands.poll_raw_keys, lambda _s: None) == (
+            "resume"
+        )
+        [(text, reflow)] = display.message_calls
+        assert reflow is False
+        assert text.startswith("PAUSED")
+
+    @pytest.mark.filterwarnings("ignore::DeprecationWarning")
+    def test_a_callable_without_reflow_is_called_with_the_text_alone(self):
+        """A plain one-argument callable, the seam's original contract, must
+        not be handed a keyword it cannot take."""
+        shown: list[str] = []
+
+        def show(text):
+            shown.append(text)
+
+        commands = KeyboardCommands(key_getter=RecordingGetter([[("q", {})]]))
+        assert pause_menu(show, commands.poll_raw_keys, lambda _s: None) == "quit"
+        assert shown and "PAUSED" in shown[0]
+
 
 class TestSessionResumesFromTheKeyboard:
     def test_a_paused_session_resumes_through_the_raw_key_path(self, tmp_path):

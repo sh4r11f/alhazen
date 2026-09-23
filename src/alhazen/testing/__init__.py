@@ -50,6 +50,10 @@ class FakeDisplay:
         self.window: Any = _RecordingWindow()
         self.flip_count = 0
         self.messages: list[str] = []
+        # (text, reflow) per show_message call, exactly as given — `messages`
+        # keeps only the text, so this is where a test pins whether a caller
+        # asked for its line breaks to be kept.
+        self.message_calls: list[tuple[str, bool]] = []
         self.menus: list[tuple[str, str, tuple[float, float, float]]] = []
         self.closed = False
         self.gamma: float | None = None
@@ -68,8 +72,12 @@ class FakeDisplay:
     def measure_refresh_rate(self, n_flips: int) -> float:
         return 1.0 / self.frame_period_s
 
-    def show_message(self, text: str) -> None:
+    def show_message(self, text: str, *, reflow: bool = True) -> None:
+        # Recorded as given, not reflowed: what reaches the screen is the
+        # display's business (alhazen.display.reflow is tested on its own),
+        # and a test of a caller wants to see what the caller sent.
         self.messages.append(text)
+        self.message_calls.append((text, reflow))
 
     def show_menu(self, title: str, body: str, *, color: tuple[float, float, float]) -> None:
         # Recorded whole, including the colour: the colour is the part of the

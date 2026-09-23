@@ -317,6 +317,25 @@ class TestSimulatedDisplay:
         display.show_message("hello")
         assert display.messages == ["hello"]
 
+    def test_a_message_is_recorded_as_given_and_logged_as_it_would_be_drawn(self, caplog):
+        """The log is where an unattended session's messages are read, so it
+        carries the text a real display would draw; the lists keep what the
+        caller sent, reflow choice included."""
+        display = SimulatedDisplay(nominal_refresh_hz=60.0, frame_period_s=0.0)
+        with caplog.at_level(logging.INFO, logger="alhazen.display.simulated"):
+            display.show_message("Look at\nthe dot.")
+            display.show_message("SPACE  resume\nQ      quit", reflow=False)
+        assert display.messages == ["Look at\nthe dot.", "SPACE  resume\nQ      quit"]
+        assert display.message_calls == [
+            ("Look at\nthe dot.", True),
+            ("SPACE  resume\nQ      quit", False),
+        ]
+        logged = [r.getMessage() for r in caplog.records]
+        assert logged == [
+            "display message: Look at the dot.",
+            "display message: SPACE  resume\nQ      quit",
+        ]
+
 
 class _Host:
     """A clock that moves only when something sleeps on it or polls it.
@@ -721,7 +740,8 @@ class TestMessageBox:
         monkeypatch.setattr(_FakeTextStim, "bounding_box", bounding_box)
         display = _open_psychopy_display(monkeypatch)
         with caplog.at_level(logging.WARNING):
-            display.show_message("one\ntwo\nthree")
+            # Kept as three lines: the estimate counts them.
+            display.show_message("one\ntwo\nthree", reflow=False)
         rect = next(d for d in display.window.drawn if isinstance(d, _FakeRect))
         text = next(d for d in display.window.drawn if isinstance(d, _FakeTextStim))
         text_height = max(18.0, 1080 * 0.022)
@@ -747,10 +767,12 @@ class TestMessageBox:
 
         # 21 source lines of 76 characters wrap to 42 laid-out lines at the
         # usual size, which is about what the rig's instructions came to.
+        # Not reflowed, so every one of those lines is laid out as written
+        # (TestMessageReflow has what reflow does to a page like this one).
         text = "\n".join("x" * 76 for _ in range(21))
         display = _open_psychopy_display(monkeypatch, text_stim=_MeasuringTextStim)
         with caplog.at_level(logging.WARNING):
-            display.show_message(text)
+            display.show_message(text, reflow=False)
 
         rect = next(d for d in display.window.drawn if isinstance(d, _FakeRect))
         message = next(d for d in display.window.drawn if isinstance(d, _FakeTextStim))
@@ -784,7 +806,7 @@ class TestMessageBox:
         text = "\n".join("x" * 76 for _ in range(80))
         display = _open_psychopy_display(monkeypatch, text_stim=_MeasuringTextStim)
         with caplog.at_level(logging.WARNING):
-            display.show_message(text)
+            display.show_message(text, reflow=False)
 
         rect = next(d for d in display.window.drawn if isinstance(d, _FakeRect))
         message = next(d for d in display.window.drawn if isinstance(d, _FakeTextStim))
@@ -830,6 +852,95 @@ class TestMessageBox:
         assert heading.kwargs["font"] == pb.HEADING_FONT
         assert rows.kwargs["font"] == pb.MENU_FONT == pb.MONO_FONT
         assert display.window.flips == 1
+
+
+# A page of instructions hard-wrapped at 74 columns, as an instructions.md is:
+# longer than the message's measure (34 text heights, 61 characters in
+# _MeasuringTextStim), so each source line left as a line wraps into a full
+# line and a stub.
+_HARD_WRAPPED_PAGE = "\n".join(("abcd " * 15).strip() for _ in range(21))
+
+
+class TestMessageReflow:
+    """show_message treats its text as prose unless told not to: hard-wrapped
+    lines are joined before layout, so the display's wrapping is the only
+    wrapping. The rule itself is pinned in test_display_text.py."""
+
+    def test_the_text_drawn_is_reflowed_by_default(self, monkeypatch):
+        from alhazen.display import reflow
+
+        text = "Look at the dot and\nkeep looking.\n\nPress SPACE\nwhen ready."
+        display = _open_psychopy_display(monkeypatch)
+        display.show_message(text)
+        drawn = next(d for d in display.window.drawn if isinstance(d, _FakeTextStim))
+        assert drawn.text == reflow(text)
+        assert drawn.text == "Look at the dot and keep looking.\n\nPress SPACE when ready."
+
+    def test_reflow_false_draws_the_text_exactly_as_given(self, monkeypatch):
+        text = "PAUSED\n\nSPACE   resume\nQ       quit\n"
+        display = _open_psychopy_display(monkeypatch)
+        display.show_message(text, reflow=False)
+        drawn = next(d for d in display.window.drawn if isinstance(d, _FakeTextStim))
+        assert drawn.text == text
+
+    def test_a_hard_wrapped_page_keeps_its_letter_size_once_reflowed(self, monkeypatch, caplog):
+        """The case the issue was about: the same page, wrapped twice, came
+        out 42 lines tall and shrank its letters to fit; reflowed, it is 26
+        lines and fits at the usual size."""
+        usual = max(18.0, 1080 * 0.022)
+        heights = {}
+        for reflow in (True, False):
+            display = _open_psychopy_display(monkeypatch, text_stim=_MeasuringTextStim)
+            caplog.clear()
+            with caplog.at_level(logging.WARNING):
+                display.show_message(_HARD_WRAPPED_PAGE, reflow=reflow)
+            message = next(d for d in display.window.drawn if isinstance(d, _FakeTextStim))
+            box = next(d for d in display.window.drawn if isinstance(d, _FakeRect))
+            heights[reflow] = (message.kwargs["height"], box.kwargs["height"])
+            shrunk = "letters were shrunk" in caplog.text
+            assert shrunk is (not reflow)
+        assert heights[True][0] == pytest.approx(usual)
+        assert heights[False][0] < usual
+
+    def test_the_box_is_sized_from_the_reflowed_text(self, monkeypatch, caplog):
+        """Reflow happens before anything is measured: with no layout to ask,
+        the estimate counts the lines that will be drawn, not the source's."""
+        monkeypatch.setattr(_FakeTextStim, "bounding_box", None)
+        display = _open_psychopy_display(monkeypatch)
+        with caplog.at_level(logging.WARNING):
+            display.show_message("one\ntwo\nthree")
+        assert "1 line(s)" in caplog.text
+
+
+class TestEveryBackendTakesReflow:
+    """A caller that keeps its line breaks passes reflow=False to whatever
+    display it was given, so every backend — and every public fake standing
+    in for one — must accept it the same way: keyword-only, on by default."""
+
+    @pytest.mark.parametrize(
+        "backend",
+        ["DisplayBackend", "PsychoPyDisplay", "SimulatedDisplay", "FakeDisplay"],
+    )
+    def test_the_signature_matches_the_protocol(self, backend):
+        import inspect
+
+        import alhazen.display as display_pkg
+        import alhazen.testing as testing_pkg
+
+        cls = getattr(display_pkg, backend, None) or getattr(testing_pkg, backend)
+        parameter = inspect.signature(cls.show_message).parameters["reflow"]
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        assert parameter.default is True
+
+    def test_the_fake_display_records_what_it_was_given(self):
+        from alhazen.testing import FakeClock, FakeDisplay
+
+        display = FakeDisplay(FakeClock())
+        display.show_message("hard\nwrapped")
+        display.show_message("laid\nout", reflow=False)
+        # As given: reflowing is the real display's job, not the fake's.
+        assert display.messages == ["hard\nwrapped", "laid\nout"]
+        assert display.message_calls == [("hard\nwrapped", True), ("laid\nout", False)]
 
 
 class TestTheMenuNeverDrawsTextOverText:

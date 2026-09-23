@@ -118,6 +118,8 @@ The names an experiment imports directly.
 
 ::: alhazen.display.palette
 
+::: alhazen.display.text
+
 ::: alhazen.stimuli.base
 
 ::: alhazen.stimuli.fixation
