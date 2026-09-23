@@ -112,6 +112,11 @@ command source, and the bus:
    the host can wait, not whether a panel is holding its refresh)
 9. emit the events the phase queued via `ctx.emit_on_flip`, stamped now —
    the photon-honest timestamp
+10. hand the phase's mid-trial reward requests (`ctx.request_reward`) to the
+    reward worker and emit a `REWARD` for each, stamped with that same flip;
+    then report every delivery the worker has finished since the last frame
+    as `REWARD_DELIVERED` or `REWARD_FAILED`. Neither step waits for the pump
+    (§5.3)
 
 The overlay runs *after* the phase and *before* the flip, so it can see what
 that frame queued. That is what lets the photodiode patch mark the exact flip
@@ -198,7 +203,7 @@ the whole default test suite work with none of them installed.
 | Protocol | Backends | Notes |
 |---|---|---|
 | `EyeTracker` | `eyelink`, `viewpixx`, `mouse_sim`, `scripted` | screen-px gaze on the session clock; Host-PC overlay where one exists; the native recording landed in the run directory at teardown |
-| `RewardDispenser` | `nidaq`, `simulated` | pulse train (n, width, gap); the waveform always ends at 0 V |
+| `RewardDispenser` | `nidaq`, `simulated` | pulse train (n, width, gap); the waveform always ends at 0 V. For a task that asks for reward mid-trial, `QueuedReward` wraps the backend and runs every delivery on one worker thread (§5.3); `alhazen.testing.ScriptedReward` holds and fails deliveries on the test's say-so |
 | `SyncOutput` | `nidaq`, `simulated`, `none` | one digital line per configured event name |
 | `SpikeSource` | `spikeglx`, `simulated` | live threshold-crossing spikes on the session clock, drained between trials; a background fetch thread whose faults re-raise on the session's own thread. The simulated backend fires to a configured stimulus event from ground-truth receptive fields, so a live analysis runs — and is asserted on — with no probe in any brain ([live-spikes.md](live-spikes.md)) |
 
@@ -241,6 +246,7 @@ graph TB
     TRK -->|"is_recording()"| HC["engine: health_checks"]
     TRK -->|"start/stop_trial, overlay, shutdown"| RUN["SessionRunner: lifecycle"]
     RWD -->|"deliver(pulses)"| MR["engine: on_manual_reward ('r' key)"]
+    RWD -.->|"mid_trial_reward tasks only:<br/>wrapped in QueuedReward"| QR["engine: reward_requests<br/>(submit / completed / wait_idle)"]
     TRK -->|"send_message()"| SUB1["bus: TrackerMessageSubscriber"]
     SNC -->|"pulse(line)"| SUB2["bus: sync subscriber"]
     BUS["EventBus"] --> SUB1
@@ -293,10 +299,17 @@ device's failure never prevents another's release. Only the run directory and
 the base name in that path are a promise; the suffix belongs to the backend
 (§4.7).
 
-**Reward policy is not here.** The only live path through the device layer is
-the experimenter's manual-reward key: the engine delivers, *then* emits
+**Reward policy is not here.** Inside a trial the device layer is reached two
+ways. The experimenter's manual-reward key: the engine delivers, *then* emits
 `REWARD{manual: true}` — in that order, because an event claiming a reward
-the pump never gave is a lie in the data.
+the pump never gave is a lie in the data. And, for a task that declares
+`mid_trial_reward`, a phase's `ctx.request_reward`, which the engine hands to
+the reward worker after the flip (§5.3). Between trials the runner waits for
+that worker to go idle (`engine.settle_rewards`) *inside* the tracker's
+recording segment, so the eye data covers the last drop's whole delivery,
+and before it pays the outcome. Teardown settles once more — as its own step,
+before the recorder writes — for a trial a quit or a fault cut short, and
+`reward.close` then joins the worker before releasing the device.
 
 ### 4.4 Config that names events
 
@@ -391,6 +404,7 @@ class SaccadeTask(alhazen.Task):
     outcomes = outcomes(CORRECT=dict(completed=True, success=True))  # ...and the rest
     params_model = SaccadeParams        # pydantic; validated before it is used
     reward = RewardPolicy(by_outcome={"CORRECT": RewardPulses(n_pulses=2)})
+    mid_trial_reward = False            # True: phases may call ctx.request_reward (§5.3)
 
     def conditions(self, rng): ...      # default: one nameless condition
     def build_trial(self, setup): ...   # the one method every task writes
@@ -580,6 +594,112 @@ schedule and the data — re-serving, adaptive schedulers, `alhazen report`'s
 outcome counts — follows the recycle. The failure streak that pauses a
 session (`max_consecutive_failures`, §10) counts a recycled trial as the
 completed trial it was.
+
+#### Mid-trial reward
+
+Some tasks pay *while* the trial runs — a monkey following a moving dot gets
+a drop for every stretch its gaze stays in the window, through an 8 s
+pursuit. A phase asks for one with `ctx.request_reward(pulses, reason)`:
+
+```python
+class Pursuit(alhazen.Task):
+    ...
+    mid_trial_reward = True    # declared next to `reward`
+
+
+class FollowDot:               # a phase
+    def on_frame(self, ctx):
+        if ctx.extras["held_long_enough"]:
+            ctx.request_reward(ctx.extras["drop"], "pursuit_hold")
+        ...
+```
+
+The request only queues on the context — a phase still touches no hardware.
+What happens to it:
+
+```mermaid
+sequenceDiagram
+    participant P as Phase (on_frame)
+    participant E as TrialEngine (session thread)
+    participant Q as QueuedReward (worker thread)
+    participant D as RewardDispenser
+    participant B as EventBus
+    P->>E: ctx.request_reward(pulses, reason)  (queued on ctx)
+    E->>E: display.flip()  — frame n
+    E->>Q: submit(request, frame=n)  returns at once, with deliveries ahead
+    E->>B: REWARD {pulses, reason, frame: n, queued_behind?}  stamped with flip n
+    Q->>D: deliver(pulses)  (one at a time, in order)
+    Note over E: frames n+1, n+2, … keep flipping
+    D-->>Q: returns (or raises)
+    Q->>Q: completion onto a thread-safe queue
+    E->>Q: completed()  — drained every frame
+    E->>B: REWARD_DELIVERED {pulses, reason, frame: n}  or  REWARD_FAILED {…, error}
+    Note over E,Q: between trials: settle_rewards() waits for idle, drains the rest,<br/>then the runner pays the outcome through the same worker
+```
+
+- **Declared, and checked at build.** `mid_trial_reward` is a class
+  attribute beside `reward`. `build_session` refuses such a task on a rig
+  with no `devices.reward` — before a run directory or a window exists —
+  rather than at the first drop. `--mode test` and `--mode simulate` stand a
+  `simulated` dispenser in and say so in the setup notes, so a laptop
+  rehearsal still builds; `--mode run` does not. A request from a task that
+  did *not* declare it raises `RewardRequestError` at the call, as does a
+  request that could not open the valve (not a `RewardPulses`, zero pulses,
+  an empty reason).
+- **Never blocks the frame loop.** The builder wraps the dispenser in
+  `QueuedReward`, whose worker thread delivers; `submit` returns at once. An
+  8 s pursuit at 120 Hz cannot absorb a 200 ms pulse train inside a frame.
+- **One path, one valve, one delivery at a time.** Every delivery of such a
+  session goes through the same worker, in the order asked for: the task's
+  drops, the manual key and the end-of-trial pay (`deliver()` waits its turn
+  and re-raises a failure on the caller's thread). Requests that arrive while
+  one is delivering queue up; none is dropped or merged. A drop requested
+  behind others carries `queued_behind: <count>` on its REWARD, so a rig
+  whose pulse train is longer than the task's drop interval shows in the
+  data that it delivered late. Between trials the runner calls
+  `engine.settle_rewards(ctx)`, which waits for the worker to go idle, *then*
+  pays the outcome — so the end-of-trial pulse train never overlaps a drop.
+  The manual key pressed mid-trial waits behind queued drops on the session
+  thread, exactly as it always blocked the frame it was pressed on.
+- **The worker never touches the bus.** It calls the dispenser and puts a
+  plain-data completion on a thread-safe queue. The engine drains that queue
+  on the session thread — every frame, and in `settle_rewards` — and emits
+  the events, so the bus, the recorder and the trial record keep their one
+  writer.
+- **Events.** `REWARD` on the flip after the request, carrying
+  `{manual: false, pulses, reason, frame}` (+ `queued_behind` when anything
+  was ahead of it), so events.csv and the tracker's messages stamp the frame
+  the drop was commanded on — the frame an analysis masks vergence and pupil
+  transients around. `frame` counts the trial's flips from 0, across phases —
+  the same `frame_index` as the database's `frame_inputs` table
+  ([database.md](database.md)).
+  The delivery's end is its own event: `REWARD_DELIVERED` (reserved for this;
+  an end-of-trial or manual REWARD is already emitted after the pump) or
+  `REWARD_FAILED` with the request's `reason` and the `error`. Both are
+  stamped when drained, within a frame of the pump finishing, and carry the
+  same `frame` as the REWARD they complete. The dashboard's reward panel
+  counts a drop at its `REWARD_DELIVERED`, not at its REWARD.
+- **Accounting.** A task that declares `mid_trial_reward` writes
+  `n_mid_trial_rewards` and `n_mid_trial_reward_failures` on every row — 0,
+  never empty, on a trial with no drops. `rewarded` means *juice reached the
+  subject this trial*: True once any drop or the end-of-trial pay is
+  delivered, False when deliveries were attempted and none arrived, absent
+  when none was attempted — which, for a task that does not ask for
+  mid-trial reward, is exactly what it always meant.
+- **`NO_REWARD`** still means "a completed trial that earned nothing". A
+  trial whose phases asked for a drop earned it, so it gets no `NO_REWARD`
+  even when its outcome pays nothing at the end — whether or not the pump
+  then delivered (a failed drop is a `REWARD_FAILED`, not a `NO_REWARD`).
+- **A failed drop does not stop the trial.** The measurement is still being
+  made. The failure is logged with its traceback, counted, and marked with
+  `REWARD_FAILED`; once the trial is over and its row written, the runner
+  hands it to the same pause flow an end-of-trial failure takes ("REWARD
+  FAILURE — check the pump"), so a human looks at the pump before the session
+  carries on.
+- **A request with no flip to stamp it** — queued in a phase's `on_enter`,
+  then the trial skipped or aborted before the next flip — was never
+  commanded; `settle_rewards` logs it by reason at WARNING and delivers
+  nothing.
 
 ### 5.4 Schedulers (`paradigms/`)
 

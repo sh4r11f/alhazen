@@ -23,6 +23,7 @@
     "PAUSED",
     "RESUMED",
     "REWARD",
+    "REWARD_DELIVERED",
     "REWARD_FAILED",
     "STAGE_CHANGED",
     "TRACKER_SETTING",
@@ -51,6 +52,8 @@
     "outcome_before_frame_qa",
     "frame_qa_reason",
     "rewarded",
+    "n_mid_trial_rewards",
+    "n_mid_trial_reward_failures",
     "feedback"
   ],
   "schema_versions": {

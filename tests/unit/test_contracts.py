@@ -53,7 +53,14 @@ from alhazen.session.recorder import _LEADING
 from alhazen.task.plan import TrialPlan
 from alhazen.task.reward_policy import RewardPolicy
 from alhazen.training import state
-from support import COMPLETED, FRAME_S, EngineHarness, RunForFrames, SessionHarness
+from support import (
+    COMPLETED,
+    FRAME_S,
+    EngineHarness,
+    RequestRewardOnFrames,
+    RunForFrames,
+    SessionHarness,
+)
 
 BASELINE = json.loads(
     (Path(__file__).parents[1] / "fixtures" / "contracts.json").read_text(encoding="utf-8")
@@ -203,11 +210,30 @@ class TestTrialRecordColumns:
         harness.runner.run()
         return harness.recorder.trials[0]
 
-    def test_every_declared_column_is_actually_written(self, tmp_path):
+    def mid_trial_record(self, tmp_path) -> dict:
+        """A row from a task that asks for reward mid-trial: its two counts."""
+        harness = SessionHarness(
+            tmp_path / "mid-trial",
+            n_trials=1,
+            reward=SimulatedReward(),
+            mid_trial_reward=True,
+            build_trial=lambda setup: TrialPlan(
+                phases=[RequestRewardOnFrames(2, COMPLETED, on_frames=(0,))]
+            ),
+        )
+        harness.runner.run()
+        return harness.recorder.trials[0]
+
+    def written(self, tmp_path) -> set[str]:
         written: set[str] = set()
         for record in self.engine_records():
             written |= self.produced(record)
         written |= self.produced(self.session_record(tmp_path))
+        written |= self.produced(self.mid_trial_record(tmp_path))
+        return written
+
+    def test_every_declared_column_is_actually_written(self, tmp_path):
+        written = self.written(tmp_path)
 
         missing = set(TRIAL_RECORD_COLUMNS) - written
         assert not missing, (
@@ -217,10 +243,7 @@ class TestTrialRecordColumns:
         )
 
     def test_no_column_is_written_without_being_declared(self, tmp_path):
-        written: set[str] = set()
-        for record in self.engine_records():
-            written |= self.produced(record)
-        written |= self.produced(self.session_record(tmp_path))
+        written = self.written(tmp_path)
 
         undeclared = written - set(TRIAL_RECORD_COLUMNS)
         assert not undeclared, (

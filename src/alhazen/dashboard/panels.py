@@ -1140,7 +1140,7 @@ def _reward_deliveries(events: list[dict[str, Any]]) -> dict[str, Any]:
         trial = float(event["trial_index"]) if _num(event.get("trial_index")) else 0.0
         last_trial = max(last_trial, trial)
         name = event.get("event")
-        if name not in {"REWARD", "REWARD_FAILED", "NO_REWARD"}:
+        if name not in {"REWARD", "REWARD_DELIVERED", "REWARD_FAILED", "NO_REWARD"}:
             continue
         if name == "NO_REWARD":
             declined += 1
@@ -1152,6 +1152,12 @@ def _reward_deliveries(events: list[dict[str, Any]]) -> dict[str, Any]:
             payload = json.loads(event.get("payload_json") or "{}")
         except (TypeError, ValueError):
             payload = {}
+        if name == "REWARD" and "reason" in payload:
+            # A mid-trial drop's REWARD marks when it was commanded, not that
+            # it arrived: its REWARD_DELIVERED or REWARD_FAILED follows, and
+            # that is what is counted — counting both would pay every drop
+            # twice, and a failed one once.
+            continue
         pulses = payload.get("pulses") or {}
         if _num(pulses.get("n_pulses")) and _num(pulses.get("pulse_ms")):
             open_ms = float(pulses["n_pulses"]) * float(pulses["pulse_ms"])

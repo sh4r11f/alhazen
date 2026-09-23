@@ -48,6 +48,15 @@ class RewardError(AlhazenError):
     produces unusable behavior."""
 
 
+class RewardRequestError(AlhazenError):
+    """A phase asked for a mid-trial reward (``ctx.request_reward``) that this
+    session cannot give: the task never declared ``mid_trial_reward = True``,
+    or the request itself is malformed. A programming error in the task,
+    raised at the call so the traceback points at the phase — never an
+    ignored request, because a subject not paid for behaviour the task
+    believes it paid for is a training problem nobody sees until too late."""
+
+
 class SyncError(AlhazenError):
     """A sync (TTL) line could not be opened or pulsed. Loud by design: sync
     pulses are the only thing aligning behavior to an external recording, and
