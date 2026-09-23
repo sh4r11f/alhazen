@@ -94,9 +94,16 @@ class TrialFeedback:
     can change an outcome the trial already had.
 
     The two outcomes it does NOT run on are PAUSED and ABORTED. Neither is a
-    trial result — one is an experimenter stopping the session, the other a
-    quit — and telling a subject they failed a trial they were still in the
-    middle of would be a lie.
+    trial result — one is an experimenter stopping the session, the other the
+    experimenter's skip or a device that stopped mid-trial — and telling a
+    subject they failed a trial they were still in the middle of would be a
+    lie.
+
+    **A device that stops while it runs does not cut it short.** Everything
+    was measured before it began, so when the eye tracker stops recording
+    during feedback the engine flags the row (``fault``), lets the phase run
+    to its end, and the trial keeps its outcome — its own ``then`` included,
+    when this phase is the one that decides it (core/engine.py).
 
     **It judges the response, never the display.** Frame QA's verdict comes
     after this phase, so a correct trial that frame QA then recycles into

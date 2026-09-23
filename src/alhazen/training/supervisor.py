@@ -24,6 +24,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from alhazen.core.trial import lost_to_fault
 from alhazen.errors import ConfigError
 from alhazen.task.reward_policy import RewardPolicy
 from alhazen.training.criteria import decide, metric_names
@@ -152,10 +153,36 @@ class TrainingSupervisor:
     def observe(self, outcome: Any, record: dict[str, Any]) -> None:
         """Feed one finished attempt to the criteria.
 
-        PAUSED attempts are skipped: the experimenter stopping for a moment
-        is not evidence about the subject.
+        Two kinds of attempt are left out entirely — not counted in any
+        metric, not in the window's size, not toward ``min_trials``, not
+        toward a ramp:
+
+        - PAUSED: the experimenter stopping for a moment is not evidence
+          about the subject.
+        - An attempt lost to a system fault (``core.trial.lost_to_fault``):
+          frame QA recycled it for dropped frames, or the eye tracker stopped
+          recording before its outcome was decided. The rig failed, not the
+          subject. Counted, either would pull ``completed_rate`` down — a
+          subject demoted because the display dropped frames — and a window
+          filled with them could decide a promotion on fewer real trials than
+          ``min_trials`` promises.
+
+        A trial whose tracker stopped only during its closing phase is
+        counted like any other: its outcome is the subject's own, and it
+        stands (core/engine.py).
         """
         if outcome.name == "PAUSED":
+            return
+        fault = lost_to_fault(outcome.name, record)
+        if fault is not None:
+            # DEBUG: the runner has already said, at WARNING, that this trial
+            # was lost to a fault and is not counted against the subject.
+            log.debug(
+                "stage %r: %s trial left out of the criteria window (lost to %s)",
+                self.stage.name,
+                outcome.name,
+                fault,
+            )
             return
         summary = {
             "outcome": outcome.name,

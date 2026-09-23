@@ -11,8 +11,11 @@ Contract, in order:
    in a ``finally``), run it through the engine and let its mid-trial reward
    deliveries finish, tell the scheduler how it
    went (for **every** outcome — the scheduler alone decides re-queueing),
-   record the measurement (for every outcome except PAUSED, which produced
-   none), wait out the ITI.
+   pay what it earned, record the measurement (for every outcome except
+   PAUSED, which produced none), wait out the ITI. A trial lost to a system
+   fault — dropped frames, a tracker that stopped — is re-served like any
+   non-completed trial, but paid all the same and held against nobody
+   (``TrialResult.lost_to_fault``).
 4. However the loop ends, teardown attempts *every* step — a session is
    unrepeatable work, so writing the trials table must survive a display
    that fails to close, and vice versa. Step errors are logged and collected;
@@ -30,13 +33,19 @@ from typing import Any
 
 import numpy as np
 
-from alhazen.config.models import SessionConfig
+from alhazen.config.models import RewardPulses, SessionConfig
 from alhazen.config.snapshot import write_snapshot
 from alhazen.core.clock import Clock
 from alhazen.core.commands import Command, CommandSource
-from alhazen.core.engine import QuitRequested, TrialEngine
+from alhazen.core.engine import QuitRequested, TrialEngine, TrialResult
 from alhazen.core.events import Event, EventBus
-from alhazen.core.trial import CircleRegion, TrialContext
+from alhazen.core.trial import (
+    FAULT_DROPPED_FRAMES,
+    FAULT_TRACKER_STOPPED,
+    NO_FAULT,
+    CircleRegion,
+    TrialContext,
+)
 from alhazen.dashboard.panels import frame_intervals_panel
 from alhazen.dashboard.runtime import DashboardController, dashboard_state
 from alhazen.dashboard.spec import DashboardSpec
@@ -163,6 +172,31 @@ def _earned_mid_trial(record: dict[str, Any]) -> bool:
     """Did a phase ask for a mid-trial drop this trial? Delivered or failed —
     either way the trial earned it."""
     return (record.get("n_mid_trial_rewards", 0) + record.get("n_mid_trial_reward_failures", 0)) > 0
+
+
+# What each system fault was, in the words the session log uses. A health
+# check the engine gains later would report a reason not listed here; it is
+# still named, by that reason, in the fallback where this is read.
+_FAULT_CAUSES = {
+    FAULT_DROPPED_FRAMES: "the display dropped more frames than frame QA allows",
+    FAULT_TRACKER_STOPPED: (
+        "the eye tracker stopped recording before the trial's outcome was decided"
+    ),
+}
+
+
+def _cut_short_by_device(fault: str | None) -> bool:
+    """Was this trial lost to a device that stopped mid-trial — the eye
+    tracker — rather than to frame QA?
+
+    The two faults a trial can be lost to are handled differently, because
+    they cost the subject different things. A dropped-frames trial ran to its
+    end: the subject responded, is paid for that response, and a completed
+    trial ends a failure streak. A trial a device cut short usually ended
+    before any response existed: it is paid ``RewardPolicy.on_fault``, and it
+    says nothing about the subject either way.
+    """
+    return fault is not None and fault != FAULT_DROPPED_FRAMES
 
 
 class SessionRunner:
@@ -417,6 +451,14 @@ class SessionRunner:
 
                 outcome = result.outcome
                 self._log_trial(attempt, result.record, outcome)
+                # The system fault this trial was lost to — the display
+                # dropped frames, or the eye tracker stopped before its outcome
+                # was decided — or None. Such a trial is not the subject's
+                # fault: it is flagged (the row's `fault`, written by the
+                # engine), served again (its outcome is non-completed, below),
+                # paid anyway, and held against nobody (the failure streak
+                # further down, and the training criteria).
+                fault = result.lost_to_fault
 
                 # Two different questions, two different gates. The SCHEDULER
                 # holds the plan and must hear about every outcome — the
@@ -440,7 +482,14 @@ class SessionRunner:
                 # NO_REWARD when the response did not pay. A task cannot fix
                 # that by paying DROPPED_FRAMES: that would pay a recycled
                 # wrong answer too.
-                reward_failed = self._deliver_reward(ctx, result.response_outcome)
+                #
+                # A trial the eye tracker cut short has no response to pay
+                # for, so `fault` routes it to the task's fault reward
+                # (RewardPolicy.on_fault) instead — see _deliver_reward.
+                reward_failed = self._deliver_reward(ctx, result.response_outcome, fault=fault)
+                if fault is not None:
+                    # After the pay, so the line can say what was paid.
+                    self._log_fault_trial(attempt, result, fault, pay_failed=reward_failed)
                 # A mid-trial drop that failed takes the same pause flow as
                 # an end-of-trial failure. Held until now rather than
                 # stopping the trial: the measurement was still being made,
@@ -478,7 +527,7 @@ class SessionRunner:
                 # to carry the counter past a completed trial untouched: two
                 # fixation breaks, a completed trial with a dead pump, one
                 # more fixation break and the screen said three in a row.
-                too_many_failures = self._too_many_failures_in_a_row(outcome)
+                too_many_failures = self._too_many_failures_in_a_row(outcome, fault=fault)
 
                 if outcome.name == "PAUSED" or reward_failed:
                     # A reward failure goes through the same pause flow as a
@@ -529,6 +578,11 @@ class SessionRunner:
             detail = f" ({record['abort_reason']})"
         elif record.get("frame_qa_reason"):
             detail = f" (was {record.get('outcome_before_frame_qa')}: {record['frame_qa_reason']})"
+        elif record.get("fault", NO_FAULT) != NO_FAULT:
+            # Neither an abort nor a recycle, yet a fault on the row: a device
+            # stopped during the closing phase, after the measurement. The
+            # engine flagged it and let the outcome stand (core/engine.py).
+            detail = f" (fault {record['fault']} during its closing phase — the outcome stands)"
         log.info(
             "trial %d attempt %d: %s%s%s",
             self._trial_index,
@@ -644,7 +698,23 @@ class SessionRunner:
                 "stage transitions held" if held else "stage transitions resumed"
             )
 
-    def _deliver_reward(self, ctx: TrialContext, outcome: Any) -> bool:
+    def _earned(self, outcome: Any, fault: str | None) -> RewardPulses | None:
+        """What this trial earned at its end, scaled — a ``RewardPulses`` — or
+        None for nothing. The one place the pay rule lives: _deliver_reward
+        pays it, and a fault trial's log line reports it.
+
+        A trial the eye tracker cut short is paid the task's fault reward,
+        never its outcome's entry: its ABORTED is the rig's, not something
+        the subject earned. Every other trial — a dropped-frames trial
+        included, since ``outcome`` is then the response it replaced — is
+        paid by its outcome.
+        """
+        assert self._reward_policy is not None
+        if _cut_short_by_device(fault):
+            return self._reward_policy.pulses_for_fault()
+        return self._reward_policy.pulses_for(outcome.name)
+
+    def _deliver_reward(self, ctx: TrialContext, outcome: Any, fault: str | None = None) -> bool:
         """Pay out what this outcome earned. Returns True if the hardware
         failed, which the caller turns into a pause.
 
@@ -654,16 +724,29 @@ class SessionRunner:
         payloads name what was paid for, and the row's
         ``outcome_before_frame_qa`` says the same.
 
+        ``fault`` is the system fault the trial was lost to
+        (``TrialResult.lost_to_fault``), or None. A trial the eye tracker cut
+        short is paid ``RewardPolicy.on_fault`` (_earned), and its REWARD /
+        REWARD_FAILED payloads carry ``fault`` beside ``outcome``: that key
+        is how events.csv tells a fault reward from a reward for a response.
+        A dropped-frames trial pays for its response and its payloads are
+        the ones any response gets.
+
         The one deliberate catch in this file. Everywhere else a device fault
         aborts loudly, but here the trial's measurement already exists and is
         about to be written: letting a pump failure propagate would throw away
         a completed trial's data to report a problem with the juice line. So
         it is recorded, marked in the event stream, shown on screen, and
-        handed to a human — loudly, but without losing the trial.
+        handed to a human — loudly, but without losing the trial. A fault
+        reward that fails takes the same path.
         """
         if self._reward_policy is None or self._reward is None or outcome.name == "PAUSED":
             return False
-        pulses = self._reward_policy.pulses_for(outcome.name)
+        pulses = self._earned(outcome, fault)
+        # What the delivery was for, as every event about it says.
+        paid_for: dict[str, Any] = {"outcome": outcome.name}
+        if _cut_short_by_device(fault):
+            paid_for["fault"] = fault
         if pulses is None:
             # A completed trial that earned nothing is a fact the subject
             # experienced. Marked with its own event rather than left as the
@@ -671,6 +754,9 @@ class SessionRunner:
             # failed to be written. "Nothing" includes the trial itself: one
             # whose phases asked for mid-trial drops earned those, so it gets
             # no NO_REWARD even when its outcome pays nothing at the end.
+            # A trial the tracker cut short is not completed, so a task with
+            # no on_fault writes nothing here — its fault line in the log says
+            # that nothing was paid, and why.
             if outcome.completed and not _earned_mid_trial(ctx.record):
                 self._emit(ctx, "NO_REWARD", {"outcome": outcome.name})
             return False
@@ -681,16 +767,85 @@ class SessionRunner:
             # False unless a mid-trial drop already arrived: `rewarded` says
             # whether any juice reached the subject this trial.
             ctx.record.setdefault("rewarded", False)
-            self._emit(ctx, "REWARD_FAILED", {"outcome": outcome.name})
+            self._emit(ctx, "REWARD_FAILED", paid_for)
             self._display.show_message("REWARD FAILURE — check the pump")
             return True
         ctx.record["rewarded"] = True
         self._emit(
             ctx,
             "REWARD",
-            {"manual": False, "outcome": outcome.name, "pulses": pulses.model_dump(mode="json")},
+            {"manual": False, **paid_for, "pulses": pulses.model_dump(mode="json")},
         )
         return False
+
+    def _log_fault_trial(
+        self, attempt: int, result: TrialResult, fault: str, *, pay_failed: bool
+    ) -> None:
+        """The WARNING a trial lost to a system fault gets: which trial, what
+        failed, what the subject was paid, and that the trial is served again.
+
+        One line per such trial, beside the trial's own INFO line, because
+        this is what an experimenter reading session.log afterwards needs in
+        one place: a trial that failed through no fault of the subject's, and
+        was not held against them. WARNING because the rig failed — a display
+        dropping frames or a tracker dropping out, several times in a
+        session, is the rig to fix before the next one.
+        """
+        cause = _FAULT_CAUSES.get(fault, f"a device health check failed ({fault})")
+        log.warning(
+            "trial %d attempt %d: %s — a system fault, not the subject's. %s. Flagged "
+            "fault=%s; the condition will be served again, and the trial is not counted "
+            "against the subject.",
+            self._trial_index,
+            attempt,
+            cause,
+            self._describe_fault_pay(result, fault, pay_failed),
+            fault,
+        )
+
+    def _describe_fault_pay(self, result: TrialResult, fault: str, pay_failed: bool) -> str:
+        """What a fault trial was paid at its end, in words, for its log line.
+
+        Reports the decision _deliver_reward made (it asks the same _earned),
+        and says why when nothing was paid — above all when the task sets no
+        ``on_fault``, which is a choice the experimenter may not know they
+        made.
+        """
+        record = result.record
+        # Drops a mid-trial-reward task delivered before the fault stay paid,
+        # and stay on the row (n_mid_trial_rewards); said here so the line
+        # accounts for everything the subject got.
+        drops = record.get("n_mid_trial_rewards", 0)
+        before = ""
+        if drops:
+            before = f"; {drops} mid-trial drop(s) delivered before the fault stay counted"
+        policy, device = self._reward_policy, self._reward
+        if policy is None or device is None:
+            missing = "reward policy" if policy is None else "reward device"
+            return f"Nothing paid at the trial's end: this session has no {missing}{before}"
+        outcome = result.response_outcome
+        pulses = self._earned(outcome, fault)
+        if _cut_short_by_device(fault):
+            if policy.on_fault is None:
+                return (
+                    f"The task sets no fault reward (RewardPolicy.on_fault), so nothing was "
+                    f"paid for it{before}"
+                )
+            if pulses is None:
+                return (
+                    f"The task's fault reward (RewardPolicy.on_fault) comes to no pulses at "
+                    f"reward scale {policy.scale:g}, so nothing was paid{before}"
+                )
+            paid = f"Paid the task's fault reward (RewardPolicy.on_fault), {pulses}"
+        else:
+            if pulses is None:
+                return (
+                    f"Paid for the subject's response as on any trial: {outcome.name} pays "
+                    f"nothing{before}"
+                )
+            paid = f"Paid for the subject's response, {outcome.name}, {pulses}"
+        delivered = " — the delivery FAILED at the pump" if pay_failed else ", delivered"
+        return f"{paid}{delivered}{before}"
 
     def _emit_session_event(self, name: str, payload: dict[str, Any]) -> None:
         """An event between trials, with no trial record to mirror it into."""
@@ -728,9 +883,12 @@ class SessionRunner:
         )
         return self._handle_pause({}, rest=f"BLOCK {done} OF {total} COMPLETE — REST")
 
-    def _too_many_failures_in_a_row(self, outcome: Any) -> bool:
+    def _too_many_failures_in_a_row(self, outcome: Any, fault: str | None = None) -> bool:
         """Count the subject's failed trials back to back; True on the one that
         reaches the task's limit, which the caller turns into a pause.
+
+        ``fault`` is the system fault the trial was lost to
+        (``TrialResult.lost_to_fault``), or None.
 
         What counts is what the SUBJECT did, trial by trial:
 
@@ -745,12 +903,23 @@ class SessionRunner:
           saccades that those completed trials had separated, and told the
           operator to check a calibration while the panel dropped half its
           frames. Frame QA counts recycles on its own and stops the run with
-          the display's message.
+          the display's message. Ending the streak never counts against the
+          subject, so a dropped-frames trial keeps ending it even though it is
+          a system fault.
         - ``PAUSED`` neither counts nor ends it: the experimenter stopped the
           trial, and that says nothing about the subject. The count restarts
           after the pause this raises, so a subject still not fixating gets a
           whole new run of chances rather than a pause every trial.
-        - Every other outcome that did not complete counts.
+        - A trial the eye tracker cut short (``ABORTED``, lost to
+          ``tracker_stopped``) neither counts nor ends it, like ``PAUSED``,
+          and for the same reason: the rig stopped the trial, usually before
+          the subject had responded, so it says nothing about the subject in
+          either direction. Counted, a tracker dropping out between fixation
+          breaks would send the operator to recalibrate a subject for the
+          tracker's fault; ending the streak, it would hide a subject who was
+          breaking fixation on every trial the tracker let finish.
+        - Every other outcome that did not complete counts — the
+          experimenter's skip included, as it always has.
 
         Beside the count it keeps how many of the counted trials dropped more
         of their frames than frame QA's budget, so the pause can say when the
@@ -759,7 +928,7 @@ class SessionRunner:
         experimenter to recalibrate while it does.
         """
         limit = self._max_consecutive_failures
-        if limit is None or outcome.name == "PAUSED":
+        if limit is None or outcome.name == "PAUSED" or _cut_short_by_device(fault):
             return False
         if outcome.completed or outcome.name == "DROPPED_FRAMES":
             self._failures_in_a_row = 0
