@@ -827,6 +827,38 @@ the verdict's centre — the target's centre or a fixed reference — since no
 landing there could ever be a hit. The default, `None`, leaves every sample
 eligible, as before.
 
+**The saccade subject mode lands with `LandingSample`.**
+`response_phases(SubjectMode.SACCADE_AND_REWARD, ...)` (`task/subject_mode.py`)
+builds a `StimulusResponse` followed by a `LandingSample` in its fixed-dwell
+mode — not a `LandingCheck` — so its `endpoint_*` columns are where the eye
+came to rest. The mode's arguments map onto it as follows:
+
+| `response_phases` argument | `LandingSample` setting | Why |
+|---|---|---|
+| `target_region` | `region` | the window the landing must be in |
+| `on_hit` / `on_miss` | `on_hit` / `on_miss` | unchanged meaning |
+| `landing_timeout_s` (0.5 s) | `dwell_s` | still "the time the eye has, from saccade onset, to be on the target"; the landing is judged once, at that moment |
+| `depart_region` (`"fixation"`) | `depart_region` | a blink at the cue stamps onset with the eye still at fixation; this keeps such a trial from recording a landing there |
+| — | `onset_event="RESPONSE_ONSET"` (the phase default) | the event the mode's `StimulusResponse` emits |
+| `on_timeout` | — (on `StimulusResponse`) | no saccade at all is still `on_timeout`, before the landing phase starts |
+
+The dwell, not the saccade-offset rule: the offset rule needs a speed
+threshold the mode has no argument for, and it exists for a next phase (a
+pursuit) that must start at the landing. Here the landing ends the trial.
+What this means for a trial's row:
+
+- `endpoint_x/y_dva` and `endpoint_error_dva` are the last valid sample
+  outside the fixation window at the end of the dwell; `endpoint_in_target`
+  judges that point, so an overshoot through the target is a miss;
+- `endpoint_measured`, `endpoint_latency_ms` and
+  `endpoint_reference_x/y_dva` are written too (no `endpoint_settled`: a dwell
+  has no settle verdict); with no valid sample outside the fixation window,
+  `endpoint_measured` is False, no coordinates are written, and the trial is
+  `on_miss`;
+- the trial ends `landing_timeout_s` after the `RESPONSE_ONSET` flip, on a
+  hit as on a miss, and `LANDED` goes out then for any measured endpoint,
+  hit or miss.
+
 `FrameTimeline` (in `display/frames.py`) is the schedule `FrameSequence`
 plays: keyframes, linear ramps, visibility spans and events, all indexed by
 frame. Frames rather than milliseconds because a display can only change on a
