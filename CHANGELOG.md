@@ -237,6 +237,15 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Fixed
 
+- **A TRACKPixx3 that stopped answering at the end of a session stranded its
+  recording.** `shutdown()` ran its last drain before the delivery's `try`,
+  so when the device did not answer — exactly when a session ends early —
+  the samples of every earlier trial stayed in the temp folder and the
+  message record (held only in memory) was never written. The last drain's
+  failure is now held while the recording and messages are delivered, and
+  raised after as a `TrackerError` saying which samples are missing. If the
+  delivery fails too, its error is the one raised and the drain's is logged.
+
 - **The real eye trackers never noticed a recording that died mid-trial.**
   The EyeLink's and the TRACKPixx3's `is_recording()` returned a flag they
   set at `start_trial` and cleared at `stop_trial`, so a pulled cable, a Host
