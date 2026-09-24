@@ -13,6 +13,7 @@ back a stage on a Monday morning should be able to do it with a text editor.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -52,6 +53,11 @@ class TrainingState:
         # the same good afternoon.
         self.window = list(window or [])
         self.history = list(history or [])
+        # The state file `load` could not read, when it could not. The session
+        # then starts over at the first stage, and `save` moves this file
+        # aside before writing — the only copy of weeks of shaping is never
+        # written over by the state of the one session that could not read it.
+        self._unreadable: Path | None = None
 
     # -- progress ------------------------------------------------------
 
@@ -100,6 +106,7 @@ class TrainingState:
         that cannot be read is NOT normal, and says so loudly before starting
         over: silently restarting an animal at stage 0 after a disk problem
         would waste weeks of shaping and look like a behavioural regression.
+        The unreadable file is never written over: `save` renames it first.
         """
         path = cls.path_for(data_root, subject)
         if not path.exists():
@@ -113,15 +120,23 @@ class TrainingState:
                 window=raw.get("window", []),
                 history=raw.get("history", []),
             )
-        except (yaml.YAMLError, KeyError, TypeError) as error:
+        # UnicodeDecodeError as well as the parse errors: bytes that are not
+        # UTF-8 are what a disk problem leaves, and that is the case this
+        # branch exists for.
+        except (yaml.YAMLError, KeyError, TypeError, UnicodeDecodeError) as error:
             log.error(
-                "training state at %s is unreadable (%s) — starting at stage %r. The old "
-                "file is left in place; move it aside once you have looked at it.",
+                "training state at %s is unreadable (%s) — starting at stage %r. The file "
+                "is kept: when this session saves, it is renamed to %s rather than "
+                "written over. Look at it, and put the subject back by hand if it was "
+                "further along.",
                 path,
                 error,
                 default_stage,
+                _aside_name(path, "<time>").name,
             )
-            return cls(stage=default_stage)
+            state = cls(stage=default_stage)
+            state._unreadable = path
+            return state
         log.info(
             "loaded training state for %s: stage %r, %d completed there",
             subject,
@@ -131,19 +146,82 @@ class TrainingState:
         return state
 
     def save(self, data_root: Path, subject: str) -> Path:
+        """Write the state, replacing the old file in one step.
+
+        The YAML goes to a temporary file beside the real one, which is then
+        renamed over it. A crash or a full disk part-way through leaves the
+        previous state whole, rather than a truncated file the next session
+        cannot read — and would start the subject over from.
+        """
         path = self.path_for(data_root, subject)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            yaml.safe_dump(
-                {
-                    "schema_version": SCHEMA_VERSION,
-                    "stage": self.stage,
-                    "completed_by_stage": self.completed_by_stage,
-                    "window": self.window,
-                    "history": self.history,
-                },
-                sort_keys=False,
-            ),
-            encoding="utf-8",
+        # Only the file `load` failed on is moved, and only once: a later
+        # save of the same state writes over this session's own file.
+        if self._unreadable == path and path.exists():
+            self._set_aside(path)
+        text = yaml.safe_dump(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "stage": self.stage,
+                "completed_by_stage": self.completed_by_stage,
+                "window": self.window,
+                "history": self.history,
+            },
+            sort_keys=False,
         )
+        _replace_atomically(path, text)
         return path
+
+    def _set_aside(self, path: Path) -> None:
+        """Rename the file `load` could not read, so saving cannot destroy it.
+
+        Renamed, not copied: the new name says what the file is to whoever
+        opens the subject's folder, and the real name is free for this
+        session's state. A name that is already taken gets a counter rather
+        than being replaced.
+        """
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        aside = _aside_name(path, stamp)
+        counter = 1
+        while aside.exists():
+            counter += 1
+            aside = _aside_name(path, f"{stamp}-{counter}")
+        path.rename(aside)
+        log.warning(
+            "the unreadable training state was moved to %s; this session's state is "
+            "written to %s in its place",
+            aside,
+            path,
+        )
+        self._unreadable = None
+
+
+def _aside_name(path: Path, stamp: str) -> Path:
+    """Where an unreadable state file is moved: same folder, same name, plus
+    ``.unreadable-<stamp>`` before the suffix."""
+    return path.with_name(f"{path.stem}.unreadable-{stamp}{path.suffix}")
+
+
+def _replace_atomically(path: Path, text: str) -> None:
+    """Replace ``path`` with ``text`` so a reader sees the old file or the new
+    one, never half of either.
+
+    Written and flushed to disk under a temporary name in the same folder (a
+    rename is only atomic within one filesystem), then renamed over the
+    target with `os.replace`, which replaces an existing file on Windows as
+    well as on POSIX.
+    """
+    temporary = path.with_name(f"{path.name}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            # Onto the disk before the rename: otherwise a power cut can
+            # leave the real name pointing at data that was never written.
+            os.fsync(f.fileno())
+        os.replace(temporary, path)
+    finally:
+        # Still there only if something above failed. Removed so a stray,
+        # half-written file is never mistaken for the state; the error that
+        # got us here propagates unchanged.
+        temporary.unlink(missing_ok=True)
