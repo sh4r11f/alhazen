@@ -175,73 +175,64 @@ class TestState:
     def test_a_first_session_starts_at_the_first_stage(self, tmp_path):
         assert TrainingState.load(tmp_path, "m01", default_stage="one").stage == "one"
 
-    def test_a_corrupt_file_is_loud_and_starts_over(self, tmp_path, caplog):
-        # Silently restarting an animal at stage 0 after a disk problem would
-        # waste weeks and read as a behavioural regression.
+    # A state file that exists but cannot be read, in each way a hand edit or
+    # a disk problem can leave it: a YAML syntax error, no `stage` key, YAML
+    # that is not a mapping at all, and bytes that are not UTF-8.
+    UNREADABLE = {
+        "yaml-error": b"stage: [this is not a stage\ncompleted_by_stage: {tighten: 900}\n",
+        "no-stage": b"stgae: tighten\ncompleted_by_stage: {tighten: 900}\n",
+        "not-a-mapping": b"- tighten\n- 900\n",
+        "not-utf-8": b"\xff\xfe\x00\x81 not utf-8",
+    }
+
+    @pytest.mark.parametrize("content", list(UNREADABLE.values()), ids=list(UNREADABLE))
+    def test_an_unreadable_file_is_refused_not_started_over(self, tmp_path, content):
+        # The owner's rule: a trained animal must never silently get a
+        # first-stage session because of a typo in a hand edit. Loading
+        # refuses, naming the file and saying how to proceed.
         path = TrainingState.path_for(tmp_path, "m01")
         path.parent.mkdir(parents=True)
-        path.write_text("stage: [this is not a stage")
-        with caplog.at_level("ERROR"):
-            state = TrainingState.load(tmp_path, "m01", default_stage="one")
-        assert state.stage == "one"
-        assert "unreadable" in caplog.text
-        assert path.exists()  # the old file is left for a human to look at
+        path.write_bytes(content)
+        with pytest.raises(ConfigError) as caught:
+            TrainingState.load(tmp_path, "m01", default_stage="any-look")
+        message = str(caught.value)
+        assert str(path) in message
+        # Both ways forward are spelled out: fix it, or rename it — with a
+        # concrete name — to start over at the named first stage on purpose.
+        assert "fix the file" in message
+        assert "training_state.unreadable.yaml" in message
+        assert "'any-look'" in message
 
-    def test_saving_after_a_corrupt_file_moves_it_aside_rather_than_over_it(self, tmp_path, caplog):
-        # The bug this pins: load started over, and teardown's save then
-        # wrote stage 0 over the only copy of the subject's real place.
+    @pytest.mark.parametrize("content", list(UNREADABLE.values()), ids=list(UNREADABLE))
+    def test_a_refused_file_is_left_byte_for_byte(self, tmp_path, content):
+        # It is the only record of where the subject really was: not
+        # renamed, not rewritten, and nothing written beside it.
         path = TrainingState.path_for(tmp_path, "m01")
         path.parent.mkdir(parents=True)
-        original = "stage: [this is not a stage\ncompleted_by_stage: {tighten: 900}\n"
-        path.write_text(original, encoding="utf-8")
-        state = TrainingState.load(tmp_path, "m01", default_stage="one")
+        path.write_bytes(content)
+        with pytest.raises(ConfigError):
+            TrainingState.load(tmp_path, "m01", default_stage="one")
+        assert path.read_bytes() == content
+        assert [p.name for p in path.parent.iterdir()] == ["training_state.yaml"]
 
-        with caplog.at_level("WARNING"):
-            state.save(tmp_path, "m01")
+    def test_the_parse_error_is_in_the_message(self, tmp_path):
+        # So the experimenter can find the typo without a YAML linter.
+        path = TrainingState.path_for(tmp_path, "m01")
+        path.parent.mkdir(parents=True)
+        path.write_text("completed_by_stage: {tighten: 900}\n", encoding="utf-8")
+        with pytest.raises(ConfigError, match="KeyError: 'stage'"):
+            TrainingState.load(tmp_path, "m01", default_stage="one")
 
-        asides = list(path.parent.glob("training_state.unreadable-*.yaml"))
-        assert len(asides) == 1
-        # Byte for byte what was there: it is evidence, and possibly the
-        # subject's real stage after a one-character typo.
-        assert asides[0].read_text(encoding="utf-8") == original
-        assert asides[0].name in caplog.text
-        # The real name now holds this session's state, which loads.
-        assert TrainingState.load(tmp_path, "m01", default_stage="other").stage == "one"
-
-    def test_the_file_is_moved_aside_once_not_on_every_save(self, tmp_path):
+    def test_renaming_the_file_as_the_message_says_starts_over(self, tmp_path):
+        # The documented way to start over on purpose really does: with the
+        # file renamed, the next load is a first session.
         path = TrainingState.path_for(tmp_path, "m01")
         path.parent.mkdir(parents=True)
         path.write_text("stage: [broken", encoding="utf-8")
-        state = TrainingState.load(tmp_path, "m01", default_stage="one")
-        state.save(tmp_path, "m01")
-        state.save(tmp_path, "m01")  # the second save replaces its own file
-        assert len(list(path.parent.glob("training_state.unreadable-*.yaml"))) == 1
-
-    def test_an_earlier_aside_file_is_never_replaced(self, tmp_path):
-        # Two unreadable files set aside in the same second must both survive.
-        path = TrainingState.path_for(tmp_path, "m01")
-        path.parent.mkdir(parents=True)
-        for text in ("stage: [first", "stage: [second"):
-            path.write_text(text, encoding="utf-8")
-            TrainingState.load(tmp_path, "m01", default_stage="one").save(tmp_path, "m01")
-        kept = {
-            aside.read_text(encoding="utf-8")
-            for aside in path.parent.glob("training_state.unreadable-*.yaml")
-        }
-        # The first save's aside file plus the second's, whatever the clock
-        # did between them.
-        assert kept == {"stage: [first", "stage: [second"}
-
-    def test_bytes_that_are_not_text_are_unreadable_too(self, tmp_path, caplog):
-        # What a disk problem leaves behind; it used to escape as a crash
-        # of its own rather than the documented start-over.
-        path = TrainingState.path_for(tmp_path, "m01")
-        path.parent.mkdir(parents=True)
-        path.write_bytes(b"\xff\xfe\x00\x81 not utf-8")
-        with caplog.at_level("ERROR"):
-            state = TrainingState.load(tmp_path, "m01", default_stage="one")
-        assert state.stage == "one"
-        assert "unreadable" in caplog.text
+        with pytest.raises(ConfigError):
+            TrainingState.load(tmp_path, "m01", default_stage="one")
+        path.rename(path.with_name("training_state.unreadable.yaml"))
+        assert TrainingState.load(tmp_path, "m01", default_stage="one").stage == "one"
 
     def test_a_failed_write_leaves_the_previous_state_whole(self, tmp_path, monkeypatch):
         # A full disk or a power cut part-way through a save must not leave a

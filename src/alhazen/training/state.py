@@ -8,6 +8,9 @@ and written at teardown.
 
 The file is plain YAML on purpose: an experimenter who needs to put an animal
 back a stage on a Monday morning should be able to do it with a text editor.
+The price of hand editing is typos, so a file that exists but cannot be read
+stops the session at build with a `ConfigError` saying how to fix it — a
+trained subject is never quietly given a first-stage session instead.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ import yaml
 
 from alhazen.data import naming
 from alhazen.data.atomic import replace_atomically
+from alhazen.errors import ConfigError
 
 log = logging.getLogger(__name__)
 
@@ -53,11 +57,6 @@ class TrainingState:
         # the same good afternoon.
         self.window = list(window or [])
         self.history = list(history or [])
-        # The state file `load` could not read, when it could not. The session
-        # then starts over at the first stage, and `save` moves this file
-        # aside before writing — the only copy of weeks of shaping is never
-        # written over by the state of the one session that could not read it.
-        self._unreadable: Path | None = None
 
     # -- progress ------------------------------------------------------
 
@@ -103,10 +102,16 @@ class TrainingState:
         """Read a subject's state, or start it at ``default_stage``.
 
         A missing file is normal — it is a subject's first session. A file
-        that cannot be read is NOT normal, and says so loudly before starting
-        over: silently restarting an animal at stage 0 after a disk problem
-        would waste weeks of shaping and look like a behavioural regression.
-        The unreadable file is never written over: `save` renames it first.
+        that exists but cannot be read (a YAML error, a missing ``stage``, a
+        wrong type, bytes that are not UTF-8) raises `ConfigError`, and the
+        file is not touched. Starting over instead would give a trained
+        animal a first-stage session because of one typo in a hand edit —
+        weeks of shaping wasted, and read as a behavioural regression. The
+        message says how to proceed: fix the file, or rename it to start the
+        subject over on purpose.
+
+        Raises:
+            ConfigError: the file exists and cannot be read.
         """
         path = cls.path_for(data_root, subject)
         if not path.exists():
@@ -121,22 +126,25 @@ class TrainingState:
                 history=raw.get("history", []),
             )
         # UnicodeDecodeError as well as the parse errors: bytes that are not
-        # UTF-8 are what a disk problem leaves, and that is the case this
-        # branch exists for.
+        # UTF-8 are what a disk problem leaves, and they get the same
+        # actionable refusal as a typo rather than escaping as a bare crash.
         except (yaml.YAMLError, KeyError, TypeError, UnicodeDecodeError) as error:
-            log.error(
-                "training state at %s is unreadable (%s) — starting at stage %r. The file "
-                "is kept: when this session saves, it is renamed to %s rather than "
-                "written over. Look at it, and put the subject back by hand if it was "
-                "further along.",
-                path,
-                error,
-                default_stage,
-                _aside_name(path, "<time>").name,
-            )
-            state = cls(stage=default_stage)
-            state._unreadable = path
-            return state
+            # Refused, not started over: this is raised from build_session
+            # before a run folder exists or a window opens, so the subject
+            # runs no trials at the wrong stage and nothing on disk changes.
+            # The rename suggested below is the deliberate way to start
+            # over, because a missing file is exactly a first session.
+            raise ConfigError(
+                f"the training state at {path} cannot be read "
+                f"({type(error).__name__}: {error}), so subject {subject!r} was not "
+                f"started — a trained subject must not silently get a "
+                f"{default_stage!r} session. Either fix the file (it is plain YAML, "
+                f"meant for hand editing) and start again; or, to start this subject "
+                f"over at the first stage ({default_stage!r}) on purpose, rename it "
+                f"in the same folder (for example to "
+                f"{path.with_name(f'{path.stem}.unreadable{path.suffix}').name}) and "
+                f"start again: with no state file, a session is the subject's first."
+            ) from error
         log.info(
             "loaded training state for %s: stage %r, %d completed there",
             subject,
@@ -151,14 +159,10 @@ class TrainingState:
         The YAML goes to a temporary file beside the real one, which is then
         renamed over it. A crash or a full disk part-way through leaves the
         previous state whole, rather than a truncated file the next session
-        cannot read — and would start the subject over from.
+        cannot read — and would refuse to start from.
         """
         path = self.path_for(data_root, subject)
         path.parent.mkdir(parents=True, exist_ok=True)
-        # Only the file `load` failed on is moved, and only once: a later
-        # save of the same state writes over this session's own file.
-        if self._unreadable == path and path.exists():
-            self._set_aside(path)
         text = yaml.safe_dump(
             {
                 "schema_version": SCHEMA_VERSION,
@@ -171,32 +175,3 @@ class TrainingState:
         )
         replace_atomically(path, text)
         return path
-
-    def _set_aside(self, path: Path) -> None:
-        """Rename the file `load` could not read, so saving cannot destroy it.
-
-        Renamed, not copied: the new name says what the file is to whoever
-        opens the subject's folder, and the real name is free for this
-        session's state. A name that is already taken gets a counter rather
-        than being replaced.
-        """
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        aside = _aside_name(path, stamp)
-        counter = 1
-        while aside.exists():
-            counter += 1
-            aside = _aside_name(path, f"{stamp}-{counter}")
-        path.rename(aside)
-        log.warning(
-            "the unreadable training state was moved to %s; this session's state is "
-            "written to %s in its place",
-            aside,
-            path,
-        )
-        self._unreadable = None
-
-
-def _aside_name(path: Path, stamp: str) -> Path:
-    """Where an unreadable state file is moved: same folder, same name, plus
-    ``.unreadable-<stamp>`` before the suffix."""
-    return path.with_name(f"{path.stem}.unreadable-{stamp}{path.suffix}")

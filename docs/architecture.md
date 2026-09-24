@@ -1311,9 +1311,16 @@ are no longer judged, but its demotion criteria still are.
 per stage, the window, and every transition with its timestamp and session.
 Plain YAML on purpose: an experimenter who needs to put an animal back a
 stage on a Monday morning should be able to do it with a text editor. A
-missing file is a first session; an unreadable one is loud and left in place,
-because silently restarting an animal at stage 0 after a disk problem would
-waste weeks and read as a behavioural regression.
+missing file is a first session, which starts at the curriculum's first stage.
+A file that exists but cannot be read (a YAML error, no `stage`, a wrong type,
+bytes that are not UTF-8) is refused: `build_session` raises a `ConfigError`
+naming the file and the parse error, before a run folder exists or a window
+opens, and the file is left exactly as it was. Starting over instead would
+give a trained animal a first-stage session because of one typo in a hand
+edit — weeks of shaping wasted, and read as a behavioural regression. The
+message gives the two ways forward: fix the file and start again, or — to
+start the subject over at the first stage on purpose — rename it in the same
+folder (for example to `training_state.unreadable.yaml`) and start again.
 
 Every trial row carries `stage`, `stage_completed_trials`, `reward_scale` and
 each ramped parameter's current value (`ramp_<path>`) — which is what makes a
