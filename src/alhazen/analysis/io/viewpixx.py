@@ -61,6 +61,7 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 import yaml
+from pydantic import ValidationError
 
 from alhazen.config.models import MonitorConfig
 from alhazen.devices.eyetracker.viewpixx import is_tracking_lost
@@ -173,8 +174,10 @@ class RecordingViews:
     @property
     def sample_rate_hz(self) -> float:
         """The device's rate, from its own timestamps."""
-        steps = np.diff(self.samples["t_device"].to_numpy(dtype=float))
-        return float(1.0 / np.median(steps[steps > 0]))
+        # The same step rule the reader used to accept the file
+        # (_sample_period_s), so the rate reported and the period the clock
+        # fit was toleranced against cannot disagree.
+        return 1.0 / _median_positive_step_s(self.samples["t_device"].to_numpy(dtype=float))
 
     def between(self, t0: float, t1: float) -> pd.DataFrame:
         """The samples with ``t0 <= t_session < t1``."""
@@ -205,7 +208,7 @@ class RecordingViews:
                 parts = text.split(maxsplit=2)
                 if ends and ends[-1] is None:
                     ends[-1] = t  # the previous trial never closed: it ends here
-                indices.append(int(parts[1]))
+                indices.append(_trial_index(text, "the messages table"))
                 statuses.append(parts[2] if len(parts) > 2 else "")
                 starts.append(t)
                 ends.append(None)
@@ -323,7 +326,10 @@ def _load_run(
     # the TRACKPixx3 runs at whatever rate VPixx's tools left it at.
     device_t = frame[mapping["device_time_s"]].to_numpy(dtype=float)
     period_s = _sample_period_s(device_t, samples_path)
-    fit = fit_clock(messages, tolerance_s=max_residual_s or period_s)
+    # `is None`, not `or`: an explicit 0.0 is a (strict) tolerance the caller
+    # asked for, and `or` would have quietly swapped it for the sample period.
+    tolerance_s = period_s if max_residual_s is None else max_residual_s
+    fit = fit_clock(messages, tolerance_s=tolerance_s)
     # Said on every read, not only when something went wrong. The worst
     # residual is the honest error bar on every session time this reader
     # produces — every latency, every event alignment, every saccade onset
@@ -655,7 +661,7 @@ def event_times(messages: pd.DataFrame, event: str) -> pd.DataFrame:
     for _, row in messages.iterrows():
         text = str(row["message"])
         if text.startswith("TRIAL "):
-            trial_index = int(text.split()[1])
+            trial_index = _trial_index(text, "the messages table")
         elif text == wanted:
             rows.append({"trial_index": trial_index, "t_session": float(row["session_time_s"])})
     return pd.DataFrame(rows, columns=["trial_index", "t_session"])
@@ -690,7 +696,33 @@ def _read_messages(path: Path) -> pd.DataFrame:
             f"{path} is missing {', '.join(missing)}; expected the header "
             f"{','.join(MESSAGE_COLUMNS)} written by alhazen's viewpixx backend"
         )
+    # Every trial mark is parsed here, once, while the file's name is still
+    # known. trial_spans and event_times parse them again later, but by then
+    # all they hold is a DataFrame, and an error that cannot say which run's
+    # file is malformed sends the reader hunting for it.
+    for text in frame["message"]:
+        if str(text).startswith("TRIAL "):
+            _trial_index(str(text), str(path))
     return frame
+
+
+def _trial_index(text: str, source: str) -> int:
+    """The index out of a ``TRIAL <index> <status>`` mark.
+
+    A mark that has no integer where the index belongs was not written by
+    this backend (devices/eyetracker/viewpixx.py), and assigning events to
+    trials by a guessed index would put every later event in the wrong
+    trial — so it is refused, naming ``source`` and the mark as written.
+    """
+    parts = text.split()
+    try:
+        return int(parts[1])
+    except (IndexError, ValueError) as error:
+        raise DataError(
+            f"{source} has a malformed trial mark {text!r}: expected 'TRIAL <index> <status>' "
+            f"with an integer index, as alhazen's viewpixx backend writes it. Fix or remove "
+            f"the mark before reading trials from this run."
+        ) from error
 
 
 def _eye_used(messages: pd.DataFrame, path: Path) -> str:
@@ -860,12 +892,26 @@ def _check_on_panel(
     )
 
 
+def _median_positive_step_s(device_t: np.ndarray) -> float:
+    """The typical step between the device's timestamps, or NaN if none rises.
+
+    Only positive steps count: a repeated or backwards timestamp is not a
+    sample period, and the median keeps the odd dropped sample from moving
+    the answer. The one rule behind both the reader's tolerance
+    (:func:`_sample_period_s`) and the recording's reported rate.
+    """
+    steps = np.diff(device_t)
+    positive = steps[steps > 0]
+    return float(np.median(positive)) if positive.size else float("nan")
+
+
 def _sample_period_s(device_t: np.ndarray, path: Path) -> float:
     if device_t.size < 2:
         raise DataError(f"{path} holds fewer than two samples")
-    steps = np.diff(device_t)
-    period = float(np.median(steps[steps > 0])) if np.any(steps > 0) else 0.0
-    if period <= 0:
+    period = _median_positive_step_s(device_t)
+    # `not > 0` rather than `<= 0` so that NaN — no rising step at all — is
+    # refused too.
+    if not period > 0:
         raise DataError(
             f"{path} has no increasing timestamps, so its sample rate cannot be "
             f"established. Check that the device's own writer produced this file."
@@ -893,4 +939,19 @@ def _screen_from_snapshot(run_dir: Path) -> Screen:
         monitor = snapshot["config"]["rig"]["monitor"]
     except (KeyError, TypeError) as e:
         raise DataError(f"{path} has no config.rig.monitor block: {e}") from e
-    return Screen.from_monitor(MonitorConfig(**monitor))
+    if not isinstance(monitor, dict):
+        raise DataError(
+            f"{path} config.rig.monitor is a {type(monitor).__name__}, not a mapping of "
+            f"monitor fields, so this run's geometry cannot be read from it"
+        )
+    try:
+        config = MonitorConfig(**monitor)
+    except ValidationError as e:
+        # The snapshot is a file on disk like the CSVs beside it, so what is
+        # wrong with it is a DataError naming it — not a pydantic traceback
+        # that does not say which run it came from.
+        raise DataError(
+            f"{path} config.rig.monitor is not a valid monitor config, so pixels cannot be "
+            f"converted to degrees for this run: {e}"
+        ) from e
+    return Screen.from_monitor(config)

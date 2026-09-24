@@ -23,6 +23,7 @@ import mimetypes
 import sqlite3
 import zlib
 from collections.abc import Iterable, Mapping, Sequence
+from contextlib import closing
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -35,6 +36,7 @@ from alhazen.config.models import DatabaseConfig, SessionConfig
 from alhazen.core.trial import InputFrame
 from alhazen.display.frames import FrameRecord
 from alhazen.errors import DataError
+from alhazen.training.state import TrainingState
 
 if TYPE_CHECKING:
     from alhazen.data.paths import SessionPaths
@@ -99,12 +101,26 @@ class ExperimentDatabase:
         return cls(Path(data_root) / DATABASE_FILENAME, config)
 
     def connect(self) -> sqlite3.Connection:
+        """An open connection, schema checked; the caller closes it.
+
+        ``with connection:`` only commits or rolls back — it does not close.
+        Every use here is ``with closing(self.connect()) as db, db:``: the
+        transaction, then the close. Left to the garbage collector, an open
+        connection keeps the database and its WAL file locked on Windows (the
+        data folder cannot be moved or deleted), and Python 3.13 warns.
+        """
         self.path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(self.path, timeout=30.0)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA journal_mode = WAL")
-        _create_schema(connection, self.path)
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute("PRAGMA journal_mode = WAL")
+            _create_schema(connection, self.path)
+        except BaseException:
+            # A database refused for its schema (or one that will not open)
+            # is closed here: the caller never gets a connection to close.
+            connection.close()
+            raise
         return connection
 
     def write_run(
@@ -156,7 +172,7 @@ class ExperimentDatabase:
     ) -> str:
         snapshot = yaml.safe_load(paths.snapshot_path.read_text(encoding="utf-8")) or {}
         run_dir = str(paths.run_dir.resolve())
-        with self.connect() as db:
+        with closing(self.connect()) as db, db:
             db.execute("INSERT OR IGNORE INTO subjects(subject) VALUES (?)", (cfg.info.subject,))
             db.execute(
                 """INSERT INTO runs
@@ -262,7 +278,10 @@ class ExperimentDatabase:
             )
             _insert_artifacts(db, run_id, paths.run_dir, self.config.artifact_max_bytes)
             _insert_paradigm(db, run_id, paths.paradigm_path)
-            training_path = cfg.rig.data_root / f"sub-{cfg.info.subject}" / "training_state.yaml"
+            # Where the training layer keeps this subject's state, asked of it
+            # rather than spelled out again here: two spellings of one path are
+            # how the mirror would quietly stop finding the file.
+            training_path = TrainingState.path_for(cfg.rig.data_root, cfg.info.subject)
             if training_path.exists():
                 db.execute(
                     """INSERT INTO training_states(subject, yaml, updated_run_id)
@@ -283,7 +302,7 @@ class ExperimentDatabase:
     ) -> int:
         """Add an aligned native device stream in one transaction."""
         rows = list(samples)
-        with self.connect() as db:
+        with closing(self.connect()) as db, db:
             if db.execute("SELECT 1 FROM runs WHERE run_id = ?", (run_id,)).fetchone() is None:
                 raise DataError(f"database has no run {run_id!r}")
             db.execute(
@@ -349,7 +368,7 @@ class ExperimentDatabase:
         if step <= 0:
             raise DataError("session_seconds_per_sample must be positive")
         contiguous = np.ascontiguousarray(array)
-        with self.connect() as db:
+        with closing(self.connect()) as db, db:
             if db.execute("SELECT 1 FROM runs WHERE run_id = ?", (run_id,)).fetchone() is None:
                 raise DataError(f"database has no run {run_id!r}")
             db.execute(
@@ -414,7 +433,7 @@ class ExperimentDatabase:
             clauses.append("task = ?")
             params.append(task)
         sql = f"SELECT * FROM runs WHERE {' AND '.join(clauses)} ORDER BY run DESC"  # noqa: S608
-        with self.connect() as db:
+        with closing(self.connect()) as db, db:
             rows = db.execute(sql, params).fetchall()
         if not rows:
             raise DataError(f"no database run for subject={subject!r}, session={session}")
@@ -435,7 +454,7 @@ class ExperimentDatabase:
         """Frame timing, behavioral input, and nearest aligned device channels."""
         run_row = self.find_run(subject, session, run=run, task=task)
         run_id = run_row["run_id"]
-        with self.connect() as db:
+        with closing(self.connect()) as db, db:
             frame = db.execute(
                 """SELECT f.*, i.gaze_x_centered_px, i.gaze_y_centered_px,
                           i.keys_json, i.wheel
@@ -478,7 +497,7 @@ class ExperimentDatabase:
         sample_index = round((t_session - float(stream["t_session_start"])) / step)
         if sample_index < 0:
             return []
-        with self.connect() as db:
+        with closing(self.connect()) as db, db:
             chunk = db.execute(
                 """SELECT * FROM device_chunks
                    WHERE run_id=? AND device=? AND stream=?

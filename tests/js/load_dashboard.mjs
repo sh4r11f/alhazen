@@ -86,7 +86,8 @@ function fakeStorage(initial) {
  * options.fetch        (url, init) => response or promise of one; every call
  *                      is also recorded in `fetches`. Without it any fetch
  *                      throws, naming the URL.
- * options.search       location.search, e.g. '?token=abc'.
+ * options.search       location.search, e.g. '?token=abc'; the page may
+ *                      rewrite it (window.location, window.history.replaced).
  * options.storage      localStorage contents before the script runs.
  */
 export function loadDashboard(options = {}) {
@@ -131,9 +132,27 @@ export function loadDashboard(options = {}) {
     }
   }
 
+  /* The address bar: where the page was loaded from, and a history whose
+   * replaceState rewrites it the way a browser does (same page, new URL, no
+   * reload), keeping each call for a test to look at. */
+  const location = { pathname: '/', search: options.search || '', hash: '' };
+  const history = {
+    state: null,
+    replaced: [],
+    replaceState(state, unused, url) {
+      history.replaced.push(String(url));
+      const parsed = new URL(String(url), 'http://127.0.0.1' + location.pathname);
+      history.state = state;
+      location.pathname = parsed.pathname;
+      location.search = parsed.search;
+      location.hash = parsed.hash;
+    },
+  };
+
   const sandbox = {
     document: document,
-    location: { search: options.search || '' },
+    location: location,
+    history: history,
     URLSearchParams: URLSearchParams,
     localStorage: fakeStorage(options.storage || {}),
     sessionStorage: fakeStorage({}),

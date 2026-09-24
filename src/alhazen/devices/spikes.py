@@ -370,7 +370,6 @@ class SpikeGLXLiveSource:
         self._pending: list[tuple[np.ndarray, np.ndarray]] = []  # (session times, channels)
         self._covered: float | None = None
         self._fault: BaseException | None = None
-        self._gap_samples = 0
 
     @property
     def n_channels(self) -> int:
@@ -481,10 +480,9 @@ class SpikeGLXLiveSource:
             if head > self._cursor:
                 # The server's ring buffer moved past our cursor: samples
                 # are gone for the live map (the recording still has them).
-                # Counted and logged, and the detector's continuity state is
+                # Logged, and the detector's continuity state is
                 # reset so it cannot stitch across the hole.
                 lost = head - self._cursor
-                self._gap_samples += lost
                 log.warning(
                     "spike stream fell behind: lost %d samples (%.0f ms) to the ring buffer",
                     lost,
