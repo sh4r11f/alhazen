@@ -97,8 +97,8 @@ command source, and the bus:
 1. poll experimenter commands (skip / pause / calibrate / quit / manual reward)
 2. run per-frame health checks (today one: "is the tracker still recording,
    and still delivering" — §4.3). A check returns None, or a `HealthFault`:
-   the reason, and what the device said about it (a bare reason string is
-   still accepted). A failed check is a **system fault** — a device stopped,
+   the reason, and what the device said about it (a bare reason string, the
+   1.5.0 shape, still works but warns: it goes in 2.0). A failed check is a **system fault** — a device stopped,
    which is never the subject's doing — and its reason (`tracker_stopped`) is
    written as the row's `fault`, its words as `fault_detail` (§2.2). A check
    runs every frame, so it must not make a round trip to its device on the
@@ -714,7 +714,7 @@ none, that the model's defaults are running.
 | `StimulusResponse` | gaze leaves the depart-region, or the deadline passes | `rt_ms`, `<depart_region>_x/y_dva` (where the eye left from — measured, never assumed to be the fixation point) |
 | `LandingCheck` | gaze enters the target region, or the window times out. **Records where gaze first crossed into the region — mid-flight for any usable window — not where the saccade ended**; use `LandingSample` for landing error | `endpoint_x/y_dva`, `endpoint_error_dva`, `endpoint_in_target` |
 | `LandingSample` | a fixed dwell after saccade onset (`dwell_s`), **or** saccade offset: the first *new* sample slower than `settle_speed_dva_per_s`, capped at `max_wait_s`. The region is ignored until then; the last valid sample is the endpoint, judged once. With `depart_region` (the fixation window), a sample still inside that window is never the endpoint and never settles — a blink at the cue counts as departure, and would otherwise end the trial as a miss at fixation | `endpoint_measured`, `endpoint_in_target`, `endpoint_x/y_dva`, `endpoint_error_dva`, `endpoint_latency_ms`, `endpoint_reference_x/y_dva`; `endpoint_settled` in the saccade-offset mode |
-| `ResponseWindow` | a bound key is pressed, or the deadline passes. **Keys pressed before the cue was on screen are ignored**: a frame's keys are everything pressed since the previous frame's read, so they count only once that read came after the flip stamped `t_<onset_event>` — never on the phase's first frame (before the flip) or its second (the presses made while the cue waited for its flip). With `onset_event=None` keys count from the first frame, timed from phase entry | `response_key`, `rt_ms` (from the cue's flip) |
+| `ResponseWindow` | a bound key is pressed, or the deadline passes. **Keys pressed before the cue was on screen are ignored**: a frame's keys are everything pressed since the previous frame's read, so they count only once that read came after the flip stamped `t_<onset_event>` — never on the phase's first frame (before the flip) or its second (the presses made while the cue waited for its flip). The deadline (`timeout_s`) also runs from the cue's flip, so the subject has all of it with the cue on screen. With `onset_event=None` keys count from the first frame, and the reaction time and the deadline run from phase entry | `response_key`, `rt_ms` (from the cue's flip) |
 | `AdjustmentLoop` | the commit key is pressed, or the deadline passes | `adjusted_value`, `adjustment_turns` |
 | `FrameSequence` | a compiled `FrameTimeline` finishes | `sequence_frames` |
 | `Blank` / `Feedback` | a fixed duration elapses | — |

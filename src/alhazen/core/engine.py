@@ -28,10 +28,12 @@ every simulated session can drive it as-is.
 from __future__ import annotations
 
 import logging
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from alhazen._deprecation import deprecation_message
 from alhazen.core.clock import Clock
 from alhazen.core.commands import Command, CommandSource
 from alhazen.core.events import Event, EventBus, EventSchema
@@ -44,6 +46,7 @@ from alhazen.core.trial import (
     HealthFault,
     InputFrame,
     Outcome,
+    Phase,
     PhaseAction,
     RewardCompletion,
     RewardRequest,
@@ -142,7 +145,10 @@ def _is_interrupted(outcome: Outcome | None) -> bool:
     Showing a subject a red fixation point because somebody pressed P would
     be telling them they failed a trial they were still in the middle of.
     """
-    return outcome is not None and outcome.name in ("PAUSED", "ABORTED")
+    # Compared by name against the reserved constants, as lost_to_fault does:
+    # an Outcome is a value, so an equal one built elsewhere (read back from a
+    # row, say) is the same outcome, and a typo in a literal would match none.
+    return outcome is not None and outcome.name in (PAUSED.name, ABORTED.name)
 
 
 def _write_fault(ctx: TrialContext, failed: HealthFault) -> None:
@@ -188,8 +194,9 @@ class TrialEngine:
         # that believes a device is still recording when it is not would
         # silently produce data with holes and no record of why. A check
         # returns None when healthy, and otherwise a HealthFault — the reason
-        # and what the device said about it — or, the older shape, the bare
-        # reason string. A check that fails is a system fault — a device
+        # and what the device said about it. (The 1.5.0 shape, a bare reason
+        # string, still works until 2.0 and warns; see _failed_health_check.)
+        # A check that fails is a system fault — a device
         # stopped, which is never the subject's doing — so its reason is also
         # the row's `fault`, and its detail the row's `fault_detail`; during
         # the closing phase it flags the row without ending the trial
@@ -219,7 +226,28 @@ class TrialEngine:
     # Public entry point
     # ------------------------------------------------------------------
 
-    def run_trial(self, ctx: TrialContext, phases: list[Any]) -> TrialResult:
+    def run_trial(self, ctx: TrialContext, phases: list[Phase]) -> TrialResult:
+        # A phase that declares it must be last — trial feedback, which must
+        # never be on screen while something is still being measured — is
+        # refused anywhere else, before a frame is drawn. A programming error
+        # in the task, met while writing it rather than with a subject in
+        # the chair and a coloured fixation point over the measurement.
+        #
+        # Checked before anything else is touched: in particular before frame
+        # QA is told a trial has started, which would leave it mid-trial for
+        # a trial that never ran a frame.
+        #
+        # Read with getattr, not through the Phase protocol: `must_be_last` is
+        # optional, and a protocol attribute is one every phase — downstream
+        # ones included — would have to declare.
+        for index, phase in enumerate(phases):
+            if getattr(phase, "must_be_last", False) and index != len(phases) - 1:
+                raise RuntimeError(
+                    f"phase {getattr(phase, 'name', phase)!r} must be the trial's last phase, "
+                    f"but {len(phases) - 1 - index} phase(s) follow it. Feedback is shown "
+                    f"only after everything has been measured."
+                )
+
         self._frame_index = 0
         # "none" from the start, overwritten only when a fault happens: every
         # row carries the column, and a clean trial says so with a value, not
@@ -241,19 +269,6 @@ class TrialEngine:
             ctx.record["n_mid_trial_rewards"] = 0
             ctx.record["n_mid_trial_reward_failures"] = 0
             ctx.record["n_mid_trial_rewards_cancelled"] = 0
-
-        # A phase that declares it must be last — trial feedback, which must
-        # never be on screen while something is still being measured — is
-        # refused anywhere else, before a frame is drawn. A programming error
-        # in the task, met while writing it rather than with a subject in
-        # the chair and a coloured fixation point over the measurement.
-        for index, phase in enumerate(phases):
-            if getattr(phase, "must_be_last", False) and index != len(phases) - 1:
-                raise RuntimeError(
-                    f"phase {getattr(phase, 'name', phase)!r} must be the trial's last phase, "
-                    f"but {len(phases) - 1 - index} phase(s) follow it. Feedback is shown "
-                    f"only after everything has been measured."
-                )
 
         # TRIAL_START is emitted immediately — not on a flip — because it is
         # not a visual event: nothing has been drawn yet, and downstream
@@ -363,7 +378,9 @@ class TrialEngine:
     # Per-phase frame loop
     # ------------------------------------------------------------------
 
-    def _run_phase(self, phase: Any, ctx: TrialContext, *, closing: bool = False) -> Outcome | None:
+    def _run_phase(
+        self, phase: Phase, ctx: TrialContext, *, closing: bool = False
+    ) -> Outcome | None:
         """Run one phase frame by frame until it ADVANCEs or ends the trial.
 
         ``closing`` marks the trial's closing phase (the one declaring
@@ -471,17 +488,34 @@ class TrialEngine:
         device reports itself healthy.
 
         A check that answers with a bare reason string — the shape every
-        check had before a device could say more — is read as a HealthFault
-        with no detail, so such a check keeps working unchanged.
+        check had in 1.5.0, before a device could say more — is read as a
+        HealthFault with no detail, so such a check keeps working. Until 2.0:
+        it warns, since removing it then breaks whoever still returns one
+        (docs/versioning.md §4). Warned on the frame it fails rather than at
+        construction, because only its answer shows which shape a check has.
         """
         for check in self._health_checks:
             failed = check()
             if failed is None:
                 continue
-            return failed if isinstance(failed, HealthFault) else HealthFault(reason=failed)
+            if isinstance(failed, HealthFault):
+                return failed
+            warnings.warn(
+                deprecation_message(
+                    "a health check returning a bare reason string",
+                    since="1.6",
+                    removed_in="2.0",
+                    instead=f"HealthFault(reason={failed!r}) from alhazen.core",
+                ),
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            return HealthFault(reason=failed)
         return None
 
-    def _flag_closing_phase_fault(self, ctx: TrialContext, phase: Any, failed: HealthFault) -> None:
+    def _flag_closing_phase_fault(
+        self, ctx: TrialContext, phase: Phase, failed: HealthFault
+    ) -> None:
         """A device failed its health check during the closing phase: flag the
         row, say so, and let the phase run to its end.
 

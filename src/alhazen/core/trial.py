@@ -101,8 +101,9 @@ class HealthFault:
     cable from a Host PC abort. Free text, never a value to select on: the
     wording is the backend's and may change.
 
-    A health check may still return a bare reason string instead; the engine
-    reads that as a HealthFault with nothing more said (core/engine.py).
+    A health check may still return a bare reason string instead — the 1.5.0
+    shape — and the engine reads that as a HealthFault with nothing more
+    said, with a DeprecationWarning: it goes in 2.0 (core/engine.py).
     """
 
     reason: str

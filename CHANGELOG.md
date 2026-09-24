@@ -188,6 +188,12 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Changed
 
+- **A health check returning a bare reason string is deprecated.** The
+  1.5.0 shape still works — `TrialEngine` reads it as a `HealthFault` with no
+  detail — but now emits a `DeprecationWarning`: it goes in 2.0. Return
+  `HealthFault(reason)` (`alhazen.core`) instead. The session's own tracker
+  check already does, and no experiment repository returns a string.
+
 - **The `movie` extra now requires `imageio-ffmpeg>=0.4.4`** (was `>=0.4`).
   imageio 2.31, the extra's own floor, calls `write_frames(audio_path=...)`,
   which imageio-ffmpeg before 0.4.4 does not accept, so an install at the old
@@ -320,6 +326,35 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   [docs/architecture.md](docs/architecture.md) §5.3.
 
 ### Fixed
+
+- **`response_phases(SubjectMode.SACCADE_AND_REWARD)` no longer scores "no
+  saccade" as a landing miss.** Without `on_timeout` it fell back to
+  `on_miss`, so a trial the subject never answered ended as a miss — usually
+  a completed outcome — and was neither served again nor kept out of an
+  adaptive scheduler, which recorded it as a wrong answer. The saccade mode
+  now needs `on_timeout` and raises `ValueError` without it, as the keyboard
+  mode always has. Nothing in `examples/`, the `alhazen new` template or the
+  experiment repositories relied on the fallback. The mode still ends with
+  `LandingCheck`, so its endpoint is still where gaze first crossed into the
+  target, not where the saccade came to rest.
+- **`LandingCheck` refuses a verdict that cannot end it.** It checked
+  `on_hit` and `on_miss` only for `None`, so `on_hit=PhaseAction.CONTINUE`
+  was accepted, looped until the timeout and then recorded the hit as a
+  miss, and a typo for `ADVANCE` failed only mid-trial. It now uses
+  `LandingSample`'s check: an `Outcome` or `PhaseAction.ADVANCE`, anything
+  else a `ValueError` at construction naming the phase and the argument.
+- **`ResponseWindow`'s deadline runs from the cue's flip.** The reaction time
+  was timed from the flip that showed the cue, but `timeout_s` from the
+  phase's entry a frame earlier, so the subject had one frame less than
+  `timeout_s` with the cue on screen, and a key pressed with the cue up for
+  exactly `timeout_s` was scored a timeout. The deadline now counts from the
+  `t_<onset_event>` stamp, as `StimulusResponse`'s does, so a timed-out trial
+  ends one frame later than before. With `onset_event=None` it still runs
+  from phase entry.
+- **A misplaced closing phase no longer leaves frame QA mid-trial.**
+  `TrialEngine.run_trial` told the frame monitor a trial had started before
+  refusing a `must_be_last` phase that was not last; the check now comes
+  first.
 
 - **The dashboard server checks what it reads, and the page hides its
   token.** A request id sent as a JSON list or object raised `TypeError`
