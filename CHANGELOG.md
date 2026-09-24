@@ -255,6 +255,26 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Fixed
 
+- **A session build that failed part-way left the window, the tracker link
+  and the sync lines open.** `build_session`'s failure path released only the
+  dashboard, the mid-trial reward worker and the spike source. A failure once
+  the devices were up (a scheduler that raised, a refresh rate that disagreed
+  with the config) left the window open, the eye tracker connected and
+  `NidaqSync`'s NI-DAQ tasks reserved, which blocks the next session, and a
+  dispenser not wrapped for mid-trial reward was never closed. The display was
+  also constructed before the guard began, so a failure there left the
+  dashboard's child process running. And the dashboard's `stop()` was the one
+  unguarded release: if it raised, the reward worker and spike source were
+  skipped and its error replaced the build's. Now every resource the build
+  acquires registers its release as soon as it is held. A failure, or a
+  Ctrl-C, releases them all in reverse order, each attempted even when
+  another fails. A release that fails is logged with its traceback, and the
+  build's own error is the one raised. The tracker is released with
+  `shutdown(None)` once it has connected. Devices handed in (`tracker=`,
+  `reward=`, `sync=`, `spikes=`) are released like the rig's own, as the
+  runner's teardown already did. See
+  [docs/architecture.md](docs/architecture.md) §9.
+
 - **`experiment_git_sha` says `-dirty` when the experiment ran from
   uncommitted code.** It was `git rev-parse --short HEAD`, which names the
   commit and nothing else, so a session run from edited experiment code

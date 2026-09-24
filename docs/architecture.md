@@ -433,7 +433,9 @@ trial's segment. At teardown the runner adds `tracker.shutdown(...)`,
 retrieved recording is covered by it, and each as its own step, so one
 device's failure never prevents another's release. Only the run directory and
 the base name in that path are a promise; the suffix belongs to the backend
-(§4.7). A recording a backend cannot hand over is a failed step, never only a
+(§4.7). A build that fails before there is a runner releases the same devices
+itself, by the same one-failure-never-blocks-another rule (§9, the dashboard's
+guard). A recording a backend cannot hand over is a failed step, never only a
 log line: an EyeLink whose link is down at teardown raises a `TrackerError`
 naming the EDF left on its Host PC, and the database records the run as
 `failed`. Both real backends release their device in a `finally`, whatever
@@ -1593,9 +1595,20 @@ of the page is described in [`dashboard.md`](dashboard.md):
   vsync (frames under half a period, impossible on a locked panel), and no
   dropped-frame count can.
 
-The child starts before the display opens, so the whole remainder of
-`build_session` runs inside a guard that stops it on any failure — otherwise
-a tracker that will not connect leaves an orphaned server holding the port.
+The child starts before the display opens, inside a guard that covers the
+whole remainder of `build_session` — otherwise a tracker that will not connect
+leaves an orphaned server holding the port. The guard is an `ExitStack`, and
+it covers more than the child: everything the build acquires registers its
+release as soon as it is held — the child, the window, the tracker once it
+has connected (`shutdown(None)`: no recording is wanted from a session that
+never began), the sync output, the reward dispenser (or the `QueuedReward`
+wrapped around it), the spike source — whether the rig config built the
+device or the caller handed it in, because the runner's teardown releases
+either. A failure anywhere, or a Ctrl-C, runs those releases in reverse
+order; each is attempted even when another fails, and a release that fails is
+logged with its traceback rather than raised, so the build's own error is
+what propagates. A build that succeeds drops them unrun, and the runner's
+teardown takes over.
 
 `devices/automated.py` supplies a scripted subject — gaze that moves from
 fixation to a target on `STIM_ON`, alternating key answers after a response
