@@ -237,6 +237,22 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Fixed
 
+- **A session that failed while starting up left every device open.**
+  `SessionRunner.run` wrote the snapshot, registered the subject, attached
+  `session.log` and made the first dashboard publish before the `try` whose
+  `finally` tears the session down. By then the window, the eye tracker, the
+  reward and sync devices and the dashboard's process were all open, so a
+  failure in any of those steps (a `session.log` that could not be opened, a
+  `participants.tsv` another program held, a dashboard that could not
+  publish) left them all held and wrote no "session end" line. Every setup
+  step now runs inside that `try`. `session.log` is attached before the
+  subject is registered, so a registry failure is in the run's own log. A
+  session whose config snapshot cannot be written never started: its devices
+  are released, the tracker without a destination for its recording, and
+  nothing is written into its run directory, which a run without a snapshot
+  could not be analysed from. The original error is raised either way. See
+  [docs/architecture.md](docs/architecture.md) §10.
+
 - **The same run number on a later day wrote into the earlier run's
   folder.** `SessionPaths.create` refused only this run's own trials file,
   whose name carries the date; the folder's name does not. So `--run 1` on
