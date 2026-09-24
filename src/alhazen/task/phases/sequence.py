@@ -19,6 +19,7 @@ from typing import Any
 
 from alhazen.core.trial import Outcome, PhaseAction, TrialContext
 from alhazen.display.frames import FrameTimeline
+from alhazen.task.phases._draw import draw_stimuli
 
 
 class FrameSequence:
@@ -56,10 +57,7 @@ class FrameSequence:
 
         for key, attr, value in self._timeline.settings_at(self._frame):
             setattr(ctx.stimuli[key], attr, value)
-        for key in self._timeline.visible_at(self._frame):
-            stimulus = ctx.stimuli[key]
-            stimulus.update(ctx.dt)
-            stimulus.draw()
+        draw_stimuli(ctx, self._timeline.visible_at(self._frame))
         for name in self._timeline.events_at(self._frame):
             # Queued, not emitted: the event belongs to the flip that shows
             # this frame, which has not happened yet.

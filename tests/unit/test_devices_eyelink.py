@@ -771,6 +771,24 @@ class TestShutdown:
         assert "'alhazen.EDF'" in caplog.text
         assert host.closed
 
+    @pytest.mark.parametrize("step", ["setOfflineMode", "closeDataFile"])
+    def test_a_link_that_dies_with_no_run_behind_it_raises_a_tracker_error(
+        self, host_pylink, monkeypatch, step
+    ):
+        # check-rig's shutdown(None). Nothing is lost, but a link that dies
+        # while the EDF closes is still a fault, and it used to leave as
+        # pylink's bare RuntimeError — past check-rig's `except AlhazenError`,
+        # as a traceback instead of a failed check.
+        tracker, host = self.connected(host_pylink)
+        monkeypatch.setattr(FakeEyeLinkHost, step, link_terminated)
+        with pytest.raises(TrackerError) as excinfo:
+            tracker.shutdown(None)
+        message = str(excinfo.value)
+        assert "the EyeLink failed while closing the EDF (link terminated)" in message
+        assert "'alhazen.EDF'" in message and "100.1.1.1" in message
+        assert isinstance(excinfo.value.__cause__, RuntimeError)
+        assert host.closed
+
     def test_a_failed_transfer_still_releases_the_link(self, host_pylink, monkeypatch, tmp_path):
         tracker, host = self.connected(host_pylink)
         monkeypatch.setattr(FakeEyeLinkHost, "receiveDataFile", link_terminated)
@@ -825,3 +843,37 @@ class TestShutdown:
         with pytest.raises(RuntimeError, match="link terminated"):
             tracker.shutdown(tmp_path / "run.edf")
         assert (tmp_path / "run.edf").read_bytes() == b"EDF"
+
+
+class TestAFailedConnect:
+    """connect() opens the link and then the EDF on it. When the EDF step
+    fails, the link it opened is closed before the error leaves — as the
+    SpikeGLX and NI-DAQ backends clean up after their own failed connects —
+    rather than left open behind a tracker that reports no connection."""
+
+    @pytest.mark.parametrize("step", ["openDataFile", "sendCommand"])
+    def test_the_link_is_released_and_the_error_is_the_rigs(self, host_pylink, monkeypatch, step):
+        monkeypatch.setattr(FakeEyeLinkHost, step, link_terminated)
+        tracker = EyeLinkTracker(
+            EyeTrackerConfig(backend="eyelink"), None, SCREEN, host_pylink.clock
+        )
+        with pytest.raises(TrackerError, match="EyeLink connect to 100.1.1.1 failed"):
+            tracker.connect()
+        (host,) = host_pylink.hosts
+        assert host.closed
+        # Nothing is left for a later shutdown() to talk to: the link is gone.
+        host.closed = False
+        tracker.shutdown(None)
+        assert not host.closed
+
+    def test_a_close_that_fails_as_well_does_not_hide_the_connect_error(
+        self, host_pylink, monkeypatch, caplog
+    ):
+        monkeypatch.setattr(FakeEyeLinkHost, "openDataFile", link_terminated)
+        monkeypatch.setattr(FakeEyeLinkHost, "close", link_terminated)
+        tracker = EyeLinkTracker(
+            EyeTrackerConfig(backend="eyelink"), None, SCREEN, host_pylink.clock
+        )
+        with caplog.at_level(logging.ERROR), pytest.raises(TrackerError, match="connect"):
+            tracker.connect()
+        assert "EyeLink close() failed as well" in caplog.text

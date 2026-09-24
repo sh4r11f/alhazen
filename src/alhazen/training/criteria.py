@@ -23,9 +23,13 @@ from alhazen.training.stages import StageCriteria
 
 log = logging.getLogger(__name__)
 
-# One window entry per trial attempt. The keys the built-in metrics read are
-# written by the runner (training/supervisor.py); an experiment's own metric
-# sees the whole trial record and can read anything in it.
+# One window entry per trial attempt, written by the supervisor
+# (training/supervisor.py ``observe``). Every entry has the keys in
+# stages.WINDOW_KEYS, which the built-in metrics read — ``rt_ms`` is the RT
+# taken from whichever record field the curriculum's ``rt_key`` names. An
+# experiment's own metric sees those plus the record fields its curriculum
+# lists in ``record_fields``, and nothing else from the trial record: the
+# window is persisted in the subject's state file, so it is kept small.
 TrialSummary = dict[str, Any]
 MetricFn = Callable[[list[TrialSummary]], float]
 
@@ -92,7 +96,10 @@ def mean_rt_ms(window: list[TrialSummary]) -> float:
     """Mean reaction time over trials that recorded one.
 
     Returns NaN when nothing in the window has an RT, so a criterion on a
-    task that records none never accidentally reads as "fast enough".
+    task that records none never accidentally reads as "fast enough". The
+    supervisor warns when that goes on for a whole ``min_trials`` of
+    completed trials, since the usual cause is a curriculum whose ``rt_key``
+    does not match the field the task's phases write.
     """
     times = [
         float(trial["rt_ms"])

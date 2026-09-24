@@ -118,6 +118,41 @@ class TestResponseWindow:
         assert result.outcome is NO_RESPONSE
         assert "response_key" not in result.record
 
+    def test_the_deadline_runs_from_the_cue_flip_not_from_phase_entry(self):
+        # The subject has the whole timeout_s with the cue on screen, the same
+        # window the reaction time is measured in. The cue's flip is one frame
+        # after on_enter; a deadline counted from on_enter would cut that
+        # frame off the end, and a key read with the cue up for exactly
+        # timeout_s (frame 5, 3 frame periods after the flip) would be scored
+        # a timeout.
+        timeout_s = 3 * FRAME_S
+        harness, result = run(
+            [self.phase(timeout_s=timeout_s)],
+            [NOTHING, NOTHING, NOTHING, NOTHING, press("left"), NOTHING],
+        )
+        assert result.outcome is LEFT
+        assert result.record["rt_ms"] == pytest.approx(timeout_s * 1000, abs=1.0)
+
+    def test_the_timeout_comes_timeout_s_after_the_cue_flip(self):
+        timeout_s = 3 * FRAME_S
+        harness, result = run([self.phase(timeout_s=timeout_s)], [NOTHING])
+        assert result.outcome is NO_RESPONSE
+        # The frame that timed out read the clock at cue + timeout_s; TRIAL_END
+        # is stamped two flips later (that frame's own, then the engine's
+        # blanking flip).
+        after_cue = result.record["t_trial_end"] - result.record["t_response_cue"]
+        assert after_cue == pytest.approx(timeout_s + 2 * FRAME_S)
+
+    def test_without_an_onset_event_the_deadline_runs_from_phase_entry(self):
+        # No cue flip to count from: the window opened on entry, and so did
+        # its deadline. A key on frame 5 is too late — the window closed on
+        # frame 4, timeout_s after on_enter.
+        harness, result = run(
+            [self.phase(timeout_s=3 * FRAME_S, onset_event=None)],
+            [NOTHING, NOTHING, NOTHING, NOTHING, press("left"), NOTHING],
+        )
+        assert result.outcome is NO_RESPONSE
+
     def test_needs_keys_and_a_timeout_outcome(self):
         with pytest.raises(ValueError, match="at least one key"):
             ResponseWindow(keys={}, on_timeout=NO_RESPONSE)

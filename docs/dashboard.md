@@ -26,7 +26,12 @@ already computed over the whole session, so a cumulative curve does not begin
 partway up in trial 4000 of a long run.
 
 The server binds only to `127.0.0.1`, uses a random per-session token, and
-loads no internet resources. `--dashboard` and `--no-dashboard` override the
+loads no internet resources. The page takes the token out of the address bar
+as soon as it has read it (it keeps it for its own requests, and a reload of
+the tab still works). The server refuses a malformed request with a 400
+rather than guessing: a query parameter that is not an integer or is given
+twice, a request id that is not a string of 1 to 64 characters, or a body
+whose length is negative (larger than 4 KiB gets a 413). `--dashboard` and `--no-dashboard` override the
 rig for one run. `--no-dashboard-browser` starts the server without launching
 the default browser; the URL is written to the session log.
 

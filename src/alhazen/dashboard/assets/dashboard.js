@@ -104,19 +104,113 @@ function seriesColor(series) {
   return series.ramp === undefined ? slotColor(series.slot) : rampColor(series.ramp);
 }
 
-/** As many decimals as a number deserves — the same rule the Python side
- *  uses for the KPI strip, so the two never disagree on screen. */
+/** As many decimals as a number deserves — the same rule, and the same
+ *  characters, as the Python side's format_number (dashboard/panels.py),
+ *  which writes the KPI strip, so the two never disagree on screen. Python's
+ *  own formatting is followed exactly: `,` between thousands whatever the
+ *  browser's locale, 3 significant digits written the way Python's `.3g`
+ *  writes them (0.5, not 0.500; 1.23e-05 below 0.0001), and a value exactly
+ *  halfway between two roundings goes to the even one (2.125 -> 2.12), where
+ *  toFixed and toPrecision would round it up. The only difference is the
+ *  sign: minus() sets it as U+2212, as the Python side's presentation pass
+ *  does to format_number's text before it reaches the page. */
 function fmt(value) {
   if (!isFinite(value)) return '—';
   const magnitude = Math.abs(value);
   let text;
-  if (magnitude >= 1000) text = value.toLocaleString(undefined, { maximumFractionDigits: 0 });
-  else if (magnitude >= 100) text = value.toFixed(0);
-  else if (magnitude >= 10) text = value.toFixed(1);
-  else if (magnitude >= 1) text = value.toFixed(2);
+  if (magnitude >= 1000) text = groupThousands(fixedHalfEven(value, 0));
+  else if (magnitude >= 100) text = fixedHalfEven(value, 0);
+  else if (magnitude >= 10) text = fixedHalfEven(value, 1);
+  else if (magnitude >= 1) text = fixedHalfEven(value, 2);
   else if (magnitude === 0) text = '0';
-  else text = value.toPrecision(3);
+  else text = significantHalfEven(value, 3);
   return minus(text);
+}
+
+/** Whether `magnitude` (>= 0) lies exactly halfway between two numbers with
+ *  `decimals` decimals — the one case where JavaScript's rounding (the larger
+ *  magnitude) and Python's (the even last digit) disagree.
+ *
+ *  A number is such a tie when magnitude * 10^decimals is an odd multiple of
+ *  1/2. A double is a fraction with a power of two below it, so that holds
+ *  exactly when magnitude * 2^(decimals + 1) is an odd integer. Multiplying by
+ *  a power of two is exact in floating point, where multiplying by 10^decimals
+ *  would not be, so the test below has no rounding error of its own. */
+function isRoundingTie(magnitude, decimals) {
+  const scaled = magnitude * Math.pow(2, decimals + 1);
+  return Number.isInteger(scaled) && scaled % 2 === 1;
+}
+
+/** `digits` (a string of decimal digits) less one unit in its last place,
+ *  kept at the same length: '101' -> '100'. Done on a BigInt so no digit is
+ *  lost however long the string is. */
+function decrementDigits(digits) {
+  return String(BigInt(digits) - 1n).padStart(digits.length, '0');
+}
+
+/** `value` with `decimals` decimals, as Python's f'{value:.{decimals}f}'
+ *  writes it: ties to the even last digit. */
+function fixedHalfEven(value, decimals) {
+  const sign = value < 0 ? '-' : '';
+  const magnitude = Math.abs(value);
+  /* A whole number needs no rounding, and from 1e21 up toFixed switches to
+   * exponent notation ('1e+21') where Python still writes every digit.
+   * BigInt writes a whole double's exact digits. */
+  if (Number.isInteger(magnitude)) {
+    return sign + BigInt(magnitude).toString() + (decimals ? '.' + '0'.repeat(decimals) : '');
+  }
+  /* toFixed rounds correctly from the double's exact value, and on a tie
+   * takes the larger magnitude. When that left an odd last digit, the even
+   * neighbour is one unit below. */
+  let text = magnitude.toFixed(decimals);
+  if (isRoundingTie(magnitude, decimals) && Number(text[text.length - 1]) % 2 === 1) {
+    const point = text.indexOf('.');
+    const digits = decrementDigits(text.replace('.', ''));
+    text = point < 0 ? digits : digits.slice(0, point) + '.' + digits.slice(point);
+  }
+  return sign + text;
+}
+
+/** `value` (non-zero, finite) to `precision` significant digits, as Python's
+ *  f'{value:.{precision}g}' writes it: ties to the even last digit, trailing
+ *  zeros dropped, and exponent notation ('1.23e-05', at least two exponent
+ *  digits) when the rounded exponent is below -4 or at least `precision`. */
+function significantHalfEven(value, precision) {
+  const sign = value < 0 ? '-' : '';
+  const magnitude = Math.abs(value);
+  /* toExponential gives the rounded digits and the exponent after rounding
+   * (0.9995 -> '1.00e+0'), which is the exponent Python's rule looks at. */
+  const [mantissa, exponentText] = magnitude.toExponential(precision - 1).split('e');
+  const exponent = Number(exponentText);
+  let digits = mantissa.replace('.', '');
+  /* The last kept digit is worth 10^(exponent - precision + 1), i.e. it is
+   * decimal number (precision - 1 - exponent). A tie rounded up to an odd
+   * digit goes back down to the even one. When rounding carried into a new
+   * leading digit ('1.00'), the last digit is 0 and this never fires. */
+  if (isRoundingTie(magnitude, precision - 1 - exponent) &&
+      Number(digits[digits.length - 1]) % 2 === 1) {
+    digits = decrementDigits(digits);
+  }
+  /* Trailing zeros after the point go, then a point left with nothing after
+   * it: '0.500' -> '0.5', '1.00' -> '1'. A number with no point keeps its
+   * zeros, which are not decimals. */
+  const dropZeros = (text) =>
+    (text.includes('.') ? text.replace(/0+$/, '').replace(/\.$/, '') : text);
+  if (exponent < -4 || exponent >= precision) {
+    const shortMantissa = dropZeros(digits[0] + '.' + digits.slice(1));
+    const exponentDigits = String(Math.abs(exponent)).padStart(2, '0');
+    return sign + shortMantissa + 'e' + (exponent < 0 ? '-' : '+') + exponentDigits;
+  }
+  const fixed = exponent < 0
+    ? '0.' + '0'.repeat(-exponent - 1) + digits
+    : digits.slice(0, exponent + 1) + '.' + digits.slice(exponent + 1);
+  return sign + dropZeros(fixed);
+}
+
+/** A whole number's text with a comma between each group of three digits,
+ *  as Python's ',' format writes it: '-1234567' -> '-1,234,567'. */
+function groupThousands(text) {
+  return text.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
 /** A true minus sign. A hyphen in front of a number is a typesetting error in
@@ -125,8 +219,6 @@ function minus(text) {
   return String(text).replace(/^-(?=\d)/, '\u2212');
 }
 
-/** A title's first letter in capitals and nothing else changed, so a task's
- *  own wording ("P(occluder) by alignment") is kept as written. */
 /** What the reader sees for a data value: its display form when the session
  *  sent one, the record's own value otherwise, so a dashboard saved before
  *  display forms existed still draws. The raw values stay in the payload for
@@ -137,6 +229,8 @@ function shown(object, key) {
   return display !== undefined && display !== null && display !== '' ? display : object[key];
 }
 
+/** A title's first letter in capitals and nothing else changed, so a task's
+ *  own wording ("P(occluder) by alignment") is kept as written. */
 function sentenceStart(text) {
   const value = String(text || '');
   return value ? value[0].toUpperCase() + value.slice(1) : value;
@@ -179,7 +273,12 @@ function ellipsize(text, maxWidth, font) {
 /**
  * Tick values a human reads: multiples of 1, 2, 2.5 or 5 times a power of ten
  * covering [lo, hi]. `integer` forces a whole-number step, which is what a
- * trial axis needs — there is no trial 7.5.
+ * trial axis needs — there is no trial 7.5. On such an axis a step below 1
+ * becomes 1, and a step of 2.5 becomes 5: the next step on the ladder, as the
+ * ladder itself would choose (the smallest nice step at least the raw one,
+ * so never more ticks than asked for). Rounding 2.5 to 3 instead gave
+ * 0, 3, 6, 9 on a 0–10 axis — not a step anyone counts in, and one that
+ * pushed niceDomain's end out to 12.
  */
 function niceTicks(lo, hi, target, integer) {
   if (!(hi > lo)) return [lo];
@@ -187,7 +286,9 @@ function niceTicks(lo, hi, target, integer) {
   const magnitude = Math.pow(10, Math.floor(Math.log10(raw)));
   const normalised = raw / magnitude;
   let step = (normalised <= 1 ? 1 : normalised <= 2 ? 2 : normalised <= 2.5 ? 2.5 : normalised <= 5 ? 5 : 10) * magnitude;
-  if (integer) step = Math.max(1, Math.round(step));
+  /* Only 2.5 itself is not whole among the ladder's steps of 1 and up (25,
+   * 250, … are); Math.round only tidies floating-point dust from the others. */
+  if (integer) step = step <= 1 ? 1 : step === 2.5 ? 5 : Math.round(step);
   const ticks = [];
   const first = Math.ceil(lo / step - 1e-9) * step;
   for (let value = first; value <= hi + step * 1e-9; value += step) {
@@ -2181,8 +2282,22 @@ window.matchMedia('(prefers-color-scheme: dark)')
 /* Commands and polling                                                */
 /* ------------------------------------------------------------------ */
 
-let token = new URLSearchParams(location.search).get('token') || sessionStorage.getItem('alhazen-token');
+/* The session token arrives in the URL the session opened (…/?token=…). It is
+ * read once, kept in this variable for every API call, and saved in
+ * sessionStorage so a reload of this tab still has it. Then it is taken out of
+ * the address bar: a URL left there is seen by anyone looking at the screen,
+ * lands in the browser's history and in any screenshot or copied link. The
+ * saved copy in figures/ has no token in its URL, so it is never rewritten. */
+const pageParams = new URLSearchParams(location.search);
+let token = pageParams.get('token') || sessionStorage.getItem('alhazen-token');
 if (token) sessionStorage.setItem('alhazen-token', token);
+if (pageParams.has('token')) {
+  pageParams.delete('token');
+  const rest = pageParams.toString();
+  /* replaceState, not a navigation: the page is not reloaded and the Back
+   * button does not return to the URL with the token. */
+  history.replaceState(history.state, '', location.pathname + (rest ? '?' + rest : '') + location.hash);
+}
 
 async function command(name) {
   if (name === 'quit' && !confirm('Quit this session?')) return;
