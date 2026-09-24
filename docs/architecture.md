@@ -1094,9 +1094,13 @@ All of them: draw randomness only from the injected Generator, hear about
 **every** outcome, and re-serve any condition whose outcome was not
 `completed`. Schedulers read `TrialResult.outcome` and never the record — a
 scheduler reaching into measurements is how a scheduler and an analysis end
-up disagreeing about what "correct" meant. `QuestPlus` takes a
-`score: Callable[[TrialResult], bool]` for tasks titrating something other
-than accuracy.
+up disagreeing about what "correct" meant. The adaptive ones —
+`UpDownStaircase` (so each of `InterleavedStaircases`) and `QuestPlus` —
+take a `score: Callable[[TrialResult], bool]` for tasks titrating something
+other than accuracy, and `make_scheduler` builds every adaptive kind with the
+task's `score_trial` (default: `outcome.success`). The scorer is asked about
+completed trials only; an attempt with no measurement is re-served, never
+scored.
 
 `SchedulerConfig` (+ `StaircaseConfig`, `QuestConfig`, `BlockConfig`) is the
 config surface, so moving from constant stimuli to a staircase is a YAML edit
