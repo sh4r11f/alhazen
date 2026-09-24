@@ -161,12 +161,13 @@ def make_manual_reward(
     rig has no dispenser.
 
     Through a ``QueuedReward`` — a task that asks for reward mid-trial — it
-    overrides the queue (``QueuedReward.deliver_next``). The key blocks the
-    frame it was pressed on until the pump is done; behind the queued drops
-    that wait could be every one of their pulse trains, ahead of them it is
-    at most the train already on the valve plus its own. The end-of-trial pay
-    does not come through here — the runner calls ``deliver`` — so it still
-    takes its turn behind the queue.
+    overrides the queue (``QueuedReward.deliver_manual``): every drop still
+    waiting is cancelled, each with its own REWARD_CANCELLED, and the manual
+    reward is delivered once, as soon as the train already on the valve
+    finishes. The key blocks the frame it was pressed on until the pump is
+    done, so that wait is at most that train plus its own. The end-of-trial
+    pay does not come through here — the runner calls ``deliver`` — so it is
+    never cancelled and takes its turn as before.
 
     Any other dispenser is the device itself, called on the session thread
     exactly as before.
@@ -177,7 +178,7 @@ def make_manual_reward(
     if reward is None:
         return None
     if isinstance(reward, QueuedReward):
-        return lambda: reward.deliver_next(pulses)
+        return lambda: reward.deliver_manual(pulses)
     return lambda: reward.deliver(pulses)
 
 
@@ -575,9 +576,9 @@ def build_session(
 
         manual_pulses = reward_pulses if reward_pulses is not None else RewardPulses()
         # One hook for the engine's `r` key and the runner's pause menu.
-        # Through the wrapper it goes ahead of the queued drops, while the
-        # runner's end-of-trial pay calls deliver() and takes its turn
-        # (make_manual_reward).
+        # Through the wrapper it cancels the queued drops and goes next,
+        # while the runner's end-of-trial pay calls deliver(), is never
+        # cancelled, and takes its turn (make_manual_reward).
         on_manual_reward = make_manual_reward(reward, manual_pulses)
 
         engine = TrialEngine(

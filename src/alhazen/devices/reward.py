@@ -13,9 +13,10 @@ earned — it only plays out the pulse train it is handed.
 :class:`QueuedReward` wraps a backend for a task that asks for reward while a
 trial runs: it serialises every delivery onto one worker thread, so a
 mid-trial drop never blocks the frame loop and never overlaps another
-delivery on the valve. The experimenter's manual reward goes ahead of the
-drops still waiting (``QueuedReward.deliver_next``); a pulse train already on
-the valve always finishes.
+delivery on the valve. The experimenter's manual reward overrides the queue
+(``QueuedReward.deliver_manual``): it cancels every drop still waiting and is
+delivered once, as soon as the pulse train already on the valve finishes —
+which is never cut short.
 """
 
 from __future__ import annotations
@@ -184,51 +185,55 @@ class QueuedReward:
       queued, then for its own delivery, and re-raises a failure on the
       caller's thread — the same contract as any ``RewardDispenser``, which
       is why the runner need not know it holds this rather than the device.
-    - ``deliver_next(pulses)`` — the experimenter's manual reward (the ``r``
+      Never cancelled.
+    - ``deliver_manual(pulses)`` — the experimenter's manual reward (the ``r``
       key during a trial, R in the pause menu). The same synchronous contract
-      as ``deliver``, but it overrides the queue: it goes on the valve as soon
-      as the delivery already there finishes, ahead of every drop still
-      waiting.
+      as ``deliver``, but it overrides the queue: every drop still waiting is
+      cancelled (reported through ``completed()``, never delivered), and the
+      manual reward is delivered once, as soon as the delivery already on the
+      valve finishes. Drops asked for after it queue as usual.
 
     So the order at the valve is: the delivery on it finishes (it is never
-    cut short — ``deliver_next`` says why); then the oldest waiting
-    ``deliver_next``; then the oldest of everything else. Going ahead moves
-    nothing else: the drops still waiting keep their order and are all
-    delivered after it.
+    cut short — ``deliver_manual`` says why); then the oldest waiting manual
+    reward; then the oldest of everything else — which, once a manual reward
+    has emptied the queue of drops, is only what was asked for after it.
 
     Threading: the worker only calls the dispenser and puts plain-data
-    completions on a thread-safe queue. It never touches the event bus, the
-    recorder or a trial record — the session thread drains the queue and
-    emits the events (core/engine.py), so the one-writer rule the bus and
-    recorder rely on holds.
+    completions on a thread-safe queue; a cancellation is put there by the
+    thread that asked for the manual reward. Neither ever touches the event
+    bus, the recorder or a trial record — the session thread drains the
+    queue and emits the events (core/engine.py), so the one-writer rule the
+    bus and recorder rely on holds.
     """
 
     def __init__(self, dispenser: RewardDispenser) -> None:
         self.dispenser = dispenser
         self._done: queue.Queue[RewardCompletion] = queue.Queue()
         # One lock guards everything the session thread and the worker share:
-        # both parts of the line below, _outstanding and _closed. One lock,
-        # not one per structure, so a count taken while a job joins the line
-        # always agrees with where the job was put: the worker cannot take a
-        # job, or finish one, in between.
+        # both lines below, _outstanding and _closed. One lock, not one per
+        # structure, so a count taken while a job joins a line always agrees
+        # with where the job was put, and a manual reward's cancellations and
+        # its own place in line are one step: the worker cannot take a job,
+        # or finish one, in between.
         self._lock = threading.Lock()
         # Two conditions on that one lock, each with its own kind of waiter:
         # the worker waits on _wakeup for a job to arrive (or for close()),
         # and wait_idle waits on _idle for the last delivery to finish.
         self._wakeup = threading.Condition(self._lock)
         self._idle = threading.Condition(self._lock)
-        # The jobs waiting for the valve: one line in two parts, each first
-        # in, first out. deliver_next joins the end of _front, which is ahead
-        # of everything in _back; submit and deliver join the end of _back.
-        # The worker empties _front before it takes anything from _back
-        # (_take). A job leaves the line when the worker takes it, so neither
-        # part ever holds the delivery that is on the valve.
-        self._front: deque[_Job] = deque()
-        self._back: deque[_Job] = deque()
-        # Deliveries asked for and not yet finished: everything in the line
-        # plus the one on the valve. What a new drop reports as queued_behind
-        # (all of it goes before a job joining the back) and what wait_idle
-        # waits to reach zero.
+        # The jobs waiting for the valve, in two lines, each first in, first
+        # out. _manual holds manual rewards (deliver_manual); _queue holds the
+        # mid-trial drops (submit) and the end-of-trial pay (deliver). The
+        # worker empties _manual before it takes anything from _queue (_take).
+        # A job leaves its line when the worker takes it, so neither line ever
+        # holds the delivery that is on the valve — which is why a manual
+        # reward, cancelling what is in _queue, can never cut that one short.
+        self._manual: deque[_Job] = deque()
+        self._queue: deque[_Job] = deque()
+        # Deliveries asked for and not yet finished or cancelled: everything
+        # in both lines plus the one on the valve. What a new drop reports as
+        # queued_behind (all of it goes before a job joining _queue) and what
+        # wait_idle waits to reach zero.
         self._outstanding = 0
         self._closed = False
         # A daemon, so a process exiting after a crash is never held open by
@@ -246,35 +251,43 @@ class QueuedReward:
 
         Exact when taken: everything outstanding goes before a new drop — the
         delivery on the valve, a manual reward still waiting, the drops
-        queued earlier. A manual reward asked for *after* this drop goes
-        before it too; that one is on record as its own manual REWARD.
+        queued earlier. A drop asked for while a manual reward waits for the
+        valve queues behind it and is not cancelled by it: a manual reward
+        cancels only what was waiting when it was asked for.
         """
-        return self._enqueue(_Job(pulses=request.pulses, request=request), front=False)
+        return self._enqueue(_Job(pulses=request.pulses, request=request), manual=False)
 
     def deliver(self, pulses: RewardPulses) -> None:
         """Deliver after everything already queued, and wait for it.
 
-        The end-of-trial pay. It never jumps the queue: the runner pays
-        between trials, where no frame is waiting on it, and only after
-        ``settle_rewards`` has waited for every drop — so it finds the queue
-        empty anyway, and follows the trial's drops at the valve.
+        The end-of-trial pay. It never jumps the queue and a manual reward
+        never cancels it: the runner pays between trials, where no frame is
+        waiting on it, and only after ``settle_rewards`` has waited for every
+        drop — so it finds the queue empty anyway, and follows the trial's
+        drops at the valve. It is the trial's outcome, earned and decided;
+        only drops, which a manual reward replaces, are ever cancelled.
         """
-        self._deliver_and_wait(pulses, front=False)
+        self._deliver_and_wait(pulses, manual=False)
 
-    def deliver_next(self, pulses: RewardPulses) -> None:
-        """Deliver ahead of every queued delivery, as soon as the valve is
-        free, and wait for it.
+    def deliver_manual(self, pulses: RewardPulses) -> None:
+        """The experimenter's manual reward: override the queue, deliver this
+        once, and wait for it.
 
-        The experimenter's manual reward. Its caller is the session thread:
-        the ``r`` key blocks the frame it was pressed on until the pump is
-        done, so that the manual REWARD is emitted after the delivery it
-        records. Behind the queue that wait could be every queued drop's
-        pulse train, with the reward the experimenter asked for arriving
-        late. Ahead of it, the wait is at most the rest of the train already
-        on the valve plus this one's own. The drops it overtakes are neither
-        dropped nor merged: they stay queued and follow it, in their order.
-        Several calls go in the order made, all ahead of the queue (a session
-        makes one at a time: the key is synchronous).
+        Every mid-trial drop still waiting for the valve is cancelled — taken
+        out of the queue and reported through ``completed()`` with
+        ``cancelled_by="manual"``, so each gets its own REWARD_CANCELLED and
+        none vanishes — and this reward is delivered as soon as the delivery
+        already on the valve finishes. Drops asked for after this call queue
+        as usual, behind it: the queue builds up again on its own. The
+        end-of-trial pay (``deliver``) is never cancelled; one still waiting
+        is delivered after this.
+
+        Its caller is the session thread: the ``r`` key blocks the frame it
+        was pressed on until the pump is done, so that the manual REWARD is
+        emitted after the delivery it records. The wait is at most the rest
+        of the train already on the valve plus this one's own. Several calls
+        go in the order made, each cancelling the drops waiting when it was
+        made (a session makes one at a time: the key is synchronous).
 
         The train already on the valve is not cut short, for two reasons:
 
@@ -291,10 +304,11 @@ class QueuedReward:
           flood the subject.
 
         Interrupting would save at most one train's wait. A failure is
-        re-raised here, on the caller's thread; the worker carries on with
-        the queue.
+        re-raised here, on the caller's thread. The drops it cancelled stay
+        cancelled — each is already reported — and the worker carries on
+        with whatever is asked for next.
         """
-        self._deliver_and_wait(pulses, front=True)
+        self._deliver_and_wait(pulses, manual=True)
 
     def completed(self) -> list[RewardCompletion]:
         """Every mid-trial completion reported since the last call, oldest
@@ -311,7 +325,8 @@ class QueuedReward:
 
         Once this returns, every mid-trial completion is already in the
         completion queue: the worker reports a request *before* it counts it
-        finished (``_run``).
+        finished (``_run``), and a cancellation is reported in the same step
+        that stops counting it (``_cancel_queued_drops``).
         """
         with self._idle:
             while self._outstanding:
@@ -330,9 +345,9 @@ class QueuedReward:
         with self._lock:
             if self._closed:
                 return
-            # Nothing can join the line from here on (_enqueue refuses), so
-            # the worker delivers what is already in it and then stops: _take
-            # returns None only once both parts of the line are empty.
+            # Nothing can join a line from here on (_enqueue refuses), so the
+            # worker delivers what is already waiting and then stops: _take
+            # returns None only once both lines are empty.
             self._closed = True
             self._wakeup.notify()
         try:
@@ -346,22 +361,28 @@ class QueuedReward:
                 # can only come from a path that skipped it. Their outcomes
                 # never reached events.csv; the log is the last place to say.
                 for done in unreported:
+                    if done.cancelled_by is not None:
+                        how = f"CANCELLED by a {done.cancelled_by} reward, never delivered"
+                    elif done.error is None:
+                        how = "delivered"
+                    else:
+                        how = f"FAILED — {done.error}"
                     log.error(
-                        "mid-trial reward %r (frame %s) finished after the session stopped "
+                        "mid-trial reward %r (frame %s) ended after the session stopped "
                         "reporting: %s",
                         done.request.reason,
                         done.request.frame,
-                        "delivered" if done.error is None else f"FAILED — {done.error}",
+                        how,
                     )
         finally:
             self.dispenser.close()
 
-    def _deliver_and_wait(self, pulses: RewardPulses, *, front: bool) -> None:
-        """Put a synchronous delivery in line — at the end of the front part
-        or of the back — and block until the worker has delivered it,
-        re-raising its failure on this thread."""
+    def _deliver_and_wait(self, pulses: RewardPulses, *, manual: bool) -> None:
+        """Put a synchronous delivery in line — a manual reward in the manual
+        line, the end-of-trial pay at the end of the queue — and block until
+        the worker has delivered it, re-raising its failure on this thread."""
         job = _Job(pulses=pulses, finished=threading.Event())
-        self._enqueue(job, front=front)
+        self._enqueue(job, manual=manual)
         assert job.finished is not None
         # No timeout: the worker sets this whatever the dispenser does, and
         # a real dispenser bounds its own hardware wait (NidaqReward).
@@ -369,14 +390,18 @@ class QueuedReward:
         if job.error is not None:
             raise job.error
 
-    def _enqueue(self, job: _Job, *, front: bool) -> int:
+    def _enqueue(self, job: _Job, *, manual: bool) -> int:
         """Put a job in line and wake the worker; return how many deliveries
-        are ahead of it (on the valve or earlier in the line).
+        are ahead of it (on the valve or earlier in line).
 
-        Everything happens under the one lock, so the count is exact: the
-        worker cannot take a job, or finish one, between the count and the
-        append.
+        A manual reward first cancels every drop waiting in the queue
+        (``_cancel_queued_drops``). All of it happens under the one lock, so
+        the count is exact and the cancelling and the manual reward's place
+        in line are one step: the worker cannot take a job, or finish one, in
+        between. A drop it has not taken yet is cancelled; one it has taken
+        is on the valve, and finishes.
         """
+        cancelled: list[RewardRequest] = []
         with self._lock:
             if self._closed:
                 raise RewardError("reward delivery requested after the reward worker was closed")
@@ -385,33 +410,63 @@ class QueuedReward:
                 # the thread itself was killed. Queuing onto it would wait
                 # forever for a delivery nobody makes.
                 raise RewardError("the reward worker thread is no longer running")
-            if front:
-                # It overtakes the whole back part. Still ahead of it: the
-                # delivery on the valve, which always finishes, and any
-                # earlier front job — which is everything outstanding except
-                # the back part.
-                overtaken = len(self._back)
-                ahead = self._outstanding - overtaken
-                self._front.append(job)
+            if manual:
+                cancelled = self._cancel_queued_drops()
+                # Still ahead of it: the delivery on the valve, which always
+                # finishes, and any earlier manual reward — everything
+                # outstanding except what is left in the queue, which can
+                # only be an end-of-trial pay, and which it goes ahead of.
+                ahead = self._outstanding - len(self._queue)
+                self._manual.append(job)
             else:
-                # Everything outstanding goes before a job joining the back.
-                overtaken = 0
+                # Everything outstanding goes before a job joining the queue.
                 ahead = self._outstanding
-                self._back.append(job)
+                self._queue.append(job)
             self._outstanding += 1
             # notify(), not notify_all(): the worker is the only thread that
             # ever waits on _wakeup.
             self._wakeup.notify()
-        if overtaken:
-            # Said, because the drops it overtook are now delivered one
-            # delivery later than the queued_behind on their REWARD events.
-            log.info(
-                "reward %s goes to the valve ahead of %d queued delivery(ies), "
-                "which follow it in their order",
-                job.pulses,
-                overtaken,
+        if cancelled:
+            # Said in the log as well as in the events (REWARD_CANCELLED,
+            # which the engine emits when it drains them): drops the subject
+            # earned and will not receive.
+            log.warning(
+                "manual reward cancels %d queued mid-trial drop(s), which will not be "
+                "delivered: %s",
+                len(cancelled),
+                ", ".join(f"{request.reason!r} (frame {request.frame})" for request in cancelled),
             )
         return ahead
+
+    def _cancel_queued_drops(self) -> list[RewardRequest]:
+        """Take every mid-trial drop out of the queue, report each as
+        cancelled, and return their requests. The caller holds the lock.
+
+        Only drops. A synchronous job in the queue — the end-of-trial pay,
+        whose caller is blocked on it — is never cancelled and keeps its
+        place. The delivery on the valve is in neither line, so it is never
+        touched. Each cancellation is reported in the same step that stops
+        counting it as outstanding, so ``wait_idle`` returning still means
+        every completion is already in the completion queue.
+        """
+        kept: deque[_Job] = deque()
+        cancelled: list[RewardRequest] = []
+        for waiting in self._queue:
+            if waiting.request is None:
+                kept.append(waiting)
+                continue
+            cancelled.append(waiting.request)
+            # "manual" is the only thing that cancels a drop today, and the
+            # value the REWARD_CANCELLED payload carries (core/events.py).
+            # Put while holding our lock, which cannot deadlock: the
+            # completion queue's own lock is only ever held inside its put and
+            # get, and nothing waits for our lock while holding it.
+            self._done.put(RewardCompletion(request=waiting.request, cancelled_by="manual"))
+        self._queue = kept
+        # Never reaches zero here — the manual reward that cancelled them is
+        # counted next, in the same step — so nobody in wait_idle needs waking.
+        self._outstanding -= len(cancelled)
+        return cancelled
 
     # ------------------------------------------------------------------
     # The worker thread
@@ -419,21 +474,21 @@ class QueuedReward:
 
     def _take(self) -> _Job | None:
         """The next job for the valve, or None once close() has been called
-        and the line is empty. Blocks while there is nothing to deliver.
+        and both lines are empty. Blocks while there is nothing to deliver.
 
-        The front part first, then the back: this is the one place the
+        The manual line first, then the queue: this is the one place the
         order at the valve is decided.
         """
         with self._wakeup:
             while True:
-                if self._front:
-                    return self._front.popleft()
-                if self._back:
-                    return self._back.popleft()
+                if self._manual:
+                    return self._manual.popleft()
+                if self._queue:
+                    return self._queue.popleft()
                 if self._closed:
                     return None
                 # Releases the lock while it waits, so the session thread
-                # can add to the line; re-checked on every wake-up.
+                # can add to a line; re-checked on every wake-up.
                 self._wakeup.wait()
 
     def _run(self) -> None:
