@@ -11,7 +11,6 @@ import yaml
 
 from alhazen import build_session
 from alhazen.config.loader import load_model, load_rig
-from alhazen.session.builder import make_gaze_input_provider
 from alhazen.testing import FakeClock
 from alhazen.training import Curriculum, Ramp, Stage, StageCriteria, TrainingState
 from support import load_example_task
@@ -76,11 +75,10 @@ def run_session(tmp_path: Path, trials: int, run: int) -> None:
     )
     curriculum = FAST_CURRICULUM
 
-    # One clock for the session and the scripted subject, which stamps its
-    # gaze samples from the clock it is built with; it used to get a second,
-    # unrelated MonotonicClock. A fake one, advanced a frame per flip by the
-    # simulated display, so the session runs in the same simulated time on
-    # every machine.
+    # One clock for the session and the scripted subject, which build_session
+    # hands to the subject through configure(). A fake one, advanced a frame
+    # per flip by the simulated display, so the session runs in the same
+    # simulated time on every machine.
     clock = FakeClock()
     runner = build_session(
         rig=rig,
@@ -93,16 +91,12 @@ def run_session(tmp_path: Path, trials: int, run: int) -> None:
         iti=params.iti,
         simulated_frame_period_s=0.0,
         date_yyyymmdd="20260826",
+        # The example's own stand-in subject, wired by the session like any
+        # tracker: configured with its screen and this clock, read for gaze,
+        # and told of each trial start through the tracker messages.
+        tracker=ImprovingSubject(start_error_dva=5.0),
         clock=clock,
     )
-    # Improving over eight trials rather than twenty, matching the shortened
-    # criteria windows: the subject still has to earn each promotion.
-    subject = ImprovingSubject(runner._screen, clock)
-    subject._start_error_px = runner._screen.deg2px(5.0)
-    runner._tracker = subject
-    runner._engine._input_provider = make_gaze_input_provider(subject, runner._screen)
-    runner._engine._health_checks = ()
-    runner._bus.subscribe(subject.on_event)
     runner.run()
 
 

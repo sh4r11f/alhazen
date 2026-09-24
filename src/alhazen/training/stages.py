@@ -22,6 +22,12 @@ from pydantic import BaseModel, model_validator
 from alhazen.config.models import Model
 from alhazen.errors import ConfigError
 
+# The keys every criteria-window entry carries, written by the supervisor
+# (training/supervisor.py ``observe``) and read by the built-in metrics
+# (training/criteria.py). Here, beside the Curriculum, because the
+# curriculum's ``record_fields`` must not reuse them.
+WINDOW_KEYS = ("outcome", "completed", "success", "rt_ms", "stage")
+
 
 class Ramp(Model):
     """A parameter that slides from ``start`` to ``end`` as the subject works.
@@ -119,11 +125,34 @@ class Curriculum(Model):
     # a subject that has finished its curriculum usually keeps working at the
     # final stage until the experimenter stops.
     stop_when_complete: bool = False
+    # The trial-record field holding the reaction time ``mean_rt_ms`` reads.
+    # The phases that measure one let the task rename it (``rt_record_key``
+    # on the gaze and response phases), so the curriculum has to be told the
+    # same name. Whatever it is called on the row, the criteria window keeps
+    # it as ``rt_ms``, so a state file written before this setting existed
+    # means the same thing after it.
+    rt_key: str = "rt_ms"
+    # Further trial-record fields copied into each criteria-window entry, for
+    # an experiment's own metric (``register_metric``) to read. Only these:
+    # the window is saved in the subject's hand-editable state file, and a
+    # whole trial record per attempt would bury it.
+    record_fields: list[str] = []
 
     @model_validator(mode="after")
     def _valid(self) -> Curriculum:
         if not self.stages:
             raise ValueError("a curriculum needs at least one stage")
+        if not self.rt_key:
+            raise ValueError("rt_key names the record field holding the RT; it cannot be empty")
+        shadowed = sorted(set(self.record_fields) & set(WINDOW_KEYS))
+        if shadowed:
+            # Copied in under their own names, these would overwrite what the
+            # built-in metrics read — a record column called "completed"
+            # would silently redefine completed_rate.
+            raise ValueError(
+                f"record_fields {shadowed} would replace the built-in window keys "
+                f"{list(WINDOW_KEYS)}; the RT is chosen with rt_key instead"
+            )
         names = [stage.name for stage in self.stages]
         if len(set(names)) != len(names):
             duplicates = sorted({name for name in names if names.count(name) > 1})

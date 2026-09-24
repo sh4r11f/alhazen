@@ -43,6 +43,20 @@ class StageChange:
     reason: str  # "criteria" or "manual"
 
 
+@dataclass(frozen=True)
+class _Completion:
+    """A promotion past the last stage: the curriculum is finished.
+
+    Its own result rather than a None from ``_change_by``, so that asking
+    what a move would be has no side effect. Only ``_commit`` acts on it —
+    which means between trials, like every other move, and not the moment a
+    promote key is pressed mid-trial.
+    """
+
+    last_stage: str
+    reason: str  # "criteria" or "manual"
+
+
 class TrainingSupervisor:
     """Applies a curriculum to a task across a session."""
 
@@ -72,8 +86,16 @@ class TrainingSupervisor:
         # (the hold key), for the sessions where a human wants to watch a
         # stage out rather than let a criterion end it.
         self.holding = False
+        # Set only by `_finish`, i.e. when a completion is committed between
+        # trials; the runner reads it after each transition.
         self.complete = False
-        self._pending: StageChange | None = None
+        self._pending: StageChange | _Completion | None = None
+        # For the one warning about an RT criterion with no RT to judge
+        # (`_check_rt_is_recorded`): completed trials seen this session,
+        # whether any of them carried the RT, and whether we have said so.
+        self._completed_seen = 0
+        self._rt_seen = False
+        self._rt_warned = False
         self.apply_current_stage()
 
     # ------------------------------------------------------------------
@@ -184,14 +206,24 @@ class TrainingSupervisor:
                 fault,
             )
             return
+        # The RT is read from the field the curriculum names (the phases let
+        # a task rename it) but always kept as "rt_ms": that is what
+        # mean_rt_ms reads, and what every state file already saved holds.
+        rt = record.get(self._curriculum.rt_key)
         summary = {
             "outcome": outcome.name,
             "completed": bool(outcome.completed),
             "success": bool(outcome.success) if outcome.success is not None else None,
-            "rt_ms": record.get("rt_ms"),
+            "rt_ms": rt,
             "stage": self.stage.name,
         }
+        # The fields an experiment's own metric asked for, under their own
+        # names. Absent from this record -> None, as rt_ms is.
+        for field in self._curriculum.record_fields:
+            summary[field] = _storable(field, record.get(field))
         self._state.note_attempt(summary, self.stage.criteria.window)
+        if summary["completed"]:
+            self._check_rt_is_recorded(rt)
         # Ramps advance with completed trials, so the parameters have to be
         # rebuilt now for the NEXT trial to be built at the new value.
         if summary["completed"] and self.stage.ramps:
@@ -205,11 +237,20 @@ class TrainingSupervisor:
         overruling the criteria on purpose.
         """
         if self._pending is not None:
-            change, self._pending = self._pending, None
-            return self._commit(change)
+            move, self._pending = self._pending, None
+            return self._commit(move)
         if self.holding:
             return None
-        verdict = decide(self.stage.criteria, self._state.window)
+        criteria = self.stage.criteria
+        if self.complete and self._at_last_stage():
+            # Finished, and still at the last stage: there is nothing left to
+            # promote to. The window is not cleared by a completion (no stage
+            # changed), so the promotion that finished the curriculum would
+            # otherwise be re-decided — and re-announced — on every later
+            # trial. Demotion is still judged: a finished subject that falls
+            # apart should still be sent back.
+            criteria = criteria.model_copy(update={"promote_when": {}})
+        verdict = decide(criteria, self._state.window)
         if verdict is None:
             return None
         return self._commit(self._change_by(1 if verdict == "promote" else -1, "criteria"))
@@ -221,9 +262,9 @@ class TrainingSupervisor:
         stage change mid-trial would produce a row recorded at a difficulty
         that was only true for part of it.
         """
-        change = self._change_by(direction, "manual")
-        if change is not None:
-            self._pending = change
+        move = self._change_by(direction, "manual")
+        if move is not None:
+            self._pending = move
 
     def toggle_hold(self) -> bool:
         """Suspend or resume automatic transitions. Returns the new state."""
@@ -231,8 +272,15 @@ class TrainingSupervisor:
         log.info("automatic stage transitions %s", "held" if self.holding else "resumed")
         return self.holding
 
-    def _change_by(self, direction: int, reason: str) -> StageChange | None:
-        """The transition ``direction`` implies from where the subject is."""
+    def _at_last_stage(self) -> bool:
+        return self._curriculum.index_of(self._state.stage) == len(self._curriculum.stages) - 1
+
+    def _change_by(self, direction: int, reason: str) -> StageChange | _Completion | None:
+        """The move ``direction`` implies from where the subject is.
+
+        A query: it changes nothing. Past the last stage it answers
+        ``_Completion``, which only ``_commit`` acts on.
+        """
         stages = self._curriculum.stages
         index = self._curriculum.index_of(self._state.stage)
         target = index + direction
@@ -240,22 +288,83 @@ class TrainingSupervisor:
             log.info("already at the first stage; demotion ignored")
             return None
         if target >= len(stages):
-            # Past the last stage: the curriculum is finished. Whether that
-            # ends the session is the curriculum's own decision.
-            self.complete = True
-            log.info("curriculum complete: %r was the last stage", stages[index].name)
-            return None
+            return _Completion(stages[index].name, reason)
         return StageChange(stages[index].name, stages[target].name, reason)
 
-    def _commit(self, change: StageChange | None) -> StageChange | None:
-        if change is None:
+    def _commit(self, move: StageChange | _Completion | None) -> StageChange | None:
+        """Carry out a move between trials. A completion changes no stage,
+        so it returns None: the runner has no STAGE_CHANGED to emit, and
+        reads ``complete`` instead."""
+        if move is None:
             return None
+        if isinstance(move, _Completion):
+            self._finish(move)
+            return None
+        change = move
         self._state.note_transition(
             change.from_stage, change.to_stage, change.reason, self._session_id
         )
         self.apply_current_stage()
         log.info("stage %s -> %s (%s)", change.from_stage, change.to_stage, change.reason)
         return change
+
+    def _finish(self, completion: _Completion) -> None:
+        """Mark the curriculum finished, and say so once.
+
+        Whether that ends the session is the curriculum's own decision
+        (``stop_when_complete``, acted on by the runner). A second completion
+        — the promote key pressed again at the end — changes nothing and is
+        only acknowledged.
+        """
+        if self.complete:
+            log.info(
+                "curriculum already complete (%r is the last stage); %s promotion ignored",
+                completion.last_stage,
+                completion.reason,
+            )
+            return
+        self.complete = True
+        log.info(
+            "curriculum complete: %r was the last stage (%s)",
+            completion.last_stage,
+            completion.reason,
+        )
+
+    def _check_rt_is_recorded(self, rt: Any) -> None:
+        """Warn, once per session, about an RT criterion with no RT to judge.
+
+        ``mean_rt_ms`` is NaN over a window with no RT in it, and NaN meets
+        no threshold — deliberately, so a missing RT never reads as "fast
+        enough". The cost is that a curriculum whose ``rt_key`` does not
+        match the field the task's phases write (their ``rt_record_key``)
+        never promotes and never demotes on RT, in silence. It cannot be
+        caught at build — which phases write what is only known once trials
+        run — so it is caught here: once a whole ``min_trials`` of completed
+        trials has gone by in this session at a stage gating on RT, and not
+        one of them carried the field. One trial without an RT is normal (a
+        task may leave it empty on some outcomes); none at all is a
+        misconfiguration.
+        """
+        self._completed_seen += 1
+        if rt is not None:
+            self._rt_seen = True
+        if self._rt_seen or self._rt_warned:
+            return
+        criteria = self.stage.criteria
+        if "mean_rt_ms" not in criteria.promote_when and "mean_rt_ms" not in criteria.demote_when:
+            return
+        if self._completed_seen < criteria.min_trials:
+            return
+        self._rt_warned = True
+        log.warning(
+            "stage %r has a mean_rt_ms criterion, but none of the %d completed trials this "
+            "session recorded an RT under %r (the curriculum's rt_key), so mean_rt_ms is NaN "
+            "and that criterion can never be met. If the task's phases write the RT under "
+            "another name (their rt_record_key), set the curriculum's rt_key to it.",
+            self.stage.name,
+            self._completed_seen,
+            self._curriculum.rt_key,
+        )
 
     # ------------------------------------------------------------------
 
@@ -279,6 +388,33 @@ class TrainingSupervisor:
         so a failure to write it is loud and does not stop the data being
         written."""
         return self._state.save(self._data_root, self._subject)
+
+
+def _storable(field: str, value: Any) -> Any:
+    """A record value as the criteria window may keep it.
+
+    The window is written to the subject's YAML state file at teardown, and
+    safe YAML holds only plain values. A numpy scalar (what a task computing
+    its measures with numpy writes) is turned into the Python value it is;
+    anything else that is not a plain value is refused now, naming the
+    field, rather than failing the state file's write after the session.
+    """
+    if value is None or isinstance(value, (bool, str)):
+        return value
+    if isinstance(value, (int, float)):
+        # Made exactly int or float: a subclass (numpy's float64 is one) is
+        # not something safe YAML will write.
+        return float(value) if isinstance(value, float) else int(value)
+    # A numpy scalar or 0-d array: `.item()` is its plain Python value.
+    item = getattr(value, "item", None)
+    if callable(item) and getattr(value, "ndim", None) == 0:
+        return _storable(field, item())
+    raise ConfigError(
+        f"the curriculum's record_fields asks the criteria window to keep {field!r}, but "
+        f"this trial's record holds a {type(value).__name__} there — the window is saved in "
+        f"the training state file and can keep only a number, text, true/false or nothing. "
+        f"Record a single value in that field, or leave it out of record_fields."
+    )
 
 
 def _validate_metric_names(curriculum: Curriculum) -> None:

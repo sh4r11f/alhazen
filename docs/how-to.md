@@ -119,7 +119,11 @@ register_metric("mean_saccade_error_dva", lambda window: ...)
 ```
 
 The function receives the sliding window of recent trial summaries and
-returns a number; name it in a stage's `promote_when` or `demote_when`.
+returns a number; name it in a stage's `promote_when` or `demote_when`. A
+summary carries `outcome`, `completed`, `success`, `rt_ms` and `stage`; list
+any other record field the metric reads in the curriculum's `record_fields`
+(here, `record_fields: [saccade_error_dva]`). If the task's phases write the
+RT under another name, set the curriculum's `rt_key` to it.
 
 ## Add a display backend
 

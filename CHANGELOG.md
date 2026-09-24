@@ -327,6 +327,30 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Fixed
 
+- **A curriculum's RT criterion could never be met when the task renamed its
+  RT field, and finishing a curriculum happened too early and was announced
+  on every trial.** The training supervisor read the RT from `rt_ms`
+  whatever the task's phases wrote it under (`rt_record_key`), so
+  `mean_rt_ms` was NaN on every window and the criterion never promoted,
+  silently; and an experiment's own metric saw only four fixed keys, not
+  "the whole trial record" its documentation promised. A curriculum now has
+  `rt_key` (the record field holding the RT, default `rt_ms`, still kept as
+  `rt_ms` in the window so existing state files and curricula read as
+  before) and `record_fields` (further record fields copied into the window
+  for custom metrics). A stage gating on `mean_rt_ms` whose session runs
+  `min_trials` completed trials with no RT under `rt_key` logs a WARNING
+  once. Separately, the promote key at the last stage marked the
+  curriculum complete the moment it was pressed, mid-trial, instead of
+  queueing it; and a promotion criterion that kept holding at the last
+  stage logged "curriculum complete" on every later trial. Completion is
+  now carried out between trials like any move, logged once, and the last
+  stage's promotion is not re-decided afterwards (demotion still is). The
+  shaping example's scripted subject is now a proper eye tracker
+  (`configure(screen, clock)`, counting trials from the session's tracker
+  messages), so the example and its test pass it to
+  `build_session(tracker=..., clock=...)` instead of rewiring a built
+  runner's private attributes.
+
 - **`response_phases(SubjectMode.SACCADE_AND_REWARD)` no longer scores "no
   saccade" as a landing miss.** Without `on_timeout` it fell back to
   `on_miss`, so a trial the subject never answered ended as a miss — usually
