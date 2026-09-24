@@ -237,6 +237,16 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Fixed
 
+- **A failure building the final dashboard skipped the rest of teardown.**
+  The end-of-session dashboard publish was the one bare call in the runner's
+  teardown. Building that state asks the eye tracker and the live analysis for
+  their panels, so a device that died mid-session could raise there — and
+  every later step was skipped: no tracker recording retrieved, no manifest,
+  the reward device and the window left open. It is now a teardown step like
+  the others (`dashboard.publish`), and so is the end-of-session log line
+  (`log.session_end`). The error is still raised once teardown is done; no
+  dashboard is saved when its final state could not be built.
+
 - **A TRACKPixx3 that stopped answering at the end of a session stranded its
   recording.** `shutdown()` ran its last drain before the delivery's `try`,
   so when the device did not answer — exactly when a session ends early —

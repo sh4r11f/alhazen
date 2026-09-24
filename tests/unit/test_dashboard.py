@@ -469,6 +469,64 @@ class TestRunnerIntegration:
         assert dashboard.states[-1]["status"] == "complete"
 
 
+class FinalPublishFails(FakeDashboard):
+    """A dashboard whose last publish — the complete, end-of-session state —
+    raises, the way building that state does when a panel's source (the eye
+    tracker, the live analysis) died during the session."""
+
+    def publish(self, state: dict) -> None:
+        if state["status"] in {"complete", "failed", "cancelled"}:
+            raise RuntimeError("a panel could not be built")
+        super().publish(state)
+
+
+class TestTeardownGoesOnWhenTheDashboardFails:
+    """The final publish was the one bare call in the runner's teardown: when
+    it raised, every step after it was skipped — no tracker recording
+    retrieved, no manifest, the reward device and the window left open."""
+
+    def test_every_later_step_still_runs_and_the_error_is_raised(self, tmp_path: Path):
+        from alhazen.testing import ScriptedReward
+
+        clock = FakeClock()
+        gaze = GazeSample(gx=SCREEN.width_px / 2, gy=SCREEN.height_px / 2, t=0.0)
+        tracker = ScriptedTracker([(0.0, gaze)], clock)
+        reward = ScriptedReward()
+        harness = SessionHarness(tmp_path, n_trials=1, tracker=tracker, reward=reward, clock=clock)
+        dashboard = FinalPublishFails([])
+        wire_dashboard(harness, dashboard)
+
+        # Loud: the failure is the session's error once teardown is done.
+        with pytest.raises(RuntimeError, match="a panel could not be built"):
+            harness.runner.run()
+
+        assert tracker.shutdowns, "the tracker's recording was never retrieved"
+        assert harness.paths.manifest_path.exists()
+        assert reward.closed
+        assert harness.display.closed
+        assert dashboard.stopped
+        # Nothing saved in place of the state that could not be built.
+        assert not (harness.paths.figures_dir / "dashboard.html").exists()
+
+    def test_a_failing_end_of_session_log_line_does_not_stop_teardown(self, tmp_path: Path, caplog):
+        harness = SessionHarness(tmp_path, n_trials=1)
+
+        def broken() -> None:
+            raise RuntimeError("could not count the rows")
+
+        harness.runner._log_session_end = broken  # type: ignore[method-assign]
+        with (
+            caplog.at_level(logging.ERROR, logger="alhazen.session.runner"),
+            pytest.raises(RuntimeError, match="could not count the rows"),
+        ):
+            harness.runner.run()
+
+        assert "teardown step 'log.session_end' failed" in caplog.text
+        assert harness.paths.trials_path.exists()
+        assert harness.paths.manifest_path.exists()
+        assert harness.display.closed
+
+
 class CameraScriptedTracker(ScriptedTracker):
     """A scripted tracker with a camera, like the viewpixx: every read is a
     fresh frame stamped with the time it was taken."""
