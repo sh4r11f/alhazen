@@ -303,6 +303,55 @@ class TestDeviceModels:
         with pytest.raises(ValueError, match="ignores camera_image"):
             EyeTrackerConfig(backend="eyelink", camera_image=False)
 
+    def test_the_dropout_limit_defaults_to_each_backends_own(self):
+        # Filled in when the config loads, so the snapshot records the number
+        # the session ran with rather than a null a later default could
+        # reinterpret.
+        eyelink = EyeTrackerConfig(backend="eyelink")
+        viewpixx = EyeTrackerConfig(backend="viewpixx")
+        assert eyelink.max_sample_gap_ms == 50.0
+        assert viewpixx.max_sample_gap_ms == 100.0
+        assert eyelink.model_dump()["max_sample_gap_ms"] == 50.0
+        assert (eyelink.sample_gap_limit_s, viewpixx.sample_gap_limit_s) == (0.05, 0.1)
+        # A null in the rig file means the same default.
+        assert EyeTrackerConfig(backend="eyelink", max_sample_gap_ms=None).max_sample_gap_ms == 50.0
+        # The stand-ins stream nothing that could stop: no limit at all.
+        assert EyeTrackerConfig(backend="mouse_sim").max_sample_gap_ms is None
+        with pytest.raises(ValueError, match="streams no samples"):
+            _ = EyeTrackerConfig(backend="mouse_sim").sample_gap_limit_s
+
+    def test_the_dropout_limit_is_the_rigs_when_it_says_one(self):
+        assert EyeTrackerConfig(backend="eyelink", max_sample_gap_ms=80).sample_gap_limit_s == 0.08
+
+    def test_the_dropout_limit_must_clear_ordinary_delivery(self):
+        # Shorter than the slowest delivery a backend can have would read
+        # ordinary samples as a dropout and abort trials on a working tracker.
+        with pytest.raises(ValueError, match="too short for the eyelink backend.*250 Hz"):
+            EyeTrackerConfig(backend="eyelink", max_sample_gap_ms=19)
+        with pytest.raises(ValueError, match="too short for the viewpixx backend.*USB read"):
+            EyeTrackerConfig(backend="viewpixx", max_sample_gap_ms=49)
+        EyeTrackerConfig(backend="eyelink", max_sample_gap_ms=20)
+        EyeTrackerConfig(backend="viewpixx", max_sample_gap_ms=50)
+
+    def test_the_dropout_limit_must_still_protect_the_subject(self):
+        with pytest.raises(ValueError, match="too long: at most 1000 ms"):
+            EyeTrackerConfig(backend="eyelink", max_sample_gap_ms=1001)
+        EyeTrackerConfig(backend="viewpixx", max_sample_gap_ms=1000)
+
+    def test_the_dropout_pause_needs_a_count(self):
+        assert EyeTrackerConfig(backend="eyelink").max_consecutive_dropouts == 3
+        assert EyeTrackerConfig(backend="viewpixx", max_consecutive_dropouts=1)
+        with pytest.raises(ValueError, match="max_consecutive_dropouts must be >= 1"):
+            EyeTrackerConfig(backend="eyelink", max_consecutive_dropouts=0)
+
+    def test_the_dropout_fields_are_refused_on_a_stand_in(self):
+        # A stand-in has no stream that could stop, so either field would do
+        # nothing — and a field that does nothing is a config error.
+        with pytest.raises(ValueError, match="ignores max_sample_gap_ms"):
+            EyeTrackerConfig(backend="mouse_sim", max_sample_gap_ms=50)
+        with pytest.raises(ValueError, match="ignores max_consecutive_dropouts"):
+            EyeTrackerConfig(backend="mouse_sim", max_consecutive_dropouts=2)
+
     def test_sync_needs_a_positive_pulse_width(self):
         with pytest.raises(ValueError, match="pulse_ms"):
             SyncHwConfig(backend="simulated", pulse_ms=0)

@@ -5,8 +5,9 @@ answer is gone, because it only ever existed as scrollback in whichever
 terminal was open at the rig. This module keeps the other half: what each
 device *did* on the day. The reward pulse that was commanded and the one that
 was measured, every sync line by name with what was sent down it, what the
-recorder handed back, how long the tracker took to answer, the lag the sorter
-was running at — plus the rig file, the alhazen revision, and when.
+recorder handed back, how long the tracker took to answer and how fast a stop
+of its recording was noticed, the lag the sorter was running at — plus the
+rig file, the alhazen revision, and when.
 
 Why that is worth a file. Nothing in a pass/fail line survives to be compared:
 a rig that has been degrading for a fortnight passes every check on the
@@ -257,8 +258,38 @@ def _render_evidence(result: CheckResult) -> list[str]:
             f"units={e.get('units')}, lag={lag}, dropped={e.get('dropped_messages')}"
         ]
     if result.name == "eyetracker" and e.get("connect_ms") is not None:
-        return [f"answered in {e['connect_ms']} ms"]
+        return [f"answered in {e['connect_ms']} ms", *_render_dropout(e.get("dropout"))]
     return []
+
+
+def _render_dropout(dropout: dict[str, Any] | None) -> list[str]:
+    """The eye tracker's dropout test, in the lines worth reading at the rig:
+    the limit against the longest gap seen while recording normally (the
+    margin the limit has), how fast a stop was caught and what the tracker
+    said, and what the check costs per frame on this machine."""
+    if not dropout or not dropout.get("tested"):
+        return []
+    lines = []
+    if dropout.get("longest_gap_ms") is not None:
+        lines.append(
+            f"dropout limit {dropout.get('limit_ms')} ms; longest gap between samples while "
+            f"recording normally {dropout['longest_gap_ms']} ms over {dropout.get('baseline_s')} s"
+        )
+    if dropout.get("check_us_mean") is not None:
+        caught = dropout.get("detecting_check_us")
+        lines.append(
+            f"health check per frame: mean {dropout['check_us_mean']} us, max "
+            f"{dropout.get('check_us_max')} us"
+            + (f"; {caught} us on the call that caught the stop" if caught is not None else "")
+        )
+    if dropout.get("stopped_by") is not None:
+        lines.append(f"stopped by {dropout['stopped_by']}")
+    if dropout.get("detected"):
+        lines.append(f"reported after {dropout.get('latency_ms')} ms: {dropout.get('detail')}")
+    lines.append(
+        f"dropout test: {'PASS' if dropout.get('ok') else 'FAIL'} — {dropout.get('verdict')}"
+    )
+    return lines
 
 
 __all__ = [

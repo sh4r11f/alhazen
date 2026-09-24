@@ -16,7 +16,7 @@ from __future__ import annotations
 import math
 import re
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
@@ -305,6 +305,49 @@ SELF_DRIVEN_CALIBRATION_TYPES = ("HV5", "HV9", "HV13")
 # name on its own screen, in another room, with the subject already seated.
 EYELINK_CALIBRATION_TYPES = ("H3", "HV3", "HV5", "HV9", "HV13")
 
+# Dropout detection: the fields only a tracker that streams samples to this
+# machine reads. The stand-ins (mouse_sim, scripted) have no stream that could
+# stop, so either field set on one of them would do nothing — a config error,
+# like every other field the chosen backend ignores.
+STREAMING_ONLY_FIELDS = ("max_sample_gap_ms", "max_consecutive_dropouts")
+
+# How long, in ms, a real tracker may go without delivering a new sample
+# mid-trial before its recording is called dead (the tracker health check's
+# stale-sample signal; docs/eye-tracker.md). Per backend, because the two
+# live paths are different kinds of thing:
+#
+# - eyelink: link samples stream from the Host PC at its recording rate —
+#   250 Hz at the slowest an EyeLink records, 2000 Hz at the fastest — so 50
+#   ms is 12 to 100 samples missing in a row. Kept short on purpose: until the
+#   check fires, the last sample is what the phases see (repeated, with the
+#   same time), so the limit is also how long a dead recording can pass for
+#   a still eye.
+# - viewpixx: the backend's own reader thread polls the device over USB
+#   every 4 ms, and on the rig one poll in five took 20-40 ms (viewpixx.py,
+#   GazeReader). 100 ms is the age at which the backend already stopped
+#   treating a report as a position before dropout detection existed.
+DEFAULT_MAX_SAMPLE_GAP_MS = {"eyelink": 50.0, "viewpixx": 100.0}
+# The shortest limit each backend accepts: long enough that ordinary
+# delivery never looks like a dropout. eyelink: five samples at the slowest
+# rate an EyeLink records at (250 Hz, 4 ms apart). viewpixx: past one slow
+# USB read (40 ms at worst, measured on the rig) with room to spare.
+#
+# There is no sample rate in this config to check the limit against: the
+# EyeLink's is set on its Host PC and the TRACKPixx3's by VPixx's own tools,
+# and a rate written here that nothing sets or reads back would be a claim
+# nobody checks. So the floor is the slowest delivery each backend can have.
+MIN_SAMPLE_GAP_MS = {"eyelink": 20.0, "viewpixx": 50.0}
+# The longest either accepts. Past a second, a trial whose tracker died has
+# run that long on a frozen or missing gaze position before the check says
+# so — long enough for a fixation phase to have ended it as the subject's
+# failure already — so the check would no longer protect the subject.
+MAX_SAMPLE_GAP_MS = 1000.0
+# How many trials in a row the tracker may drop out on before the session
+# pauses with a fault heading. Three: one dropout is a cable nudged, two in a
+# row is suspicious, and at three the session would otherwise go on serving
+# the same trial into a dead tracker, paying its fault reward every time.
+DEFAULT_MAX_CONSECUTIVE_DROPOUTS = 3
+
 
 class EyeTrackerConfig(Model):
     """Which eye tracker this rig has, and how it is set up.
@@ -379,6 +422,37 @@ class EyeTrackerConfig(Model):
     # device holds; the dashboard's camera panel can change it during a
     # session, and every change is recorded as a TRACKER_SETTING event.
     iris_size_px: int | None = None
+    # Dropout detection (docs/eye-tracker.md, "When the tracker drops out"):
+    # how long the tracker may go without delivering a new sample mid-trial
+    # before its recording is called dead and the trial ends as a system
+    # fault (`fault: tracker_stopped`). Left out of the rig file, it is the
+    # backend's own default (DEFAULT_MAX_SAMPLE_GAP_MS) — written into the
+    # config when it loads (_fill_in_the_sample_gap), so the run's snapshot
+    # records the number the session actually ran with, not a null that a
+    # later default could reinterpret. eyelink and viewpixx only.
+    max_sample_gap_ms: float | None = None
+    # How many trials in a row the tracker may drop out on before the session
+    # pauses, headed with what the tracker said, so the experimenter looks at
+    # the tracker instead of the session serving the same trial into a dead
+    # one again and again. eyelink and viewpixx only.
+    max_consecutive_dropouts: int = DEFAULT_MAX_CONSECUTIVE_DROPOUTS
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fill_in_the_sample_gap(cls, data: Any) -> Any:
+        """Write the backend's own ``max_sample_gap_ms`` in when the rig file
+        leaves it out (or says null), before validation.
+
+        Filled in rather than resolved later, so the value the session runs
+        with is the value its snapshot records. Only for the backends that
+        read it: on a stand-in it stays None, and one typed there is refused
+        below like any other field the backend ignores.
+        """
+        if isinstance(data, dict):
+            backend = data.get("backend")
+            if backend in DEFAULT_MAX_SAMPLE_GAP_MS and data.get("max_sample_gap_ms") is None:
+                return {**data, "max_sample_gap_ms": DEFAULT_MAX_SAMPLE_GAP_MS[backend]}
+        return data
 
     @model_validator(mode="after")
     def _valid(self) -> EyeTrackerConfig:
@@ -394,7 +468,61 @@ class EyeTrackerConfig(Model):
             self._valid_eyelink_layout()
         if self.backend == "viewpixx":
             self._valid_viewpixx()
+        if self.backend in DEFAULT_MAX_SAMPLE_GAP_MS:
+            self._valid_dropout_detection()
         return self
+
+    @property
+    def sample_gap_limit_s(self) -> float:
+        """``max_sample_gap_ms`` in seconds: what a backend's dropout check
+        compares its newest sample's age with.
+
+        Falls back to the backend's default for a config built without
+        validation (``model_construct``), which is the only way the field can
+        still be None on a streaming backend. A stand-in has no limit to ask
+        for, and asking is a programming error, said so rather than answered
+        with a number that means nothing.
+        """
+        gap = self.max_sample_gap_ms
+        if gap is None:
+            if self.backend not in DEFAULT_MAX_SAMPLE_GAP_MS:
+                raise ValueError(
+                    f"eyetracker backend {self.backend!r} streams no samples, so it has no "
+                    f"sample-gap limit to ask for"
+                )
+            gap = DEFAULT_MAX_SAMPLE_GAP_MS[self.backend]
+        return gap / 1000.0
+
+    def _valid_dropout_detection(self) -> None:
+        """The dropout limit must sit between ordinary delivery and "too late
+        to protect the subject" for this backend, and the pause needs at
+        least one dropout to count to."""
+        gap = self.max_sample_gap_ms
+        assert gap is not None  # filled in before validation (_fill_in_the_sample_gap)
+        floor = MIN_SAMPLE_GAP_MS[self.backend]
+        if gap < floor:
+            why = (
+                "five samples at the slowest rate an EyeLink records at (250 Hz)"
+                if self.backend == "eyelink"
+                else "one slow USB read of the gaze report (20-40 ms, measured on the rig)"
+            )
+            raise ValueError(
+                f"max_sample_gap_ms {gap:g} is too short for the {self.backend} backend: it "
+                f"must be at least {floor:g} ms — {why} — or ordinary delivery would read as "
+                f"a dropout and abort trials on a tracker that is working"
+            )
+        if gap > MAX_SAMPLE_GAP_MS:
+            raise ValueError(
+                f"max_sample_gap_ms {gap:g} is too long: at most {MAX_SAMPLE_GAP_MS:g} ms. A "
+                f"dropout detected later than that has let the trial run on a frozen or "
+                f"missing gaze position for so long that a fixation phase has usually ended "
+                f"it as the subject's failure first"
+            )
+        if self.max_consecutive_dropouts < 1:
+            raise ValueError(
+                "max_consecutive_dropouts must be >= 1: it is how many trials in a row the "
+                "tracker may drop out on before the session pauses"
+            )
 
     def _valid_eyelink_layout(self) -> None:
         if self.calibration_type not in EYELINK_CALIBRATION_TYPES:
@@ -416,8 +544,11 @@ class EyeTrackerConfig(Model):
             "viewpixx": EYELINK_ONLY_FIELDS,
         }
         # The simulated backends have no hardware fields at all, so every
-        # backend-specific key is wrong on them.
-        wrong = wrong_for.get(self.backend, EYELINK_ONLY_FIELDS + VIEWPIXX_ONLY_FIELDS)
+        # backend-specific key is wrong on them — and they stream nothing that
+        # could drop out, so the dropout-detection fields are wrong too.
+        wrong = wrong_for.get(
+            self.backend, EYELINK_ONLY_FIELDS + VIEWPIXX_ONLY_FIELDS + STREAMING_ONLY_FIELDS
+        )
         named = sorted(set(wrong) & self.model_fields_set)
         if named:
             raise ValueError(

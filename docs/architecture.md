@@ -83,10 +83,14 @@ One loop per displayed frame, and the only code that touches the display, the
 command source, and the bus:
 
 1. poll experimenter commands (skip / pause / calibrate / quit / manual reward)
-2. run per-frame health checks (today one: "is the tracker still recording").
-   A failed check is a **system fault** — a device stopped, which is never
-   the subject's doing — and its reason (`tracker_stopped`) is written as the
-   row's `fault` (§2.2). While the trial is still measuring, it also aborts
+2. run per-frame health checks (today one: "is the tracker still recording,
+   and still delivering" — §4.3). A check returns None, or a `HealthFault`:
+   the reason, and what the device said about it (a bare reason string is
+   still accepted). A failed check is a **system fault** — a device stopped,
+   which is never the subject's doing — and its reason (`tracker_stopped`) is
+   written as the row's `fault`, its words as `fault_detail` (§2.2). A check
+   runs every frame, so it must not make a round trip to its device on the
+   healthy path. While the trial is still measuring, it also aborts
    the trial: the reserved `ABORTED`, with the same reason as
    `abort_reason`, and the condition is served again. During the **closing
    phase** (the one declaring `must_be_last`, e.g. `TrialFeedback`) it
@@ -206,6 +210,16 @@ step 8). Every row names the one that hit its trial in a single column,
 | the tracker stopped during its closing phase | its own | — | `tracker_stopped` | no |
 | the experimenter skipped it | `ABORTED` | `skipped_by_user` | `none` | no — not a fault |
 
+Beside it, `fault_detail` holds what the failed health check said about the
+fault, in the device's words — "no new sample from the EyeLink for 58 ms
+(limit 50 ms); the Host PC … reports recording ended (isRecording 3,
+ABORT_EXPT) …" — so a pulled cable can be told from a Host PC abort
+([eye-tracker.md](eye-tracker.md), "When the tracker drops out"). It is only
+on a row whose fault a health check reported with a detail; a dropped-frames
+row carries its own account in `frame_qa_reason`, and when frame QA's
+recycle replaces a closing-phase tracker flag, the detail goes with it. Free
+text, for a person: select on `fault`, never on this.
+
 `fault` is on every row, `none` included: a value a reader can select on
 (`trials.fault != "none"`), never an empty cell, for the reason
 `n_dropped_frames` is `0` on a clean trial. It says which fault *hit* a
@@ -305,7 +319,7 @@ graph TB
     B --> RWD["RewardDispenser"]
     B --> SNC["SyncOutput"]
     TRK -->|"get_gaze() → screen→centered px"| IP["engine: input_provider"]
-    TRK -->|"is_recording()"| HC["engine: health_checks"]
+    TRK -->|"is_recording() · recording_fault()"| HC["engine: health_checks"]
     TRK -->|"start/stop_trial, overlay, shutdown"| RUN["SessionRunner: lifecycle"]
     RWD -->|"deliver(pulses)"| MR["engine: on_manual_reward ('r' key)"]
     RWD -.->|"mid_trial_reward tasks only:<br/>wrapped in QueuedReward"| QR["engine: reward_requests<br/>(submit / completed / wait_idle)"]
@@ -343,7 +357,7 @@ sequenceDiagram
     R->>T: draw_host_overlay(cross + region boxes)
     R->>E: run_trial(ctx, phases)
     loop every frame
-        E->>T: is_recording()  (health check)
+        E->>T: is_recording() · recording_fault()  (health check)
         E->>T: get_gaze()      (input provider)
         E->>B: emit queued events after the flip
         B->>T: send_message(text)
@@ -352,11 +366,50 @@ sequenceDiagram
     R->>T: stop_trial()   (finally — however the trial ended)
 ```
 
-A tracker that stops recording mid-trial fails the `is_recording()` health
-check: the engine aborts the trial (`ABORTED`, `tracker_stopped`) and the
-runner pays it the task's fault reward and serves it again — or, in the
-trial's closing phase, the row is only flagged (§2.2; §5.3, "System
-faults"). The next trial's `start_trial` opens a fresh segment as usual.
+A tracker that stops recording mid-trial fails the health check: the engine
+aborts the trial (`ABORTED`, `tracker_stopped`, and the tracker's words as
+`fault_detail`) and the runner pays it the task's fault reward and serves it
+again — or, in the trial's closing phase, the row is only flagged (§2.2;
+§5.3, "System faults").
+
+**Two questions, because one is not enough.** `is_recording()` is a flag
+the backend keeps from `start_trial` to `stop_trial` — `procedures.py` reads
+it to know whether a segment is already open — and it asks the device
+nothing, so on its own it cannot see a recording that died in between. The
+EyeLink and TRACKPixx3 backends also answer `recording_fault()`, an optional
+capability (`devices/eyetracker/protocol.py`) that the builder's health
+check calls when a tracker has it:
+
+- **stale samples** — the newest sample not replaced for
+  `eyetracker.max_sample_gap_ms` (50 ms on an EyeLink, 100 ms on a
+  TRACKPixx3 by default). A blink is a sample saying "no eye", with a
+  timestamp that still advances, so it never reads as one;
+- **the device asked** — the EyeLink's `isRecording()`, only once the samples
+  are stale, to say why; the TRACKPixx3's reader thread asking every half
+  limit whether free-run sampling still feeds the session's buffer, and
+  whether the register read failed — its live gaze report and its recorded
+  samples are separate paths, and the first carries on when the second stops.
+
+The healthy path costs no device round trip — the EyeLink reads pylink's
+local link buffer, the TRACKPixx3 reads what its reader thread keeps current
+— which is what lets it run every frame at 120 Hz ([eye-tracker.md](eye-tracker.md),
+"When the tracker drops out", has the per-backend table and the rig
+verification checklist).
+
+**After a dropout.** Once `recording_fault()` has reported, the backend
+remembers it until the next `start_trial`. Meanwhile a device that refuses
+the stop at the trial's end, or the messages the dropout is followed by
+(its `TRIAL_END`, the fault reward's `REWARD`), is logged rather than raised
+— raising there, in the runner's `finally` or inside the engine's own
+bookkeeping, would lose the trial's row over a failure the dropout already
+explains. The next trial's `start_trial` is where the tracker is found to be
+back or not: it re-opens the recording (the TRACKPixx3 also restarts a gaze
+reader that died, once the device answers again, and re-arms a recording it
+finds stopped), and a device that is gone raises a `TrackerError` naming the
+rig and what the previous trial died of, which ends the session with its data
+saved. A device that answers but keeps dropping out stops the session at the
+pause screen after `eyetracker.max_consecutive_dropouts` trials in a row
+(§5.3, "System faults").
 
 `stop_trial()` is idempotent and guaranteed by a `finally`: a tracker left
 believing it is still recording writes the next trial's samples into this
@@ -413,6 +466,18 @@ pulse and one pulse per mapped sync line, because constructing a backend only
 proves the SDK imports. It never opens a window, and says so rather than
 implying the display was verified.
 
+A real eye tracker gets one step more than a connect: the **dropout test**.
+check-rig opens a recording segment as a trial does, polls the session's own
+health check (`make_tracker_health_check`) at 120 Hz for a second — nothing
+may be reported — then stops the recording through the SDK behind the
+session's back (`simulate_dropout`: the EyeLink's `stopRecording()`, the
+TRACKPixx3's `TPxDisableFreeRun()`) and times the report. A stop that is not
+reported within `max_sample_gap_ms` plus 50 ms, or a check that fires on
+normal recording, fails the line. The record keeps the limit, the longest
+gap seen while recording normally, the check's measured per-frame cost, the
+latency and the tracker's own words ([eye-tracker.md](eye-tracker.md),
+"Checking it before a session").
+
 Each check also carries `evidence`: what that device did, in numbers. `ok`
 answers "may the session start" and is gone as soon as the terminal scrolls;
 the evidence is what makes today's checkout comparable with last week's, and
@@ -450,6 +515,7 @@ because the two devices are not the same shape of thing.
 | Validation, drift correction | `devices/eyetracker/procedures.py`, the same on both: generic over `get_gaze()`, results on the dashboard ([eye-tracker.md](eye-tracker.md)) | |
 | Camera image | on the Host PC's own screen | read through `camera_frame()` into the dashboard's *Eye tracker* group while paused |
 | Messages | written into the EDF, which then carries its own alignment | written to a sidecar CSV stamped on **both** clocks, because nothing can be written into the sample stream |
+| Dropout detection | the newest link sample not replaced for `max_sample_gap_ms` (50 ms); `isRecording()` asked once it is, to say why | the gaze reader dead, or stalled past `max_sample_gap_ms` (100 ms); the reader asks the device every half limit whether free-run sampling still feeds the session's buffer |
 | Operator overlay | drawn on the Host PC's eye image | none — the only surface the device can draw on is the subject's screen |
 
 Two consequences are load-bearing rather than cosmetic:
@@ -805,13 +871,14 @@ engine flags in the row's `fault` (§2.2) — and a trial *lost* to one of them
 
 | | The display dropped frames | The eye tracker stopped recording |
 |---|---|---|
-| Detected by | frame QA's `recycle_trial`, after the trial ran to its end (§2 step 8) | the tracker health check, while the trial was still measuring (§2 step 2) |
-| Row | `outcome: DROPPED_FRAMES`, the response kept as `outcome_before_frame_qa`, `fault: dropped_frames` | `outcome: ABORTED`, `abort_reason: tracker_stopped`, `fault: tracker_stopped` |
+| Detected by | frame QA's `recycle_trial`, after the trial ran to its end (§2 step 8) | the tracker health check, while the trial was still measuring (§2 step 2; how, §4.3) |
+| Row | `outcome: DROPPED_FRAMES`, the response kept as `outcome_before_frame_qa`, `fault: dropped_frames` | `outcome: ABORTED`, `abort_reason: tracker_stopped`, `fault: tracker_stopped`, and what the tracker said as `fault_detail` |
 | Served again | yes: `completed=False` | yes: `completed=False` |
 | Paid | for the subject's response, as on any trial — `by_outcome` of `outcome_before_frame_qa`, or `NO_REWARD` for a completed response that pays nothing | the task's `RewardPolicy.on_fault`, scaled; nothing when the task sets none. Its REWARD (or REWARD_FAILED) payload carries `fault` beside `outcome: ABORTED` |
 | Failure streak | **ends it** — the subject completed the trial, and ending a streak never counts against anyone | **neither counts nor ends it**, like `PAUSED` |
 | Training criteria | left out of the window | left out of the window |
-| `session.log` | one WARNING: the trial, the cause, what was paid, that it is served again | the same |
+| `session.log` | one WARNING: the trial, the cause, what was paid, that it is served again | the same, with the tracker's words |
+| Many in a row | frame QA's `max_consecutive_recycles` aborts the run, naming the display | `eyetracker.max_consecutive_dropouts` (3) in a row stop the session at the pause screen, headed with what the tracker said; a trial the tracker records through ends the streak, a pause neither counts nor ends it, and the count starts over after its pause |
 
 The experimenter's skip (`ABORTED`, `skipped_by_user`) and a pause are not
 faults: never flagged, never paid `on_fault`, counted as they always were.
@@ -1513,7 +1580,12 @@ every backend precisely so a backend cannot quietly reach for
    is simply running. The streak is the subject's: a completed trial ends
    it, and so does a `DROPPED_FRAMES` trial (the subject completed it); a
    `PAUSED` trial and a trial the eye tracker cut short neither count nor
-   end it; the experimenter's skip counts (§5.3, "System faults"). A
+   end it; the experimenter's skip counts (§5.3, "System faults"). The
+   tracker's dropouts have a streak of their own, the rig's rather than the
+   subject's: after `eyetracker.max_consecutive_dropouts` of them in a row
+   the pause screen leads with `THE EYE TRACKER DROPPED OUT ON 3 TRIALS IN A
+   ROW` and what the tracker said, because each of those trials is served
+   again and the session would otherwise loop on a dead tracker. A
    `BlockPlan` leaves a break when a block ends and
    another follows (`take_block_break`), and the runner takes it before
    the next block's first trial: the pause screen headed `BLOCK 3 OF 6
@@ -1535,8 +1607,10 @@ correction verdict, one line per trial (`trial 12 attempt 1: CORRECT`, with
 the abort or frame-QA reason where there is one, or the fault a closing
 phase flagged), one line per trial that dropped frames (per-frame drops are
 DEBUG; the frame log holds every interval), one WARNING per trial lost to a
-system fault (the cause, what the subject was paid — or that the task sets
-no `on_fault` — and that the trial will be served again), and a
+system fault (the cause — for a tracker dropout, in the tracker's own words —
+what the subject was paid, or that the task sets no `on_fault`, and that the
+trial will be served again), one WARNING when a run of dropouts pauses the
+session, and a
 `session end:` line with the status and outcome counts —
 or `session end: FAILED … <exception>` at ERROR, so a log that merely stops is
 a crash and one that ends is a session.

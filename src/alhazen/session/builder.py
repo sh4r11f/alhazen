@@ -28,6 +28,7 @@ from pydantic import BaseModel
 from alhazen.config.gamma import gamma_path, load_gamma
 from alhazen.config.loader import build_session_config, load_rig
 from alhazen.config.models import (
+    DEFAULT_MAX_CONSECUTIVE_DROPOUTS,
     Duration,
     EyeTrackerConfig,
     RewardPulses,
@@ -40,7 +41,7 @@ from alhazen.core.commands import CommandSource, KeyboardCommands, NullCommands
 from alhazen.core.engine import TrialEngine
 from alhazen.core.events import EventBus, EventSchema
 from alhazen.core.rng import resolve_seed, spawn_streams
-from alhazen.core.trial import FAULT_TRACKER_STOPPED, InputFrame, TrialContext
+from alhazen.core.trial import FAULT_TRACKER_STOPPED, HealthFault, InputFrame, TrialContext
 from alhazen.dashboard.runtime import DashboardController
 from alhazen.dashboard.spec import DashboardSpec
 from alhazen.data.paths import SessionPaths
@@ -139,18 +140,44 @@ def make_gaze_input_provider(tracker: EyeTracker, screen: Screen) -> Callable[[]
     return provider
 
 
-def make_tracker_health_check(tracker: EyeTracker) -> Callable[[], str | None]:
-    """Abort a trial the moment the tracker stops recording.
+def make_tracker_health_check(tracker: EyeTracker) -> Callable[[], HealthFault | None]:
+    """Abort a trial the moment the tracker's recording dies.
 
     A trial that runs on while its tracker has dropped out produces a record
     that looks like a normal trial but has no eye data behind it — worse than
-    an abort, because nothing in the data says so. The reason string,
+    an abort, because nothing in the data says so. The reason,
     ``FAULT_TRACKER_STOPPED``, lands in the trial record as ``abort_reason``
     and as the row's ``fault``: a tracker that stops is a system fault, not
-    the subject's (core/trial.py). During the trial's closing phase, after
-    the measurement, the engine flags it without aborting.
+    the subject's (core/trial.py). What the tracker said about it lands as
+    ``fault_detail``. During the trial's closing phase, after the
+    measurement, the engine flags it without aborting.
+
+    Two questions, asked every frame, in this order:
+
+    1. ``is_recording()`` — is a recording segment open at all? A flag the
+       backend keeps between ``start_trial`` and ``stop_trial``; no device
+       call. On its own it cannot see a recording that died mid-trial, which
+       is why there is a second question.
+    2. ``recording_fault()`` — is the open recording still delivering? An
+       optional capability (devices/eyetracker/protocol.py) of the backends
+       with a real stream: the EyeLink and the TRACKPixx3 watch their newest
+       sample's age, and ask their device *why* only once it has gone stale,
+       so a healthy frame costs no round trip to the device. A tracker
+       without it (the stand-ins, an experiment's own fake) is judged by the
+       first question alone, as before.
     """
-    return lambda: None if tracker.is_recording() else FAULT_TRACKER_STOPPED
+    probe = getattr(tracker, "recording_fault", None)
+
+    def check() -> HealthFault | None:
+        if not tracker.is_recording():
+            return HealthFault(
+                FAULT_TRACKER_STOPPED,
+                "the tracker reports no recording open (is_recording() is False)",
+            )
+        detail = probe() if probe is not None else None
+        return None if detail is None else HealthFault(FAULT_TRACKER_STOPPED, detail)
+
+    return check
 
 
 def make_manual_reward(
@@ -650,6 +677,14 @@ def build_session(
                 max_consecutive_failures
                 if max_consecutive_failures is not None
                 else getattr(task_params, "max_consecutive_failures", None)
+            ),
+            # The rig's number, unlike the one above: how often a tracker may
+            # drop out in a row is about the tracker, not the task. A caller-
+            # supplied tracker on a rig with no tracker config gets the default.
+            max_consecutive_dropouts=(
+                devices.eyetracker.max_consecutive_dropouts
+                if devices.eyetracker is not None
+                else DEFAULT_MAX_CONSECUTIVE_DROPOUTS
             ),
             score=score,
             on_pause=on_pause,

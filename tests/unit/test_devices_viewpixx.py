@@ -24,7 +24,6 @@ import sys
 import threading
 import time
 import types
-from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -32,6 +31,7 @@ import pytest
 
 from alhazen.config.models import EyeTrackerConfig
 from alhazen.devices.eyetracker import EyeTracker, ViewPixxTracker, make_tracker
+from alhazen.devices.eyetracker import viewpixx as viewpixx_module
 from alhazen.devices.eyetracker.guide import GUIDE_TITLE
 from alhazen.devices.eyetracker.viewpixx import (
     AUTO_SETTLE_S,
@@ -53,264 +53,15 @@ from alhazen.devices.eyetracker.viewpixx import (
 from alhazen.display.palette import TERMINAL_GREEN
 from alhazen.errors import TrackerError
 from alhazen.testing import FakeClock
+from fake_sdk import FakeLibdpx, FakeTrackPixx, install_fake_pypixxlib
 from support import SCREEN
 
 
-class FakeLibdpx:
-    """Stand-in for pypixxlib's ``_libdpx``: the free functions connect() uses
-    to bring the tracker up, and libdpx's sticky error flag.
-    """
-
-    def __init__(self) -> None:
-        self.selected: str | None = None
-        self.overlay_hidden = False
-        self.awake = False
-        self.cache_updates = 0
-        self.error = "DPX_SUCCESS"
-        self.error_string = "Function executed successfully"
-        # The sample ring: where the device says it is, and whether it runs.
-        self.freerun = False
-        self.buffer_base = 0
-        self.arms = 0
-        # Pupil ellipse semi-axes (left major/minor, right major/minor); all
-        # zero is the device's "no eye in the image".
-        self.pupils: tuple[float, float, float, float] = (3.0, 2.0, 3.0, 2.0)
-        # The gaze report TPxBestPolyGetEyePosition writes: calibrated
-        # positions and raw eye vectors, [x_left, y_left, x_right, y_right].
-        # Raw vectors of a tracked eye are plain numbers; the device's own
-        # buffers start at zero, which the backend reads as "not measured".
-        self.positions: list[float] = [0.0, 0.0, 0.0, 0.0]
-        self.raw_positions: list[float] = [1.5, -0.5, 1.4, -0.4]
-        self.reads = 0
-        # The calibration sampling call that returns raw vectors records into
-        # the device's own list (FakeTrackPixx shares it), and answers with
-        # [x_right, y_right, x_left, y_left] for a target. With these
-        # coefficients the fit maps (raw - 1) x 100 back onto the screen, so
-        # raw = target / 100 + 1 is a perfect calibration. Never exactly zero:
-        # a zero raw vector is how the device reports an eye it did not measure.
-        # The device whose per-target method the raw-returning call goes
-        # through (set by FakeTrackPixx).
-        self.device = None
-        self.raw_at_target: Callable[[float, float], tuple[float, float, float, float]] = (
-            lambda x, y: (x / 100.0 + 1.0, y / 100.0 + 1.0, x / 100.0 + 1.0, y / 100.0 + 1.0)
-        )
-        identity_x = [-100.0, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-        identity_y = [-100.0, 0.0, 100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-        self.calibration_coefficients = identity_x + identity_y + identity_x + identity_y
-        self.coefficient_error: str | None = None
-        # The expected iris size register, and the largest value it keeps: a
-        # test lowers the cap to mimic a device that clamps what it cannot hold.
-        self.iris_size = 90
-        self.iris_register_max = 10_000
-        # The camera image TPxGetImagePtr hands back: 8-bit grey, row-major.
-        # None is the library's NULL pointer (no image available).
-        self.image: np.ndarray | None = np.full((24, 32), 200, dtype=np.uint8)
-        self.image_reads = 0
-        # What reading the image does to the ring, if anything — a hook a
-        # test sets to mimic a device call that re-points the buffer.
-        self.on_image_read: Callable[[], None] | None = None
-
-    def TPxGetImagePtr(self):  # noqa: N802 - vendor's name
-        self.image_reads += 1
-        if self.on_image_read is not None:
-            self.on_image_read()
-        if self.image is None:
-            return ctypes.POINTER(ctypes.c_byte)(), 0, 0
-        height, width = self.image.shape
-        # Kept alive on the fake so the pointer stays valid until the
-        # backend has copied out of it, as the device's own buffer would.
-        self._image_buffer = (ctypes.c_byte * (height * width))(
-            *(int(v) - 256 if v > 127 else int(v) for v in self.image.ravel())
-        )
-        pointer = ctypes.cast(self._image_buffer, ctypes.POINTER(ctypes.c_byte))
-        return pointer, height, width
-
-    def TPxGetEyePositionDuringCalib_returnsRaw(self, x, y, eye):  # noqa: N802 - vendor's
-        # The same device call as pypixxlib's wrapper, with the raw vectors
-        # handed back. Routed through the device's own method, so a test
-        # that patches that method (to mimic the device un-arming the
-        # sample ring) sees this call too, and every target is recorded once.
-        self.device.getEyePositionDuringCalib(x, y, eye)
-        return list(self.raw_at_target(x, y))
-
-    def TPxGetCalibCoeffs(self):  # noqa: N802 - vendor's name
-        if self.coefficient_error is not None:
-            self.error = self.coefficient_error
-        return list(self.calibration_coefficients)
-
-    def TPxGetIrisExpectedSize(self) -> int:  # noqa: N802 - vendor's name
-        return self.iris_size
-
-    def TPxSetIrisExpectedSize(self, size: int) -> None:  # noqa: N802 - vendor's name
-        self.iris_size = min(int(size), self.iris_register_max)
-
-    def TPxSetBuff(self, base: int, size: int) -> None:  # noqa: N802 - vendor's name
-        self.buffer_base = base
-        self.arms += 1
-
-    def TPxEnableFreeRun(self) -> None:  # noqa: N802 - vendor's name
-        self.freerun = True
-
-    def TPxIsFreeRun(self) -> int:  # noqa: N802 - vendor's name
-        return 1048576 if self.freerun else 0
-
-    def TPxGetBuffBaseAddr(self) -> int:  # noqa: N802 - vendor's name
-        return self.buffer_base
-
-    def TPxGetPupilSize(self) -> tuple[float, float, float, float]:  # noqa: N802
-        return self.pupils
-
-    def TPxBestPolyGetEyePosition(self, packed, raw) -> float:  # noqa: N802 - vendor's name
-        """The gaze report, both forms, written into the caller's buffers
-        the way the C call does: the calibrated positions the test queued in
-        ``positions``, the raw eye vectors in ``raw_positions``."""
-        self.reads += 1
-        for index, value in enumerate(self.positions):
-            packed[index] = value
-        for index, value in enumerate(self.raw_positions):
-            raw[index] = value
-        return 0.0
-
-    def DPxSelectDevice(self, name: str) -> None:  # noqa: N802 - vendor's name
-        self.selected = name
-
-    def TPxHideOverlay(self) -> None:  # noqa: N802 - vendor's name
-        self.overlay_hidden = True
-
-    def DPxSetTPxAwake(self) -> None:  # noqa: N802 - vendor's name
-        self.awake = True
-
-    def DPxUpdateRegCache(self) -> None:  # noqa: N802 - vendor's name
-        self.cache_updates += 1
-
-    def DPxGetError(self) -> str:  # noqa: N802 - vendor's name
-        return self.error
-
-    def DPxGetErrorString(self) -> str:  # noqa: N802 - vendor's name
-        return self.error_string
-
-    def DPxClearError(self) -> None:  # noqa: N802 - vendor's name
-        self.error = "DPX_SUCCESS"
-
-
-class FakeTrackPixx:
-    """Stand-in for pypixxlib's TRACKPixx3, recording what it was asked to do.
-
-    The gaze report lives on the fake libdpx (the backend reads it through
-    ``TPxBestPolyGetEyePosition``, not through this class, to get the raw
-    vectors pypixxlib's wrapper discards); ``positions`` and ``reads`` here
-    forward to it so a test reaches everything through the one fixture.
-    """
-
-    def __init__(self) -> None:
-        # The free functions the backend calls around this object. Owned by
-        # the device so a test reaches both through the one fixture value.
-        self.libdpx = FakeLibdpx()
-        self.opened = False
-        self.closed = False
-        self.led_intensity: int | None = None
-        self.eye_to_verify = 3  # pypixxlib's own default
-        self.recording_folder: str | None = None
-        self.samples_file: Path | None = None
-        self.device_time = 100.0
-        self.drains = 0
-        self.calibration_points: list[tuple[float, float, int]] = []
-        self.libdpx.device = self
-        self.finished_calibration = False
-        # What the device answers after finishCalibration(); False is the
-        # calibration-with-no-eye case seen on the rig.
-        self.calibrated_after_finish = True
-        # What it answers BEFORE any calibration this session: the device
-        # keeps one across runs, and the rig had one. False is a fresh
-        # device, which is what the failed pilot ran on.
-        self.holds_calibration = True
-        # Printed by the real setUpDataRecording() and saveBufferedData().
-        self.chatter = (
-            "Recording data is not yet directly implemented in the TRACKPixx3 -- "
-            "Please use the schedule method"
-        )
-        # pypixxlib's own ring layout, which the backend reads back.
-        self.buffer_base_addr = 0x12000000
-        self.buffer_size = 0x18000000
-        self.last_read_addr = 0x12000000
-
-    @property
-    def positions(self) -> list[float]:
-        return self.libdpx.positions
-
-    @positions.setter
-    def positions(self, value: list[float]) -> None:
-        self.libdpx.positions = list(value)
-
-    @property
-    def reads(self) -> int:
-        return self.libdpx.reads
-
-    def open(self) -> None:
-        self.opened = True
-
-    def close(self) -> None:
-        self.closed = True
-
-    def setLEDintensity(self, value: int) -> None:  # noqa: N802 - vendor's name
-        self.led_intensity = value
-
-    def setUpDataRecording(self, folder: str) -> str:  # noqa: N802 - vendor's name
-        # Mirrors pypixxlib: it prints its note, then picks the name itself,
-        # inside a data/ subdirectory of the folder it was given.
-        print(self.chatter)
-        self.recording_folder = folder
-        data_dir = Path(folder) / "data"
-        data_dir.mkdir(parents=True, exist_ok=True)
-        self.samples_file = data_dir / "TPx_2026-08-27_09-00-00.csv"
-        # Mirrors the real one's TPxSetBuff + TPxEnableFreeRun.
-        self.libdpx.buffer_base = self.buffer_base_addr
-        self.libdpx.freerun = True
-        self.last_read_addr = self.buffer_base_addr
-        return str(self.samples_file)
-
-    def saveBufferedData(self) -> None:  # noqa: N802 - vendor's name
-        # The real one prints its note and appends the device's newly-
-        # buffered samples; this one appends a line per drain so a test can
-        # count them in the file.
-        print(self.chatter)
-        self.drains += 1
-        assert self.samples_file is not None
-        with self.samples_file.open("a") as f:
-            f.write(f"drain {self.drains}\n")
-
-    def isDeviceCalibrated(self) -> bool:  # noqa: N802 - vendor's name
-        if self.finished_calibration:
-            return self.calibrated_after_finish
-        return self.holds_calibration
-
-    def getTime(self) -> float:  # noqa: N802 - vendor's name
-        return self.device_time
-
-    def getEyePositionDuringCalib(self, x, y, eye):  # noqa: N802 - vendor's name
-        self.calibration_points.append((x, y, eye))
-
-    def finishCalibration(self) -> None:  # noqa: N802 - vendor's name
-        self.finished_calibration = True
-
-
 @pytest.fixture
-def fake_pypixxlib(monkeypatch):
-    """Install a fake pypixxlib for the duration of one test.
-
-    The backend imports it inside connect(), so patching sys.modules is
-    enough — and monkeypatch removes the entries again, so no other test
-    inherits a fake SDK.
-    """
-    device = FakeTrackPixx()
-    tracker_module = types.ModuleType("pypixxlib.tracker")
-    tracker_module.TRACKPixx3 = lambda: device  # type: ignore[attr-defined]
-    package = types.ModuleType("pypixxlib")
-    package.tracker = tracker_module  # type: ignore[attr-defined]
-    package._libdpx = device.libdpx  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "pypixxlib", package)
-    monkeypatch.setitem(sys.modules, "pypixxlib.tracker", tracker_module)
-    return device
+def fake_pypixxlib(monkeypatch) -> FakeTrackPixx:
+    """Install a fake pypixxlib for the duration of one test (fake_sdk.py,
+    shared with the check-rig and session tests that run this backend)."""
+    return install_fake_pypixxlib(monkeypatch)
 
 
 def make_viewpixx(clock=None, *, background_gaze=False, **cfg_kwargs) -> ViewPixxTracker:
@@ -1283,12 +1034,14 @@ class TestRecordingGuard:
     ):
         # What a calibration does to the device: free-run off, ring at 0. A
         # drain from the old read pointer never returns on the real library.
+        # Moved under an open segment: start_trial() now checks the ring
+        # itself (and re-arms it), so a move before it never reaches a drain.
         tracker = connected()
         libdpx = fake_pypixxlib.libdpx
+        tracker.start_trial(1, "ok")
         libdpx.freerun = False
         libdpx.buffer_base = 0
         fake_pypixxlib.last_read_addr = 0x12345678
-        tracker.start_trial(1, "ok")
         tracker.stop_trial()
         assert fake_pypixxlib.drains == 0  # nothing valid to save
         assert libdpx.freerun
@@ -1300,6 +1053,360 @@ class TestRecordingGuard:
         tracker.start_trial(1, "ok")
         tracker.stop_trial()
         assert fake_pypixxlib.drains == 1
+
+    def test_start_trial_rearms_a_ring_found_stopped_between_trials(self, fake_pypixxlib, caplog):
+        # A trial started on a device that is not recording would be a
+        # dropout from its first frame; the ring is put back first, and said so.
+        tracker = connected()
+        fake_pypixxlib.libdpx.freerun = False
+        with caplog.at_level(logging.WARNING):
+            tracker.start_trial(1, "ok")
+        assert fake_pypixxlib.libdpx.freerun
+        assert "not recording into the session's buffer before trial 1" in caplog.text
+        assert tracker.recording_fault() is None
+
+
+# One display frame at 120 Hz: how often a session asks.
+FRAME = 1 / 120
+
+
+def recording_trial(clock: FakeClock | None = None, **cfg_kwargs) -> ViewPixxTracker:
+    """A configured tracker, no reader thread, with trial 1's segment open."""
+    tracker = connected(clock or FakeClock(start=10.0), **cfg_kwargs)
+    tracker.start_trial(1, "attempt 1")
+    return tracker
+
+
+class StalledReader:
+    """Make the reader look alive while it never reads again — what a USB
+    call that has not returned looks like from the render thread. The test
+    reads for it (``read_now``) when it wants the thread to have read."""
+
+    def __init__(self, tracker: ViewPixxTracker) -> None:
+        self.reader = tracker._reader
+        assert self.reader is not None
+
+    def __enter__(self):
+        self.reader._thread = threading.current_thread()  # type: ignore[union-attr]
+        return self.reader
+
+    def __exit__(self, *exc) -> None:
+        self.reader._thread = None  # type: ignore[union-attr]
+
+
+class TestDropoutDetection:
+    """recording_fault(): the reader died, the reader stalled, or the device
+    stopped recording — and on the healthy path, no device call at all."""
+
+    def test_the_healthy_path_touches_no_device(self, fake_pypixxlib):
+        # With the reader thread doing the reading, a frame's check is only
+        # attribute reads: no gaze read, no register round trip.
+        tracker = recording_trial()
+        libdpx = fake_pypixxlib.libdpx
+        with StalledReader(tracker) as reader:
+            reader.read_now()
+            before = (libdpx.reads, libdpx.cache_updates)
+            for _ in range(10):
+                assert tracker.recording_fault() is None
+            assert (libdpx.reads, libdpx.cache_updates) == before
+
+    def test_a_reader_that_died_is_a_dropout(self, fake_pypixxlib, monkeypatch):
+        tracker = recording_trial()
+
+        def explode(packed, raw):
+            raise OSError("USB read failed")
+
+        monkeypatch.setattr(fake_pypixxlib.libdpx, "TPxBestPolyGetEyePosition", explode)
+        detail = tracker.recording_fault()
+        assert detail == "the TRACKPixx3 stopped answering: USB read failed"
+        # Said again, and never asked again, for the rest of the trial.
+        assert tracker.recording_fault() == detail
+
+    def test_a_reader_whose_thread_died_is_reported_before_anything_is_read(
+        self, fake_pypixxlib, monkeypatch
+    ):
+        tracker = recording_trial()
+        with StalledReader(tracker) as reader:
+
+            def explode(packed, raw):
+                raise OSError("USB read failed")
+
+            monkeypatch.setattr(fake_pypixxlib.libdpx, "TPxBestPolyGetEyePosition", explode)
+            with pytest.raises(TrackerError):
+                reader.read_now()  # the thread's last read, which killed it
+            detail = tracker.recording_fault()
+        assert detail is not None
+        assert detail.startswith("the TRACKPixx3 stopped answering: the gaze reader's last device")
+        assert "USB read failed" in detail
+
+    def test_a_stalled_reader_is_reported_after_the_limit_and_not_before(self, fake_pypixxlib):
+        clock = FakeClock(start=10.0)
+        tracker = recording_trial(clock)
+        with StalledReader(tracker) as reader:
+            reader.read_now()
+            clock.advance(0.090)
+            assert tracker.recording_fault() is None  # 90 ms: inside the 100 ms limit
+            clock.advance(0.020)
+            detail = tracker.recording_fault()
+        assert detail is not None
+        assert detail.startswith("no gaze report from the TRACKPixx3 for 110 ms (limit 100 ms)")
+        assert "stuck in a device call" in detail
+
+    def test_a_report_repeated_within_the_limit_is_not_a_dropout(self, fake_pypixxlib):
+        clock = FakeClock(start=10.0)
+        tracker = recording_trial(clock)
+        with StalledReader(tracker) as reader:
+            reader.read_now()
+            clock.advance(0.060)
+            assert tracker.recording_fault() is None
+            reader.read_now()  # a slow read finally came back
+            clock.advance(0.060)
+            assert tracker.recording_fault() is None
+
+    def test_get_gaze_keeps_a_position_until_the_check_has_called_the_dropout(self, fake_pypixxlib):
+        # The health check runs before get_gaze() in every frame. A stalled
+        # reader must be called a dropout — a system fault — before the stale
+        # position turns into "no gaze", which a fixation phase would blame
+        # on the subject as a broken fixation.
+        clock = FakeClock(start=10.0)
+        tracker = recording_trial(clock, max_sample_gap_ms=200)
+        fake_pypixxlib.positions = [10.0, 20.0, 0.0, 0.0]
+        with StalledReader(tracker) as reader:
+            reader.read_now()
+            clock.advance(0.201)
+            assert tracker.recording_fault() is not None
+            assert tracker.get_gaze() is not None  # still the last position
+            clock.advance(0.005)
+            assert tracker.get_gaze() is None
+
+    def test_the_device_stopping_its_recording_is_reported(self, fake_pypixxlib):
+        # The gaze report carries on when the recording stops — two separate
+        # paths through the device — so the reader asks the device itself.
+        clock = FakeClock(start=10.0)
+        tracker = recording_trial(clock)
+        fake_pypixxlib.libdpx.freerun = False  # another program took it over
+        # Not before the reader's next question: its last answer is fresh.
+        assert tracker.recording_fault() is None
+        clock.advance(0.050)  # half the limit: the question is due
+        detail = tracker.recording_fault()
+        assert detail == (
+            "the TRACKPixx3 stopped recording samples into the session's buffer: "
+            "free-run sampling is off"
+        )
+
+    def test_a_moved_buffer_is_named(self, fake_pypixxlib):
+        clock = FakeClock(start=10.0)
+        tracker = recording_trial(clock)
+        fake_pypixxlib.libdpx.buffer_base = 0
+        clock.advance(0.050)
+        detail = tracker.recording_fault()
+        assert detail is not None
+        assert "its sample buffer moved (base 0x0, armed at 0x12000000)" in detail
+
+    def test_a_device_that_went_away_is_reported(self, fake_pypixxlib):
+        # libdpx's free functions do not raise: the gaze read carries on,
+        # writing nothing, and only the sticky error says the transfer failed.
+        clock = FakeClock(start=10.0)
+        tracker = recording_trial(clock)
+        fake_pypixxlib.libdpx.unplug()
+        clock.advance(0.050)
+        detail = tracker.recording_fault()
+        assert detail is not None
+        assert detail.startswith("the TRACKPixx3 did not answer a register read (")
+        assert "DPX_ERR_USB_REQ_FAILED" in detail
+
+    def test_blinks_never_read_as_a_dropout(self, fake_pypixxlib):
+        # A blink is the device reporting "no eye", at full rate.
+        clock = FakeClock(start=10.0)
+        tracker = recording_trial(clock)
+        fake_pypixxlib.positions = [TRACKING_LOST_PX] * 4
+        for _ in range(240):
+            clock.advance(FRAME)
+            assert tracker.recording_fault() is None
+            assert tracker.get_gaze() is None
+
+    def test_a_healthy_session_second_is_quiet(self, fake_pypixxlib):
+        clock = FakeClock(start=10.0)
+        tracker = recording_trial(clock)
+        for _ in range(240):
+            clock.advance(FRAME)
+            assert tracker.recording_fault() is None
+            tracker.get_gaze()
+
+    def test_no_open_segment_has_nothing_to_report(self, fake_pypixxlib):
+        tracker = connected()
+        fake_pypixxlib.libdpx.freerun = False
+        assert tracker.recording_fault() is None
+        assert tracker.newest_sample_age_s() is None
+
+    def test_the_cutoff_never_undercuts_the_limit(self, fake_pypixxlib):
+        # GAZE_STALE_S is the floor; a longer limit carries the cutoff with it.
+        assert connected()._gaze_stale_s == pytest.approx(0.105)
+        assert connected(max_sample_gap_ms=60)._gaze_stale_s == pytest.approx(GAZE_STALE_S)
+        assert connected(max_sample_gap_ms=300)._gaze_stale_s == pytest.approx(0.305)
+
+
+class TestAfterADropout:
+    """What a dropout leaves behind: the drain and the messages that follow
+    it are logged, not raised; the next start restarts a reader that died,
+    re-checks the device, and refuses the trial loudly if it does not answer."""
+
+    def dropped(self, fake_pypixxlib) -> tuple[ViewPixxTracker, FakeClock, str]:
+        clock = FakeClock(start=10.0)
+        tracker = recording_trial(clock)
+        fake_pypixxlib.libdpx.unplug()
+        clock.advance(0.050)
+        detail = tracker.recording_fault()
+        assert detail is not None
+        return tracker, clock, detail
+
+    def test_messages_after_a_dropout_are_left_out_and_logged(self, fake_pypixxlib, caplog):
+        tracker, clock, detail = self.dropped(fake_pypixxlib)
+        marks = len(tracker._messages)
+        with caplog.at_level(logging.WARNING):
+            tracker.send_message("trial_end")
+        # Left out: a mark with no device time aligns nothing.
+        assert len(tracker._messages) == marks
+        assert "message 'trial_end'" in caplog.text
+        assert "left out of the message record" in caplog.text
+
+    def test_a_message_that_fails_without_a_dropout_still_raises(self, fake_pypixxlib):
+        tracker = recording_trial()
+        fake_pypixxlib.libdpx.unplug()
+        with pytest.raises(OSError, match="DPX_ERR_USB_REQ_FAILED"):
+            tracker.send_message("stim_on")
+
+    def test_a_drain_that_fails_after_a_dropout_is_logged_not_raised(self, fake_pypixxlib, caplog):
+        tracker, clock, detail = self.dropped(fake_pypixxlib)
+        with caplog.at_level(logging.ERROR):
+            tracker.stop_trial()
+        assert not tracker.is_recording()
+        assert "could not be saved after this trial's dropout" in caplog.text
+
+    def test_a_drain_that_fails_without_a_dropout_still_raises(self, fake_pypixxlib):
+        tracker = recording_trial()
+        fake_pypixxlib.libdpx.unplug()
+        with pytest.raises(OSError, match="DPX_ERR_USB_REQ_FAILED"):
+            tracker.stop_trial()
+
+    def test_a_device_that_is_gone_refuses_the_next_trial(self, fake_pypixxlib):
+        tracker, clock, detail = self.dropped(fake_pypixxlib)
+        tracker.stop_trial()
+        with pytest.raises(TrackerError) as excinfo:
+            tracker.start_trial(2, "attempt 1")
+        message = str(excinfo.value)
+        assert message.startswith("the TRACKPixx3 is not answering at trial 2:")
+        assert "DPX_ERR_USB_REQ_FAILED" in message
+        assert "DATAPixx3 is powered and its USB cable connected" in message
+        assert f"The previous trial's recording had already been lost: {detail}." in message
+        assert not tracker.is_recording()
+
+    def test_a_reader_that_died_is_restarted_when_the_device_answers_again(
+        self, fake_pypixxlib, monkeypatch, caplog
+    ):
+        clock = FakeClock(start=10.0)
+        tracker = recording_trial(clock)
+        libdpx = fake_pypixxlib.libdpx
+        working = libdpx.TPxBestPolyGetEyePosition
+
+        def explode(packed, raw):
+            raise OSError("USB read failed")
+
+        monkeypatch.setattr(libdpx, "TPxBestPolyGetEyePosition", explode)
+        assert tracker.recording_fault() is not None
+        tracker.stop_trial()
+        monkeypatch.setattr(libdpx, "TPxBestPolyGetEyePosition", working)  # the cable is back
+        with caplog.at_level(logging.INFO):
+            tracker.start_trial(2, "attempt 1")
+        reader = tracker._reader
+        assert reader is not None and reader.fault is None
+        assert "answers again: gaze reader restarted before trial 2" in caplog.text
+        clock.advance(FRAME)
+        assert tracker.recording_fault() is None
+
+    def test_a_reader_that_still_cannot_read_refuses_the_next_trial(
+        self, fake_pypixxlib, monkeypatch
+    ):
+        tracker = recording_trial()
+
+        def explode(packed, raw):
+            raise OSError("USB read failed")
+
+        monkeypatch.setattr(fake_pypixxlib.libdpx, "TPxBestPolyGetEyePosition", explode)
+        assert tracker.recording_fault() is not None
+        tracker.stop_trial()
+        with pytest.raises(TrackerError, match="not answering at trial 2: .*USB read failed"):
+            tracker.start_trial(2, "attempt 1")
+
+    def test_a_device_that_fails_the_first_marks_is_refused_in_the_rigs_words(
+        self, fake_pypixxlib, monkeypatch, caplog
+    ):
+        # The check passed, then the trial's first messages failed. The
+        # segment is open, and the runner's finally drains it: that drain
+        # must be logged, never raise over the clear error.
+        tracker = connected()
+
+        def explode() -> float:
+            raise OSError("link down")
+
+        monkeypatch.setattr(fake_pypixxlib, "getTime", explode)
+        with pytest.raises(TrackerError, match="not answering at trial 1: OSError: link down"):
+            tracker.start_trial(1, "attempt 1")
+        monkeypatch.setattr(fake_pypixxlib, "saveBufferedData", explode)
+        with caplog.at_level(logging.ERROR):
+            tracker.stop_trial()  # what the runner's finally does: no raise
+        assert not tracker.is_recording()
+        assert "could not be saved after this trial's dropout" in caplog.text
+
+    def test_start_trial_replaces_a_verdict_from_before_it(self, fake_pypixxlib):
+        # The reader's last answer may predate the trial. The start asks the
+        # device itself, so an old "not recording" never faults a new trial.
+        tracker = recording_trial()
+        tracker.stop_trial()
+        reader = tracker._reader
+        assert reader is not None
+        reader.note_check("stopped recording samples (an answer from before the trial)")
+        tracker.start_trial(2, "attempt 1")
+        assert tracker.recording_fault() is None
+
+    def test_simulate_dropout_switches_free_run_off_behind_the_backends_back(self, fake_pypixxlib):
+        # What check-rig does to prove detection works on the real device.
+        clock = FakeClock(start=10.0)
+        tracker = recording_trial(clock)
+        said = tracker.simulate_dropout()
+        assert "TPxDisableFreeRun() through pypixxlib" in said
+        assert tracker.is_recording()
+        assert not fake_pypixxlib.libdpx.freerun
+        clock.advance(0.050)
+        detail = tracker.recording_fault()
+        assert detail is not None and "free-run sampling is off" in detail
+
+    def test_simulate_dropout_needs_an_open_recording(self, fake_pypixxlib):
+        with pytest.raises(TrackerError, match="needs an open recording"):
+            connected().simulate_dropout()
+
+    def test_a_stuck_device_call_fails_loudly_instead_of_hanging(self, fake_pypixxlib, monkeypatch):
+        # A USB call that never returns holds the device lock forever. The
+        # session's own calls give up after LOCK_TIMEOUT_S, and say why.
+        monkeypatch.setattr(viewpixx_module, "LOCK_TIMEOUT_S", 0.001)
+        tracker = recording_trial()
+        assert tracker._device_lock.acquire()  # the stuck call
+        try:
+            with pytest.raises(
+                TrackerError, match="did not answer within .* a device call is stuck"
+            ):
+                tracker.send_message("stim_on")
+        finally:
+            tracker._device_lock.release()
+
+    def test_shutdown_without_a_destination_discards_the_test_recording(self, fake_pypixxlib):
+        # check-rig's dropout test records for a second or two; nothing asks
+        # for that recording, and it must not pile up in the temp folder.
+        tracker = connected()
+        scratch = tracker._scratch_dir
+        assert scratch is not None and scratch.is_dir()
+        tracker.shutdown(None)
+        assert not scratch.exists()
 
 
 class TestCalibrationRecording:

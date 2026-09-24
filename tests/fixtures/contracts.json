@@ -57,7 +57,8 @@
     "n_mid_trial_reward_failures",
     "n_mid_trial_rewards_cancelled",
     "feedback",
-    "fault"
+    "fault",
+    "fault_detail"
   ],
   "schema_versions": {
     "database": 2,
