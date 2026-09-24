@@ -53,16 +53,19 @@ src/alhazen/
 Layering is enforced by import-linter (pyproject `[tool.importlinter]`),
 top to bottom: `cli` → `modes` → `session | testing | analysis` → `training` →
 `task` → `dashboard` → `paradigms | devices` → `core | neural` →
-`stimuli | scenes` → `display` → `config | data | _scaffold`. Imports point
-only downward; `errors` and `version` sit outside the contract. `neural`
-shares core's line so that both the device layer (live, during a session) and
+`stimuli | scenes` → `display` → `config | data | _scaffold` →
+`_deprecation`. Imports point only downward; `errors` and `version` sit
+outside the contract. `_deprecation`, the `@deprecated` decorator, is a single
+module with a line of its own at the bottom, so that every layer may import it
+while it imports nothing else from alhazen. `neural` shares core's line so
+that both the device layer (live, during a session) and
 the analysis layer (offline, over the files) can run the same spike detection
 and the same map arithmetic without either importing the other. `modes` sits
 directly under `cli`, the only package that imports it, and above `session`,
 which every mode builds or drives; the ruler that `--mode measure` and
 `alhazen calibrate ruler` both draw lives in `display/ruler.py` so that
 `modes` never imports from `cli`. `_scaffold` imports nothing from alhazen but
-`errors`, and the bottom line keeps it that way.
+`errors`, and its line keeps it that way.
 
 Three placements carry the weight:
 
@@ -1479,7 +1482,14 @@ since hashing gigabytes to identify it costs more than it is worth), every
 table written, the parameters, and the alhazen version that produced them. An
 empty result still writes its file: nothing on disk is indistinguishable from
 the analysis never having run, which is the question the bundle exists to
-answer.
+answer. Inputs are hashed by the same function the run manifest uses
+(`data.manifest.sha256_file`), so the two can be compared.
+
+An `out_dir` that already holds files is reused — a report re-run into its
+own `analysis/` directory is the normal case — but not silently: opening the
+bundle logs a warning listing them, and the manifest's `preexisting` lists
+every one this bundle did not rewrite, so an earlier run's leftover output
+cannot pass for this run's.
 
 ### 7.6 Readers
 

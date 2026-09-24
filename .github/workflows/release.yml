@@ -9,7 +9,11 @@
 # bring them back; the jobs themselves are in the git history of this file.
 #
 # What stays is everything that can fail for a reason worth hearing: the
-# version gate, and a build of the wheel and sdist that twine checks.
+# version gate, a build of the wheel and sdist that twine checks, and a smoke
+# test that installs the built wheel into a clean environment and runs it.
+#
+# Every `uses:` is pinned to a full commit SHA, the tag it was resolved from
+# in the trailing comment: a tag can be moved to other code, a SHA cannot.
 name: release
 
 on:
@@ -27,8 +31,8 @@ jobs:
     # never lets a number be reused.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - name: The version agrees everywhere
@@ -49,8 +53,8 @@ jobs:
     needs: check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - name: Build the wheel and sdist
@@ -60,7 +64,72 @@ jobs:
           # Fails on a malformed description or metadata, which PyPI would
           # otherwise reject after the version number is already spent.
           python -m twine check dist/*
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: distributions
           path: dist/
+
+  smoke:
+    # twine checks the metadata, not whether the wheel works. A wheel can pass
+    # it and still be broken where only an install shows it: a runtime file
+    # left out of package-data (the scaffold templates, the dashboard page), a
+    # dependency the code imports but pyproject does not declare, a console
+    # script pointing at a moved function. So the wheel just built is
+    # installed into a fresh venv — no checkout, so nothing can be imported
+    # from the source tree by accident — and run the way a new user runs it:
+    # the version, then the README's quick start (`alhazen new`, then a whole
+    # simulated session with no window and nobody in the chair).
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: distributions
+          path: dist/
+      - name: Install the wheel into a clean venv
+        run: |
+          python -m venv "$RUNNER_TEMP/smoke"
+          # Exactly one wheel is expected; a glob that matched none or two
+          # would install the wrong thing or nothing, so say so and stop.
+          wheels=(dist/*.whl)
+          if [ "${#wheels[@]}" -ne 1 ] || [ ! -f "${wheels[0]}" ]; then
+            echo "expected exactly one wheel in dist/, found: ${wheels[*]}" >&2
+            exit 1
+          fi
+          "$RUNNER_TEMP/smoke/bin/python" -m pip install "${wheels[0]}"
+      - name: The installed version is the wheel's version
+        # `alhazen --version` reads the installed distribution's metadata and
+        # falls back to "unknown", so an install that half-worked prints a
+        # version string that is wrong rather than failing — compare it.
+        run: |
+          wheel=$(basename dist/*.whl)
+          # alhazen_vision-1.5.0-py3-none-any.whl -> 1.5.0
+          expected=$(echo "$wheel" | cut -d- -f2)
+          reported=$("$RUNNER_TEMP/smoke/bin/alhazen" --version)
+          echo "wheel $wheel; alhazen --version says: $reported"
+          if [ "$reported" != "alhazen $expected" ]; then
+            echo "alhazen --version printed '$reported', expected 'alhazen $expected'" >&2
+            exit 1
+          fi
+      - name: Scaffold an experiment and run a headless simulated session
+        # Runs in the temp directory, away from dist/ and any source tree.
+        # PYTHONPATH=src lets run.py import the scaffolded experiment without
+        # installing it (the scaffold's "start before installing anything"
+        # path), so alhazen itself comes only from the wheel. simulate reduces
+        # its own trial counts, so the session takes seconds.
+        working-directory: ${{ runner.temp }}
+        run: |
+          "$RUNNER_TEMP/smoke/bin/alhazen" new smoke_demo
+          cd smoke_demo
+          PYTHONPATH=src "$RUNNER_TEMP/smoke/bin/python" run.py --mode simulate \
+            --rig configs/rig-lab.yaml --headless
+          # A zero exit with no data written is not a session that ran.
+          run_dir=$(find data-rehearsal -type d -name 'run-*' | head -n 1)
+          if [ -z "$run_dir" ] || [ -z "$(find "$run_dir" -name '*_trials.csv')" ]; then
+            echo "the simulated session wrote no trials file under data-rehearsal/" >&2
+            exit 1
+          fi
+          echo "session written to $run_dir"

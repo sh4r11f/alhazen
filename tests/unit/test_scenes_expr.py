@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from alhazen.errors import ConfigError
-from alhazen.scenes.expr import EvalContext, evaluate_expr, evaluate_number
+from alhazen.scenes.expr import EvalContext, compile_node, evaluate_expr, evaluate_number
 from alhazen.scenes.rng import mulberry32, rng, rng_n
 
 FIXTURE = json.loads((Path(__file__).parents[1] / "fixtures_expr_parity.json").read_text())
@@ -126,6 +126,73 @@ class TestStrictness:
     def test_a_non_numeric_result_where_a_number_is_needed(self, context):
         with pytest.raises(ConfigError, match="a number was needed"):
             evaluate_number("fixed(1.5, 2)", context)
+
+
+class TestMalformedNumbers:
+    """A number literal that is not a number is a mistake in the file, so it
+    must fail when the expression is compiled (which the loader does for every
+    expression when a scene is opened), naming the literal and the expression.
+    It used to escape the tokenizer as Python's bare ``ValueError``."""
+
+    @pytest.mark.parametrize("source", ["1.2.3", "1..2 + 3", "2 * 1e+", "4e-"])
+    def test_is_a_config_error_at_compile_time(self, source):
+        # compile_node is what load_scene calls; nothing is evaluated here.
+        with pytest.raises(ConfigError, match="malformed number") as caught:
+            compile_node(source)
+        assert repr(source) in str(caught.value)
+
+    def test_names_the_literal(self):
+        with pytest.raises(ConfigError, match=r"'1\.2\.3'"):
+            compile_node("width * 1.2.3")
+
+    @pytest.mark.parametrize(
+        ("source", "expected"), [("1.", 1.0), (".5", 0.5), ("1e3", 1000.0), ("2.5E-1", 0.25)]
+    )
+    def test_well_formed_numbers_still_parse(self, source, expected):
+        assert evaluate_number(source, EvalContext()) == expected
+
+
+class TestOperatorErrorsAreLoud:
+    """An operator that cannot be applied to the values it meets at render
+    time — a string where a number belongs, a power too large for a float —
+    must raise ConfigError naming the expression, the operator and the values,
+    as a failing function call already did. It used to raise Python's raw
+    TypeError or OverflowError, with no word of which expression did it."""
+
+    @pytest.mark.parametrize(
+        ("source", "operator"),
+        [
+            ("params.name - 1", "-"),
+            ("params.name * 2", "*"),
+            ("params.name / 0", "/"),
+            ("params.name % 2", "%"),
+            ("params.name < 1", "<"),
+            ("10 ** 400", "**"),
+            ("-params.name", "-"),
+        ],
+    )
+    def test_is_a_config_error_naming_expression_and_operator(self, source, operator):
+        context = EvalContext(params={"name": "gabor"})
+        with pytest.raises(ConfigError) as caught:
+            evaluate_expr(source, context)
+        message = str(caught.value)
+        assert repr(source) in message
+        assert f"{operator!r}" in message
+
+    def test_names_the_values_involved(self):
+        context = EvalContext(params={"name": "gabor"})
+        with pytest.raises(ConfigError, match=r"'gabor' and 1"):
+            evaluate_expr("params.name - 1", context)
+
+    def test_a_failing_function_call_names_its_expression_too(self):
+        with pytest.raises(ConfigError, match=r"'sqrt\(-1\)'"):
+            evaluate_expr("sqrt(-1)", EvalContext())
+
+    def test_division_by_a_zero_param_stays_javascript_infinity(self):
+        # Not an error: the studio divides by zero to Infinity, and parity
+        # with it is the point. Pinned so the wrapping above cannot change it.
+        context = EvalContext(params={"gap": 0})
+        assert evaluate_number("1 / params.gap", context) == float("inf")
 
 
 class TestHostValues:
