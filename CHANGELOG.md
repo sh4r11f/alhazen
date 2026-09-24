@@ -188,6 +188,21 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Changed
 
+- **The `movie` extra now requires `imageio-ffmpeg>=0.4.4`** (was `>=0.4`).
+  imageio 2.31, the extra's own floor, calls `write_frames(audio_path=...)`,
+  which imageio-ffmpeg before 0.4.4 does not accept, so an install at the old
+  floors failed on the first movie written. Found by the new CI job that tests
+  every dependency at its declared minimum.
+
+- **Python 3.11 and 3.13 are tested, and the supported versions are
+  declared.** `requires-python` said `>=3.10`, but CI ran only 3.10 and 3.12,
+  and the package carried no Python classifiers at all, so nothing said which
+  versions were actually checked. CI now also runs the suite on 3.11 and 3.13
+  (on Linux), plus one job on 3.10 with every direct dependency at the lowest
+  version pyproject allows, so the stated floors (`numpy>=1.24`,
+  `pandas>=2.0`, `pydantic>=2.5`, ...) are tested rather than assumed; and
+  pyproject lists the classifiers for 3.10 through 3.13, the versions CI runs.
+
 - **The public API is now exactly the names `docs/reference.md` lists.**
   Most of its entries used to document a whole module, and the policy called
   "everything in the modules on this page" public — so dashboard formatting

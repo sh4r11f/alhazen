@@ -52,16 +52,19 @@ src/alhazen/
 Layering is enforced by import-linter (pyproject `[tool.importlinter]`),
 top to bottom: `cli` → `modes` → `session | testing | analysis` → `training` →
 `task` → `dashboard` → `paradigms | devices` → `core | neural` →
-`stimuli | scenes` → `display` → `config | data | _scaffold`. Imports point
-only downward; `errors` and `version` sit outside the contract. `neural`
-shares core's line so that both the device layer (live, during a session) and
+`stimuli | scenes` → `display` → `config | data | _scaffold` →
+`_deprecation`. Imports point only downward; `errors` and `version` sit
+outside the contract. `_deprecation`, the `@deprecated` decorator, is a single
+module with a line of its own at the bottom, so that every layer may import it
+while it imports nothing else from alhazen. `neural` shares core's line so
+that both the device layer (live, during a session) and
 the analysis layer (offline, over the files) can run the same spike detection
 and the same map arithmetic without either importing the other. `modes` sits
 directly under `cli`, the only package that imports it, and above `session`,
 which every mode builds or drives; the ruler that `--mode measure` and
 `alhazen calibrate ruler` both draw lives in `display/ruler.py` so that
 `modes` never imports from `cli`. `_scaffold` imports nothing from alhazen but
-`errors`, and the bottom line keeps it that way.
+`errors`, and its line keeps it that way.
 
 Three placements carry the weight:
 
