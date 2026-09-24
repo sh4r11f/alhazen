@@ -1906,10 +1906,11 @@ mkdocstrings, and the site builds under `--strict`.
 
 ### Compatibility
 
-The public API is everything exported from `alhazen` and everything in the
-documented modules. A deprecated name keeps working, and warns, until the next
-major version removes it (`alhazen._deprecation`); the warning names that
-version and the replacement.
+The public API is everything exported from `alhazen` and the members
+`docs/reference.md` lists for each documented module; any other name is
+internal, whether or not it starts with `_`. A deprecated name keeps working,
+and warns, until the next major version removes it (`alhazen._deprecation`);
+the warning names that version and the replacement.
 
 Three contracts outlast any version because they live on disk:
 `core.rng.STREAMS` is append-only, `RESERVED_EVENTS` only ever gains names,

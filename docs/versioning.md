@@ -15,10 +15,15 @@ alhazen follows [semantic versioning](https://semver.org). Given `MAJOR.MINOR.PA
 | **PATCH** | A fix, with no new surface. | A dropped-frame count that was off by one. |
 
 **The public API** — the surface those rules apply to — is everything exported
-from `alhazen` (its `__all__`) and everything documented in the
-[API reference](reference.md). Anything starting with `_` is not public, and
-neither is anything reachable only by importing a submodule the reference does
-not list.
+from `alhazen` (its `__all__`) and the members the
+[API reference](reference.md) lists for each module on it. A name that is not
+listed is internal even without a leading underscore and even in a listed
+module — a formatting helper, a tuning constant, a real device backend's
+class — and may change or disappear in any release, without a deprecation.
+Anything starting with `_` is not public, and neither is any module the
+reference does not list. `tests/unit/test_docs_snippets.py` fails when a
+listed name stops existing, and when an entry on that page has no explicit
+list, so the public surface cannot grow or shrink without the page saying so.
 
 Three further things are compatibility contracts even though they are not
 Python API, because they live **on disk** and outlast any one version. Section
