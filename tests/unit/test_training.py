@@ -187,6 +187,82 @@ class TestState:
         assert "unreadable" in caplog.text
         assert path.exists()  # the old file is left for a human to look at
 
+    def test_saving_after_a_corrupt_file_moves_it_aside_rather_than_over_it(self, tmp_path, caplog):
+        # The bug this pins: load started over, and teardown's save then
+        # wrote stage 0 over the only copy of the subject's real place.
+        path = TrainingState.path_for(tmp_path, "m01")
+        path.parent.mkdir(parents=True)
+        original = "stage: [this is not a stage\ncompleted_by_stage: {tighten: 900}\n"
+        path.write_text(original, encoding="utf-8")
+        state = TrainingState.load(tmp_path, "m01", default_stage="one")
+
+        with caplog.at_level("WARNING"):
+            state.save(tmp_path, "m01")
+
+        asides = list(path.parent.glob("training_state.unreadable-*.yaml"))
+        assert len(asides) == 1
+        # Byte for byte what was there: it is evidence, and possibly the
+        # subject's real stage after a one-character typo.
+        assert asides[0].read_text(encoding="utf-8") == original
+        assert asides[0].name in caplog.text
+        # The real name now holds this session's state, which loads.
+        assert TrainingState.load(tmp_path, "m01", default_stage="other").stage == "one"
+
+    def test_the_file_is_moved_aside_once_not_on_every_save(self, tmp_path):
+        path = TrainingState.path_for(tmp_path, "m01")
+        path.parent.mkdir(parents=True)
+        path.write_text("stage: [broken", encoding="utf-8")
+        state = TrainingState.load(tmp_path, "m01", default_stage="one")
+        state.save(tmp_path, "m01")
+        state.save(tmp_path, "m01")  # the second save replaces its own file
+        assert len(list(path.parent.glob("training_state.unreadable-*.yaml"))) == 1
+
+    def test_an_earlier_aside_file_is_never_replaced(self, tmp_path):
+        # Two unreadable files set aside in the same second must both survive.
+        path = TrainingState.path_for(tmp_path, "m01")
+        path.parent.mkdir(parents=True)
+        for text in ("stage: [first", "stage: [second"):
+            path.write_text(text, encoding="utf-8")
+            TrainingState.load(tmp_path, "m01", default_stage="one").save(tmp_path, "m01")
+        kept = {
+            aside.read_text(encoding="utf-8")
+            for aside in path.parent.glob("training_state.unreadable-*.yaml")
+        }
+        # The first save's aside file plus the second's, whatever the clock
+        # did between them.
+        assert kept == {"stage: [first", "stage: [second"}
+
+    def test_bytes_that_are_not_text_are_unreadable_too(self, tmp_path, caplog):
+        # What a disk problem leaves behind; it used to escape as a crash
+        # of its own rather than the documented start-over.
+        path = TrainingState.path_for(tmp_path, "m01")
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"\xff\xfe\x00\x81 not utf-8")
+        with caplog.at_level("ERROR"):
+            state = TrainingState.load(tmp_path, "m01", default_stage="one")
+        assert state.stage == "one"
+        assert "unreadable" in caplog.text
+
+    def test_a_failed_write_leaves_the_previous_state_whole(self, tmp_path, monkeypatch):
+        # A full disk or a power cut part-way through a save must not leave a
+        # truncated file for the next session to start the subject over from.
+        good = TrainingState(stage="two")
+        good.save(tmp_path, "m01")
+
+        def disk_full(fd):
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr("alhazen.training.state.os.fsync", disk_full)
+        with pytest.raises(OSError, match="No space left"):
+            TrainingState(stage="one").save(tmp_path, "m01")
+
+        monkeypatch.undo()
+        assert TrainingState.load(tmp_path, "m01", default_stage="one").stage == "two"
+        # And no half-written temporary file is left beside it.
+        assert [p.name for p in TrainingState.path_for(tmp_path, "m01").parent.iterdir()] == [
+            "training_state.yaml"
+        ]
+
     def test_a_transition_clears_the_window(self):
         # The new stage's criteria must be judged on trials run AT that
         # stage, not on the ones that earned the move.

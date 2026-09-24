@@ -246,6 +246,19 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   raised after as a `TrackerError` saying which samples are missing. If the
   delivery fails too, its error is the one raised and the drain's is logged.
 
+- **A training state that could not be read was written over.** When
+  `training_state.yaml` was unreadable (a typo made while editing it by hand,
+  a disk problem), the session started the subject at the first stage — as
+  documented, and loudly — and then its teardown saved that first stage over
+  the file, destroying the only record of where the subject really was. The
+  file the load failed on is now renamed to
+  `training_state.unreadable-<UTC time>.yaml` before the session's own state
+  is written, and the warning names it; a name already taken is never
+  replaced. The save itself is now atomic (a temporary file, flushed to disk,
+  then renamed over the old one), so a crash or a full disk mid-write leaves
+  the previous state whole instead of a truncated file. Bytes that are not
+  UTF-8 are treated as unreadable too, instead of escaping as a crash.
+
 - **The real eye trackers never noticed a recording that died mid-trial.**
   The EyeLink's and the TRACKPixx3's `is_recording()` returned a flag they
   set at `start_trial` and cleared at `stop_trial`, so a pulled cable, a Host
