@@ -1673,10 +1673,6 @@ class SessionRunner:
 
     def _teardown(self, file_handler: logging.FileHandler) -> None:
         errors: list[Exception] = []
-        # First, before any step can fail: the log's own account of how the
-        # session ended is worth more than a step's failure message, and a
-        # log that simply stops is what this line exists to prevent.
-        self._log_session_end()
 
         def step(name: str, fn: Callable[[], None]) -> None:
             try:
@@ -1684,6 +1680,13 @@ class SessionRunner:
             except Exception as e:  # logged loudly + collected, never swallowed
                 log.exception("teardown step %r failed", name)
                 errors.append(e)
+
+        # First, before any other step can fail: the log's own account of how
+        # the session ended is worth more than a step's failure message, and
+        # a log that simply stops is what this line exists to prevent. A step
+        # like every other, so if even this line cannot be written, the data
+        # below still is.
+        step("log.session_end", self._log_session_end)
 
         # Before the recorder writes: a trial cut short by a quit or a fault
         # left the loop before its between-trials settle, and its drops'
@@ -1715,11 +1718,27 @@ class SessionRunner:
             step("live.finish", lambda: live.finish(self._paths.run_dir))
         if self._dashboard is not None:
             terminal = self._terminal_status(errors)
-            # Complete state, not the capped one: what lands in figures/ is
-            # the record of the session, and it is written once.
-            final_state = self._publish_dashboard(terminal, f"Session {terminal}.", full=True)
             dashboard = self._dashboard
-            step("dashboard.save", lambda: dashboard.save(self._paths.figures_dir, final_state))
+            final_state: dict[str, Any] = {}
+
+            def publish_final() -> None:
+                # Complete state, not the capped one: what lands in figures/
+                # is the record of the session, and it is written once.
+                final_state.update(
+                    self._publish_dashboard(terminal, f"Session {terminal}.", full=True)
+                )
+
+            # A step, not a bare call: building the final state asks the live
+            # analysis and the eye tracker for their panels, and a device that
+            # died mid-session can fail right here. Unguarded, that failure
+            # skipped every step below it — the tracker's recording, the
+            # manifest, closing the window.
+            step("dashboard.publish", publish_final)
+            # Saved only when the final state was built. When it was not, that
+            # failure is already logged and collected, and an earlier, capped
+            # state saved in its place would pose as the session's record.
+            if final_state:
+                step("dashboard.save", lambda: dashboard.save(self._paths.figures_dir, final_state))
             step("dashboard.stop", dashboard.stop)
         # Devices release BEFORE the manifest is written: the tracker's
         # recording is retrieved into this run's directory during shutdown,

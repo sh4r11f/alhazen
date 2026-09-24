@@ -1911,37 +1911,77 @@ class ViewPixxTracker:
         scratch directory. Swallowing a failure here is how a completed
         session's eye data quietly stays in a temp folder that the next
         reboot clears.
+
+        A failed last drain raises too — but only after the delivery. A
+        device that has stopped answering is exactly when a session ends
+        early, and its failure must not keep what IS saved from the run
+        directory: the samples of every earlier drain (already on disk) and
+        the message record (held in memory, gone with the process).
         """
         if self._tracker is None:
             return  # connect() never ran: nothing was opened
-        if self._reader is not None:
-            self._reader.stop()  # before the drain: nothing else may touch the device
-
-        if self._recording:
-            # The session can end mid-trial (quit, abort); stop_trial() owns
-            # the correct close-then-drain sequence, so delegate rather than
-            # re-deriving it here.
-            self.stop_trial()
-        self._drain_buffer()
-
         try:
-            if recording_destination is not None and self._samples_path is not None:
-                self._deliver_recording(recording_destination)
-            elif self._samples_path is not None:
-                # Nothing asked for the recording: a check (check-rig's dropout
-                # test records a second or two), not a session. Removed, and
-                # said so, rather than left behind in the temp folder on every
-                # checkout.
-                log.info(
-                    "no destination for the TRACKPixx3 recording %s: discarded",
-                    self._samples_path,
+            if self._reader is not None:
+                self._reader.stop()  # before the drain: nothing else may touch the device
+
+            # Held, not raised: the delivery below runs whatever happened here.
+            drain_error: Exception | None = None
+            try:
+                if self._recording:
+                    # The session can end mid-trial (quit, abort); stop_trial()
+                    # owns the correct close-then-drain sequence, so delegate
+                    # rather than re-deriving it here.
+                    self.stop_trial()
+                self._drain_buffer()
+            except Exception as e:  # pypixxlib's exception type cannot be named off the rig
+                drain_error = e
+
+            try:
+                delivered = self._hand_over_recording(recording_destination)
+            except Exception:
+                # The delivery's own error is the one that propagates (it says
+                # where the samples are stranded). The drain's would be lost
+                # with it, so it is logged here rather than raised.
+                if drain_error is not None:
+                    log.error(
+                        "the TRACKPixx3's last drain had already failed before the delivery "
+                        "did: %s",
+                        drain_error,
+                    )
+                raise
+
+            if drain_error is not None:
+                kept = (
+                    "Every earlier drain's samples and the message record were still "
+                    "delivered to the run directory."
+                    if delivered
+                    else "No recording was asked for, so nothing else is missing."
                 )
-                self._samples_path = None
-                self._discard_scratch_dir()
+                raise TrackerError(
+                    f"the TRACKPixx3's last drain failed at teardown ({drain_error}): the "
+                    f"samples buffered since the drain before it are not in the recording. "
+                    f"{kept}"
+                ) from drain_error
         finally:
             # Whatever happened to the files, the device link is released —
             # a held DATAPixx3 blocks the next session from opening it.
             self._tracker.close()
+
+    def _hand_over_recording(self, destination: Path | None) -> bool:
+        """Deliver the recording to ``destination``, or discard it when there
+        is none. True when a recording was delivered."""
+        if self._samples_path is None:
+            return False  # configure() never started a recording
+        if destination is not None:
+            self._deliver_recording(destination)
+            return True
+        # Nothing asked for the recording: a check (check-rig's dropout test
+        # records a second or two), not a session. Removed, and said so,
+        # rather than left behind in the temp folder on every checkout.
+        log.info("no destination for the TRACKPixx3 recording %s: discarded", self._samples_path)
+        self._samples_path = None
+        self._discard_scratch_dir()
+        return False
 
     def _deliver_recording(self, destination: Path) -> None:
         """Move the device's CSV, and write the messages, into the run dir.
