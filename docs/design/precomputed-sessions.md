@@ -804,8 +804,8 @@ flowchart LR
   CSVs, so crash safety arrives first, and `alhazen plan` lets a task be
   planned, inspected and verified offline.
 - **1.7** is opt-in per task. Training keeps running as today until its task
-  opts in, then runs live. `build_trial` and `update(dt)` warn for one minor
-  version, as the deprecation policy requires.
+  opts in, then runs live. `build_trial` and `update(dt)` warn from 1.7 until
+  2.0 removes them, as the deprecation policy requires.
 - **Porting** is checked with pilot sessions against each experiment's 1.x
   sessions: frame QA, timing, outcome rates.
 - **2.0**: live runs are today's compute-each-frame behaviour, now recording

@@ -22,7 +22,9 @@ fails on you:
   normal — update the baseline in the same commit. A failure on a *removal* is
   the contract working.
 - `tests/unit/test_versioning.py` checks that `pyproject.toml` and
-  `CHANGELOG.md` name the same version.
+  `CHANGELOG.md` name the same version, and that every deprecation's
+  `removed_in` is a MAJOR release the declared version has not reached — so
+  the bump to a MAJOR fails until the names it removes are gone.
 
 **Definition of done:** all five green, the new behavior has tests, and
 `docs/architecture.md` is updated in the same change.
