@@ -1416,13 +1416,21 @@ can gate a pipeline. Every number is printed, including the good ones: "0
 dropped frames" belongs in the record, not merely in the absence of a
 warning.
 
-**Anything written into a run directory re-writes the manifest.** A run
-directory is append-only *by manifest rewrite*: `verify_manifest` reports an
-unlisted file as a problem, so `AlignmentFit.save` and `SessionReport.save`
-both call `write_manifest` (idempotently) after writing. Otherwise the first
-report leaves unlisted files behind and every later report — and every
-`load_run` — comes back not-ok, i.e. the tool breaks the thing it exists to
-check.
+**Anything written into a run directory is recorded in its manifest — and
+only that.** `verify_manifest` reports an unlisted file as a problem, so
+`AlignmentFit.save` and `SessionReport.save` both call `add_to_manifest`
+with the file they wrote. Otherwise the first report leaves an unlisted file
+behind and every later report — and every `load_run` — comes back not-ok,
+i.e. the tool breaks the thing it exists to check.
+
+They do not call `write_manifest`, which hashes the whole directory. That is
+for the session's teardown, when every file there is the session's own.
+Called by a report, it recorded a file damaged since the session under its
+damaged hash: the report said "hash mismatch" once, and every check after it
+said "verified". `add_to_manifest` replaces only the entries of the files it
+is given, so the damage stays detectable. A run with no manifest (its session
+never finished teardown) is not given one after the fact; the report still
+writes its file, and a warning says it went unrecorded.
 
 ### 7.5 Results bundles
 

@@ -10,12 +10,13 @@ and only the bottom of the stack is below all three. Like the rest of the
 package, it knows nothing about what its numbers measure.
 """
 
-from alhazen.data.manifest import verify_manifest, write_manifest
+from alhazen.data.manifest import add_to_manifest, verify_manifest, write_manifest
 from alhazen.data.participants import ensure_participant, participants_path
 from alhazen.data.paths import SessionPaths
 
 __all__ = [
     "SessionPaths",
+    "add_to_manifest",
     "ensure_participant",
     "participants_path",
     "verify_manifest",

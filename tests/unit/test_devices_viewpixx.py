@@ -434,6 +434,65 @@ class TestShutdown:
         assert (tmp_path / "run_gaze-messages.csv").exists()
         assert scratch is not None and scratch.is_dir()
 
+    def test_a_failed_last_drain_still_delivers_what_was_saved(
+        self, fake_pypixxlib, monkeypatch, tmp_path
+    ):
+        # The bug this pins: the last drain ran outside the delivery's try, so
+        # a device that stopped answering at the end of a session left every
+        # earlier trial's samples in the temp folder and never wrote the
+        # message record at all — while the drain's error was all anyone saw.
+        tracker = connected()
+        tracker.start_trial(1, "ok")
+        fake_pypixxlib.device_time = 5.0
+        tracker.send_message("stim_on")
+        tracker.stop_trial()  # drain 1: trial 1's samples are on disk
+
+        def link_down() -> None:
+            raise OSError("link down")
+
+        monkeypatch.setattr(fake_pypixxlib, "saveBufferedData", link_down)
+        with pytest.raises(TrackerError, match=r"last drain failed at teardown \(link down\)"):
+            tracker.shutdown(tmp_path / "run.edf")
+
+        # Still loud, and what had been saved reached the run directory.
+        assert "drain 1" in (tmp_path / "run_gaze.csv").read_text()
+        assert "stim_on" in (tmp_path / "run_gaze-messages.csv").read_text()
+        assert fake_pypixxlib.closed
+
+    def test_a_failed_drain_is_logged_when_the_delivery_fails_too(
+        self, fake_pypixxlib, monkeypatch, tmp_path, caplog
+    ):
+        # Nothing was ever drained, so there is no samples file to deliver:
+        # the delivery's error propagates, and the drain's is not lost.
+        tracker = connected()
+        tracker.send_message("stim_on")
+
+        def link_down() -> None:
+            raise OSError("link down")
+
+        monkeypatch.setattr(fake_pypixxlib, "saveBufferedData", link_down)
+        with caplog.at_level(logging.ERROR), pytest.raises(TrackerError) as excinfo:
+            tracker.shutdown(tmp_path / "run.edf")
+        assert "does not exist at teardown" in str(excinfo.value)
+        assert "last drain had already failed before the delivery did: link down" in caplog.text
+        assert (tmp_path / "run_gaze-messages.csv").exists()
+        assert fake_pypixxlib.closed
+
+    def test_a_failed_drain_with_no_destination_still_cleans_up(self, fake_pypixxlib, monkeypatch):
+        # check-rig's case: the drain failure is still raised, and the
+        # scratch recording is still removed rather than left in temp.
+        tracker = connected()
+        scratch = tracker._scratch_dir
+
+        def link_down() -> None:
+            raise OSError("link down")
+
+        monkeypatch.setattr(fake_pypixxlib, "saveBufferedData", link_down)
+        with pytest.raises(TrackerError, match="No recording was asked for"):
+            tracker.shutdown(None)
+        assert scratch is not None and not scratch.exists()
+        assert fake_pypixxlib.closed
+
     def test_no_destination_writes_nothing(self, fake_pypixxlib, tmp_path):
         # What check-rig does: a smoke test that opens and closes the device
         # without a run behind it.

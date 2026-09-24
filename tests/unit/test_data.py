@@ -9,7 +9,7 @@ import pytest
 import yaml
 
 from alhazen.core.events import Event
-from alhazen.data.manifest import verify_manifest, write_manifest
+from alhazen.data.manifest import add_to_manifest, verify_manifest, write_manifest
 from alhazen.data.participants import ensure_participant, participants_path
 from alhazen.data.paths import SessionPaths
 from alhazen.errors import DataError
@@ -150,6 +150,88 @@ class TestManifest:
 
         (tmp_path / "trials.csv").unlink()
         assert "missing: trials.csv" in verify_manifest(tmp_path, manifest_path)
+
+
+class TestAddToManifest:
+    """What a report or a saved alignment does to a finished run: record its
+    own file and nothing else. It used to re-hash the whole directory, which
+    recorded a file damaged since the session under its damaged hash — the
+    first report said "hash mismatch", and every check after it "verified"."""
+
+    def finished_run(self, tmp_path):
+        (tmp_path / "trials.csv").write_text("a\n1\n")
+        (tmp_path / "figures").mkdir()
+        (tmp_path / "figures" / "fig.txt").write_text("fig")
+        manifest_path = tmp_path / "manifest.yaml"
+        write_manifest(tmp_path, manifest_path)
+        return manifest_path
+
+    def test_a_damaged_file_stays_detectable(self, tmp_path):
+        manifest_path = self.finished_run(tmp_path)
+        (tmp_path / "trials.csv").write_text("a\n2\n")  # changed after the session
+        report = tmp_path / "report.yaml"
+        report.write_text("ok: false\n")
+
+        add_to_manifest(tmp_path, manifest_path, [report])
+
+        # The damage is still reported; the new file is recorded.
+        assert verify_manifest(tmp_path, manifest_path) == ["hash mismatch: trials.csv"]
+
+    def test_every_other_entry_is_left_exactly_as_it_was(self, tmp_path):
+        manifest_path = self.finished_run(tmp_path)
+        before = yaml.safe_load(manifest_path.read_text())["artifacts"]
+        (tmp_path / "report.yaml").write_text("ok: true\n")
+
+        add_to_manifest(tmp_path, manifest_path, [tmp_path / "report.yaml"])
+
+        after = yaml.safe_load(manifest_path.read_text())["artifacts"]
+        assert after[: len(before)] == before
+        assert [entry["path"] for entry in after[len(before) :]] == ["report.yaml"]
+
+    def test_a_file_saved_again_replaces_its_own_entry(self, tmp_path):
+        manifest_path = self.finished_run(tmp_path)
+        report = tmp_path / "report.yaml"
+        report.write_text("first\n")
+        add_to_manifest(tmp_path, manifest_path, [report])
+        report.write_text("second, longer\n")
+        add_to_manifest(tmp_path, manifest_path, [report])
+
+        paths = [entry["path"] for entry in yaml.safe_load(manifest_path.read_text())["artifacts"]]
+        assert paths.count("report.yaml") == 1
+        assert verify_manifest(tmp_path, manifest_path) == []
+
+    def test_a_file_nobody_recorded_stays_unlisted(self, tmp_path):
+        manifest_path = self.finished_run(tmp_path)
+        (tmp_path / "copied-in-by-hand.csv").write_text("x\n")
+        (tmp_path / "report.yaml").write_text("ok: false\n")
+
+        add_to_manifest(tmp_path, manifest_path, [tmp_path / "report.yaml"])
+
+        assert verify_manifest(tmp_path, manifest_path) == ["unlisted file: copied-in-by-hand.csv"]
+
+    def test_a_file_in_a_subfolder_is_recorded_with_forward_slashes(self, tmp_path):
+        manifest_path = self.finished_run(tmp_path)
+        figure = tmp_path / "figures" / "later.png"
+        figure.write_bytes(b"png")
+
+        add_to_manifest(tmp_path, manifest_path, [figure])
+
+        paths = [entry["path"] for entry in yaml.safe_load(manifest_path.read_text())["artifacts"]]
+        assert "figures/later.png" in paths
+        assert verify_manifest(tmp_path, manifest_path) == []
+
+    def test_a_run_without_a_manifest_is_not_given_one(self, tmp_path, caplog):
+        # Its session never finished teardown. A manifest made now would call
+        # whatever is in the folder a complete run.
+        (tmp_path / "trials.csv").write_text("a\n1\n")
+        (tmp_path / "report.yaml").write_text("ok: false\n")
+
+        with caplog.at_level("WARNING"):
+            add_to_manifest(tmp_path, tmp_path / "manifest.yaml", [tmp_path / "report.yaml"])
+
+        assert not (tmp_path / "manifest.yaml").exists()
+        assert "has no manifest" in caplog.text
+        assert "report.yaml" in caplog.text
 
 
 class TestParticipants:

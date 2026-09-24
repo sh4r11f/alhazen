@@ -26,7 +26,7 @@ from alhazen.analysis.io import spikeglx
 from alhazen.analysis.io.session import RunData, load_run
 from alhazen.analysis.photodiode import PhotodiodeReport, measure_from_recording
 from alhazen.analysis.sync import AlignmentFit, align_run, event_bit_map
-from alhazen.data.manifest import write_manifest
+from alhazen.data.manifest import add_to_manifest
 from alhazen.errors import AlhazenError
 
 log = logging.getLogger(__name__)
@@ -134,17 +134,20 @@ class SessionReport:
         return "\n".join(lines)
 
     def save(self, run_dir: Path | None = None) -> Path:
-        """Write ``report.yaml`` into the run directory and re-hash the run.
+        """Write ``report.yaml`` into the run directory and record it in the
+        run's manifest.
 
-        The rewrite is not optional bookkeeping. `verify_manifest` reports
-        any unlisted file as a problem, so a report saved without one would
-        make the *next* report on the same run come back not-ok — the tool
-        would break the thing it exists to check.
+        The entry is not optional bookkeeping. `verify_manifest` reports any
+        unlisted file as a problem, so a report saved without one would make
+        the *next* report on the same run come back not-ok — the tool would
+        break the thing it exists to check. Only the report's own entry is
+        written: a report on a damaged run must leave the damage detectable,
+        not re-hash it into the record.
         """
         directory = Path(run_dir or self.run_dir)
         path = directory / REPORT_FILENAME
         path.write_text(yaml.safe_dump(self.to_dict(), sort_keys=False), encoding="utf-8")
-        write_manifest(directory, directory / "manifest.yaml")
+        add_to_manifest(directory, directory / "manifest.yaml", [path])
         return path
 
 
