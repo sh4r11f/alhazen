@@ -173,6 +173,24 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Changed
 
+- **A queue-based paradigm's `trials_per_block` may no longer be smaller
+  than one block's plan; such a config is now refused.** For `sequence`,
+  `constant` and `adjustment`, every block gets its own full plan (cells ×
+  `n_per_condition`), and `trials_per_block` ended the block by count. Set
+  below the plan, it abandoned whatever was still queued, without a word —
+  and a failed trial re-queues at the end, so the retries were cut first:
+  with two cells, three presentations each and a bound of 4, one cell could
+  finish a block with 1 completed trial and the other with 3. The session
+  builder now raises a `ConfigError` before trial one, naming the task,
+  `trials_per_block`, `n_per_condition` and how many planned trials each
+  block would have dropped. A config that ran before this change can be
+  refused by it; to serve the same trials, omit `trials_per_block` (a block
+  ends when its plan is done) or lower `n_per_condition` so that one block's
+  plan is the block length wanted. A bound equal to or above the plan is
+  accepted — it never cut anything, since a block's completed count reaches
+  its plan exactly as its queue empties — and the adaptive kinds
+  (`staircase`, `questplus`), whose block length `trials_per_block` is, are
+  unchanged.
 - **Training criteria leave out a trial lost to a system fault.** A
   dropped-frames trial and a tracker-stopped trial no longer enter the
   criteria window: no metric, no `min_trials` count and no ramp sees them,

@@ -417,9 +417,12 @@ class TestBlocksFromAConfig:
         assert list(summary["n_completed"]) == [2, 2]
 
     def test_trials_per_block_bounds_a_block(self):
+        # n_per_condition was 4 here, so each block's plan of 4 was cut to 3 —
+        # the dropping TestTrialsPerBlockNeverCutsAPlan now refuses. A plan
+        # of 3 is the config that serves these same six trials honestly.
         cfg = SchedulerConfig(
             kind="sequence",
-            n_per_condition=4,
+            n_per_condition=3,
             shuffle=False,
             blocks=BlockConfig(n_blocks=2, trials_per_block=3),
         )
@@ -457,3 +460,108 @@ class TestBlocksFromAConfig:
 
         with pytest.raises(ValueError, match="trials_per_block"):
             make_scheduler(cfg, sides(), rng())
+
+
+class TestTrialsPerBlockNeverCutsAPlan:
+    """A queue-based kind gives every block its own full plan (cells x
+    `n_per_condition`), and `trials_per_block` then ended the block by COUNT.
+    Set below the plan, it abandoned whatever was still queued — and a retry
+    re-queues at the tail, so retries were the first trials cut. The cells
+    could end uneven, which ConstantStimuli exists to prevent, and nothing
+    said so.
+
+    Completed trials can never outnumber a queue-based plan (each planned
+    trial leaves the queue only by completing), so a bound at or above the
+    plan ends a block only once its plan is done, and one below it can only
+    ever cut. The cutting config is refused when the scheduler is built."""
+
+    def grid(self) -> list[Condition]:
+        return [
+            Condition({"side": side, "contrast": contrast})
+            for side in ("left", "right")
+            for contrast in (0.2, 0.8)
+        ]
+
+    def cfg(self, kind="constant", n_per_condition=2, **blocks) -> SchedulerConfig:
+        return SchedulerConfig(
+            kind=kind,
+            n_per_condition=n_per_condition,
+            blocks=BlockConfig(n_blocks=2, **blocks),
+        )
+
+    def test_a_bound_below_the_plan_is_refused_with_the_numbers(self):
+        # 4 cells x n_per_condition=2 is 8 trials a block; a bound of 5 would
+        # never serve 3 of them in either block.
+        cfg = self.cfg(trials_per_block=5)
+
+        with pytest.raises(ConfigError) as excinfo:
+            make_scheduler(cfg, self.grid(), rng(), task_name="contrast-task")
+
+        message = str(excinfo.value)
+        assert "contrast-task" in message
+        assert "trials_per_block=5" in message
+        assert "n_per_condition=2" in message
+        assert "8 trials" in message  # the plan it would have cut
+        assert "the other 3 planned trials" in message  # dropped from each block
+
+    @pytest.mark.parametrize("kind", ["sequence", "constant", "adjustment"])
+    def test_every_queue_based_kind_is_refused(self, kind):
+        with pytest.raises(ConfigError, match="trials_per_block"):
+            make_scheduler(self.cfg(kind=kind, trials_per_block=7), self.grid(), rng())
+
+    def test_retries_past_the_bound_still_leave_every_cell_its_count(self):
+        """A bound equal to the plan, and every condition failing its first
+        two attempts in every block: each block serves 8 planned trials plus 8
+        retries, twice the bound — and every cell still reaches its count,
+        inside its own block, because the bound counts COMPLETED trials."""
+        source = make_scheduler(self.cfg(trials_per_block=8), self.grid(), rng())
+        failures: dict[tuple, int] = {}
+
+        def fail_twice(condition):
+            key = condition.key()
+            failures[key] = failures.get(key, 0) + 1
+            return BROKE if failures[key] <= 2 else HIT
+
+        answered: list[tuple[Condition, Outcome]] = []
+
+        def answer(condition):
+            outcome = fail_twice(condition)
+            answered.append((condition, outcome))
+            return outcome
+
+        drain(source, answer=answer)
+
+        completed: dict[tuple, int] = {}
+        for condition, outcome in answered:
+            if outcome.completed:
+                completed[condition.key()] = completed.get(condition.key(), 0) + 1
+        # 4 cells x 2 blocks, each (block, cell) pair completed exactly twice.
+        assert len(completed) == 8
+        assert set(completed.values()) == {2}
+        assert list(source.summary()["n_completed"]) == [8, 8]
+        assert len(answered) == 32  # 16 completed + 16 retries, nothing dropped
+
+    def test_a_bound_above_the_plan_is_accepted(self):
+        """Test mode lowers `n_per_condition` and leaves block structure
+        alone, so a config whose bound matched the full plan meets a smaller
+        one in a rehearsal. That must still build: it cuts nothing."""
+        source = make_scheduler(self.cfg(n_per_condition=1, trials_per_block=8), self.grid(), rng())
+
+        served = drain(source)
+
+        assert [condition.params["block"] for condition in served] == [1] * 4 + [2] * 4
+
+    def test_an_adaptive_kind_is_not_measured_against_n_per_condition(self):
+        """An adaptive kind has no plan of cells x `n_per_condition` — it
+        shares one estimator across blocks, and `trials_per_block` is its
+        block length. A bound below what that product would be still builds."""
+        cfg = SchedulerConfig(
+            kind="staircase",
+            n_per_condition=3,  # ignored by a staircase; 4 cells x 3 would be 12
+            staircase=StaircaseConfig(parameter="contrast", start=0.5, step=0.1, n_trials=4),
+            blocks=BlockConfig(n_blocks=2, trials_per_block=2),
+        )
+
+        served = drain(make_scheduler(cfg, self.grid(), rng()))
+
+        assert [condition.params["block"] for condition in served] == [1, 1, 2, 2]

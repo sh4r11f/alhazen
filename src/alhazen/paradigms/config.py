@@ -81,6 +81,12 @@ class BlockConfig(Model):
     """Runs and blocks wrapped around whichever scheduler was chosen."""
 
     n_blocks: int = 1
+    # Where a block ends, in COMPLETED trials. It is the block length of an
+    # adaptive kind, which shares one estimator across blocks and has no
+    # plan of its own to end on. A queue-based kind already ends each block
+    # when that block's plan (cells x n_per_condition) is done, so here it may
+    # not be smaller than the plan — make_scheduler refuses a bound that
+    # could only abandon planned trials.
     trials_per_block: int | None = None
     # Whether the session pauses for a rest between blocks (BlockPlan). Off
     # for a design whose blocks are analysis structure only.
@@ -152,6 +158,9 @@ def make_scheduler(
     number is part of the condition key, the runner records that retry as
     attempt 1 of a different condition. One queue per block puts the retry
     back where it belongs, which is what "end-of-block recycling" means.
+    Each of those blocks ends when its plan is done, so a ``trials_per_block``
+    below the plan is refused: it could only abandon planned trials, retries
+    first.
 
     An **adaptive** kind shares one scheduler across every block, because its
     estimate must be continuous. It therefore needs ``trials_per_block`` to
@@ -167,11 +176,67 @@ def make_scheduler(
             rng=rng,
             breaks=cfg.blocks.breaks,
         )
+    sources = [
+        _make_inner(cfg, conditions, rng, score, task_name) for _ in range(cfg.blocks.n_blocks)
+    ]
+    # Checked after the sources are built, so a `constant` condition list that
+    # is not a full factorial is refused by _grids for what it is, before its
+    # cell count is used here as the size of a plan.
+    _refuse_a_bound_below_the_plan(cfg, conditions, task_name)
     return BlockPlan(
-        [_make_inner(cfg, conditions, rng, score, task_name) for _ in range(cfg.blocks.n_blocks)],
+        sources,
         trials_per_block=cfg.blocks.trials_per_block,
         rng=rng,
         breaks=cfg.blocks.breaks,
+    )
+
+
+def _refuse_a_bound_below_the_plan(
+    cfg: SchedulerConfig, conditions: list[Condition], task_name: str | None
+) -> None:
+    """Refuse a queue-based ``trials_per_block`` that is smaller than the plan
+    each block is given.
+
+    Every queue-based kind (sequence, constant, adjustment) plans each cell
+    ``n_per_condition`` times, and a planned trial leaves its queue only by
+    completing — a non-completed one goes back on the end. So a block's
+    completed count reaches the plan size exactly when its queue empties,
+    and never passes it. A bound at or above the plan therefore ends the
+    block only once the plan is done; a bound below it ends the block with
+    trials still queued, and that block's scheduler is never asked again.
+    Those trials are lost, and the ones at the tail of the queue are the
+    retries — so the cells that failed most end the block furthest short,
+    and the session can end with the uneven counts ConstantStimuli exists to
+    prevent. Refused at build time, before any trial, like every other
+    config error.
+
+    A bound above the plan is allowed: it cuts nothing, and test mode lowers
+    ``n_per_condition`` without touching block structure, so a bound that
+    matched the full plan must still build against the rehearsal's smaller
+    one.
+    """
+    assert cfg.blocks is not None
+    bound = cfg.blocks.trials_per_block
+    if bound is None:
+        return
+    # An empty condition list is one nameless cell for sequence and
+    # adjustment (constant refuses it in _grids), and constant's cell count
+    # is the list's length because _grids has already refused a list that
+    # is not the full factorial it would build.
+    n_cells = max(len(conditions), 1)
+    planned = n_cells * cfg.n_per_condition
+    if bound >= planned:
+        return
+    who = f"task {task_name!r}" if task_name else "this task"
+    raise ConfigError(
+        f"paradigm blocks.trials_per_block={bound} is smaller than the {planned} trials "
+        f"each block of kind {cfg.kind!r} plans for {who} ({n_cells} condition(s) x "
+        f"n_per_condition={cfg.n_per_condition}). Every block is given that whole plan, "
+        f"so ending it after {bound} completed trials would never serve the other "
+        f"{planned - bound} planned trials — retries first, since they re-queue at the "
+        f"end — and the conditions can end with uneven counts. Omit trials_per_block "
+        f"(a block of this kind ends when its plan is done), or set n_per_condition so "
+        f"that one block's plan is the block length you want."
     )
 
 

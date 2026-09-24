@@ -1140,6 +1140,13 @@ Two composition rules fall out of blocks and are worth stating:
   *completed* trials, so the inner scheduler's own re-queue already lands the
   retry inside the same block. A second queue in the wrapper could
   double-serve a condition.
+- `trials_per_block` is an adaptive kind's block length. A queue-based
+  kind's block already ends when its plan (cells × `n_per_condition`) is
+  done — the completed count reaches the plan exactly as the queue empties —
+  so `make_scheduler` refuses a `trials_per_block` below that plan with a
+  `ConfigError` giving both numbers: it could only end the block with
+  planned trials still queued, the retries at the tail first, and leave the
+  cells uneven. A bound at or above the plan is accepted; it cuts nothing.
 
 ### 5.5 Live analysis (`task/live.py`)
 
