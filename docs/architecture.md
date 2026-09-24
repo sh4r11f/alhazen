@@ -126,8 +126,8 @@ command source, and the bus:
 10. hand the phase's mid-trial reward requests (`ctx.request_reward`) to the
     reward worker and emit a `REWARD` for each, stamped with that same flip;
     then report every delivery the worker has finished since the last frame
-    as `REWARD_DELIVERED` or `REWARD_FAILED`. Neither step waits for the pump
-    (§5.3)
+    as `REWARD_DELIVERED` or `REWARD_FAILED`, and every drop a manual reward
+    cancelled as `REWARD_CANCELLED`. Neither step waits for the pump (§5.3)
 
 The overlay runs *after* the phase and *before* the flip, so it can see what
 that frame queued. That is what lets the photodiode patch mark the exact flip
@@ -371,14 +371,16 @@ the base name in that path are a promise; the suffix belongs to the backend
 **Reward policy is not here.** Inside a trial the device layer is reached two
 ways. The experimenter's manual-reward key: the engine delivers, *then* emits
 `REWARD{manual: true}` — in that order, because an event claiming a reward
-the pump never gave is a lie in the data. And, for a task that declares
-`mid_trial_reward`, a phase's `ctx.request_reward`, which the engine hands to
-the reward worker after the flip (§5.3). Between trials the runner waits for
-that worker to go idle (`engine.settle_rewards`) *inside* the tracker's
-recording segment, so the eye data covers the last drop's whole delivery,
-and before it pays the outcome. Teardown settles once more — as its own step,
-before the recorder writes — for a trial a quit or a fault cut short, and
-`reward.close` then joins the worker before releasing the device.
+the pump never gave is a lie in the data. (For a task with mid-trial reward
+the key cancels every drop still queued and is delivered next, §5.3.) And,
+for a task that declares `mid_trial_reward`, a phase's `ctx.request_reward`,
+which the engine hands to the reward worker after the flip (§5.3). Between
+trials the runner waits for that worker to go idle (`engine.settle_rewards`)
+*inside* the tracker's recording segment, so the eye data covers the last
+drop's whole delivery, and before it pays the outcome. Teardown settles once
+more — as its own step, before the recorder writes — for a trial a quit or a
+fault cut short, and `reward.close` then joins the worker before releasing the
+device.
 
 ### 4.4 Config that names events
 
@@ -478,6 +480,12 @@ class SaccadeTask(alhazen.Task):
     def conditions(self, rng): ...      # default: one nameless condition
     def build_trial(self, setup): ...   # the one method every task writes
     def score(self, record): ...        # default: identity
+    def instructions(self): ...         # what the subject reads first; None: nothing, on purpose
+
+    @classmethod
+    def default_params(cls): ...        # the params file when no --params is given
+    @classmethod
+    def params_hook(cls, params, args): ...  # params derived from the invocation
 ```
 
 The declarations are checked in `__init_subclass__`, at class-definition
@@ -485,9 +493,126 @@ time: a task missing its outcomes is a programming error the author should
 meet while writing the file, not with a subject waiting. `make_source` reads
 a `SchedulerConfig` from the params (§5.4) unless the task overrides it, and
 `build_session(task=...)` fills in name, params, events, trial builder,
-scheduler, score and reward policy — while the explicit parameters still work
-and still win when both are given, which is what a test overriding one piece
-of a real task needs.
+scheduler, score, reward policy and the subject's instructions — while the
+explicit parameters still work and still win when both are given, which is
+what a test overriding one piece of a real task needs.
+
+#### What the subject reads first
+
+A session can be started four ways — `alhazen run --task`, an experiment's
+`run.py` (`run_experiment`), `build_mode_session` and `build_session(task=...)`
+— and the task is the one thing all four are handed. So the wording shown
+before trial one is the task's own: `instructions()` returns the text, and
+`build_session` asks for it once, after a curriculum has set the stage's
+params (the text may quote them) and before the run directory exists (a
+missing file fails without leaving an empty run behind). Before this, only
+`run.py` was handed the wording, and a real session started with
+`alhazen run` showed the subject nothing.
+
+```mermaid
+flowchart LR
+    AR["alhazen run --task"] --> RS["cli dispatch<br/>(_run_session)"]
+    RP["run.py<br/>run_experiment()"] --> RS
+    RS --> BMS["build_mode_session(mode)"]
+    OWN["an experiment's own<br/>test or script"] --> BS
+    BMS --> BS["build_session(task=...)"]
+    BMS -. "run mode, and the task<br/>never said" .-> W["WARNING, and a line<br/>before trial one"]
+    BS --> Q{"instructions=<br/>given?"}
+    Q -- "yes: run.py's own,<br/>or an example's" --> T["that text"]
+    Q -- "no" --> TI["task.instructions()"]
+    TI --> T
+    T --> G{"_start_gate"}
+    G -- "run, test:<br/>a real display" --> SP["waits for SPACE<br/>(ESC cancels)"]
+    G -- "simulate:<br/>a real display" --> AU["shown for 2 s,<br/>then starts by itself"]
+    G -- "a simulated display" --> LG["logged,<br/>starts at once"]
+```
+
+The method has three states, and they are told apart without calling it:
+
+| the task | the session | `--mode run` |
+|---|---|---|
+| returns text | shows it | — |
+| returns `None` | shows nothing: the task has declared it has none (an animal subject) | — |
+| does not override it | shows nothing, as every task did before the hook existed | logs a WARNING naming `instructions()`, and prints and records `instructions: none — …` before trial one |
+
+The third state exists so that a task that *forgot* is never mistaken for
+one that *decided*. Only run mode warns — a pilot is run mode with a shorter
+params file — because it is the session a subject actually sits through;
+test mode rehearses whatever the task declares, and simulate has nobody to
+read anything. A shared base class that returns `None` declares it for every
+task under it. Returned text is checked when the session is built: a
+non-string (a `Path` instead of the file's contents) is a `TypeError`, and
+empty text a `ConfigError`, because shown it would be a blank screen waiting
+for SPACE. A value written where the method belongs (`instructions = "..."`)
+is refused when the class is defined.
+
+An explicit `instructions=` — to `build_session`, `build_mode_session` or
+`run_experiment` — still works and takes precedence over the task's, and
+`instructions=""` turns the screen off whatever the task declares. What
+decides the gate after the text is `session/builder.py` `_start_gate`, a
+function of the display kind and `auto_start` alone, so the rule is pinned by
+tests without a renderer.
+
+#### Where a session's params come from
+
+An installed package's entry point names the Task class and nothing else, so
+`alhazen run --task` used to know nothing but the class: with no `--params`
+it ran the params model's defaults — for one experiment 432 trials of a
+576-trial design — and it could not start a task whose scheduler needs to
+know who and which session, which only `run.py`'s `params_hook` could tell
+it. Both now live on the class, as classmethods because they decide the
+params the task is built with and so run before it exists
+(`__init_subclass__` refuses them written as ordinary methods or as values):
+
+- `default_params()` returns the task's params file — absolute, or relative
+  to the file the method is written in, never to the working directory. A
+  path that names no file is a `ConfigError` naming it, and nothing runs:
+  the model's defaults are not the experiment, so they never stand in for a
+  file the task declared. `None` (the default) keeps the model's defaults,
+  which is what a task that declares nothing has always got.
+- `params_hook(params, args)` derives params from the invocation — a
+  search's state directory from the subject and the rig's data root, say.
+  It runs once, between loading the params and constructing the task, and
+  its result is re-validated through `params_model`. A task that does not
+  override it is never called.
+
+`cli/main.py` resolves them in `_run_session`, the dispatch both entry points
+share, in this order:
+
+```mermaid
+flowchart TB
+    START["alhazen run --task, or run.py"] --> P1{"--params given?<br/>(run.py's default_params<br/>is --params's default)"}
+    P1 -- yes --> LOAD["load that file"]
+    P1 -- no --> P2{"task.default_params()"}
+    P2 -- "a path" --> EX{"is it a file?"}
+    EX -- yes --> LOAD
+    EX -- no --> STOP["INVALID, naming the path;<br/>nothing runs"]
+    P2 -- None --> DEF["the params model's defaults<br/>(said before trial one)"]
+    LOAD --> WHO["settle subject and session:<br/>flags, the prompt, or simulate's sim / 1"]
+    DEF --> WHO
+    WHO --> H{"run.py passed<br/>params_hook?"}
+    H -- yes --> HR["run.py's hook"]
+    H -- no --> HT{"task declares<br/>params_hook?"}
+    HT -- yes --> HK["the task's hook"]
+    HT -- no --> BUILD
+    HR --> VAL["re-validated through<br/>params_model"]
+    HK --> VAL
+    VAL --> BUILD["task_class(params)"]
+```
+
+Three details carry the weight. **Precedence**: an explicit `--params`, then
+`run_experiment(default_params=...)`, then the task's own; and
+`run_experiment(params_hook=...)` *replaces* the task's hook rather than
+chaining with it, so a `run.py` written before the hooks does exactly what it
+did. **Order**: the subject and session are settled before the hook runs
+(`_settle_subject_and_session`), because deriving params from them is what a
+hook is for — it used to run first, so a subject typed at the prompt reached
+it as `None` and a search state was filed under `sub-None`. The params file is
+still loaded and checked before anyone is asked anything. **Record**:
+`args.params` is set to the file that was loaded, so the snapshot's
+`sources.task` names the task's own file when that is what ran, and the line
+printed before trial one says `params: <file>` — or, for a task that declares
+none, that the model's defaults are running.
 
 ### 5.2 The phase library (`task/phases/`)
 
@@ -755,7 +880,22 @@ sequenceDiagram
     Q->>Q: completion onto a thread-safe queue
     E->>Q: completed()  — drained every frame
     E->>B: REWARD_DELIVERED {pulses, reason, frame: n}  or  REWARD_FAILED {…, error}
+    Note over E,Q: a drop still waiting when a manual reward is asked for never reaches D:<br/>it is cancelled, and drained as REWARD_CANCELLED {…, cancelled_by: manual}
     Note over E,Q: between trials: settle_rewards() waits for idle, drains the rest,<br/>then the runner pays the outcome through the same worker
+```
+
+Which delivery goes on the valve next:
+
+```mermaid
+graph LR
+    DROPS["phase drops<br/>submit()"] --> Q["queue<br/>first in, first out"]
+    PAY["end-of-trial pay<br/>deliver()"] --> Q
+    MAN["manual reward<br/>deliver_manual()"] --> ML["manual line<br/>first in, first out"]
+    MAN -.->|"cancels every drop still waiting<br/>(never the end-of-trial pay)"| Q
+    Q -.->|"each cancelled drop"| RC["REWARD_CANCELLED<br/>never delivered"]
+    ML -->|"taken first"| W["worker thread"]
+    Q -->|"taken when the manual line is empty"| W
+    W -->|"one train at a time, never cut short"| V["dispenser.deliver(pulses)"]
 ```
 
 - **Declared, and checked at build.** `mid_trial_reward` is a class
@@ -771,17 +911,54 @@ sequenceDiagram
   `QueuedReward`, whose worker thread delivers; `submit` returns at once. An
   8 s pursuit at 120 Hz cannot absorb a 200 ms pulse train inside a frame.
 - **One path, one valve, one delivery at a time.** Every delivery of such a
-  session goes through the same worker, in the order asked for: the task's
-  drops, the manual key and the end-of-trial pay (`deliver()` waits its turn
-  and re-raises a failure on the caller's thread). Requests that arrive while
-  one is delivering queue up; none is dropped or merged. A drop requested
-  behind others carries `queued_behind: <count>` on its REWARD, so a rig
-  whose pulse train is longer than the task's drop interval shows in the
-  data that it delivered late. Between trials the runner calls
+  session goes through the same worker: the task's drops, the manual reward
+  and the end-of-trial pay. None ever overlaps another on the valve, and none
+  is merged. Drops and the end-of-trial pay go in the order asked for
+  (`deliver()` waits its turn and re-raises a failure on the caller's
+  thread); requests that arrive while one is delivering queue up, and none is
+  dropped — except by the manual reward, below, and even then each one ends
+  with an event of its own. A drop requested behind others carries
+  `queued_behind: <count>` on its REWARD — every delivery ahead of it when it
+  was commanded, a manual reward still waiting included — so a rig whose
+  pulse train is longer than the task's drop interval shows in the data that
+  it delivered late. Between trials the runner calls
   `engine.settle_rewards(ctx)`, which waits for the worker to go idle, *then*
   pays the outcome — so the end-of-trial pulse train never overlaps a drop.
-  The manual key pressed mid-trial waits behind queued drops on the session
-  thread, exactly as it always blocked the frame it was pressed on.
+- **The manual reward overrides the queue.** The experimenter's reward — `r`
+  during a trial, R in the pause menu or the dashboard's button, all one hook
+  that the builder's `make_manual_reward` routes to
+  `QueuedReward.deliver_manual` — replaces whatever drops are waiting. Every
+  drop still queued is cancelled: taken out of the queue and never
+  delivered, each one ended by its own `REWARD_CANCELLED {pulses, reason,
+  frame, cancelled_by: "manual"}`, and all of them named in one WARNING in
+  the log. The train already on the valve finishes (next bullet), and the
+  manual reward is delivered once, next. Drops asked for after it queue as
+  usual: the queue builds up again by itself. The key stays synchronous, so
+  its `REWARD {manual: true}` is still emitted after the pump and it still
+  blocks the frame it was pressed on — for **at most the rest of the train on
+  the valve plus its own**. The engine reports the cancellations, and any
+  drop that finished on the valve while the key waited, before it emits the
+  manual REWARD, so events.csv reads in the order things happened at the
+  valve: the REWARD_CANCELLED events, then that drop's REWARD_DELIVERED, then
+  the manual REWARD that caused them, all in the frame the key was pressed
+  on. A cancellation is not a failure: it takes no pause, and it leaves
+  `rewarded` alone. The end-of-trial pay is never cancelled — it is the
+  trial's outcome, and it is made after `settle_rewards` has emptied the
+  queue anyway. Between trials the queue is empty, so the pause menu's reward
+  cancels nothing and goes straight to the valve. A manual reward that fails
+  raises on the session thread, as it always has; what it cancelled stays
+  cancelled, and each of those drops still gets its REWARD_CANCELLED — from
+  teardown's settle, if the failure ended the session first.
+- **A train on the valve is never cut short** — neither a drop's nor
+  anything else's: a manual reward cancels only what is still waiting. Pulse
+  width is what sets the volume delivered (it is the pump's calibration), so
+  a train stopped part-way delivers an amount nobody measured, and its
+  REWARD_DELIVERED could not say what arrived. And `NidaqReward` plays a
+  finite buffered waveform: an analog-output task leaves its last generated
+  sample on the line when it stops — the reason every waveform ends at 0 V —
+  so stopping it mid-pulse would leave the valve open until a second write
+  drove the line to 0 V, and a failure of that write would flood the
+  subject. Interrupting would save at most one train's wait.
 - **The worker never touches the bus.** It calls the dispenser and puts a
   plain-data completion on a thread-safe queue. The engine drains that queue
   on the session thread — every frame, and in `settle_rewards` — and emits
@@ -794,32 +971,42 @@ sequenceDiagram
   transients around. `frame` counts the trial's flips from 0, across phases —
   the same `frame_index` as the database's `frame_inputs` table
   ([database.md](database.md)).
-  The delivery's end is its own event: `REWARD_DELIVERED` (reserved for this;
-  an end-of-trial or manual REWARD is already emitted after the pump) or
-  `REWARD_FAILED` with the request's `reason` and the `error`. Both are
-  stamped when drained, within a frame of the pump finishing, and carry the
-  same `frame` as the REWARD they complete. The dashboard's reward panel
-  counts a drop at its `REWARD_DELIVERED`, not at its REWARD.
+  The drop's end is its own event: `REWARD_DELIVERED` (reserved for this;
+  an end-of-trial or manual REWARD is already emitted after the pump),
+  `REWARD_FAILED` with the request's `reason` and the `error`, or
+  `REWARD_CANCELLED` with `cancelled_by` when a manual reward overrode the
+  queue. All three are stamped when drained — within a frame of the pump
+  finishing, or, while a manual reward holds the frame, just before its
+  REWARD — and carry the same `frame` as the REWARD they complete. The
+  dashboard's reward panel counts a drop at its `REWARD_DELIVERED`, not at
+  its REWARD, so a cancelled drop is never counted as juice.
 - **Accounting.** A task that declares `mid_trial_reward` writes
-  `n_mid_trial_rewards` and `n_mid_trial_reward_failures` on every row — 0,
-  never empty, on a trial with no drops. `rewarded` means *juice reached the
-  subject this trial*: True once any drop or the end-of-trial pay is
-  delivered, False when deliveries were attempted and none arrived, absent
-  when none was attempted — which, for a task that does not ask for
-  mid-trial reward, is exactly what it always meant. On a trial lost to a
-  system fault the drops delivered before it stay delivered and counted, and
-  a tracker-stopped trial's `on_fault` is paid after them, through the same
-  worker; the fault's WARNING line says how many drops came first.
+  `n_mid_trial_rewards` (delivered), `n_mid_trial_reward_failures` and
+  `n_mid_trial_rewards_cancelled` on every row — 0, never empty, on a trial
+  with no drops. Together they account for every drop commanded: delivered +
+  failed + cancelled is the number of the trial's drop REWARDs. `rewarded`
+  means *juice reached the subject this trial*: True once any drop or the
+  end-of-trial pay is delivered, False when deliveries were attempted and
+  none arrived, absent when none was attempted — which, for a task that does
+  not ask for mid-trial reward, is exactly what it always meant. A cancelled
+  drop leaves it alone, since no delivery of it was attempted, and the manual
+  reward counts as it always has: by its own REWARD, not in `rewarded`. On a
+  trial lost to a system fault the drops delivered before it stay delivered
+  and counted, and a tracker-stopped trial's `on_fault` is paid after them,
+  through the same worker; the fault's WARNING line says how many drops came
+  first.
 - **`NO_REWARD`** still means "a completed trial that earned nothing". A
   trial whose phases asked for a drop earned it, so it gets no `NO_REWARD`
-  even when its outcome pays nothing at the end — whether or not the pump
-  then delivered (a failed drop is a `REWARD_FAILED`, not a `NO_REWARD`).
+  even when its outcome pays nothing at the end — whether the pump then
+  delivered it, failed, or a manual reward cancelled it (a failed drop is a
+  `REWARD_FAILED` and a cancelled one a `REWARD_CANCELLED`, never a
+  `NO_REWARD`).
 - **A failed drop does not stop the trial.** The measurement is still being
   made. The failure is logged with its traceback, counted, and marked with
   `REWARD_FAILED`; once the trial is over and its row written, the runner
   hands it to the same pause flow an end-of-trial failure takes ("REWARD
   FAILURE — check the pump"), so a human looks at the pump before the session
-  carries on.
+  carries on. A cancelled drop is not a failure and takes no such pause.
 - **A request with no flip to stamp it** — queued in a phase's `on_enter`,
   then the trial skipped or aborted before the next flip — was never
   commanded; `settle_rewards` logs it by reason at WARNING and delivers
@@ -1341,8 +1528,9 @@ every backend precisely so a backend cannot quietly reach for
 read as the record of the session's *structure*, so what it carries at INFO
 is exactly that: `session start` (identity and seed), a `devices:` line naming
 each device's backend, one `setup:` line per thing the mode decided before
-trial 1 (`ModeSession.describe()` — reductions, stood-down devices; the
-terminal is not part of the run directory), `block N of M starts/ends` from
+trial 1 (`ModeSession.describe()` — reductions, stood-down devices, a
+run-mode task that never declared its instructions; the terminal is not part
+of the run directory), `block N of M starts/ends` from
 `BlockPlan`, every calibration / validation (with per-target errors) / drift
 correction verdict, one line per trial (`trial 12 attempt 1: CORRECT`, with
 the abort or frame-QA reason where there is one, or the fault a closing
@@ -1503,7 +1691,7 @@ parallel implementation is a tool whose OK means nothing.
 | | |
 |---|---|
 | `alhazen new <name>` | scaffold an experiment package: a Task, two rig configs, a task config, tests and a runner. Its tests pass and its session runs before anything is edited |
-| `alhazen run --task ...` | run one session of an installed task, found through the `alhazen.tasks` entry-point group; picks the next free run number, prompts for subject and session if omitted |
+| `alhazen run --task ...` | run one session of an installed task, found through the `alhazen.tasks` entry-point group; picks the next free run number, prompts for subject and session if omitted, runs the task's own params file when `--params` is not given, applies its params hook, and shows the subject its instructions (§5.1). An experiment's `run.py` starts the same session through the same dispatch |
 | `alhazen validate --rig` | is this config file well-formed? |
 | `alhazen check-rig --rig` | is this rig actually wired? Constructs the real backends; `--pulse` fires the pump and the sync lines |
 | `alhazen sim-sorter` | publish the sorted-spike wire contract, so `check-rig` can be rehearsed with no sorter and no probe; `--fault` publishes a named non-conformance instead |
@@ -1512,7 +1700,12 @@ parallel implementation is a tool whose OK means nothing.
 
 The scaffold is vendored as files under `_scaffold/template/` and rendered
 with stdlib `string.Template` — a scaffold needing a dependency to run would
-be one more thing between a new user and their first session.
+be one more thing between a new user and their first session. Its task names
+its own params file (`default_params`, found from the task's own file) and
+its instructions (§5.1), so its `run.py` passes only the task and a default
+rig, and `alhazen run --task` starts the same session: a new experiment
+starts with its two entry points agreeing rather than inheriting a gap
+between them.
 
 The acceptance test **installs** the rendered package (`pip --target`, in a
 subprocess), then lists its entry point, runs its tests and runs a session

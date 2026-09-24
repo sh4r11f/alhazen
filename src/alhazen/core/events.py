@@ -36,6 +36,13 @@ RESERVED_EVENTS = frozenset(
         # End-of-trial and manual deliveries have no such event: they run on
         # the session thread and their REWARD is emitted after the pump is done.
         "REWARD_DELIVERED",
+        # A mid-trial reward that was commanded — its REWARD is in the record —
+        # and then never delivered, because a manual reward overrode the queue
+        # before it reached the valve (devices/reward.py). Carries the REWARD's
+        # {pulses, reason, frame} and cancelled_by: "manual". Its own end
+        # event, never a REWARD_FAILED: the pump did not fail, and
+        # REWARD_FAILED sends the session to the pump-failure pause.
+        "REWARD_CANCELLED",
         "PAUSED",
         "RESUMED",
         # A curriculum moved the subject between stages. Reserved rather than

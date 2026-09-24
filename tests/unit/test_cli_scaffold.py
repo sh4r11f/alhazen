@@ -205,6 +205,48 @@ class TestScaffold:
         # checked headless is that the hook is genuinely overridden.
         assert type(task).demo_views is not BaseTask.demo_views
 
+    def test_the_template_task_names_its_params_file_and_says_what_the_subject_reads(
+        self, tmp_path
+    ):
+        """What the scaffold's run.py used to be handed and `alhazen run`
+        never was: the params file and the instructions. On the task, both
+        entry points get them — so a new experiment starts with the two
+        agreeing, rather than inheriting the gap."""
+        from alhazen.config.loader import load_params
+        from alhazen.task.task import (
+            declared_params_hook,
+            declares_instructions,
+            default_params_path,
+            task_instructions,
+        )
+
+        root = scaffold("saccade_bias", tmp_path)
+        module = import_scaffolded_task(root, "saccade_bias")
+        task_class = getattr(module, task_class_name("saccade_bias"))
+
+        # The rendered configs/task.yaml, found from the task's own file.
+        declared = default_params_path(task_class)
+        assert declared == (root / "configs" / "task.yaml").resolve()
+        load_params(declared, task_class.params_model)
+
+        # Text, declared: a run-mode session has nothing to warn about.
+        assert declares_instructions(task_class)
+        assert task_instructions(task_class(task_class.params_model())).strip()
+
+        # Nothing to derive from the invocation, so no hook to run.
+        assert declared_params_hook(task_class) is None
+
+    def test_the_template_runner_leaves_the_params_file_to_the_task(self, tmp_path):
+        """One place names the file, so the two entry points cannot drift
+        apart; and the runner no longer claims `alhazen run` "does the same
+        job" — it says what is the same and what is not (the rig)."""
+        root = scaffold("saccade_bias", tmp_path)
+        runner = (root / "run.py").read_text(encoding="utf-8")
+
+        assert "default_params" not in runner.split('if __name__ == "__main__":')[1]
+        assert "does the same job" not in runner
+        assert "--rig" in runner
+
     def test_the_generated_task_is_importable_and_declares_itself(self, tmp_path):
         root = scaffold("saccade_bias", tmp_path)
         namespace: dict = {}
@@ -397,6 +439,9 @@ class TestScaffoldedPackageWorks:
         )
         assert simulate.returncode == 0, simulate.stdout + simulate.stderr
         assert next((root / "data-rehearsal").glob("sub-sim/**/run-*"), None) is not None
+        # run.py names no params file of its own: the one that ran is the
+        # file the task declares, found from the task's own location.
+        assert f"params: {(root / 'configs' / 'task.yaml').resolve()}" in simulate.stdout
 
         # Movie needs no window at all, so it takes the rig's file as it is.
         recorded = subprocess.run(
@@ -538,6 +583,29 @@ class TestRunCommand:
         main(self.run_args(rig, "--sub", "s01", "--ses", "1"))
 
         assert "run-02" in capsys.readouterr().out
+
+    def test_without_params_it_runs_the_packages_own_file_and_its_wording(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """The scaffolded task names configs/task.yaml and its own
+        instructions, so `alhazen run` with no --params runs the design in
+        that file — not the params model's defaults — and shows the subject
+        the task's wording: the session the package's run.py starts."""
+        rig = self.registered(monkeypatch, tmp_path)
+        package_file = (tmp_path / "pkg" / "run_demo" / "configs" / "task.yaml").resolve()
+
+        code = main(
+            ["run", "--task", "run-demo", "--rig", str(rig), "--mode", "test"]
+            + ["--sub", "s01", "--ses", "1"]
+        )
+
+        assert code == 0
+        assert f"params: {package_file}" in capsys.readouterr().out
+        run_dir = next((tmp_path / "data-rehearsal").glob("sub-s01/ses-001/run-*"))
+        snapshot = yaml.safe_load((run_dir / "config_snapshot.yaml").read_text(encoding="utf-8"))
+        assert snapshot["config"]["sources"]["task"] == str(package_file)
+        log = (run_dir / "session.log").read_text(encoding="utf-8")
+        assert "Look at the dot in the middle of the screen" in log
 
     def test_an_unknown_task_exits_nonzero_and_lists_what_is_installed(self, tmp_path, capsys):
         rig = tmp_path / "rig.yaml"
