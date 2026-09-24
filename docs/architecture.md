@@ -1125,7 +1125,16 @@ take a `score: Callable[[TrialResult], bool]` for tasks titrating something
 other than accuracy, and `make_scheduler` builds every adaptive kind with the
 task's `score_trial` (default: `outcome.success`). The scorer is asked about
 completed trials only; an attempt with no measurement is re-served, never
-scored.
+scored. Its answer must be a `bool` (numpy's included): anything else — the
+`None` of a `score_trial` that lost its `return`, or a 0/1 int that may be a
+count — raises `TypeError` naming the scorer, instead of being read as
+truthy on every trial.
+
+The three queue-based schedulers share one queue: `AdjustmentTrials` is a
+`SimpleSequence` with its own defaults, and `ConstantStimuli` builds its
+factorial plan and hands it to one, so the re-serve rule lives in one place.
+A queue-based source reports the planned trials it still has queued through
+an optional `remaining()`, which `BlockPlan` checks its bound against (below).
 
 `SchedulerConfig` (+ `StaircaseConfig`, `QuestConfig`, `BlockConfig`) is the
 config surface, so moving from constant stimuli to a staircase is a YAML edit
@@ -1160,6 +1169,15 @@ Two composition rules fall out of blocks and are worth stating:
   `ConfigError` giving both numbers: it could only end the block with
   planned trials still queued, the retries at the tail first, and leave the
   cells uneven. A bound at or above the plan is accepted; it cuts nothing.
+  A `BlockPlan` built by hand is held to the same rule for every source that
+  reports `remaining()` (a source shared by several blocks against all their
+  bounds together); a source that does not report one is not checked.
+- For an adaptive kind, `n_blocks × trials_per_block` must cover the
+  estimator's `n_trials` (times the number of interleaved staircases or
+  QUEST+ levels). `make_scheduler` refuses a smaller total with a
+  `ConfigError`: the last block would end the session with the estimate
+  unfinished. A staircase stopped by `n_reversals` alone is not checked — its
+  trial count cannot be known in advance.
 
 ### 5.5 Live analysis (`task/live.py`)
 

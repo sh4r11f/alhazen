@@ -3,6 +3,8 @@ behavior, QUEST+ convergence, and block structure."""
 
 from __future__ import annotations
 
+import re
+
 import numpy as np
 import pytest
 
@@ -10,14 +12,17 @@ from alhazen.core.engine import TrialResult
 from alhazen.core.trial import Outcome
 from alhazen.paradigms import (
     AdjustmentTrials,
+    BlockConfig,
     BlockPlan,
     Condition,
     ConstantStimuli,
     InterleavedStaircases,
     QuestPlus,
     QuestPlusEstimator,
+    SchedulerConfig,
     SimpleSequence,
     UpDownStaircase,
+    make_scheduler,
     weibull,
 )
 
@@ -417,3 +422,254 @@ class TestAdjustmentTrials:
         served = drain(source, answer=flaky)
         assert len(served) == 3  # two settings collected, one attempt wasted
         assert int(source.summary()["n_completed"].iloc[0]) == 2
+
+
+def every_third_breaks(source) -> list[str]:
+    """Run ``source`` to exhaustion with every third SERVED trial breaking, so
+    the re-queue path is part of the order, and return each served condition
+    as a short tag (its values in key order)."""
+    served: list[str] = []
+    while (condition := source.next()) is not None:
+        served.append("".join(str(v) for _, v in sorted(condition.params.items())))
+        outcome = BROKE if len(served) % 3 == 0 else HIT
+        source.record(condition, result(outcome))
+    return served
+
+
+class TestSeededOrdersAreUnchanged:
+    """Seed discipline for the queue the three queue-based schedulers share.
+
+    SimpleSequence, AdjustmentTrials and ConstantStimuli each carried their
+    own copy of "shuffle once, serve from the front, re-queue a non-completed
+    trial at the back"; they now share SimpleSequence's. A seed must still
+    produce the session it always did, so every order below was recorded on
+    the code BEFORE the copies were merged: same seed, same draws, same
+    serve order including the retries, same summaries. The last number is
+    the next draw from the same Generator after the session — it pins how
+    many draws the scheduler took, which matters because make_scheduler
+    hands one Generator to every block's scheduler in turn."""
+
+    CONDITIONS = [Condition({"i": i}) for i in range(3)]
+
+    # seed -> (serve order, next draw after the session)
+    SEQUENCE = {
+        0: (["1", "1", "2", "2", "0", "0", "2", "0"], 16527),
+        1: (["2", "0", "1", "0", "2", "1", "1", "1"], 948649),
+        7: (["2", "1", "0", "2", "0", "1", "0", "1"], 775685),
+    }
+
+    @pytest.mark.parametrize("seed", sorted(SEQUENCE))
+    def test_simple_sequence(self, seed):
+        rng = np.random.default_rng(seed)
+        source = SimpleSequence(self.CONDITIONS, n_repeats=2, rng=rng)
+
+        assert (every_third_breaks(source), int(rng.integers(1_000_000))) == self.SEQUENCE[seed]
+
+    @pytest.mark.parametrize("seed", sorted(SEQUENCE))
+    def test_adjustment_trials_serve_what_a_sequence_serves(self, seed):
+        # Same plan, same draw: AdjustmentTrials differed from SimpleSequence
+        # only in its defaults, and the recorded orders were already equal.
+        rng = np.random.default_rng(seed)
+        source = AdjustmentTrials(2, conditions=self.CONDITIONS, rng=rng)
+
+        assert (every_third_breaks(source), int(rng.integers(1_000_000))) == self.SEQUENCE[seed]
+        assert source.summary().to_dict("records") == [{"n_completed": 6, "n_remaining": 0}]
+
+    @pytest.mark.parametrize(("seed", "next_draw"), [(0, 850624), (1, 473188), (7, 944904)])
+    def test_one_adjustment_condition_takes_no_draw(self, seed, next_draw):
+        # A single condition has no order to shuffle, so it must leave the
+        # Generator exactly where it found it (the next draw is the seed's
+        # very first).
+        rng = np.random.default_rng(seed)
+        source = AdjustmentTrials(3, conditions=[Condition({"i": 5})], rng=rng)
+
+        assert every_third_breaks(source) == ["5"] * 4
+        assert int(rng.integers(1_000_000)) == next_draw
+
+    # seed -> (serve order, n_attempts per cell in summary order, next draw)
+    CONSTANT = {
+        0: (
+            ["2x", "1x", "2y", "2x", "1y", "1x", "1y", "2y", "2y", "1x", "2y"],
+            [3, 2, 2, 4],
+            175267,
+        ),
+        1: (
+            ["1y", "1x", "1y", "1x", "2x", "2x", "2y", "2y", "1y", "2x", "1y"],
+            [2, 4, 3, 2],
+            869025,
+        ),
+        7: (
+            ["1x", "2x", "2y", "2x", "1x", "1y", "1y", "2y", "2y", "1y", "2y"],
+            [2, 3, 2, 4],
+            55531,
+        ),
+    }
+
+    @pytest.mark.parametrize("seed", sorted(CONSTANT))
+    def test_constant_stimuli(self, seed):
+        rng = np.random.default_rng(seed)
+        source = ConstantStimuli({"b": ["x", "y"], "a": [1, 2]}, n_per_condition=2, rng=rng)
+
+        order = every_third_breaks(source)
+        summary = source.summary()
+
+        expected_order, expected_attempts, expected_draw = self.CONSTANT[seed]
+        assert order == expected_order
+        assert list(summary["n_attempts"]) == expected_attempts
+        assert list(summary["n_completed"]) == [2, 2, 2, 2]
+        assert int(rng.integers(1_000_000)) == expected_draw
+
+    BLOCKS = {
+        0: (["2x1", "1x1", "1y1", "2y1", "1y1", "2y2", "2x2", "1y2", "1x2", "2y2", "1x2"], 16527),
+        1: (["1x1", "1y1", "2x1", "2y1", "2x1", "2y2", "1x2", "2x2", "1y2", "2y2", "1y2"], 948649),
+        7: (["1x1", "2x1", "1y1", "2y1", "1y1", "2y2", "1y2", "2x2", "1x2", "2y2", "1x2"], 833651),
+    }
+
+    @pytest.mark.parametrize("seed", sorted(BLOCKS))
+    def test_constant_stimuli_in_blocks_from_a_config(self, seed):
+        # One ConstantStimuli per block, all drawing from the one Generator.
+        rng = np.random.default_rng(seed)
+        cfg = SchedulerConfig(kind="constant", n_per_condition=1, blocks=BlockConfig(n_blocks=2))
+        grid = [Condition({"a": a, "b": b}) for a in (1, 2) for b in ("x", "y")]
+        source = make_scheduler(cfg, grid, rng)
+
+        assert (every_third_breaks(source), int(rng.integers(1_000_000))) == self.BLOCKS[seed]
+
+
+class TaskThatForgotToReturn:
+    """A task whose ``score_trial`` works out its verdict and never returns
+    it — the mistake that used to score every trial a failure, silently."""
+
+    def score_trial(self, result):
+        _ = bool(result.outcome.success)
+
+
+class TestAScorerMustAnswerTrueOrFalse:
+    """An adaptive scheduler steps on its scorer's verdict. A scorer that
+    returns None (a ``score_trial`` missing its ``return``) was read as False
+    on every trial, so the staircase walked to its easiest level and QUEST+
+    fitted an observer who never succeeds — and nothing said so. Anything but
+    a real boolean (``bool`` or a numpy bool) now stops at the first scored
+    trial, naming the scorer and what it returned.
+
+    0 and 1 are refused too. A scorer returning an int is most likely
+    returning a count or a magnitude (a number of correct responses, an
+    error in pixels), and bool() of that is True for every non-zero value —
+    the same silent misreading in the other direction. ``bool(...)`` in the
+    scorer is a one-word fix that says what was meant."""
+
+    def staircase(self, score):
+        return UpDownStaircase("contrast", start=0.5, step=0.1, n_trials=4, score=score)
+
+    def quest(self, score):
+        return QuestPlus(
+            "contrast", intensities=[0.2, 0.5], thresholds=[0.2, 0.5], n_trials=4, score=score
+        )
+
+    @pytest.fixture(params=["staircase", "quest"])
+    def make(self, request):
+        return getattr(self, request.param)
+
+    def test_a_scorer_that_returns_none_stops_the_session(self, make):
+        source = make(TaskThatForgotToReturn().score_trial)
+
+        with pytest.raises(TypeError) as excinfo:
+            source.record(source.next(), result(HIT))
+
+        message = str(excinfo.value)
+        assert "TaskThatForgotToReturn.score_trial" in message
+        assert "None" in message
+
+    @pytest.mark.parametrize("verdict", [1, 0, 0.0, "yes", np.float64(1.0)])
+    def test_anything_else_that_is_not_a_boolean_is_refused(self, make, verdict):
+        source = make(lambda r: verdict)
+
+        with pytest.raises(TypeError, match=re.escape(repr(verdict))):
+            source.record(source.next(), result(HIT))
+
+    @pytest.mark.parametrize("verdict", [True, False, np.bool_(True), np.bool_(False)])
+    def test_python_and_numpy_booleans_are_accepted(self, make, verdict):
+        source = make(lambda r: verdict)
+
+        source.record(source.next(), result(HIT))
+
+        assert int(source.summary()["n_trials"].iloc[0]) == 1
+
+    def test_the_staircase_history_holds_real_booleans(self):
+        stair = self.staircase(lambda r: np.bool_(True))
+
+        stair.record(stair.next(), result(HIT))
+
+        assert stair.history == [(0.5, True)]
+        assert type(stair.history[0][1]) is bool
+
+
+class TestBlockPlanNeverCutsAPlan:
+    """A hand-built BlockPlan used to end a queue-based block after
+    ``trials_per_block`` completed trials whatever that block's source still
+    had queued — so a bound below the plan dropped planned trials, retries
+    first, silently. make_scheduler already refused that for a config; a
+    source that says how much of its plan is left (``remaining()``) is now
+    checked by BlockPlan itself, at construction."""
+
+    def grid(self):
+        return {"side": ["left", "right"], "contrast": [0.2, 0.8]}
+
+    def constant(self):
+        return ConstantStimuli(self.grid(), n_per_condition=2, rng=np.random.default_rng(0))
+
+    def test_a_bound_below_a_blocks_plan_is_refused_with_the_numbers(self):
+        with pytest.raises(ValueError) as excinfo:
+            BlockPlan([self.constant(), self.constant()], trials_per_block=5)
+
+        message = str(excinfo.value)
+        assert "trials_per_block=5" in message
+        assert "block 1" in message
+        assert "8 planned trials" in message
+        assert "the other 3" in message
+
+    @pytest.mark.parametrize(
+        "make",
+        [
+            lambda: SimpleSequence([Condition({"i": i}) for i in range(3)], shuffle=False),
+            lambda: AdjustmentTrials(3),
+        ],
+        ids=["sequence", "adjustment"],
+    )
+    def test_every_queue_based_source_is_checked(self, make):
+        with pytest.raises(ValueError, match="trials_per_block=2"):
+            BlockPlan([make(), make()], trials_per_block=2)
+
+    def test_one_source_shared_by_every_block_is_checked_against_them_all(self):
+        # 8 planned trials over 3 blocks of 2 completed trials: 2 never served.
+        with pytest.raises(ValueError, match="the other 2"):
+            BlockPlan(self.constant(), n_blocks=3, trials_per_block=2)
+
+    def test_one_source_shared_by_enough_blocks_builds(self):
+        plan = BlockPlan(self.constant(), n_blocks=4, trials_per_block=2)
+
+        assert [c.params["block"] for c in drain(plan)] == [1, 1, 2, 2, 3, 3, 4, 4]
+
+    def test_a_bound_at_or_above_the_plan_builds(self):
+        plan = BlockPlan([self.constant(), self.constant()], trials_per_block=8)
+
+        assert len(drain(plan)) == 16
+
+    def test_a_source_that_reports_no_plan_is_not_checked(self):
+        # An adaptive source has no plan to cut, and a downstream source
+        # written before remaining() existed does not report one: both build
+        # exactly as they always did.
+        stair = UpDownStaircase("contrast", start=0.5, step=0.1, n_trials=4)
+
+        plan = BlockPlan(stair, n_blocks=2, trials_per_block=1)
+
+        assert len(drain(plan)) == 2
+
+    def test_remaining_counts_down_and_retries_count_back_up(self):
+        source = self.constant()
+        assert source.remaining() == 8
+
+        first = source.next()
+        assert source.remaining() == 7
+        source.record(first, result(BROKE))
+        assert source.remaining() == 8  # the retry is back in the plan

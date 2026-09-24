@@ -188,6 +188,34 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Changed
 
+- **Blocks that cannot hold a paradigm's planned trials are refused, for
+  adaptive kinds and for a hand-built `BlockPlan`.** An adaptive kind
+  (`staircase`, `questplus`) shares one estimator across its blocks, and the
+  blocks end after `n_blocks × trials_per_block` completed trials. When that
+  was fewer than the estimator's `n_trials` (per interleaved staircase or
+  QUEST+ level), the last block ended the session with the estimate
+  unfinished and nothing in the log said so. `make_scheduler` now raises a
+  `ConfigError` naming `n_blocks`, `trials_per_block`, the total and the
+  trials needed. A staircase stopped by `n_reversals` alone is not checked.
+  Separately, a `BlockPlan` built by hand over queue-based sources could still
+  end a block with planned trials queued (only config-built ones were
+  refused). `SimpleSequence`, `ConstantStimuli` and `AdjustmentTrials` now
+  report the planned trials they still have queued through a new
+  `remaining()` method, and `BlockPlan` refuses at construction, with a
+  `ValueError` giving the numbers, a `trials_per_block` that would cut one
+  (a source shared by several blocks is checked against all their bounds
+  together). `remaining()` is optional: a source without it, adaptive or
+  downstream, is not checked and builds as before. Code that built either
+  kind of cutting plan will now fail to start; lower `n_trials`, raise the
+  bound, or omit it.
+
+- **`SimpleSequence`, `AdjustmentTrials` and `ConstantStimuli` share one
+  queue.** They carried three copies of "shuffle once, serve from the front,
+  re-queue a non-completed trial at the back". `AdjustmentTrials` is now a
+  `SimpleSequence` subclass and `ConstantStimuli` delegates its queue to one.
+  Every seed produces the same session as before — serve order, retries,
+  summaries and Generator draws are pinned by tests recorded on the old code.
+
 - **A health check returning a bare reason string is deprecated.** The
   1.5.0 shape still works — `TrialEngine` reads it as a `HealthFault` with no
   detail — but now emits a `DeprecationWarning`: it goes in 2.0. Return
@@ -326,6 +354,19 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   [docs/architecture.md](docs/architecture.md) §5.3.
 
 ### Fixed
+
+- **A scorer that does not return a boolean no longer fails silently.** A
+  task whose `score_trial` works out its verdict and forgets to `return` it
+  hands the adaptive schedulers None, which they read as a failure on every
+  trial: the staircase walked to its easiest level and QUEST+ fitted an
+  observer who never succeeds. `UpDownStaircase` (so every interleaved one)
+  and `QuestPlus` now raise `TypeError` at the first scored trial, naming the
+  scorer (e.g. `MyTask.score_trial`) and what it returned. `bool` and numpy's
+  bool are accepted; ints are refused, 0 and 1 included, because a count or a
+  magnitude read as truthy is the same silent mistake the other way round —
+  wrap the comparison in `bool(...)`. The default scorer is now one shared
+  function, and `QuestPlus` replaces a scorer only when none was given (`is
+  not None`), as the staircase already did, not whenever it is falsy.
 
 - **A curriculum's RT criterion could never be met when the task renamed its
   RT field, and finishing a curriculum happened too early and was announced

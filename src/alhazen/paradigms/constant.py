@@ -14,14 +14,14 @@ that no analysis can undo. ``record`` re-queues those conditions instead.
 from __future__ import annotations
 
 import itertools
-from collections import Counter, deque
+from collections import Counter
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
 from alhazen.core.engine import TrialResult
-from alhazen.paradigms.base import Condition
+from alhazen.paradigms.base import Condition, SimpleSequence
 
 
 class ConstantStimuli:
@@ -56,36 +56,35 @@ class ConstantStimuli:
             Condition(dict(zip(keys, values, strict=True))) for values in itertools.product(*grids)
         ]
         # Repeat before shuffling, so a condition's repeats are spread through
-        # the session rather than sitting in back-to-back blocks.
+        # the session rather than sitting in back-to-back blocks. The plan is
+        # the whole list of cells, repeated as a unit (c1 c2 c1 c2, not
+        # c1 c1 c2 c2): that order is what the permutation below is drawn
+        # over, so it is part of what a seed reproduces.
         planned = cells * n_per_condition
-        if shuffle:
-            assert rng is not None
-            order = rng.permutation(len(planned))
-            planned = [planned[i] for i in order]
-
-        self._queue: deque[Condition] = deque(planned)
+        # The queue — shuffle once, serve from the front, re-queue what did
+        # not complete at the back — is SimpleSequence's, shared with every
+        # queue-based scheduler. Handed the finished plan with n_repeats=1 it
+        # takes exactly the one permutation draw this class always took.
+        self._queue = SimpleSequence(planned, n_repeats=1, rng=rng, shuffle=shuffle)
         self._completed: Counter = Counter()
         self._attempts: Counter = Counter()
         self._cells = cells
 
     def next(self) -> Condition | None:
-        # Empty means every condition has had its full count of *completed*
+        # None means every condition has had its full count of *completed*
         # presentations, not merely that many attempts.
-        if not self._queue:
-            return None
-        return self._queue.popleft()
+        return self._queue.next()
 
     def record(self, condition: Condition, result: TrialResult) -> None:
         self._attempts[condition.key()] += 1
         if result.outcome.completed:
             self._completed[condition.key()] += 1
-            return
-        # Re-queued at the END, never retried immediately: an immediate retry
-        # shows the identical condition twice in a row, which a subject can
-        # learn to exploit ("fail this one and it comes straight back"), and
-        # it clusters a hard condition's failures instead of leaving them
-        # spread the way the initial shuffle spread everything else.
-        self._queue.append(condition)
+        # A non-completed attempt goes back on the end of the queue there.
+        self._queue.record(condition, result)
+
+    def remaining(self) -> int:
+        """Planned trials still to serve, re-queued retries included."""
+        return self._queue.remaining()
 
     def summary(self) -> pd.DataFrame:
         """One row per condition cell: what was planned, attempted, and
