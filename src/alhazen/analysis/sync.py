@@ -33,7 +33,7 @@ import yaml
 
 from alhazen.analysis.io import spikeglx
 from alhazen.analysis.io.session import RunData
-from alhazen.data.manifest import write_manifest
+from alhazen.data.manifest import add_to_manifest
 from alhazen.data.percents import compared_percents
 from alhazen.errors import DataError
 
@@ -165,12 +165,13 @@ class AlignmentFit:
         run_dir = Path(run_dir)
         path = run_dir / f"alignment_{system}.yaml"
         path.write_text(yaml.safe_dump(self.to_dict(), sort_keys=False), encoding="utf-8")
-        # A run directory is append-only *by manifest rewrite*: a file added
-        # without one makes `verify_manifest` report it as unlisted, which
-        # means the first alignment would break every later report and every
-        # `load_run` on this run. Spec 6.2 requires the rewrite; it is
-        # idempotent, so rewriting twice in one report run costs only hashes.
-        write_manifest(run_dir, run_dir / "manifest.yaml")
+        # A file added without a manifest entry makes `verify_manifest`
+        # report it as unlisted, which means the first alignment would break
+        # every later report and every `load_run` on this run (spec 6.2).
+        # Only this file's entry is written: re-hashing the whole run would
+        # record any file damaged since the session as if it were the
+        # session's own.
+        add_to_manifest(run_dir, run_dir / "manifest.yaml", [path])
         log.info(
             "alignment written to %s: %d/%d events matched, %.3f ms rms, %.0f ppm",
             path.name,

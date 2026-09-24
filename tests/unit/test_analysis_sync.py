@@ -509,3 +509,21 @@ class TestFinalRefit:
         behavior, pulses = planted()
         fit = fit_alignment("TRIAL_START", behavior, pulses)
         assert fit.residual_rms_ms == pytest.approx(0.0, abs=1e-6)
+
+
+class TestSavingKeepsTheRunsDamageVisible:
+    """`AlignmentFit.save` re-hashed the whole run after writing its file,
+    recording anything damaged since the session as the session's own."""
+
+    def test_only_the_alignment_is_added_to_the_manifest(self, tmp_path):
+        from alhazen.data.manifest import verify_manifest, write_manifest
+
+        (tmp_path / "trials.csv").write_text("a\n1\n")
+        manifest_path = tmp_path / "manifest.yaml"
+        write_manifest(tmp_path, manifest_path)
+        (tmp_path / "trials.csv").write_text("a\n2\n")  # changed after the session
+
+        behavior, pulses = planted()
+        fit_alignment("TRIAL_START", behavior, pulses).save(tmp_path)
+
+        assert verify_manifest(tmp_path, manifest_path) == ["hash mismatch: trials.csv"]
