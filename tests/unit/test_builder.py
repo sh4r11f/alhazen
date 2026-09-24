@@ -113,9 +113,13 @@ class TestFrameQAOnADisplayWithNoPanel:
         with caplog.at_level(logging.INFO, logger="alhazen.session.builder"):
             built = build(tmp_path, schema, display=display)
 
-        # Recorded, not acted on: the intervals still reach frames.csv.
-        assert built._frame_monitor._cfg.policy == "log"
-        assert not built._frame_monitor.marks_trials
+        built.run()
+
+        # Recorded, not acted on: the intervals still reach frames.csv, and
+        # no trial is marked — only a policy that marks trials (not "log")
+        # gives the rows an n_dropped_frames column.
+        assert read_table(tmp_path, "frames")
+        assert all("n_dropped_frames" not in row for row in read_table(tmp_path, "trials"))
         assert any(
             "not applied on a simulated display" in record.getMessage() for record in caplog.records
         ), [r.getMessage() for r in caplog.records]
@@ -140,7 +144,8 @@ class TestFrameQAOnADisplayWithNoPanel:
         display = DisplayConfig(backend="simulated", frame_qa=FrameQAConfig(policy="log"))
         with caplog.at_level(logging.INFO, logger="alhazen.session.builder"):
             built = build(tmp_path, schema, display=display)
-        assert built._frame_monitor._cfg.policy == "log"
+        built.run()
+        assert all("n_dropped_frames" not in row for row in read_table(tmp_path, "trials"))
         assert not any(
             "not applied on a simulated display" in record.getMessage() for record in caplog.records
         )

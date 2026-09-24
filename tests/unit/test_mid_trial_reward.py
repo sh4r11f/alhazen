@@ -780,9 +780,8 @@ class TestInTheFrameLoop:
         # `frame` joins against the database's frame_inputs table: the flip
         # the REWARD is stamped with is the flip that index was recorded at.
         wrapper, _ = queued()
-        harness = EngineHarness(reward_requests=wrapper)
         flips: dict[int, float] = {}
-        harness.engine._on_frame_input = lambda trial, index, t, inputs: flips.__setitem__(index, t)
+        harness = EngineHarness(reward_requests=wrapper, on_frame_input=record_flips(flips))
         ctx = harness.ctx()
         harness.engine.run_trial(ctx, [RequestRewardOnFrames(5, COMPLETED, on_frames=(1, 4))])
         harness.engine.settle_rewards(ctx)

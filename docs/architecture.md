@@ -442,9 +442,10 @@ the base name in that path are a promise; the suffix belongs to the backend
 itself, by the same one-failure-never-blocks-another rule (§9, the dashboard's
 guard). A recording a backend cannot hand over is a failed step, never only a
 log line: an EyeLink whose link is down at teardown raises a `TrackerError`
-naming the EDF left on its Host PC, and the database records the run as
-`failed`. Both real backends release their device in a `finally`, whatever
-else failed.
+naming the EDF left on its Host PC, and the run is recorded as `failed` —
+in the database, in the saved dashboard and in `session.log`'s closing
+`session end: FAILED in teardown` line. Both real backends release their
+device in a `finally`, whatever else failed.
 
 **Reward policy is not here.** Inside a trial the device layer is reached two
 ways. The experimenter's manual-reward key: the engine delivers, *then* emits
@@ -1707,7 +1708,14 @@ every backend precisely so a backend cannot quietly reach for
    screen a fault puts up;
 4. teardown attempts every step regardless of earlier failures (recorder →
    frame log → close log file → manifest → display), re-raising the first
-   teardown error only if nothing else is propagating. It runs however the
+   teardown error only if nothing else is propagating. A Ctrl-C during a step
+   abandons that step only: the rest still run, the run is recorded as
+   `failed`, and the `KeyboardInterrupt` is raised at the end; a second
+   Ctrl-C abandons the rest of teardown, so one hung on a device can still be
+   escaped. The dashboard's final state is built while the devices are held
+   and saved once they are released, so a step that fails in between (a
+   tracker whose shutdown cannot retrieve its recording) is in the saved
+   status as it is in the database's: `failed`. It runs however the
    session ends, including in a step before the loop — attaching
    `session.log`, registering the subject, the first dashboard publish —
    because by then the builder has opened the window, connected the tracker
@@ -1768,7 +1776,13 @@ trial will be served again), one WARNING when a run of dropouts pauses the
 session, and a
 `session end:` line with the status and outcome counts —
 or `session end: FAILED … <exception>` at ERROR, so a log that merely stops is
-a crash and one that ends is a session.
+a crash and one that ends is a session. That line is the first thing teardown
+does, before any step can fail, so it says how the *session* ended. When a
+teardown step then fails, the run is `failed` in the database, and a second
+line at ERROR — `session end: FAILED in teardown`, naming each step that did
+not finish — is written just before the log closes, so the log's last
+verdict agrees with the database. Only the steps after the log closes (the
+manifest, the database row) cannot be reported in it.
 
 On-disk layout per run (see `data/paths.py`; overwriting an existing run's
 trials file is refused):

@@ -29,6 +29,16 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Added
 
+- **`PauseMenu.action_for_key(key)`: the menu choice a key press selects.**
+  The key-to-action mapping existed twice: `run_pause_menu` (the blocking
+  keyboard loop) had its own copy, and the runner's polling loops (a rest
+  that can time out, a pause with the dashboard on) had another, under a
+  comment that called it shared by both. Every pause loop now asks the menu.
+  What each key selects is unchanged for every menu `build_pause_menu`
+  makes. A hand-built `PauseMenu` without a `Q or ESC` or a `SPACE` row no
+  longer returns `"quit"` or `"resume"` for those keys from
+  `run_pause_menu`: a key selects only a row the menu has.
+
 - **`build_session(clock=...)` takes the session clock.** The builder made
   its own `MonotonicClock` with no way to pass one in, so a test (or an
   example's stand-in subject) that built its own tracker had to give it a
@@ -368,6 +378,34 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   [docs/architecture.md](docs/architecture.md) §5.3.
 
 ### Fixed
+
+- **A Ctrl-C during teardown no longer abandons the rest of it.** Each
+  teardown step caught `Exception` only, so a Ctrl-C while a slow step ran
+  (an EDF transfer, the dashboard child's 2 s join) skipped every step after
+  it: `session.log` stayed attached and unclosed, and no manifest, no
+  database row and no closed window followed. Now the first interrupt
+  abandons only the step it landed in, logged at ERROR; the remaining steps
+  run, the run is recorded as `failed`, and the `KeyboardInterrupt` is
+  raised at the end. A second Ctrl-C during teardown abandons the rest at
+  once, so a teardown hung on a device can still be escaped from the
+  keyboard. As before, nothing raised in teardown replaces the exception
+  that ended the session. See [docs/architecture.md](docs/architecture.md)
+  §10.
+
+- **session.log and the saved dashboard now say `failed` when a teardown
+  step fails.** The "session end:" line and the final dashboard state were
+  both written before the devices were released, so a tracker that failed
+  only at teardown (an EyeLink whose link died after the last trial, taking
+  its EDF with it) left session.log ending "session end: complete" and the
+  saved dashboard saying `complete`, while the database recorded the run as
+  `failed`. The first "session end:" line is still written first, before
+  anything can fail, and says how the session ended. If a step fails after
+  it, a second line at ERROR, `session end: FAILED in teardown`, names every
+  step that did not finish, just before the log closes. The dashboard's
+  final state is still built while the devices are held, but it is saved
+  after they are released, corrected to `failed` and published again first
+  when a step has failed since. See [docs/architecture.md](docs/architecture.md)
+  §10.
 
 - **A scorer that does not return a boolean no longer fails silently.** A
   task whose `score_trial` works out its verdict and forgets to `return` it
