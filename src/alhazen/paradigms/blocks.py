@@ -50,6 +50,15 @@ class BlockPlan:
     practice block, then the real thing); passing one source runs it across
     every block. ``trials_per_block`` bounds a block by completed trials;
     without it, a block ends when its source is exhausted.
+
+    When each block has its own queue-based source (a fixed plan,
+    re-queueing what did not complete), the bound must not be smaller than
+    that source's plan. The completed count reaches the plan exactly when the
+    queue empties, so a bound at or above it ends the block only once the
+    plan is done, and one below it ends the block with planned trials — the
+    retries first — still queued in a source nothing asks again.
+    ``make_scheduler`` refuses that config; a plan built by hand is not
+    checked, because a source does not say how many trials it plans.
     """
 
     def __init__(
