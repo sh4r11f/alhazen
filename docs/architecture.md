@@ -697,7 +697,7 @@ none, that the model's defaults are running.
 | `StimulusResponse` | gaze leaves the depart-region, or the deadline passes | `rt_ms`, `<depart_region>_x/y_dva` (where the eye left from — measured, never assumed to be the fixation point) |
 | `LandingCheck` | gaze enters the target region, or the window times out. **Records where gaze first crossed into the region — mid-flight for any usable window — not where the saccade ended**; use `LandingSample` for landing error | `endpoint_x/y_dva`, `endpoint_error_dva`, `endpoint_in_target` |
 | `LandingSample` | a fixed dwell after saccade onset (`dwell_s`), **or** saccade offset: the first *new* sample slower than `settle_speed_dva_per_s`, capped at `max_wait_s`. The region is ignored until then; the last valid sample is the endpoint, judged once. With `depart_region` (the fixation window), a sample still inside that window is never the endpoint and never settles — a blink at the cue counts as departure, and would otherwise end the trial as a miss at fixation | `endpoint_measured`, `endpoint_in_target`, `endpoint_x/y_dva`, `endpoint_error_dva`, `endpoint_latency_ms`, `endpoint_reference_x/y_dva`; `endpoint_settled` in the saccade-offset mode |
-| `ResponseWindow` | a bound key is pressed, or the deadline passes | `response_key`, `rt_ms` |
+| `ResponseWindow` | a bound key is pressed, or the deadline passes. **Keys pressed before the cue was on screen are ignored**: a frame's keys are everything pressed since the previous frame's read, so they count only once that read came after the flip stamped `t_<onset_event>` — never on the phase's first frame (before the flip) or its second (the presses made while the cue waited for its flip). With `onset_event=None` keys count from the first frame, timed from phase entry | `response_key`, `rt_ms` (from the cue's flip) |
 | `AdjustmentLoop` | the commit key is pressed, or the deadline passes | `adjusted_value`, `adjustment_turns` |
 | `FrameSequence` | a compiled `FrameTimeline` finishes | `sequence_frames` |
 | `Blank` / `Feedback` | a fixed duration elapses | — |
@@ -1102,9 +1102,13 @@ All of them: draw randomness only from the injected Generator, hear about
 **every** outcome, and re-serve any condition whose outcome was not
 `completed`. Schedulers read `TrialResult.outcome` and never the record — a
 scheduler reaching into measurements is how a scheduler and an analysis end
-up disagreeing about what "correct" meant. `QuestPlus` takes a
-`score: Callable[[TrialResult], bool]` for tasks titrating something other
-than accuracy.
+up disagreeing about what "correct" meant. The adaptive ones —
+`UpDownStaircase` (so each of `InterleavedStaircases`) and `QuestPlus` —
+take a `score: Callable[[TrialResult], bool]` for tasks titrating something
+other than accuracy, and `make_scheduler` builds every adaptive kind with the
+task's `score_trial` (default: `outcome.success`). The scorer is asked about
+completed trials only; an attempt with no measurement is re-served, never
+scored.
 
 `SchedulerConfig` (+ `StaircaseConfig`, `QuestConfig`, `BlockConfig`) is the
 config surface, so moving from constant stimuli to a staircase is a YAML edit
