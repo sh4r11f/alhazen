@@ -161,92 +161,98 @@ def main(argv: list[str] | None = None) -> int:
     if args.command is None:
         parser.print_help()
         return 0
-    if args.command == "validate":
-        try:
-            rig = load_rig(args.rig)
-        except ConfigError as e:
-            print(f"INVALID: {e}", file=sys.stderr)
-            return 1
-        print(
-            f"OK: {args.rig} — {rig.display.backend} display, "
-            f"{rig.monitor.width_px}x{rig.monitor.height_px}@{rig.monitor.refresh_rate_hz:g}Hz, "
-            f"data_root={rig.data_root}"
-        )
-        return 0
-    if args.command == "new":
-        from alhazen._scaffold import scaffold
+    # argparse has already refused any name not in the table (its `choices`
+    # are the subparsers above), so the lookup cannot miss.
+    return _COMMANDS[args.command](args, parser)
 
-        try:
-            root = scaffold(args.name, Path(args.into), force=args.force)
-        except ConfigError as e:
-            print(f"CANNOT SCAFFOLD: {e}", file=sys.stderr)
-            return 1
-        print(f"created {root}")
-        print("\nnext:")
-        print(f"  cd {root}")
-        print('  pip install -e ".[dev]"')
-        print("  pytest")
-        print("  python run.py --mode simulate --rig configs/rig-lab.yaml --headless")
-        print("\nthen, on a machine with a screen:")
-        print("  python run.py --mode demo --rig configs/rig-mac.yaml")
-        return 0
 
-    if args.command == "run":
-        return _run_session(args)
+# One handler per subcommand. Each takes the parsed arguments and the
+# top-level parser (the ones with sub-subcommands print their own --help
+# through it) and returns the exit code.
+Handler = Callable[[argparse.Namespace, argparse.ArgumentParser], int]
 
-    if args.command == "calibrate":
-        return _calibrate(args, parser)
 
-    if args.command == "monitor":
-        return _monitor(args, parser)
-
-    if args.command == "report":
-        from alhazen.analysis.report import build_report
-
-        try:
-            session_report = build_report(args.run, args.neural, analog_channel=args.analog_channel)
-        except AlhazenError as e:
-            # A run that cannot be read at all is not a report with problems,
-            # it is a path that is wrong.
-            print(f"CANNOT READ RUN: {e}", file=sys.stderr)
-            return 1
-        print(session_report.render())
-        written = session_report.save()
-        print(f"written: {written}")
-        # Non-zero when the manifest failed or an alignment was refused, so
-        # this is usable in a pipeline that must not carry on past bad data.
-        return 0 if session_report.ok else 1
-
-    if args.command == "check-rig":
-        try:
-            rig = load_rig(args.rig)
-            results = check_rig(rig, pulse=args.pulse)
-        except ConfigError as e:
-            # A config no session could run (a bad file, a test-only backend)
-            # is not a rig fault and has no per-check line to report under.
-            print(f"INVALID: {e}", file=sys.stderr)
-            return 1
-        for result in results:
-            print(format_result(result))
-        # The display is the one component this can never check: verifying it
-        # means opening a window, which is a session. Said out loud rather
-        # than omitted, so nobody reads a clean run as "everything works".
-        print("     display: untested (needs a real session)")
-        if args.record:
-            from alhazen.session.checkout import build_record
-
-            record, summary = build_record(args.rig, results, pulse=args.pulse).write(args.record)
-            # After the lines, not instead of them, and unconditionally: the
-            # failing checkout is the one whose evidence is worth keeping, so
-            # the record is never skipped on a FAIL.
-            print(f"record:  {record}")
-            print(f"summary: {summary}")
-        # Unchanged by the record: a checkout passes on the checks alone.
-        return 0 if all(r.ok for r in results) else 1
-
-    if args.command == "sim-sorter":
-        return _sim_sorter(args)
+def _validate(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    """Is this rig file well-formed? Loads it exactly as a session would."""
+    try:
+        rig = load_rig(args.rig)
+    except ConfigError as e:
+        print(f"INVALID: {e}", file=sys.stderr)
+        return 1
+    print(
+        f"OK: {args.rig} — {rig.display.backend} display, "
+        f"{rig.monitor.width_px}x{rig.monitor.height_px}@{rig.monitor.refresh_rate_hz:g}Hz, "
+        f"data_root={rig.data_root}"
+    )
     return 0
+
+
+def _new(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    """Scaffold an experiment package, and say what to type next."""
+    from alhazen._scaffold import scaffold
+
+    try:
+        root = scaffold(args.name, Path(args.into), force=args.force)
+    except ConfigError as e:
+        print(f"CANNOT SCAFFOLD: {e}", file=sys.stderr)
+        return 1
+    print(f"created {root}")
+    print("\nnext:")
+    print(f"  cd {root}")
+    print('  pip install -e ".[dev]"')
+    print("  pytest")
+    print("  python run.py --mode simulate --rig configs/rig-lab.yaml --headless")
+    print("\nthen, on a machine with a screen:")
+    print("  python run.py --mode demo --rig configs/rig-mac.yaml")
+    return 0
+
+
+def _report(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    """Summarise a finished run, and align it to a recording when given one."""
+    from alhazen.analysis.report import build_report
+
+    try:
+        session_report = build_report(args.run, args.neural, analog_channel=args.analog_channel)
+    except AlhazenError as e:
+        # A run that cannot be read at all is not a report with problems,
+        # it is a path that is wrong.
+        print(f"CANNOT READ RUN: {e}", file=sys.stderr)
+        return 1
+    print(session_report.render())
+    written = session_report.save()
+    print(f"written: {written}")
+    # Non-zero when the manifest failed or an alignment was refused, so
+    # this is usable in a pipeline that must not carry on past bad data.
+    return 0 if session_report.ok else 1
+
+
+def _check_rig(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    """Smoke-test a rig's devices, through the backends a session builds."""
+    try:
+        rig = load_rig(args.rig)
+        results = check_rig(rig, pulse=args.pulse)
+    except ConfigError as e:
+        # A config no session could run (a bad file, a test-only backend)
+        # is not a rig fault and has no per-check line to report under.
+        print(f"INVALID: {e}", file=sys.stderr)
+        return 1
+    for result in results:
+        print(format_result(result))
+    # The display is the one component this can never check: verifying it
+    # means opening a window, which is a session. Said out loud rather
+    # than omitted, so nobody reads a clean run as "everything works".
+    print("     display: untested (needs a real session)")
+    if args.record:
+        from alhazen.session.checkout import build_record
+
+        record, summary = build_record(args.rig, results, pulse=args.pulse).write(args.record)
+        # After the lines, not instead of them, and unconditionally: the
+        # failing checkout is the one whose evidence is worth keeping, so
+        # the record is never skipped on a FAIL.
+        print(f"record:  {record}")
+        print(f"summary: {summary}")
+    # Unchanged by the record: a checkout passes on the checks alone.
+    return 0 if all(r.ok for r in results) else 1
 
 
 def add_mode_arguments(parser: argparse.ArgumentParser) -> None:
@@ -522,8 +528,32 @@ def _settle_subject_and_session(args: argparse.Namespace, mode: Mode) -> str | N
     if args.sub is None:
         args.sub = input("subject id: ").strip()
     if args.ses is None:
-        args.ses = int(input("session number: ").strip())
+        args.ses = _ask_session_number()
     return None
+
+
+def _ask_session_number() -> int:
+    """Prompt until the answer is a session number: a whole number, 1 or more.
+
+    A typo used to end in a raw ValueError traceback, with the rig config
+    loaded and an animal waiting. Asked again instead — the person who
+    mistyped is right there — and each bad answer is named with the same
+    ``INVALID:`` the CLI prints for every other bad input. Sessions start at
+    1 because ``SessionInfo`` refuses anything lower; refusing it here saves
+    the experimenter from meeting that as a validation error later.
+    """
+    while True:
+        answer = input("session number: ").strip()
+        try:
+            session = int(answer)
+        except ValueError:
+            session = 0  # not a number at all; reported by the check below
+        if session >= 1:
+            return session
+        print(
+            f"INVALID: session number must be a whole number, 1 or more; got {answer!r}",
+            file=sys.stderr,
+        )
 
 
 def _apply_params_hook(
@@ -699,7 +729,14 @@ def _trial_session(args: argparse.Namespace, rig: Any, task: Any, params: Any, m
         from alhazen.config.loader import load_model
         from alhazen.training import Curriculum
 
-        curriculum = load_model(args.curriculum, Curriculum)
+        # Inside the same handling as every other config file: a misspelled
+        # --curriculum path, or a curriculum that does not validate, used to
+        # print a traceback where the rig and the params print INVALID.
+        try:
+            curriculum = load_model(args.curriculum, Curriculum)
+        except ConfigError as e:
+            print(f"INVALID: {e}", file=sys.stderr)
+            return 1
 
     try:
         built = build_mode_session(
@@ -739,25 +776,6 @@ def _trial_session(args: argparse.Namespace, rig: Any, task: Any, params: Any, m
     built.runner.run()
     print(f"session complete — data under {built.data_root.resolve()}")
     return 0
-
-
-def _next_run(data_root: Path, subject: str, session: int) -> int:
-    """First unused run number for this subject and session.
-
-    The run directories ARE the record, so they are what is counted — a
-    counter file that disagreed with them is what would eventually overwrite
-    a session's data.
-    """
-    session_dir = Path(data_root) / f"sub-{subject}" / f"ses-{session:03d}"
-    if not session_dir.exists():
-        return 1
-    taken = []
-    for path in session_dir.glob("run-*"):
-        try:
-            taken.append(int(path.name.split("_")[0].split("-")[1]))
-        except (IndexError, ValueError):
-            continue
-    return max(taken, default=0) + 1
 
 
 def _calibrate(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
@@ -940,6 +958,20 @@ def _sim_sorter(args: argparse.Namespace) -> int:
     finally:
         publisher.close()
     return 0
+
+
+# Looked up by name at call time for `run` and `sim-sorter`, whose handlers
+# take other arguments; the rest are the functions themselves.
+_COMMANDS: dict[str, Handler] = {
+    "validate": _validate,
+    "new": _new,
+    "run": lambda args, parser: _run_session(args),
+    "calibrate": _calibrate,
+    "monitor": _monitor,
+    "report": _report,
+    "check-rig": _check_rig,
+    "sim-sorter": lambda args, parser: _sim_sorter(args),
+}
 
 
 if __name__ == "__main__":

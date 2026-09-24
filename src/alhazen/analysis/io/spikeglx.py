@@ -36,17 +36,42 @@ def parse_meta(meta_path: Path | str) -> dict[str, str]:
 
     Keys are kept exactly as written, including SpikeGLX's ``~`` prefixes, so
     a caller looking for a documented key name finds it.
+
+    Read as UTF-8, and if the file is not UTF-8, read again with each
+    undecodable byte replaced by U+FFFD and a warning naming the keys that
+    lost one. SpikeGLX on Windows can write text values — a path with an
+    accented folder name — in the local code page, and one such byte used to
+    make the whole meta unreadable. Replacing is safe because every field
+    this module interprets (rates, channel counts, sizes) is ASCII digits: a
+    replaced byte there cannot pass for a number, so ``float``/``int`` still
+    refuses it loudly; it can only land in a value that is used as text.
     """
     meta_path = Path(meta_path)
     if not meta_path.exists():
         raise DataError(f"SpikeGLX meta file not found: {meta_path}")
+    raw = meta_path.read_bytes()
+    try:
+        text = raw.decode("utf-8")
+        replaced = False
+    except UnicodeDecodeError:
+        text = raw.decode("utf-8", errors="replace")
+        replaced = True
     meta: dict[str, str] = {}
-    for line in meta_path.read_text(encoding="utf-8").splitlines():
+    for line in text.splitlines():
         line = line.strip()
         if not line or "=" not in line:
             continue
         key, _, value = line.partition("=")
         meta[key.strip()] = value.strip()
+    if replaced:
+        damaged = sorted(key for key, value in meta.items() if "�" in key + value)
+        log.warning(
+            "%s is not UTF-8; undecodable bytes were replaced with U+FFFD in: %s. "
+            "Those values are text only — no number this module reads is among them "
+            "unless it is listed here.",
+            meta_path.name,
+            ", ".join(damaged) or "(no key=value line)",
+        )
     return meta
 
 
@@ -68,10 +93,30 @@ def sample_rate_hz(meta: dict[str, str]) -> float:
     )
 
 
-def channel_count(meta: dict[str, str]) -> int:
+def channel_count(meta: dict[str, str], source: Path | str | None = None) -> int:
+    """``nSavedChans``: how many int16 channels each frame of the binary holds.
+
+    ``source`` names the recording in an error. Anything but a positive
+    integer is refused here, because every sample offset in the file is a
+    multiple of it — a zero was a ZeroDivisionError further down, and a
+    non-number a bare ValueError that named neither the file nor the field.
+    """
+    where = f" for {source}" if source is not None else ""
     if "nSavedChans" not in meta:
-        raise DataError(f"meta has no nSavedChans; present keys: {sorted(meta)[:20]}")
-    return int(meta["nSavedChans"])
+        raise DataError(f"meta{where} has no nSavedChans; present keys: {sorted(meta)[:20]}")
+    value = meta["nSavedChans"]
+    try:
+        count = int(value)
+    except ValueError as error:
+        raise DataError(
+            f"nSavedChans={value!r} in the meta{where} is not an integer channel count"
+        ) from error
+    if count <= 0:
+        raise DataError(
+            f"nSavedChans={value!r} in the meta{where}: a recording needs at least one "
+            f"saved channel, so this meta cannot describe its binary"
+        )
+    return count
 
 
 def has_digital_word(meta: dict[str, str]) -> bool:
@@ -98,16 +143,35 @@ def n_samples(bin_path: Path | str, meta: dict[str, str]) -> int:
     A file that is not a whole number of frames is truncated, or the meta
     beside it belongs to a different recording. Either way the caller must
     hear about it before any of it is interpreted as data.
+
+    Whole frames alone cannot show a copy that stopped exactly between two
+    frames, so when the meta records ``fileSizeBytes`` (SpikeGLX writes it
+    at the end of a recording) the file must be exactly that size too.
     """
     bin_path = Path(bin_path)
     if not bin_path.exists():
         raise DataError(f"SpikeGLX binary not found: {bin_path}")
-    frame_bytes = channel_count(meta) * SAMPLE_DTYPE.itemsize
+    n_channels = channel_count(meta, source=bin_path)
+    frame_bytes = n_channels * SAMPLE_DTYPE.itemsize
     file_bytes = bin_path.stat().st_size
+    if "fileSizeBytes" in meta:
+        try:
+            expected_bytes = int(meta["fileSizeBytes"])
+        except ValueError as error:
+            raise DataError(
+                f"fileSizeBytes={meta['fileSizeBytes']!r} in the meta for {bin_path} is not "
+                f"a byte count"
+            ) from error
+        if file_bytes != expected_bytes:
+            raise DataError(
+                f"{bin_path} is {file_bytes} bytes but its meta records "
+                f"fileSizeBytes={expected_bytes} — the file is truncated (or was appended "
+                f"to), or this meta describes a different recording"
+            )
     if file_bytes % frame_bytes != 0:
         raise DataError(
             f"{bin_path} is {file_bytes} bytes, not a whole number of {frame_bytes}-byte "
-            f"frames ({channel_count(meta)} channels x {SAMPLE_DTYPE.itemsize} bytes) — "
+            f"frames ({n_channels} channels x {SAMPLE_DTYPE.itemsize} bytes) — "
             f"the file is truncated, or this meta describes a different recording"
         )
     return file_bytes // frame_bytes
@@ -119,7 +183,7 @@ def memmap_bin(bin_path: Path | str, meta: dict[str, str]) -> np.memmap:
         bin_path,
         mode="r",
         dtype=SAMPLE_DTYPE,
-        shape=(n_samples(bin_path, meta), channel_count(meta)),
+        shape=(n_samples(bin_path, meta), channel_count(meta, source=bin_path)),
     )
 
 
@@ -151,7 +215,7 @@ def digital_word_edges(
                 f"no digital-word channel — this recording carries no sync lines"
             )
         # SpikeGLX writes the digital word last.
-        word_channel = channel_count(meta) - 1
+        word_channel = channel_count(meta, source=meta_path) - 1
 
     data = memmap_bin(bin_path, meta)
     mask = np.uint16(1 << bit_index)

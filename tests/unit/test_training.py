@@ -252,7 +252,7 @@ class TestState:
         def disk_full(fd):
             raise OSError(28, "No space left on device")
 
-        monkeypatch.setattr("alhazen.training.state.os.fsync", disk_full)
+        monkeypatch.setattr("alhazen.data.atomic.os.fsync", disk_full)
         with pytest.raises(OSError, match="No space left"):
             TrainingState(stage="one").save(tmp_path, "m01")
 

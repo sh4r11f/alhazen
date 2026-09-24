@@ -6,6 +6,7 @@ from collections.abc import Callable
 from typing import Any
 
 from alhazen.core.trial import Outcome, PhaseAction, TrialContext
+from alhazen.task.phases._draw import draw_stimuli
 
 # What the fixation point turns for a good and a bad trial, in the renderer's
 # signed RGB. Green and red rather than anything subtler: feedback is read
@@ -66,10 +67,7 @@ class Feedback:
             self._on_show(ctx)
 
     def on_frame(self, ctx: TrialContext) -> str | Outcome:
-        for key in self._stimulus_keys:
-            stimulus = ctx.stimuli[key]
-            stimulus.update(ctx.dt)
-            stimulus.draw()
+        draw_stimuli(ctx, self._stimulus_keys)
         if ctx.clock.now() - self._t0 >= self._duration_s:
             return self._then
         return PhaseAction.CONTINUE
@@ -257,10 +255,7 @@ class TrialFeedback:
 
     def on_frame(self, ctx: TrialContext) -> str | Outcome:
         # Updated then drawn, in order, like every other phase's stimuli.
-        for key in self._drawn_keys:
-            stimulus = ctx.stimuli[key]
-            stimulus.update(ctx.dt)
-            stimulus.draw()
+        draw_stimuli(ctx, self._drawn_keys)
         if ctx.clock.now() - self._t0 >= self._duration_s:
             # Discarded by the engine when the trial already had an outcome;
             # returned rather than skipped so the phase ends the same way in
