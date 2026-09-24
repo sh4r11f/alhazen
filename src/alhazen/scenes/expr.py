@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import math
 import re
+import reprlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -216,7 +217,23 @@ def tokenize(source: str) -> list[Token]:
                     index = lookahead + 1
                     while index < len(source) and source[index].isdigit():
                         index += 1
-            tokens.append(Token("num", float(source[start:index])))
+            # The scan above is greedy about digits and dots, so it happily
+            # collects "1.2.3" or "1e+" as one literal, and float() on that
+            # would escape as a bare ValueError that names neither the
+            # expression nor the literal. Refusing it here, as a ConfigError,
+            # makes it a compile-time error — the loader compiles every
+            # expression when a scene is opened, so it fails at load, not on
+            # a frame.
+            literal = source[start:index]
+            try:
+                number = float(literal)
+            except ValueError as error:
+                raise ConfigError(
+                    f"malformed number {literal!r} at position {start} in expression "
+                    f"{source!r}: a number is digits with at most one '.', optionally "
+                    f"followed by an exponent such as 'e-3'"
+                ) from error
+            tokens.append(Token("num", number))
             continue
         if char in "'\"":
             closing = source.find(char, index + 1)
@@ -450,11 +467,18 @@ def _evaluate(node: Node, context: EvalContext) -> Any:
             raise ConfigError(f"error evaluating a scene expression: {error}") from error
     if kind == "unary":
         value = _evaluate(node.args[0], context)
-        if node.value == "-":
-            return -value
-        if node.value == "+":
-            return +value
-        return 0.0 if _truthy(value) else 1.0
+        if node.value == "!":
+            return 0.0 if _truthy(value) else 1.0
+        # Negating a string (a param that holds a colour, say) is a TypeError
+        # in Python. Raised bare, it would reach the frame loop naming no
+        # expression; as a ConfigError it names the operator and the value,
+        # and compile_expr adds which expression it was.
+        try:
+            return -value if node.value == "-" else +value
+        except Exception as error:
+            raise ConfigError(
+                f"cannot apply unary {node.value!r} to {_describe(value)}: {error}"
+            ) from error
     if kind == "tern":
         condition = _evaluate(node.args[0], context)
         return _evaluate(node.args[1] if _truthy(condition) else node.args[2], context)
@@ -469,6 +493,26 @@ def _evaluate(node: Node, context: EvalContext) -> Any:
     if operator == "||":
         return left if _truthy(left) else _evaluate(node.args[1], context)
     right = _evaluate(node.args[1], context)
+    # Every operator below is plain Python arithmetic on whatever the operands
+    # turned out to be at render time, so each can fail the way Python does:
+    # a TypeError for a string meeting a number, an OverflowError for a power
+    # too large for a float. Function calls already turned such failures into
+    # ConfigErrors; operators now do the same, naming the operator and both
+    # values so the message says what met what.
+    try:
+        return _apply_binary(operator, left, right)
+    except ConfigError:
+        raise
+    except Exception as error:
+        raise ConfigError(
+            f"cannot apply {operator!r} to {_describe(left)} and {_describe(right)}: {error}"
+        ) from error
+
+
+def _apply_binary(operator: str, left: Any, right: Any) -> Any:
+    """One non-short-circuiting binary operator, with JavaScript's semantics
+    where they differ from Python's. Raises whatever Python raises; the
+    caller turns that into a ConfigError with the operands named."""
     if operator == "+":
         if isinstance(left, str) or isinstance(right, str):
             return _js_string(left) + _js_string(right)
@@ -503,6 +547,18 @@ def _evaluate(node: Node, context: EvalContext) -> Any:
     if operator == ">=":
         return 1.0 if left >= right else 0.0
     raise ConfigError(f"unknown operator {operator!r} in a scene expression")
+
+
+def _describe(value: Any) -> str:
+    """An operand as an error message shows it: strings quoted (so a colour
+    string is visibly a string), numbers as the studio would print them, and
+    anything else — the whole params object, say — shortened by reprlib so
+    one bad expression cannot produce a page of message."""
+    if isinstance(value, str):
+        return reprlib.repr(value)
+    if isinstance(value, float):
+        return _js_string(value)
+    return reprlib.repr(value)
 
 
 def _js_string(value: Any) -> str:
@@ -589,9 +645,24 @@ def compile_node(source: str) -> Node:
 
 
 def compile_expr(source: str) -> Callable[[EvalContext], Any]:
-    """Parse once, evaluate many times."""
+    """Parse once, evaluate many times.
+
+    Anything that fails during evaluation — an operator meeting a string, a
+    function outside its domain, a params name that is not there — depends
+    on the values of that frame, so it cannot be caught at load. It is raised
+    as a ConfigError prefixed with the expression's own source, because the
+    nodes that fail do not know it and a message naming only the operator
+    would leave the reader searching the scene for which ``-`` it meant.
+    """
     node = compile_node(source)
-    return lambda context: _evaluate(node, context)
+
+    def evaluate(context: EvalContext) -> Any:
+        try:
+            return _evaluate(node, context)
+        except ConfigError as error:
+            raise ConfigError(f"scene expression {source!r} failed: {error}") from error
+
+    return evaluate
 
 
 def evaluate_expr(source: str, context: EvalContext) -> Any:
