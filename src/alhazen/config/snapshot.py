@@ -31,49 +31,48 @@ from alhazen.config.models import SessionConfig
 from alhazen.version import DISTRIBUTION, get_version
 
 
-def _git_sha(cwd: Path) -> str:
-    try:
-        out = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=True,
-        )
-        return out.stdout.strip()
-    except Exception:
-        return "unknown"
+def _git_describe(directory: Path, *, must_declare: str | None = None) -> str:
+    """What `git describe --always --dirty` says about the tree holding `directory`.
 
+    Both trees the snapshot records — the experiment's and alhazen's own —
+    are read here, so the two keys answer in the same three forms. They are
+    kept apart because collapsing them hides what the keys are for:
 
-def _alhazen_git_describe(package_dir: Path) -> str:
-    """What `git describe` says about alhazen's OWN source tree — and only that.
-
-    Three answers, kept apart because collapsing them hides what this is for:
-
-    - ``"v1.3.1"`` or ``"v1.3.1-2-gabc1234"``, either with ``-dirty`` — the
-      real answer. The ``-2-`` is the point: the tree is two commits past the
-      tag whose number `alhazen_version` reports.
-    - ``"not a source checkout"`` — alhazen is not running from a git clone
-      of itself, which is what a wheel install looks like, and it means the
-      version number alone identifies the code.
+    - ``"v1.3.1"``, ``"v1.3.1-2-gabc1234"``, or ``"abc1234"`` in a repository
+      with no annotated tag — each with ``-dirty`` appended when tracked files
+      have uncommitted changes. The real answer. The ``-2-`` says the tree is
+      two commits past that tag; ``-dirty`` says the commit alone will not
+      reproduce what ran. A file git does not track does not count: that is
+      what `--dirty` means. It is also why a data directory inside the
+      repository that git does not track cannot mark every run dirty — and
+      why a new module that was never added cannot either.
+    - ``"not a source checkout"`` — the directory is not inside a git
+      repository at all, or (with `must_declare`) not inside the right one.
     - ``"unknown"`` — git could not be run, or could not answer.
 
-    The ownership check is not optional. A wheel installed into a virtualenv
-    that lives inside another repository — an experiment's ``.venv/`` — sits
-    inside that repository's work tree, and git describes it without
-    complaint: tried on a scratch repo, the experiment's own tag came back as
-    alhazen's. Recording someone else's commit under alhazen's name is the
-    wrong-attribution bug this key exists to fix, so the tree has to prove it
-    is alhazen's own: its top level must hold the pyproject that declares
-    this distribution.
+    Any other failure — an OSError other than git being absent, say — is not
+    absorbed: it propagates, because a snapshot that cannot be trusted should
+    stop the session before trial 1 rather than write a guess.
+
+    `must_declare` names a distribution whose own repository this must be:
+    the tree's top level has to hold the pyproject that declares it, or the
+    answer is "not a source checkout". :func:`_alhazen_git_describe` says why
+    alhazen's own tree needs that check.
     """
 
     def git(*args: str) -> str:
         return subprocess.run(
-            ["git", "-C", str(package_dir), *args],
+            ["git", "-C", str(directory), *args],
             capture_output=True,
             text=True,
+            # git writes UTF-8 whatever the platform. Left to the default, the
+            # output is decoded in the locale's code page — cp1252 on a Windows
+            # rig — and the UTF-8 bytes of a path like C:\Users\Ída include one
+            # cp1252 does not define. That decode fails on subprocess's reader
+            # thread, the output comes back as None, and the caller crashes
+            # far from the cause. `--show-toplevel` prints the path, so any
+            # experiment in such a folder would fail to start.
+            encoding="utf-8",
             timeout=5,
             check=True,
             # English messages whatever the machine's language, because the
@@ -95,23 +94,46 @@ def _alhazen_git_describe(package_dir: Path) -> str:
             return "not a source checkout"
         return "unknown"
 
-    # Whose tree is it? Compared line by line with spaces removed, so a
-    # dependency line such as `"alhazen-vision>=1.3"` in an experiment's own
-    # pyproject can never pass for the declaration.
-    try:
-        lines = (top / "pyproject.toml").read_text(encoding="utf-8").splitlines()
-    except OSError:
-        lines = []
-    declaration = f'name="{DISTRIBUTION}"'
-    if not any(line.replace(" ", "") == declaration for line in lines):
-        return "not a source checkout"  # installed inside somebody else's tree
+    if must_declare is not None:
+        # Whose tree is it? Compared line by line with spaces removed, so a
+        # dependency line such as `"alhazen-vision>=1.3"` in an experiment's
+        # own pyproject can never pass for the declaration.
+        try:
+            lines = (top / "pyproject.toml").read_text(encoding="utf-8").splitlines()
+        except OSError:
+            lines = []
+        declaration = f'name="{must_declare}"'
+        if not any(line.replace(" ", "") == declaration for line in lines):
+            return "not a source checkout"  # inside somebody else's tree
 
     try:
         return git("describe", "--always", "--dirty")
     except (FileNotFoundError, subprocess.TimeoutExpired, subprocess.CalledProcessError):
-        # alhazen's own tree, but git cannot describe it — a clone with no
-        # commits. Calling that "not a source checkout" would be wrong.
+        # A repository, but git cannot describe it — one with no commits yet.
+        # Calling that "not a source checkout" would be wrong.
         return "unknown"
+
+
+def _alhazen_git_describe(package_dir: Path) -> str:
+    """What `git describe` says about alhazen's OWN source tree — and only that.
+
+    The answers are :func:`_git_describe`'s. Here, ``"v1.3.1-2-gabc1234"``
+    means the tree is two commits past the tag whose number
+    `alhazen_version` reports, and ``"not a source checkout"`` means
+    alhazen is not running from a git clone of itself — which is what a
+    wheel install looks like, and it means the version number alone
+    identifies the code.
+
+    The ownership check is not optional. A wheel installed into a virtualenv
+    that lives inside another repository — an experiment's ``.venv/`` — sits
+    inside that repository's work tree, and git describes it without
+    complaint: tried on a scratch repo, the experiment's own tag came back as
+    alhazen's. Recording someone else's commit under alhazen's name is the
+    wrong-attribution bug this key exists to fix, so the tree has to prove it
+    is alhazen's own: its top level must hold the pyproject that declares
+    this distribution.
+    """
+    return _git_describe(package_dir, must_declare=DISTRIBUTION)
 
 
 def environment_digest() -> str:
@@ -146,6 +168,17 @@ def build_provenance(experiment_dir: Path | None = None) -> dict[str, str]:
     downstream repos install alhazen by cloning `main`, and every one of them
     has run code that its version string did not describe. The describe
     string does describe it — tag, commits past the tag, and dirty.
+
+    ``experiment_git_sha`` is the same reading of the experiment's tree
+    (`experiment_dir`, else the working directory), with no ownership check
+    because any repository holding the experiment is the experiment's. It was
+    `git rev-parse --short HEAD`, which cannot say "dirty": a session run from
+    edited, uncommitted experiment code recorded a clean-looking SHA whose
+    checkout does not reproduce it. The key keeps its name so every reader of
+    old snapshots still finds it. In a repository with no annotated tag — all
+    of the downstream experiment repos today — a clean tree records the same
+    short SHA as before; a tagged one records ``v2.0-3-gabc1234``, which git
+    accepts as a revision just as it accepts the bare SHA.
     """
     return {
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -153,7 +186,7 @@ def build_provenance(experiment_dir: Path | None = None) -> dict[str, str]:
         "alhazen_git_describe": _alhazen_git_describe(Path(__file__).resolve().parent),
         "python": sys.version.split()[0],
         "platform": platform.platform(),
-        "experiment_git_sha": _git_sha(experiment_dir or Path.cwd()),
+        "experiment_git_sha": _git_describe(experiment_dir or Path.cwd()),
         "environment_digest": environment_digest(),
     }
 

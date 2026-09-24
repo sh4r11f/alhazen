@@ -64,6 +64,8 @@ from support import (
     RequestRewardOnFrames,
     RunForFrames,
     SessionHarness,
+    TickingClock,
+    record_flips,
 )
 
 DROP = RewardPulses(n_pulses=1, pulse_ms=50, inter_pulse_ms=0)
@@ -726,6 +728,38 @@ class TestInTheFrameLoop:
             "reason": "hold",
             "frame": 2,
         }
+
+    def test_reward_carries_its_flip_however_long_the_frames_events_took(self, queued):
+        # REWARD is emitted after the frame's visual events have been through
+        # the bus, and after submit(). On a clock that moves while code runs
+        # (TickingClock), with a subscriber that takes 2 ms per event, it must
+        # still carry the flip it was commanded on — the time of the visual
+        # event queued on the same frame — not the moment it was emitted.
+        clock = TickingClock()
+        flips: dict[int, float] = {}
+        wrapper, _ = queued()
+        harness = EngineHarness(
+            clock=clock, reward_requests=wrapper, on_frame_input=record_flips(flips)
+        )
+        harness.bus.subscribe(lambda event: clock.advance(0.002))
+
+        class CueAndPay(RequestRewardOnFrames):
+            def on_frame(self, ctx):
+                # frames_seen grows in RunForFrames.on_frame: its length here
+                # is this call's index.
+                if len(self.frames_seen) == 2:
+                    ctx.emit_on_flip("STIM_ON")
+                return super().on_frame(ctx)
+
+        ctx = harness.ctx()
+        harness.engine.run_trial(ctx, [CueAndPay(4, COMPLETED, on_frames=(2,))])
+        harness.engine.settle_rewards(ctx)
+
+        (stim_on,) = events_named(harness.collector, "STIM_ON")
+        (reward,) = events_named(harness.collector, "REWARD")
+        assert reward.payload["frame"] == 2
+        assert reward.t == stim_on.t == flips[2]
+        assert ctx.record["t_reward"] == flips[2]
 
     def test_the_frame_index_counts_across_phases(self, queued):
         wrapper, _ = queued()
@@ -1403,6 +1437,31 @@ class TestBuild:
         assert device.closed
         started = set(threading.enumerate()) - threads_before
         assert not [t for t in started if t.name == "alhazen-reward"]
+
+    def test_a_build_that_fails_closes_the_dispenser_once(self, tmp_path):
+        # The worker's close() closes the device it wraps. A failed build
+        # that released the device and the worker separately would close
+        # the device twice, and a dispenser's close() is not promised to
+        # survive that.
+        class BrokenScheduler(Pursuit):
+            name = "broken-scheduler"
+
+            def make_source(self, params, rng):
+                raise ValueError("no scheduler for you")
+
+        class CountingReward(ScriptedReward):
+            def __init__(self) -> None:
+                super().__init__()
+                self.closes = 0
+
+            def close(self) -> None:
+                self.closes += 1
+                super().close()
+
+        device = CountingReward()
+        with pytest.raises(ValueError, match="no scheduler for you"):
+            build(tmp_path, BrokenScheduler(Params()), reward=device)
+        assert device.closes == 1
 
     def test_a_task_without_it_keeps_the_device_itself(self, tmp_path):
         runner = build(

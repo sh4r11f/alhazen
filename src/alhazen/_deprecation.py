@@ -3,14 +3,18 @@
 alhazen's public API is what an experiment package depends on, and those
 packages live in other repositories on other people's schedules. So nothing
 public disappears without a release in which it still works and says it is
-going: one minor version of warning, then removal.
+going: a name is deprecated in a MINOR release, keeps working and warning,
+and is removed in the next MAJOR one — removal breaks callers, which is what
+a MAJOR bump announces (docs/versioning.md §4).
 
-    @deprecated(since="1.1", removed_in="1.2", instead="Task.build_trial")
+    @deprecated(since="1.1", removed_in="2.0", instead="Task.build_trial")
     def old_thing(...): ...
 
 The warning names the version it goes away in and what to use instead,
 because a DeprecationWarning that says only "deprecated" leaves the reader
-exactly where they started.
+exactly where they started. tests/unit/test_versioning.py reads every
+``removed_in`` out of the source and fails once pyproject.toml's version
+reaches it, so the version named is never one that has already shipped.
 """
 
 from __future__ import annotations

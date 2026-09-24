@@ -23,8 +23,10 @@ and what the guides tell a task author to call, subclass or implement.
 Everything else stays importable, at the importer's own risk.
 `tests/unit/test_docs_snippets.py` fails when a listed name no longer exists,
 so a public name cannot be renamed or removed without this page — and the
-version number — noticing. Deprecations warn for one minor version before
-removal, naming the version and the replacement (`alhazen._deprecation`).
+version number — noticing. A deprecated name keeps working until the next
+major version removes it, and until then it warns, naming that version and
+the replacement (`alhazen._deprecation`; the policy is §4 of
+[Versioning and releases](versioning.md)).
 
 ## The top-level package
 
@@ -58,6 +60,10 @@ The names an experiment imports directly.
 ::: alhazen.session.runner
     options:
       members: [SessionRunner, pause_menu, host_overlay_shapes]
+
+::: alhazen.session.pause
+    options:
+      members: [build_pause_menu, run_pause_menu, PauseMenu]
 
 ::: alhazen.session.recorder
     options:

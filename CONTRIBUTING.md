@@ -22,7 +22,9 @@ fails on you:
   normal — update the baseline in the same commit. A failure on a *removal* is
   the contract working.
 - `tests/unit/test_versioning.py` checks that `pyproject.toml` and
-  `CHANGELOG.md` name the same version.
+  `CHANGELOG.md` name the same version, and that every deprecation's
+  `removed_in` is a MAJOR release the declared version has not reached — so
+  the bump to a MAJOR fails until the names it removes are gone.
 
 **Definition of done:** all five green, the new behavior has tests, and
 `docs/architecture.md` is updated in the same change.
@@ -32,20 +34,24 @@ fails on you:
 Imports point only downward:
 
 ```
-cli → session | testing | analysis → training → task → paradigms | devices
-    → core → stimuli | scenes → display → config | data
+cli → modes → session | testing | analysis → training → task → dashboard
+    → paradigms | devices → core | neural → stimuli | scenes → display
+    → config | data | _scaffold
 ```
 
 `errors` and `version` sit outside it — anything may import them. The contract
 is enforced by `lint-imports`, not by convention, and a new package joins the
-list in the same change that adds it.
+list in the same change that adds it: `lint-imports` cannot see a package that
+is not on the list, so `tests/unit/test_layering.py` fails until it is. The
+same test checks this drawing, and the one in `docs/architecture.md`, against
+the config.
 
 ## The invariants
 
 These are what the tests pin. Do not "simplify" one away without a discussion:
 
 1. **Flip-locked events.** Visual events queue via `ctx.emit_on_flip` and emit
-   only after the flip that showed them.
+   only after the flip that showed them, stamped with that flip's time.
 2. **One clock.** Every timestamp comes from the injected session clock.
    Device clocks are aligned offline, never mixed in online.
 3. **Dumb phases.** A phase touches only the `TrialContext` — no hardware, no

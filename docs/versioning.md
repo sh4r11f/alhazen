@@ -111,13 +111,16 @@ make new files claim to be an older format and sail past the readers' checks.
 
 Nothing public disappears without a release in which it still works and says it
 is going — experiment packages live in other repositories on other people's
-schedules. One MINOR version of warning, then removal:
+schedules. Removing a public name is "something that used to work no longer
+does", so by §1 it is a MAJOR change. A name is deprecated in a MINOR release,
+keeps working and warning through every MINOR and PATCH release after it, and
+is removed in the next MAJOR:
 
 ```python
 from alhazen._deprecation import deprecated
 
 
-@deprecated(since="1.1", removed_in="1.2", instead="Task.build_trial")
+@deprecated(since="1.1", removed_in="2.0", instead="Task.build_trial")
 def old_thing(target):
     return target
 ```
@@ -126,6 +129,12 @@ The warning names the version it goes away in and what to use instead, because
 one that says only "deprecated" leaves the reader exactly where they started.
 For a single argument on a function that still exists, use
 `warn_deprecated_argument` from inside the function.
+
+`tests/unit/test_versioning.py` reads every `removed_in` out of the source and
+fails if one is not a MAJOR release, or if `pyproject.toml` has already reached
+it. So bumping to 2.0.0 fails until the names it removes are gone, and no
+warning names a release that has already shipped — `pause_menu` said "removed
+in 1.2" from 1.1 through 1.5.
 
 ## 5. Cutting a release
 

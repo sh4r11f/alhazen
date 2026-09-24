@@ -364,7 +364,13 @@ class Task:
     def score_trial(self, result: Any) -> bool:
         """Whether an adaptive scheduler should count this trial as a success.
         The default is the outcome's own ``success`` flag; a task titrating
-        something else (a bias magnitude, a settling error) overrides it."""
+        something else (a bias magnitude, a settling error) overrides it.
+
+        The default ``make_source`` hands this to every adaptive kind — an
+        up-down staircase (each one, when interleaved) and QUEST+. It is asked
+        about completed trials only: an attempt with no measurement is served
+        again, never scored. A task that overrides ``make_source`` to build
+        its own scheduler passes it on itself."""
         return bool(result.outcome.success)
 
 
