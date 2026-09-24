@@ -5,6 +5,13 @@ point group, so ``alhazen run --task saccade-bias`` works from anywhere once
 the package is installed. That is what makes the CLI usable on a rig: the
 experimenter does not have to remember where the code lives or what the
 class is called.
+
+The entry point names the class and nothing else, so whatever else a session
+needs from the experiment has to be on the class: its params file
+(``Task.default_params``), its params hook (``Task.params_hook``) and what
+its subject reads (``Task.instructions``). Before those existed, a session
+started from here ran the params model's defaults and showed no instructions,
+while the same experiment's ``run.py`` — which was handed both — did not.
 """
 
 from __future__ import annotations

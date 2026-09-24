@@ -130,3 +130,80 @@ before laying it out; with `reflow=False`, draw every line break as given.
 A backend with no screen records the flag rather than dropping it. A backend
 that predates the argument still works — alhazen never passes `reflow` to a
 `show_message` that does not take it — but its messages are drawn unreflowed.
+
+## Say what the subject reads before trial one
+
+Override `Task.instructions`. Every way of starting a session shows what it
+returns — `alhazen run --task`, the experiment's `run.py`,
+`build_session(task=...)` — so this is the one place the wording lives:
+
+```python
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[2]   # src/<package>/task.py -> the repository
+
+
+class MyTask(Task):
+    def instructions(self) -> str | None:
+        # A file under review, so what the subject reads cannot drift from
+        # what was agreed. Read as UTF-8 by name: on a Windows rig the
+        # default code page turns every em-dash into three wrong characters.
+        return (REPO / "instructions.md").read_text(encoding="utf-8")
+```
+
+- **Return `None` for a task with nothing to show** — an animal subject. That
+  is a declaration, not an omission: leave the method out altogether and
+  `--mode run` logs a WARNING naming it, because a task that forgot looks
+  exactly like one that decided.
+- **Declare it once on a shared base** when a family of tasks answers the
+  same way; every task under the base inherits the answer.
+- **Hard-wrapped text is fine.** The display reflows prose: a single newline
+  inside a paragraph becomes a space, a blank line separates paragraphs, and
+  an indented line or a list item keeps its break.
+- **It may quote the params.** It is called once per session, after a
+  curriculum has set the stage's values, so `self.params` is what the session
+  runs at.
+- **Fail loudly.** A missing file raises its own error before the run
+  directory is created; empty text is refused, since shown it would be a
+  blank screen waiting for SPACE.
+
+## Say which params a task runs with
+
+Override `Task.default_params` — a classmethod, because it decides the params
+the task is built with — to name the file a session loads when nobody passes
+`--params`. `alhazen run --task` and the experiment's `run.py` both use it,
+in every mode:
+
+```python
+class MyTask(Task):
+    @classmethod
+    def default_params(cls):
+        return REPO / "configs" / "task.yaml"   # REPO as in the recipe above
+```
+
+- **Absolute, or relative to this file.** A relative path is resolved
+  against the file the method is written in — never the working directory,
+  which is wherever `alhazen run` was started — so a config kept inside the
+  package can be named as `"configs/task.yaml"`.
+- **A missing file stops the session by name.** The params model's defaults
+  are not the experiment, so they never run in place of a file the task
+  declared. `REPO` found from `__file__` reaches the repository only while
+  the package is installed editable (`pip install -e .`).
+- **`--params` still wins**, for a pilot or a one-off; so does
+  `run_experiment(default_params=...)` for the sessions `run.py` starts.
+
+When the params depend on *who* and *which session* — a scheduler that
+carries state across sessions — override `Task.params_hook` as well:
+
+```python
+class MySearchTask(Task):
+    @classmethod
+    def params_hook(cls, params, args):
+        return params.model_copy(update={"session": args.ses})
+```
+
+It runs after the subject and session are settled and before the task is
+built; what it returns is re-validated through `params_model`, and an
+exception it raises is not caught. [docs/modes.md](modes.md#parameters-derived-from-the-invocation)
+has the whole contract, including why state derived from the data root must
+follow a rehearsal to the rehearsal root.

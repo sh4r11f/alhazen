@@ -68,7 +68,7 @@ from alhazen.session.runner import SessionRunner
 from alhazen.stimuli.photodiode import make_photodiode
 from alhazen.task.live import LiveAnalysis, LiveWiring
 from alhazen.task.plan import BuildTrial
-from alhazen.task.task import Task
+from alhazen.task.task import Task, task_instructions
 from alhazen.training.stages import Curriculum
 from alhazen.training.state import TrainingState
 from alhazen.training.supervisor import TrainingSupervisor
@@ -237,9 +237,12 @@ def build_session(
     """Wire one runnable session.
 
     Pass ``task=`` (a Task instance) and everything the experiment declares —
-    name, params, events, trial builder, scheduler, score, reward policy —
-    comes from it. The explicit parameters still work and still win when both
-    are given, which is what a test overriding one piece of a real task needs.
+    name, params, events, trial builder, scheduler, score, reward policy, the
+    subject's instructions — comes from it. The explicit parameters still work
+    and still win when both are given, which is what a test overriding one
+    piece of a real task needs. For ``instructions`` that includes an empty
+    string: ``instructions=""`` shows no instruction screen whatever the task
+    declares.
 
     ``tracker``/``reward``/``sync`` likewise override what the rig config
     would have built, so a simulated session can be driven by a scripted gaze
@@ -324,6 +327,16 @@ def build_session(
     # config's file values for a session that ran at a stage's values, which
     # is the one thing the snapshot exists to prevent.
     cfg = build_session_config(rig_cfg, info, task_params, sources or {})
+
+    # What the subject reads before trial one: the caller's text when it
+    # passed one (run.py's `instructions=`, an example's instructions.md),
+    # otherwise whatever the task declares (Task.instructions). Asked here,
+    # after the curriculum block, because a stage may have rebuilt the params
+    # the text is allowed to depend on; and before the run directory is
+    # created, so a task whose instructions file is missing fails without
+    # leaving an empty run behind.
+    if instructions is None and task is not None:
+        instructions = task_instructions(task)
 
     # Refused here, before a run directory exists or a window opens, rather
     # than at the first drop: a task that pays during the trial on a rig with
@@ -659,13 +672,7 @@ def build_session(
                 if instructions and auto_start
                 else instructions
             ),
-            await_start=(
-                _psychopy_auto_start
-                if instructions and display.kind == "psychopy" and auto_start
-                else _psychopy_await_start
-                if instructions and display.kind == "psychopy"
-                else None
-            ),
+            await_start=_start_gate(instructions, display.kind, auto_start),
             dashboard=dashboard_controller,
             dashboard_spec=dashboard_spec,
             manual_reward=on_manual_reward,
@@ -696,6 +703,29 @@ def build_session(
                 log.exception("could not close the spike source while aborting the build")
         raise
     return runner
+
+
+def _start_gate(
+    instructions: str | None, display_kind: str, auto_start: bool
+) -> Callable[[], bool] | None:
+    """What stands between the instruction screen and trial one.
+
+    - Nothing, when there is no text to read, or when the display has no
+      keyboard behind it (a simulated one): the runner shows the text, which
+      the simulated display logs, and starts at once.
+    - The two-second auto-start, on a real display in an unattended session
+      (``auto_start``: simulate mode, an example's ``--auto``). It never waits
+      for a key, because nobody is there to press one — which is why an
+      instruction screen can be shown in simulate mode at all.
+    - SPACE (start) or ESC (cancel), on a real display with somebody in the
+      chair.
+
+    A function of its own so the rule can be pinned without a renderer: the
+    two gates it chooses between need PsychoPy, the choice does not.
+    """
+    if not instructions or display_kind != "psychopy":
+        return None
+    return _psychopy_auto_start if auto_start else _psychopy_await_start
 
 
 def _psychopy_await_start() -> bool:
