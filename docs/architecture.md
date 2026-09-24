@@ -1266,6 +1266,22 @@ The window is fed the **scored** record: the same dict written to
 `trials.csv`, after the task's `score` hook ran. A derived measure computed
 there exists nowhere else, so a criterion could otherwise never gate on one.
 
+The window keeps only part of each record, because it is saved in the
+subject's hand-editable state file: the outcome, `completed`, `success`, the
+stage, and `rt_ms` — the RT, read from the record field the curriculum's
+`rt_key` names (default `rt_ms`; set it when the task's phases write the RT
+under another `rt_record_key`). An experiment's own metric reads those plus
+any record fields the curriculum lists in `record_fields` (plain values only;
+a numpy scalar is kept as the number it is). A stage gating on `mean_rt_ms`
+whose session has run `min_trials` completed trials without one RT under
+`rt_key` logs a WARNING once: the metric is NaN there, and the criterion can
+never be met.
+
+Promotion past the last stage finishes the curriculum. Like any move it is
+carried out between trials — the promote key at the last stage only queues
+it — and it is logged once; afterwards the last stage's promotion criteria
+are no longer judged, but its demotion criteria still are.
+
 ### 6.3 What persists, and what a row says
 
 `<data_root>/sub-<ID>/training_state.yaml` holds the stage, completed counts
