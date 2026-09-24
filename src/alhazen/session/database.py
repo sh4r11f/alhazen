@@ -515,11 +515,12 @@ class ExperimentDatabase:
 def _run_id(cfg: SessionConfig, paths: SessionPaths) -> str:
     """This run's identity in the database.
 
-    The DATE is part of it, because it is part of what makes a run unique on
-    disk: `SessionPaths.create` refuses to overwrite the date-stamped trials
-    file, so the same subject/session/run on a later day is a legitimate new
-    run. Without the date that run passed the file check and then collided in
-    the database — and was never mirrored at all.
+    The DATE is part of it. `SessionPaths.create` used to refuse only the
+    date-stamped trials file, so the same subject/session/run on a later day
+    was accepted as a new run — into the same folder — and without the date
+    it collided here and was never mirrored at all. `create` now refuses any
+    used run folder, whatever the day; the date stays in the id so the runs
+    mirrored before that keep theirs.
     """
     info = cfg.info
     return (

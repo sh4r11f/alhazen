@@ -23,15 +23,43 @@ from alhazen.session.database import (
 from support import FRAME_S, SessionHarness, make_session_config
 
 
-def write_run(tmp_path, *, date="20260826", run=1, session=1, status="complete", **kwargs):
-    """Mirror one run into a database, through the same call the runner makes."""
+def write_run(
+    tmp_path,
+    *,
+    date="20260826",
+    run=1,
+    session=1,
+    status="complete",
+    into_a_used_folder=False,
+    **kwargs,
+):
+    """Mirror one run into a database, through the same call the runner makes.
+
+    ``into_a_used_folder`` stands for a run recorded before
+    `SessionPaths.create` refused a run folder that already holds files: the
+    one way two runs with the same numbers still reach a database. Its paths
+    are built directly, because ``create`` now refuses exactly that.
+    """
+    from alhazen.data import naming
     from alhazen.data.paths import SessionPaths
 
     cfg = make_session_config(tmp_path)
     cfg = cfg.model_copy(
         update={"info": cfg.info.model_copy(update={"session": session, "run": run})}
     )
-    paths = SessionPaths.create(tmp_path, cfg.info.subject, session, run, cfg.info.task_name, date)
+    subject, task = cfg.info.subject, cfg.info.task_name
+    if into_a_used_folder:
+        paths = SessionPaths(
+            run_dir=(
+                tmp_path
+                / naming.subject_dirname(subject)
+                / naming.session_dirname(session)
+                / naming.run_dirname(run, task)
+            ),
+            base=naming.base_name(subject, session, run, task, date),
+        )
+    else:
+        paths = SessionPaths.create(tmp_path, subject, session, run, task, date)
     paths.snapshot_path.write_text("config: {}\nprovenance: {}\n")
     database = ExperimentDatabase(tmp_path / DATABASE_FILENAME, **kwargs)
     return database, database.write_run(
@@ -115,15 +143,16 @@ class TestSchemaCompatibility:
 
 
 class TestRunIdentity:
-    """`SessionPaths.create` refuses to overwrite the *date-stamped* trials
-    file, so the same sub/ses/run on a later day is a legitimate new run. The
-    database's run_id carried no date, so that run passed the file check and
-    then hit a raw `sqlite3.IntegrityError` at teardown — and was never
-    mirrored at all."""
+    """`SessionPaths.create` used to refuse only the *date-stamped* trials
+    file, so the same sub/ses/run on a later day was accepted as a new run.
+    The database's run_id carried no date, so that run passed the file check
+    and then hit a raw `sqlite3.IntegrityError` at teardown — and was never
+    mirrored at all. `create` now refuses the folder on any day; runs recorded
+    before that (``into_a_used_folder``) must still mirror as two runs."""
 
     def test_the_same_numbers_on_two_dates_are_two_runs(self, tmp_path):
         _db, first = write_run(tmp_path, date="20260826")
-        database, second = write_run(tmp_path, date="20260827")
+        database, second = write_run(tmp_path, date="20260827", into_a_used_folder=True)
 
         assert first != second
         with database.connect() as db:
@@ -138,7 +167,7 @@ class TestRunIdentity:
 
         with pytest.raises(DataError) as excinfo:
             # Same subject, session, run AND date: the same run twice.
-            database, _ = write_run(tmp_path, date="20260826")
+            database, _ = write_run(tmp_path, date="20260826", into_a_used_folder=True)
 
         message = str(excinfo.value)
         assert DATABASE_FILENAME in message

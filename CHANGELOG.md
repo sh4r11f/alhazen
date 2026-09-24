@@ -237,6 +237,19 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Fixed
 
+- **The same run number on a later day wrote into the earlier run's
+  folder.** `SessionPaths.create` refused only this run's own trials file,
+  whose name carries the date; the folder's name does not. So `--run 1` on
+  Tuesday, after `--run 1` on Monday, passed the check and wrote into
+  Monday's folder: over its `config_snapshot.yaml`, `manifest.yaml` and
+  dashboard, appending to its `session.log`, and `load_run` then paired one
+  day's trials with the other day's snapshot. A run folder that holds any
+  file — a finished run, or one that crashed before writing its trials file —
+  is now refused on any day, naming a few of the files; the fix is the next
+  run number. An empty folder left by a build that failed before the session
+  began can still be used. The CLI's automatic run numbering never reused a
+  folder, so only an explicit run number was affected.
+
 - **The real eye trackers never noticed a recording that died mid-trial.**
   The EyeLink's and the TRACKPixx3's `is_recording()` returned a flag they
   set at `start_trial` and cleared at `stop_trial`, so a pulled cable, a Host
