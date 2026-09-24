@@ -148,6 +148,26 @@ class TestShapingAcrossSessions:
         # And the transition history is appended to, not replaced.
         assert len(after["history"]) >= len(first["history"])
 
+    def test_a_session_that_could_not_read_the_state_does_not_destroy_it(self, tmp_path):
+        # Through the real teardown: the session starts over (as documented),
+        # and its save moves the unreadable file aside instead of writing the
+        # first stage over the only record of where the subject really was.
+        path = TrainingState.path_for(tmp_path, "m01")
+        path.parent.mkdir(parents=True)
+        original = "stage: real-task\ncompleted_by_stage: {real-task: 400\n"  # a typo
+        path.write_text(original, encoding="utf-8")
+
+        run_session(tmp_path, trials=4, run=1)
+
+        (aside,) = path.parent.glob("training_state.unreadable-*.yaml")
+        assert aside.read_text(encoding="utf-8") == original
+        rows = trials_of(next(tmp_path.glob("sub-m01/ses-001/run-01*")))
+        assert rows[0]["stage"] == "any-look"
+        # The real name holds this session's state: started over, and
+        # possibly promoted once in four trials — never the typo'd file's.
+        saved = yaml.safe_load(path.read_text(encoding="utf-8"))
+        assert saved["stage"] in {"any-look", "tighten"}
+
     def test_transitions_are_in_the_event_stream(self, tmp_path):
         run_session(tmp_path, trials=60, run=1)
         events_path = next((tmp_path / "sub-m01" / "ses-001").glob("run-01*/*_events.csv"))
