@@ -63,7 +63,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypeVar
@@ -246,8 +246,9 @@ def dpx_fault(libdpx: Any) -> str | None:
     return f"{error} ({detail})"
 
 
-def recording_armed(libdpx: Any, tracker: Any) -> bool:
-    """Is the device still streaming samples into the ring this backend drains?
+def recording_problem(libdpx: Any, tracker: Any) -> str | None:
+    """What is wrong with the device's recording, in words, or None while it
+    still streams samples into the ring this backend drains.
 
     The per-target calibration call (``TPxGetEyePositionDuringCalib``) does
     two things VPixx's documentation does not mention: it switches free-run
@@ -256,12 +257,25 @@ def recording_armed(libdpx: Any, tracker: Any) -> bool:
     a ring that no longer exists, and ``TPxSaveToCSV`` from it never returns
     — the session hangs with it and Windows kills the process as "not
     responding" (observed on the rig, 2026-09-01). So every drain first asks
-    whether the ring is still the one it was armed with.
+    whether the ring is still the one it was armed with — and the gaze
+    reader asks the same thing mid-trial, as its dropout signal.
+
+    One register round trip (``DPxUpdateRegCache``); the caller holds the
+    device lock and checks libdpx's sticky error afterwards (dpx_fault).
     """
     libdpx.DPxUpdateRegCache()
-    return bool(libdpx.TPxIsFreeRun()) and int(libdpx.TPxGetBuffBaseAddr()) == int(
-        tracker.buffer_base_addr
-    )
+    if not libdpx.TPxIsFreeRun():
+        return "free-run sampling is off"
+    base, armed_at = int(libdpx.TPxGetBuffBaseAddr()), int(tracker.buffer_base_addr)
+    if base != armed_at:
+        return f"its sample buffer moved (base {base:#x}, armed at {armed_at:#x})"
+    return None
+
+
+def recording_armed(libdpx: Any, tracker: Any) -> bool:
+    """Is the device still streaming samples into the ring this backend
+    drains? recording_problem() without the words."""
+    return recording_problem(libdpx, tracker) is None
 
 
 def arm_recording(libdpx: Any, tracker: Any) -> None:
@@ -373,7 +387,21 @@ def read_keys(event: Any, key_list: Sequence[str], wait_s: float) -> list[str] |
 # How old the newest gaze report may be before get_gaze() calls it "no
 # verifiable position". A reader thread that has fallen this far behind is a
 # stalled USB call, and a position from before the stall is not this frame's.
+#
+# The floor, since dropout detection: with a longer eyetracker.max_sample_gap_ms
+# the cutoff follows the limit, GAZE_STALE_MARGIN_S past it. The tracker health
+# check runs before get_gaze() in every frame (core/engine.py), so a stalled
+# reader is then always called a dropout — a system fault, served again —
+# before get_gaze() turns it into a missing position a fixation phase would
+# blame on the subject as a broken fixation.
 GAZE_STALE_S = 0.1
+GAZE_STALE_MARGIN_S = 0.005
+# How long a call on the session's thread waits for the device lock before
+# it calls the device stuck. A normal hold is one USB call — 2 ms as a rule,
+# 20-40 ms at worst on the rig — or one drain; a call that has not returned
+# in two seconds is a USB transfer to a device that went away mid-call, and a
+# plain wait behind it would hang the session with a window nobody can close.
+LOCK_TIMEOUT_S = 2.0
 # How often the calibration screen refreshes its eye status between keys.
 STATUS_REFRESH_S = 0.1
 # How long a failed calibration's verdict stays on screen before the pause
@@ -431,7 +459,18 @@ class GazeReader:
     A read that raises stops the thread, and the next ``latest()`` re-raises
     it on the caller's thread: a tracker that stops answering must abort
     loudly (invariant 6), not quietly report "no eye" for the rest of the
-    session.
+    session. During a trial the tracker health check sees it first
+    (``fault``) and ends the trial as a dropout; ``restart()`` is how the next
+    trial brings the reader back, if the device answers again.
+
+    ``check`` is the reader's second job, for dropout detection: a question
+    to the device about its *recording* — is it still sampling into the
+    session's ring? — asked every ``check_every_s`` after a read, under the
+    same lock, and kept with the time it was asked (``device_check``). The
+    gaze report cannot answer that: the live position and the recorded
+    samples are separate paths through the device, and the first carries on
+    when the second stops. Asked here, off the render thread, because it is
+    a USB round trip like the read itself.
     """
 
     def __init__(
@@ -440,12 +479,19 @@ class GazeReader:
         clock: Clock,
         lock: threading.Lock,
         interval_s: float = 0.004,
+        check: Callable[[], str | None] | None = None,
+        check_every_s: float = 0.05,
     ) -> None:
         self._read = read
         self._clock = clock
         self._lock = lock
         self._interval = interval_s
+        self._check = check
+        self._check_every_s = check_every_s
         self._latest: tuple[DeviceGaze, float] | None = None
+        # The device's latest answer to `check` — None (recording) or what is
+        # wrong — and the session time it was asked; None before the first.
+        self._checked: tuple[str | None, float] | None = None
         self._fault: BaseException | None = None
         self._stop = threading.Event()
         self._paused = threading.Event()
@@ -478,9 +524,10 @@ class GazeReader:
         self._paused.clear()
 
     def read_now(self) -> None:
-        """One read, on the calling thread: what the loop does, and what a
-        caller with no thread running does to refresh. A read that fails is
-        recorded as the reader's fault and raised as a TrackerError."""
+        """One read, on the calling thread — and the device check, when one
+        is due: what the loop does, and what a caller with no thread running
+        does to refresh. A read or a check that fails is recorded as the
+        reader's fault and raised as a TrackerError."""
         try:
             with self._lock:
                 report = self._read()
@@ -488,6 +535,75 @@ class GazeReader:
             self._fault = e
             raise TrackerError(f"the TRACKPixx3 stopped answering: {e}") from e
         self._latest = (report, self._clock.now())
+        checked = self._checked
+        if self._check is not None and (
+            checked is None or self._clock.now() - checked[1] >= self._check_every_s
+        ):
+            self.check_now()
+
+    def check_now(self) -> None:
+        """Ask the device about its recording now, and keep the answer.
+
+        One more hold of the lock, taken separately from the read's so the
+        render thread's own calls can get in between the two. The answer is
+        kept before the lock is released: whoever asked the device last —
+        this thread, or start_trial on the session's (note_check) — is then
+        the one whose answer stands, and an answer from before a start's
+        check can never land after it.
+        """
+        if self._check is None:
+            return
+        try:
+            with self._lock:
+                verdict = self._check()
+                self._checked = (verdict, self._clock.now())
+        except Exception as e:  # pypixxlib's exception type cannot be named off the rig
+            self._fault = e
+            raise TrackerError(f"the TRACKPixx3 stopped answering: {e}") from e
+
+    def note_check(self, verdict: str | None) -> None:
+        """Keep an answer the caller got from the device on its own thread
+        (start_trial asks before a trial relies on the recording), so a
+        verdict from before it is never read as the device's latest. Call it
+        with the device lock still held, for the reason check_now gives."""
+        self._checked = (verdict, self._clock.now())
+
+    @property
+    def fault(self) -> BaseException | None:
+        """What the reader died of — its last device call raised — or None
+        while it has not. Read without raising, unlike latest()."""
+        return self._fault
+
+    @property
+    def device_check(self) -> tuple[str | None, float] | None:
+        """The device's latest answer about its recording — None while it
+        records, else what is wrong — with the session time it was asked;
+        None before the first answer."""
+        return self._checked
+
+    @property
+    def newest_read_t(self) -> float | None:
+        """The session time of the newest report, without raising on a
+        reader that died (the dropout check reports that itself); None
+        before the first read."""
+        latest = self._latest
+        return None if latest is None else latest[1]
+
+    def restart(self, *, background: bool) -> None:
+        """Bring back a reader that died, if the device answers again.
+
+        One read on the calling thread first, which raises TrackerError if the
+        device still does not answer — so a caller finds out now, loudly, and
+        the reader stays stopped. Only then is the fault cleared for good and,
+        for a background reader, the thread started again. The device's old
+        answer about its recording is dropped: it predates the fault.
+        """
+        self.stop()
+        self._fault = None
+        self._checked = None
+        self.read_now()
+        if background:
+            self.start()
 
     def latest(self) -> tuple[DeviceGaze, float] | None:
         """The newest (report, session time) pair, or None before the first
@@ -654,11 +770,13 @@ def calibration_targets(
 class ViewPixxTracker:
     """pypixxlib-backed EyeTracker for a VPixx TRACKPixx3.
 
-    Like EyeLinkTracker, the device-touching methods are not exercised by the
-    default test suite — they need pypixxlib and a DATAPixx3. Everything that
-    is a *decision* rather than a device call (which eye, what counts as a
-    blink, where the targets go, what lands in the run directory) is a free
-    function above or a plain path computation below, and those are tested.
+    Like EyeLinkTracker, the device-touching methods need pypixxlib and a
+    DATAPixx3 to be exercised for real; the suite runs them against a
+    stand-in pypixxlib (tests/fake_sdk.py). Everything that is a *decision*
+    rather than a device call (which eye, what counts as a blink, where the
+    targets go, what lands in the run directory, when a recording counts as
+    dropped out) is a free function above or plain bookkeeping below, and
+    those are tested.
     """
 
     def __init__(
@@ -712,6 +830,19 @@ class ViewPixxTracker:
         # The "no calibration" warning is said once per uncalibrated stretch,
         # not once per frame.
         self._warned_uncalibrated = False
+        # Dropout detection (recording_fault). How long the gaze reader may
+        # go without a new report mid-trial (eyetracker.max_sample_gap_ms);
+        # the age at which get_gaze() stops calling a report a position, which
+        # never undercuts that limit (GAZE_STALE_S explains why); and when
+        # this trial's segment opened.
+        self._max_gap_s = cfg.sample_gap_limit_s
+        self._gaze_stale_s = max(GAZE_STALE_S, self._max_gap_s + GAZE_STALE_MARGIN_S)
+        self._segment_t = 0.0
+        # What recording_fault() reported for the open segment, once it has:
+        # the dropout, kept until the next start_trial(). Also what lets
+        # stop_trial() and send_message() log, rather than raise, a device
+        # failure that the dropout already explains (see there).
+        self._dropout: str | None = None
 
     # ------------------------------------------------------------------
     # Setup
@@ -811,8 +942,16 @@ class ViewPixxTracker:
         # Gaze is read off the render thread from here on (GazeReader),
         # through libdpx directly so the raw eye vectors come back too.
         # Looked up per read, not bound once: a swapped-in library (the
-        # tests') must be honoured.
-        self._reader = GazeReader(lambda: read_device_gaze(self._libdpx), clock, self._device_lock)
+        # tests') must be honoured. The reader also asks the device whether
+        # it is still recording, every half dropout limit, so a stopped
+        # recording is reported within the limit (dropout detection).
+        self._reader = GazeReader(
+            lambda: read_device_gaze(self._libdpx),
+            clock,
+            self._device_lock,
+            check=self._check_recording,
+            check_every_s=self._max_gap_s / 2,
+        )
         if self._background_gaze:
             self._reader.start()
 
@@ -1217,7 +1356,7 @@ class ViewPixxTracker:
         if report is None:
             return "no gaze report yet"
         gaze, t = report
-        if self._clock.now() - t > GAZE_STALE_S:
+        if self._clock.now() - t > self._gaze_stale_s:
             return "gaze reader stalled: the newest report is too old to use"
         eye = self._cfg.eye
         raw_seen = eye_in_raw(gaze.raw, eye)
@@ -1333,28 +1472,272 @@ class ViewPixxTracker:
         free-running since configure(). What a trial opens is the span the
         analysis will cut out of the continuous sample file, which is exactly
         what the messages mark.
+
+        What there is to do is check the live path before a trial relies on
+        it (_reopen_live_path) — which is also where a device that dropped
+        out on an earlier trial is found to be back, or not. One that does
+        not answer refuses the trial with a TrackerError saying what to check.
         """
+        previous = self._dropout
+        self._reopen_live_path(trial_index)
         self._recording = True
-        # The only durable record, inside the run's own files, of which eye
-        # each trial's samples came from. Written per trial rather than once,
-        # so a trial's segment is self-describing — the same reason the
-        # EyeLink backend re-sends EYE_USED every trial.
-        self.send_message(f"TRIAL {trial_index} {status}")
-        self.send_message(f"EYE_USED {self._cfg.eye}")
+        self._dropout = None
+        self._segment_t = self._clock.now()
+        try:
+            # The only durable record, inside the run's own files, of which
+            # eye each trial's samples came from. Written per trial rather
+            # than once, so a trial's segment is self-describing — the same
+            # reason the EyeLink backend re-sends EYE_USED every trial.
+            self.send_message(f"TRIAL {trial_index} {status}")
+            self.send_message(f"EYE_USED {self._cfg.eye}")
+        except Exception as e:  # pypixxlib's exception type cannot be named off the rig
+            # The device answered the check a moment ago and not these. The
+            # segment is open, and the runner's finally will drain it from
+            # the same device: kept as this segment's dropout, so that drain
+            # is logged rather than raised and never replaces this error.
+            message = self._not_answering(trial_index, f"{type(e).__name__}: {e}", previous)
+            self._dropout = message
+            raise TrackerError(message) from e
+
+    def _reopen_live_path(self, trial_index: int) -> None:
+        """Make sure the gaze reader is alive and the device is recording
+        into this session's ring before a trial starts — or refuse the trial.
+
+        Two things a dropout on an earlier trial can have left behind:
+
+        - a reader that died (its last device call raised). It is restarted
+          only after one read on this thread proves the device answers again
+          (GazeReader.restart); if it does not, the trial is refused, loudly.
+        - a device not recording into the ring (free-run off, the ring
+          moved). Re-armed here, with a warning, exactly as a drain would:
+          the samples since the last drain are lost either way, and a trial
+          started on a device that is not recording would be a dropout from
+          its first frame.
+
+        The answer is handed to the reader as its latest (note_check), so a
+        verdict from before this check can never fault the new trial.
+        Nothing to do before configure() has started the reader and the
+        recording.
+        """
+        reader = self._reader
+        if reader is None or self._samples_path is None:
+            return
+        # What the previous segment died of, if it did: every refusal below
+        # says it, since a device that fails right after a dropout is almost
+        # always failing the same way.
+        previous = self._dropout
+        if reader.fault is not None:
+            log.warning(
+                "the TRACKPixx3 gaze reader stopped on %r; trying the device again before trial %d",
+                reader.fault,
+                trial_index,
+            )
+            try:
+                reader.restart(background=self._background_gaze)
+            except TrackerError as e:
+                raise TrackerError(self._not_answering(trial_index, str(e), previous)) from e
+            log.info(
+                "the TRACKPixx3 answers again: gaze reader restarted before trial %d", trial_index
+            )
+        try:
+            with self._locked(f"checking its recording before trial {trial_index}"):
+                problem = recording_problem(self._libdpx, self._tracker)
+                fault = dpx_fault(self._libdpx)
+                if fault is None and problem is not None:
+                    log.warning(
+                        "the TRACKPixx3 was not recording into the session's buffer before "
+                        "trial %d (%s); recording re-armed, samples since the last drain are lost",
+                        trial_index,
+                        problem,
+                    )
+                    arm_recording(self._libdpx, self._tracker)
+                    fault = dpx_fault(self._libdpx)
+                if fault is None:
+                    # Kept under the lock (GazeReader.check_now says why), so
+                    # an answer the reader got just before this one cannot
+                    # land after it and fault the new trial on its first frame.
+                    reader.note_check(None)
+        except TrackerError as e:  # the lock was never freed: a device call is stuck
+            raise TrackerError(self._not_answering(trial_index, str(e), previous)) from e
+        except Exception as e:  # pypixxlib's exception type cannot be named off the rig
+            raise TrackerError(
+                self._not_answering(trial_index, f"{type(e).__name__}: {e}", previous)
+            ) from e
+        if fault is not None:
+            raise TrackerError(self._not_answering(trial_index, fault, previous))
+
+    def _not_answering(self, trial_index: int, what: str, previous: str | None) -> str:
+        """The message a trial refused for a device that does not answer
+        raises with: what failed, what to check, and what the previous
+        trial's recording died of, if it did."""
+        before = (
+            f" The previous trial's recording had already been lost: {previous}."
+            if previous
+            else ""
+        )
+        return (
+            f"the TRACKPixx3 is not answering at trial {trial_index}: {what}. Check that the "
+            f"DATAPixx3 is powered and its USB cable connected, then start the session "
+            f"again.{before}"
+        )
 
     def stop_trial(self) -> None:
         """Close this trial's segment and drain the device's buffer.
 
         Idempotent: a trial can end before start_trial() ever set recording,
         and the runner calls this in a ``finally`` regardless.
+
+        After a dropout (recording_fault() reported one on this segment), a
+        drain that fails is logged at ERROR rather than raised. The device is
+        already known to be failing and the trial's fault is on its row;
+        raising in the runner's ``finally`` would throw that row away and end
+        the session. The samples are not written off: teardown drains once
+        more, and the next start_trial() refuses to go on with a device that
+        does not answer. Without a dropout, a failed drain propagates as ever.
         """
         if not self._recording:
             return
         self._recording = False
-        self._drain_buffer()
+        try:
+            self._drain_buffer()
+        except Exception as e:  # pypixxlib's exception type cannot be named off the rig
+            if self._dropout is None:
+                raise
+            log.error(
+                "the TRACKPixx3 samples buffered since the last drain could not be saved after "
+                "this trial's dropout (%s): %s. Teardown drains once more — if the device answers "
+                "by then they are saved, otherwise they are lost.",
+                self._dropout,
+                e,
+            )
 
     def is_recording(self) -> bool:
+        """True from start_trial() to stop_trial(): the segment flag, which
+        asks the device nothing. Whether the device is still delivering is
+        recording_fault()'s question."""
         return self._recording
+
+    def recording_fault(self) -> str | None:
+        """Optional capability (protocol.py): None while this trial's live
+        path delivers, otherwise what failed — the tracker health check's
+        detail.
+
+        The session calls this every frame, and on the healthy path it
+        touches no device: it reads what the gaze reader thread keeps current
+        off the render thread. Three signals, each a different way to stop:
+
+        - **the reader died** — its last device call raised: the device said
+          no (GazeReader.fault);
+        - **the reader stalled** — no new report for ``max_sample_gap_ms``:
+          a device call that has not returned, a USB transfer to a device
+          that went away mid-call;
+        - **the device stopped recording** — the reader asks it, every half
+          limit, whether it still samples into this session's ring and
+          whether it answered at all (_check_recording). The gaze report
+          alone cannot tell: the live position and the recorded samples are
+          separate paths through the device, and the first carries on when
+          the second stops.
+
+        A blink is none of these: the device keeps reporting, with its
+        tracking-lost sentinel in place of a position, and the reader keeps
+        reading it.
+        """
+        if not self._recording:
+            return None
+        if self._dropout is not None:
+            return self._dropout  # judged already: say it again, ask nothing again
+        detail = self._live_path_fault()
+        if detail is not None:
+            self._dropout = detail
+        return detail
+
+    def _live_path_fault(self) -> str | None:
+        """recording_fault()'s three questions, in order: dead, stalled,
+        stopped recording."""
+        reader = self._reader
+        if reader is None:
+            return "the gaze reader never started (configure() has not run)"
+        if reader.fault is not None:
+            return (
+                f"the TRACKPixx3 stopped answering: the gaze reader's last device call "
+                f"failed ({reader.fault})"
+            )
+        if not reader.running:
+            # No reader thread (the tests, a synchronous caller): read here,
+            # as get_gaze() does, so the age below is this frame's.
+            try:
+                reader.read_now()
+            except TrackerError as e:
+                return str(e)
+        age = self.newest_sample_age_s()
+        assert age is not None  # a segment is open
+        if age > self._max_gap_s:
+            return (
+                f"no gaze report from the TRACKPixx3 for {age * 1000:.0f} ms (limit "
+                f"{self._max_gap_s * 1000:g} ms): the gaze reader is stuck in a device call — "
+                f"the USB link or the DATAPixx3 stopped responding"
+            )
+        checked = reader.device_check
+        if checked is not None and checked[0] is not None:
+            return f"the TRACKPixx3 {checked[0]}"
+        return None
+
+    def newest_sample_age_s(self) -> float | None:
+        """Optional capability (protocol.py): seconds since the gaze reader's
+        newest report was read — or since this segment opened, before any
+        report. None with no segment open."""
+        if not self._recording or self._reader is None:
+            return None
+        read_t = self._reader.newest_read_t
+        return self._clock.now() - (read_t if read_t is not None else self._segment_t)
+
+    def _check_recording(self) -> str | None:
+        """The gaze reader's periodic question to the device: is it still
+        recording samples into the ring this backend drains? None when it is,
+        otherwise what is wrong, in words (recording_fault() says it).
+
+        One register round trip, made on the reader thread with the device
+        lock already held by the reader — so this must not take it again.
+        libdpx's free functions do not raise (dpx_fault): a register read the
+        USB link could not make shows only in the sticky error flag, which is
+        how a device that went away is caught when the gaze read itself
+        carries on without raising.
+        """
+        if self._calibrating:
+            # The device's own calibration call un-arms the ring for the whole
+            # walk, and calibrate() re-arms it when the walk is over. No trial
+            # runs meanwhile (the reader is paused, too).
+            return None
+        problem = recording_problem(self._libdpx, self._tracker)
+        fault = dpx_fault(self._libdpx)
+        if fault is not None:
+            return (
+                f"did not answer a register read ({fault}): the USB link or the DATAPixx3 "
+                f"stopped responding"
+            )
+        if problem is not None:
+            return f"stopped recording samples into the session's buffer: {problem}"
+        return None
+
+    @contextlib.contextmanager
+    def _locked(self, doing: str) -> Iterator[None]:
+        """Hold the device lock on the session's thread, or fail loudly.
+
+        Every device call runs under the lock (GazeReader). A call that never
+        returns holds it forever — and a plain ``with lock`` behind it hangs
+        the session. Here the wait is LOCK_TIMEOUT_S, far past any normal
+        hold, and then a TrackerError says what was waiting.
+        """
+        if not self._device_lock.acquire(timeout=LOCK_TIMEOUT_S):
+            raise TrackerError(
+                f"the TRACKPixx3 did not answer within {LOCK_TIMEOUT_S:g} s while {doing}: a "
+                f"device call is stuck (the gaze reader's, most likely) — the USB link or the "
+                f"DATAPixx3 stopped responding"
+            )
+        try:
+            yield
+        finally:
+            self._device_lock.release()
 
     def get_gaze(self) -> GazeSample | None:
         """Newest sample for the configured eye, or None.
@@ -1378,8 +1761,11 @@ class ViewPixxTracker:
         if report is None:
             return None  # nothing has been read yet
         gaze, t = report
-        if self._clock.now() - t > GAZE_STALE_S:
-            return None  # the reader is behind: a stalled USB call, no position for now
+        if self._clock.now() - t > self._gaze_stale_s:
+            # The reader is behind: a stalled USB call, no position for now.
+            # During a trial the dropout check has already ended it by this
+            # age (GAZE_STALE_S); this is for the calls outside one.
+            return None
         if self._calibrated is False:
             # Whatever the array holds, it is not a gaze position. Said once
             # per uncalibrated stretch — loud, but not once per frame.
@@ -1420,10 +1806,33 @@ class ViewPixxTracker:
         Errors are not caught (invariant 6): if the device stops answering,
         the samples being written are losing their alignment marks, which
         must abort loudly rather than produce a session that only looks
-        recorded.
+        recorded. A device call stuck on the lock raises too, after
+        LOCK_TIMEOUT_S, instead of hanging the session.
+
+        One exception: right after a dropout on this trial, when the engine's
+        own TRIAL_END is on its way here from a device the dropout already
+        explains. Raising then would end the session inside the trial's own
+        bookkeeping and lose its row. The message is logged instead, and left
+        out of the record: a mark with no device time cannot align anything,
+        and one written with a guess would pull the analysis's clock fit off
+        (analysis/io/viewpixx.py fit_clock). The next start_trial() refuses
+        to go on if the device still does not answer.
         """
-        with self._device_lock:
-            device_time = float(self._tracker.getTime())
+        try:
+            with self._locked(f"stamping message {text!r}"):
+                device_time = float(self._tracker.getTime())
+        except Exception as e:  # pypixxlib's exception type cannot be named off the rig
+            if self._dropout is None:
+                raise
+            log.warning(
+                "TRACKPixx3 message %r at session time %.6f is left out of the message record: "
+                "the device did not answer (%s) after this trial's dropout (%s)",
+                text,
+                self._clock.now(),
+                e,
+                self._dropout,
+            )
+            return
         self._messages.append((device_time, self._clock.now(), text))
 
     def draw_host_overlay(self, shapes: list[HostShape]) -> None:
@@ -1447,7 +1856,7 @@ class ViewPixxTracker:
         """
         if self._samples_path is None:
             return  # configure() never started a recording
-        with self._device_lock:
+        with self._locked("draining its sample buffer"):
             if not recording_armed(self._libdpx, self._tracker):
                 # Draining now would hand the library a read pointer into a
                 # ring that is gone, and that call never returns. Re-arm and

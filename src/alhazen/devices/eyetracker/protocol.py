@@ -37,6 +37,27 @@ today, and must go on doing so without growing methods it has no use for.
   calls from inside its blocking ``calibrate()`` with ``(stage, detail)`` —
   ``("calibrating", "target 3 of 9 · eyes: both tracked")`` — so the
   dashboard can follow a procedure the render thread is busy running.
+
+Two more serve dropout detection (docs/eye-tracker.md, "When the tracker
+drops out"), offered by the backends that stream real samples — the EyeLink
+and the TRACKPixx3:
+
+- ``recording_fault() -> str | None``: None while the recording segment
+  ``start_trial`` opened is still delivering (and when none is open — that
+  is ``is_recording()``'s to say), otherwise what failed, in words: which
+  signal fired and what the device answered. The session's tracker health
+  check calls it every frame (session/builder.py), so it must be cheap: a
+  backend watches its newest sample's age and asks the device anything only
+  once that has gone stale. Once it has reported a fault it repeats the
+  same words until the next ``start_trial``, and asks nothing more.
+- ``newest_sample_age_s() -> float | None``: how long, on the session clock,
+  since the newest sample arrived — what ``recording_fault`` compares with
+  the limit.
+
+``is_recording()`` itself is a flag the backend keeps — True from
+``start_trial`` to ``stop_trial`` — and asks no device anything. That is
+what procedures.py relies on to tell whether a segment is already open, and
+it is why it cannot see a recording that died mid-trial on its own.
 """
 
 from __future__ import annotations

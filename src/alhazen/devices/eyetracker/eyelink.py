@@ -46,6 +46,20 @@ OK_RESULT = 0
 ABORT_RESULT = 27
 NO_REPLY = 1000
 
+# What pylink's isRecording() answers (the C API's check_recording(), which
+# SR Research's own examples call to notice a tracker that stopped): TRIAL_OK
+# while the Host PC records, otherwise the code its recording ended with.
+# Read from pylink at runtime; the numbers here are the fallbacks for SDK
+# builds that do not expose the names (the values in SR Research's eyelink.h),
+# each with what it means in a fault's detail.
+TRIAL_OK = 0
+RECORDING_ENDED: dict[str, tuple[int, str]] = {
+    "TRIAL_ERROR": (-1, "the Host PC is no longer recording"),
+    "REPEAT_TRIAL": (1, "its operator ended the recording (repeat trial)"),
+    "SKIP_TRIAL": (2, "its operator ended the recording (skip trial)"),
+    "ABORT_EXPT": (3, "its operator aborted the experiment"),
+}
+
 # The keys the guide lists for the EyeLink. The procedure itself runs on the
 # Host PC's setup screen, which alhazen mirrors into the subject window
 # through calibration.py; these are the Host PC's own keys.
@@ -77,10 +91,13 @@ def is_missing_gaze(gx: float, gy: float, missing_sentinel: float) -> bool:
 class EyeLinkTracker:
     """pylink-backed EyeTracker for a real EyeLink rig.
 
-    Not exercised by the default test suite (it needs pylink and a tracker);
-    it is exercised by ``alhazen check-rig`` and by real sessions. Kept thin
-    on purpose: each method is one piece of the documented EyeLink startup /
-    per-trial / shutdown sequence and nothing more.
+    The default test suite runs it against a stand-in pylink (the calibration
+    around ``doTrackerSetup()``, and the recording and dropout detection
+    against a simulated Host PC in tests/fake_sdk.py); only a real tracker
+    proves the SDK behaves as the stand-in does, which is what ``alhazen
+    check-rig`` and real sessions are for. Kept thin on purpose: each method
+    is one piece of the documented EyeLink startup / per-trial / shutdown
+    sequence and nothing more.
     """
 
     def __init__(
@@ -110,6 +127,19 @@ class EyeLinkTracker:
         # a repeat recognisable as a repeat (protocol.py, GazeSample.t).
         self._sample_tracker_time: float | None = None
         self._sample_session_t = 0.0
+        # Dropout detection (recording_fault). How long the newest sample may
+        # go unreplaced mid-trial (eyetracker.max_sample_gap_ms), and the
+        # session time this trial's recording began delivering: a gap is
+        # counted from the later of that and the newest sample, so the
+        # inter-trial interval — no recording, so no samples — is never
+        # mistaken for a gap inside the trial.
+        self._max_gap_s = cfg.sample_gap_limit_s
+        self._segment_t = 0.0
+        # What recording_fault() reported for the open segment, once it has:
+        # the dropout, kept until the next start_trial(). Also what lets
+        # stop_trial() and send_message() log, rather than raise, a link
+        # failure that the dropout already explains (see there).
+        self._dropout: str | None = None
         # Where calibrate() reports its stages (the dashboard, via the
         # session's monitor); None until someone asks to be told.
         self._progress: ProgressHook | None = None
@@ -339,55 +369,229 @@ class EyeLinkTracker:
     # ------------------------------------------------------------------
 
     def start_trial(self, trial_index: int, status: str) -> None:
-        """Open this trial's recording segment and resolve which eye to read."""
-        tracker = self._tracker
-        tracker.setOfflineMode()
-        tracker.sendCommand("clear_screen 0")
-        # Operator-facing line on the Host PC's own screen. Distinct from
-        # send_message(), which writes into the EDF that analysis reads.
-        tracker.sendCommand(f"record_status_message 'Trial {trial_index}: {status}'")
+        """Open this trial's recording segment and resolve which eye to read.
 
-        error = tracker.startRecording(1, 1, 1, 1)
+        This is also where a tracker that dropped out on an earlier trial is
+        found to be back, or not. Every failure here is a TrackerError that
+        names the Host PC and what to check — never pylink's bare
+        RuntimeError — and, when the previous trial's recording had died,
+        says what it died of: a start that fails right after a dropout is
+        almost always the same fault.
+        """
+        tracker = self._tracker
+        # What the previous segment died of, if it did: kept for the error
+        # message below, since a successful start clears it.
+        previous = self._dropout
+        try:
+            tracker.setOfflineMode()
+            tracker.sendCommand("clear_screen 0")
+            # Operator-facing line on the Host PC's own screen. Distinct from
+            # send_message(), which writes into the EDF that analysis reads.
+            tracker.sendCommand(f"record_status_message 'Trial {trial_index}: {status}'")
+            error = tracker.startRecording(1, 1, 1, 1)
+        except RuntimeError as e:
+            # pylink raises RuntimeError when the link itself fails (a pulled
+            # cable, a Host PC that is off). Said as a rig fault with the
+            # address to check, not as the SDK's own words alone.
+            raise TrackerError(
+                self._start_failed(trial_index, f"the link failed ({e})", previous)
+            ) from e
         if error:
             raise TrackerError(
-                f"EyeLink startRecording failed (code {error}) at trial {trial_index}. "
-                f"Check the tracker link and the Host PC's recording status."
+                self._start_failed(trial_index, f"startRecording failed (code {error})", previous)
             )
         self._recording = True
-        # Let samples start flowing before the first get_gaze() of the trial.
-        self._pylink.pumpDelay(100)
+        self._dropout = None
+        try:
+            # Let samples start flowing before the first get_gaze() of the trial.
+            self._pylink.pumpDelay(100)
+            # The dropout check's clock starts here, once samples have had
+            # the same 100 ms to arrive that get_gaze() gets: a recording that
+            # delivers nothing from here on is dead from its first frame.
+            self._segment_t = self._clock.now()
 
-        # Which eye is tracked can change mid-session (a recalibration, a
-        # switch to the subject's better eye), so it is resolved per trial
-        # rather than assumed — reading a stale eye returns no data at all,
-        # which looks exactly like a subject who never fixates.
-        eye_used = tracker.eyeAvailable()
-        if eye_used == self._pylink.RIGHT_EYE:
-            self._eye_index = 1
-        elif eye_used in (self._pylink.LEFT_EYE, self._pylink.BINOCULAR):
-            # GazeSample carries one (gx, gy), so binocular has to pick one
-            # eye; left is the arbitrary-but-fixed choice.
-            self._eye_index = 0
-        else:
-            raise TrackerError(
-                f"EyeLink eyeAvailable() reported no usable eye ({eye_used}) at trial "
-                f"{trial_index}. Check camera setup and calibration on the Host PC."
+            # Which eye is tracked can change mid-session (a recalibration, a
+            # switch to the subject's better eye), so it is resolved per trial
+            # rather than assumed — reading a stale eye returns no data at
+            # all, which looks exactly like a subject who never fixates.
+            eye_used = tracker.eyeAvailable()
+            if eye_used == self._pylink.RIGHT_EYE:
+                self._eye_index = 1
+            elif eye_used in (self._pylink.LEFT_EYE, self._pylink.BINOCULAR):
+                # GazeSample carries one (gx, gy), so binocular has to pick
+                # one eye; left is the arbitrary-but-fixed choice.
+                self._eye_index = 0
+            else:
+                raise TrackerError(
+                    f"EyeLink eyeAvailable() reported no usable eye ({eye_used}) at trial "
+                    f"{trial_index}. Check camera setup and calibration on the Host PC."
+                )
+            # The only durable record of which eye this trial's samples came from.
+            eye_name = "RIGHT" if self._eye_index == 1 else "LEFT"
+            tracker.sendMessage(f"EYE_USED {self._eye_index} {eye_name}")
+        except RuntimeError as e:
+            # Recording started, then the link failed. The segment is open,
+            # and the runner's finally will stop it over the same dead link:
+            # kept as this segment's dropout, so that stop is logged rather
+            # than raised — and never replaces this error with pylink's own.
+            message = self._start_failed(
+                trial_index, f"the link failed as recording started ({e})", previous
             )
-        # The only durable record of which eye this trial's samples came from.
-        eye_name = "RIGHT" if self._eye_index == 1 else "LEFT"
-        tracker.sendMessage(f"EYE_USED {self._eye_index} {eye_name}")
+            self._dropout = message
+            raise TrackerError(message) from e
+
+    def _start_failed(self, trial_index: int, what: str, previous: str | None) -> str:
+        """The message a failed start raises with: what failed, what to check,
+        and what the previous trial's recording died of, if it did."""
+        before = (
+            f" The previous trial's recording had already been lost: {previous}."
+            if previous
+            else ""
+        )
+        return (
+            f"EyeLink could not start recording at trial {trial_index}: {what}. Check the "
+            f"tracker link (the cable between this machine and the Host PC at "
+            f"{self._cfg.host_ip}) and the Host PC's recording status, then start the "
+            f"session again.{before}"
+        )
 
     def stop_trial(self) -> None:
         """Close this trial's recording segment. Idempotent: a trial can end
         before start_trial() ever set recording, and the runner calls this in
-        a ``finally`` regardless."""
-        if self._recording:
+        a ``finally`` regardless.
+
+        After a dropout (recording_fault() reported one on this segment), a
+        link failure here is logged rather than raised. The recording is
+        already gone and the trial's fault is on its row; raising in the
+        runner's ``finally`` would throw that row away and end the session
+        over a stop with nothing left to stop. Whether the tracker is really
+        gone is the next start_trial()'s to find out, and it says so loudly.
+        Without a dropout, a failure here is as unexpected as it ever was and
+        propagates.
+        """
+        if not self._recording:
+            return
+        try:
             self._pylink.pumpDelay(100)  # let buffered samples flush first
             self._tracker.stopRecording()
-            self._recording = False
+        except RuntimeError as e:
+            if self._dropout is None:
+                raise
+            log.warning(
+                "EyeLink stopRecording() failed after this trial's dropout (%s): %s. The "
+                "recording was already lost; the next trial's start says whether the tracker "
+                "is back.",
+                self._dropout,
+                e,
+            )
+        self._recording = False
 
     def is_recording(self) -> bool:
+        """True from start_trial() to stop_trial(): the segment flag, which
+        asks the tracker nothing. Whether that recording is still delivering
+        is recording_fault()'s question."""
         return self._recording
+
+    def recording_fault(self) -> str | None:
+        """Optional capability (protocol.py): None while this trial's
+        recording delivers, otherwise what failed — the tracker health
+        check's detail.
+
+        The session calls this every frame, so the healthy path asks the
+        Host PC nothing. It reads pylink's newest link sample
+        (``getNewestSample()``: a copy out of the buffer pylink's own link
+        thread fills — no round trip to the Host PC) and compares its
+        timestamp with the one seen before. While the Host PC records,
+        samples arrive at its rate — 250 to 2000 per second, several per
+        frame — and a blink is one of them, carrying the MISSING_DATA
+        sentinel with a timestamp that still advances. So a newest sample
+        that has not been replaced for ``max_sample_gap_ms`` is a recording
+        that stopped, whatever the eye did.
+
+        Only then is the Host PC asked why (``isRecording()``, _ask_host_why):
+        the answer is what tells a pulled cable — the Host PC still recording,
+        or not answering at all — from a Host PC that stopped recording, and
+        which of its codes it stopped with. Asking it once, at the dropout,
+        rather than every frame keeps a call whose cost on the rig is not yet
+        measured out of the frame loop.
+        """
+        if not self._recording:
+            return None
+        if self._dropout is not None:
+            return self._dropout  # judged already: say it again, ask nothing again
+        try:
+            age = self.newest_sample_age_s()
+        except RuntimeError as e:
+            self._dropout = f"the EyeLink link failed while its newest sample was read ({e})"
+            return self._dropout
+        assert age is not None  # a segment is open
+        if age <= self._max_gap_s:
+            return None
+        self._dropout = (
+            f"no new sample from the EyeLink for {age * 1000:.0f} ms (limit "
+            f"{self._max_gap_s * 1000:g} ms); {self._ask_host_why()}"
+        )
+        return self._dropout
+
+    def newest_sample_age_s(self) -> float | None:
+        """Optional capability (protocol.py): seconds since the newest link
+        sample was first seen — or since this segment began delivering, when
+        none has arrived in it. None with no segment open."""
+        if not self._recording:
+            return None
+        now = self._clock.now()
+        self._note_newest_sample(now)
+        return now - max(self._sample_session_t, self._segment_t)
+
+    def _ask_host_why(self) -> str:
+        """What the Host PC says about the recording, asked once the samples
+        have gone stale; in words, for the fault's detail.
+
+        ``isRecording()`` is 0 (TRIAL_OK) while the Host PC records, and
+        otherwise the code recording ended with. Three answers, three places
+        to look: 0 means the Host PC still believes it is recording, so the
+        samples stopped on their way here (the cable, the network); a code
+        means it stopped, and which one says whether its operator did it; no
+        answer at all is a link that is down.
+        """
+        pylink = self._pylink
+        where = f"the Host PC at {self._cfg.host_ip}"
+        try:
+            code = int(self._tracker.isRecording())
+        except RuntimeError as e:
+            return (
+                f"{where} did not answer isRecording() ({e}): the link to it is down — check "
+                f"the cable between this machine and the Host PC"
+            )
+        if code == getattr(pylink, "TRIAL_OK", TRIAL_OK):
+            return (
+                f"{where} still reports recording (isRecording 0), so the samples stopped on "
+                f"their way here — check the link cable and the network between this machine "
+                f"and the Host PC"
+            )
+        for name, (fallback, meaning) in RECORDING_ENDED.items():
+            if code == getattr(pylink, name, fallback):
+                return f"{where} reports recording ended (isRecording {code}, {name}): {meaning}"
+        return f"{where} reports recording ended (isRecording {code}, a code alhazen does not name)"
+
+    def _note_newest_sample(self, now: float) -> Any:
+        """Read pylink's newest link sample and note when it was first seen;
+        return it (None before any sample has arrived).
+
+        Stamped the first time a sample is seen, and never restamped: the
+        tracker's clock says whether it is new, the session clock says when.
+        Mixing the two online would break invariant 2, so the tracker's time
+        is only compared, never reported. Shared by get_gaze() and the
+        dropout check, so the two can never disagree about which sample is
+        new.
+        """
+        sample = self._tracker.getNewestSample()
+        if sample is not None:
+            tracker_time = sample.getTime()
+            if tracker_time != self._sample_tracker_time:
+                self._sample_tracker_time = tracker_time
+                self._sample_session_t = now
+        return sample
 
     def get_gaze(self) -> GazeSample | None:
         """Newest sample for this trial's resolved eye, or None.
@@ -397,17 +601,9 @@ class EyeLinkTracker:
         the MISSING_DATA sentinel (a blink). All three are routine; the
         phases decide what a gap means, this method never guesses.
         """
-        sample = self._tracker.getNewestSample()
+        sample = self._note_newest_sample(self._clock.now())
         if sample is None:
             return None
-        # Stamped the first time this sample is seen, and never restamped:
-        # the tracker's clock says whether it is new, the session clock says
-        # when. Mixing the two online would break invariant 2, so the
-        # tracker's time is only compared, never reported.
-        tracker_time = sample.getTime()
-        if tracker_time != self._sample_tracker_time:
-            self._sample_tracker_time = tracker_time
-            self._sample_session_t = self._clock.now()
 
         # isLeftSample()/isRightSample() can be False even when the getter
         # still hands back a non-None (stale) struct, so this is a different
@@ -428,9 +624,29 @@ class EyeLinkTracker:
         return GazeSample(gx=gx, gy=gy, t=self._sample_session_t)
 
     def send_message(self, text: str) -> None:
-        # Forwarded verbatim: what the text says is the message subscriber's
-        # business (devices/eyetracker/messages.py), not this method's.
-        self._tracker.sendMessage(text)
+        """Write one message into the EDF.
+
+        Forwarded verbatim: what the text says is the message subscriber's
+        business (devices/eyetracker/messages.py), not this method's. A link
+        failure raises (invariant 6) — except right after a dropout on this
+        trial, when the engine's own TRIAL_END is on its way here over a link
+        the dropout already explains. Raising then would end the session
+        inside the trial's own bookkeeping and lose its row, so the message
+        is logged as unwritten instead, and the next start_trial() finds out
+        loudly whether the tracker is back.
+        """
+        try:
+            self._tracker.sendMessage(text)
+        except RuntimeError as e:
+            if self._dropout is None:
+                raise
+            log.warning(
+                "EyeLink message %r was not written into the EDF: the link failed (%s) after "
+                "this trial's dropout (%s)",
+                text,
+                e,
+                self._dropout,
+            )
 
     def draw_host_overlay(self, shapes: list[HostShape]) -> None:
         for shape in shapes:

@@ -246,6 +246,148 @@ whether it holds one from before the session — whose, it cannot say — so a
 session that ran on a previous subject's calibration is at least a session
 whose log says so. Validate it, or calibrate again, before trusting it.
 
+## When the tracker drops out mid-trial
+
+A recording can die in the middle of a trial: the link cable is pulled, the
+EyeLink Host PC's operator stops recording, the DATAPixx3 loses power or
+another program takes it over. A trial that runs on after that has no eye
+data behind it and looks like any other trial. So the session asks, on every
+frame, whether the tracker is still delivering, and a trial whose tracker
+stops is a **system fault** ([architecture.md](architecture.md) §2.2, and
+§5.3 "System faults"): `ABORTED`, `fault: tracker_stopped`, paid the task's
+`RewardPolicy.on_fault`, served again, held against nobody. A stop during the
+trial's closing phase (its feedback, after the measurement) only flags the
+row.
+
+`is_recording()` alone could never see this. It is a flag each backend sets
+at `start_trial()` and clears at `stop_trial()` — it asks the device nothing
+— so a recording that died in between went unnoticed. The check the session
+runs now asks a second question, `recording_fault()`, which the EyeLink and
+TRACKPixx3 backends answer from their device.
+
+### How a dropout is detected
+
+Two signals:
+
+1. **Stale samples.** While a tracker records, samples keep arriving. A blink
+   is a sample that says "no eye" (the EyeLink's `-32768`, the TRACKPixx3's
+   `±9000`), not a missing sample, so its timestamp still advances. When the
+   newest sample has not been replaced for `eyetracker.max_sample_gap_ms`,
+   the recording is called dead. The gap is measured on the session clock
+   from when the newest sample was first seen, or from the start of the
+   trial's recording if none has arrived since. So the time between trials,
+   when nothing is recording, is never counted.
+2. **Ask the device.** Its answer says *why*, and for the TRACKPixx3 it is
+   the only way to see the recording stop at all.
+
+| | EyeLink | TRACKPixx3 |
+|---|---|---|
+| the newest sample | pylink's `getNewestSample()`, new when its tracker timestamp changes | the gaze reader thread's newest report (a USB read every 4 ms) |
+| stale after (default) | 50 ms | 100 ms |
+| the device is asked | `isRecording()`, once the samples are stale, to say why: 0 is "still recording" (so the samples stopped on the way: the cable, the network), a code is how the Host PC's recording ended, no answer is a dead link | by the reader thread, every half limit: is free-run sampling on, is the sample buffer where the session put it (`TPxIsFreeRun`, `TPxGetBuffBaseAddr` after `DPxUpdateRegCache`), and did that register read fail (libdpx's sticky error) |
+| also a dropout | — | the reader's last device call raised (the reader has stopped) |
+
+The TRACKPixx3 needs the device asked because its live gaze report and its
+recorded samples are separate paths: switch free-run sampling off and the
+gaze report carries on while nothing is recorded. The reader also polls the
+device's sticky error flag, because libdpx's free functions do not raise. A
+USB transfer to a device that went away leaves the gaze read writing nothing,
+without raising, and shows up only in that flag.
+
+```mermaid
+flowchart TB
+  F["every frame, before the phase runs:<br/>the session's tracker health check"] --> O{"is_recording()<br/>segment open?"}
+  O -->|"no"| X["fault: tracker_stopped<br/>detail: no recording open"]
+  O -->|"yes"| R["recording_fault()"]
+  R --> EL{"EyeLink: newest link sample<br/>older than max_sample_gap_ms?"}
+  EL -->|"no"| OK["healthy: no device call"]
+  EL -->|"yes"| Q["ask isRecording() once:<br/>0, a code, or no answer"]
+  Q --> X2["fault: tracker_stopped<br/>detail: the gap, and what the Host PC said"]
+  R --> VP{"TRACKPixx3: reader died, reader stalled<br/>past the limit, or the device's last<br/>answer says it stopped recording?"}
+  VP -->|"no"| OK
+  VP -->|"yes"| X3["fault: tracker_stopped<br/>detail: which, in the device's words"]
+  X --> E["engine: ABORTED (or, in the closing phase, flagged);<br/>runner: on_fault paid, served again, WARNING logged"]
+  X2 --> E
+  X3 --> E
+```
+
+**What the check costs.** It runs every frame, 120 times a second on a
+120 Hz rig, so the healthy path makes no round trip to a device:
+
+- **EyeLink:** `getNewestSample()`, which copies the newest sample out of
+  pylink's own link buffer (pylink's link thread fills it; the Host PC is
+  not asked). `get_gaze()` makes the same call in the same frame.
+  `isRecording()` is called only once the samples have been stale for the
+  limit, once per dropout. How long it takes on the rig is not known yet. It
+  may be a round trip to the Host PC, which is why it is kept out of the
+  healthy frames.
+- **TRACKPixx3:** no device call on the render thread. The check reads what
+  the reader thread keeps current: its newest report's time and the device's
+  latest answer. The reader makes one extra register round trip every half
+  limit (every 50 ms at the default). That is 2 ms as a rule and 20-40 ms at
+  worst, the costs measured on the rig for its gaze read.
+
+`get_gaze()` on the TRACKPixx3 stops treating a report as a position when it
+is 100 ms old, or `max_sample_gap_ms` plus 5 ms if that is later. Because the
+check runs before `get_gaze()` in every frame, a stalled reader is always
+called a dropout first. That way it can never show up as a missing position
+that a fixation phase would count as the subject breaking fixation.
+
+### What is recorded
+
+The row's `fault` says `tracker_stopped`. The new **`fault_detail`** column
+beside it says what the tracker said. So does the fault's WARNING line in `session.log`. The column is there
+only on a row whose fault a health check reported. The wording is the
+backend's, for a person to read; select on `fault`, never on this.
+
+| What happened | `fault_detail` (abridged) |
+|---|---|
+| EyeLink: the Host PC's operator stopped recording | `no new sample from the EyeLink for 58 ms (limit 50 ms); the Host PC at 100.1.1.1 reports recording ended (isRecording 3, ABORT_EXPT): its operator aborted the experiment` |
+| EyeLink: the cable pulled, the Host PC unaware | `…; the Host PC at 100.1.1.1 still reports recording (isRecording 0), so the samples stopped on their way here — check the link cable and the network …` |
+| EyeLink: the link down | `…; the Host PC at 100.1.1.1 did not answer isRecording() (…): the link to it is down — …` |
+| TRACKPixx3: its recording switched off | `the TRACKPixx3 stopped recording samples into the session's buffer: free-run sampling is off` |
+| TRACKPixx3: the device gone | `the TRACKPixx3 did not answer a register read (DPX_ERR_…): the USB link or the DATAPixx3 stopped responding` |
+| TRACKPixx3: a USB call that never returned | `no gaze report from the TRACKPixx3 for 112 ms (limit 100 ms): the gaze reader is stuck in a device call — …` |
+| TRACKPixx3: a device call raised | `the TRACKPixx3 stopped answering: …` |
+
+### After a dropout
+
+- **The rest of the trial.** The recording is gone, so a device that refuses
+  what comes next is expected: the stop at the trial's end, and the messages
+  after the dropout (the trial's `TRIAL_END`, the fault reward's `REWARD`).
+  Such a failure is logged, as a WARNING, or as an ERROR for TRACKPixx3
+  samples that could not be drained, rather than raised. Raising there would
+  end the session inside the trial's own bookkeeping and lose its row.
+  Without a dropout, the same failures raise as they always have. A
+  TRACKPixx3 message the device could not stamp is left out of
+  `<base>_gaze-messages.csv` rather than written with no device time, which
+  would pull the analysis's clock fit off.
+- **The next trial's start.** This is where a tracker is found to be back,
+  or not. The EyeLink starts recording again. The TRACKPixx3 restarts a gaze
+  reader that died, once one read proves the device answers, and checks that
+  the device is recording into the session's buffer, re-arming it with a
+  warning if not. If the device is gone, the start raises a `TrackerError`
+  that says what to check (the Host PC's address; the DATAPixx3's power and
+  USB cable) and what the previous trial's recording died of. The session
+  ends there, and its teardown saves everything, as after any failure.
+- **A tracker that keeps dropping out.** If the device answers but drops
+  out again, trial after trial, each trial is served again. Left alone, that
+  would be a loop that pays the fault reward every time. So after
+  `max_consecutive_dropouts` trials in a row (3 by default) the session stops
+  at the pause screen, in red, headed:
+
+  ```
+  THE EYE TRACKER DROPPED OUT ON 3 TRIALS IN A ROW — last: <what the tracker
+  said>. Check the tracker and its connection to this machine before resuming;
+  those trials are served again
+  ```
+
+  The pause menu's C/V/D are there for after the fix. A trial the tracker
+  records through ends the run of dropouts. The count starts over after the
+  pause. An experimenter's own pause neither counts nor ends it. This is
+  separate from the subject's failure streak (`max_consecutive_failures`),
+  which leaves tracker-stopped trials out altogether.
+
 ## Configuration
 
 ```yaml
@@ -261,12 +403,27 @@ devices:
     drift_max_deg: 3.0             # largest offset a drift correction will apply
     camera_image: true             # TRACKPixx3 only: the dashboard's camera panel
     iris_size_px: 120              # TRACKPixx3 only: expected iris size, camera px
+    max_sample_gap_ms: 100         # no new sample for this long mid-trial = a dropout
+                                   #   (default: 50 on an EyeLink, 100 on a TRACKPixx3)
+    max_consecutive_dropouts: 3    # dropouts in a row before the session pauses
 ```
 
 Every field is checked when the rig loads: a layout the EyeLink does not
 accept, a limit of zero, or a TRACKPixx3-only field on an EyeLink rig fails
 there — not on the Host PC's screen in another room with the subject already
 seated.
+
+`max_sample_gap_ms` has bounds. It must be at least 20 ms on an EyeLink:
+five samples at the slowest rate an EyeLink records at, 250 Hz. On a
+TRACKPixx3 it must be at least 50 ms, past one slow USB read (20-40 ms,
+measured on the rig). It can be at most 1000 ms on either: past a second, a
+fixation phase has usually ended the trial as the subject's failure before
+the dropout is called. There is no sample rate in the rig config to check it
+against. The EyeLink's rate is set on its Host PC and the TRACKPixx3's by
+VPixx's tools, so the floor is the slowest delivery each backend can have.
+Left out, the backend's default is written into the config as it loads, so the
+run's `config_snapshot.yaml` records the number the session ran with. Both
+fields are refused on `mouse_sim`, which streams nothing that could stop.
 
 ## Instruction screens
 

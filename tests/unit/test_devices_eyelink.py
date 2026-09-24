@@ -27,6 +27,7 @@ from alhazen.devices.eyetracker.guide import GUIDE_TITLE, TARGET_COUNTS, target_
 from alhazen.display.palette import TERMINAL_GREEN
 from alhazen.errors import TrackerError
 from alhazen.testing import FakeClock
+from fake_sdk import ABORT_EXPT, MISSING_DATA, FakeEyeLinkHost, install_fake_pylink
 from support import SCREEN
 
 
@@ -433,3 +434,260 @@ class TestGazeSampleTimes:
         tracker, connection = self.connected(fake_pylink, clock)
         connection.newest = FakeSample(-32768.0, -32768.0, tracker_ms=1.0)
         assert tracker.get_gaze() is None
+
+
+# ---------------------------------------------------------------------------
+# Dropout detection: a recording that dies mid-trial, against a simulated
+# Host PC (fake_sdk.FakeEyeLinkHost) on the session's fake clock
+# ---------------------------------------------------------------------------
+
+# One display frame at 120 Hz: how often a session asks.
+FRAME = 1 / 120
+
+
+@pytest.fixture
+def host_pylink(monkeypatch):
+    """A pylink whose EyeLink() is a simulated Host PC recording at 1000 Hz
+    on a fake clock that starts at 10 s."""
+    return install_fake_pylink(monkeypatch, FakeClock(start=10.0))
+
+
+def recording(host_pylink, **cfg_kwargs) -> tuple[EyeLinkTracker, FakeEyeLinkHost, FakeClock]:
+    """A connected tracker with trial 1's recording segment open, as the
+    runner opens it — and the Host PC behind it, and the clock."""
+    clock = host_pylink.clock
+    tracker = EyeLinkTracker(EyeTrackerConfig(backend="eyelink", **cfg_kwargs), None, SCREEN, clock)
+    tracker.connect()
+    (host,) = host_pylink.hosts
+    tracker.start_trial(1, "attempt 1")
+    return tracker, host, clock
+
+
+def frames(tracker: EyeLinkTracker, clock: FakeClock, seconds: float) -> list[str | None]:
+    """Ask the dropout check once a frame for ``seconds``, as the engine
+    does, and return every answer."""
+    answers = []
+    for _ in range(round(seconds / FRAME)):
+        clock.advance(FRAME)
+        answers.append(tracker.recording_fault())
+    return answers
+
+
+class TestDropoutDetection:
+    """recording_fault(): the stale-sample signal, and the Host PC asked why
+    only once the samples have stopped."""
+
+    def test_a_healthy_recording_reports_nothing_and_asks_the_host_nothing(self, host_pylink):
+        tracker, host, clock = recording(host_pylink)
+        assert frames(tracker, clock, 2.0) == [None] * 240
+        # The healthy path reads the newest link sample and nothing else: no
+        # isRecording() round trip in the frame loop.
+        assert host.isrecording_calls == 0
+
+    def test_a_host_pc_stop_is_reported_with_its_code(self, host_pylink):
+        tracker, host, clock = recording(host_pylink)
+        frames(tracker, clock, 0.1)
+        host.host_stop(ABORT_EXPT)  # the operator aborted on the Host PC
+        detail = tracker.recording_fault()
+        assert detail is None  # the samples have not been missing long yet
+        answers = frames(tracker, clock, 0.1)
+        detail = next(answer for answer in answers if answer is not None)
+        assert detail.startswith("no new sample from the EyeLink for ")
+        assert "(limit 50 ms)" in detail
+        assert "isRecording 3, ABORT_EXPT" in detail
+        assert "its operator aborted the experiment" in detail
+        # Asked once, at the dropout.
+        assert host.isrecording_calls == 1
+
+    def test_stale_samples_are_reported_after_the_limit_and_not_before(self, host_pylink):
+        tracker, host, clock = recording(host_pylink)
+        clock.advance(0.010)
+        assert tracker.recording_fault() is None  # the newest sample, first seen now
+        host.pull_cable()
+        clock.advance(0.049)
+        assert tracker.recording_fault() is None  # 49 ms: inside the 50 ms limit
+        clock.advance(0.002)
+        detail = tracker.recording_fault()
+        assert detail is not None
+        assert detail.startswith("no new sample from the EyeLink for 51 ms (limit 50 ms)")
+        # The Host PC still believes it records: the samples stopped on the way.
+        assert "still reports recording (isRecording 0)" in detail
+        assert "check the link cable" in detail
+
+    def test_the_limit_is_the_rigs(self, host_pylink):
+        tracker, host, clock = recording(host_pylink, max_sample_gap_ms=200)
+        host.pull_cable()
+        assert frames(tracker, clock, 0.19) == [None] * round(0.19 / FRAME)
+        assert any(frames(tracker, clock, 0.03))
+
+    def test_a_blink_is_never_a_dropout(self, host_pylink):
+        # A blink is samples arriving that say "no eye": MISSING_DATA gaze,
+        # with a timestamp that still advances.
+        tracker, host, clock = recording(host_pylink)
+        host.gaze = (MISSING_DATA, MISSING_DATA)
+        for _ in range(240):
+            clock.advance(FRAME)
+            assert tracker.recording_fault() is None
+            assert tracker.get_gaze() is None  # no position, as a blink should be
+
+    def test_a_sample_repeated_within_the_limit_is_not_a_dropout(self, host_pylink):
+        tracker, host, clock = recording(host_pylink)
+        clock.advance(0.010)
+        first = tracker.get_gaze()
+        # The same sample handed back twice in one instant, and then a gap
+        # of 40 ms with nothing new: repeats, all inside the limit.
+        assert tracker.recording_fault() is None
+        assert tracker.get_gaze() == first
+        host.pull_cable()
+        assert frames(tracker, clock, 0.040) == [None] * round(0.040 / FRAME)
+        host.delivering = True  # the link recovers before the limit
+        assert frames(tracker, clock, 1.0) == [None] * 120
+
+    def test_the_gap_between_trials_is_not_a_gap_in_the_trial(self, host_pylink):
+        # No recording between trials means no samples, and the newest one
+        # is from the last trial. Counted from the segment's start, an ITI
+        # of any length is not a dropout.
+        tracker, host, clock = recording(host_pylink)
+        frames(tracker, clock, 0.5)
+        tracker.stop_trial()
+        clock.advance(5.0)
+        tracker.start_trial(2, "attempt 1")
+        assert tracker.recording_fault() is None
+        assert frames(tracker, clock, 0.5) == [None] * 60
+
+    def test_a_recording_that_never_delivers_is_a_dropout(self, host_pylink):
+        # startRecording() succeeded, and nothing ever arrives.
+        tracker, host, clock = recording(host_pylink)
+        host.pull_cable()
+        answers = frames(tracker, clock, 0.1)
+        assert any(answer is not None for answer in answers)
+
+    def test_a_link_that_is_down_is_named(self, host_pylink):
+        tracker, host, clock = recording(host_pylink)
+        frames(tracker, clock, 0.05)
+        host.link_down()
+        detail = next(answer for answer in frames(tracker, clock, 0.1) if answer is not None)
+        assert "did not answer isRecording() (link terminated)" in detail
+        assert "the link to it is down" in detail
+        assert "100.1.1.1" in detail
+
+    def test_a_code_alhazen_does_not_name_is_still_reported(self, host_pylink):
+        tracker, host, clock = recording(host_pylink)
+        host.host_stop(42)
+        detail = next(answer for answer in frames(tracker, clock, 0.1) if answer is not None)
+        assert "isRecording 42, a code alhazen does not name" in detail
+
+    def test_once_reported_it_repeats_itself_and_asks_nothing_more(self, host_pylink):
+        tracker, host, clock = recording(host_pylink)
+        host.host_stop()
+        detail = next(answer for answer in frames(tracker, clock, 0.1) if answer is not None)
+        assert frames(tracker, clock, 0.1) == [detail] * 12
+        assert host.isrecording_calls == 1
+
+    def test_no_open_segment_has_nothing_to_report(self, host_pylink):
+        clock = host_pylink.clock
+        tracker = EyeLinkTracker(EyeTrackerConfig(backend="eyelink"), None, SCREEN, clock)
+        tracker.connect()
+        clock.advance(1.0)
+        assert tracker.recording_fault() is None
+        assert tracker.newest_sample_age_s() is None
+
+    def test_the_age_is_the_newest_samples(self, host_pylink):
+        tracker, host, clock = recording(host_pylink)
+        clock.advance(0.010)
+        assert tracker.newest_sample_age_s() == 0.0  # a new sample, first seen now
+        host.pull_cable()
+        clock.advance(0.030)
+        assert tracker.newest_sample_age_s() == pytest.approx(0.030)
+
+
+class TestAfterADropout:
+    """What a dropout leaves for the rest of the trial and for the next one:
+    the stop and the messages that follow it are logged, not raised, and the
+    next start either records again or fails loudly, naming the rig."""
+
+    def dropped(self, host_pylink, how: str = "link_down"):
+        tracker, host, clock = recording(host_pylink)
+        frames(tracker, clock, 0.05)
+        getattr(host, how)()
+        detail = next(answer for answer in frames(tracker, clock, 0.1) if answer is not None)
+        return tracker, host, clock, detail
+
+    def test_a_stop_after_a_dropout_is_logged_not_raised(self, host_pylink, caplog):
+        tracker, host, clock, detail = self.dropped(host_pylink)
+        with caplog.at_level(logging.WARNING):
+            tracker.stop_trial()
+        assert not tracker.is_recording()
+        assert "stopRecording() failed after this trial's dropout" in caplog.text
+        assert detail in caplog.text
+
+    def test_a_stop_that_fails_without_a_dropout_still_raises(self, host_pylink):
+        # Nothing explains it, so it is as unexpected as ever.
+        tracker, host, clock = recording(host_pylink)
+        host.link_down()
+        with pytest.raises(RuntimeError, match="link terminated"):
+            tracker.stop_trial()
+
+    def test_messages_after_a_dropout_are_logged_not_raised(self, host_pylink, caplog):
+        tracker, host, clock, detail = self.dropped(host_pylink)
+        with caplog.at_level(logging.WARNING):
+            tracker.send_message("trial_end")
+        assert "message 'trial_end' was not written into the EDF" in caplog.text
+
+    def test_a_message_that_fails_without_a_dropout_still_raises(self, host_pylink):
+        tracker, host, clock = recording(host_pylink)
+        host.link_down()
+        with pytest.raises(RuntimeError, match="link terminated"):
+            tracker.send_message("stim_on")
+
+    def test_a_tracker_that_is_gone_refuses_the_next_trial_naming_the_rig(self, host_pylink):
+        tracker, host, clock, detail = self.dropped(host_pylink)
+        tracker.stop_trial()
+        with pytest.raises(TrackerError) as excinfo:
+            tracker.start_trial(2, "attempt 2")
+        message = str(excinfo.value)
+        assert message.startswith("EyeLink could not start recording at trial 2: the link failed")
+        assert "the Host PC at 100.1.1.1" in message
+        # What the previous trial died of, since it is almost always the same.
+        assert f"The previous trial's recording had already been lost: {detail}." in message
+        # Never pylink's bare error, but chained to it.
+        assert isinstance(excinfo.value.__cause__, RuntimeError)
+
+    def test_a_link_that_dies_as_recording_starts_keeps_the_rigs_words(
+        self, host_pylink, monkeypatch, caplog
+    ):
+        # startRecording() succeeded, then the link went. The segment is
+        # open, and the runner's finally stops it over the same dead link:
+        # that stop must be logged, never raise pylink's bare error over the
+        # clear one.
+        tracker, host, clock = recording(host_pylink)
+        tracker.stop_trial()
+        started = FakeEyeLinkHost.startRecording
+
+        def start_then_die(self, *flags):
+            code = started(self, *flags)
+            self.link_down()
+            return code
+
+        monkeypatch.setattr(FakeEyeLinkHost, "startRecording", start_then_die)
+        with pytest.raises(TrackerError, match="the link failed as recording started"):
+            tracker.start_trial(2, "attempt 1")
+        with caplog.at_level(logging.WARNING):
+            tracker.stop_trial()  # what the runner's finally does: no raise
+        assert not tracker.is_recording()
+        assert "stopRecording() failed after this trial's dropout" in caplog.text
+
+    def test_a_start_refused_with_a_code_names_the_code(self, host_pylink):
+        tracker, host, clock = recording(host_pylink)
+        tracker.stop_trial()
+        host.start_error = 7
+        with pytest.raises(TrackerError, match=r"startRecording failed \(code 7\)"):
+            tracker.start_trial(2, "attempt 1")
+        assert not tracker.is_recording()
+
+    def test_a_tracker_that_comes_back_records_again(self, host_pylink):
+        tracker, host, clock, detail = self.dropped(host_pylink, how="host_stop")
+        tracker.stop_trial()
+        tracker.start_trial(2, "attempt 2")
+        assert host.recordings_started == 2
+        assert frames(tracker, clock, 0.5) == [None] * 60
