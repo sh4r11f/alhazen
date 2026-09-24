@@ -297,7 +297,17 @@ def run_pause_menu(
         wait(0.01)
 
 
-@deprecated(since="1.1", removed_in="1.2", instead="build_pause_menu with run_pause_menu")
+# Removed in 2.0, not sooner: taking a public name away breaks whoever still
+# calls it, and semantic versioning allows that only in a MAJOR release
+# (docs/versioning.md §4). It said 1.2 until 1.5, so every call warned about a
+# removal that had already been skipped; tests/unit/test_versioning.py now
+# fails on a removal version the package has reached. The replacements are
+# named by the import path an experiment package would use.
+@deprecated(
+    since="1.1",
+    removed_in="2.0",
+    instead="alhazen.session.build_pause_menu with alhazen.session.run_pause_menu",
+)
 def pause_menu(
     show_message: Callable[[str], None],
     raw_keys: Callable[[], list[str]],

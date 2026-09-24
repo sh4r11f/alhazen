@@ -5,9 +5,10 @@ hand-written reference does.
 
 **What is public.** Everything exported from `alhazen` (the names below) and
 everything in the modules on this page. Anything else — a leading-underscore
-name, a module not listed here — may change without notice. Deprecations warn
-for one minor version before removal, naming the version and the replacement
-(`alhazen._deprecation`).
+name, a module not listed here — may change without notice. A deprecated name
+keeps working until the next major version removes it, and until then it
+warns, naming that version and the replacement (`alhazen._deprecation`; the
+policy is §4 of [Versioning and releases](versioning.md)).
 
 ## The top-level package
 
@@ -29,6 +30,10 @@ The names an experiment imports directly.
 ::: alhazen.session.runner
     options:
       members: [SessionRunner, pause_menu, host_overlay_shapes]
+
+::: alhazen.session.pause
+    options:
+      members: [build_pause_menu, run_pause_menu, PauseMenu]
 
 ::: alhazen.session.recorder
     options:

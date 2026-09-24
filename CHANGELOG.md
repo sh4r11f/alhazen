@@ -173,6 +173,18 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Changed
 
+- **A deprecated name is removed only in the next major version.**
+  [docs/versioning.md](docs/versioning.md) said so in §1 (MAJOR means
+  something that used to work no longer does) and the opposite in §4 and the
+  API reference (one minor version of warning, then removal); §4, the
+  reference and the architecture notes now agree with §1. `pause_menu` is
+  therefore removed in 2.0, not 1.2, and keeps working until then. Its warning
+  said "will be removed in 1.2" on every call from 1.2 through 1.5; it now
+  names 2.0 and the replacements by import path,
+  `alhazen.session.build_pause_menu` with `alhazen.session.run_pause_menu`,
+  which the API reference now documents along with `PauseMenu`.
+  `tests/unit/test_versioning.py` fails if any deprecation's `removed_in` is
+  not a major version or has already been reached by `pyproject.toml`'s.
 - **Training criteria leave out a trial lost to a system fault.** A
   dropped-frames trial and a tracker-stopped trial no longer enter the
   criteria window: no metric, no `min_trials` count and no ramp sees them,
