@@ -32,6 +32,51 @@ class TestSessionPaths:
         # The next run number is fine.
         SessionPaths.create(tmp_path, "M1", 1, 2, "task", "20260826")
 
+    def test_the_same_run_number_on_a_later_day_is_refused(self, tmp_path):
+        # The bug this pins: the trials file's name carries the date and the
+        # folder's does not, so tomorrow's run passed the check and wrote
+        # into today's folder, over its snapshot and manifest.
+        today = SessionPaths.create(tmp_path, "M1", 1, 1, "task", "20260826")
+        today.trials_path.write_text("trial_index\n1\n")
+        today.snapshot_path.write_text("today's snapshot\n")
+
+        with pytest.raises(DataError, match="refusing to overwrite") as refused:
+            SessionPaths.create(tmp_path, "M1", 1, 1, "task", "20260827")
+
+        # The message names what is there, and nothing was touched.
+        assert "config_snapshot.yaml" in str(refused.value)
+        assert today.snapshot_path.read_text() == "today's snapshot\n"
+
+    def test_a_run_that_crashed_before_its_trials_file_is_refused_too(self, tmp_path):
+        # A session killed mid-run leaves its snapshot and log, never a
+        # trials file: its subject still did the work.
+        paths = SessionPaths.create(tmp_path, "M1", 1, 1, "task", "20260826")
+        paths.snapshot_path.write_text("snapshot\n")
+        paths.log_path.write_text("session start\n")
+        with pytest.raises(DataError, match="config_snapshot.yaml, session.log"):
+            SessionPaths.create(tmp_path, "M1", 1, 1, "task", "20260826")
+
+    def test_a_file_in_a_subfolder_counts(self, tmp_path):
+        paths = SessionPaths.create(tmp_path, "M1", 1, 1, "task", "20260826")
+        (paths.figures_dir / "dashboard.html").write_text("<html>")
+        with pytest.raises(DataError, match="figures/dashboard.html"):
+            SessionPaths.create(tmp_path, "M1", 1, 1, "task", "20260827")
+
+    def test_a_long_list_is_cut_short(self, tmp_path):
+        paths = SessionPaths.create(tmp_path, "M1", 1, 1, "task", "20260826")
+        for name in "abcde":
+            (paths.run_dir / f"{name}.txt").write_text(name)
+        with pytest.raises(DataError, match=r"\(a.txt, b.txt, c.txt and 2 more\)"):
+            SessionPaths.create(tmp_path, "M1", 1, 1, "task", "20260826")
+
+    def test_a_folder_left_empty_by_a_failed_build_can_be_used(self, tmp_path):
+        # A build that failed before the session began (a tracker that would
+        # not connect) leaves only the empty figures folder behind; trying
+        # again with the same number is not an overwrite of anything.
+        SessionPaths.create(tmp_path, "M1", 1, 1, "task", "20260826")
+        again = SessionPaths.create(tmp_path, "M1", 1, 1, "task", "20260826")
+        assert again.figures_dir.is_dir()
+
 
 class TestRecorder:
     def test_column_ordering(self):

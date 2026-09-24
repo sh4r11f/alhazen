@@ -1,9 +1,10 @@
 """Where a run's files live, created once and treated as immutable.
 
 The overwrite refusal is the load-bearing rule: a run directory that already
-holds a trials file belongs to an already-recorded run — a subject's (or
-animal's) unrepeatable work — and is never silently reused. Re-running the
-same subject/session/task means the next run number, not clobbering.
+holds any file belongs to an already-started run — a subject's (or animal's)
+unrepeatable work — and is never silently reused. Re-running the same
+subject/session/task means the next run number, not clobbering, on the same
+day or any later one.
 """
 
 from __future__ import annotations
@@ -43,11 +44,7 @@ class SessionPaths:
         )
         base = naming.base_name(subject, session, run, task_name, stamp)
         paths = cls(run_dir=run_dir, base=base)
-        if paths.trials_path.exists():
-            raise DataError(
-                f"refusing to overwrite existing run data at {paths.trials_path} — "
-                f"use the next run number"
-            )
+        _refuse_a_used_run_dir(run_dir)
         (run_dir / "figures").mkdir(parents=True, exist_ok=True)
         return paths
 
@@ -84,3 +81,34 @@ class SessionPaths:
     @property
     def figures_dir(self) -> Path:
         return self.run_dir / "figures"
+
+
+def _refuse_a_used_run_dir(run_dir: Path) -> None:
+    """Refuse a run directory that holds any file at all.
+
+    Checking for this run's own trials file was not enough. Its name carries
+    the date and the directory's does not, so the same run number on a later
+    day passed the check and wrote into the earlier run's folder: over its
+    config_snapshot.yaml, manifest.yaml and dashboard, appending to its
+    session.log — and `load_run` then paired one day's trials with the other
+    day's snapshot. A run that crashed before writing its trials file (it has
+    a snapshot and a log) is protected the same way.
+
+    An EMPTY directory is not a run: a build that failed before the session
+    started (a tracker that would not connect) leaves one behind, with only
+    the empty ``figures`` folder, and trying again with the same number is
+    fine.
+    """
+    if not run_dir.exists():
+        return
+    found = sorted(path for path in run_dir.rglob("*") if path.is_file())
+    if not found:
+        return
+    # A few names are enough to recognise the run; all of them would bury
+    # the instruction at the end of the message.
+    names = ", ".join(path.relative_to(run_dir).as_posix() for path in found[:3])
+    more = f" and {len(found) - 3} more" if len(found) > 3 else ""
+    raise DataError(
+        f"refusing to overwrite existing run data in {run_dir} ({names}{more}) — "
+        f"use the next run number"
+    )
