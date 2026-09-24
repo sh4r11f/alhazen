@@ -18,7 +18,9 @@ What they pin, beyond #54's handling being reached at all:
 - a tracker that drops out on ``max_consecutive_dropouts`` trials in a row
   stops the session at the pause screen, headed with what it said;
 - a tracker that is gone for good ends the session at the next trial's
-  start, loudly and in the rig's words — after the lost trial's row is safe.
+  start, loudly and in the rig's words — after the lost trial's row is safe;
+- an EyeLink whose link is gone by teardown fails the run, naming the EDF it
+  left on the Host PC.
 """
 
 from __future__ import annotations
@@ -40,8 +42,8 @@ from alhazen.core.trial import (
 from alhazen.devices.eyetracker import EyeLinkTracker, ViewPixxTracker
 from alhazen.devices.reward import SimulatedReward
 from alhazen.errors import TrackerError
+from alhazen.session.database import DATABASE_FILENAME, ExperimentDatabase
 from alhazen.session.pause import FAULT_COLOR
-from alhazen.session.runner import SessionRunner
 from alhazen.stimuli.base import NullStimulus
 from alhazen.task.phases import TrialFeedback
 from alhazen.task.plan import TrialPlan
@@ -110,11 +112,19 @@ def clean(device) -> list[Any]:
 
 
 def run(
-    tmp_path, tracker, device, plan: list[Entry], *, n_trials: int = 1, clock: FakeClock
+    tmp_path,
+    tracker,
+    device,
+    plan: list[Entry],
+    *,
+    n_trials: int = 1,
+    clock: FakeClock,
+    **harness_kwargs: Any,
 ) -> SessionHarness:
     """A session of one condition on ``tracker``, serving ``plan`` one entry
     per attempt, until ``n_trials`` have completed. The runner is left to
-    the caller to run, so a test can expect it to raise."""
+    the caller to run, so a test can expect it to raise. Any other keyword
+    goes to SessionHarness."""
     served = iter(plan)
     phases_by_attempt: list[list[Any]] = []
 
@@ -131,6 +141,7 @@ def run(
         clock=clock,
         reward=SimulatedReward(),
         reward_policy=POLICY,
+        **harness_kwargs,
     )
     harness.phases_by_attempt = phases_by_attempt  # type: ignore[attr-defined]
     return harness
@@ -301,32 +312,22 @@ class TestDropoutsInARow:
 
     def test_the_limit_is_the_rigs_and_none_never_pauses(self, tmp_path, eyelink):
         tracker, host, clock = eyelink
-        harness = run(tmp_path, tracker, host, [cable_pulled()] * 3 + [clean], clock=clock)
-        harness.runner._max_consecutive_dropouts = None
+        harness = run(
+            tmp_path,
+            tracker,
+            host,
+            [cable_pulled()] * 3 + [clean],
+            clock=clock,
+            max_consecutive_dropouts=None,
+        )
         harness.runner.run()
         assert self.headings(harness) == []
 
     def test_a_limit_below_one_is_refused(self, tmp_path):
-        harness = SessionHarness(tmp_path)
-        runner = harness.runner
+        # The harness hands the limit to SessionRunner's constructor, which
+        # is what refuses it.
         with pytest.raises(ValueError, match="max_consecutive_dropouts must be >= 1"):
-            SessionRunner(
-                cfg=runner._cfg,
-                paths=runner._paths,
-                display=runner._display,
-                screen=runner._screen,
-                clock=runner._clock,
-                bus=runner._bus,
-                engine=runner._engine,
-                source=runner._source,
-                build_trial=runner._build_trial,
-                recorder=runner._recorder,
-                frame_monitor=runner._frame_monitor,
-                commands=runner._commands,
-                refresh_rate_hz=60.0,
-                task_rng=runner._task_rng,
-                max_consecutive_dropouts=0,
-            )
+            SessionHarness(tmp_path, max_consecutive_dropouts=0)
 
 
 class TestAnEyeLinkThatIsGone:
@@ -355,6 +356,31 @@ class TestAnEyeLinkThatIsGone:
         assert "stopRecording() failed after this trial's dropout" in warnings
         assert "was not written into the EDF" in warnings
         assert any("session end: FAILED" in line for line in log_lines(harness, "ERROR"))
+
+    def test_a_link_lost_after_the_last_trial_fails_the_run_naming_the_edf(
+        self, tmp_path, eyelink, monkeypatch
+    ):
+        # Every trial recorded, then the link goes before teardown retrieves
+        # the EDF. That was a WARNING in the log and a run mirrored as
+        # `complete`: nothing machine-readable said the eye data never
+        # arrived. The paradigm summary is the stand-in moment — a teardown
+        # step after the trials are written and before the tracker's shutdown.
+        tracker, host, clock = eyelink
+        harness = run(tmp_path, tracker, host, [clean], clock=clock)
+        database = ExperimentDatabase(tmp_path / DATABASE_FILENAME)
+        harness.runner._database = database
+        monkeypatch.setattr(harness.source, "summary", host.link_down)
+        with pytest.raises(TrackerError, match="'alhazen.EDF'"):
+            harness.runner.run()
+
+        with database.connect() as db:
+            (status,) = db.execute("SELECT status FROM runs").fetchone()
+        assert status == "failed"
+        # The trial is kept, the link released, and no EDF pretends to be here.
+        (row,) = rows(harness)
+        assert row["outcome"] == "CORRECT"
+        assert host.closed
+        assert not (harness.paths.run_dir / f"{harness.paths.base}.edf").exists()
 
 
 # ---------------------------------------------------------------------------

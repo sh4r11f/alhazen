@@ -50,7 +50,6 @@ from alhazen.dashboard.panels import panel_payload
 from alhazen.dashboard.spec import DashboardPanel
 from alhazen.devices.eyetracker import ScriptedTracker
 from alhazen.devices.reward import SimulatedReward
-from alhazen.display.frames import FrameMonitor
 from alhazen.errors import RewardError
 from alhazen.session.builder import make_tracker_health_check
 from alhazen.stimuli.base import NullStimulus
@@ -204,6 +203,7 @@ def run_session(
     training=None,
     commands=None,
     mid_trial_reward=False,
+    on_pause=None,
 ):
     """Run a session of one condition, serving the trials in ``plan`` in order.
 
@@ -213,7 +213,8 @@ def run_session(
     health check included — and the entries stop it when they choose.
     ``recycle`` gives the session frame QA's ``recycle_trial`` (10% budget);
     ``limit`` is the task's ``max_consecutive_failures``; ``training`` a
-    supervisor to drive.
+    supervisor to drive; ``on_pause`` the pause strategy (None: unattended,
+    every pause resumes at once).
     """
     clock = FakeClock()
     served = iter(plan)
@@ -235,22 +236,19 @@ def run_session(
         reward_policy=policy,
         commands=commands,
         mid_trial_reward=mid_trial_reward,
-    )
-    box["harness"] = harness
-    if recycle:
-        # The existing frame-QA session tests install the monitor the same
-        # way: the harness's own is the default `log` policy.
-        monitor = FrameMonitor(
+        # Without `recycle` the harness's frame QA is the default `log` policy.
+        frame_qa=(
             FrameQAConfig(
                 policy="recycle_trial", max_dropped_fraction=0.10, max_consecutive_recycles=50
-            ),
-            1 / FRAME_S,
-        )
-        harness.engine._frame_monitor = monitor
-        harness.runner._frame_monitor = monitor
-    harness.runner._max_consecutive_failures = limit
-    if training is not None:
-        harness.runner._training = training
+            )
+            if recycle
+            else None
+        ),
+        max_consecutive_failures=limit,
+        training=training,
+        on_pause=on_pause,
+    )
+    box["harness"] = harness
     harness.runner.run()
     return harness
 
@@ -641,10 +639,51 @@ class TestTheFailureStreak:
 
     def streak(self, tmp_path, outcomes, limit=2):
         """The runner's verdict after each (outcome, lost_to_fault) in turn:
-        True on the trial that reaches ``limit`` failures in a row."""
-        harness = SessionHarness(tmp_path, n_trials=1)
-        harness.runner._max_consecutive_failures = limit
-        return [harness.runner._too_many_failures_in_a_row(o, fault=f) for o, f in outcomes]
+        True on the trial that reaches ``limit`` failures in a row.
+
+        Driven through a session, one trial per pair: a tracker-stopped pair
+        is a trial the tracker cuts short, a dropped-frames pair one the
+        display drops half its frames on (frame QA recycles it), and any
+        other a trial that ends as that outcome. A final clean trial ends the
+        session. The verdict is whether the streak's pause came up right
+        after that trial.
+        """
+        served = 0
+        paused_after: list[int] = []
+
+        def counted(make):
+            def build(harness):
+                nonlocal served
+                served += 1
+                return make(harness)
+
+            return build
+
+        def entry(outcome, fault):
+            if fault == FAULT_TRACKER_STOPPED:
+                return tracker_stops(outcome)
+            if fault == FAULT_DROPPED_FRAMES:
+                return dropped_frames()
+            return clean(outcome)
+
+        def on_pause(menu):
+            if "FAILED IN A ROW" in menu.title:
+                paused_after.append(served)
+            return "resume"
+
+        plan = [counted(entry(o, f)) for o, f in outcomes] + [counted(clean())]
+        harness = run_session(
+            tmp_path,
+            plan,
+            limit=limit,
+            recycle=any(f == FAULT_DROPPED_FRAMES for _o, f in outcomes),
+            on_pause=on_pause,
+        )
+        # The session served exactly those trials, lost to exactly those
+        # faults, before its last one — what the verdicts are about.
+        served_rows = [(row["outcome"], row["fault"]) for row in rows(harness)]
+        assert served_rows[: len(outcomes)] == [(o.name, f or NO_FAULT) for o, f in outcomes]
+        return [index in paused_after for index in range(1, len(outcomes) + 1)]
 
     def test_a_tracker_stopped_trial_neither_counts_nor_ends_it(self, tmp_path):
         aborted = Outcome("ABORTED", completed=False)

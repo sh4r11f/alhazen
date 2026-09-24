@@ -334,9 +334,9 @@ class FakeDashboard:
         self.stopped = True
 
 
-def wire_dashboard(harness, dashboard) -> None:
-    """Give the runner a dashboard AND a keyboard, which is what a rig that
-    opens a browser has.
+def wired(dashboard) -> dict:
+    """SessionHarness arguments that give the runner a dashboard AND a
+    keyboard, which is what a rig that opens a browser has.
 
     The builder wires a pause strategy for every rendering display and none
     for a simulated one (session/builder.py), so "a dashboard and no
@@ -345,22 +345,26 @@ def wire_dashboard(harness, dashboard) -> None:
     rather than waiting at a pause for a browser nobody has open. The browser
     is the second control surface at a rig, never the only one.
     """
-    harness.runner._dashboard = dashboard
-    harness.runner._on_pause = lambda menu: "resume"
+    return {"dashboard": dashboard, "on_pause": lambda menu: "resume"}
 
 
 class TestRunnerIntegration:
     def test_keyboard_pause_enables_browser_reward_then_resume(self, tmp_path: Path):
         reward = SimulatedReward()
         commands = ScriptedCommands([[Command.PAUSE]])
-        harness = SessionHarness(tmp_path, n_trials=1, commands=commands, reward=reward)
         # The first batch is drained and discarded on entering the pause, so
         # the commands that matter start in the second.
         dashboard = FakeDashboard([[], ["manual_reward"], ["resume"]])
         pulses = RewardPulses(n_pulses=1, pulse_ms=25, inter_pulse_ms=0)
-        wire_dashboard(harness, dashboard)
-        harness.runner._manual_reward = lambda: reward.deliver(pulses)
-        harness.runner._manual_reward_payload = {"pulses": pulses.model_dump(mode="json")}
+        harness = SessionHarness(
+            tmp_path,
+            n_trials=1,
+            commands=commands,
+            reward=reward,
+            manual_reward=lambda: reward.deliver(pulses),
+            manual_reward_payload={"pulses": pulses.model_dump(mode="json")},
+            **wired(dashboard),
+        )
 
         harness.runner.run()
 
@@ -379,14 +383,18 @@ class TestRunnerIntegration:
         gaze = GazeSample(gx=SCREEN.width_px / 2 + 20.0, gy=SCREEN.height_px / 2, t=0.0)
         tracker = ScriptedTracker([(0.0, gaze)], clock)
         commands = ScriptedCommands([[Command.PAUSE]])
-        harness = SessionHarness(
-            tmp_path, n_trials=1, commands=commands, tracker=tracker, clock=clock
-        )
         # The empty batch after each procedure is what the runner's drain
         # finds: nothing was clicked while the walk ran. The next click comes
         # once the buttons are back.
         dashboard = FakeDashboard([[], ["validate"], [], ["drift_correct"], [], ["resume"]])
-        wire_dashboard(harness, dashboard)
+        harness = SessionHarness(
+            tmp_path,
+            n_trials=1,
+            commands=commands,
+            tracker=tracker,
+            clock=clock,
+            **wired(dashboard),
+        )
 
         harness.runner.run()
 
@@ -419,11 +427,15 @@ class TestRunnerIntegration:
         gaze = GazeSample(gx=SCREEN.width_px / 2, gy=SCREEN.height_px / 2, t=0.0)
         tracker = ScriptedTracker([(0.0, gaze)], clock)
         commands = ScriptedCommands([[Command.PAUSE]])
-        harness = SessionHarness(
-            tmp_path, n_trials=1, commands=commands, tracker=tracker, clock=clock
-        )
         dashboard = FakeDashboard([[], ["calibrate"], [], ["resume"]])
-        wire_dashboard(harness, dashboard)
+        harness = SessionHarness(
+            tmp_path,
+            n_trials=1,
+            commands=commands,
+            tracker=tracker,
+            clock=clock,
+            **wired(dashboard),
+        )
 
         harness.runner.run()
 
@@ -440,11 +452,15 @@ class TestRunnerIntegration:
         gaze = GazeSample(gx=SCREEN.width_px / 2, gy=SCREEN.height_px / 2, t=0.0)
         tracker = ScriptedTracker([(0.0, gaze)], clock)
         commands = ScriptedCommands([[Command.CALIBRATE]])
-        harness = SessionHarness(
-            tmp_path, n_trials=1, commands=commands, tracker=tracker, clock=clock
-        )
         dashboard = FakeDashboard([[], ["resume"]])
-        wire_dashboard(harness, dashboard)
+        harness = SessionHarness(
+            tmp_path,
+            n_trials=1,
+            commands=commands,
+            tracker=tracker,
+            clock=clock,
+            **wired(dashboard),
+        )
 
         harness.runner.run()
 
@@ -456,9 +472,8 @@ class TestRunnerIntegration:
         """The server accepts Validate whether or not a tracker is wired, so
         the runner has to answer the click rather than crash or stay mute."""
         commands = ScriptedCommands([[Command.PAUSE]])
-        harness = SessionHarness(tmp_path, n_trials=1, commands=commands)
         dashboard = FakeDashboard([[], ["validate"], [], ["resume"]])
-        wire_dashboard(harness, dashboard)
+        harness = SessionHarness(tmp_path, n_trials=1, commands=commands, **wired(dashboard))
 
         with caplog.at_level(logging.WARNING, logger="alhazen.session.runner"):
             harness.runner.run()
@@ -492,9 +507,10 @@ class TestTeardownGoesOnWhenTheDashboardFails:
         gaze = GazeSample(gx=SCREEN.width_px / 2, gy=SCREEN.height_px / 2, t=0.0)
         tracker = ScriptedTracker([(0.0, gaze)], clock)
         reward = ScriptedReward()
-        harness = SessionHarness(tmp_path, n_trials=1, tracker=tracker, reward=reward, clock=clock)
         dashboard = FinalPublishFails([])
-        wire_dashboard(harness, dashboard)
+        harness = SessionHarness(
+            tmp_path, n_trials=1, tracker=tracker, reward=reward, clock=clock, **wired(dashboard)
+        )
 
         # Loud: the failure is the session's error once teardown is done.
         with pytest.raises(RuntimeError, match="a panel could not be built"):
@@ -561,12 +577,16 @@ class TestTrackerSettingsThroughThePause:
         gaze = GazeSample(gx=SCREEN.width_px / 2, gy=SCREEN.height_px / 2, t=0.0)
         tracker = IrisScriptedTracker([(0.0, gaze)], clock)
         commands = ScriptedCommands([[Command.PAUSE]])
-        harness = SessionHarness(
-            tmp_path, n_trials=1, commands=commands, tracker=tracker, clock=clock
-        )
         dashboard = FakeDashboard([[], [], ["resume"]])
         dashboard.setting_batches = [[], [("iris_size_px", 124)]]
-        wire_dashboard(harness, dashboard)
+        harness = SessionHarness(
+            tmp_path,
+            n_trials=1,
+            commands=commands,
+            tracker=tracker,
+            clock=clock,
+            **wired(dashboard),
+        )
         harness.runner.run()
 
         assert tracker.iris == 124
@@ -587,11 +607,15 @@ class TestCameraThroughThePause:
         gaze = GazeSample(gx=SCREEN.width_px / 2, gy=SCREEN.height_px / 2, t=0.0)
         tracker = CameraScriptedTracker([(0.0, gaze)], clock)
         commands = ScriptedCommands([[Command.PAUSE]])
-        harness = SessionHarness(
-            tmp_path, n_trials=1, commands=commands, tracker=tracker, clock=clock
-        )
         dashboard = FakeDashboard(batches)
-        wire_dashboard(harness, dashboard)
+        harness = SessionHarness(
+            tmp_path,
+            n_trials=1,
+            commands=commands,
+            tracker=tracker,
+            clock=clock,
+            **wired(dashboard),
+        )
         harness.runner.run()
         return harness, tracker, dashboard
 
@@ -629,11 +653,15 @@ class TestCameraThroughThePause:
         gaze = GazeSample(gx=SCREEN.width_px / 2, gy=SCREEN.height_px / 2, t=0.0)
         tracker = ScriptedTracker([(0.0, gaze)], clock)
         commands = ScriptedCommands([[Command.PAUSE]])
-        harness = SessionHarness(
-            tmp_path, n_trials=1, commands=commands, tracker=tracker, clock=clock
-        )
         dashboard = FakeDashboard([[]] * 250 + [["resume"]])
-        wire_dashboard(harness, dashboard)
+        harness = SessionHarness(
+            tmp_path,
+            n_trials=1,
+            commands=commands,
+            tracker=tracker,
+            clock=clock,
+            **wired(dashboard),
+        )
         harness.runner.run()
         assert [s["status"] for s in dashboard.states].count("paused") == 1
 
@@ -659,11 +687,16 @@ class TestStaleCommandsAreDiscarded:
     def test_a_command_queued_before_the_pause_never_fires(self, tmp_path: Path):
         reward = SimulatedReward()
         commands = ScriptedCommands([[Command.PAUSE]])
-        harness = SessionHarness(tmp_path, n_trials=1, commands=commands, reward=reward)
         # A manual reward left over from before this pause, then a resume.
         dashboard = FakeDashboard([["manual_reward"], ["resume"]])
-        wire_dashboard(harness, dashboard)
-        harness.runner._manual_reward = lambda: reward.deliver(RewardPulses(n_pulses=1))
+        harness = SessionHarness(
+            tmp_path,
+            n_trials=1,
+            commands=commands,
+            reward=reward,
+            manual_reward=lambda: reward.deliver(RewardPulses(n_pulses=1)),
+            **wired(dashboard),
+        )
 
         harness.runner.run()
 
@@ -680,14 +713,18 @@ class TestStaleCommandsAreDiscarded:
         gaze = GazeSample(gx=SCREEN.width_px / 2, gy=SCREEN.height_px / 2, t=0.0)
         tracker = ScriptedTracker([(0.0, gaze)], clock)
         commands = ScriptedCommands([[Command.PAUSE]])
-        harness = SessionHarness(
-            tmp_path, n_trials=1, commands=commands, tracker=tracker, clock=clock
-        )
         # Second batch: a double-click, two Calibrates in one poll. Third: a
         # Validate the server accepted before it saw "calibrating". Then a
         # Resume clicked after the buttons came back, which must still work.
         dashboard = FakeDashboard([[], ["calibrate", "calibrate"], ["validate"], ["resume"]])
-        wire_dashboard(harness, dashboard)
+        harness = SessionHarness(
+            tmp_path,
+            n_trials=1,
+            commands=commands,
+            tracker=tracker,
+            clock=clock,
+            **wired(dashboard),
+        )
 
         harness.runner.run()
 
@@ -699,9 +736,8 @@ class TestStaleCommandsAreDiscarded:
 
     def test_a_stale_quit_does_not_end_the_next_pause(self, tmp_path: Path):
         commands = ScriptedCommands([[Command.PAUSE]])
-        harness = SessionHarness(tmp_path, n_trials=2, commands=commands)
         dashboard = FakeDashboard([["quit"], ["resume"]])
-        wire_dashboard(harness, dashboard)
+        harness = SessionHarness(tmp_path, n_trials=2, commands=commands, **wired(dashboard))
 
         harness.runner.run()
 
@@ -781,19 +817,13 @@ class TestPage:
         buttons = set(re.findall(r'data-command="([a-z_]+)"', html))
         assert buttons == _ALLOWED_COMMANDS
 
-    def test_the_eye_tracker_panels_can_be_drawn(self):
-        # The monitor (session/eyetracker.py) sends a camera picture as an
-        # ``image`` form and its verdicts as ``stat`` tiles with a status;
-        # a form the renderer lacks draws as "Nothing to draw", so both are
-        # asserted against the asset.
+    def test_the_calibrating_status_has_its_own_colour(self):
+        # The status a procedure publishes under has its own colour. What the
+        # renderer does with the eye-tracker panels and that status (the
+        # camera picture, a verdict tile's status, the progress notice) is
+        # run in tests/js/page.test.mjs; the stylesheet is not, so this stays.
         html = self.page()
-        assert "image: drawImage," in html
-        assert "putImageData" in html
-        assert "tile.dataset.status" in html
-        # The status a procedure publishes under has its own colour, and the
-        # notice shows the procedure's progress instead of the pause hint.
         assert '#status[data-state="calibrating"]' in html
-        assert "state.status === 'calibrating'" in html
 
     def test_nothing_is_fetched_from_the_network(self):
         # A rig has no internet and a saved figure outlives any CDN.
@@ -806,10 +836,10 @@ class TestPage:
         out the momentarily-empty document clamps scroll to zero. At one trial
         every few seconds that makes any panel below the fold unreadable.
 
-        Asserted against the asset rather than in a browser, because there is
-        no JS test harness here and a missing three-line guard is worth
-        catching cheaply. It checks the ORDER too: restoring before the panels
-        are painted would clamp against a height that is about to grow.
+        Asserted against the asset rather than run in tests/js, because the
+        fake page there has no layout and so cannot clamp a scroll position.
+        It checks the ORDER too: restoring before the panels are painted
+        would clamp against a height that is about to grow.
         """
         from alhazen.dashboard import runtime
 
@@ -1043,20 +1073,15 @@ class TestTheChildDoesNotLeak:
 
 
 class TestFigureConventionsInTheRenderer:
-    """Checked against the assets rather than in a browser, like the scroll
-    test above: there is no JS test harness here, and each of these guards a
-    mistake that passes a quick look at the page."""
+    """Checked against the stylesheet, which tests/js does not execute. The
+    renderer's own figure conventions (colour slots, error-bar legends,
+    spines, export sizes) are run in tests/js/charts.test.mjs."""
 
     @staticmethod
     def _asset(name):
         from alhazen.dashboard import runtime
 
         return (runtime._ASSETS / name).read_text(encoding="utf-8")
-
-    @staticmethod
-    def _function(script, name):
-        body = script[script.index(f"function {name}(") :]
-        return body[: body.index("\n}")]
 
     def test_the_hover_crosshair_is_hidden_by_its_attribute_alone(self):
         """A stylesheet `opacity` outranks the SVG attribute the script hides
@@ -1068,80 +1093,3 @@ class TestFigureConventionsInTheRenderer:
         rule = re.search(r"\.hairline\s*\{([^}]*)\}", css)
         assert rule is not None, "no .hairline rule"
         assert not re.search(r"(^|[;\s])opacity\s*:", rule.group(1)), rule.group(1)
-
-    def test_each_factor_on_a_grouped_panel_gets_its_own_colour(self):
-        """Colour slots count from 1. Passing the 0-based index gave the first
-        two factors slot 1 both, so they were drawn in the same blue."""
-        dots = self._function(self._asset("dashboard.js"), "drawDots")
-        assert "slotColor(series.indexOf(g.series) + 1)" in dots
-        assert "slotColor(series.indexOf(name) + 1)" in dots
-
-    def test_error_bars_are_defined_on_the_panel(self):
-        """A journal will not print an error bar the figure does not define."""
-        dots = self._function(self._asset("dashboard.js"), "drawDots")
-        assert "shape: 'whisker'" in dots
-        assert "data.error_label" in dots
-
-    def test_spines_end_on_their_outermost_ticks(self):
-        frame = self._function(self._asset("dashboard.js"), "drawFrame")
-        assert "ySpan" in frame and "xSpan" in frame
-
-    def test_figures_are_exported_at_journal_column_widths(self):
-        script = self._asset("dashboard.js")
-        assert "const FIGURE_WIDTH_MM = { single: 89, double: 183 };" in script
-        assert "const EXPORT_DPI = 600;" in script
-        export = self._function(script, "exportFigure")
-        # Drawn light and in figure proportions, and both undone however the
-        # draw ends: a failed export must leave the page as it found it.
-        assert "setAttribute('data-theme', 'light')" in export
-        assert export.index("exportMode = true") < export.index("finally")
-        assert export.rindex("exportMode = false") > export.index("finally")
-
-
-class TestLiveCameraInTheRenderer:
-    """Checked against the asset, like the renderer guards above: there is no
-    JS test harness here, and these are the two properties the stream exists
-    for."""
-
-    @staticmethod
-    def _function(name):
-        from alhazen.dashboard import runtime
-
-        script = (runtime._ASSETS / "dashboard.js").read_text(encoding="utf-8")
-        body = script[script.index(f"function {name}(") :]
-        return body[: body.index("\n}")]
-
-    def test_a_frame_redraws_only_the_canvas(self):
-        """A frame that rebuilt the panels would bring back the lag the stream
-        removes, and throw away the reader's scroll and hover every time."""
-        loop = self._function("cameraLoop")
-        assert "/api/camera" in loop
-        assert "render(" not in loop
-        assert "render(" not in self._function("paintCamera")
-
-    def test_a_failed_stream_is_said_under_the_image(self):
-        loop = self._function("cameraLoop")
-        assert "console.error" in loop
-        assert "cameraProblem = 'Camera stream failed: '" in loop
-
-
-class TestTrackerControlsInTheRenderer:
-    """Checked against the asset, like the other renderer guards."""
-
-    @staticmethod
-    def _function(name):
-        from alhazen.dashboard import runtime
-
-        script = (runtime._ASSETS / "dashboard.js").read_text(encoding="utf-8")
-        body = script[script.index(f"function {name}(") :]
-        return body[: body.index("\n}")]
-
-    def test_a_setting_goes_to_its_own_endpoint_and_a_refusal_is_said(self):
-        send = self._function("sendTrackerSetting")
-        assert "/api/tracker" in send and "X-Alhazen-Token" in send
-        assert "not changed: " in send and "console.error" in send
-
-    def test_a_value_being_typed_survives_a_redraw(self):
-        render = self._function("render")
-        assert "dataset.setting" in render
-        assert render.index("dataset.setting") < render.index("panels.forEach(paintPanel)")

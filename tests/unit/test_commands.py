@@ -13,10 +13,11 @@ import pytest
 from alhazen.config.models import RewardPulses
 from alhazen.core.commands import DEFAULT_KEYMAP, Command, KeyboardCommands, NullCommands
 from alhazen.session.runner import pause_menu
+from alhazen.task.plan import TrialPlan
 from alhazen.task.reward_policy import RewardPolicy
 from alhazen.testing import ScriptedCommands
 from alhazen.training import Curriculum, Stage, StageCriteria, TrainingState, TrainingSupervisor
-from support import SessionHarness
+from support import COMPLETED, RunForFrames, SessionHarness
 
 
 class RecordingGetter:
@@ -100,7 +101,7 @@ class TestKeyFilter:
 
 class TestPauseMenuThroughTheRealSource:
     """The deprecated ``pause_menu`` seam, wired to a KeyboardCommands the way
-    the builder used to. Kept because the function is public API until 1.2:
+    the builder used to. Kept because the function is public API until 2.0:
     an experiment package still calling it must keep getting its keys back.
 
     The live path is tested in test_pause_menu.py and test_pause_flow.py.
@@ -147,6 +148,24 @@ class TestPauseMenuThroughTheRealSource:
         commands = KeyboardCommands(key_getter=RecordingGetter([[("q", {})]]))
         assert pause_menu(show, commands.poll_raw_keys, lambda _s: None) == "quit"
         assert shown and "PAUSED" in shown[0]
+
+    def test_it_warns_that_2_0_removes_it_and_names_the_replacements(self):
+        """Removal waits for the next MAJOR (docs/versioning.md §4). It used
+        to say 1.2, which every release from 1.2 to 1.5 made false."""
+        import alhazen.session
+
+        commands = KeyboardCommands(key_getter=RecordingGetter([[("space", {})]]))
+        with pytest.warns(DeprecationWarning) as caught:
+            assert pause_menu(lambda _text: None, commands.poll_raw_keys, lambda _s: None) == (
+                "resume"
+            )
+        [message] = [str(warning.message) for warning in caught]
+        assert "will be removed in 2.0" in message
+        # Named by the path an experiment imports them from, and that path
+        # has to resolve — a replacement the reader cannot import is no help.
+        for replacement in ("build_pause_menu", "run_pause_menu"):
+            assert f"alhazen.session.{replacement}" in message
+            assert callable(getattr(alhazen.session, replacement))
 
 
 class TestSessionResumesFromTheKeyboard:
@@ -198,15 +217,34 @@ class TestStageCommandsMoveTheSubject:
         """The demote path had no coverage anywhere: neither key can fire on
         a real rig today, so nothing noticed."""
         supervisor = self.supervisor(tmp_path)
-        harness = SessionHarness(tmp_path, n_trials=1)
-        harness.runner._training = supervisor
+        # Through a session, as an experimenter presses them: PROMOTE during
+        # trial 1 and DEMOTE during trial 2, each applied between trials.
+        # Each trial is RunForFrames(2) — three polls — so the fourth poll is
+        # trial 2's first frame.
+        commands = ScriptedCommands([[Command.PROMOTE_STAGE], [], [], [Command.DEMOTE_STAGE]])
+        stage_at_build: list[str] = []
+        hold_ms_at_build: list[float] = []
 
-        harness.runner.on_session_command(Command.PROMOTE_STAGE)
-        harness.runner._apply_stage_transition()
-        assert supervisor.stage.name == "real"
+        def build(setup):
+            # The stage each trial is built at, and the task's parameters
+            # then: what the transition before it left the subject on.
+            # (Teardown hands the task back at its base parameters, so the
+            # stage's own have to be read while the session runs.)
+            stage_at_build.append(supervisor.stage.name)
+            hold_ms_at_build.append(supervisor._task.params.hold_ms)
+            return TrialPlan(phases=[RunForFrames(2, COMPLETED)])
 
-        harness.runner.on_session_command(Command.DEMOTE_STAGE)
-        harness.runner._apply_stage_transition()
+        harness = SessionHarness(
+            tmp_path, n_trials=3, commands=commands, build_trial=build, training=supervisor
+        )
+        harness.runner.run()
+
+        # Promoted after trial 1: trial 2 ran at "real".
+        assert stage_at_build[1] == "real"
+        # Demoted after trial 2: trial 3, and the session's end, back at "easy".
+        assert stage_at_build[2] == "easy"
         assert supervisor.stage.name == "easy"
+        changes = [e.payload for e in harness.collector.events if e.name == "STAGE_CHANGED"]
+        assert [(c["from"], c["to"]) for c in changes] == [("easy", "real"), ("real", "easy")]
         # Demotion restores the stage's own parameters, not the harder ones.
-        assert supervisor._task.params.hold_ms == 100.0
+        assert hold_ms_at_build[2] == 100.0

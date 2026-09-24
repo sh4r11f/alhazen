@@ -555,7 +555,15 @@ class TestLandingSampleThroughTheInputProvider:
         # the previous sample. The builder's provider carries each sample's
         # own time through as gaze_t, which is what keeps the repeat at
         # 200 px (a false zero speed) from being taken for the landing.
-        harness = EngineHarness(declared_events=("LANDED", "RESPONSE_ONSET"))
+        # The provider is handed to the engine at construction, as the builder
+        # hands it; it reads a tracker that runs on the harness's own clock,
+        # which exists only once the harness does — so the engine gets a
+        # closure that reaches the provider built just below.
+        provider: dict = {}
+        harness = EngineHarness(
+            declared_events=("LANDED", "RESPONSE_ONSET"),
+            input_provider=lambda: provider["gaze"](),
+        )
         # Each sample a millisecond before its frame reads it, so no lookup
         # depends on a floating-point tie between the two clocks.
         path_px = [0.0, 200.0, 390.0, 400.0, 401.0]
@@ -564,7 +572,7 @@ class TestLandingSampleThroughTheInputProvider:
             for k, x in enumerate(path_px)
         ]
         tracker = ScriptedTracker(script, harness.clock)
-        harness.engine._input_provider = make_gaze_input_provider(tracker, SCREEN)
+        provider["gaze"] = make_gaze_input_provider(tracker, SCREEN)
         ctx = harness.ctx(regions={"target": TARGET})
 
         result = harness.engine.run_trial(ctx, [onset(), offset_phase()])

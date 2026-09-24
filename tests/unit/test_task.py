@@ -20,6 +20,7 @@ from alhazen import (
     build_session,
     outcomes,
 )
+from alhazen.core.engine import TrialResult
 from alhazen.core.events import EventSchema
 from alhazen.errors import ConfigError
 from alhazen.paradigms.config import SchedulerConfig, StaircaseConfig
@@ -131,6 +132,33 @@ class TestMakeSource:
         )
         assert isinstance(source, InterleavedStaircases)
 
+    def test_a_staircase_counts_what_the_tasks_score_trial_calls_a_success(self):
+        """`score_trial` is the task's say in what an adaptive scheduler
+        titrates. A staircase that read `outcome.success` instead would
+        titrate accuracy for a task that asked for something else."""
+
+        class Inverted(DemoTask):
+            name = "inverted-task"
+
+            def score_trial(self, result):
+                return not result.outcome.success
+
+        paradigm = SchedulerConfig(
+            kind="staircase",
+            staircase=StaircaseConfig(parameter="contrast", start=0.5, step=0.1, n_trials=3),
+        )
+        task = Inverted(Params(paradigm=paradigm))
+        source = task.make_source(task.params, np.random.default_rng(0))
+
+        levels = []
+        while (condition := source.next()) is not None:
+            levels.append(condition.params["contrast"])
+            # DONE is a success by the outcome's own flag, and a failure by
+            # this task's scorer: every trial makes the next one easier.
+            source.record(condition, TrialResult(outcome=task.outcomes["DONE"], record={}))
+
+        assert levels == pytest.approx([0.5, 0.6, 0.7])
+
     def test_interleaving_by_something_the_task_never_declares_fails_loudly(self):
         paradigm = SchedulerConfig(
             kind="staircase",
@@ -203,8 +231,11 @@ class TestBuildSessionFromATask:
         )
         runner.run()
         # One trial (the default paradigm), one delivery, from the task's
-        # own table — nothing in the session wiring names an outcome.
-        assert len(runner._reward.deliveries) == 1
+        # own table — nothing in the session wiring names an outcome. A
+        # REWARD is written only once the device has delivered.
+        with next(tmp_path.rglob("*_events.csv")).open() as f:
+            rewards = [row for row in csv.DictReader(f) if row["event"] == "REWARD"]
+        assert len(rewards) == 1
 
     def test_explicit_arguments_still_win(self, tmp_path):
         # A test (or a training harness) overriding one piece of a real task
