@@ -128,6 +128,21 @@ class TestUpDownStaircase:
         with pytest.raises(ValueError, match="must stop"):
             UpDownStaircase(parameter="c", start=0.5, step=0.1)
 
+    def test_the_score_callable_decides_what_success_means(self):
+        # As for QUEST+: a task titrating a magnitude rather than accuracy
+        # says what a success is, and the staircase steps on that.
+        stair = self.stair(score=lambda r: not r.outcome.success)
+        stair.record(stair.next(), result(HIT))
+        assert stair.value == pytest.approx(0.6)  # a HIT scored as a failure: easier
+        assert stair.history == [(0.5, False)]
+
+    def test_an_incomplete_trial_never_reaches_the_score_callable(self):
+        seen = []
+        stair = self.stair(score=lambda r: seen.append(r) or True)
+        stair.record(stair.next(), result(BROKE))
+        assert seen == []
+        assert stair.history == []
+
 
 class TestInterleavedStaircases:
     def make(self, seed=0):
