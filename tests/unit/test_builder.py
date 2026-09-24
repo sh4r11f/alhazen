@@ -7,6 +7,7 @@ import pytest
 
 from alhazen import CircleRegion, Model
 from alhazen.config.models import (
+    DEFAULT_MAX_CONSECUTIVE_DROPOUTS,
     DevicesConfig,
     DisplayConfig,
     Duration,
@@ -236,6 +237,40 @@ class TestDeviceOverrides:
         runner.run()
         assert tracker.trials_started  # the runner drove this object, not a config's
 
+    def test_a_trackers_own_dropout_check_reaches_the_row(self, tmp_path):
+        """The engine a built session runs asks the tracker's recording_fault()
+        every frame — the builder's own health check — and its words land on
+        the row."""
+
+        class DiesOnTheFirstTrial(ScriptedTracker):
+            def recording_fault(self) -> str | None:
+                return "no new sample for 60 ms" if len(self.trials_started) == 1 else None
+
+        runner = build(
+            tmp_path,
+            EventSchema(()),
+            tracker=DiesOnTheFirstTrial([], FakeClock()),
+            build_trial=lambda setup: TrialPlan(phases=[RunForFrames(3, COMPLETED)]),
+        )
+        runner.run()
+        first, second = runner._recorder.trials
+        assert (first["outcome"], first["fault"]) == ("ABORTED", "tracker_stopped")
+        assert first["fault_detail"] == "no new sample for 60 ms"
+        assert (second["outcome"], second["fault"]) == ("COMPLETED", "none")
+
+    def test_the_rig_says_how_many_dropouts_in_a_row_pause_the_session(self, tmp_path):
+        runner = build(
+            tmp_path,
+            EventSchema(()),
+            tracker=ScriptedTracker([], FakeClock()),
+            rig_eyetracker=EyeTrackerConfig(backend="eyelink", max_consecutive_dropouts=5),
+        )
+        assert runner._max_consecutive_dropouts == 5
+
+    def test_a_rig_with_no_tracker_config_pauses_at_the_default(self, tmp_path):
+        runner = build(tmp_path, EventSchema(()), tracker=ScriptedTracker([], FakeClock()))
+        assert runner._max_consecutive_dropouts == DEFAULT_MAX_CONSECUTIVE_DROPOUTS
+
     def test_a_handed_in_tracker_gets_the_session_monitor(self, tmp_path):
         # The monitor is what the pause menu's C/V/D and the dashboard's
         # buttons act on, and it holds the drift correction the engine's
@@ -334,9 +369,48 @@ class TestGazeInputProvider:
     def test_health_check_reports_a_stopped_tracker(self):
         tracker = ScriptedTracker([], FakeClock())
         check = make_tracker_health_check(tracker)
-        assert check() == "tracker_stopped"
+        failed = check()
+        assert failed is not None
+        # The reason is the fault vocabulary; the detail says which question
+        # failed, for the row's fault_detail and the log.
+        assert failed.reason == "tracker_stopped"
+        assert failed.detail is not None and "is_recording() is False" in failed.detail
         tracker.start_trial(1, "attempt 1")
         assert check() is None
+
+    def test_health_check_asks_a_tracker_that_can_tell_whether_it_still_delivers(self):
+        """The segment flag cannot see a recording that died mid-trial; a
+        backend's recording_fault() can, and its words become the detail."""
+
+        class DyingTracker(ScriptedTracker):
+            fault: str | None = None
+
+            def recording_fault(self) -> str | None:
+                return self.fault
+
+        tracker = DyingTracker([], FakeClock())
+        tracker.start_trial(1, "attempt 1")
+        check = make_tracker_health_check(tracker)
+        assert check() is None
+        tracker.fault = "no new sample for 60 ms"
+        failed = check()
+        assert failed is not None
+        assert (failed.reason, failed.detail) == ("tracker_stopped", "no new sample for 60 ms")
+
+    def test_a_closed_segment_is_reported_before_the_device_is_asked(self):
+        # With no segment open there is no recording to ask about: the flag
+        # answers, and recording_fault() is never called.
+        asked: list[bool] = []
+
+        class Counting(ScriptedTracker):
+            def recording_fault(self) -> str | None:
+                asked.append(True)
+                return None
+
+        check = make_tracker_health_check(Counting([], FakeClock()))
+        failed = check()
+        assert failed is not None and failed.reason == "tracker_stopped"
+        assert asked == []
 
 
 class TestHostOverlay:

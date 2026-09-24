@@ -474,6 +474,24 @@ class TestATrackerStoppedTrial:
         assert "Flagged fault=tracker_stopped; the condition will be served again" in line
         assert "not counted against the subject" in line
 
+    def test_the_row_and_the_line_say_what_the_tracker_said(self, tmp_path):
+        """fault names the fault; fault_detail is the tracker's own account of
+        it — here the scripted tracker's, which can only say its segment was
+        closed. The real backends say which signal fired and what the device
+        answered (test_tracker_dropout.py)."""
+        harness = run_session(tmp_path, [tracker_stops(), clean()])
+
+        first, second = rows(harness)
+        said = "the tracker reports no recording open (is_recording() is False)"
+        assert first["fault_detail"] == said
+        assert second.get("fault_detail", "") == ""  # only where a check said something
+        (line,) = fault_lines(harness)
+        assert f"decided ({said}) — a system fault" in line
+        # Right after the fault it describes, in the trials table.
+        with harness.paths.trials_path.open(encoding="utf-8") as f:
+            header = next(csv.reader(f))
+        assert header.index("fault_detail") == header.index("fault") + 1
+
     def test_a_task_with_no_fault_reward_pays_nothing_and_says_so(self, tmp_path):
         reward = SimulatedReward()
         harness = run_session(
@@ -830,6 +848,10 @@ class TestATrackerThatStopsDuringTheClosingPhase:
         assert "abort_reason" not in result.record
         assert result.lost_to_fault is None
         assert "during the closing phase 'trial_feedback', after the measurement" in caplog.text
+        # What the tracker said goes on the flagged row and into the line.
+        said = "the tracker reports no recording open (is_recording() is False)"
+        assert result.record["fault_detail"] == said
+        assert f"The device said: {said}" in caplog.text
 
     def test_the_feedback_runs_to_its_end(self):
         stopped, stopped_fixation, stopped_harness = self.run(
@@ -885,6 +907,10 @@ class TestATrackerThatStopsDuringTheClosingPhase:
         assert result.record["fault"] == FAULT_DROPPED_FRAMES
         assert result.lost_to_fault == FAULT_DROPPED_FRAMES
         assert "health check failed (tracker_stopped) during the closing phase" in caplog.text
+        # The detail described the tracker stop; the row now names the
+        # display, whose own account is frame_qa_reason.
+        assert "fault_detail" not in result.record
+        assert result.record["frame_qa_reason"]
 
     def test_a_skip_after_it_is_still_a_skip(self):
         # Two body frames, then the closing phase: its first frame flags the

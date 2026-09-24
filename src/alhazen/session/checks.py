@@ -23,13 +23,15 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from alhazen.config.models import RewardPulses, RigConfig
-from alhazen.core.clock import MonotonicClock
-from alhazen.devices.eyetracker import make_tracker
+from alhazen.config.models import EyeTrackerConfig, RewardPulses, RigConfig
+from alhazen.core.clock import Clock, MonotonicClock
+from alhazen.devices.eyetracker import EyeTracker, make_tracker
+from alhazen.devices.eyetracker.procedures import PROCEDURE_TRIAL_INDEX
 from alhazen.devices.recording import make_recording
 from alhazen.devices.reward import make_reward
 from alhazen.devices.spikes import (
@@ -41,12 +43,30 @@ from alhazen.devices.sync import SyncOutput, make_sync
 from alhazen.display import monitors as monitor_registry
 from alhazen.display.screen import Screen
 from alhazen.errors import AlhazenError, DisplayError, SpikeSourceError
+from alhazen.session.builder import make_tracker_health_check
 
 log = logging.getLogger(__name__)
 
 # One short, deliberately audible pulse: enough for whoever is standing at
 # the rig to hear the valve, short enough to waste nothing.
 CHECK_PULSE = RewardPulses(n_pulses=1, pulse_ms=50, inter_pulse_ms=0)
+
+# The eye tracker's dropout test (_dropout_evidence). How long the tracker is
+# watched recording normally before it is stopped: long enough for the
+# longest ordinary gap between samples to show, short enough not to hold the
+# checkout up. How often the session's health check is polled meanwhile —
+# the frame rate of a 120 Hz rig, which is how often a session asks. How much
+# later than the limit a stop may be reported and still pass: one poll, and
+# on the TRACKPixx3 one device query (its reader asks every half limit). And
+# how long to wait for a report at all before calling detection broken.
+DROPOUT_BASELINE_S = 1.0
+DROPOUT_POLL_S = 1 / 120
+DROPOUT_SLACK_S = 0.05
+DROPOUT_TIMEOUT_S = 2.0
+# What a tracker needs to offer for the test to run (devices/eyetracker/
+# protocol.py): the dropout check itself, the age it compares, and a way to
+# stop its recording through the SDK behind the session's back.
+DROPOUT_CAPABILITIES = ("recording_fault", "newest_sample_age_s", "simulate_dropout")
 
 
 @dataclass(frozen=True)
@@ -196,7 +216,18 @@ def _check_data_root(rig: RigConfig) -> CheckResult:
     return CheckResult("data_root", True, f"{root} is writable", {**evidence, "written": True})
 
 
-def _check_eyetracker(rig: RigConfig) -> CheckResult:
+def _check_eyetracker(
+    rig: RigConfig,
+    clock: Clock | None = None,
+    sleep: Callable[[float], None] | None = None,
+) -> CheckResult:
+    """Connect to the tracker, exercise its dropout detection, release it.
+
+    ``clock`` and ``sleep`` are the session clock the tracker is built with
+    and how the dropout test waits between polls: a real clock and a real
+    sleep at the rig, a fake clock and its ``advance`` in a test, so the test
+    runs in simulated time.
+    """
     cfg = rig.devices.eyetracker
     if cfg is None:
         return CheckResult("eyetracker", True, "not configured on this rig", {"configured": False})
@@ -217,39 +248,211 @@ def _check_eyetracker(rig: RigConfig) -> CheckResult:
             {**evidence, "connected": None, "connect_ms": None},
         )
 
-    # display=None is safe: connect() and shutdown() — the only methods
-    # called here — never touch the window; only configure() does, and
-    # calibration graphics need a real session.
-    tracker = make_tracker(cfg, None, Screen.from_monitor(rig.monitor), MonotonicClock())
+    # display=None is safe: nothing called here touches the window. The
+    # EyeLink's configure() does (calibration graphics), and is never called;
+    # the TRACKPixx3's configure() only starts the device's recording and its
+    # gaze reader, which the dropout test needs.
+    clock = clock if clock is not None else MonotonicClock()
+    sleep = sleep if sleep is not None else time.sleep
+    screen = Screen.from_monitor(rig.monitor)
+    tracker = make_tracker(cfg, None, screen, clock)
     started = time.perf_counter()
     try:
         tracker.connect()
-        # How long the tracker took to answer, which is the tracker's actual
-        # response and not a restatement of "it did not raise": a link that
-        # connects in 4 s today and 40 ms last week is a network or a host
-        # that has changed, and only a written number shows it.
-        evidence["connect_ms"] = round(1000.0 * (time.perf_counter() - started), 1)
-        evidence["connected"] = True
-        # Release the device again: this is a smoke test, not a session, and
-        # nothing should be left connected behind it. No destination — no
-        # trial ran, so there is no recording to hand back.
-        tracker.shutdown(None)
     except AlhazenError as e:
         # Only alhazen's own device errors are a rig fault; anything else is
         # a bug here and keeps its traceback.
         evidence["connected"] = False
         evidence["connect_ms"] = round(1000.0 * (time.perf_counter() - started), 1)
         return CheckResult("eyetracker", False, str(e), {**evidence, "error": str(e)})
+    # How long the tracker took to answer, which is the tracker's actual
+    # response and not a restatement of "it did not raise": a link that
+    # connects in 4 s today and 40 ms last week is a network or a host that
+    # has changed, and only a written number shows it.
+    evidence["connect_ms"] = round(1000.0 * (time.perf_counter() - started), 1)
+    evidence["connected"] = True
+    released: str | None = None
+    try:
+        # With the link up, the one thing a connect cannot show: that a
+        # recording which dies mid-trial is noticed.
+        dropout = _dropout_evidence(tracker, cfg, screen, clock, sleep)
+    finally:
+        # Released whatever the test did — even on an exception that is a
+        # bug here and keeps its traceback — because nothing may be left
+        # connected, or recording, behind a check. No destination: this was
+        # not a session, and its test recording is not data.
+        try:
+            tracker.shutdown(None)
+        except AlhazenError as e:
+            released = str(e)
+    evidence["dropout"] = dropout
+    if released is not None:
+        return CheckResult(
+            "eyetracker",
+            False,
+            f"the tracker could not be released cleanly: {released}",
+            {**evidence, "error": released},
+        )
     # Named by what the experimenter would have to go and check: an EyeLink
     # is reached over the network, so the IP is the useful half of the
     # message; a TRACKPixx3 is inside the display chassis and has no address
     # to get wrong, so printing one would be noise at best and misleading at
     # worst.
     where = f" at {cfg.host_ip}" if cfg.backend == "eyelink" else ""
-    # The console line is unchanged: how long the link took to answer is a
-    # number to compare between checkouts, not something to read out loud at
-    # the rig. It goes in the record.
-    return CheckResult("eyetracker", True, f"{cfg.backend}{where} responded", evidence)
+    # How long the link took to answer is a number to compare between
+    # checkouts, not something to read out loud at the rig: it goes in the
+    # record. Whether a dropout is noticed is said on the line, because a
+    # tracker whose dropouts go unnoticed is one to fix before the session.
+    responded = f"{cfg.backend}{where} responded"
+    if not dropout["tested"]:
+        return CheckResult("eyetracker", True, responded, evidence)
+    if not dropout["ok"]:
+        return CheckResult("eyetracker", False, f"{responded}, but {dropout['verdict']}", evidence)
+    return CheckResult("eyetracker", True, f"{responded}; {dropout['verdict']}", evidence)
+
+
+def _dropout_evidence(
+    tracker: EyeTracker,
+    cfg: EyeTrackerConfig,
+    screen: Screen,
+    clock: Clock,
+    sleep: Callable[[float], None],
+) -> dict[str, Any]:
+    """Exercise the dropout detection a session relies on, on the real
+    tracker, and write down how it did. ``ok`` in the result is the verdict.
+
+    Three steps, each with the session's own code:
+
+    1. **Record normally.** Open a recording segment as a trial does
+       (``start_trial``; the TRACKPixx3 is configured first, which starts its
+       recording and gaze reader and needs no window), and poll the session's
+       own health check (``make_tracker_health_check``) at a session's frame
+       rate for DROPOUT_BASELINE_S. Nothing may be reported: a check that
+       fires on a tracker recording normally would abort every trial. The
+       longest the tracker went without a new sample is written down, which
+       is what ``max_sample_gap_ms`` has to stay clear of.
+    2. **Stop the recording through the vendor SDK**, behind the session's
+       back (``simulate_dropout``: the EyeLink's ``stopRecording()``, the
+       TRACKPixx3's ``TPxDisableFreeRun()``) — the stop a session must notice.
+    3. **Time the report.** Poll the health check until it reports. It
+       passes within the limit plus DROPOUT_SLACK_S. The detail it gave is
+       written down: it is the sentence a session's row would carry.
+
+    Also written down: what one health-check call cost here, on the healthy
+    path and on the call that caught the stop — the per-frame price of the
+    check in a session, measured on this machine rather than assumed.
+
+    A tracker without the capabilities (DROPOUT_CAPABILITIES) is not tested,
+    and the record says so.
+    """
+    if not all(hasattr(tracker, name) for name in DROPOUT_CAPABILITIES):
+        return {"tested": False, "ok": None, "verdict": "no dropout detection to exercise"}
+    limit_s = cfg.sample_gap_limit_s
+    evidence: dict[str, Any] = {
+        "tested": True,
+        "ok": False,
+        "limit_ms": round(limit_s * 1000.0, 1),
+        "baseline_s": DROPOUT_BASELINE_S,
+        "poll_ms": round(DROPOUT_POLL_S * 1000.0, 1),
+        "longest_gap_ms": None,
+        "false_alarm": None,
+        "check_us_mean": None,
+        "check_us_max": None,
+        "stopped_by": None,
+        "detected": False,
+        "latency_ms": None,
+        "detail": None,
+        "detecting_check_us": None,
+        "verdict": "",
+    }
+    check = make_tracker_health_check(tracker)
+
+    def timed_check() -> tuple[Any, float]:
+        # Wall-clock microseconds for one call, whatever clock the tracker
+        # runs on: the cost is this machine's, the time the test's.
+        began = time.perf_counter()
+        failed = check()
+        return failed, (time.perf_counter() - began) * 1e6
+
+    try:
+        if cfg.backend == "viewpixx":
+            tracker.configure(screen, clock)
+        tracker.start_trial(PROCEDURE_TRIAL_INDEX, "check-rig dropout test")
+        try:
+            _watch_and_stop(tracker, evidence, limit_s, clock, sleep, timed_check)
+        finally:
+            tracker.stop_trial()
+    except AlhazenError as e:
+        # The device failed the test itself — a recording that would not
+        # start, a stop the SDK refused: detection could not be shown to
+        # work, which on a real tracker is a fault in its own right.
+        evidence["error"] = str(e)
+        evidence["ok"] = False
+        evidence["verdict"] = f"the dropout test could not run: {e}"
+    return evidence
+
+
+def _watch_and_stop(
+    tracker: Any,
+    evidence: dict[str, Any],
+    limit_s: float,
+    clock: Clock,
+    sleep: Callable[[float], None],
+    timed_check: Callable[[], tuple[Any, float]],
+) -> None:
+    """Steps 1 to 3 of _dropout_evidence, filling in ``evidence``."""
+    costs: list[float] = []
+    longest = 0.0
+    began = clock.now()
+    while clock.now() - began < DROPOUT_BASELINE_S:
+        failed, cost = timed_check()
+        costs.append(cost)
+        age = tracker.newest_sample_age_s()
+        if age is not None:
+            longest = max(longest, age)
+        if failed is not None:
+            evidence["false_alarm"] = failed.detail
+            evidence["verdict"] = (
+                f"the dropout check fired while the tracker was recording normally — it would "
+                f"abort every trial: {failed.detail}"
+            )
+            return
+        sleep(DROPOUT_POLL_S)
+    evidence["longest_gap_ms"] = round(longest * 1000.0, 1)
+    evidence["check_us_mean"] = round(sum(costs) / len(costs), 1)
+    evidence["check_us_max"] = round(max(costs), 1)
+
+    evidence["stopped_by"] = tracker.simulate_dropout()
+    stopped = clock.now()
+    budget_s = limit_s + DROPOUT_SLACK_S
+    while clock.now() - stopped <= DROPOUT_TIMEOUT_S:
+        failed, cost = timed_check()
+        if failed is not None:
+            latency_ms = round((clock.now() - stopped) * 1000.0, 1)
+            evidence.update(
+                detected=True,
+                latency_ms=latency_ms,
+                detail=failed.detail,
+                detecting_check_us=round(cost, 1),
+            )
+            if latency_ms <= budget_s * 1000.0:
+                evidence["ok"] = True
+                evidence["verdict"] = (
+                    f"a stop through the SDK was reported in {latency_ms:.0f} ms "
+                    f"(limit {limit_s * 1000:g} ms)"
+                )
+            else:
+                evidence["verdict"] = (
+                    f"a stop through the SDK was reported only after {latency_ms:.0f} ms, past "
+                    f"the {limit_s * 1000:g} ms limit (+{DROPOUT_SLACK_S * 1000:g} ms for polling)"
+                )
+            return
+        sleep(DROPOUT_POLL_S)
+    evidence["verdict"] = (
+        f"a stop through the SDK was NOT reported within {DROPOUT_TIMEOUT_S:g} s — dropout "
+        f"detection is not working on this tracker, and a session would run on after it stops "
+        f"recording"
+    )
 
 
 def _check_reward(rig: RigConfig, pulse: bool) -> CheckResult:
