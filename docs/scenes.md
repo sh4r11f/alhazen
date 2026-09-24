@@ -12,7 +12,7 @@ graph LR
     STUDIO["illusion-studio<br/>(design, TypeScript + Canvas)"] -->|"scene.json"| LOAD
     LOAD["load_scene()<br/>version check · subset check"] --> RENDER
     PARAMS["task params"] --> RENDER
-    CLOCK["trial dt"] --> RENDER
+    CLOCK["trial dt<br/>(measured frame durations)"] --> RENDER
     RENDER["headless_render()<br/>numpy, no display"] --> ARRAY["(h, w, 3) uint8"]
     ARRAY --> SIM["simulated backend:<br/>recorded in .frames"]
     ARRAY --> PSY["psychopy backend:<br/>blitted as an ImageStim"]
@@ -63,18 +63,49 @@ is how an experiment finds out what a scene wants before running one.
 
 ## Determinism
 
-Same scene, same params, same time ⇒ same pixels. Three things make that
-true:
+Same scene, same params, same `time` and `dt` ⇒ same pixels. Three things
+make that true:
 
 - **The RNG is ported, not substituted.** `scenes/rng.py` is a bit-exact port
   of the studio's mulberry32, pinned by sequences generated from the
   TypeScript itself. `numpy.random` would give different — equally random,
   entirely other — dots.
-- **Nothing reads a wall clock.** Scene time comes from the trial's `dt`, so
-  two runs of the same trial show the same frames.
+- **Nothing reads a wall clock.** The renderer is handed `time` and `dt` by
+  its caller and reads nothing else that changes from one frame to the next.
 - **Dot fields have no incremental state.** A dot's position is computed from
   its index and the current time, so seeking to a moment gives what playing
   to it would.
+
+### What a run shows
+
+That is a promise about one picture, not about a run. Inside a trial,
+`SceneStimulus` adds up the `dt` its phase passes on every frame: `ctx.dt`,
+the measured duration of the frame just shown. So scene time follows the
+flips as they actually happened, not a count of frames. (A trial's first
+frame has no measured frame before it and gets 1/60 s.) On a 60 Hz display,
+with and without a drop on the second frame:
+
+| frame drawn | 1 | 2 | 3 | 4 |
+|---|---|---|---|---|
+| no drop: scene time (ms) | 16.7 | 33.3 | 50.0 | 66.7 |
+| frame 2 dropped: scene time (ms) | 16.7 | 33.3 | 66.7 | 83.3 |
+
+Frame 2 stayed on screen for two periods, so frame 3 shows the scene two
+periods on, and the picture due at 50 ms is never drawn: the scene skips
+ahead to where it should be rather than falling behind. Ordinary flip jitter
+moves scene time by fractions of a millisecond. That is enough to move a
+change keyed to `time` (say `time > 0.5`) by a whole frame when the
+threshold falls near one. An expression that reads `dt` sees the measured
+value too. What that means for reproducing a run:
+
+- **Two runs of the same trial show the same frames only if every flip took
+  the same time.** A real display does not promise that.
+- **Any single frame can be rendered again** from the scene time and `dt` it
+  was drawn at, because rendering is a pure function of them.
+- **The frame log shows where a scene skipped.** `frames.csv` holds every
+  measured interval and marks the dropped ones.
+- **A design that needs the identical sequence of frames on every run**
+  needs a schedule indexed by frame (`FrameTimeline`), which a scene is not.
 
 ## The expression language
 

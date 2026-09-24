@@ -1011,6 +1011,73 @@ class TestSceneStimulus:
         # It moved: scene time advanced with the trial's dt, not a wall clock.
         assert not np.array_equal(stimulus.frames[0], stimulus.frames[2])
 
+    def test_scene_time_follows_the_measured_flips_so_a_dropped_frame_skips_ahead(self):
+        """What the class docstring says, run through the engine. Scene time
+        is the sum of the measured frame durations a phase passes (ctx.dt),
+        not a count of frames. A frame that stays up for two periods moves
+        the scene on by two, so a run that dropped it shows a different
+        sequence from a run that did not: the next picture is the one due at
+        that moment, and the one due in between is never drawn."""
+        from alhazen.core.trial import PhaseAction
+        from support import COMPLETED, FRAME_S, EngineHarness
+
+        # A dot moving 5 px per 60 Hz frame, so every frame's picture differs.
+        scene = scene_of(
+            {
+                "type": "circle",
+                "cx": {"expr": "10 + 300*time"},
+                "cy": 20,
+                "radius": 4,
+                "fill": "#fff",
+            }
+        )
+
+        class DrawScene:
+            """Draws the scene the way every library phase draws a stimulus
+            (update by ctx.dt, then draw), for five frames. On ``drop_on``,
+            the flip after the draw takes an extra period: a dropped frame."""
+
+            name = "draw_scene"
+
+            def __init__(self, harness, drop_on):
+                self._harness = harness
+                self._drop_on = drop_on
+                self.drawn = 0
+                self.times = []
+
+            def on_enter(self, ctx):
+                pass
+
+            def on_frame(self, ctx):
+                stimulus = ctx.stimuli["scene"]
+                stimulus.update(ctx.dt)
+                stimulus.draw()
+                self.times.append(stimulus.time)
+                if self.drawn == self._drop_on:
+                    self._harness.display.next_flip_extra = FRAME_S
+                self.drawn += 1
+                return PhaseAction.CONTINUE if self.drawn < 5 else COMPLETED
+
+        def run(drop_on=None):
+            harness = EngineHarness()
+            stimulus = SceneStimulus(harness.display, SCREEN, scene, width=80, height=40)
+            phase = DrawScene(harness, drop_on)
+            harness.engine.run_trial(harness.ctx(stimuli={"scene": stimulus}), [phase])
+            return phase.times, stimulus.frames
+
+        clean_times, clean_frames = run()
+        # Frame 2 (index 1) stays on screen for two periods.
+        dropped_times, dropped_frames = run(drop_on=1)
+
+        # The first frame has no measured frame before it: ctx.dt's 1/60 s.
+        assert clean_times == pytest.approx([n * FRAME_S for n in (1, 2, 3, 4, 5)])
+        assert dropped_times == pytest.approx([n * FRAME_S for n in (1, 2, 4, 5, 6)])
+        # After the drop, each picture is the one due at that moment...
+        assert np.array_equal(dropped_frames[2], clean_frames[3])
+        assert np.array_equal(dropped_frames[3], clean_frames[4])
+        # ...and the picture due at 3 periods is never drawn.
+        assert not any(np.array_equal(clean_frames[2], frame) for frame in dropped_frames)
+
     def test_a_scene_declares_its_own_size_in_the_formats_own_fields(self):
         display = FakeDisplay(FakeClock(), 1 / 60)
         scene = load_scene(

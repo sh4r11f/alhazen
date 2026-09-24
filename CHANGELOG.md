@@ -301,6 +301,19 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   feedback runs to its end, and the trial keeps its outcome — paid,
   scheduled and counted by it.
 
+- **The scene documentation no longer promises the same frames on every
+  run.** `SceneStimulus`, `docs/scenes.md` and `docs/architecture.md` said
+  that scene time never comes from a wall clock, so two runs of the same
+  trial show the same frames. It never reads a wall clock, but scene time is
+  the sum of the measured frame durations a phase passes to `update(dt)`, so
+  it follows the flips as they actually happened. A dropped frame moves the
+  scene on by the time it took, and the picture due in between is never
+  drawn. Flip jitter moves it by fractions of a millisecond. Two runs show
+  the same frames only if every flip took the same time. What does
+  reproduce is the picture for a given scene time and `dt`. The docs now say
+  so, with a worked example. Nothing about how a scene is drawn has changed,
+  and a test now pins the behaviour described.
+
 - **Frame QA's percentages no longer contradict their own verdict.** The
   recycle reason printed the dropped fraction to one decimal and the budget
   to whole percents. At the shipped 10% budget, a trial that dropped 21 of

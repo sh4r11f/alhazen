@@ -1139,9 +1139,25 @@ class SceneStimulus:
     stimulus keys can draw one. ``update(dt)`` advances the scene's own clock;
     ``draw()`` renders that moment and puts it on screen.
 
-    Scene time comes from the trial's dt, never from a wall clock: two runs of
-    the same trial must show the same frames, and a stimulus that read the
-    time of day could not promise that.
+    Scene time is the running sum of the ``dt`` values ``update`` was given,
+    and a phase passes ``ctx.dt``: the measured duration of the frame just
+    shown, on the session clock. (A trial's first frame has no measured frame
+    before it, so it gets ``ctx.dt``'s default of 1/60 s.) Nothing here reads
+    a wall clock, but scene time is not a frame count either: it follows the
+    flips as they actually happened. A dropped frame stays on screen for two
+    refresh periods (or more), so the next frame shows the scene that much
+    later, and the picture due in between is never drawn. Ordinary flip
+    jitter moves scene time by fractions of a millisecond.
+
+    So two runs of the same trial show the same frames only if every flip
+    took the same time, and a real display does not promise that. What does
+    reproduce is the picture at a given moment: ``headless_render`` is a pure
+    function of the scene, its params, ``time`` and ``dt``, so a frame can be
+    rendered again from the scene time and ``dt`` it was drawn at. The frame
+    log (``frames.csv``) holds every measured interval and marks the dropped
+    ones, so the trials whose scene skipped ahead can be found afterwards. A
+    design that needs the identical sequence of frames on every run needs a
+    schedule indexed by frame (``FrameTimeline``), which a scene is not.
 
     Coordinates (spec 7.3). A scene is y-**down** logical pixels from its
     top-left corner; the screen is centered px with y **up**. The rendered
