@@ -34,20 +34,24 @@ fails on you:
 Imports point only downward:
 
 ```
-cli → session | testing | analysis → training → task → paradigms | devices
-    → core → stimuli | scenes → display → config | data
+cli → modes → session | testing | analysis → training → task → dashboard
+    → paradigms | devices → core | neural → stimuli | scenes → display
+    → config | data | _scaffold
 ```
 
 `errors` and `version` sit outside it — anything may import them. The contract
 is enforced by `lint-imports`, not by convention, and a new package joins the
-list in the same change that adds it.
+list in the same change that adds it: `lint-imports` cannot see a package that
+is not on the list, so `tests/unit/test_layering.py` fails until it is. The
+same test checks this drawing, and the one in `docs/architecture.md`, against
+the config.
 
 ## The invariants
 
 These are what the tests pin. Do not "simplify" one away without a discussion:
 
 1. **Flip-locked events.** Visual events queue via `ctx.emit_on_flip` and emit
-   only after the flip that showed them.
+   only after the flip that showed them, stamped with that flip's time.
 2. **One clock.** Every timestamp comes from the injected session clock.
    Device clocks are aligned offline, never mixed in online.
 3. **Dumb phases.** A phase touches only the `TrialContext` — no hardware, no
