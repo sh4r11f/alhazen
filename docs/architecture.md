@@ -1481,7 +1481,14 @@ since hashing gigabytes to identify it costs more than it is worth), every
 table written, the parameters, and the alhazen version that produced them. An
 empty result still writes its file: nothing on disk is indistinguishable from
 the analysis never having run, which is the question the bundle exists to
-answer.
+answer. Inputs are hashed by the same function the run manifest uses
+(`data.manifest.sha256_file`), so the two can be compared.
+
+An `out_dir` that already holds files is reused — a report re-run into its
+own `analysis/` directory is the normal case — but not silently: opening the
+bundle logs a warning listing them, and the manifest's `preexisting` lists
+every one this bundle did not rewrite, so an earlier run's leftover output
+cannot pass for this run's.
 
 ### 7.6 Readers
 

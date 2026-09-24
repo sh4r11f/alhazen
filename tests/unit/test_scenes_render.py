@@ -211,6 +211,24 @@ class TestExpressionsAreResolvedAtLoad:
         with pytest.raises(ConfigError, match="tiem"):
             load_scene(body)
 
+    def test_a_malformed_number_fails_at_load_naming_its_field(self):
+        # Used to escape the tokenizer as a bare ValueError, which the
+        # loader's "does not parse" wrapper did not catch.
+        with pytest.raises(ConfigError, match=r"layers\[0\]\.element\.cx .*malformed number"):
+            load_scene(self.scene("1.2.3 * width"))
+
+    def test_the_background_expression_is_checked_too(self):
+        # The background was the one expression the loader never looked at,
+        # so its typo waited for the first frame.
+        body = {"version": 1, "background": {"expr": "tiem > 1 ? '#fff' : '#000'"}}
+        with pytest.raises(ConfigError, match=r"background reads \['tiem'\]"):
+            load_scene(body)
+
+    def test_a_malformed_number_in_the_background_fails_at_load(self):
+        body = {"version": 1, "background": {"expr": "1.2.3"}}
+        with pytest.raises(ConfigError, match="background does not parse"):
+            load_scene(body)
+
 
 class TestColours:
     def test_the_forms_scenes_use(self):
@@ -985,6 +1003,42 @@ class TestExpressionsInScenes:
         }
         image = render(element, params={"x": 150})
         assert image[75, 150].tolist() == [255, 255, 255]
+
+    def test_a_runtime_operator_error_names_layer_expression_and_time(self):
+        # `params.x - 1` is fine at load (params.x may be any value); it can
+        # only fail on a frame, once it meets a string. That frame's error
+        # must say where in the scene, which expression, and when.
+        element = {"type": "circle", "cx": {"expr": "params.x - 1"}, "cy": 75, "radius": 8}
+        with pytest.raises(ConfigError) as caught:
+            render(element, params={"x": "left"}, time=1.5)
+        message = str(caught.value)
+        assert "layers[0]" in message
+        assert "'params.x - 1'" in message
+        assert "'left' and 1" in message
+        assert "scene time 1.5 s" in message
+
+    def test_a_runtime_error_inside_a_group_names_the_child(self):
+        body = {
+            "type": "group",
+            "children": [
+                {"element": {"type": "circle", "cx": 10, "cy": 10, "radius": 5}},
+                {"element": {"type": "circle", "cx": {"expr": "-params.x"}, "radius": 5}},
+            ],
+        }
+        with pytest.raises(ConfigError, match=r"layers\[0\]\.children\[1\] at scene time"):
+            render(body, params={"x": "left"})
+
+    def test_a_string_result_in_a_numeric_field_names_the_expression(self):
+        # withAlpha is valid language, so this loads; the float() the field
+        # needs used to fail as a bare ValueError naming nothing.
+        element = {"type": "circle", "cx": {"expr": "withAlpha('#ffffff', 1)"}, "radius": 5}
+        with pytest.raises(ConfigError, match=r"layers\[0\] .*a number was needed"):
+            render(element)
+
+    def test_a_runtime_error_in_the_background_names_it(self):
+        scene = load_scene({"version": 1, "background": {"expr": "params.ink * 2"}})
+        with pytest.raises(ConfigError, match=r"background at scene time 0 s: .*'\*'"):
+            headless_render(scene, params={"ink": "#fff"}, width=4, height=4)
 
     def test_a_canvas_size_is_required(self):
         with pytest.raises(ConfigError, match="canvas size"):
