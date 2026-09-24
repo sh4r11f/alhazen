@@ -1,7 +1,8 @@
 """The experiment: what a trial is made of.
 
-Everything this file declares is this experiment's own — its parameters, the
-events it marks, the outcomes a trial can have, and how one is built. The
+Everything this file declares is this experiment's own — its parameters and
+the file they are read from, the events it marks, the outcomes a trial can
+have, how one is built, and what the subject reads before the first. The
 frame loop, the devices, the data files and the scheduling all come from
 alhazen, and none of them appear here.
 
@@ -10,6 +11,8 @@ through, the stimuli they draw, and the regions they test gaze against.
 """
 
 from __future__ import annotations
+
+from pathlib import Path
 
 import numpy as np
 
@@ -64,6 +67,46 @@ class $task_class(Task):
     )
 
     params_model = ${task_class}Params
+
+    @classmethod
+    def default_params(cls) -> Path:
+        """The params file a session runs with when no --params is given.
+
+        Named here, on the task, because the task is the one thing every way
+        of starting a session is handed: ``alhazen run --task $task_name``
+        and ``python run.py`` both load it, in every mode. A path that names
+        no file stops the session, naming it, rather than running the params
+        model's defaults in its place.
+        """
+        # This file is src/$package/task.py, two levels below the repository,
+        # and configs/ sits at the repository's top beside pyproject.toml.
+        # Found from this file rather than from the working directory, so the
+        # session finds it wherever it is started. That holds while the
+        # package is installed editable (pip install -e .), which keeps this
+        # file inside the repository; a regular install carries no configs/,
+        # and a session started without --params then stops and names the
+        # file it could not find.
+        repository = Path(__file__).resolve().parents[2]
+        return repository / "configs" / "task.yaml"
+
+    def instructions(self) -> str | None:
+        """What the subject reads before trial one, in every mode that runs
+        trials. ``run`` and ``test`` wait for SPACE; ``simulate`` starts by
+        itself.
+
+        Return None instead to declare that this task has none (an animal
+        subject). Leaving the method out altogether makes ``--mode run``
+        warn, because a task that forgot looks exactly like one that decided.
+        Kept here as a string so it is reviewed with the code; read it from a
+        file (an instructions.md) once it outgrows that. The display reflows
+        it: a single newline joins lines into one paragraph, and a blank line
+        starts the next.
+        """
+        return (
+            "Look at the dot in the middle of the screen, and keep your eyes on it.\n"
+            "\n"
+            "Press SPACE to begin."
+        )
 
     def conditions(self, rng: np.random.Generator) -> list[Condition]:
         """The cells this session varies over. One nameless condition is a

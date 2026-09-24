@@ -44,8 +44,8 @@ You now have a working experiment package:
 
 ```
 saccade_bias/
-├── src/saccade_bias/task.py   the experiment: params, events, outcomes, one trial
-├── configs/task.yaml          the task's parameters
+├── src/saccade_bias/task.py   the experiment: params, events, outcomes, one trial, the instructions
+├── configs/task.yaml          the task's parameters (the file task.py names)
 ├── configs/rig-mac.yaml       a development laptop: a window, no devices (read its Retina notes)
 ├── configs/rig-lab.yaml       the rig: fill in your monitor, uncomment your devices
 ├── tests/test_task.py         tests on a fake clock, no display needed
@@ -65,10 +65,11 @@ there is one per machine and never one shared between them.
 pytest
 ```
 
-Three tests, on a fake clock with scripted gaze: the trial completes when the
+Five tests, on a fake clock with scripted gaze: the trial completes when the
 subject looks at the point, times out when they never do, and — the one worth
 reading — treats a blink during the hold as a break rather than as continued
-fixation.
+fixation. The last two check that the params file the task names is there and
+loads, and that the task tells its subject what to do.
 
 ## Run a session
 
@@ -111,7 +112,7 @@ non-zero if anything is wrong, so it can gate a pipeline.
 
 ## Change the experiment
 
-Open `src/saccade_bias/task.py`. Three things to try:
+Open `src/saccade_bias/task.py`. Four things to try:
 
 1. **Change a duration.** `configs/task.yaml`'s `hold_duration: {ms: 500}`
    can also be `{frames: 30}` — frame-denominated durations are exact, and
@@ -120,6 +121,10 @@ Open `src/saccade_bias/task.py`. Three things to try:
 3. **Change the scheduling.** `paradigm: {kind: staircase, ...}` in the task
    config turns the same trials into an adaptive staircase, with no code
    change.
+4. **Change what the subject reads.** `instructions()` returns the text shown
+   before trial one — in every mode that runs trials, however the session was
+   started. Return `None` for a task whose subject reads nothing (an animal);
+   leave the method out and a real session warns that it was never said.
 
 ## When you get to the rig
 
@@ -129,6 +134,15 @@ alhazen calibrate ruler --rig configs/rig-lab.yaml   # is the geometry right?
 alhazen check-rig --rig configs/rig-lab.yaml --pulse # is everything wired?
 alhazen run --task saccade-bias --rig configs/rig-lab.yaml --sub s01 --ses 1
 ```
+
+`alhazen run --task` starts the same session `run.py` does. With no
+`--params` it loads `configs/task.yaml`, because the task names that file
+(`default_params()` in `task.py`), and it shows the subject the task's
+`instructions()` before trial one; the line printed before the first trial
+says which params file is running. The task finds `configs/` from its own
+file, so keep the package installed editable (`pip install -e .`): a session
+that cannot find the file stops and names it rather than running the params
+model's defaults instead.
 
 `monitor register` writes the rig's monitor into PsychoPy's own monitor
 database — the one Monitor Center edits, under `~/.psychopy3/monitors` — using

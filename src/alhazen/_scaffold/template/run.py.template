@@ -14,13 +14,19 @@ laptop does not have. The default rig is the laptop, so that a bare
 ``python run.py --mode demo`` shows the stimulus wherever you are sitting.
 
 This exists so the experiment can be started without installing anything.
-Once the package IS installed, ``alhazen run --task $task_name --mode ...``
-does the same job through the same code.
+Once the package is installed (``pip install -e .``),
+``alhazen run --task $task_name --rig <file>`` starts the same session
+through the same code, because what else a session needs from this
+experiment is declared on its task, which both are handed: the params file
+(``default_params`` in src/$package/task.py, used when ``--params`` is not
+given) and what the subject reads before trial one (``instructions``). The
+one difference is the rig: this file starts on the laptop's by default, and
+``alhazen run`` needs ``--rig``.
 
 The argument parser, the run-number counter, the rehearsal path — everything
 every experiment needs — is alhazen's ``run_experiment``. What belongs here
-is only what is about THIS experiment: its task class, and (once you write
-them) where its subject-facing instructions come from.
+is only what is about THIS experiment and not already on its task: which
+task it is, and which rig to start on.
 """
 
 from __future__ import annotations
@@ -39,7 +45,6 @@ if __name__ == "__main__":
         run_experiment(
             task_class=$task_class,
             default_rig=HERE / "configs" / "rig-mac.yaml",
-            default_params=HERE / "configs" / "task.yaml",
             argv=sys.argv[1:],
         )
     )
