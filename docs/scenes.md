@@ -52,12 +52,29 @@ Refusing is the whole design. A renderer that silently skipped a text layer
 would produce a stimulus that looks almost right, and "almost right" in a
 psychophysics experiment is a result nobody can interpret.
 
-Every expression in a scene is **compiled at load**, and every identifier in
-it resolved against the function library, the builtin variables (`time`,
-`dt`, `width`, `height`, `dpr`, `params`) and any names passed as
-`load_scene(..., declared_params=[...])`. So a typo in a ternary branch this
-session happens never to take is an error when the file is opened, not on the
-frame that finally reaches it — which could be minutes into a session.
+Every expression in a scene, the `background` included, is **compiled at
+load**, and every identifier in it resolved against the function library, the
+builtin variables (`time`, `dt`, `width`, `height`, `dpr`, `params`) and any
+names passed as `load_scene(..., declared_params=[...])`. So a typo in a
+ternary branch this session happens never to take is an error when the file
+is opened, not on the frame that finally reaches it — which could be minutes
+into a session. The same goes for a syntax error or a malformed number such
+as `1.2.3`. Each is a `ConfigError` naming the field (`layers[2].element.cx`)
+and the expression.
+
+What cannot be known at load is what the values will be. `params.x - 1` is
+fine until `params.x` turns out to be a string; `10 ** params.k` is fine until
+`k` is large enough to overflow. Those fail on the frame that meets them, as a
+`ConfigError` naming the layer, the scene time, the expression, the operator
+and the values involved:
+
+```
+layers[0] at scene time 1.5 s: scene expression 'params.x - 1' failed:
+cannot apply '-' to 'left' and 1: unsupported operand type(s) for -: 'str' and 'float'
+```
+
+Dividing by zero is not one of them: as in the studio, `1 / 0` is infinity
+and `1 % 0` is NaN.
 `scene_param_names(scene)` reports every `params.<name>` a scene reads, which
 is how an experiment finds out what a scene wants before running one.
 
