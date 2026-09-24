@@ -7,14 +7,19 @@ the psychometric function the staircase converges on (2-down-1-up ≈ 71%
 correct), and the *reversals* — the trials where direction changes — are what
 an analysis averages to estimate the threshold.
 
-Success comes from ``TrialResult.outcome.success`` and nothing else. A
-scheduler that reached into the trial record would be reading measurements the
-task defines, which is how a scheduler and an analysis end up disagreeing
-about what "correct" meant.
+What counts as a success is the experiment's business, not this module's —
+the same rule QUEST+ follows. ``score`` maps a completed trial to True/False;
+built from a config, it is the task's own ``Task.score_trial``, so a task
+titrating a magnitude or a settling error rather than accuracy steps the
+staircase on that. Without one, success is ``TrialResult.outcome.success``.
+The staircase never reads the trial record itself: a scheduler with its own
+idea of "correct" is how a scheduler and an analysis end up disagreeing about
+what "correct" meant, so the definition stays in the task, in one place.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
@@ -24,11 +29,21 @@ from alhazen.core.engine import TrialResult
 from alhazen.paradigms.base import Condition
 
 
+def _success_from_outcome(result: TrialResult) -> bool:
+    # The default scorer, and the same one QuestPlus and Task.score_trial
+    # default to: a staircase built without a scorer must titrate exactly
+    # what it did before the scorer existed, trial for trial.
+    return bool(result.outcome.success)
+
+
 class UpDownStaircase:
     """One transformed up-down staircase over a single condition parameter.
 
     Stops after ``n_reversals`` reversals or ``n_trials`` completed trials,
     whichever is given (both may be, and whichever comes first ends it).
+
+    ``score`` decides whether a completed trial was a success (default:
+    ``outcome.success``). It is asked about completed trials only.
     """
 
     def __init__(
@@ -43,6 +58,7 @@ class UpDownStaircase:
         min_value: float | None = None,
         max_value: float | None = None,
         fixed: dict[str, Any] | None = None,
+        score: Callable[[TrialResult], bool] | None = None,
     ) -> None:
         if step <= 0:
             raise ValueError("step must be > 0 — direction comes from n_up/n_down, not its sign")
@@ -62,6 +78,9 @@ class UpDownStaircase:
         self._min = min_value
         self._max = max_value
         self._fixed = dict(fixed or {})
+        # `is not None` rather than `or`: a scorer is replaced only when none
+        # was given, never because the object passed in happens to be falsy.
+        self._score = score if score is not None else _success_from_outcome
 
         self._successes = 0  # consecutive, reset by a failure
         self._failures = 0  # consecutive, reset by a success
@@ -88,9 +107,15 @@ class UpDownStaircase:
         if not result.outcome.completed:
             # No measurement exists, so the staircase must not move: stepping
             # on a fixation break would walk the estimate toward wherever the
-            # subject happened to stop cooperating.
+            # subject happened to stop cooperating. The scorer is not asked
+            # either: there is no trial for it to judge. next() serves the
+            # same value again, so the attempt is simply retried.
             return
-        success = bool(result.outcome.success)
+        # The scorer's verdict, not outcome.success: a task titrating
+        # something other than accuracy has said what a success is.
+        # bool() keeps `history` a list of real booleans whatever truthy
+        # value a task's scorer hands back (a numpy bool, say).
+        success = bool(self._score(result))
         self.history.append((self._value, success))
         if success:
             self._successes += 1
@@ -146,6 +171,8 @@ class InterleavedStaircases:
     session affects every staircase equally instead of only the later ones.
     Which staircase a trial belongs to travels in the condition itself (and so
     into the trial record), which is how ``record`` routes the result back.
+    Each staircase then scores it with its own ``score``; ``make_scheduler``
+    gives every one of them the task's.
     """
 
     def __init__(

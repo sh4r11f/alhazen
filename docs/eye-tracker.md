@@ -369,7 +369,15 @@ backend's, for a person to read; select on `fault`, never on this.
   warning if not. If the device is gone, the start raises a `TrackerError`
   that says what to check (the Host PC's address; the DATAPixx3's power and
   USB cable) and what the previous trial's recording died of. The session
-  ends there, and its teardown saves everything, as after any failure.
+  ends there, and its teardown saves everything it can still reach, as after
+  any failure. An EyeLink's EDF is the exception: it is on the Host PC, and
+  a dead link cannot bring it over. Teardown then raises a `TrackerError`
+  naming the file (`edf_host_filename`, `alhazen.EDF` by default) and where
+  it belongs in the run directory, the database records the run as `failed`,
+  and the link is closed all the same. Copy the file off the Host PC by hand before
+  the next session: every session opens its EDF under that same name.
+  (With no run behind it — `check-rig` — a dead link loses nothing and is
+  only logged.)
 - **A tracker that keeps dropping out.** If the device answers but drops
   out again, trial after trial, each trial is served again. Left alone, that
   would be a loop that pays the fault reward every time. So after
