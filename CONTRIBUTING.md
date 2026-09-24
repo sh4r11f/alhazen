@@ -48,11 +48,14 @@ Imports point only downward:
 ```
 cli → modes → session | testing | analysis → training → task → dashboard
     → paradigms | devices → core | neural → stimuli | scenes → display
-    → config | data | _scaffold
+    → config | data | _scaffold → _deprecation
 ```
 
-`errors` and `version` sit outside it — anything may import them. The contract
-is enforced by `lint-imports`, not by convention, and a new package joins the
+`errors` and `version` sit outside it — anything may import them.
+`_deprecation` (the `@deprecated` decorator) is on it, alone on the bottom
+line: every layer may import it, and it may import nothing else from alhazen.
+The contract is enforced by `lint-imports`, not by convention, and a new
+package joins the
 list in the same change that adds it: `lint-imports` cannot see a package that
 is not on the list, so `tests/unit/test_layering.py` fails until it is. The
 same test checks this drawing, and the one in `docs/architecture.md`, against
