@@ -6,15 +6,19 @@ an argument parser, a next-run-number counter, a rehearsal path, a guard
 against autopilotting a real rig. Two experiments had already written it
 twice, identically, including the same off-by-one in the run counter.
 
-What is genuinely per-experiment is which task class to run, and which rig and
-params file it starts from by default, so those are the arguments, and
+What is genuinely per-experiment is which task class to run and which rig to
+start on when the command line names none, so those are the arguments, and
 everything else is shared with ``alhazen run``. Literally shared: both go
 through ``add_mode_arguments`` and the same dispatch, because two entry points
 that drifted apart would mean a flag that behaves one way at the rig and
-another way in a script. The subject-facing wording used to be an argument
-too; a task now declares it itself (``Task.instructions``), so ``alhazen run``
-shows it as well, and the argument remains for a run.py that wants to
-override it.
+another way in a script.
+
+The subject's wording, the params file and the params hook used to be
+arguments here too, which is why ``alhazen run`` — handed only the task class
+— could have none of them. A task now declares all three itself
+(``Task.instructions``, ``Task.default_params``, ``Task.params_hook``), so
+both entry points get them. The arguments remain for a ``run.py`` written
+before that, and when given they take precedence over the task's own.
 """
 
 from __future__ import annotations
@@ -37,21 +41,31 @@ def run_experiment(
 ) -> int:
     """Parse ``argv`` and run this experiment in the mode it names.
 
-    ``instructions`` is optional: a task that implements
-    ``Task.instructions`` has its wording shown by every entry point, this one
-    included, with nothing passed here. **Given, it takes precedence** over
-    the task's own for sessions started through this run.py — ``alhazen run``
-    still shows the task's. It is a callable rather than a string so an
+    ``task_class`` and ``default_rig`` are all a ``run.py`` needs. The three
+    optional arguments below are each something the task can declare for
+    itself, and a task that does has it applied by ``alhazen run --task`` as
+    well as here. **Each one, when given, takes precedence over the task's
+    own** for the sessions this ``run.py`` starts; ``alhazen run`` keeps
+    using the task's.
+
+    ``default_params`` is the params file used when ``--params`` is not
+    given, in place of ``Task.default_params``. ``--params`` still wins over
+    it.
+
+    ``instructions`` is the subject's wording, in place of
+    ``Task.instructions``. It is a callable rather than a string so an
     experiment that reads its wording from a file pays for the read only when
     this is called, and fails at that point with its own error rather than at
     import.
 
-    ``params_hook(params, args)`` is the one place an experiment may derive
-    its parameters from how it was invoked. A task receives only its params
-    and the scheduler's generator (``Task.make_source``), so one whose
-    scheduler must know *which subject and which session it is* — an
-    adaptive design carrying state across sessions is the general case — has
-    no other route from the command line to its own code. Whatever it
+    ``params_hook(params, args)`` derives parameters from how the session was
+    started, in place of ``Task.params_hook`` — it replaces the task's hook,
+    and the two are never chained. A task receives only its params and the
+    scheduler's generator (``Task.make_source``), so one whose scheduler must
+    know *which subject and which session it is* — an adaptive design
+    carrying state across sessions is the general case — has no other route
+    from the command line to its own code. It runs after the subject and
+    session are settled (flags, prompt, or simulate's own), and whatever it
     returns is re-validated through the task's own params model, so a hook
     that returns something the task cannot express fails here rather than
     mid-session.
@@ -63,6 +77,9 @@ def run_experiment(
         description=description or task_class.__doc__,
     )
     add_mode_arguments(parser)
+    # run.py's params file becomes --params's default, which is exactly what
+    # gives it precedence over the task's own (the dispatch asks the task only
+    # when --params is still None) and keeps an explicit --params above both.
     parser.set_defaults(
         rig=str(default_rig), params=str(default_params) if default_params else None
     )

@@ -166,3 +166,44 @@ class MyTask(Task):
 - **Fail loudly.** A missing file raises its own error before the run
   directory is created; empty text is refused, since shown it would be a
   blank screen waiting for SPACE.
+
+## Say which params a task runs with
+
+Override `Task.default_params` — a classmethod, because it decides the params
+the task is built with — to name the file a session loads when nobody passes
+`--params`. `alhazen run --task` and the experiment's `run.py` both use it,
+in every mode:
+
+```python
+class MyTask(Task):
+    @classmethod
+    def default_params(cls):
+        return REPO / "configs" / "task.yaml"   # REPO as in the recipe above
+```
+
+- **Absolute, or relative to this file.** A relative path is resolved
+  against the file the method is written in — never the working directory,
+  which is wherever `alhazen run` was started — so a config kept inside the
+  package can be named as `"configs/task.yaml"`.
+- **A missing file stops the session by name.** The params model's defaults
+  are not the experiment, so they never run in place of a file the task
+  declared. `REPO` found from `__file__` reaches the repository only while
+  the package is installed editable (`pip install -e .`).
+- **`--params` still wins**, for a pilot or a one-off; so does
+  `run_experiment(default_params=...)` for the sessions `run.py` starts.
+
+When the params depend on *who* and *which session* — a scheduler that
+carries state across sessions — override `Task.params_hook` as well:
+
+```python
+class MySearchTask(Task):
+    @classmethod
+    def params_hook(cls, params, args):
+        return params.model_copy(update={"session": args.ses})
+```
+
+It runs after the subject and session are settled and before the task is
+built; what it returns is re-validated through `params_model`, and an
+exception it raises is not caught. [docs/modes.md](modes.md#parameters-derived-from-the-invocation)
+has the whole contract, including why state derived from the data root must
+follow a rehearsal to the rehearsal root.

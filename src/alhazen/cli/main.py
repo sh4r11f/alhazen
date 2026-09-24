@@ -374,9 +374,12 @@ def _run_session(
     different command per mode will use one of them and forget the rest. What
     they share is the task and the rig; what differs is what happens next.
 
-    ``params_hook`` is supplied only by an experiment's own ``run.py``
-    (``alhazen.cli.modes.run_experiment``); ``alhazen run`` passes None and
-    is unaffected. See that function for why the seam exists.
+    The params come from the task itself unless the invocation says
+    otherwise (``_load_params``, ``_apply_params_hook``), so ``alhazen run
+    --task`` and an experiment's ``run.py`` start the same session.
+    ``params_hook`` is ``run.py``'s own (``run_experiment``'s
+    ``params_hook=``), and replaces the task's; ``alhazen run`` passes None,
+    which leaves the task's in charge.
     """
     from alhazen.cli.tasks import installed_tasks, load_task_class
 
@@ -422,28 +425,32 @@ def _run_session(
     if mode is Mode.MEASURE:
         return _measure_rig(args, rig)
 
-    from alhazen.config.loader import load_model
-
     try:
         if task_class is None:
             task_class = load_task_class(args.task)
-        params = (
-            load_model(args.params, task_class.params_model)
-            if args.params
-            else task_class.params_model()
-        )
-        if params_hook is not None:
-            # Re-validated through the task's own model, so a hook that
-            # returns something the task cannot express fails here — with
-            # the config still on screen — rather than mid-session. Same
-            # rule a training stage's overrides follow.
-            try:
-                params = task_class.params_model.model_validate(params_hook(params, args))
-            except ValidationError as e:
-                raise ConfigError(
-                    f"the params hook for {task_class.__name__} returned something "
-                    f"{task_class.params_model.__name__} cannot accept:\n{e}"
-                ) from e
+        # From here on args.params names the file the params actually came
+        # from — the task's own when nobody named one — so the snapshot's
+        # `sources`, the line printed before trial one and the params hook
+        # all see the file that ran, not the flag that was typed.
+        params, args.params = _load_params(task_class, args.params)
+    except ConfigError as e:
+        print(f"INVALID: {e}", file=sys.stderr)
+        return 1
+
+    # Who is in the chair and which session this is, settled BEFORE the
+    # params hook runs, because deriving params from exactly those is what a
+    # hook is for. It used to run first, so a subject typed at the prompt
+    # reached it as None, and a search state carried across sessions was
+    # filed under `sub-None` with nothing saying so. The params file is still
+    # loaded and checked before anyone is asked anything.
+    if mode.runs_trials:
+        refused = _settle_subject_and_session(args, mode)
+        if refused is not None:
+            print(refused, file=sys.stderr)
+            return 2
+
+    try:
+        params = _apply_params_hook(task_class, params, args, params_hook)
     except ConfigError as e:
         print(f"INVALID: {e}", file=sys.stderr)
         return 1
@@ -453,6 +460,122 @@ def _run_session(
     if mode is Mode.MOVIE:
         return _movie_task(args, rig, task_class(params), params)
     return _trial_session(args, rig, task_class(params), params, mode)
+
+
+def _load_params(task_class: Any, named: str | None) -> tuple[Any, str | None]:
+    """The params a session starts from, and the file they came from (None:
+    the params model's own defaults).
+
+    The first of these that applies:
+
+    1. the file the invocation names — ``--params``, or for an experiment's
+       ``run.py`` its ``default_params=``, which ``run_experiment`` installs
+       as ``--params``'s default, so either one takes precedence over the
+       task's;
+    2. the file the task declares (``Task.default_params``). A declared file
+       that is not there raises ``ConfigError`` naming it;
+    3. the params model's defaults — only for a task that declares no file,
+       which is what every task got before it could.
+
+    ``alhazen run`` used to go straight from 1 to 3, so with no ``--params``
+    it ran the model's defaults in place of the experiment's own file
+    without a word — for one experiment, 432 trials of a 576-trial design.
+    """
+    from alhazen.config.loader import load_model
+    from alhazen.task.task import default_params_path
+
+    path = named
+    if path is None:
+        declared = default_params_path(task_class)
+        path = str(declared) if declared is not None else None
+    if path is None:
+        return task_class.params_model(), None
+    return load_model(path, task_class.params_model), path
+
+
+def _settle_subject_and_session(args: argparse.Namespace, mode: Mode) -> str | None:
+    """Fill in ``args.sub`` and ``args.ses`` for a session that runs trials,
+    or return why they cannot be — a usage error for the caller to print.
+
+    Simulate mode names its own subject: nobody is there to ask. Otherwise a
+    missing flag is prompted for — an experimenter at a rig types this with
+    an animal already waiting and should not have to remember the flag
+    names — but only where a person can answer. With stdin not a terminal
+    (nohup, CI, a batch script) input() blocks forever or dies in a raw
+    EOFError, so the missing flags are refused instead.
+
+    Idempotent: flags already settled are left as they are, and nothing is
+    asked twice.
+    """
+    if mode is Mode.SIMULATE:
+        if args.sub is None:
+            args.sub = "sim"
+        if args.ses is None:
+            args.ses = 1
+        return None
+    missing = [flag for flag, value in (("--sub", args.sub), ("--ses", args.ses)) if value is None]
+    if missing and not (sys.stdin and sys.stdin.isatty()):
+        return (
+            f"{' and '.join(missing)} required: stdin is not a terminal, so "
+            f"{mode.value} mode cannot prompt for them"
+        )
+    if args.sub is None:
+        args.sub = input("subject id: ").strip()
+    if args.ses is None:
+        args.ses = int(input("session number: ").strip())
+    return None
+
+
+def _apply_params_hook(
+    task_class: Any,
+    params: Any,
+    args: argparse.Namespace,
+    run_py_hook: Callable[[Any, argparse.Namespace], Any] | None,
+) -> Any:
+    """The params after the experiment's params hook, re-validated; unchanged
+    when there is none.
+
+    ``run.py``'s hook (``run_experiment(params_hook=...)``), when given,
+    replaces the task's own (``Task.params_hook``) — they are not chained,
+    so a ``run.py`` written before tasks could declare one keeps doing
+    exactly what it did. A task that declares none is not touched at all.
+
+    What the hook returns is re-validated through the task's own model, so a
+    hook that returns something the task cannot express fails here — with
+    the config still on screen — rather than mid-session. Same rule a
+    training stage's overrides follow. An exception the hook raises is its
+    own, and is not caught.
+    """
+    from alhazen.task.task import declared_params_hook
+
+    if run_py_hook is not None:
+        hook, whose = run_py_hook, f"the params hook run.py passes for {task_class.__name__}"
+    else:
+        declared = declared_params_hook(task_class)
+        if declared is None:
+            return params
+        hook, whose = declared, f"{task_class.__name__}.params_hook()"
+    try:
+        return task_class.params_model.model_validate(hook(params, args))
+    except ValidationError as e:
+        raise ConfigError(
+            f"{whose} returned something {task_class.params_model.__name__} cannot accept:\n{e}"
+        ) from e
+
+
+def _params_line(args: argparse.Namespace, task: Any, params: Any) -> str:
+    """Where this session's params came from, in one line before trial one.
+
+    The snapshot records it (``sources``), but a snapshot is read after the
+    session; the experimenter reads this before it, which is when a wrong
+    file — or no file at all — can still be stopped.
+    """
+    if args.params:
+        return f"params: {args.params}"
+    return (
+        f"params: the defaults of {type(params).__name__} — no --params given, and "
+        f"{type(task).__name__} declares no default_params()"
+    )
 
 
 def _measure_rig(args: argparse.Namespace, rig: Any) -> int:
@@ -562,27 +685,14 @@ def _trial_session(args: argparse.Namespace, rig: Any, task: Any, params: Any, m
     """run, test and simulate: the three modes that put trials on screen."""
     from alhazen.modes.session import build_mode_session
 
-    # Prompted rather than required, because an experimenter at a rig types
-    # this with an animal already waiting and should not have to remember the
-    # flag names. A simulated session has nobody to prompt, so it names itself.
-    if mode is Mode.SIMULATE:
-        subject = args.sub if args.sub is not None else "sim"
-        session = args.ses if args.ses is not None else 1
-    else:
-        # ...but only where a person can answer. With stdin not a terminal —
-        # nohup, CI, a batch script — input() blocks forever or dies in a raw
-        # EOFError after the rig config has already loaded, so the missing
-        # flags are refused up front instead.
-        missing = [f for f, v in (("--sub", args.sub), ("--ses", args.ses)) if v is None]
-        if missing and not (sys.stdin and sys.stdin.isatty()):
-            print(
-                f"{' and '.join(missing)} required: stdin is not a terminal, so "
-                f"{mode.value} mode cannot prompt for them",
-                file=sys.stderr,
-            )
-            return 2
-        subject = args.sub if args.sub is not None else input("subject id: ").strip()
-        session = args.ses if args.ses is not None else int(input("session number: ").strip())
+    # Settled already by _run_session, before the params hook ran; asked
+    # again here only so this function stays correct on its own. It is
+    # idempotent, so nobody is prompted twice.
+    refused = _settle_subject_and_session(args, mode)
+    if refused is not None:
+        print(refused, file=sys.stderr)
+        return 2
+    subject, session = args.sub, args.ses
 
     curriculum = None
     if args.curriculum:
@@ -622,6 +732,7 @@ def _trial_session(args: argparse.Namespace, rig: Any, task: Any, params: Any, m
     # quietly redesigns the experiment would put numbers in the snapshot that
     # are not the numbers that ran, and the snapshot is the record.
     print(built.describe())
+    print(_params_line(args, task, params))
     # The task's own name, not args.task: an experiment's run.py has no
     # --task flag, because it already knows which experiment it is.
     print(f"running {task.name}: sub-{subject} ses-{session:03d} run-{built.run:02d}")

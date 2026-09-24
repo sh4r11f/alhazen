@@ -447,8 +447,8 @@ redesigns the experiment: the snapshot records the numbers that ran.
 ## Starting an experiment
 
 An experiment package ships a `run.py` so it can be started without installing
-anything. It needs to say which task, and which rig and params file to start
-from when the command line names none:
+anything. It needs to say which task, and which rig to start on when the
+command line names none:
 
 ```python
 from alhazen.cli.modes import run_experiment
@@ -457,29 +457,57 @@ raise SystemExit(
     run_experiment(
         task_class=MyTask,
         default_rig=HERE / "configs" / "rig-mac.yaml",
-        default_params=HERE / "configs" / "task.yaml",
         argv=sys.argv[1:],
     )
 )
 ```
 
-The subject's wording is not here: it is the task's own
-([What the subject reads first](#what-the-subject-reads-first)), so that
-`alhazen run --task` shows it too. Reading it from a file the experiment
-keeps under review is the usual way:
+Everything else the session needs from the experiment is declared on the
+task, because an installed package's entry point hands `alhazen run --task`
+the task class and nothing else — so what is declared there reaches both
+entry points, and `alhazen run --task my-task` and `python run.py` start the
+same session:
 
 ```python
+REPO = Path(__file__).resolve().parents[2]   # src/<package>/task.py -> the repository
+
+
 class MyTask(Task):
+    @classmethod
+    def default_params(cls):
+        # The params file when no --params is given, in every mode.
+        return REPO / "configs" / "task.yaml"
+
     def instructions(self) -> str | None:
+        # What the subject reads before trial one; None for an animal.
         return (REPO / "instructions.md").read_text(encoding="utf-8")
 ```
 
+**The params file.** Without `--params`, a session loads the file the task
+declares; `--params` names another (a pilot's, say). A declared file that is
+not there stops the session with `INVALID`, naming it — the params model's
+defaults are never run in its place, because they are not the experiment.
+A task that declares no file runs its model's defaults, as before, and the
+line printed before trial one says so:
+
+```
+params: the defaults of MyParams — no --params given, and MyTask declares no default_params()
+```
+
+`REPO` found from `__file__` reaches the repository's `configs/` only while
+the package is installed editable (`pip install -e .`); a regular install
+carries no `configs/`, and the session says so by name rather than guessing.
+
+**The wording.** See [What the subject reads first](#what-the-subject-reads-first).
 The display joins hard-wrapped lines into paragraphs itself (`show_message`
 reflows by default), so the file can stay wrapped at 80 columns and needs no
-joining of its own. An indented line or a list item keeps its break. A
-`run.py` written before tasks could say this still works:
-`run_experiment(instructions=lambda: ...)` is honoured, and given, it takes
-precedence over the task's own for the sessions that `run.py` starts.
+joining of its own. An indented line or a list item keeps its break.
+
+**A `run.py` written before tasks could say either still works.**
+`run_experiment` still takes `default_params=`, `instructions=` and
+`params_hook=`, and **each one, when given, takes precedence over the task's
+own** for the sessions that `run.py` starts (`--params` still wins over
+`default_params=`). `alhazen run` keeps using the task's.
 
 The flags are shared with `alhazen run` through the same code, because two
 entry points that drifted apart would mean a flag behaving one way at the rig
@@ -496,33 +524,40 @@ is the general case, and it has no route from the command line to its own
 code — the dispatch loads the params from YAML and constructs the task with
 nothing in between.
 
-`params_hook` is that route, and the only one:
+`Task.params_hook` is that route, and the only one:
 
 ```python
-def _fill_state_path(params, args):
-    # Every other task's params model rejects unknown keys, so a hook
-    # shared across tasks must ask rather than assume.
-    if "state_dir" not in type(params).model_fields:
-        return params
-    rig = load_rig(args.rig)
-    return params.model_copy(update={
-        "state_dir": Path(rig.data_root) / f"sub-{args.sub}" / "my-search",
-        "session": args.ses,
-    })
-
-run_experiment(
-    task_class=MyTask,
-    default_rig=HERE / "configs" / "rig-lab.yaml",
-    params_hook=_fill_state_path,
-)
+class MySearchTask(Task):
+    @classmethod
+    def params_hook(cls, params, args):
+        root = Path(load_rig(args.rig).data_root)
+        # A rehearsal's data goes to the rehearsal root, and state derived
+        # from the data root must follow it: a simulated subject writing into
+        # a real animal's search would be indistinguishable from real work.
+        if not Mode(args.mode).writes_real_data:
+            root = rehearsal_root(root)
+        return params.model_copy(update={
+            "state_dir": root / f"sub-{args.sub}" / "my-search",
+            "session": args.ses,
+        })
 ```
 
-It runs once, between the load and the task's construction, and whatever it
-returns is re-validated through the task's own params model — so a hook that
-returns something the task cannot express fails with the config still on
-screen rather than mid-session. `alhazen run` passes no hook and is
-unaffected.
+It runs once, between the load and the task's construction, for `alhazen run
+--task` and `run.py` alike, and whatever it returns is re-validated through
+the task's own params model — so a hook that returns something the task
+cannot express fails with the config still on screen rather than mid-session.
+For `run`, `test` and `simulate`, `args.sub` and `args.ses` are settled before
+it runs — from the flags, from the prompt, or simulate's own `sim` and `1` —
+so what the hook files state under is what the session records. `demo` and
+`movie` have nobody in the chair and pass them as given.
 
-Do this here rather than in `run.py` itself. A `run.py` that parsed `argv`,
-loaded the params and called `build_session` directly would be a second copy
-of the mode dispatch, which is the thing `run_experiment` exists to prevent.
+`run_experiment(params_hook=...)` still works: given, it **replaces** the
+task's hook for the sessions that `run.py` starts — the two are not chained,
+so a `run.py` written before tasks could declare a hook keeps doing exactly
+what it did. It is also where a flag of the experiment's own can reach the
+hook, since `alhazen run` accepts only its own flags.
+
+Do this in the hook rather than in `run.py` itself. A `run.py` that parsed
+`argv`, loaded the params and called `build_session` directly would be a
+second copy of the mode dispatch, which is the thing `run_experiment` exists
+to prevent — and `alhazen run` would never see it.
