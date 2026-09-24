@@ -35,6 +35,7 @@ from alhazen.config.models import DatabaseConfig, SessionConfig
 from alhazen.core.trial import InputFrame
 from alhazen.display.frames import FrameRecord
 from alhazen.errors import DataError
+from alhazen.training.state import TrainingState
 
 if TYPE_CHECKING:
     from alhazen.data.paths import SessionPaths
@@ -262,7 +263,10 @@ class ExperimentDatabase:
             )
             _insert_artifacts(db, run_id, paths.run_dir, self.config.artifact_max_bytes)
             _insert_paradigm(db, run_id, paths.paradigm_path)
-            training_path = cfg.rig.data_root / f"sub-{cfg.info.subject}" / "training_state.yaml"
+            # Where the training layer keeps this subject's state, asked of it
+            # rather than spelled out again here: two spellings of one path are
+            # how the mirror would quietly stop finding the file.
+            training_path = TrainingState.path_for(cfg.rig.data_root, cfg.info.subject)
             if training_path.exists():
                 db.execute(
                     """INSERT INTO training_states(subject, yaml, updated_run_id)

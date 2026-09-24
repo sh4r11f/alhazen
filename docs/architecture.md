@@ -1629,8 +1629,10 @@ every backend precisely so a backend cannot quietly reach for
    documents itself) — merged config + seed + versions + an environment
    digest (sha256 over installed distributions) + both git trees, the
    experiment's (`experiment_git_sha`) and alhazen's own
-   (`alhazen_git_describe`). Both are read with `git describe --always
-   --dirty`, so a session run from uncommitted changes to tracked files says
+   (`alhazen_git_describe`). The experiment's tree is the one holding the
+   task class's source file (or, with no task, the trial builder's), not
+   the folder the session was started from. Both are read with
+   `git describe --always --dirty`, so a session run from uncommitted changes to tracked files says
    `-dirty` rather than naming a commit that would not reproduce it; where
    there is no answer they read `not a source checkout` (not in a git
    repository) or `unknown` (git absent or not answering);
