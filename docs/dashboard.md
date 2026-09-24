@@ -72,7 +72,7 @@ flowchart LR
   R["DataRecorder<br/>trials + events"] --> S["dashboard_state()"]
   P["DashboardSpec<br/>resolved_panels"] --> S
   S -->|"per panel, whole session"| C["panels.panel_payload()<br/>counts · bins · means<br/>s.e.m. · Wilson CI · cumulative"]
-  C -->|"thinned to &le; 180 points"| N["panels.present()<br/>sentence case · ° · minus sign<br/>display twins"]
+  C -->|"thinned to &le; 180 points"| N["presentation.present()<br/>sentence case · ° · minus sign<br/>display twins"]
   N --> W["one JSON snapshot"]
   S -->|"last max_rows rows"| W
   W --> Q(["queue (1 slot)"])
@@ -89,7 +89,7 @@ accuracy that divides by the wrong denominator looks entirely plausible in a
 browser, and the page's JavaScript is tested (`tests/js/`) only for how it
 draws, never for what it computes.
 
-What the reader sees is decided once, after the numbers. `panels.present()`
+What the reader sees is decided once, after the numbers. `presentation.present()`
 rewrites every payload in a journal figure's conventions: labels in sentence
 case, column and outcome names as words (`FIX_BREAK` is "Fix break",
 `saccade_latency_ms` is "Saccade latency (ms)"), abbreviations in their own
