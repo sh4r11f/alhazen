@@ -306,6 +306,21 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Fixed
 
+- **A scene expression that failed on a frame raised a bare Python error
+  naming nothing.** Only function calls turned their failures into
+  `ConfigError`. An operator meeting the wrong value (`params.x - 1` with a
+  string param, `10 ** 400`) raised a raw `TypeError` or `OverflowError`
+  mid-frame, with no word of which scene field or expression did it, and a
+  malformed number literal (`1.2.3`) escaped the tokenizer as a `ValueError`
+  that the loader's check did not catch. The `background` expression was
+  never checked at load at all. Now a malformed number, like a syntax error
+  or an unknown name, fails at `load_scene` naming the field (the background
+  included); an operator error on a frame is a `ConfigError` naming the
+  layer path, the scene time, the expression, the operator and the values;
+  and a non-numeric result in a numeric field says so. Dividing by zero is
+  unchanged (infinity, as in the studio). See "What alhazen renders" in
+  [docs/scenes.md](docs/scenes.md).
+
 - **A session that failed while starting up left every device open.**
   `SessionRunner.run` wrote the snapshot, registered the subject, attached
   `session.log` and made the first dashboard publish before the `try` whose
