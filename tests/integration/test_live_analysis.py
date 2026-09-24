@@ -13,6 +13,12 @@ engine. It pins the four promises the seam makes:
 - the analysis's panels reach the dashboard state, after the spec's own;
 - ``finish`` runs in teardown before the manifest is written, so the saved
   artifact is covered — ``load_run`` verifying is the proof.
+
+The dashboard is the real ``DashboardController`` minus its child process
+(``InProcessDashboard`` below): none of the four promises is about the HTTP
+server, and waiting for a spawned interpreter to bind made these tests fail
+on a loaded machine (issue #62). The server itself is tested in
+tests/unit/test_dashboard.py.
 """
 
 from __future__ import annotations
@@ -22,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pytest
 
 from alhazen.analysis.io.session import load_run
 from alhazen.config.models import (
@@ -34,6 +41,7 @@ from alhazen.config.models import (
 )
 from alhazen.core.events import EventSchema
 from alhazen.core.trial import Outcome, PhaseAction, TrialContext, outcomes
+from alhazen.dashboard.runtime import DashboardController
 from alhazen.modes import Mode
 from alhazen.modes.session import build_mode_session
 from alhazen.paradigms.config import SchedulerConfig
@@ -46,6 +54,63 @@ from alhazen.task.task import Task
 # which is what proves the events reached the source through the bus.
 PING_AT = (1.0, -1.0)
 FAR_AWAY = (8.0, 8.0)
+
+
+class InProcessDashboard(DashboardController):
+    """The real DashboardController with the child process taken out.
+
+    ``start`` spawns a fresh interpreter that must re-import pydantic and bind
+    a socket within 20 s; under machine load that wait is what failed (#62),
+    and nothing these tests assert depends on it. Everything they do assert
+    on stays real: the runner builds each state with the real
+    ``dashboard_state`` and writes the final one with the inherited, real
+    ``save`` — the only producer of figures/dashboard_state.json.
+
+    ``publish`` and ``publish_camera`` are overridden, not inherited, because
+    the inherited ones put onto multiprocessing queues that nothing would
+    ever read: the queue's feeder thread can then block on a full pipe and
+    hang interpreter exit. Recording the states instead also lets a test see
+    what went out live. ``poll_commands``, ``poll_settings``, ``alive`` and
+    ``stop`` are inherited: with no child started they read empty queues,
+    answer False and return at once.
+    """
+
+    # Every instance the builder made, so a test can reach the one its
+    # session used (the builder constructs it; the test never sees it).
+    instances: list[InProcessDashboard] = []
+
+    def __init__(self, *, port: int = 0, auto_open: bool = True) -> None:
+        super().__init__(port=port, auto_open=auto_open)
+        self.published: list[dict[str, Any]] = []
+        self.started = False
+        InProcessDashboard.instances.append(self)
+
+    def start(self, timeout_s: float = 20.0) -> str:
+        # No child, so nothing to wait for; the URL is only ever logged.
+        self.started = True
+        self.url = "http://127.0.0.1:0/"
+        return self.url
+
+    def publish(self, state: dict[str, Any]) -> None:
+        self.published.append(state)
+
+    def publish_camera(self, pixels: Any, t: float) -> None:
+        # No tracker in these sessions streams a camera; one that started to
+        # should be noticed here, not silently dropped.
+        raise AssertionError("these sessions have no camera to publish")
+
+
+@pytest.fixture(autouse=True)
+def in_process_dashboard(monkeypatch):
+    """Make build_session construct InProcessDashboard instead of the real
+    controller. build_session reads the name from its module at call time,
+    so patching the module attribute is enough (the same seam
+    tests/unit/test_builder.py uses); monkeypatch raises if the name ever
+    moves, so the swap cannot silently stop happening."""
+    from alhazen.session import builder as builder_module
+
+    InProcessDashboard.instances.clear()
+    monkeypatch.setattr(builder_module, "DashboardController", InProcessDashboard)
 
 
 class PingParams(Model):
@@ -171,6 +236,8 @@ def sim_rig(tmp_path: Path) -> RigConfig:
         display=DisplayConfig(backend="simulated"),
         # Dashboard on (browser suppressed): the point is that the live
         # panels travel through the real publish path into the saved state.
+        # The controller the builder makes is InProcessDashboard (the
+        # autouse fixture above), so no server process is started.
         dashboard={"enabled": True, "auto_open": False},
         devices=DevicesConfig(
             spikes=SpikeSourceConfig(
@@ -234,6 +301,12 @@ def test_live_analysis_seam_end_to_end(tmp_path):
     assert live_panels[0]["title"] == "Spikes heard"
     assert live_panels[0]["data"]["form"] == "stat"
     assert live_panels[0]["data"]["secondary"] == "2 pings"
+
+    # And it went out live, not only into the file: the session's one
+    # dashboard was started, and a state it was sent carried the panel.
+    (dashboard,) = InProcessDashboard.instances
+    assert dashboard.started
+    assert any(p.get("section") == "Live" for state in dashboard.published for p in state["panels"])
 
 
 # ----------------------------------------------------------------------

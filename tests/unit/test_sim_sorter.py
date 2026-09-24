@@ -396,17 +396,28 @@ class TestAgainstTheRealCheck:
         import threading
 
         stop = threading.Event()
+        # Set once the first step() has returned, i.e. once the single
+        # announcement has been sent.
+        announced = threading.Event()
 
         def keep_publishing():
             while not stop.is_set():
                 pub.step(time.monotonic())
+                announced.set()
                 time.sleep(0.005)
 
         thread = threading.Thread(target=keep_publishing, daemon=True)
         thread.start()
         # Let the single announcement go out and be missed, exactly as it is
-        # missed by a check-rig run minutes after the sorter started.
-        time.sleep(0.2)
+        # missed by a check-rig run minutes after the sorter started. Waiting
+        # on the send itself rather than sleeping: a PUB socket drops what is
+        # sent while nobody is subscribed, so once the send has happened
+        # before check_rig connects, the miss is certain. The timeout only
+        # turns a dead publisher thread into a failure instead of a hang.
+        if not announced.wait(timeout=10.0):
+            stop.set()
+            pub.close()
+            raise AssertionError("the publisher thread never completed a step() in 10 s")
         try:
             result = {r.name: r for r in check_rig(rig)}["spikes"]
         finally:

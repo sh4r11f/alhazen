@@ -43,25 +43,63 @@ def live_publisher(**overrides):
 
 
 class Pumping:
-    """Publishes in the background for as long as the block lasts."""
+    """Publishes in the background for as long as the block lasts.
+
+    Entering the block returns only once the publisher's first ``step()`` has
+    returned, so the block's body starts after the sorter's first units
+    announcement has been sent. For the "announce_once" sorter that ordering
+    is the test: the one announcement must go out before check-rig
+    subscribes, so that it is missed. A ZeroMQ PUB socket drops a message
+    sent while nobody is subscribed at the moment of sending, so a message
+    sent before the check connects is missed every time, not only when the
+    thread happens to be scheduled in time (which a fixed sleep assumed).
+    """
 
     def __init__(self, pub) -> None:
         self._pub = pub
         self._stop = threading.Event()
+        # Set after the first step() returns (or when the loop dies first);
+        # the latch __enter__ waits on in place of a sleep.
+        self._first_step_done = threading.Event()
+        # An exception that ended the loop, re-raised in the test's thread:
+        # a publisher that died would otherwise read as a silent sorter.
+        self._error: BaseException | None = None
         self._thread = threading.Thread(target=self._loop, daemon=True)
 
     def _loop(self) -> None:
-        while not self._stop.is_set():
-            self._pub.step(time.monotonic())
-            time.sleep(0.005)
+        try:
+            while not self._stop.is_set():
+                self._pub.step(time.monotonic())
+                self._first_step_done.set()
+                # Pacing, not synchronisation: the same poll interval as
+                # SortedSpikePublisher.run(), so the heartbeat and units
+                # periods are honoured against the real clock.
+                time.sleep(0.005)
+        except BaseException as error:
+            self._error = error
+            self._first_step_done.set()
+
+    def _raise_if_died(self) -> None:
+        if self._error is not None:
+            raise AssertionError(f"the publisher thread died: {self._error!r}") from self._error
 
     def __enter__(self) -> Pumping:
         self._thread.start()
+        # The timeout only turns a hang into a failure; the wait normally
+        # ends as soon as one step() has run.
+        if not self._first_step_done.wait(timeout=10.0):
+            self._stop.set()
+            raise AssertionError("the publisher thread never completed a step() in 10 s")
+        self._raise_if_died()
         return self
 
     def __exit__(self, *exc) -> None:
         self._stop.set()
         self._thread.join(timeout=2.0)
+        # Not while another exception is propagating: that one says what the
+        # test saw, and this one would replace it.
+        if exc[0] is None:
+            self._raise_if_died()
 
 
 def rehearsal_rig(tmp_path, address: str, timeout_ms: float = 1000.0):
@@ -97,8 +135,9 @@ def clean(tmp_path_factory):
     tmp_path = tmp_path_factory.mktemp("clean")
     pub = live_publisher()
     try:
+        # Pumping returns once the first announcement is out; the check
+        # still has to hear a re-announcement, which is what it verifies.
         with Pumping(pub):
-            time.sleep(0.1)  # let the first announcement go out
             return record_of(tmp_path, rehearsal_rig(tmp_path, pub.address))
     finally:
         pub.close()
@@ -244,8 +283,9 @@ class TestWhenADeviceFails:
         two failed checkouts learns nothing from a pair of identical files."""
         pub = live_publisher(fault="announce_once")
         try:
+            # Pumping returns once the single announcement has gone out, so
+            # the check subscribes after it and misses it.
             with Pumping(pub):
-                time.sleep(0.2)  # the single announcement goes out and is missed
                 record, _ = record_of(tmp_path, rehearsal_rig(tmp_path, pub.address, 500.0))
         finally:
             pub.close()
