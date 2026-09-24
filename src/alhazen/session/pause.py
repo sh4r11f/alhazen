@@ -243,7 +243,7 @@ def build_pause_menu(
     if rest is not None:
         subtitle = "between blocks — nothing is being recorded; SPACE when the subject is ready"
         if resumes_in_s is not None:
-            # A simulation's rest times out (session/runner.py), and whoever
+            # A simulation's rest times out (session/pause_control.py), and whoever
             # is watching the screen should know it will not wait for them.
             subtitle += (
                 f"\nsimulation: resumes by itself in {resumes_in_s:g} s unless a key is pressed"

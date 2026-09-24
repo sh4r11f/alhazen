@@ -108,7 +108,7 @@ class TrialFeedback:
     **It judges the response, never the display.** Frame QA's verdict comes
     after this phase, so a correct trial that frame QA then recycles into
     ``DROPPED_FRAMES`` is still shown as a success — and is paid as one
-    (session/runner.py). The trial is served again for its data, not held
+    (session/reward_payer.py). The trial is served again for its data, not held
     against the subject.
 
     Two things are deliberately separate here, because an experiment's

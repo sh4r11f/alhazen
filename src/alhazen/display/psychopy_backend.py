@@ -105,7 +105,8 @@ def split_menu_title(title: str) -> tuple[str, str | None]:
     """A menu heading's headline and the instruction after it, if it has one.
 
     Fault headings are written "WHAT HAPPENED — what to do about it"
-    (session/runner.py, session/pause.py). Drawn whole at heading size, a
+    (session/runner.py, session/streaks.py, session/pause_control.py,
+    session/pause.py). Drawn whole at heading size, a
     long one wraps onto several big lines; drawn apart, the part a person
     reads across a room stays big and short, and the instruction sits under
     it at a size meant for reading from the rig. Only the first dash splits,

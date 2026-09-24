@@ -14,7 +14,7 @@ One trial is paid by something other than its outcome: a trial a device fault
 cut short (the eye tracker stopped recording mid-trial) is paid ``on_fault``,
 because the subject was still working when the rig failed and the trial is
 served again anyway. The session decides which trials those are
-(session/runner.py); the policy only says what they pay.
+(session/reward_payer.py); the policy only says what they pay.
 """
 
 from __future__ import annotations
