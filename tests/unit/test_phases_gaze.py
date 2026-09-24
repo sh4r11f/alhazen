@@ -825,6 +825,26 @@ class TestConstructorGuards:
         with pytest.raises(ValueError, match=match):
             LandingSample(**kwargs)
 
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [
+            # CONTINUE as a verdict never ends the phase on a hit: it loops
+            # until the timeout and then reports a miss — a landing that hit
+            # the target recorded as one that did not.
+            (dict(on_hit=PhaseAction.CONTINUE, on_miss=MISS), "on_hit is 'CONTINUE'"),
+            (dict(on_hit=HIT, on_miss=PhaseAction.CONTINUE), "on_miss is 'CONTINUE'"),
+            # A typo for ADVANCE would only fail on the frame the engine read it.
+            (dict(on_hit="ADVNCE", on_miss=MISS), "on_hit is 'ADVNCE'"),
+        ],
+    )
+    def test_landing_check_refuses_a_verdict_that_cannot_end_it(self, kwargs, match):
+        with pytest.raises(ValueError, match=f"LandingCheck needs both .*{match}"):
+            LandingCheck(**kwargs)
+
+    def test_landing_check_still_takes_advance_as_a_verdict(self):
+        # ADVANCE lets a following phase (TrialFeedback) end the trial.
+        LandingCheck(on_hit=PhaseAction.ADVANCE, on_miss=PhaseAction.ADVANCE)
+
 
 _DONE = Outcome("DONE", completed=True, success=True)
 

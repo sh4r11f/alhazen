@@ -24,7 +24,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from alhazen.core.trial import lost_to_fault
+from alhazen.core.trial import PAUSED, Outcome, lost_to_fault
 from alhazen.errors import ConfigError
 from alhazen.task.reward_policy import RewardPolicy
 from alhazen.training.criteria import decide, metric_names
@@ -150,7 +150,7 @@ class TrainingSupervisor:
     # What happened
     # ------------------------------------------------------------------
 
-    def observe(self, outcome: Any, record: dict[str, Any]) -> None:
+    def observe(self, outcome: Outcome, record: dict[str, Any]) -> None:
         """Feed one finished attempt to the criteria.
 
         Two kinds of attempt are left out entirely — not counted in any
@@ -171,7 +171,7 @@ class TrainingSupervisor:
         counted like any other: its outcome is the subject's own, and it
         stands (core/engine.py).
         """
-        if outcome.name == "PAUSED":
+        if outcome.name == PAUSED.name:
             return
         fault = lost_to_fault(outcome.name, record)
         if fault is not None:

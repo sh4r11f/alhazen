@@ -52,7 +52,9 @@ from alhazen.core.trial import (
     FAULT_DROPPED_FRAMES,
     FAULT_TRACKER_STOPPED,
     NO_FAULT,
+    PAUSED,
     CircleRegion,
+    Outcome,
     TrialContext,
 )
 from alhazen.dashboard.panels import frame_intervals_panel
@@ -471,7 +473,7 @@ class SessionRunner:
                     reward_failed = True
 
                 record = result.record
-                if outcome.name != "PAUSED":
+                if outcome.name != PAUSED.name:
                     if self._score is not None:
                         record = self._score(record)
                     self._recorder.add_trial(record)
@@ -505,7 +507,7 @@ class SessionRunner:
                 # below can `continue` past it.
                 dropout_streak = self._dropout_streak(outcome, result.record)
 
-                if outcome.name == "PAUSED" or reward_failed:
+                if outcome.name == PAUSED.name or reward_failed:
                     # A reward failure goes through the same pause flow as a
                     # deliberate pause: a human has to look at the pump before
                     # the session carries on rewarding nothing. The
@@ -564,7 +566,7 @@ class SessionRunner:
             parts.append(f"{name} {backend if backend is not None else 'none'}")
         return ", ".join(parts)
 
-    def _log_trial(self, attempt: int, record: dict[str, Any], outcome: Any) -> None:
+    def _log_trial(self, attempt: int, record: dict[str, Any], outcome: Outcome) -> None:
         """One line per trial: the backbone a session log is read by."""
         detail = ""
         if record.get("abort_reason"):
@@ -757,7 +759,7 @@ class SessionRunner:
         )
         return self._pauses.handle({}, rest=f"BLOCK {done} OF {total} COMPLETE — REST")
 
-    def _failure_streak(self, outcome: Any, fault: str | None) -> FailureStreak | None:
+    def _failure_streak(self, outcome: Outcome, fault: str | None) -> FailureStreak | None:
         """Count this trial toward the subject's failure streak (the rules are
         StreakMonitor.count_failure's); the streak, logged, on the trial that
         reaches the task's limit, which the caller turns into a pause.
@@ -813,7 +815,7 @@ class SessionRunner:
             and frames.dropped_fraction > self._frame_monitor.dropped_fraction_budget
         )
 
-    def _dropout_streak(self, outcome: Any, record: dict[str, Any]) -> DropoutStreak | None:
+    def _dropout_streak(self, outcome: Outcome, record: dict[str, Any]) -> DropoutStreak | None:
         """Count this trial toward the device's dropout streak (the rules are
         StreakMonitor.count_dropout's); the streak, logged, on every trial from
         ``max_consecutive_dropouts`` on until its pause is raised."""

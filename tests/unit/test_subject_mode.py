@@ -57,6 +57,7 @@ def test_saccade_and_reward_mode_lands_on_the_target():
         SubjectMode.SACCADE_AND_REWARD,
         timeout_s=10 * FRAME_S,
         landing_timeout_s=10 * FRAME_S,
+        on_timeout=NO_RESPONSE,
         on_hit=HIT,
         on_miss=MISS,
     )
@@ -75,6 +76,7 @@ def test_saccade_and_reward_mode_reports_a_miss_on_timeout():
         SubjectMode.SACCADE_AND_REWARD,
         timeout_s=2 * FRAME_S,
         landing_timeout_s=2 * FRAME_S,
+        on_timeout=NO_RESPONSE,
         on_hit=HIT,
         on_miss=MISS,
     )
@@ -88,7 +90,34 @@ def test_saccade_and_reward_mode_reports_a_miss_on_timeout():
 
 
 def test_saccade_and_reward_mode_needs_hit_and_miss_outcomes():
-    with pytest.raises(ValueError):
-        response_phases(SubjectMode.SACCADE_AND_REWARD, on_hit=HIT)
-    with pytest.raises(ValueError):
-        response_phases(SubjectMode.SACCADE_AND_REWARD, on_miss=MISS)
+    with pytest.raises(ValueError, match="on_hit and on_miss"):
+        response_phases(SubjectMode.SACCADE_AND_REWARD, on_hit=HIT, on_timeout=NO_RESPONSE)
+    with pytest.raises(ValueError, match="on_hit and on_miss"):
+        response_phases(SubjectMode.SACCADE_AND_REWARD, on_miss=MISS, on_timeout=NO_RESPONSE)
+
+
+def test_saccade_and_reward_mode_needs_its_own_timeout_outcome():
+    # "No saccade at all" is not a landing miss. Standing in for one, it
+    # would be a completed trial (a miss usually is), never served again and
+    # fed to an adaptive scheduler as the subject's wrong answer.
+    with pytest.raises(ValueError, match="on_timeout"):
+        response_phases(SubjectMode.SACCADE_AND_REWARD, on_hit=HIT, on_miss=MISS)
+
+
+def test_saccade_and_reward_mode_ends_a_trial_with_no_saccade_as_on_timeout():
+    phases = response_phases(
+        SubjectMode.SACCADE_AND_REWARD,
+        timeout_s=2 * FRAME_S,
+        landing_timeout_s=2 * FRAME_S,
+        on_timeout=NO_RESPONSE,
+        on_hit=HIT,
+        on_miss=MISS,
+    )
+    harness, result = run(
+        phases,
+        [IN_FIX],
+        declared=("STIM_ON", "RESPONSE_ONSET", "LANDED"),
+        regions={"fixation": FIX, "target": TARGET},
+    )
+    assert result.outcome is NO_RESPONSE
+    assert "endpoint_in_target" not in result.record
