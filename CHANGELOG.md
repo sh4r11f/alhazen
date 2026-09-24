@@ -306,6 +306,28 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Fixed
 
+- **The offline readers name the file when its contents are wrong, and a
+  results directory says what it already held.** In the ViewPixx reader, a
+  run snapshot whose `config.rig.monitor` the monitor model refused raised a
+  pydantic `ValidationError`, and a `TRIAL` mark with no integer index a raw
+  `ValueError`/`IndexError`; both are now a `DataError` naming the file (and
+  the mark), and malformed trial marks are refused when the messages file is
+  read. `max_residual_s=0.0` was treated as unset and replaced by the sample
+  period; it is now the tolerance used. In the SpikeGLX reader, a `.meta`
+  that is not UTF-8 (a Windows path in the local code page) raised
+  `UnicodeDecodeError`; it is now read with undecodable bytes replaced and a
+  warning naming the affected keys — safe because every field read as a
+  number is ASCII. A non-numeric or non-positive `nSavedChans` is a
+  `DataError` naming the file and field (it was a `ValueError` or
+  `ZeroDivisionError`), and a binary whose size differs from the meta's
+  `fileSizeBytes` is refused as truncated, which catches a copy cut exactly
+  at a frame boundary. `ResultsBundle` hashes inputs with the run manifest's
+  own function, and reusing an `out_dir` that already holds files logs a
+  warning listing them and records every one the bundle did not rewrite
+  under a new `preexisting` key in `manifest.json`, so an earlier run's
+  leftovers cannot pass for this run's outputs; reuse itself is still
+  allowed, since reports are routinely re-run into the same directory.
+
 - **A session that failed while starting up left every device open.**
   `SessionRunner.run` wrote the snapshot, registered the subject, attached
   `session.log` and made the first dashboard publish before the `try` whose

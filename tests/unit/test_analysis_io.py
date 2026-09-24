@@ -61,6 +61,61 @@ class TestSpikeGLX:
         with pytest.raises(DataError, match="truncated"):
             spikeglx.n_samples(files["bin_path"], spikeglx.parse_meta(files["meta_path"]))
 
+    def test_a_file_cut_at_a_frame_boundary_is_refused_against_the_metas_size(self, tmp_path):
+        # Whole frames prove nothing about completeness: a copy that stopped
+        # exactly between two frames passed the modulo check. SpikeGLX writes
+        # the full size into the meta, and that is what gives the cut away.
+        files = write_nidq(tmp_path / "run_g0", {0: [1.0]}, duration_s=1.0)
+        full = files["bin_path"].stat().st_size
+        with files["meta_path"].open("a") as handle:
+            handle.write(f"fileSizeBytes={full}\n")
+        meta = spikeglx.parse_meta(files["meta_path"])
+        assert spikeglx.n_samples(files["bin_path"], meta) == 25000  # intact: accepted
+
+        frame = 3 * spikeglx.SAMPLE_DTYPE.itemsize  # two analog channels + the word
+        with files["bin_path"].open("r+b") as handle:
+            handle.truncate(full - 10 * frame)
+        with pytest.raises(DataError, match="fileSizeBytes") as e:
+            spikeglx.n_samples(files["bin_path"], meta)
+        assert str(full) in str(e.value)
+        assert files["bin_path"].name in str(e.value)
+
+    def test_a_non_numeric_file_size_in_the_meta_is_named(self, tmp_path):
+        files = write_nidq(tmp_path / "run_g0", {0: [1.0]}, duration_s=1.0)
+        meta = {**spikeglx.parse_meta(files["meta_path"]), "fileSizeBytes": "lots"}
+        with pytest.raises(DataError, match="fileSizeBytes='lots'"):
+            spikeglx.n_samples(files["bin_path"], meta)
+
+    @pytest.mark.parametrize("value", ["three", "0", "-2"])
+    def test_an_unusable_channel_count_is_a_data_error_naming_the_file(self, tmp_path, value):
+        # A raw ValueError ("three") or ZeroDivisionError ("0") said nothing
+        # about which recording or which field.
+        files = write_nidq(tmp_path / "run_g0", {0: [1.0]}, duration_s=1.0)
+        meta = {**spikeglx.parse_meta(files["meta_path"]), "nSavedChans": value}
+        with pytest.raises(DataError, match=f"nSavedChans={value!r}") as e:
+            spikeglx.n_samples(files["bin_path"], meta)
+        assert files["bin_path"].name in str(e.value)
+
+    def test_a_meta_that_is_not_utf8_is_still_read(self, tmp_path, caplog):
+        # SpikeGLX on Windows can write a path in the local code page; one
+        # accented folder name made the whole meta unreadable. Every field
+        # this module parses as a number is ASCII, so the stray byte is
+        # replaced — and said so — rather than refusing the recording.
+        import logging
+
+        files = write_nidq(tmp_path / "run_g0", {0: [1.0]}, duration_s=1.0, rate_hz=24999.92)
+        with files["meta_path"].open("ab") as handle:
+            handle.write("fileName=D:/Donn\u00e9es/run_g0_t0.nidq.bin\n".encode("cp1252"))
+
+        with caplog.at_level(logging.WARNING, logger="alhazen.analysis.io.spikeglx"):
+            meta = spikeglx.parse_meta(files["meta_path"])
+
+        assert spikeglx.sample_rate_hz(meta) == pytest.approx(24999.92)
+        assert meta["fileName"] == "D:/Donn\ufffdes/run_g0_t0.nidq.bin"
+        (warning,) = [r for r in caplog.records if "UTF-8" in r.getMessage()]
+        assert files["meta_path"].name in warning.getMessage()
+        assert "fileName" in warning.getMessage()
+
     def test_a_bit_outside_the_word_is_refused(self, tmp_path):
         files = write_nidq(tmp_path / "run_g0", {0: [1.0]})
         with pytest.raises(DataError, match="0..15"):

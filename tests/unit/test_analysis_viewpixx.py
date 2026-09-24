@@ -538,6 +538,72 @@ class TestLoudFailures:
         with pytest.raises(DataError, match=r"no file matching '\*_gaze.csv'"):
             read_run(tmp_path)
 
+    @pytest.mark.parametrize(
+        "monitor",
+        [
+            # A field the model requires is missing.
+            {"width_px": 1920, "height_px": 1080, "width_cm": 52.1, "refresh_rate_hz": 120.0},
+            # A value the model refuses.
+            {
+                "width_px": 1920,
+                "height_px": 1080,
+                "width_cm": -52.1,
+                "distance_cm": 57.0,
+                "refresh_rate_hz": 120.0,
+            },
+            # Not a mapping at all.
+            ["1920", "1080"],
+        ],
+    )
+    def test_a_snapshot_monitor_the_config_model_refuses_names_the_file(self, simple_run, monitor):
+        # The snapshot is an external file like any other: what is wrong with
+        # it has to come back as a DataError naming it, not as a pydantic
+        # traceback that says nothing about which run it came from.
+        path = simple_run / "config_snapshot.yaml"
+        path.write_text(yaml.safe_dump({"config": {"rig": {"monitor": monitor}}}))
+        with pytest.raises(DataError, match="config_snapshot.yaml") as e:
+            read_run(simple_run)
+        assert "monitor" in str(e.value)
+
+    # A non-numeric index (a raw ValueError before) and no index at all (a
+    # raw IndexError before).
+    MALFORMED_TRIAL_MARKS = ["TRIAL one attempt 1", "TRIAL "]
+
+    @pytest.mark.parametrize("mark", MALFORMED_TRIAL_MARKS)
+    def test_a_malformed_trial_mark_names_the_file_and_the_message(self, tmp_path, mark):
+        # Refused when the file is read, where the file's name is known,
+        # rather than later by whichever view first parses the mark.
+        builder = RunBuilder(tmp_path)
+        builder.trial_of()
+        builder.trial_of()
+        device, session, _ = builder.messages[0]
+        builder.messages[0] = (device, session, mark)
+        run = builder.write()
+        with pytest.raises(DataError, match="gaze-messages.csv") as e:
+            read_run(run)
+        assert repr(mark) in str(e.value)
+
+    @pytest.mark.parametrize("mark", MALFORMED_TRIAL_MARKS)
+    def test_the_message_views_refuse_a_malformed_trial_mark_too(self, simple_run, mark):
+        # event_times takes any messages table, not only one read_run
+        # checked, so it has to say what is wrong itself.
+        import dataclasses
+
+        recording = read_run(simple_run)
+        messages = recording.messages.copy()
+        messages.loc[0, "message"] = mark
+        with pytest.raises(DataError, match="malformed trial mark") as e:
+            event_times(messages, "stim_on")
+        assert repr(mark) in str(e.value)
+        with pytest.raises(DataError, match="malformed trial mark"):
+            dataclasses.replace(recording, messages=messages).trial_spans()
+
+    def test_an_explicit_zero_tolerance_is_a_tolerance_not_unset(self, simple_run):
+        # max_residual_s=0.0 asks for a fit with no residual at all. Treating
+        # it as falsy fell back to the sample period and passed the run.
+        with pytest.raises(DataError, match="do not fit a straight line"):
+            read_run(simple_run, max_residual_s=0.0)
+
 
 # ----------------------------------------------------------------------
 # Events and trials
