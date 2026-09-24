@@ -21,11 +21,12 @@ from alhazen.cli.calibrate import (
     ruler_report,
     write_gamma,
 )
-from alhazen.cli.main import _next_run, main
+from alhazen.cli.main import main
 from alhazen.cli.tasks import load_task_class
 from alhazen.config.models import DisplayConfig, RigConfig
 from alhazen.errors import ConfigError
 from alhazen.modes import Mode
+from alhazen.modes.session import next_run
 from support import MONITOR
 
 
@@ -466,7 +467,10 @@ class TestScaffoldedPackageWorks:
 
 
 class TestNextRunNumber:
-    """`_next_run` decides where a session's data goes. Nothing tested it."""
+    """`next_run` decides where a session's data goes. Nothing tested it.
+
+    These pinned a private copy of it in cli/main.py that nothing called;
+    they now pin the one `build_mode_session` actually uses."""
 
     def session_dir(self, tmp_path, *runs: str) -> Path:
         directory = tmp_path / "sub-s01" / "ses-001"
@@ -476,30 +480,30 @@ class TestNextRunNumber:
         return tmp_path
 
     def test_an_empty_data_root_starts_at_one(self, tmp_path):
-        assert _next_run(tmp_path, "s01", 1) == 1
+        assert next_run(tmp_path, "s01", 1) == 1
 
     def test_a_session_with_no_runs_yet_starts_at_one(self, tmp_path):
         root = self.session_dir(tmp_path)
-        assert _next_run(root, "s01", 1) == 1
+        assert next_run(root, "s01", 1) == 1
 
     def test_it_counts_the_directories_that_exist(self, tmp_path):
         root = self.session_dir(tmp_path, "run-01_task-demo", "run-02_task-demo")
-        assert _next_run(root, "s01", 1) == 3
+        assert next_run(root, "s01", 1) == 3
 
     def test_a_gap_does_not_reuse_a_number(self, tmp_path):
         """One past the HIGHEST, not the first hole. Filling a gap would
         write into a numbering an experimenter's notes already refer to."""
         root = self.session_dir(tmp_path, "run-01_task-demo", "run-04_task-demo")
-        assert _next_run(root, "s01", 1) == 5
+        assert next_run(root, "s01", 1) == 5
 
     def test_a_directory_that_is_not_a_run_is_ignored(self, tmp_path):
         root = self.session_dir(tmp_path, "run-01_task-demo", "run-notes", "run-")
-        assert _next_run(root, "s01", 1) == 2
+        assert next_run(root, "s01", 1) == 2
 
     def test_each_session_numbers_independently(self, tmp_path):
         root = self.session_dir(tmp_path, "run-01_task-demo", "run-02_task-demo")
-        assert _next_run(root, "s01", 2) == 1
-        assert _next_run(root, "s02", 1) == 1
+        assert next_run(root, "s01", 2) == 1
+        assert next_run(root, "s02", 1) == 1
 
 
 class TestRunCommand:

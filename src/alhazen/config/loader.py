@@ -24,12 +24,33 @@ M = TypeVar("M", bound=BaseModel)
 def load_model(path: str | Path, model: type[M]) -> M:
     """Load one YAML file into one pydantic model, converting both YAML and
     validation failures into a ConfigError that names the file — the
-    experimenter fixes a file, so the error must say which one."""
+    experimenter fixes a file, so the error must say which one.
+
+    That includes a file that cannot be read at all: one that is not UTF-8,
+    a directory, or one this user may not open. Those used to escape as the
+    raw OS or codec error, naming at most a byte offset."""
     path = Path(path)
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
         raise ConfigError(f"config file not found: {path}") from None
+    except UnicodeDecodeError as e:
+        # The usual cause is a ° or µ typed into an editor that saves as
+        # Windows-1252 ("ANSI"): one byte, not UTF-8's two. The offending
+        # byte is quoted so it can be found in a hex view if need be.
+        bad = e.object[e.start : e.start + 1]
+        raise ConfigError(
+            f"{path} is not UTF-8 text (byte {bad!r} at offset {e.start}). Re-save it as "
+            f"UTF-8 — a ° or µ typed in an editor that saves as ANSI/Windows-1252 is the "
+            f"usual cause"
+        ) from e
+    except OSError as e:
+        # After FileNotFoundError, which has its own message. A directory
+        # reads as IsADirectoryError on POSIX but PermissionError on
+        # Windows, so it is recognised by looking, not by the error's type.
+        if path.is_dir():
+            raise ConfigError(f"{path} is a directory, not a config file") from e
+        raise ConfigError(f"cannot read config file {path}: {e.strerror or e}") from e
     except yaml.YAMLError as e:
         raise ConfigError(f"invalid YAML in {path}: {e}") from e
     if raw is None:
@@ -63,7 +84,12 @@ def load_rig(path: str | Path) -> RigConfig:
 
 def load_params(path: str | Path, model: type[M]) -> M:
     """Load an experiment's task-params file against the experiment's own
-    pydantic model. Same contract as the rig loader: typos fail loudly."""
+    pydantic model. Same contract as the rig loader: typos fail loudly.
+
+    An alias of :func:`load_model`, and nothing more. It stays because it is
+    public (listed in the API reference) and in use: every scaffolded
+    package's tests call it, and so does at least one experiment repository.
+    Removing it would be a breaking change bought for no behaviour at all."""
     return load_model(path, model)
 
 

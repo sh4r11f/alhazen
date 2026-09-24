@@ -9,11 +9,35 @@ import pytest
 import yaml
 
 from alhazen.core.events import Event
+from alhazen.data import naming
 from alhazen.data.manifest import add_to_manifest, verify_manifest, write_manifest
 from alhazen.data.participants import ensure_participant, participants_path
 from alhazen.data.paths import SessionPaths
 from alhazen.errors import DataError
 from alhazen.session.recorder import DataRecorder, ordered_trial_columns
+
+
+class TestParseRunDirname:
+    """`naming.parse_run_dirname` reads back the run number `run_dirname`
+    writes. It is what `next_run` counts with, so a name it misreads is a
+    run number handed out twice, and a stray folder it accepts is a gap."""
+
+    @pytest.mark.parametrize("run", [1, 2, 9, 10, 99, 100, 1234])
+    def test_it_inverts_run_dirname(self, run):
+        assert naming.parse_run_dirname(naming.run_dirname(run, "mib-quest")) == run
+
+    def test_a_run_folder_without_a_task_still_counts(self):
+        """Counted, because a folder that looks like a run is one somebody
+        will think of as that run: skipping it would hand its number out
+        again, into the numbering their notes already use."""
+        assert naming.parse_run_dirname("run-07") == 7
+
+    @pytest.mark.parametrize(
+        "name",
+        ["run-", "run-notes", "run-_task-x", "run-1a_task-x", "run--1", "ses-001", "run", ""],
+    )
+    def test_a_name_that_is_not_a_run_is_none(self, name):
+        assert naming.parse_run_dirname(name) is None
 
 
 class TestSessionPaths:

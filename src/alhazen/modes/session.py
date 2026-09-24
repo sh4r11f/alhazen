@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Any
 
 from alhazen.config.models import EyeTrackerConfig, RewardHwConfig, RigConfig
+from alhazen.data import naming
 from alhazen.errors import ConfigError
 from alhazen.modes import Mode, flag_refusal
 from alhazen.modes.rehearsal import Reduction, rehearsal_root, shrink_params
@@ -107,18 +108,21 @@ def next_run(data_root: Path | str, subject: str, session: int) -> int:
     The run directories ARE the record, so they are what is counted: a
     counter file that disagreed with them is what would eventually overwrite
     a session's data. Both experiment packages had grown their own identical
-    copy of this before it lived here.
+    copy of this before it lived here, and so had the CLI.
+
+    One past the HIGHEST number taken, not the first gap: filling a gap would
+    reuse a number an experimenter's notes may already refer to. The folder
+    names are built and read by `alhazen.data.naming`, the one definition of
+    the layout, so what is counted here is what `SessionPaths` creates.
     """
-    session_dir = Path(data_root) / f"sub-{subject}" / f"ses-{session:03d}"
+    session_dir = (
+        Path(data_root) / naming.subject_dirname(subject) / naming.session_dirname(session)
+    )
     if not session_dir.exists():
         return 1
-    taken = []
-    for path in session_dir.glob("run-*"):
-        try:
-            taken.append(int(path.name.split("_")[0].split("-")[1]))
-        except (IndexError, ValueError):
-            continue
-    return max(taken, default=0) + 1
+    taken = [naming.parse_run_dirname(path.name) for path in session_dir.glob("run-*")]
+    # None is a folder that only looks like a run ("run-notes"): not a number.
+    return max((run for run in taken if run is not None), default=0) + 1
 
 
 # Backends that are already stand-ins. Simulate mode leaves these alone: there

@@ -321,6 +321,38 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Fixed
 
+- **`experiment_git_sha` recorded the folder a session was started from, not
+  the experiment.** The runner wrote the snapshot without saying where the
+  experiment's code was, so the revision was read from the working
+  directory: a session started from a home folder, a data drive or another
+  checkout recorded that folder's commit, or `not a source checkout`, for an
+  experiment whose own repository had the answer. `build_session` now passes
+  the folder holding the task class's source file (with no task, the trial
+  builder's), and the snapshot describes that repository. Only code with no
+  source file at all (defined at a prompt) still falls back to the working
+  directory. An experiment installed as a wheel outside any repository now
+  reads `not a source checkout`, which is true, where the working directory
+  gave a guess.
+
+- **A typo at the session-number prompt, or a bad `--curriculum`, ended in a
+  traceback.** `alhazen run` and an experiment's `run.py` read the prompted
+  session number with a bare `int(...)`, so `1a` raised a raw `ValueError`
+  with the rig already loaded; a non-number, or a number below 1, is now
+  named (`INVALID: ...`) and asked for again. The curriculum file was loaded
+  outside the config-error handling, so a misspelled path or a curriculum
+  that did not validate printed a traceback; it now prints `INVALID:` naming
+  the file and exits 1, like the rig and params files.
+
+- **A config file that could not be read escaped as a raw OS or codec
+  error.** `load_model` (and so `load_rig`, `load_params` and every command
+  reading a config) turned only a missing file and bad YAML into a
+  `ConfigError`. A rig file saved as ANSI/Windows-1252 with a `°` or `µ` in
+  it raised a bare `UnicodeDecodeError`; a directory, or a file this user may
+  not read, raised `IsADirectoryError`/`PermissionError`. Each is now a
+  `ConfigError` naming the file and what is wrong with it (not UTF-8, with
+  the offending byte; a directory; the OS's reason), so the CLI prints
+  `INVALID:` rather than a traceback.
+
 - **Six small data and device faults: a registry that a crash could empty,
   database handles left open, and trackers not released after a failure.**
   `participants.tsv` was rewritten in place, so a crash or a full disk while
