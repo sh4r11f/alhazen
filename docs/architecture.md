@@ -1581,7 +1581,7 @@ of the page is described in [`dashboard.md`](dashboard.md):
 - **The browser draws; it does not analyse.** `dashboard/panels.py` computes
   every mark in Python, over the whole session and thinned to a bounded
   number of points — so each snapshot costs the same on trial 4000 as on
-  trial 40, and no statistic lives in untested page JavaScript. A live
+  trial 40, and no statistic lives in page JavaScript. A live
   analysis (§5.5) obeys the same division: its `panels()` are finished
   payloads (a receptive-field map travels as a `heatmap` form the page
   only renders), appended after the spec's own panels. So does the

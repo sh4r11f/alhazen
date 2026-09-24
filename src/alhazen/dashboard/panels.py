@@ -5,9 +5,10 @@ mean, error bar, confidence interval and running proportion the dashboard
 shows is computed here and travels to the page ready to draw. Two reasons,
 both practical:
 
-* **It is testable.** A statistic computed in the page's JavaScript has no
-  test in this suite, and a running accuracy that divides by the wrong
-  denominator looks exactly like one that doesn't.
+* **It is testable.** The page's JavaScript is tested only for how it draws
+  (``tests/js/``), not for what a statistic in it would compute, and a
+  running accuracy that divides by the wrong denominator looks exactly like
+  one that doesn't.
 * **It is bounded.** Every series is thinned to at most :data:`MAX_POINTS`
   before it is sent — more points than a panel has pixels tell the reader
   nothing — so a 5000-trial session publishes a panel the same size as a

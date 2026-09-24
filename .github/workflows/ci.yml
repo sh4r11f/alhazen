@@ -31,3 +31,17 @@ jobs:
       - name: import layering
         if: runner.os == 'Linux'
         run: lint-imports
+
+  # The dashboard's renderer (src/alhazen/dashboard/assets/dashboard.js) is
+  # browser JavaScript that pytest cannot run. tests/js runs it in a fake
+  # page with Node's built-in test runner: no npm install, no package.json.
+  # Node 22 because it expands the quoted glob itself on every OS.
+  dashboard-js:
+    name: dashboard renderer / node22
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node --test "tests/js/*.test.mjs"

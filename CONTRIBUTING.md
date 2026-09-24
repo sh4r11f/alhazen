@@ -2,7 +2,7 @@
 
 ## The gates
 
-Every change passes all five, and none of them is ever weakened to get green.
+Every change passes all six, and none of them is ever weakened to get green.
 If a gate seems wrong, say so in the pull request rather than adjusting it.
 
 ```bash
@@ -11,7 +11,19 @@ pytest                          # must stay green; no display, no hardware neede
 ruff check . && ruff format --check .
 mypy                            # zero errors, src/ only
 lint-imports                    # the layering contract must stay KEPT
+node --test "tests/js/*.test.mjs"  # the dashboard renderer; Node 22+, nothing to install
 ```
+
+The last one runs the dashboard's browser script,
+`src/alhazen/dashboard/assets/dashboard.js`, which pytest cannot execute. It
+needs only Node 22 or newer (<https://nodejs.org>) — no npm install and no
+`package.json`; keep the quotes, Node expands the pattern itself. The tests in
+`tests/js/` load the real script, unmodified, into a fake page
+(`fake_dom.mjs`, `load_dashboard.mjs`) and check what it draws: tick values,
+number formats, colours, legends, figure-export sizes, the camera stream. Run
+one file with `node --test tests/js/charts.test.mjs`. When dashboard.js starts
+using a DOM feature the fake lacks, the fake throws naming it: extend the
+fake, do not loosen it.
 
 Two of those live inside `pytest` and are worth knowing about before one
 fails on you:
@@ -26,7 +38,7 @@ fails on you:
   `removed_in` is a MAJOR release the declared version has not reached — so
   the bump to a MAJOR fails until the names it removes are gone.
 
-**Definition of done:** all five green, the new behavior has tests, and
+**Definition of done:** all six green, the new behavior has tests, and
 `docs/architecture.md` is updated in the same change.
 
 ## The layering contract
