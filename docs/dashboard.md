@@ -232,6 +232,8 @@ the task scores its outcomes, and falls back to the completion rate when it
 does not — labelling the axis with whichever it used, never quietly swapping
 one for the other. `rewards` reads the event stream, so it also counts manual
 deliveries, mid-trial drops (each once, when its `REWARD_DELIVERED` arrives),
+fault rewards (a `REWARD` carrying `fault`, paid on a trial the eye tracker
+cut short — see "System faults" in [architecture.md](architecture.md)),
 unrewarded completions (`NO_REWARD`) and hardware failures (`REWARD_FAILED`).
 
 `scatter` and `vectors` are two questions about the same endpoints. `scatter`

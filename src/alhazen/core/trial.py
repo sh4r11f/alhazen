@@ -10,6 +10,7 @@ small contracts defined in this module.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
@@ -44,16 +45,85 @@ class Outcome:
 # Framework-reserved outcomes, produced by the engine (never by a phase):
 # all are non-completed by definition. PAUSED and ABORTED ended the trial
 # before its measurement existed; PAUSED additionally writes no trials row
-# (the runner enforces that split; see session/runner.py). DROPPED_FRAMES is
-# different in kind: the trial ran to its own end, but the display dropped
-# more frames than the rig's frame QA allows (display/frames.py, policy
-# ``recycle_trial``), so what the subject saw was not the stimulus the config
-# describes and the measurement is discarded. The trial's own outcome is
-# kept on the record as ``outcome_before_frame_qa``.
+# (the runner enforces that split; see session/runner.py). ABORTED has two
+# causes, told apart by the row's ``abort_reason``: the experimenter's skip
+# key (``skipped_by_user``), or a device health check that failed mid-trial
+# (the check's own reason — ``tracker_stopped`` when the eye tracker stopped
+# recording). DROPPED_FRAMES is different in kind: the trial ran to its own
+# end, but the display dropped more frames than the rig's frame QA allows
+# (display/frames.py, policy ``recycle_trial``), so what the subject saw was
+# not the stimulus the config describes and the measurement is discarded. The
+# trial's own outcome is kept on the record as ``outcome_before_frame_qa``.
+#
+# A health-check abort and DROPPED_FRAMES are SYSTEM FAULTS: the rig failed,
+# not the subject. See NO_FAULT below for how a row says so.
 PAUSED = Outcome("PAUSED", completed=False)
 ABORTED = Outcome("ABORTED", completed=False)
 DROPPED_FRAMES = Outcome("DROPPED_FRAMES", completed=False)
 _RESERVED_OUTCOMES = {"PAUSED": PAUSED, "ABORTED": ABORTED, "DROPPED_FRAMES": DROPPED_FRAMES}
+
+
+# The values of the ``fault`` column: which system fault — the rig failing,
+# never the subject — hit a trial. The engine writes it on EVERY row, NO_FAULT
+# on a trial nothing happened to, for the reason ``n_dropped_frames`` is 0
+# rather than absent on a clean trial: an empty cell reads back as NaN, and
+# "no fault" has to be a value a reader can select on, never the absence of
+# one. The string "none" rather than an empty one for the same reason.
+#
+# Exactly two faults are recognised — the failures that are the rig's, never
+# the subject's. What the session does about a trial lost to one is
+# session/runner.py's business.
+#
+# - FAULT_DROPPED_FRAMES: frame QA recycled the trial into DROPPED_FRAMES.
+# - FAULT_TRACKER_STOPPED: the eye tracker stopped recording. It is the
+#   reason the session's tracker health check reports
+#   (session/builder.py); the engine writes whatever reason a failed health
+#   check gives, and that check is the only one there is.
+#
+# Which fault a row names and whether it cost the trial its measurement are
+# two questions — see lost_to_fault.
+NO_FAULT = "none"
+FAULT_DROPPED_FRAMES = "dropped_frames"
+FAULT_TRACKER_STOPPED = "tracker_stopped"
+
+
+def lost_to_fault(outcome_name: str, record: Mapping[str, Any]) -> str | None:
+    """The system fault that cost a trial its measurement, or None.
+
+    A trial is lost to a fault in exactly two ways, and its row says which:
+
+    - frame QA recycled it: the outcome is ``DROPPED_FRAMES`` (and the row's
+      ``fault`` is ``"dropped_frames"``);
+    - a device health check aborted it before its outcome was decided — the
+      eye tracker stopped recording: the outcome is ``ABORTED`` and the row's
+      ``abort_reason`` is the same reason its ``fault`` names
+      (``"tracker_stopped"``). The engine writes both from the one failed
+      check, which is what ties the abort to the fault.
+
+    Everything else is None, including two rows that do name a fault:
+
+    - the experimenter's skip is ``ABORTED`` for its own reason
+      (``skipped_by_user``), even on a trial whose tracker had already
+      stopped during its closing phase;
+    - a trial whose tracker stopped only during its closing phase — after its
+      measurement, while feedback was on screen — keeps its own outcome: the
+      fault is flagged on the row, but it cost the trial nothing.
+
+    It reads only what a trials.csv row holds, so an analysis can apply the
+    same rule offline: ``lost_to_fault(row["outcome"], row)``. A row written
+    before the ``fault`` column existed can only be recognised as a
+    dropped-frames loss.
+    """
+    if outcome_name == DROPPED_FRAMES.name:
+        return FAULT_DROPPED_FRAMES
+    fault = record.get("fault")
+    if (
+        outcome_name == ABORTED.name
+        and fault not in (None, "", NO_FAULT)
+        and record.get("abort_reason") == fault
+    ):
+        return str(fault)
+    return None
 
 
 # The columns the framework itself writes into a trial record, as against the
@@ -68,12 +138,12 @@ _RESERVED_OUTCOMES = {"PAUSED": PAUSED, "ABORTED": ABORTED, "DROPPED_FRAMES": DR
 # how a reader stops guessing.
 #
 # Not every column is on every row: `abort_reason` only on an abort,
-# `rewarded` only where a pump is wired and a delivery was attempted, the two
+# `rewarded` only where a pump is wired and a delivery was attempted, the three
 # `n_mid_trial_*` counts only for a task that declares mid-trial reward, the
 # two frame-QA columns only on a recycled trial, `success` only where the
-# outcome defines one. Every emitted event also mirrors its time as
-# `t_<event name lowercased>`, which is a pattern rather than a fixed name and
-# so is not listed.
+# outcome defines one. `fault` IS on every row. Every emitted event also
+# mirrors its time as `t_<event name lowercased>`, which is a pattern rather
+# than a fixed name and so is not listed.
 #
 # tests/unit/test_contracts.py drives real trials through the engine and the
 # runner and checks the names they produce against this tuple, so a rename at
@@ -89,18 +159,26 @@ TRIAL_RECORD_COLUMNS: tuple[str, ...] = (
     "outcome_before_frame_qa",
     "frame_qa_reason",
     "rewarded",
-    # Mid-trial reward (TrialContext.request_reward): how many of the drops a
-    # phase asked for during this trial the pump delivered, and how many it
-    # failed. Written — as 0 on a trial that asked for none — on every trial
-    # of a task declaring ``mid_trial_reward``, and absent otherwise, so a
-    # zero is "none this trial" and never "not a mid-trial task".
+    # Mid-trial reward (TrialContext.request_reward): of the drops a phase
+    # asked for during this trial, how many the pump delivered, how many it
+    # failed, and how many a manual reward cancelled before they started.
+    # Together they are every drop commanded — each one's REWARD is in the
+    # event record. Written — as 0 on a trial that asked for none — on every
+    # trial of a task declaring ``mid_trial_reward``, and absent otherwise, so
+    # a zero is "none this trial" and never "not a mid-trial task".
     "n_mid_trial_rewards",
     "n_mid_trial_reward_failures",
+    "n_mid_trial_rewards_cancelled",
     # "success" or "failure": what the subject was told at the end of the
     # trial (task/phases TrialFeedback). Beside the outcome, never derived
     # from it, because the two are different questions — a saccade that
     # missed is still a completed, scored measurement.
     "feedback",
+    # The system fault that hit the trial — "dropped_frames" or
+    # "tracker_stopped" — or "none", on every row (see NO_FAULT). The one
+    # column that says a trial failed, or was flagged, because the rig did;
+    # whether that cost the trial its measurement is `lost_to_fault`.
+    "fault",
 )
 
 
@@ -256,8 +334,8 @@ class RewardRequest:
 
     def payload(self) -> dict[str, Any]:
         """The fields every event about this request carries, so a REWARD and
-        the REWARD_DELIVERED or REWARD_FAILED that follows it can be matched
-        up in events.csv by ``frame`` and ``reason``."""
+        the REWARD_DELIVERED, REWARD_FAILED or REWARD_CANCELLED that follows
+        it can be matched up in events.csv by ``frame`` and ``reason``."""
         return {
             "pulses": self.pulses.model_dump(mode="json"),
             "reason": self.reason,
@@ -267,14 +345,23 @@ class RewardRequest:
 
 @dataclass(frozen=True)
 class RewardCompletion:
-    """How one handed-over request ended: ``error`` is None when the pump
-    delivered it, else the failure's message. Crosses back from the reward
-    worker thread to the session thread, so it is immutable and carries only
-    plain data — never the exception object, whose traceback the worker has
-    already logged."""
+    """How one handed-over request ended — one of three ways:
+
+    - delivered: ``error`` and ``cancelled_by`` are both None;
+    - failed: ``error`` is the failure's message;
+    - cancelled: ``cancelled_by`` names what cancelled it before it reached
+      the valve. Today that is only ``"manual"``: a manual reward overrode
+      the queue (devices/reward.py, ``QueuedReward.deliver_manual``). It was
+      never delivered, and it is not a failure — the pump was never asked.
+
+    Crosses to the session thread from the reward worker (or, for a
+    cancellation, from the thread that asked for the manual reward), so it is
+    immutable and carries only plain data — never the exception object, whose
+    traceback the worker has already logged."""
 
     request: RewardRequest
     error: str | None = None
+    cancelled_by: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -334,9 +421,11 @@ class TrialContext:
         session's reward dispenser, whose worker thread delivers it without
         blocking the frame loop, and emits REWARD stamped with that flip and
         carrying ``{pulses, reason, frame}``. REWARD_DELIVERED or
-        REWARD_FAILED follows when the pump is done. ``reason`` is the task's
-        own label ("pursuit_hold", "end_bonus") and comes back on every one
-        of those events.
+        REWARD_FAILED follows when the pump is done — or REWARD_CANCELLED,
+        when the experimenter's manual reward overrode the queue before the
+        drop reached the valve. ``reason`` is the task's own label
+        ("pursuit_hold", "end_bonus") and comes back on every one of those
+        events.
 
         Raises RewardRequestError when the task never declared
         ``mid_trial_reward = True`` — never ignored, because a task that

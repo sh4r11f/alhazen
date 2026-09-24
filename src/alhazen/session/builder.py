@@ -40,7 +40,7 @@ from alhazen.core.commands import CommandSource, KeyboardCommands, NullCommands
 from alhazen.core.engine import TrialEngine
 from alhazen.core.events import EventBus, EventSchema
 from alhazen.core.rng import resolve_seed, spawn_streams
-from alhazen.core.trial import InputFrame, TrialContext
+from alhazen.core.trial import FAULT_TRACKER_STOPPED, InputFrame, TrialContext
 from alhazen.dashboard.runtime import DashboardController
 from alhazen.dashboard.spec import DashboardSpec
 from alhazen.data.paths import SessionPaths
@@ -144,10 +144,42 @@ def make_tracker_health_check(tracker: EyeTracker) -> Callable[[], str | None]:
 
     A trial that runs on while its tracker has dropped out produces a record
     that looks like a normal trial but has no eye data behind it — worse than
-    an abort, because nothing in the data says so. The reason string lands in
-    the trial record as ``abort_reason``.
+    an abort, because nothing in the data says so. The reason string,
+    ``FAULT_TRACKER_STOPPED``, lands in the trial record as ``abort_reason``
+    and as the row's ``fault``: a tracker that stops is a system fault, not
+    the subject's (core/trial.py). During the trial's closing phase, after
+    the measurement, the engine flags it without aborting.
     """
-    return lambda: None if tracker.is_recording() else "tracker_stopped"
+    return lambda: None if tracker.is_recording() else FAULT_TRACKER_STOPPED
+
+
+def make_manual_reward(
+    reward: RewardDispenser | None, pulses: RewardPulses
+) -> Callable[[], None] | None:
+    """The experimenter's manual reward: the hook behind the ``r`` key during
+    a trial and R in the pause menu (keyboard or dashboard). None when the
+    rig has no dispenser.
+
+    Through a ``QueuedReward`` — a task that asks for reward mid-trial — it
+    overrides the queue (``QueuedReward.deliver_manual``): every drop still
+    waiting is cancelled, each with its own REWARD_CANCELLED, and the manual
+    reward is delivered once, as soon as the train already on the valve
+    finishes. The key blocks the frame it was pressed on until the pump is
+    done, so that wait is at most that train plus its own. The end-of-trial
+    pay does not come through here — the runner calls ``deliver`` — so it is
+    never cancelled and takes its turn as before.
+
+    Any other dispenser is the device itself, called on the session thread
+    exactly as before.
+
+    One closure serves the engine and the runner's pause menu, and the test
+    harness reuses it, so there is one routing to get right.
+    """
+    if reward is None:
+        return None
+    if isinstance(reward, QueuedReward):
+        return lambda: reward.deliver_manual(pulses)
+    return lambda: reward.deliver(pulses)
 
 
 def validate_event_names(
@@ -556,7 +588,11 @@ def build_session(
             reward = queued_reward
 
         manual_pulses = reward_pulses if reward_pulses is not None else RewardPulses()
-        on_manual_reward = (lambda: reward.deliver(manual_pulses)) if reward is not None else None
+        # One hook for the engine's `r` key and the runner's pause menu.
+        # Through the wrapper it cancels the queued drops and goes next,
+        # while the runner's end-of-trial pay calls deliver(), is never
+        # cancelled, and takes its turn (make_manual_reward).
+        on_manual_reward = make_manual_reward(reward, manual_pulses)
 
         engine = TrialEngine(
             display=display,
