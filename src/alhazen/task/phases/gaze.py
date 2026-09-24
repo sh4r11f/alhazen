@@ -23,14 +23,7 @@ from collections.abc import Callable
 from typing import Any
 
 from alhazen.core.trial import CircleRegion, Outcome, PhaseAction, TrialContext
-
-
-def _draw(ctx: TrialContext, keys: list[str] | tuple[str, ...]) -> None:
-    """Update and draw the named stimuli for this frame."""
-    for key in keys:
-        stimulus = ctx.stimuli[key]
-        stimulus.update(ctx.dt)
-        stimulus.draw()
+from alhazen.task.phases._draw import draw_stimuli
 
 
 class AcquireFixation:
@@ -83,7 +76,7 @@ class AcquireFixation:
             self._visible = not self._visible
             self._blink_t = now
         if self._visible:
-            _draw(ctx, [self._fixation_key])
+            draw_stimuli(ctx, [self._fixation_key])
 
         if ctx.regions[self._region].contains(ctx.inputs.gaze):
             if self._hold_start is None:
@@ -153,7 +146,7 @@ class HoldFixation:
         # break, never a lucky completion.
         if not ctx.regions[self._region].contains(ctx.inputs.gaze):
             return self._on_break
-        _draw(ctx, [self._fixation_key, *self._concurrent])
+        draw_stimuli(ctx, [self._fixation_key, *self._concurrent])
         if ctx.clock.now() - self._t0 >= self._duration:
             return PhaseAction.ADVANCE
         return PhaseAction.CONTINUE
@@ -213,7 +206,7 @@ class StimulusResponse:
         self._launch: tuple[float, float] | None = None
 
     def on_frame(self, ctx: TrialContext) -> str | Outcome:
-        _draw(ctx, [self._stimulus_key, *self._concurrent])
+        draw_stimuli(ctx, [self._stimulus_key, *self._concurrent])
         inside = ctx.regions[self._depart_region].contains(ctx.inputs.gaze)
         if inside:
             # Latched every frame, including the frames before the flip: the
@@ -284,16 +277,14 @@ class LandingCheck:
         # Either may be PhaseAction.ADVANCE instead of an Outcome: the
         # endpoint is on the record either way (``<prefix>_in_target``), and a
         # trial that shows feedback needs the next phase to read it and end
-        # the trial, rather than this one ending it first.
-        if on_hit is None or on_miss is None:
-            raise ValueError(
-                "LandingCheck needs both on_hit and on_miss — an Outcome each, or "
-                "PhaseAction.ADVANCE to let a following phase (TrialFeedback) end the trial"
-            )
+        # the trial, rather than this one ending it first. Anything else is
+        # refused here, by the check LandingSample uses: CONTINUE in
+        # particular is not "carry on" but "never end on a hit" — the phase
+        # would loop to its timeout and record the hit as a miss.
+        self._on_hit = _landing_verdict("LandingCheck", "on_hit", on_hit)
+        self._on_miss = _landing_verdict("LandingCheck", "on_miss", on_miss)
         self._region = region
         self._timeout_s = timeout_s
-        self._on_hit = on_hit
-        self._on_miss = on_miss
         self._stimulus_keys = list(stimulus_keys or [])
         self._landed_event = landed_event
         self._prefix = record_prefix
@@ -324,7 +315,7 @@ class LandingCheck:
         )
 
     def on_frame(self, ctx: TrialContext) -> str | Outcome:
-        _draw(ctx, self._stimulus_keys)
+        draw_stimuli(ctx, self._stimulus_keys)
         if ctx.inputs.gaze is not None:
             # Latched every frame, so a track loss right before the timeout
             # still leaves a real position to fall back on.
@@ -346,19 +337,21 @@ class LandingCheck:
 Reference = tuple[float, float] | Callable[[TrialContext], tuple[float, float]]
 
 
-def _landing_verdict(label: str, verdict: Outcome | str | None) -> Outcome | str:
-    """A verdict LandingSample can end with: an Outcome, or PhaseAction.ADVANCE.
+def _landing_verdict(phase: str, label: str, verdict: Outcome | str | None) -> Outcome | str:
+    """A verdict a landing phase (``phase``, named in the error) can end
+    with: an Outcome, or PhaseAction.ADVANCE.
 
-    Checked at construction, because anything else (None, CONTINUE, a typo)
-    would only fail on the frame the landing is judged, with a subject in
-    the rig.
+    Checked at construction, because anything else would only show up with
+    a subject in the rig: None or a typo fails on the frame the landing is
+    judged, and CONTINUE never ends the phase at all — LandingCheck would
+    loop until its timeout and then report the hit as a miss.
     """
     if isinstance(verdict, Outcome):
         return verdict
     if verdict == PhaseAction.ADVANCE:
         return PhaseAction.ADVANCE
     raise ValueError(
-        f"LandingSample needs both on_hit and on_miss, and {label} is {verdict!r} — "
+        f"{phase} needs both on_hit and on_miss, and {label} is {verdict!r} — "
         "pass an Outcome each, or PhaseAction.ADVANCE to let a following phase "
         "(TrialFeedback, a pursuit) run"
     )
@@ -472,8 +465,8 @@ class LandingSample:
         # in LandingCheck: the verdict is on the record either way, and a
         # trial that shows feedback or starts a pursuit at the landing needs
         # the next phase to run rather than this one ending the trial.
-        self._on_hit = _landing_verdict("on_hit", on_hit)
-        self._on_miss = _landing_verdict("on_miss", on_miss)
+        self._on_hit = _landing_verdict("LandingSample", "on_hit", on_hit)
+        self._on_miss = _landing_verdict("LandingSample", "on_miss", on_miss)
         # The window the eye leaves and the window it should land in are two
         # different places. Named as one, every sample on the target would
         # count as "not left yet", and no landing could ever be a hit.
@@ -591,7 +584,7 @@ class LandingSample:
         return not ctx.regions[self._depart_region].contains(gaze)
 
     def on_frame(self, ctx: TrialContext) -> str | Outcome:
-        _draw(ctx, self._stimulus_keys)
+        draw_stimuli(ctx, self._stimulus_keys)
         now = ctx.clock.now()
         gaze, gaze_t = ctx.inputs.gaze, ctx.inputs.gaze_t
         if gaze is not None and gaze_t is None and self._settle_speed is not None:

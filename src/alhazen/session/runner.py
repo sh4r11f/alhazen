@@ -38,6 +38,7 @@ import sys
 import time
 from collections import Counter
 from collections.abc import Callable, Sequence
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -52,7 +53,9 @@ from alhazen.core.trial import (
     FAULT_DROPPED_FRAMES,
     FAULT_TRACKER_STOPPED,
     NO_FAULT,
+    PAUSED,
     CircleRegion,
+    Outcome,
     TrialContext,
 )
 from alhazen.dashboard.panels import frame_intervals_panel
@@ -178,8 +181,15 @@ class SessionRunner:
         max_consecutive_failures: int | None = None,
         rest_resume_after_s: float | None = None,
         max_consecutive_dropouts: int | None = DEFAULT_MAX_CONSECUTIVE_DROPOUTS,
+        experiment_dir: Path | None = None,
     ) -> None:
         self._cfg = cfg
+        # Where the experiment's code lives, so the snapshot's
+        # `experiment_git_sha` describes that repository. None falls back to
+        # the working directory (config.snapshot.build_provenance), which is
+        # only right when the session happens to be started from inside the
+        # experiment's checkout; build_session passes the task's own folder.
+        self._experiment_dir = experiment_dir
         # The subject's failure streak and the device's dropout streak: which
         # trials count toward which, and when either stops the session at the
         # pause screen (session/streaks.py, which also validates both limits).
@@ -327,7 +337,7 @@ class SessionRunner:
             # still documents what it was trying to run. Until it is on disk
             # the run directory is not a run, and teardown releases the
             # devices without writing anything into it (_teardown).
-            write_snapshot(self._cfg, self._paths.snapshot_path)
+            write_snapshot(self._cfg, self._paths.snapshot_path, self._experiment_dir)
             snapshot_written = True
             # The log before the registry, so a participants.tsv that cannot
             # be written ends with a "session end: FAILED" line in this run's
@@ -471,7 +481,7 @@ class SessionRunner:
                     reward_failed = True
 
                 record = result.record
-                if outcome.name != "PAUSED":
+                if outcome.name != PAUSED.name:
                     if self._score is not None:
                         record = self._score(record)
                     self._recorder.add_trial(record)
@@ -505,7 +515,7 @@ class SessionRunner:
                 # below can `continue` past it.
                 dropout_streak = self._dropout_streak(outcome, result.record)
 
-                if outcome.name == "PAUSED" or reward_failed:
+                if outcome.name == PAUSED.name or reward_failed:
                     # A reward failure goes through the same pause flow as a
                     # deliberate pause: a human has to look at the pump before
                     # the session carries on rewarding nothing. The
@@ -564,7 +574,7 @@ class SessionRunner:
             parts.append(f"{name} {backend if backend is not None else 'none'}")
         return ", ".join(parts)
 
-    def _log_trial(self, attempt: int, record: dict[str, Any], outcome: Any) -> None:
+    def _log_trial(self, attempt: int, record: dict[str, Any], outcome: Outcome) -> None:
         """One line per trial: the backbone a session log is read by."""
         detail = ""
         if record.get("abort_reason"):
@@ -757,7 +767,7 @@ class SessionRunner:
         )
         return self._pauses.handle({}, rest=f"BLOCK {done} OF {total} COMPLETE — REST")
 
-    def _failure_streak(self, outcome: Any, fault: str | None) -> FailureStreak | None:
+    def _failure_streak(self, outcome: Outcome, fault: str | None) -> FailureStreak | None:
         """Count this trial toward the subject's failure streak (the rules are
         StreakMonitor.count_failure's); the streak, logged, on the trial that
         reaches the task's limit, which the caller turns into a pause.
@@ -813,7 +823,7 @@ class SessionRunner:
             and frames.dropped_fraction > self._frame_monitor.dropped_fraction_budget
         )
 
-    def _dropout_streak(self, outcome: Any, record: dict[str, Any]) -> DropoutStreak | None:
+    def _dropout_streak(self, outcome: Outcome, record: dict[str, Any]) -> DropoutStreak | None:
         """Count this trial toward the device's dropout streak (the rules are
         StreakMonitor.count_dropout's); the streak, logged, on every trial from
         ``max_consecutive_dropouts`` on until its pause is raised."""

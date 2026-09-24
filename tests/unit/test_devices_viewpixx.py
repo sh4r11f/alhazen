@@ -40,6 +40,7 @@ from alhazen.devices.eyetracker.viewpixx import (
     HOST_DEVICE,
     STATUS_REFRESH_S,
     TRACKING_LOST_PX,
+    GazeReader,
     calibration_targets,
     evaluate_calibration,
     eye_in_raw,
@@ -1085,6 +1086,50 @@ class TestGazeReader:
         tracker.connect()
         with pytest.raises(TrackerError, match="before configure"):
             tracker.get_gaze()
+
+
+class TestAReaderThatWillNotStop:
+    """stop() waits a bounded time for the reader thread; a USB read that has
+    not returned by then is abandoned. The abandoned thread used to share
+    its stop flag with the next start(), which cleared it: once its read
+    returned it carried on reading beside the new thread, for the session."""
+
+    def test_an_abandoned_thread_stops_once_its_read_returns(self, monkeypatch, caplog):
+        # No wait at all in stop(), so the first read is still stuck in the
+        # device when stop() gives up on it — no sleeping for 2 s here.
+        monkeypatch.setattr(viewpixx_module, "READER_JOIN_S", 0.0)
+        stuck_in_the_device = threading.Event()
+        released = threading.Event()
+        readers: list[threading.Thread] = []
+
+        def read():
+            readers.append(threading.current_thread())
+            if len(readers) == 1:
+                stuck_in_the_device.set()
+                released.wait()
+            return "report"  # never looked into by the reader
+
+        reader = GazeReader(read, FakeClock(), threading.Lock(), interval_s=0.001)
+        reader.start()
+        assert stuck_in_the_device.wait(5.0)
+        with caplog.at_level(logging.ERROR):
+            reader.stop()
+        # Said loudly, not dropped in silence.
+        assert "did not stop within" in caplog.text
+        abandoned = readers[0]
+        assert abandoned.is_alive()
+
+        reader.start()
+        try:
+            released.set()
+            # The abandoned thread returns from its read, sees its own stop
+            # was asked for, and ends — the new start() did not undo it.
+            abandoned.join(timeout=5.0)
+            assert not abandoned.is_alive()
+            assert reader.running
+        finally:
+            monkeypatch.setattr(viewpixx_module, "READER_JOIN_S", 2.0)
+            reader.stop()
 
 
 class TestRecordingGuard:

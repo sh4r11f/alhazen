@@ -172,6 +172,11 @@ describe('the eye-tracker panels', () => {
     });
   });
 
+  it('leaves its URL alone: it has no token in it', () => {
+    const dashboard = loadDashboard();
+    assert.deepEqual(dashboard.window.history.replaced, []);
+  });
+
   it('turn the session controls on only while paused', () => {
     const dashboard = loadDashboard({ staticState: stateWith([], { status: 'paused' }) });
     const buttons = dashboard.document.querySelectorAll('[data-command]');
@@ -188,6 +193,26 @@ describe('the live page', () => {
     assert.equal(dashboard.fetches[0].url, '/api/state?token=abc&revision=0');
     assert.equal(cards(dashboard).length, 1);
     assert.deepEqual(dashboard.pendingTimers(), [{ ms: 50 }]);
+  });
+
+  it('takes the token out of the address bar and still uses it', async () => {
+    // A token left in the URL is on the screen, in the history and in any
+    // copied link; the page keeps it in memory and in sessionStorage instead.
+    const dashboard = await livePage({ states: [paused(1)] });
+    assert.equal(dashboard.window.location.search, '');
+    assert.deepEqual(dashboard.window.history.replaced, ['/']);
+    assert.equal(dashboard.window.sessionStorage.getItem('alhazen-token'), 'abc');
+    assert.equal(dashboard.fetches[0].url, '/api/state?token=abc&revision=0');
+  });
+
+  it('keeps the rest of the URL when it removes the token', () => {
+    const dashboard = loadDashboard({
+      staticState: null,
+      search: '?panel=eye&token=abc',
+      fetch: pending,
+    });
+    assert.equal(dashboard.window.location.search, '?panel=eye');
+    assert.deepEqual(dashboard.window.history.replaced, ['/?panel=eye']);
   });
 
   it('does not rebuild the page for a revision it has already drawn', async () => {

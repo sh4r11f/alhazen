@@ -32,7 +32,7 @@ from typing import Any
 
 from alhazen.config.models import RewardPulses
 from alhazen.core.engine import TrialResult
-from alhazen.core.trial import TrialContext
+from alhazen.core.trial import PAUSED, Outcome, TrialContext
 from alhazen.devices.reward import RewardDispenser
 from alhazen.display.backend import DisplayBackend
 from alhazen.session.streaks import cut_short_by_device
@@ -78,7 +78,7 @@ class RewardPayer:
         self._display = display
         self._emit = emit
 
-    def earned(self, outcome: Any, fault: str | None) -> RewardPulses | None:
+    def earned(self, outcome: Outcome, fault: str | None) -> RewardPulses | None:
         """What this trial earned at its end, scaled — a ``RewardPulses`` — or
         None for nothing. The one place the pay rule lives: ``deliver`` pays
         it, and a fault trial's log line reports it.
@@ -94,7 +94,7 @@ class RewardPayer:
             return self.policy.pulses_for_fault()
         return self.policy.pulses_for(outcome.name)
 
-    def deliver(self, ctx: TrialContext, outcome: Any, fault: str | None = None) -> bool:
+    def deliver(self, ctx: TrialContext, outcome: Outcome, fault: str | None = None) -> bool:
         """Pay out what this outcome earned. Returns True if the hardware
         failed, which the caller turns into a pause.
 
@@ -120,7 +120,7 @@ class RewardPayer:
         screen, and handed to a human — loudly, but without losing the trial.
         A fault reward that fails takes the same path.
         """
-        if self.policy is None or self._device is None or outcome.name == "PAUSED":
+        if self.policy is None or self._device is None or outcome.name == PAUSED.name:
             return False
         pulses = self.earned(outcome, fault)
         # What the delivery was for, as every event about it says.

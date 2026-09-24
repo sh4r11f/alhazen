@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -75,6 +77,28 @@ class RenderContext:
 # ---------------------------------------------------------------------------
 
 
+@contextmanager
+def _drawing(where: str, context: RenderContext) -> Iterator[None]:
+    """Prefix any ConfigError raised while drawing with where and when.
+
+    An expression error that depends on a frame's values (a param holding a
+    string where a number belongs) can only surface here, mid-frame. The
+    expression evaluator already names the expression, the operator and the
+    values; what it cannot know is which part of the scene the expression sits
+    in, or at what scene time it failed. This adds both — ``layers[2]`` or
+    ``background``, and the time the frame was drawn at — so the frame can be
+    reproduced with ``headless_render`` and the field found in the file.
+
+    Wrapped only around a layer's OWN work, never around a group's children
+    (each child is wrapped under its own path), so a nested error is prefixed
+    once, with the innermost path.
+    """
+    try:
+        yield
+    except ConfigError as error:
+        raise ConfigError(f"{where} at scene time {context.time:g} s: {error}") from error
+
+
 def value(field: Any, context: RenderContext, default: float = 0.0) -> float:
     """A numeric field: a literal, an expression, or absent."""
     if field is None:
@@ -84,7 +108,16 @@ def value(field: Any, context: RenderContext, default: float = 0.0) -> float:
         if source is None:
             raise ConfigError(f"a field object must carry 'expr', got {sorted(field)}")
         result = evaluate_expr(source, context.eval_context())
-        return float(result)
+        # An expression may legitimately produce a string (fixed(), withAlpha)
+        # and the language does not stop one reaching a numeric field. float()
+        # accepts a numeric string, as JavaScript coerces one; anything else
+        # would be a bare ValueError naming nothing, so it is named here.
+        try:
+            return float(result)
+        except (TypeError, ValueError) as error:
+            raise ConfigError(
+                f"expression {source!r} produced {result!r}, but a number was needed here"
+            ) from error
     return float(field)
 
 
@@ -704,15 +737,23 @@ def _layer_transform(layer: Layer) -> Any:
     return getattr(layer, "transform", None) or (layer.model_extra or {}).get("transform")
 
 
-def _draw_layer(canvas: Canvas, layer: Layer, context: RenderContext, opacity: float) -> None:
-    if layer.visible is not None and not value(layer.visible, context, 1.0):
+def _draw_layer(
+    canvas: Canvas, layer: Layer, context: RenderContext, opacity: float, path: str
+) -> None:
+    """Draw one layer. ``path`` is where it sits in the scene (``layers[0]``,
+    ``layers[0].children[1]``) — the same form the loader's errors use — so an
+    error raised while drawing it can say which layer it came from."""
+    with _drawing(path, context):
+        visible = layer.visible is None or value(layer.visible, context, 1.0)
+    if not visible:
         return
     # Canvas semantics: `ctx.globalAlpha = layer.opacity` inside a
     # save/restore REPLACES the inherited alpha rather than multiplying into
     # it, so the innermost declared opacity wins. A layer that declares none
     # inherits its parent's. Multiplying would make a 0.5 layer inside a 0.5
     # group draw at 0.25 — a quarter of what its author asked for.
-    layer_opacity = opacity if layer.opacity is None else value(layer.opacity, context, 1.0)
+    with _drawing(path, context):
+        layer_opacity = opacity if layer.opacity is None else value(layer.opacity, context, 1.0)
     if layer_opacity <= 0:
         return
 
@@ -730,27 +771,34 @@ def _draw_layer(canvas: Canvas, layer: Layer, context: RenderContext, opacity: f
         # instead made black content vanish (a black shape on a black scratch
         # changes nothing) and left every anti-aliased edge premultiplied
         # against black, i.e. fringed.
-        placement = _resolve_transform(transform, context)
+        with _drawing(path, context):
+            placement = _resolve_transform(transform, context)
         scratch = _scratch_for(canvas, placement)
-        _draw_element(scratch, element, kind, context, 1.0)
+        _draw_element(scratch, element, kind, context, 1.0, path)
         _blit_transformed(canvas, scratch, placement, layer_opacity)
         return
 
-    _draw_element(canvas, element, kind, context, layer_opacity)
+    _draw_element(canvas, element, kind, context, layer_opacity, path)
 
 
 def _draw_element(
-    canvas: Canvas, element: dict, kind: Any, context: RenderContext, opacity: float
+    canvas: Canvas, element: dict, kind: Any, context: RenderContext, opacity: float, path: str
 ) -> None:
     """One element into one canvas: a group's children, or a primitive."""
     if kind == "group":
-        for child in element.get("children") or []:
-            _draw_layer(canvas, Layer.model_validate(child), context, opacity)
+        # Children are wrapped under their own paths by _draw_layer; wrapping
+        # this loop too would prefix a child's error with its parent's path
+        # a second time.
+        for index, child in enumerate(element.get("children") or []):
+            _draw_layer(
+                canvas, Layer.model_validate(child), context, opacity, f"{path}.children[{index}]"
+            )
         return
-    drawer = DRAWERS.get(str(kind))
-    if drawer is None:
-        raise ConfigError(f"no renderer for primitive type {kind!r}")
-    drawer(canvas, element, context, opacity)
+    with _drawing(path, context):
+        drawer = DRAWERS.get(str(kind))
+        if drawer is None:
+            raise ConfigError(f"no renderer for primitive type {kind!r}")
+        drawer(canvas, element, context, opacity)
 
 
 @dataclass(frozen=True)
@@ -897,10 +945,11 @@ def headless_render(
     context = RenderContext(
         width=int(width), height=int(height), time=time, dt=dt, params=params or {}
     )
-    background = string_value(scene.background, context, DEFAULT_BACKGROUND)
-    canvas = Canvas(int(width), int(height), parse_color(background))
-    for layer in scene.layers:
-        _draw_layer(canvas, layer, context, 1.0)
+    with _drawing("background", context):
+        background = string_value(scene.background, context, DEFAULT_BACKGROUND)
+        canvas = Canvas(int(width), int(height), parse_color(background))
+    for index, layer in enumerate(scene.layers):
+        _draw_layer(canvas, layer, context, 1.0, f"layers[{index}]")
     return canvas.to_uint8()
 
 

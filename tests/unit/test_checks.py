@@ -252,6 +252,27 @@ class TestTheDropoutTest:
         (host,) = sdk.hosts
         assert host.closed
 
+    def test_a_link_that_dies_while_the_check_releases_it_fails_the_check(
+        self, tmp_path, monkeypatch
+    ):
+        # pylink's RuntimeError from closing the test EDF used to escape the
+        # check's `except AlhazenError` as a traceback, ending check-rig
+        # instead of being reported as this check's failure.
+        clock, run = self.check(tmp_path)
+        sdk = install_fake_pylink(monkeypatch, clock)
+
+        def link_terminated(self) -> None:
+            raise RuntimeError("link terminated")
+
+        monkeypatch.setattr(FakeEyeLinkHost, "closeDataFile", link_terminated)
+        result = run()
+
+        assert not result.ok
+        assert result.detail.startswith("the tracker could not be released cleanly: ")
+        assert "link terminated" in result.evidence["error"]
+        (host,) = sdk.hosts
+        assert host.closed
+
     def test_the_limit_tested_is_the_rigs(self, tmp_path, monkeypatch):
         clock, run = self.check(tmp_path, max_sample_gap_ms=120)
         install_fake_pylink(monkeypatch, clock)

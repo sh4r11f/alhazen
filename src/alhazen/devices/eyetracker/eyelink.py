@@ -163,16 +163,42 @@ class EyeLinkTracker:
 
         self._pylink = pylink
         try:
-            self._tracker = pylink.EyeLink(self._cfg.host_ip)
-            self._tracker.openDataFile(self._cfg.edf_host_filename)
+            tracker = pylink.EyeLink(self._cfg.host_ip)
+        except RuntimeError as e:
+            raise TrackerError(self._connect_failed(e)) from e
+        try:
+            tracker.openDataFile(self._cfg.edf_host_filename)
             # Stamped into the EDF header so a file found later on the Host
             # PC's disk can be traced back to the software that recorded it.
-            self._tracker.sendCommand("add_file_preamble_text 'RECORDED BY alhazen'")
-        except RuntimeError as e:
-            raise TrackerError(
-                f"EyeLink connect to {self._cfg.host_ip} failed: {e}. Check the tracker "
-                f"link/IP, or use eyetracker backend 'mouse_sim'."
-            ) from e
+            tracker.sendCommand("add_file_preamble_text 'RECORDED BY alhazen'")
+        except BaseException as e:
+            # The link is open and this tracker will never be connected, so
+            # nothing else would close it: released here, as the SpikeGLX and
+            # NI-DAQ backends release theirs after a failed connect.
+            # BaseException, so a Ctrl+C here releases the link too.
+            try:
+                tracker.close()
+            except Exception as close_error:  # pylink's error types are not all documented
+                # The connect error is the one that says what went wrong;
+                # close()'s is logged rather than raised over it.
+                log.error(
+                    "EyeLink close() failed as well (%s), after the connect had already "
+                    "failed (%s)",
+                    close_error,
+                    e,
+                )
+            if isinstance(e, RuntimeError):
+                raise TrackerError(self._connect_failed(e)) from e
+            raise
+        # Kept only once connected: a tracker that failed to connect holds no
+        # link, so shutdown() has nothing to release.
+        self._tracker = tracker
+
+    def _connect_failed(self, error: RuntimeError) -> str:
+        return (
+            f"EyeLink connect to {self._cfg.host_ip} failed: {error}. Check the tracker "
+            f"link/IP, or use eyetracker backend 'mouse_sim'."
+        )
 
     def configure(self, screen: Screen, clock: Clock) -> None:
         """Set data filters, hand the tracker the display geometry, and
@@ -686,8 +712,10 @@ class EyeLinkTracker:
         with its eye data still on the Host PC. Raised, it is a failed
         teardown step, so the run ends ``failed`` and the message says
         where the file is. With no destination (check-rig, the accuracy
-        measurement) nothing was asked for and nothing is lost, so a dead
-        link is logged and the check is not failed over it.
+        measurement) nothing was asked for and nothing is lost, so a link
+        found down is logged and the check is not failed over it; a link
+        that fails while the EDF is being closed is a TrackerError all the
+        same, which check-rig reports as a failed check.
 
         Whatever happened, the link is released (``close()``) in a
         ``finally``, as the TRACKPixx3 backend releases its device: nothing
@@ -728,8 +756,9 @@ class EyeLinkTracker:
         """Close the EDF on the Host PC and, given a destination, retrieve it.
 
         Raises a TrackerError naming the file whenever a destination was
-        given and the EDF did not arrive there. Without one, a dead link is
-        logged and any other failure propagates as pylink raised it.
+        given and the EDF did not arrive there. Without one, a link found
+        down is logged, and one that fails while the EDF closes is still a
+        TrackerError (not pylink's RuntimeError), so a check reports it.
         """
         if not self._tracker.isConnected():
             if edf_destination is None:
@@ -768,7 +797,16 @@ class EyeLinkTracker:
             # retrieval as a link found down, and is said the same way: in
             # words that name the file, not pylink's, which name nothing.
             if edf_destination is None:
-                raise
+                # No run behind it (check-rig, the accuracy measurement), so
+                # nothing is lost — but a link that dies here is still a
+                # fault, and raised as pylink's bare RuntimeError it went
+                # past check-rig's `except AlhazenError` as a traceback
+                # instead of a failed check.
+                raise TrackerError(
+                    f"the EyeLink failed while closing the EDF ({e}); no recording was "
+                    f"asked for, so nothing is lost ('{self._cfg.edf_host_filename}' is left "
+                    f"on the Host PC at {self._cfg.host_ip}). Check the link to the Host PC."
+                ) from e
             raise TrackerError(
                 self._edf_not_retrieved(
                     edf_destination, f"the EyeLink failed while closing the EDF ({e})"

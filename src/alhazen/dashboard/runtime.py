@@ -15,7 +15,7 @@ import socketserver
 import threading
 import time
 import webbrowser
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from functools import lru_cache
@@ -23,6 +23,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs
 
 from alhazen.config.models import IRIS_SIZE_RANGE_PX
 from alhazen.dashboard.panels import panel_payload
@@ -58,6 +59,20 @@ _TRACKER_SETTINGS = {"iris_size_px": IRIS_SIZE_RANGE_PX}
 # because an eye dropping out mid-calibration is exactly when the experimenter
 # needs to change one without abandoning the walk.
 _SETTING_STATUSES = frozenset({"paused", "calibrating"})
+
+# The largest POST body the server reads. A command or a tracker setting is a
+# few dozen bytes of JSON; the cap is generous for that and small enough that
+# no request can make a handler thread buffer an arbitrary amount of memory.
+_MAX_BODY_BYTES = 4096
+# The longest request id the server keeps for deduplication. The page sends
+# a UUID (36 characters); the cap bounds what one remembered id can cost.
+_MAX_REQUEST_ID_CHARS = 64
+# How many request ids each queue remembers. A retried click arrives within
+# seconds, so the most recent thousand is far more than enough, and the bound
+# keeps a long session's memory from growing with its clicks.
+_REMEMBERED_REQUEST_IDS = 1024
+# What a refused request id is told.
+_REQUEST_ID_RULE = f"request_id must be a string of 1 to {_MAX_REQUEST_ID_CHARS} characters"
 
 
 @dataclass(frozen=True)
@@ -244,7 +259,7 @@ class DashboardController:
         payload = json.dumps(state, indent=2, sort_keys=True, default=str)
         state_path = figures_dir / "dashboard_state.json"
         state_path.write_text(payload + "\n", encoding="utf-8")
-        page = page_html(payload.replace("</", "<\\/"))
+        page = page_html(payload)
         (figures_dir / "dashboard.html").write_text(page, encoding="utf-8")
 
     def alive(self) -> bool:
@@ -323,18 +338,86 @@ class _CameraState:
             return self.seq, self.frame
 
 
-def _query_int(query: str, name: str, default: int) -> int:
+def _query_params(query: str) -> dict[str, list[str]]:
+    """A request's query string, parsed once, with every value of every key.
+
+    Blank values are kept (``after=``) so that the checks below see them and
+    refuse them, rather than the parser dropping them without a word.
+    """
+    return parse_qs(query, keep_blank_values=True)
+
+
+def _query_int(params: dict[str, list[str]], name: str, default: int) -> int:
     """An integer query parameter, or ``default`` when it is absent.
 
-    A value that is present but not an integer raises ValueError: the page
-    sends these itself, so a malformed one is a bug to report, not to guess
-    around.
+    A value that is present but not an integer, or a name given twice, raises
+    ValueError: the page sends these itself, so a malformed one is a bug to
+    report (the caller answers 400), not to guess around. Every integer
+    parameter goes through here, so all of them follow that one rule.
     """
-    for pair in query.split("&"):
-        key, _, value = pair.partition("=")
-        if key == name:
-            return int(value)
-    return default
+    values = params.get(name)
+    if values is None:
+        return default
+    if len(values) != 1:
+        raise ValueError(f"{name} was given {len(values)} times")
+    return int(values[0])
+
+
+def _valid_request_id(request_id: object) -> bool:
+    """Whether a POST's request id can be remembered for deduplication.
+
+    It must be a string: a JSON list or object is unhashable, and looking it
+    up in the memory of seen ids would raise TypeError outside any handler
+    and kill the request's thread. It must be short, so a remembered id costs
+    a bounded amount of memory, and non-empty, so it identifies something.
+    """
+    return isinstance(request_id, str) and 0 < len(request_id) <= _MAX_REQUEST_ID_CHARS
+
+
+class _RecentRequestIds:
+    """The request ids one queue has already accepted, oldest first.
+
+    A browser can send the same click twice (a retry after a lost response),
+    and the id is how the server forwards it only once. Each queue has its
+    own instance, so a command and a tracker setting that happen to share an
+    id never block each other. Only the most recent ``limit`` ids are kept,
+    the oldest forgotten first, so memory stays bounded however long the
+    session runs.
+
+    Handler threads run concurrently, so the check and the record happen
+    under one lock: two copies of one click arriving together still reach
+    the queue once.
+    """
+
+    def __init__(self, limit: int = _REMEMBERED_REQUEST_IDS) -> None:
+        self._limit = limit
+        # A dict rather than a set: it keeps insertion order, which is what
+        # lets the oldest id be the one forgotten.
+        self._ids: dict[str, None] = {}
+        self._lock = threading.Lock()
+
+    def forward_once(self, request_id: str, put: Callable[[], None]) -> None:
+        """Call ``put`` unless this id was forwarded before.
+
+        If ``put`` raises (a full queue), the id is not recorded, so the
+        page's retry of the same click is forwarded once there is room.
+        """
+        with self._lock:
+            if request_id in self._ids:
+                return
+            put()
+            self._ids[request_id] = None
+            if len(self._ids) > self._limit:
+                del self._ids[next(iter(self._ids))]
+
+
+class _BadBody(Exception):
+    """A POST body the server refuses, with the status and reason to answer."""
+
+    def __init__(self, status: HTTPStatus, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+        self.message = message
 
 
 # The longest a camera request may be held open waiting for a newer frame.
@@ -356,11 +439,26 @@ def _serve(
 ) -> None:
     state = _State()
     camera = _CameraState()
-    seen: set[str] = set()
+    # One memory of accepted request ids per queue (see _RecentRequestIds).
+    seen_commands = _RecentRequestIds()
+    seen_settings = _RecentRequestIds()
+    # The token as bytes, once. secrets.compare_digest refuses a str holding
+    # non-ASCII characters, and a header or a decoded query value may hold
+    # anything; bytes compare whatever they hold.
+    token_bytes = token.encode("utf-8")
+
+    def token_matches(candidate: str | None) -> bool:
+        """Whether a presented token is the session's. Compared in constant
+        time, so how long a refusal takes says nothing about how much of a
+        guess was right."""
+        return candidate is not None and secrets.compare_digest(
+            candidate.encode("utf-8"), token_bytes
+        )
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
             path, _, query = self.path.partition("?")
+            params = _query_params(query)
             if path == "/":
                 self._send(
                     HTTPStatus.OK,
@@ -369,22 +467,25 @@ def _serve(
                 )
                 return
             if path == "/api/state":
-                if not self._authorized(query):
+                if not self._authorized(params):
                     return
-                revision = 0
-                for pair in query.split("&"):
-                    if pair.startswith("revision="):
-                        with suppress(ValueError):
-                            revision = int(pair.partition("=")[2])
+                # Refused like the camera's parameters, not ignored: a
+                # revision the server could not read used to be taken as 0,
+                # which hid a page bug behind an answer that looked right.
+                try:
+                    revision = _query_int(params, "revision", 0)
+                except ValueError:
+                    self._send(HTTPStatus.BAD_REQUEST, "revision must be an integer", "text/plain")
+                    return
                 payload = state.wait_after(revision)
                 self._send(HTTPStatus.OK, payload, "application/json")
                 return
             if path == "/api/camera":
-                if not self._authorized(query):
+                if not self._authorized(params):
                     return
                 try:
-                    after = _query_int(query, "after", 0)
-                    wait_ms = _query_int(query, "wait_ms", 2000)
+                    after = _query_int(params, "after", 0)
+                    wait_ms = _query_int(params, "wait_ms", 2000)
                 except ValueError:
                     self._send(
                         HTTPStatus.BAD_REQUEST, "after and wait_ms must be integers", "text/plain"
@@ -414,7 +515,7 @@ def _serve(
             self._send(HTTPStatus.NOT_FOUND, "not found", "text/plain")
 
         def do_POST(self) -> None:  # noqa: N802
-            if self.headers.get("X-Alhazen-Token") != token:
+            if not token_matches(self.headers.get("X-Alhazen-Token")):
                 self._send(HTTPStatus.FORBIDDEN, "forbidden", "text/plain")
                 return
             if self.path == "/api/tracker":
@@ -424,13 +525,21 @@ def _serve(
                 self._send(HTTPStatus.FORBIDDEN, "forbidden", "text/plain")
                 return
             try:
-                length = int(self.headers.get("Content-Length", "0"))
-                body = json.loads(self.rfile.read(length))
+                body = self._json_body()
+            except _BadBody as refused:
+                self._send(refused.status, refused.message, "text/plain")
+                return
+            try:
                 name, request_id = body["name"], body["request_id"]
-            except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+            except (KeyError, TypeError):
                 self._send(HTTPStatus.BAD_REQUEST, "invalid command", "text/plain")
                 return
-            if name not in _ALLOWED_COMMANDS:
+            if not _valid_request_id(request_id):
+                self._send(HTTPStatus.BAD_REQUEST, _REQUEST_ID_RULE, "text/plain")
+                return
+            # The type first: a JSON list or object is unhashable, and the
+            # set lookup would raise instead of refusing it.
+            if not isinstance(name, str) or name not in _ALLOWED_COMMANDS:
                 self._send(HTTPStatus.BAD_REQUEST, "unknown command", "text/plain")
                 return
             if state.status != "paused":
@@ -440,16 +549,14 @@ def _serve(
                     "text/plain",
                 )
                 return
-            if request_id not in seen:
-                try:
-                    commands.put_nowait({"name": name, "request_id": request_id})
-                except queue.Full:
-                    self._send(HTTPStatus.SERVICE_UNAVAILABLE, "command queue full", "text/plain")
-                    return
-                seen.add(request_id)
-                if len(seen) > 1024:
-                    seen.clear()
-                    seen.add(request_id)
+            try:
+                seen_commands.forward_once(
+                    request_id,
+                    lambda: commands.put_nowait({"name": name, "request_id": request_id}),
+                )
+            except queue.Full:
+                self._send(HTTPStatus.SERVICE_UNAVAILABLE, "command queue full", "text/plain")
+                return
             self._send(HTTPStatus.ACCEPTED, "accepted", "text/plain")
 
         def _tracker_setting(self) -> None:
@@ -460,11 +567,17 @@ def _serve(
             a procedure runs. Deduplicated by request id, like a command.
             """
             try:
-                length = int(self.headers.get("Content-Length", "0"))
-                body = json.loads(self.rfile.read(length))
+                body = self._json_body()
+            except _BadBody as refused:
+                self._send(refused.status, refused.message, "text/plain")
+                return
+            try:
                 setting, value, request_id = body["setting"], body["value"], body["request_id"]
-            except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+            except (KeyError, TypeError):
                 self._send(HTTPStatus.BAD_REQUEST, "invalid tracker setting", "text/plain")
+                return
+            if not _valid_request_id(request_id):
+                self._send(HTTPStatus.BAD_REQUEST, _REQUEST_ID_RULE, "text/plain")
                 return
             bounds = _TRACKER_SETTINGS.get(setting) if isinstance(setting, str) else None
             if bounds is None:
@@ -488,22 +601,49 @@ def _serve(
                     "text/plain",
                 )
                 return
-            if request_id not in seen:
-                try:
-                    settings.put_nowait(
+            try:
+                seen_settings.forward_once(
+                    request_id,
+                    lambda: settings.put_nowait(
                         {"setting": setting, "value": value, "request_id": request_id}
-                    )
-                except queue.Full:
-                    self._send(HTTPStatus.SERVICE_UNAVAILABLE, "setting queue full", "text/plain")
-                    return
-                seen.add(request_id)
+                    ),
+                )
+            except queue.Full:
+                self._send(HTTPStatus.SERVICE_UNAVAILABLE, "setting queue full", "text/plain")
+                return
             self._send(HTTPStatus.ACCEPTED, "accepted", "text/plain")
 
-        def _authorized(self, query: str) -> bool:
-            query_token = next(
-                (p.partition("=")[2] for p in query.split("&") if p.startswith("token=")), ""
-            )
-            if query_token == token or self.headers.get("X-Alhazen-Token") == token:
+        def _json_body(self) -> Any:
+            """The POST body, parsed as JSON; raises _BadBody when it cannot be.
+
+            The length is checked before anything is read. A negative one
+            would make ``rfile.read`` read until the client closes the
+            connection, parking this thread for as long as the client likes,
+            and an unbounded one would buffer whatever the client sends.
+            """
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError as e:
+                raise _BadBody(HTTPStatus.BAD_REQUEST, "Content-Length must be an integer") from e
+            if length < 0:
+                raise _BadBody(HTTPStatus.BAD_REQUEST, "Content-Length must not be negative")
+            if length > _MAX_BODY_BYTES:
+                raise _BadBody(
+                    HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                    f"a request body may be at most {_MAX_BODY_BYTES} bytes",
+                )
+            try:
+                return json.loads(self.rfile.read(length))
+            except ValueError as e:  # a JSONDecodeError or a UnicodeDecodeError
+                raise _BadBody(HTTPStatus.BAD_REQUEST, "the request body is not JSON") from e
+
+        def _authorized(self, params: dict[str, list[str]]) -> bool:
+            # The page's GETs carry the token in the query (a long-poll URL
+            # is simplest that way); the header is accepted as well. A token
+            # given twice in the query is refused rather than one picked.
+            query_tokens = params.get("token", [])
+            query_token = query_tokens[0] if len(query_tokens) == 1 else None
+            if token_matches(query_token) or token_matches(self.headers.get("X-Alhazen-Token")):
                 return True
             self._send(HTTPStatus.FORBIDDEN, "forbidden", "text/plain")
             return False
@@ -709,5 +849,13 @@ def page_html(static_state: str) -> str:
 
     ``static_state`` is ``"null"`` for the live page, which polls the server,
     and a JSON document for the standalone copy written to ``figures/``.
+
+    The JSON sits inside a ``<script>`` element, where the HTML parser, not
+    the JavaScript one, decides where the script ends: a ``</script>`` inside
+    a string value (a task name, an event's text) would end it early, and a
+    ``<!--`` changes how the parser reads the rest. Every ``<`` is therefore
+    written as ``\\u003c``. A ``<`` can only occur inside a JSON string
+    (JSON's own syntax has none), where that escape reads back as the same
+    character, so the page's data is unchanged.
     """
-    return _page_template().replace("__STATIC_STATE__", static_state)
+    return _page_template().replace("__STATIC_STATE__", static_state.replace("<", "\\u003c"))
