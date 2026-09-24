@@ -237,6 +237,19 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Fixed
 
+- **Saving a report or an alignment hid damage to the run.**
+  `SessionReport.save` and `AlignmentFit.save` re-hashed the whole run
+  directory into `manifest.yaml`. On a run with a file changed since the
+  session, the report said "hash mismatch" once, then recorded the changed
+  file's hash as the session's — and every report and `load_run` after it
+  said "verified". Both now call the new `alhazen.data.add_to_manifest`,
+  which adds or replaces the entries of the files it is given and leaves
+  every other entry as the session recorded it. A run with no manifest (its
+  session never finished teardown) is not given one after the fact: the file
+  is still written, and a warning says it went unrecorded. `write_manifest`
+  is unchanged, and stays the session's teardown step. See
+  [docs/architecture.md](docs/architecture.md) §7.4.
+
 - **A failure building the final dashboard skipped the rest of teardown.**
   The end-of-session dashboard publish was the one bare call in the runner's
   teardown. Building that state asks the eye tracker and the live analysis for

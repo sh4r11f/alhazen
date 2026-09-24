@@ -194,3 +194,30 @@ class TestTypedRowsReachTheReport:
         # Read as a string this was `"False"`, which is truthy — so `not
         # row["success"]` silently meant the opposite of what it reads as.
         assert not run.trials["success"].iloc[0]
+
+
+class TestSavingAReportKeepsTheDamageVisible:
+    """`SessionReport.save` re-hashed the whole run. On a run with a file
+    changed since the session, the report found the mismatch, saved itself —
+    and in doing so recorded the changed file's hash as the session's. Every
+    report and `load_run` after that said "verified"."""
+
+    TRIALS = "trial_index,attempt,outcome,completed,success\n1,1,COMPLETED,True,True\n"
+
+    def test_the_next_report_still_finds_the_mismatch(self, tmp_path):
+        run_dir = write_run(tmp_path, self.TRIALS)
+        trials = run_dir / f"{BASE}_trials.csv"
+        trials.write_text(self.TRIALS + "2,1,COMPLETED,True,True\n")  # edited afterwards
+
+        first = build_report(run_dir)
+        assert first.manifest_problems == [f"hash mismatch: {trials.name}"]
+        first.save()
+
+        # The report itself is recorded; the damage is not written over.
+        assert build_report(run_dir).manifest_problems == [f"hash mismatch: {trials.name}"]
+
+    def test_a_clean_run_stays_clean_after_its_report(self, tmp_path):
+        run_dir = write_run(tmp_path, self.TRIALS)
+        build_report(run_dir).save()
+        build_report(run_dir).save()  # saved twice: one entry, still verified
+        assert build_report(run_dir).manifest_problems == []
