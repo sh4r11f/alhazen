@@ -26,7 +26,8 @@ from typing import Any
 from urllib.parse import parse_qs
 
 from alhazen.config.models import IRIS_SIZE_RANGE_PX
-from alhazen.dashboard.panels import panel_payload, present
+from alhazen.dashboard.panels import panel_payload
+from alhazen.dashboard.presentation import present
 from alhazen.dashboard.spec import DashboardSpec
 from alhazen.errors import SessionError
 
