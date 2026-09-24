@@ -84,7 +84,10 @@ class MyScheduler:
 - An adaptive scheduler asks a `score(result) -> bool` whether a *completed*
   trial was a success, defaulting to `outcome.success`, as the built-in
   staircases and QUEST+ do. Pass it the task's `score_trial` from
-  `make_source`, or a task that titrates something else gets accuracy.
+  `make_source`, or a task that titrates something else gets accuracy. The
+  built-in ones refuse (`TypeError`) an answer that is not a `bool`.
+- A queue-based scheduler may define `remaining()` (planned trials still
+  queued); `BlockPlan` then refuses a `trials_per_block` that would cut it.
 - `record()` is called for *every* outcome, including PAUSED and ABORTED.
 
 ## Add a device backend

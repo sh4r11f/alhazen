@@ -14,7 +14,8 @@ test — on a machine with no renderer installed.
 What counts as a "success" is the experiment's business, not this module's.
 ``score`` maps a finished trial to True/False, so a task can titrate accuracy
 (``outcome.success``, the default), or a magnitude crossing a criterion, or
-anything else it can compute from the result.
+anything else it can compute from the result. It must return a bool (numpy's
+included); anything else raises TypeError rather than being read as truthy.
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ import numpy as np
 import pandas as pd
 
 from alhazen.core.engine import TrialResult
-from alhazen.paradigms.base import Condition
+from alhazen.paradigms.base import Condition, _success_from_outcome, _verdict
 
 StimScale = Literal["linear", "log10", "dB"]
 
@@ -185,10 +186,6 @@ def _log_sum_exp(values: np.ndarray) -> float:
     return peak + float(np.log(np.sum(np.exp(values - peak))))
 
 
-def _success_from_outcome(result: TrialResult) -> bool:
-    return bool(result.outcome.success)
-
-
 class QuestPlus:
     """The scheduler: one estimator per interleaved level, served round-robin.
 
@@ -226,7 +223,10 @@ class QuestPlus:
         self._interleave_by = interleave_by
         self._n_trials = n_trials
         self._fixed = dict(fixed or {})
-        self._score = score or _success_from_outcome
+        # `is not None` rather than `or`, as in UpDownStaircase: a scorer is
+        # replaced only when none was given, never because the object passed
+        # in happens to be falsy.
+        self._score = score if score is not None else _success_from_outcome
 
         levels: list[Any] = sorted(interleave_levels) if interleave_by is not None else [None]
         self._entries = [
@@ -274,7 +274,10 @@ class QuestPlus:
             return
         entry["pending_retry"] = False
         estimator: QuestPlusEstimator = entry["estimator"]
-        estimator.add_response(condition.params[self._parameter], self._score(result))
+        # _verdict refuses anything but True/False: a scorer that forgot its
+        # `return` hands back None, which would fold into the posterior as a
+        # failure on every trial.
+        estimator.add_response(condition.params[self._parameter], _verdict(self._score, result))
 
     def _entry_for(self, condition: Condition) -> dict:
         if self._interleave_by is None:

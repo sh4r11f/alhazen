@@ -26,14 +26,7 @@ import numpy as np
 import pandas as pd
 
 from alhazen.core.engine import TrialResult
-from alhazen.paradigms.base import Condition
-
-
-def _success_from_outcome(result: TrialResult) -> bool:
-    # The default scorer, and the same one QuestPlus and Task.score_trial
-    # default to: a staircase built without a scorer must titrate exactly
-    # what it did before the scorer existed, trial for trial.
-    return bool(result.outcome.success)
+from alhazen.paradigms.base import Condition, _success_from_outcome, _verdict
 
 
 class UpDownStaircase:
@@ -43,7 +36,8 @@ class UpDownStaircase:
     whichever is given (both may be, and whichever comes first ends it).
 
     ``score`` decides whether a completed trial was a success (default:
-    ``outcome.success``). It is asked about completed trials only.
+    ``outcome.success``). It is asked about completed trials only, and must
+    return a bool (numpy's included); anything else raises TypeError.
     """
 
     def __init__(
@@ -112,10 +106,11 @@ class UpDownStaircase:
             # same value again, so the attempt is simply retried.
             return
         # The scorer's verdict, not outcome.success: a task titrating
-        # something other than accuracy has said what a success is.
-        # bool() keeps `history` a list of real booleans whatever truthy
-        # value a task's scorer hands back (a numpy bool, say).
-        success = bool(self._score(result))
+        # something other than accuracy has said what a success is. _verdict
+        # refuses anything but True/False (a scorer that forgot its `return`
+        # hands back None, which would read as a failure on every trial), and
+        # gives back a Python bool, so `history` holds real booleans.
+        success = _verdict(self._score, result)
         self.history.append((self._value, success))
         if success:
             self._successes += 1
