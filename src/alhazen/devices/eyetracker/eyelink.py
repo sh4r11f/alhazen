@@ -679,32 +679,101 @@ class EyeLinkTracker:
         the session's eye data and it lives on the Host PC's disk. Swallowing
         a failure here is how a completed session's eye data quietly never
         makes it off that machine.
+
+        So does a link that is down, or dies, before the transfer, whenever a
+        destination says a run wants its EDF. A warning in the log is not
+        something the runner can see: the run would be recorded as complete
+        with its eye data still on the Host PC. Raised, it is a failed
+        teardown step, so the run ends ``failed`` and the message says
+        where the file is. With no destination (check-rig, the accuracy
+        measurement) nothing was asked for and nothing is lost, so a dead
+        link is logged and the check is not failed over it.
+
+        Whatever happened, the link is released (``close()``) in a
+        ``finally``, as the TRACKPixx3 backend releases its device: nothing
+        after teardown would close it otherwise. When close() fails as well,
+        the error already on its way out is the one that propagates — it is
+        the one that names the EDF — and close()'s is logged rather than
+        lost.
         """
         if self._tracker is None:
             return  # connect() never ran: no file was ever opened
+        # The error leaving the EDF steps, if one is: what the finally checks
+        # before letting a failed close() raise over it. BaseException, not
+        # Exception: a Ctrl+C during the 500 ms wait must not be replaced by
+        # close()'s error either.
+        failure: BaseException | None = None
+        try:
+            self._close_edf(edf_destination)
+        except BaseException as e:
+            failure = e
+            raise
+        finally:
+            try:
+                # Called whether or not the link is up, as SR Research's own
+                # example scripts do at the end of a session: it is what
+                # releases pylink's side of the connection.
+                self._tracker.close()
+            except Exception as e:  # pylink's error types are not all documented
+                if failure is None:
+                    raise  # nothing else failed: a link that will not close is the fault
+                log.error(
+                    "EyeLink close() failed as well (%s), after the shutdown had already "
+                    "failed (%s)",
+                    e,
+                    failure,
+                )
 
+    def _close_edf(self, edf_destination: Path | None) -> None:
+        """Close the EDF on the Host PC and, given a destination, retrieve it.
+
+        Raises a TrackerError naming the file whenever a destination was
+        given and the EDF did not arrive there. Without one, a dead link is
+        logged and any other failure propagates as pylink raised it.
+        """
         if not self._tracker.isConnected():
-            log.warning(
-                "EyeLink link is down at shutdown; skipping EDF retrieval. The recording "
-                "'%s' should still be on the EyeLink Host PC's disk — retrieve it manually "
-                "before wiping anything.",
-                self._cfg.edf_host_filename,
+            if edf_destination is None:
+                # Nothing to retrieve and nothing lost: the file on the Host PC
+                # is a check's test recording, not a session's data.
+                log.warning(
+                    "EyeLink link is down at shutdown; no recording was asked for, so none "
+                    "is retrieved ('%s' is left on the Host PC at %s)",
+                    self._cfg.edf_host_filename,
+                    self._cfg.host_ip,
+                )
+                return
+            raise TrackerError(
+                self._edf_not_retrieved(
+                    edf_destination, "the link to the Host PC is down at shutdown"
+                )
             )
-            return
 
-        if self._recording:
-            # The session can end mid-trial (quit, abort); stop_trial() owns
-            # the correct flush-then-stop sequence, so delegate rather than
-            # re-deriving it here.
-            self.stop_trial()
+        try:
+            if self._recording:
+                # The session can end mid-trial (quit, abort); stop_trial()
+                # owns the correct flush-then-stop sequence, so delegate
+                # rather than re-deriving it here.
+                self.stop_trial()
 
-        self._tracker.setOfflineMode()
-        self._tracker.sendCommand("clear_screen 0")
-        # Give the Host PC time to finish writing before the handle closes.
-        # msecDelay (a plain wait), not pumpDelay: nothing is driving a
-        # window here. The EDF is irreplaceable, so this is not optional.
-        self._pylink.msecDelay(500)
-        self._tracker.closeDataFile()
+            self._tracker.setOfflineMode()
+            self._tracker.sendCommand("clear_screen 0")
+            # Give the Host PC time to finish writing before the handle closes.
+            # msecDelay (a plain wait), not pumpDelay: nothing is driving a
+            # window here. The EDF is irreplaceable, so this is not optional.
+            self._pylink.msecDelay(500)
+            self._tracker.closeDataFile()
+        except RuntimeError as e:
+            # pylink raises RuntimeError when the link fails. Up when
+            # isConnected() was asked and gone a moment later is the same lost
+            # retrieval as a link found down, and is said the same way: in
+            # words that name the file, not pylink's, which name nothing.
+            if edf_destination is None:
+                raise
+            raise TrackerError(
+                self._edf_not_retrieved(
+                    edf_destination, f"the EyeLink failed while closing the EDF ({e})"
+                )
+            ) from e
 
         if edf_destination is not None:
             try:
@@ -716,4 +785,19 @@ class EyeLinkTracker:
                     f"be on the Host PC's disk — retrieve it manually before wiping anything."
                 ) from e
 
-        self._tracker.close()
+    def _edf_not_retrieved(self, edf_destination: Path, what: str) -> str:
+        """The message for a run whose EDF never left the Host PC: what
+        failed, where the file is, and where it belongs.
+
+        The last clause is why this cannot wait: every session on this rig
+        opens its EDF under the one configured name, so the next session's
+        connect() opens a new file on the Host PC under this run's file's
+        name.
+        """
+        edf = self._cfg.edf_host_filename
+        return (
+            f"EyeLink EDF '{edf}' was not retrieved: {what}. This run's eye data is still on "
+            f"the Host PC at {self._cfg.host_ip}, as '{edf}' — copy it from there by hand to "
+            f"{edf_destination} before another session runs on this rig, since every session "
+            f"opens its EDF on the Host PC under that same name."
+        )

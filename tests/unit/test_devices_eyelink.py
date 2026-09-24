@@ -709,3 +709,119 @@ class TestAfterADropout:
         tracker.stop_trial()
         with pytest.raises(TrackerError, match="needs an open recording"):
             tracker.simulate_dropout()
+
+
+# ---------------------------------------------------------------------------
+# Teardown: the EDF off the Host PC, and the link released whatever failed
+# ---------------------------------------------------------------------------
+
+
+def link_terminated(*args) -> None:
+    """A pylink call on a link that died mid-teardown: pylink's own error."""
+    raise RuntimeError("link terminated")
+
+
+class TestShutdown:
+    """shutdown() retrieves the EDF when a run asked for it, and says so
+    loudly when it cannot; and it releases the link (close()) whatever
+    happened before, the way the TRACKPixx3 backend releases its device."""
+
+    def connected(self, host_pylink) -> tuple[EyeLinkTracker, FakeEyeLinkHost]:
+        """A tracker that recorded one trial, as a session leaves it."""
+        tracker, host, _ = recording(host_pylink)
+        tracker.stop_trial()
+        return tracker, host
+
+    def test_the_edf_is_retrieved_and_the_link_released(self, host_pylink, tmp_path):
+        # The happy path, unchanged: closed on the Host PC, copied into the
+        # run directory under the name the runner gave, then disconnected.
+        tracker, host = self.connected(host_pylink)
+        tracker.shutdown(tmp_path / "run.edf")
+        assert (tmp_path / "run.edf").read_bytes() == b"EDF"
+        assert "clear_screen 0" in host.commands
+        assert host.closed
+
+    def test_a_link_down_with_a_run_behind_it_raises_naming_the_edf(self, host_pylink, tmp_path):
+        # The bug this pins: a dead link was a WARNING and a return, so the
+        # runner recorded the run as complete with its eye data still on the
+        # Host PC, and the link was never closed.
+        tracker, host = self.connected(host_pylink)
+        host.link_down()
+        destination = tmp_path / "run.edf"
+        with pytest.raises(TrackerError) as excinfo:
+            tracker.shutdown(destination)
+        message = str(excinfo.value)
+        # What failed, which file, where it is, and where it belongs.
+        assert "the link to the Host PC is down at shutdown" in message
+        assert "'alhazen.EDF'" in message
+        assert "the Host PC at 100.1.1.1" in message
+        assert f"copy it from there by hand to {destination}" in message
+        assert not destination.exists()
+        assert host.closed
+
+    def test_a_link_down_with_no_run_behind_it_is_logged_and_released(self, host_pylink, caplog):
+        # check-rig and the accuracy measurement pass no destination: their
+        # recording is not data, so a dead link loses nothing and must not
+        # turn a check into a failure. It is said, and the link released.
+        tracker, host = self.connected(host_pylink)
+        host.link_down()
+        with caplog.at_level(logging.WARNING):
+            tracker.shutdown(None)
+        assert "EyeLink link is down at shutdown" in caplog.text
+        assert "'alhazen.EDF'" in caplog.text
+        assert host.closed
+
+    def test_a_failed_transfer_still_releases_the_link(self, host_pylink, monkeypatch, tmp_path):
+        tracker, host = self.connected(host_pylink)
+        monkeypatch.setattr(FakeEyeLinkHost, "receiveDataFile", link_terminated)
+        with pytest.raises(TrackerError, match=r"failed to retrieve EDF 'alhazen.EDF'"):
+            tracker.shutdown(tmp_path / "run.edf")
+        assert host.closed
+
+    @pytest.mark.parametrize("step", ["setOfflineMode", "closeDataFile"])
+    def test_a_link_that_dies_while_the_edf_is_closed_names_the_edf(
+        self, host_pylink, monkeypatch, tmp_path, step
+    ):
+        # Up when shutdown() asked, gone a moment later: the same lost
+        # retrieval as a link found down, said the same way — not as
+        # pylink's bare error, which names no file.
+        tracker, host = self.connected(host_pylink)
+        monkeypatch.setattr(FakeEyeLinkHost, step, link_terminated)
+        with pytest.raises(TrackerError) as excinfo:
+            tracker.shutdown(tmp_path / "run.edf")
+        message = str(excinfo.value)
+        assert "the EyeLink failed while closing the EDF (link terminated)" in message
+        assert "'alhazen.EDF'" in message
+        assert isinstance(excinfo.value.__cause__, RuntimeError)
+        assert host.closed
+
+    def test_a_trial_left_open_is_stopped_and_its_failure_named(
+        self, host_pylink, monkeypatch, tmp_path
+    ):
+        # A session that ends mid-trial leaves its segment for shutdown() to
+        # stop; a stop that fails there is as much a lost retrieval.
+        tracker, host, _ = recording(host_pylink)
+        monkeypatch.setattr(FakeEyeLinkHost, "stopRecording", link_terminated)
+        with pytest.raises(TrackerError, match="'alhazen.EDF'"):
+            tracker.shutdown(tmp_path / "run.edf")
+        assert host.closed
+
+    def test_a_close_that_fails_too_does_not_hide_the_first_error(
+        self, host_pylink, monkeypatch, tmp_path, caplog
+    ):
+        # Two failures, one raise: the one naming the stranded EDF is what
+        # propagates, and close()'s is logged rather than lost.
+        tracker, host = self.connected(host_pylink)
+        host.link_down()
+        monkeypatch.setattr(FakeEyeLinkHost, "close", link_terminated)
+        with caplog.at_level(logging.ERROR), pytest.raises(TrackerError, match="'alhazen.EDF'"):
+            tracker.shutdown(tmp_path / "run.edf")
+        assert "EyeLink close() failed as well (link terminated)" in caplog.text
+
+    def test_a_close_that_fails_on_its_own_still_raises(self, host_pylink, monkeypatch, tmp_path):
+        # The EDF is safe, but a link that would not close is still a fault.
+        tracker, host = self.connected(host_pylink)
+        monkeypatch.setattr(FakeEyeLinkHost, "close", link_terminated)
+        with pytest.raises(RuntimeError, match="link terminated"):
+            tracker.shutdown(tmp_path / "run.edf")
+        assert (tmp_path / "run.edf").read_bytes() == b"EDF"

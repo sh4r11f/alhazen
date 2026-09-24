@@ -237,6 +237,20 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Fixed
 
+- **An EyeLink whose link was down at teardown left its run marked
+  complete.** `EyeLinkTracker.shutdown()` logged a WARNING and returned, so
+  nothing machine-readable said the EDF never left the Host PC: the database
+  mirrored the run as `complete`, and the link was never closed. A failure
+  partway through (stopping the trial, closing the EDF, the transfer) also
+  skipped `close()`. With a run behind it, a link that is down, or dies
+  before the transfer, now raises a `TrackerError` naming the EDF on the
+  Host PC, where to copy it, and why before the next session (which opens
+  its EDF under the same name); the run is recorded as `failed`. With no
+  destination (`check-rig`, the accuracy measurement) a dead link loses
+  nothing and is still only logged. `close()` now runs in a `finally`
+  whatever failed; if it fails too, the first error is raised and close()'s
+  is logged. See [docs/eye-tracker.md](docs/eye-tracker.md).
+
 - **Events shown by one flip were stamped later than the flip, and with
   different times.** The engine read the flip's time right after `flip()`,
   then stamped each event a phase had queued with `emit_on_flip` — and each

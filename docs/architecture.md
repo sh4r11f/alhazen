@@ -427,7 +427,11 @@ trial's segment. At teardown the runner adds `tracker.shutdown(...)`,
 retrieved recording is covered by it, and each as its own step, so one
 device's failure never prevents another's release. Only the run directory and
 the base name in that path are a promise; the suffix belongs to the backend
-(§4.7).
+(§4.7). A recording a backend cannot hand over is a failed step, never only a
+log line: an EyeLink whose link is down at teardown raises a `TrackerError`
+naming the EDF left on its Host PC, and the database records the run as
+`failed`. Both real backends release their device in a `finally`, whatever
+else failed.
 
 **Reward policy is not here.** Inside a trial the device layer is reached two
 ways. The experimenter's manual-reward key: the engine delivers, *then* emits
