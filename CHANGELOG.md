@@ -237,6 +237,20 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Fixed
 
+- **A task's `score_trial` did not reach an up-down staircase.**
+  `Task.score_trial` is how a task titrating something other than accuracy (a
+  bias magnitude, a settling error) says what a success is, but
+  `make_scheduler` handed it to `kind: questplus` only. `kind: staircase`,
+  single or interleaved, stepped on `outcome.success` whatever the task said,
+  so a task that overrode the hook titrated accuracy instead, with nothing to
+  say so. `UpDownStaircase` now takes a `score` callable, as `QuestPlus` does,
+  and `make_scheduler` builds every staircase with the task's, blocks or
+  not. The scorer is asked about completed trials only; an attempt with no
+  measurement is still served again at the same level and never scored. A
+  task that does not override `score_trial` runs exactly the session it ran
+  before, seed for seed. See [docs/architecture.md](docs/architecture.md)
+  §5.4.
+
 - **The same run number on a later day wrote into the earlier run's
   folder.** `SessionPaths.create` refused only this run's own trials file,
   whose name carries the date; the folder's name does not. So `--run 1` on
