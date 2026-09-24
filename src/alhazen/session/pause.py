@@ -54,6 +54,13 @@ REST_COLOR = (-0.20, 0.90, 0.10)
 # rather than "stopped".
 WARNING_COLOR = (1.0, 0.62, -0.85)
 
+# The key text of the two rows every menu has. They are labels for a person,
+# not key names (the keyboard reports "space", "q" and "escape"), so
+# PauseMenu.action_for_key maps the real names onto them; named once here so
+# the row and that mapping cannot drift apart.
+RESUME_ROW_KEY = "SPACE"
+QUIT_ROW_KEY = "Q or ESC"
+
 
 @dataclass(frozen=True)
 class MenuItem:
@@ -80,6 +87,35 @@ class PauseMenu:
         """Key -> action, for the polling loop. Reference rows are excluded,
         so a key that is only listed can never trigger anything."""
         return {item.key: item.action for item in self.now if item.action}
+
+    def action_for_key(self, key: str) -> str | None:
+        """The action a raw key name (as the keyboard reports it: "q",
+        "escape", "space", "c") selects on this menu, or None.
+
+        The one place a key press is turned into a menu choice. Every pause
+        loop asks it — the blocking keyboard loop (run_pause_menu), and the
+        runner's polling loops for a rest that can time out and for a pause
+        with the dashboard on — so a key cannot mean one thing on one path
+        and another on the next. There used to be two copies of this mapping,
+        and a comment claiming there was one.
+
+        Two rows print a label rather than a key name, so their real names are
+        mapped here: Q and ESC share the quit row, and the resume row says
+        SPACE. Every other row matches its key text case-insensitively, which
+        is what lets a rebound key work without the pause screen and the
+        keyboard drifting apart. Only rows with an action count (``actions``),
+        so a reference row can never be selected.
+        """
+        actions = self.actions()
+        name = key.lower()
+        if name in ("q", "escape"):
+            return actions.get(QUIT_ROW_KEY)
+        if name == "space":
+            return actions.get(RESUME_ROW_KEY)
+        for row_key, action in actions.items():
+            if row_key.lower() == name:
+                return action
+        return None
 
     def render(self) -> str:
         """The menu as the block of text a display draws.
@@ -195,7 +231,7 @@ def build_pause_menu(
     keymap = DEFAULT_KEYMAP if keymap is None else keymap
     present = {"reward": has_reward, "training": has_training}
 
-    now = [MenuItem("SPACE", "resume", "resume")]
+    now = [MenuItem(RESUME_ROW_KEY, "resume", "resume")]
     if has_tracker:
         # The three eye-tracker procedures (session/eyetracker.py). Listed
         # together because they are chosen together: a validation that fails
@@ -214,7 +250,7 @@ def build_pause_menu(
             MenuItem("[", "move down a training stage", "demote_stage"),
             MenuItem("H", "hold the training stage", "hold_stage"),
         ]
-    now.append(MenuItem("Q or ESC", "end the session (data so far is saved)", "quit"))
+    now.append(MenuItem(QUIT_ROW_KEY, "end the session (data so far is saved)", "quit"))
 
     # The live keys, read out of the map so a rebind shows up here, minus the
     # ones this session cannot act on and the ones already offered above.
@@ -284,14 +320,11 @@ def run_pause_menu(
     sit here for minutes while somebody fetches the experimenter.
     """
     show(menu)
-    actions = menu.actions()
-    # Q and ESC share one row on screen, so the row's key text ("Q or ESC") is
-    # not a key name. Map the real key names here instead.
-    lookup = {key.lower(): action for key, action in actions.items()}
-    lookup.update({"q": "quit", "escape": "quit", "space": "resume"})
     while True:
         for key in raw_keys():
-            action = lookup.get(key.lower())
+            # The menu's own key mapping, the one the runner's polling loops
+            # use too (PauseMenu.action_for_key).
+            action = menu.action_for_key(key)
             if action is not None:
                 return action
         wait(0.01)

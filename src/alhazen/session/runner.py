@@ -23,6 +23,10 @@ Contract, in order:
    unrepeatable work, so writing the trials table must survive a display
    that fails to close, and vice versa. Step errors are logged and collected;
    the first is re-raised only if no other exception is already propagating.
+   A Ctrl-C abandons only the step it lands in (a second one abandons the
+   rest), and is raised when teardown is done. A step that fails makes the
+   run "failed" everywhere it is recorded: the database, the saved
+   dashboard, and a closing "session end: FAILED in teardown" line.
 
 This module keeps the loop and the lifecycle. Three decisions the loop
 consults live beside it, built by the runner from its own arguments: when a
@@ -38,6 +42,7 @@ import sys
 import time
 from collections import Counter
 from collections.abc import Callable, Sequence
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -52,7 +57,9 @@ from alhazen.core.trial import (
     FAULT_DROPPED_FRAMES,
     FAULT_TRACKER_STOPPED,
     NO_FAULT,
+    PAUSED,
     CircleRegion,
+    Outcome,
     TrialContext,
 )
 from alhazen.dashboard.panels import frame_intervals_panel
@@ -178,8 +185,15 @@ class SessionRunner:
         max_consecutive_failures: int | None = None,
         rest_resume_after_s: float | None = None,
         max_consecutive_dropouts: int | None = DEFAULT_MAX_CONSECUTIVE_DROPOUTS,
+        experiment_dir: Path | None = None,
     ) -> None:
         self._cfg = cfg
+        # Where the experiment's code lives, so the snapshot's
+        # `experiment_git_sha` describes that repository. None falls back to
+        # the working directory (config.snapshot.build_provenance), which is
+        # only right when the session happens to be started from inside the
+        # experiment's checkout; build_session passes the task's own folder.
+        self._experiment_dir = experiment_dir
         # The subject's failure streak and the device's dropout streak: which
         # trials count toward which, and when either stops the session at the
         # pause screen (session/streaks.py, which also validates both limits).
@@ -327,7 +341,7 @@ class SessionRunner:
             # still documents what it was trying to run. Until it is on disk
             # the run directory is not a run, and teardown releases the
             # devices without writing anything into it (_teardown).
-            write_snapshot(self._cfg, self._paths.snapshot_path)
+            write_snapshot(self._cfg, self._paths.snapshot_path, self._experiment_dir)
             snapshot_written = True
             # The log before the registry, so a participants.tsv that cannot
             # be written ends with a "session end: FAILED" line in this run's
@@ -471,7 +485,7 @@ class SessionRunner:
                     reward_failed = True
 
                 record = result.record
-                if outcome.name != "PAUSED":
+                if outcome.name != PAUSED.name:
                     if self._score is not None:
                         record = self._score(record)
                     self._recorder.add_trial(record)
@@ -505,7 +519,7 @@ class SessionRunner:
                 # below can `continue` past it.
                 dropout_streak = self._dropout_streak(outcome, result.record)
 
-                if outcome.name == "PAUSED" or reward_failed:
+                if outcome.name == PAUSED.name or reward_failed:
                     # A reward failure goes through the same pause flow as a
                     # deliberate pause: a human has to look at the pump before
                     # the session carries on rewarding nothing. The
@@ -564,7 +578,7 @@ class SessionRunner:
             parts.append(f"{name} {backend if backend is not None else 'none'}")
         return ", ".join(parts)
 
-    def _log_trial(self, attempt: int, record: dict[str, Any], outcome: Any) -> None:
+    def _log_trial(self, attempt: int, record: dict[str, Any], outcome: Outcome) -> None:
         """One line per trial: the backbone a session log is read by."""
         detail = ""
         if record.get("abort_reason"):
@@ -757,7 +771,7 @@ class SessionRunner:
         )
         return self._pauses.handle({}, rest=f"BLOCK {done} OF {total} COMPLETE — REST")
 
-    def _failure_streak(self, outcome: Any, fault: str | None) -> FailureStreak | None:
+    def _failure_streak(self, outcome: Outcome, fault: str | None) -> FailureStreak | None:
         """Count this trial toward the subject's failure streak (the rules are
         StreakMonitor.count_failure's); the streak, logged, on the trial that
         reaches the task's limit, which the caller turns into a pause.
@@ -813,7 +827,7 @@ class SessionRunner:
             and frames.dropped_fraction > self._frame_monitor.dropped_fraction_budget
         )
 
-    def _dropout_streak(self, outcome: Any, record: dict[str, Any]) -> DropoutStreak | None:
+    def _dropout_streak(self, outcome: Outcome, record: dict[str, Any]) -> DropoutStreak | None:
         """Count this trial toward the device's dropout streak (the rules are
         StreakMonitor.count_dropout's); the streak, logged, on every trial from
         ``max_consecutive_dropouts`` on until its pause is raised."""
@@ -966,17 +980,54 @@ class SessionRunner:
         training state is not saved for a session that never started. The
         directory stays as the build left it, so a run number whose folder is
         still empty can be used again (data/paths.py).
-        """
-        errors: list[Exception] = []
 
-        def step(name: str, fn: Callable[[], None]) -> None:
+        A Ctrl-C during a step abandons that step only; the rest still run,
+        and the interrupt is raised when they are done. A second one abandons
+        the rest of teardown (see ``step``).
+        """
+        # Exceptions a step raised; the first is re-raised once every step
+        # has run. Kept apart from interrupts, which are not a step's error.
+        errors: list[Exception] = []
+        # The KeyboardInterrupt (or other BaseException) that abandoned a
+        # step. At most one: a second one abandons teardown on the spot.
+        interrupts: list[BaseException] = []
+        # Every step that did not finish, named with what stopped it, for the
+        # session log's corrected verdict and the dashboard's final notice.
+        failed_steps: list[str] = []
+
+        def step(name: str, fn: Callable[[], object]) -> None:
             try:
                 fn()
             except Exception as e:  # logged loudly + collected, never swallowed
                 log.exception("teardown step %r failed", name)
                 errors.append(e)
+                failed_steps.append(f"{name} ({type(e).__name__}: {e})")
+            except BaseException as e:
+                # A Ctrl-C, most likely, landing in a slow step (an EDF
+                # transfer, the dashboard child's 2 s join). Left uncaught, it
+                # used to abort every step after this one: session.log left
+                # unclosed, no manifest, no database row, the window open. So
+                # the first one abandons only this step, and is raised once
+                # the rest have run.
+                if interrupts:
+                    # A second one is somebody who means it: a teardown hung
+                    # on a device must still be escapable from the keyboard.
+                    log.error(
+                        "teardown step %r interrupted again: abandoning the rest of teardown "
+                        "(this step and every one after it did not run)",
+                        name,
+                    )
+                    raise
+                log.error(
+                    "teardown step %r interrupted (%s): that step is abandoned and the "
+                    "remaining steps still run; interrupt again to abandon them too",
+                    name,
+                    type(e).__name__,
+                )
+                interrupts.append(e)
+                failed_steps.append(f"{name} (interrupted)")
 
-        def record_step(name: str, fn: Callable[[], None]) -> None:
+        def record_step(name: str, fn: Callable[[], object]) -> None:
             # A step that records the session — into its run directory, the
             # subject's training state or the database mirror. Only for a
             # session whose snapshot was written; see the docstring.
@@ -987,7 +1038,10 @@ class SessionRunner:
         # the session ended is worth more than a step's failure message, and
         # a log that simply stops is what this line exists to prevent. A step
         # like every other, so if even this line cannot be written, the data
-        # below still is.
+        # below still is. It says how the SESSION ended. A step that fails
+        # after it makes the run "failed", and a second "session end:" line
+        # says so before the log closes (below).
+        logged_status = self._terminal_status(teardown_failed=False)
         step("log.session_end", self._log_session_end)
         if not snapshot_written:
             # Said once, so an experimenter who finds the folder empty knows
@@ -1010,9 +1064,7 @@ class SessionRunner:
         # teardown fails.
         if self._training is not None:
             training = self._training
-            # Wrapped rather than passed directly: save() returns the path it
-            # wrote, and a teardown step returns nothing.
-            record_step("training.save", lambda: (training.save(), None)[1])
+            record_step("training.save", training.save)
             # A Task instance can outlive this session. The supervisor mutated
             # it stage by stage, so handing it back untouched is what stops a
             # second session from treating this one's last stage as its base.
@@ -1026,10 +1078,9 @@ class SessionRunner:
         if self._live is not None:
             live = self._live
             record_step("live.finish", lambda: live.finish(self._paths.run_dir))
+        final_state: dict[str, Any] = {}
         if self._dashboard is not None:
-            terminal = self._terminal_status(errors)
-            dashboard = self._dashboard
-            final_state: dict[str, Any] = {}
+            terminal = self._terminal_status(teardown_failed=bool(failed_steps))
 
             def publish_final() -> None:
                 # Complete state, not the capped one: what lands in figures/
@@ -1042,16 +1093,9 @@ class SessionRunner:
             # analysis and the eye tracker for their panels, and a device that
             # died mid-session can fail right here. Unguarded, that failure
             # skipped every step below it — the tracker's recording, the
-            # manifest, closing the window.
+            # manifest, closing the window. Built here, while every device is
+            # still held; saved once they are released (below).
             record_step("dashboard.publish", publish_final)
-            # Saved only when the final state was built. When it was not, that
-            # failure is already logged and collected, and an earlier, capped
-            # state saved in its place would pose as the session's record.
-            if final_state:
-                record_step(
-                    "dashboard.save", lambda: dashboard.save(self._paths.figures_dir, final_state)
-                )
-            step("dashboard.stop", dashboard.stop)
         # Devices release BEFORE the manifest is written: the tracker's
         # recording is retrieved into this run's directory during shutdown,
         # and a manifest written first would not cover the very file the
@@ -1075,6 +1119,39 @@ class SessionRunner:
             step("sync.close", sync.close)
         if reward is not None:
             step("reward.close", reward.close)
+        if self._dashboard is not None:
+            dashboard = self._dashboard
+            # Saved after the devices are released, not when the state was
+            # built: a tracker that fails only at teardown (an EyeLink whose
+            # link died after the last trial, and its EDF with it) fails the
+            # run, and a dashboard saved before that shutdown said "complete"
+            # for a run the database records as failed. Saved only when the
+            # final state was built. When it was not, that failure is already
+            # logged and collected, and an earlier, capped state saved in its
+            # place would pose as the session's record.
+            if final_state:
+                record_step(
+                    "dashboard.save",
+                    lambda: self._save_final_dashboard(dashboard, final_state, failed_steps),
+                )
+            step("dashboard.stop", dashboard.stop)
+        # The session log's last word on the run, before it closes. The
+        # "session end:" line at the top of teardown said how the session
+        # ended; if a step has failed since, the run is "failed" in the
+        # database and the saved dashboard, and the log must not be the one
+        # record still saying "complete". A second line rather than a later
+        # first one: the first is written before anything can fail, which is
+        # its point. The steps after this one (closing the log, the manifest,
+        # the database) cannot report into a log that is closed; their
+        # failures reach the terminal, the database's status and the raise.
+        if self._terminal_status(teardown_failed=bool(failed_steps)) != logged_status:
+            log.error(
+                "session end: FAILED in teardown — the session ended %s, then %d teardown "
+                "step(s) did not finish: %s",
+                logged_status,
+                len(failed_steps),
+                "; ".join(failed_steps),
+            )
         # Close the log file before the manifest hashes it, so session.log's
         # recorded hash covers its complete contents. None when the session
         # failed before the log was attached: there is nothing to close.
@@ -1087,35 +1164,61 @@ class SessionRunner:
         )
         if self._database is not None:
             database = self._database
-            status = self._terminal_status(errors)
+            status = self._terminal_status(teardown_failed=bool(failed_steps))
             record_step(
                 "database.write",
-                lambda: (
-                    database.write_run(
-                        self._cfg,
-                        self._paths,
-                        trials=self._recorder.trials,
-                        events=self._recorder.events,
-                        frames=self._frame_monitor.records,
-                        frame_inputs=self._frame_inputs.records,
-                        status=status,
-                    ),
-                    None,
-                )[1],
+                lambda: database.write_run(
+                    self._cfg,
+                    self._paths,
+                    trials=self._recorder.trials,
+                    events=self._recorder.events,
+                    frames=self._frame_monitor.records,
+                    frame_inputs=self._frame_inputs.records,
+                    status=status,
+                ),
             )
         step("display.close", self._display.close)
 
-        # Re-raise the first teardown error only when nothing else is already
-        # propagating — a teardown failure must never mask the exception that
-        # actually ended the session.
-        if errors and sys.exc_info()[0] is None:
-            raise errors[0]
+        # Nothing is raised here while the session's own exception is
+        # propagating: a teardown failure must never mask the exception that
+        # actually ended the session — nor an interrupt, since that exception
+        # ends the program all the same. Otherwise an interrupt comes first,
+        # because somebody asked for the program to stop; then the first
+        # teardown error.
+        if sys.exc_info()[0] is None:
+            if interrupts:
+                raise interrupts[0]
+            if errors:
+                raise errors[0]
 
-    def _terminal_status(self, errors: list[Exception]) -> str:
-        """How this session ended, in one word, for the mirror and the saved
-        dashboard. "cancelled" is its own answer: a run abandoned before the
-        first trial is not a run that completed with no data."""
-        if sys.exc_info()[0] is not None or errors:
+    def _save_final_dashboard(
+        self, dashboard: DashboardController, state: dict[str, Any], failed_steps: list[str]
+    ) -> None:
+        """Save the final dashboard state as the run finally ended.
+
+        ``state`` was built before the devices were released, with the status
+        known then. When a step has failed since, the run is "failed": the
+        state is corrected and published again first, so the browser, the
+        saved copy, session.log and the database all say the same thing.
+        """
+        status = self._terminal_status(teardown_failed=bool(failed_steps))
+        if status != state.get("status"):
+            self._dashboard_revision += 1
+            message = f"Session {status} — teardown step(s) did not finish: " + "; ".join(
+                failed_steps
+            )
+            state.update(revision=self._dashboard_revision, status=status, message=message)
+            self._dashboard_message = message
+            dashboard.publish(state)
+        dashboard.save(self._paths.figures_dir, state)
+
+    def _terminal_status(self, *, teardown_failed: bool) -> str:
+        """How this session ended, in one word, for the mirror, the saved
+        dashboard and session.log's closing line. "cancelled" is its own
+        answer: a run abandoned before the first trial is not a run that
+        completed with no data. ``teardown_failed`` is whether a teardown
+        step has failed or been interrupted so far; either fails the run."""
+        if sys.exc_info()[0] is not None or teardown_failed:
             return "failed"
         return "cancelled" if self._cancelled else "complete"
 

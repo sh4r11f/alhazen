@@ -8,10 +8,14 @@ from alhazen.config.models import (
     RigConfig,
     SessionConfig,
     SessionInfo,
-    resolve_refresh,
 )
-from alhazen.config.snapshot import write_snapshot
+from alhazen.config.models import resolve_refresh as resolve_refresh
+from alhazen.config.snapshot import write_snapshot as write_snapshot
 
+# `__all__` holds only the names docs/reference.md lists as public (a test in
+# tests/unit/test_docs_snippets.py holds it to that). The `X as X` imports
+# above are internal: they stay importable from here, for code that already
+# imports them this way, but are not exported.
 __all__ = [
     "DisplayConfig",
     "Duration",
@@ -25,6 +29,4 @@ __all__ = [
     "load_model",
     "load_params",
     "load_rig",
-    "resolve_refresh",
-    "write_snapshot",
 ]

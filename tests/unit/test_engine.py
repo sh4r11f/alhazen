@@ -359,7 +359,9 @@ class TestOverlay:
 class TestHealthChecks:
     def test_failing_check_aborts_with_its_reason(self):
         harness = EngineHarness(health_checks=(lambda: "tracker_stopped",))
-        result = harness.engine.run_trial(harness.ctx(), [RunForFrames(10, COMPLETED)])
+        # A bare reason is the deprecated shape (see the test below).
+        with pytest.warns(DeprecationWarning):
+            result = harness.engine.run_trial(harness.ctx(), [RunForFrames(10, COMPLETED)])
         assert result.outcome.name == "ABORTED"
         assert result.record["abort_reason"] == "tracker_stopped"
         # A bare reason says nothing more, so the row gets no detail column.
@@ -395,6 +397,35 @@ class TestHealthChecks:
         harness.engine.run_trial(harness.ctx(), [RunForFrames(5, COMPLETED)])
         # Five CONTINUE frames and the frame that returns the outcome.
         assert len(asked) == 6
+
+    def test_a_bare_reason_string_still_works_but_is_deprecated(self):
+        # The shape every check had in 1.5.0. It keeps working until 2.0
+        # (docs/versioning.md §4), and says so, naming what to return instead.
+        harness = EngineHarness(health_checks=(lambda: "tracker_stopped",))
+        with pytest.warns(DeprecationWarning, match="HealthFault"):
+            result = harness.engine.run_trial(harness.ctx(), [RunForFrames(10, COMPLETED)])
+        assert result.record["abort_reason"] == result.record["fault"] == "tracker_stopped"
+
+
+class _MustBeLast(RunForFrames):
+    name = "must_be_last"
+    must_be_last = True
+
+
+class TestPhaseOrderIsCheckedFirst:
+    def test_a_misplaced_closing_phase_is_refused_before_frame_qa_starts_the_trial(self):
+        # The refusal is a task bug met at the trial's start. Frame QA must not
+        # have been told a trial began that never ran a frame: it would be
+        # left mid-trial, holding a trial index nothing will ever end.
+        harness = EngineHarness(frame_qa=FrameQAConfig())
+        assert harness.frame_monitor is not None
+        started: list[int] = []
+        harness.frame_monitor.start_trial = started.append  # type: ignore[method-assign]
+        with pytest.raises(RuntimeError, match="must be the trial's last phase"):
+            harness.engine.run_trial(
+                harness.ctx(), [_MustBeLast(0, COMPLETED), RunForFrames(0, COMPLETED)]
+            )
+        assert started == []
 
 
 class TestFrameQAIntegration:

@@ -34,7 +34,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from alhazen.core.trial import FAULT_DROPPED_FRAMES, FAULT_TRACKER_STOPPED, NO_FAULT
+from alhazen.core.trial import (
+    DROPPED_FRAMES,
+    FAULT_DROPPED_FRAMES,
+    FAULT_TRACKER_STOPPED,
+    NO_FAULT,
+    PAUSED,
+    Outcome,
+)
 
 
 def cut_short_by_device(fault: str | None) -> bool:
@@ -170,7 +177,7 @@ class StreakMonitor:
         self._failure_streak_display_trials = 0
 
     def count_failure(
-        self, outcome: Any, *, fault: str | None, display_failing: bool
+        self, outcome: Outcome, *, fault: str | None, display_failing: bool
     ) -> FailureStreak | None:
         """Count the subject's failed trials back to back; the streak on the
         trial that reaches the task's limit, which the caller turns into a
@@ -220,9 +227,9 @@ class StreakMonitor:
         experimenter to recalibrate while it does.
         """
         limit = self._max_consecutive_failures
-        if limit is None or outcome.name == "PAUSED" or cut_short_by_device(fault):
+        if limit is None or outcome.name == PAUSED.name or cut_short_by_device(fault):
             return None
-        if outcome.completed or outcome.name == "DROPPED_FRAMES":
+        if outcome.completed or outcome.name == DROPPED_FRAMES.name:
             self._failures_in_a_row = 0
             self._failure_streak_display_trials = 0
             return None
@@ -240,7 +247,7 @@ class StreakMonitor:
         self._failure_streak_display_trials = 0
         return streak
 
-    def count_dropout(self, outcome: Any, record: dict[str, Any]) -> DropoutStreak | None:
+    def count_dropout(self, outcome: Outcome, record: dict[str, Any]) -> DropoutStreak | None:
         """Count the trials a device failed its health check on, back to back;
         the streak once the count has reached ``max_consecutive_dropouts``,
         which the caller turns into a pause (and reports through
@@ -265,7 +272,7 @@ class StreakMonitor:
         still owed their own pause if the next trial drops out as well.
         """
         limit = self._max_consecutive_dropouts
-        if limit is None or outcome.name == "PAUSED":
+        if limit is None or outcome.name == PAUSED.name:
             return None
         fault = device_fault(record)
         if fault is None:

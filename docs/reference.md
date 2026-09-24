@@ -15,7 +15,10 @@ starting with `_`. Nothing else is public, even without a leading underscore:
 - so is everything in a module that is not on this page;
 - a subpackage that re-exports a listed name for a shorter import
   (`from alhazen.scenes import load_scene`) hands out the same public object,
-  but a subpackage's `__all__` does not by itself make a name public.
+  but a subpackage's `__all__` does not by itself make a name public. It
+  holds only names this page lists for that subpackage or its modules; an
+  internal name the subpackage imports stays importable from it, but is not
+  exported.
 
 The lists are what experiments built on alhazen actually import, what
 `examples/`, the `alhazen new` template and the snippets in these docs use,
@@ -23,9 +26,10 @@ and what the guides tell a task author to call, subclass or implement.
 Everything else stays importable, at the importer's own risk.
 `tests/unit/test_docs_snippets.py` fails when a listed name no longer exists,
 so a public name cannot be renamed or removed without this page — and the
-version number — noticing. A deprecated name keeps working until the next
-major version removes it, and until then it warns, naming that version and
-the replacement (`alhazen._deprecation`; the policy is §4 of
+version number — noticing; it also fails when a subpackage's `__all__`
+exports a name this page does not list. A deprecated name keeps working
+until the next major version removes it, and until then it warns, naming
+that version and the replacement (`alhazen._deprecation`; the policy is §4 of
 [Versioning and releases](versioning.md)).
 
 ## The top-level package

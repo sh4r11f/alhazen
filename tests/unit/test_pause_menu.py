@@ -160,6 +160,37 @@ class TestTheLoop:
         assert shown == [menu]
 
 
+class TestActionForKey:
+    """The one key -> action mapping every pause loop uses: the blocking
+    keyboard loop above, and the runner's polling loops (a rest that can time
+    out, a pause with the dashboard on)."""
+
+    @pytest.mark.parametrize(
+        ("key", "action"),
+        [
+            ("space", "resume"),
+            ("SPACE", "resume"),
+            ("q", "quit"),
+            ("Q", "quit"),
+            ("escape", "quit"),
+            ("c", "calibrate"),
+            ("r", "manual_reward"),
+            ("h", "hold_stage"),
+            ("]", "promote_stage"),
+        ],
+    )
+    def test_a_key_selects_its_row(self, key, action):
+        menu = build_pause_menu(has_tracker=True, has_reward=True, has_training=True)
+
+        assert menu.action_for_key(key) == action
+
+    @pytest.mark.parametrize("key", ["r", "c", "z", "p"])
+    def test_a_key_with_no_row_selects_nothing(self, key):
+        # A bare session: R and C are bound during a trial but have no row
+        # here, and P (the pause key itself) never has one.
+        assert build_pause_menu().action_for_key(key) is None
+
+
 class TestRender:
     def test_the_key_column_is_aligned(self):
         """The body is drawn in a monospace face precisely so this alignment

@@ -114,6 +114,97 @@ class TestPromptsNeedATerminal:
         assert "--sub" in err and "--ses" in err and "terminal" in err
 
 
+class _Terminal:
+    """A stdin that says it is a terminal, so the prompts are allowed."""
+
+    def isatty(self):
+        return True
+
+
+class TestTheSessionNumberPrompt:
+    """`int(input(...))` turned a typo at the prompt into a raw ValueError
+    traceback, with the rig config loaded and an animal waiting. A bad
+    answer is now said to be bad, in the CLI's own words, and asked again."""
+
+    def settle(self, monkeypatch, answers):
+        import argparse
+        import builtins
+        import sys
+
+        from alhazen.cli.main import _settle_subject_and_session
+        from alhazen.modes import Mode
+
+        asked = []
+        replies = iter(answers)
+
+        def fake_input(prompt):
+            asked.append(prompt)
+            return next(replies)
+
+        monkeypatch.setattr(sys, "stdin", _Terminal())
+        monkeypatch.setattr(builtins, "input", fake_input)
+        args = argparse.Namespace(sub="s01", ses=None)
+        refused = _settle_subject_and_session(args, Mode.TEST)
+        return refused, args, asked
+
+    def test_a_typo_is_named_and_asked_again(self, monkeypatch, capsys):
+        refused, args, asked = self.settle(monkeypatch, ["1a", "3"])
+
+        assert refused is None
+        assert args.ses == 3
+        assert asked == ["session number: ", "session number: "]
+        err = capsys.readouterr().err
+        assert "INVALID" in err and "'1a'" in err
+
+    def test_a_number_below_one_is_asked_again(self, monkeypatch, capsys):
+        """Sessions are numbered from 1 (SessionInfo refuses 0) — caught at
+        the prompt rather than later, as a validation error from the builder."""
+        refused, args, _ = self.settle(monkeypatch, ["0", "", "2"])
+
+        assert refused is None
+        assert args.ses == 2
+        assert capsys.readouterr().err.count("INVALID") == 2
+
+    def test_a_good_answer_is_taken_first_time(self, monkeypatch, capsys):
+        refused, args, asked = self.settle(monkeypatch, [" 12 "])
+
+        assert (refused, args.ses, len(asked)) == (None, 12, 1)
+        assert capsys.readouterr().err == ""
+
+
+class TestABadCurriculumIsInvalid:
+    def test_a_missing_curriculum_file_is_reported_not_raised(self, tmp_path, capsys):
+        """`--curriculum` was loaded outside the ConfigError handling, so a
+        misspelled path printed a traceback where every other bad config
+        file prints `INVALID:` and exits 1."""
+        from alhazen.cli.modes import run_experiment
+        from alhazen.config.models import Model
+        from alhazen.core.events import EventSchema
+        from alhazen.core.trial import outcomes as make_outcomes
+        from alhazen.task.task import Task
+
+        class CurriculumParams(Model):
+            pass
+
+        class CurriculumTask(Task):
+            name = "curriculum-check"
+            events = EventSchema(())
+            outcomes = make_outcomes(DONE=dict(completed=True, success=True))
+            params_model = CurriculumParams
+
+        missing = tmp_path / "no-such-curriculum.yaml"
+        code = run_experiment(
+            task_class=CurriculumTask,
+            default_rig=rig_file(tmp_path),
+            argv=["--mode", "simulate", "--headless", "--curriculum", str(missing)],
+        )
+
+        assert code == 1
+        err = capsys.readouterr().err
+        assert "INVALID: " in err
+        assert str(missing) in err
+
+
 class TestMeasureRejectsAnUnknownSkip:
     def test_a_misspelled_measurement_is_refused(self, tmp_path, capsys):
         """An experimenter who thinks they skipped the tracker and did not

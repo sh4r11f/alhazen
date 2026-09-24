@@ -29,6 +29,55 @@ class TestOutputDirectory:
         ResultsBundle(tmp_path / "results")
         assert (tmp_path / "results" / "kept.txt").exists()
 
+    def test_reusing_a_directory_that_holds_files_is_said_out_loud(self, tmp_path, caplog):
+        # Reuse stays allowed — a report re-run into its own analysis/
+        # directory is the normal case downstream — but it is no longer
+        # silent: files from an earlier run sit beside the new manifest.
+        import logging
+
+        (tmp_path / "results").mkdir()
+        (tmp_path / "results" / "old.csv").write_text("a\n1\n")
+        with caplog.at_level(logging.WARNING, logger="alhazen.analysis.results"):
+            ResultsBundle(tmp_path / "results")
+        (warning,) = [r for r in caplog.records if "already holds" in r.getMessage()]
+        assert "old.csv" in warning.getMessage()
+
+    def test_an_empty_or_new_directory_says_nothing(self, tmp_path, caplog):
+        import logging
+
+        (tmp_path / "empty").mkdir()
+        with caplog.at_level(logging.WARNING, logger="alhazen.analysis.results"):
+            ResultsBundle(tmp_path / "empty")
+            ResultsBundle(tmp_path / "new")
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+    def test_files_this_bundle_did_not_write_are_listed_in_the_manifest(self, tmp_path):
+        # Stale outputs beside a manifest that does not mention them read as
+        # this run's work. The manifest names them instead: everything that
+        # was there before and that this bundle did not rewrite — but not
+        # the previous manifest, which this one replaces.
+        out = tmp_path / "results"
+        first = ResultsBundle(out)
+        first.write_table("rates.csv", [{"rate": 0.8}])
+        first.write_table("dropped.csv", [{"x": 1}])
+        (out / "figures").mkdir()
+        (out / "figures" / "plot.png").write_bytes(b"png")
+        first.write_manifest()
+
+        second = ResultsBundle(out)
+        second.write_table("rates.csv", [{"rate": 0.9}])
+        second.write_manifest()
+
+        manifest = read_manifest(second)
+        assert manifest["outputs"] == ["rates.csv"]
+        assert manifest["preexisting"] == ["dropped.csv", "figures/plot.png"]
+
+    def test_a_fresh_bundle_lists_nothing_preexisting(self, tmp_path):
+        bundle = ResultsBundle(tmp_path / "results")
+        bundle.write_table("rates.csv", [{"rate": 0.8}])
+        bundle.write_manifest()
+        assert read_manifest(bundle)["preexisting"] == []
+
 
 class TestTables:
     def test_a_table_is_written_and_remembered(self, tmp_path):
@@ -72,6 +121,24 @@ class TestInputs:
         second.add_input(source)
 
         assert first.inputs[0]["sha256"] != second.inputs[0]["sha256"]
+
+    def test_the_hash_is_the_one_the_run_manifest_records(self, tmp_path):
+        # One hash rule for both manifests, so a bundle's input can be
+        # checked against the run manifest that recorded the same file.
+        import yaml
+
+        from alhazen.data.manifest import write_manifest
+
+        run = tmp_path / "run"
+        run.mkdir()
+        (run / "trials.csv").write_text("trial_index\n1\n")
+        write_manifest(run, run / "manifest.yaml")
+        (listed,) = yaml.safe_load((run / "manifest.yaml").read_text())["artifacts"]
+        bundle = ResultsBundle(tmp_path / "results")
+
+        bundle.add_input(run / "trials.csv")
+
+        assert bundle.inputs[0]["sha256"] == listed["sha256"]
 
     def test_a_directory_input_is_listed_rather_than_hashed(self, tmp_path):
         # Hashing a recording's gigabytes to identify it costs more than it

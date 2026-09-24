@@ -373,7 +373,8 @@ backend's, for a person to read; select on `fault`, never on this.
   any failure. An EyeLink's EDF is the exception: it is on the Host PC, and
   a dead link cannot bring it over. Teardown then raises a `TrackerError`
   naming the file (`edf_host_filename`, `alhazen.EDF` by default) and where
-  it belongs in the run directory, the database records the run as `failed`,
+  it belongs in the run directory, the run is recorded as `failed` (in the
+  database, the saved dashboard and session.log's last line),
   and the link is closed all the same. Copy the file off the Host PC by hand before
   the next session: every session opens its EDF under that same name.
   (With no run behind it — `check-rig` — a dead link loses nothing and is

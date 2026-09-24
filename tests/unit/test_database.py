@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sqlite3
 
+import numpy as np
 import pytest
 
 from alhazen.config.models import DatabaseConfig
@@ -17,6 +18,7 @@ from alhazen.errors import DataError
 from alhazen.session.database import (
     DATABASE_FILENAME,
     SCHEMA_VERSION,
+    DeviceSample,
     ExperimentDatabase,
     FrameInputBuffer,
 )
@@ -140,6 +142,70 @@ class TestSchemaCompatibility:
             assert db.execute("SELECT version FROM schema_info").fetchone()[0] == SCHEMA_VERSION
         # And reopening it is not a fight with its own guard.
         database.connect().close()
+
+
+class TestConnectionsAreClosed:
+    """Every connection the mirror opens is closed when the call returns.
+
+    ``with sqlite3.connect(...) as db`` commits or rolls back, but does not
+    close. Left to the garbage collector, an open connection keeps the
+    database and its WAL file locked on Windows (so the folder cannot be
+    moved or deleted), and Python 3.13 warns about each one."""
+
+    @pytest.fixture
+    def opened(self, monkeypatch):
+        """Every connection the mirror opens, held here so the garbage
+        collector cannot close one on the mirror's behalf."""
+        connections: list[sqlite3.Connection] = []
+        real_connect = sqlite3.connect
+
+        def connect(*args, **kwargs):
+            connection = real_connect(*args, **kwargs)
+            connections.append(connection)
+            return connection
+
+        monkeypatch.setattr("alhazen.session.database.sqlite3.connect", connect)
+        return connections
+
+    @staticmethod
+    def assert_all_closed(connections: list[sqlite3.Connection]) -> None:
+        assert connections, "the mirror opened no connection"
+        for connection in connections:
+            # The one public way to ask: a closed connection refuses to work.
+            with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+                connection.execute("SELECT 1")
+
+    def test_writing_and_reading_a_run(self, tmp_path, opened):
+        database, run_id = write_run(tmp_path)
+        database.ingest_device_samples(
+            run_id, "ephys", "ap", [DeviceSample(channel="1", value=1.0, t_session=0.0)]
+        )
+        database.ingest_dense_stream(
+            run_id,
+            "ephys",
+            "lfp",
+            np.zeros((4, 1), dtype=np.int16),
+            channels=["0"],
+            sample_rate_hz=1000.0,
+            t_device_start=0.0,
+            t_session_start=0.0,
+        )
+        database.find_run("t01", 1)
+        self.assert_all_closed(opened)
+
+    def test_a_read_that_raises(self, tmp_path, opened):
+        database, _ = write_run(tmp_path)
+        with pytest.raises(DataError, match="has no trial"):
+            database.frame_snapshot(subject="t01", session=1, trial_index=9, frame_index=0)
+        self.assert_all_closed(opened)
+
+    def test_a_database_refused_for_its_schema(self, tmp_path, opened):
+        # connect() itself: the refusal is raised with the connection open.
+        path = TestSchemaCompatibility().stale(tmp_path)
+        opened.clear()
+        with pytest.raises(DataError):
+            ExperimentDatabase(path).connect()
+        self.assert_all_closed(opened)
 
 
 class TestRunIdentity:

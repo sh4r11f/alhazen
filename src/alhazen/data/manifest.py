@@ -29,7 +29,14 @@ log = logging.getLogger(__name__)
 MANIFEST_SCHEMA_VERSION = 1
 
 
-def _sha256(path: Path) -> str:
+def sha256_file(path: Path) -> str:
+    """A file's sha256 as hex, read in 1 MiB chunks so a large file never
+    has to fit in memory.
+
+    Public so an analysis results bundle (analysis/results.py) hashes its
+    inputs by the same rule the run manifest does, and a bundle's input can
+    be compared with the run manifest's entry for the same file.
+    """
     h = hashlib.sha256()
     with path.open("rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
@@ -44,7 +51,7 @@ def _entry(run_dir: Path, path: Path) -> dict[str, object]:
         # run's record, and a run written on Windows must verify on the
         # machine that analyses it.
         "path": path.relative_to(run_dir).as_posix(),
-        "sha256": _sha256(path),
+        "sha256": sha256_file(path),
         "bytes": path.stat().st_size,
     }
 
@@ -128,7 +135,7 @@ def verify_manifest(run_dir: Path, manifest_path: Path) -> list[str]:
         path = run_dir / rel
         if not path.exists():
             problems.append(f"missing: {rel}")
-        elif _sha256(path) != expected:
+        elif sha256_file(path) != expected:
             problems.append(f"hash mismatch: {rel}")
     for path in sorted(run_dir.rglob("*")):
         if path.is_file() and path != manifest_path:
