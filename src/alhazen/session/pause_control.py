@@ -45,27 +45,9 @@ from alhazen.session.pause import PauseMenu, build_pause_menu
 log = logging.getLogger("alhazen.session.runner")
 
 
-# Menu action -> the session command it issues. Shared by the keyboard and
-# dashboard pause paths so a stage moved from the browser and one moved from
-# the keyboard go through exactly the same code.
-def _menu_action(actions: dict[str, str], key: str) -> str | None:
-    """The action a raw key name selects on the menu, or None.
-
-    The menu prints one row for "Q or ESC", so its key text is not a key name;
-    the two real names are mapped here. Everything else matches a row's key
-    case-insensitively, which is what lets a rebound key work without the
-    pause screen and the keyboard drifting apart.
-    """
-    if key.lower() in ("q", "escape"):
-        return actions.get("Q or ESC")
-    if key.lower() == "space":
-        return actions.get("SPACE")
-    for row_key, action in actions.items():
-        if row_key.lower() == key.lower():
-            return action
-    return None
-
-
+# Menu action -> the session command it issues, for the stage rows. A stage
+# moved from the browser and one moved from the keyboard both arrive here as
+# the same action name, so they go through exactly the same code.
 PAUSE_STAGE_COMMANDS = {
     "promote_stage": Command.PROMOTE_STAGE,
     "demote_stage": Command.DEMOTE_STAGE,
@@ -281,13 +263,13 @@ class PauseController:
         The keyboard half of a pause that can time out. ``on_pause`` blocks
         until a key is pressed, which is right for a pause a person has to
         resolve and wrong for one that resumes by itself, so the runner polls
-        the same keys, through the same row mapping the dashboard path uses.
+        the same keys, through the menu's own key mapping
+        (PauseMenu.action_for_key) — the one every pause loop uses.
         """
         self._show_pause_menu(menu)
-        keys = menu.actions()
         while self._clock.now() < deadline:
             for key in self._commands.poll_raw_keys():
-                action = _menu_action(keys, key)
+                action = menu.action_for_key(key)
                 if action is not None:
                     return action
             self._wait(0.01)
@@ -459,7 +441,6 @@ class PauseController:
         # is usually resolved, browser or no browser.
         self._show_pause_menu(menu)
         self._publish("paused", notice)
-        keys = menu.actions()
         # A tracker with a camera gets its image refreshed through the pause,
         # so the Eye tracker tab shows the eye as it is now, not as it was
         # when the pause began.
@@ -485,7 +466,7 @@ class PauseController:
             actions += [
                 action
                 for key in self._commands.poll_raw_keys()
-                if (action := _menu_action(keys, key)) is not None
+                if (action := menu.action_for_key(key)) is not None
             ]
             if deadline is not None:
                 if actions:

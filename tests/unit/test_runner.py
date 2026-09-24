@@ -430,6 +430,199 @@ class TestASetupFailureStillTearsDown:
         assert not training.saved
 
 
+class StatusDatabase:
+    """The database mirror, reduced to the one thing these tests read: the
+    status each run was written with."""
+
+    def __init__(self) -> None:
+        self.statuses: list[str] = []
+
+    def write_run(self, cfg, paths, *, trials, events, frames, frame_inputs, status) -> None:
+        self.statuses.append(status)
+
+
+class FailingShutdownTracker(ScriptedTracker):
+    """A tracker whose teardown ``shutdown`` raises ``error``: an EyeLink
+    whose link died after the last trial (TrackerError), or a Ctrl-C landing
+    during the seconds an EDF transfer takes (KeyboardInterrupt)."""
+
+    def __init__(self, clock, error: BaseException) -> None:
+        super().__init__([], clock)
+        self.error = error
+
+    def shutdown(self, recording_destination, /) -> None:
+        super().shutdown(recording_destination)
+        raise self.error
+
+
+class InterruptedSync(ClosableSync):
+    """A sync output whose close is interrupted by a Ctrl-C."""
+
+    def close(self) -> None:
+        super().close()
+        raise KeyboardInterrupt
+
+
+@pytest.fixture
+def detach_leaked_log_handlers():
+    """A teardown abandoned part-way (the second Ctrl-C below, or the old
+    code under the first) never detaches session.log from the root logger;
+    left there, it would collect every later test's logging."""
+    before = list(logging.getLogger().handlers)
+    yield
+    for handler in list(logging.getLogger().handlers):
+        if handler not in before:
+            logging.getLogger().removeHandler(handler)
+            handler.close()
+
+
+def session_end_lines(harness) -> list[str]:
+    log = harness.paths.log_path.read_text(encoding="utf-8")
+    return [line for line in log.splitlines() if "session end:" in line]
+
+
+class TestACtrlCDuringTeardown:
+    """A Ctrl-C while a slow teardown step runs — an EDF transfer, a 2 s join
+    of the dashboard's child — used to abort every step after it: the log
+    left attached and unclosed, no manifest, no database row, the window
+    open. The first Ctrl-C now abandons only the step it landed in; the rest
+    of teardown runs, and the interrupt is raised when it is done. A second
+    one abandons the rest, for a teardown hung on a device."""
+
+    def session(self, tmp_path, tracker_error: BaseException, sync: ClosableSync | None = None):
+        clock = FakeClock()
+        tracker = FailingShutdownTracker(clock, tracker_error)
+        reward = ScriptedReward()
+        sync = sync if sync is not None else ClosableSync()
+        database = StatusDatabase()
+        harness = SessionHarness(
+            tmp_path,
+            n_trials=1,
+            tracker=tracker,
+            reward=reward,
+            sync=sync,
+            clock=clock,
+            database=database,
+        )
+        return harness, tracker, reward, sync, database
+
+    @pytest.mark.usefixtures("detach_leaked_log_handlers")
+    def test_the_rest_of_teardown_runs_then_the_interrupt_is_raised(self, tmp_path):
+        harness, tracker, reward, sync, database = self.session(tmp_path, KeyboardInterrupt())
+
+        with pytest.raises(KeyboardInterrupt):
+            harness.runner.run()
+
+        # Every step after the interrupted one ran.
+        assert sync.closed and reward.closed
+        assert harness.display.closed
+        assert harness.paths.manifest_path.exists()
+        # session.log was closed and detached before the manifest hashed it.
+        assert not any(
+            getattr(h, "baseFilename", None) == str(harness.paths.log_path)
+            for h in logging.getLogger().handlers
+        )
+        # A run whose EDF transfer was abandoned is not a complete run.
+        assert database.statuses == ["failed"]
+        log = harness.paths.log_path.read_text(encoding="utf-8")
+        assert "teardown step 'tracker.shutdown' interrupted" in log
+
+    @pytest.mark.usefixtures("detach_leaked_log_handlers")
+    def test_a_second_interrupt_abandons_the_rest(self, tmp_path):
+        harness, tracker, reward, sync, database = self.session(
+            tmp_path, KeyboardInterrupt(), sync=InterruptedSync()
+        )
+
+        with pytest.raises(KeyboardInterrupt):
+            harness.runner.run()
+
+        # tracker.shutdown took the first, sync.close the second: the steps
+        # after sync.close never ran.
+        assert sync.closed
+        assert not reward.closed
+        assert not harness.display.closed
+        assert database.statuses == []
+
+    def test_a_teardown_error_is_still_raised_after_the_steps(self, tmp_path):
+        """Unchanged for an ordinary error: every step runs and the first
+        teardown error is raised at the end."""
+        from alhazen.errors import TrackerError
+
+        harness, tracker, reward, sync, database = self.session(
+            tmp_path, TrackerError("the link to the Host PC is down")
+        )
+
+        with pytest.raises(TrackerError, match="link to the Host PC is down"):
+            harness.runner.run()
+
+        assert sync.closed and reward.closed and harness.display.closed
+        assert database.statuses == ["failed"]
+
+
+class TestTheSessionEndAgreesWithTheRecord:
+    """A tracker that fails only at teardown (an EyeLink whose link died
+    after the last trial) used to leave three accounts of one run: the
+    database said `failed`, while session.log ended "session end: complete"
+    and the saved dashboard said `complete` — both written before the
+    tracker's shutdown ran. All three now say `failed`."""
+
+    def session(self, tmp_path):
+        from alhazen.errors import TrackerError
+
+        clock = FakeClock()
+        tracker = FailingShutdownTracker(clock, TrackerError("the link to the Host PC is down"))
+        dashboard = StoppableDashboard()
+        database = StatusDatabase()
+        harness = SessionHarness(
+            tmp_path,
+            n_trials=1,
+            tracker=tracker,
+            clock=clock,
+            dashboard=dashboard,
+            database=database,
+        )
+        return harness, dashboard, database
+
+    def test_the_log_ends_on_the_failure(self, tmp_path):
+        from alhazen.errors import TrackerError
+
+        harness, _dashboard, database = self.session(tmp_path)
+        with pytest.raises(TrackerError):
+            harness.runner.run()
+
+        assert database.statuses == ["failed"]
+        first, last = session_end_lines(harness)
+        # The first line still says how the session itself ended, written
+        # before any step could fail; the last one is the verdict, and names
+        # the step that failed.
+        assert "session end: complete" in first
+        assert "session end: FAILED in teardown" in last
+        assert "tracker.shutdown" in last
+        assert "TrackerError: the link to the Host PC is down" in last
+
+    def test_the_saved_and_published_dashboard_say_failed(self, tmp_path):
+        from alhazen.errors import TrackerError
+
+        harness, dashboard, _database = self.session(tmp_path)
+        with pytest.raises(TrackerError):
+            harness.runner.run()
+
+        saved = harness.paths.figures_dir / "dashboard_state.json"
+        assert saved.read_text() == "failed"
+        # The browser is told too, before the dashboard's child stops.
+        assert dashboard.states[-1]["status"] == "failed"
+        assert "tracker.shutdown" in dashboard.states[-1]["message"]
+        assert dashboard.stopped
+
+    def test_a_clean_session_ends_on_one_line(self, tmp_path):
+        harness = SessionHarness(tmp_path, n_trials=1, database=(database := StatusDatabase()))
+        harness.runner.run()
+
+        (line,) = session_end_lines(harness)
+        assert "session end: complete" in line
+        assert database.statuses == ["complete"]
+
+
 class TestTrackerCalibrationBeforeTrialOne:
     """A tracker that can say it holds no calibration stops the session at
     the pause screen before trial 1, with that reason. Gaze from an
