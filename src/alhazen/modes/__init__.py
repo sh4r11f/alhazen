@@ -117,4 +117,7 @@ def flag_refusal(mode: Mode, *, headless: bool = False, mouse: bool = False) -> 
     return None
 
 
-__all__ = ["MODE_SUMMARIES", "Mode", "flag_refusal"]
+# `__all__` holds only the names docs/reference.md lists as public (a test in
+# tests/unit/test_docs_snippets.py holds it to that). The other names defined
+# here are internal: importable, but not exported.
+__all__ = ["Mode"]

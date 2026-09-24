@@ -169,3 +169,123 @@ def test_the_top_level_entry_is_exactly_alhazen_all():
     import alhazen
 
     assert set(ALL_MEMBERS["alhazen"]) == set(alhazen.__all__) | {"__version__"}
+
+
+def subpackages_with_all() -> list[str]:
+    """Every package under `alhazen` (nested ones too) that declares `__all__`."""
+    import importlib
+    import pkgutil
+
+    import alhazen
+
+    found = []
+    for info in pkgutil.walk_packages(alhazen.__path__, "alhazen."):
+        if info.ispkg and hasattr(importlib.import_module(info.name), "__all__"):
+            found.append(info.name)
+    return found
+
+
+SUBPACKAGES_WITH_ALL = subpackages_with_all()
+
+
+def test_the_subpackage_scan_finds_the_subpackages():
+    # A walk that silently found nothing would make the test below pass.
+    assert {"alhazen.core", "alhazen.devices", "alhazen.scenes"} <= set(SUBPACKAGES_WITH_ALL)
+
+
+@pytest.mark.parametrize("package", SUBPACKAGES_WITH_ALL)
+def test_a_subpackage_all_exports_only_names_the_reference_lists(package):
+    """`__all__` is what `import *` hands out and what editors and linters
+    present as a package's API, so a name in it reads as public whatever the
+    reference page says. The page says a subpackage's `__all__` does not make
+    a name public; this keeps `__all__` from contradicting it.
+
+    A name counts as listed when the page lists it under the subpackage itself
+    or under one of its modules — the ones a re-export for a shorter import
+    (`from alhazen.scenes import load_scene`) comes from. An internal name the
+    subpackage still imports stays importable from it; it is just not
+    exported.
+    """
+    import importlib
+
+    listed = {
+        name
+        for target, members in ALL_MEMBERS.items()
+        if target == package or target.startswith(package + ".")
+        for name in members or []
+    }
+    unlisted = sorted(set(importlib.import_module(package).__all__) - listed)
+    assert not unlisted, (
+        f"{package}.__all__ exports {unlisted}, which docs/reference.md does not list under "
+        f"{package} or any of its modules. Either the name is public — list it on the "
+        f"reference page — or it is internal: take it out of `__all__` (keep the import as "
+        f"`import X as X` if anything imports it from {package})."
+    )
+
+
+# The names that left the subpackages' `__all__` when it was brought in line
+# with the reference page. Leaving `__all__` changes only `import *`; code that
+# imports one of these from the subpackage by name keeps working, and this
+# pins that, so tidying an `__init__` cannot quietly break an experiment.
+FORMERLY_EXPORTED = {
+    "alhazen.analysis": ["PhotodiodeReport", "SessionReport", "build_report"],
+    "alhazen.cli": ["main"],
+    "alhazen.config": ["resolve_refresh", "write_snapshot"],
+    "alhazen.core": ["KeyboardCommands", "NullCommands", "resolve_seed"],
+    "alhazen.data": ["SessionPaths", "ensure_participant", "participants_path"],
+    "alhazen.devices": [
+        "EyeLinkTracker",
+        "MouseSimTracker",
+        "NidaqReward",
+        "NidaqSync",
+        "NullResponse",
+        "NullSync",
+        "ScriptedTracker",
+        "SubjectKeyboard",
+        "ViewPixxTracker",
+        "build_reward_waveform",
+        "make_reward",
+        "make_sync",
+        "make_sync_subscriber",
+        "make_tracker",
+    ],
+    "alhazen.devices.eyetracker": [
+        "EyeLinkTracker",
+        "MouseSimTracker",
+        "ProgressHook",
+        "ScriptedTracker",
+        "ViewPixxTracker",
+        "is_missing_gaze",
+        "make_tracker",
+    ],
+    "alhazen.display": ["Registration", "within_radius"],
+    "alhazen.modes": ["MODE_SUMMARIES", "flag_refusal"],
+    "alhazen.neural": ["SpikeDetector", "StreamTimebase"],
+    "alhazen.paradigms": ["QuestPlusEstimator", "make_scheduler", "weibull"],
+    "alhazen.scenes": [
+        "EvalContext",
+        "RenderContext",
+        "SUPPORTED_PRIMITIVES",
+        "SUPPORTED_VERSION",
+        "compile_expr",
+        "evaluate_expr",
+        "mulberry32",
+    ],
+    "alhazen.session": ["TrialPlan", "TrialSetup"],
+    "alhazen.stimuli": ["FixationPoint", "PhotodiodePatch", "make_photodiode"],
+    "alhazen.task": ["SubjectMode", "response_phases"],
+    "alhazen.training": ["StageChange", "TrainingState", "TrainingSupervisor"],
+}
+
+
+@pytest.mark.parametrize("package", sorted(FORMERLY_EXPORTED))
+def test_names_taken_out_of_all_are_still_importable(package):
+    import importlib
+
+    module = importlib.import_module(package)
+    missing = [name for name in FORMERLY_EXPORTED[package] if not hasattr(module, name)]
+    assert not missing, (
+        f"`from {package} import ...` no longer finds {missing}. They left `__all__` "
+        f"but must stay importable from {package}: code outside this repo imports them "
+        f"that way. Keep the import in {package}/__init__.py (as `import X as X`)."
+    )

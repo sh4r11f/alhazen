@@ -16,17 +16,19 @@ from alhazen.training.criteria import (
     success_rate,
 )
 from alhazen.training.stages import Curriculum, Ramp, Stage, StageCriteria
-from alhazen.training.state import TrainingState
-from alhazen.training.supervisor import StageChange, TrainingSupervisor
+from alhazen.training.state import TrainingState as TrainingState
+from alhazen.training.supervisor import StageChange as StageChange
+from alhazen.training.supervisor import TrainingSupervisor as TrainingSupervisor
 
+# `__all__` holds only the names docs/reference.md lists as public (a test in
+# tests/unit/test_docs_snippets.py holds it to that). The `X as X` imports
+# above are internal: they stay importable from here, for code that already
+# imports them this way, but are not exported.
 __all__ = [
     "Curriculum",
     "Ramp",
     "Stage",
-    "StageChange",
     "StageCriteria",
-    "TrainingState",
-    "TrainingSupervisor",
     "completed_rate",
     "mean_rt_ms",
     "register_metric",

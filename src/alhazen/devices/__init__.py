@@ -14,62 +14,38 @@ Three rules hold for everything in here:
 
 from __future__ import annotations
 
-from alhazen.devices.eyetracker import (
-    EyeLinkTracker,
-    EyeTracker,
-    GazeSample,
-    HostShape,
-    MouseSimTracker,
-    ScriptedTracker,
-    TrackerMessageSubscriber,
-    ViewPixxTracker,
-    make_tracker,
-)
-from alhazen.devices.response import (
-    NullResponse,
-    ResponseDevice,
-    ResponseSample,
-    SubjectKeyboard,
-)
-from alhazen.devices.reward import (
-    NidaqReward,
-    RewardDispenser,
-    SimulatedReward,
-    build_reward_waveform,
-    make_reward,
-)
-from alhazen.devices.sync import (
-    NidaqSync,
-    NullSync,
-    SimulatedSync,
-    SyncOutput,
-    make_sync,
-    make_sync_subscriber,
-)
+from alhazen.devices.eyetracker import EyeLinkTracker as EyeLinkTracker
+from alhazen.devices.eyetracker import EyeTracker, GazeSample, HostShape, TrackerMessageSubscriber
+from alhazen.devices.eyetracker import MouseSimTracker as MouseSimTracker
+from alhazen.devices.eyetracker import ScriptedTracker as ScriptedTracker
+from alhazen.devices.eyetracker import ViewPixxTracker as ViewPixxTracker
+from alhazen.devices.eyetracker import make_tracker as make_tracker
+from alhazen.devices.response import NullResponse as NullResponse
+from alhazen.devices.response import ResponseDevice, ResponseSample
+from alhazen.devices.response import SubjectKeyboard as SubjectKeyboard
+from alhazen.devices.reward import NidaqReward as NidaqReward
+from alhazen.devices.reward import RewardDispenser, SimulatedReward
+from alhazen.devices.reward import build_reward_waveform as build_reward_waveform
+from alhazen.devices.reward import make_reward as make_reward
+from alhazen.devices.sync import NidaqSync as NidaqSync
+from alhazen.devices.sync import NullSync as NullSync
+from alhazen.devices.sync import SimulatedSync, SyncOutput
+from alhazen.devices.sync import make_sync as make_sync
+from alhazen.devices.sync import make_sync_subscriber as make_sync_subscriber
 
+# `__all__` holds only the names docs/reference.md lists as public (a test in
+# tests/unit/test_docs_snippets.py holds it to that). The `X as X` imports
+# above are internal: they stay importable from here, for code that already
+# imports them this way, but are not exported.
 __all__ = [
-    "EyeLinkTracker",
     "EyeTracker",
     "GazeSample",
     "HostShape",
-    "MouseSimTracker",
-    "NidaqReward",
-    "NullResponse",
-    "NidaqSync",
     "ResponseDevice",
     "ResponseSample",
     "RewardDispenser",
-    "ScriptedTracker",
     "SimulatedReward",
-    "NullSync",
     "SimulatedSync",
-    "SubjectKeyboard",
     "SyncOutput",
     "TrackerMessageSubscriber",
-    "ViewPixxTracker",
-    "build_reward_waveform",
-    "make_reward",
-    "make_sync",
-    "make_sync_subscriber",
-    "make_tracker",
 ]

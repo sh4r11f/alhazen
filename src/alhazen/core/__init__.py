@@ -1,8 +1,11 @@
 from alhazen.core.clock import Clock, MonotonicClock
-from alhazen.core.commands import Command, CommandSource, KeyboardCommands, NullCommands
+from alhazen.core.commands import Command, CommandSource
+from alhazen.core.commands import KeyboardCommands as KeyboardCommands
+from alhazen.core.commands import NullCommands as NullCommands
 from alhazen.core.engine import QuitRequested, TrialEngine, TrialResult
 from alhazen.core.events import RESERVED_EVENTS, Event, EventBus, EventSchema
-from alhazen.core.rng import STREAMS, resolve_seed, spawn_streams
+from alhazen.core.rng import STREAMS, spawn_streams
+from alhazen.core.rng import resolve_seed as resolve_seed
 from alhazen.core.trial import (
     ABORTED,
     DROPPED_FRAMES,
@@ -23,6 +26,10 @@ from alhazen.core.trial import (
     outcomes,
 )
 
+# `__all__` holds only the names docs/reference.md lists as public (a test in
+# tests/unit/test_docs_snippets.py holds it to that). The `X as X` imports
+# above are internal: they stay importable from here, for code that already
+# imports them this way, but are not exported.
 __all__ = [
     "ABORTED",
     "DROPPED_FRAMES",
@@ -42,9 +49,7 @@ __all__ = [
     "EventSchema",
     "HealthFault",
     "InputFrame",
-    "KeyboardCommands",
     "MonotonicClock",
-    "NullCommands",
     "Outcome",
     "OutcomeSet",
     "Phase",
@@ -55,6 +60,5 @@ __all__ = [
     "TrialResult",
     "lost_to_fault",
     "outcomes",
-    "resolve_seed",
     "spawn_streams",
 ]

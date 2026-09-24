@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from alhazen.config.models import EyeTrackerConfig
 from alhazen.core.clock import Clock
-from alhazen.devices.eyetracker.eyelink import EyeLinkTracker, is_missing_gaze
+from alhazen.devices.eyetracker.eyelink import EyeLinkTracker
+from alhazen.devices.eyetracker.eyelink import is_missing_gaze as is_missing_gaze
 from alhazen.devices.eyetracker.messages import TrackerMessageSubscriber
 from alhazen.devices.eyetracker.mouse_sim import MouseSimTracker
 from alhazen.devices.eyetracker.protocol import (
@@ -18,9 +19,9 @@ from alhazen.devices.eyetracker.protocol import (
     EyeTracker,
     GazeSample,
     HostShape,
-    ProgressHook,
 )
-from alhazen.devices.eyetracker.scripted import ScriptedTracker
+from alhazen.devices.eyetracker.protocol import ProgressHook as ProgressHook
+from alhazen.devices.eyetracker.scripted import ScriptedTracker as ScriptedTracker
 from alhazen.devices.eyetracker.viewpixx import ViewPixxTracker
 from alhazen.display.backend import DisplayBackend
 from alhazen.display.screen import Screen
@@ -57,18 +58,16 @@ def make_tracker(
     )
 
 
+# `__all__` holds only the names docs/reference.md lists as public (a test in
+# tests/unit/test_docs_snippets.py holds it to that). The backends, and
+# `make_tracker` that picks one, are internal (the rig config chooses the
+# backend), as are the `X as X` imports above: all stay importable from here,
+# for code that already imports them this way, but are not exported.
 __all__ = [
     "CalibrationResult",
     "CameraFrame",
-    "EyeLinkTracker",
     "EyeTracker",
     "GazeSample",
     "HostShape",
-    "MouseSimTracker",
-    "ProgressHook",
-    "ScriptedTracker",
     "TrackerMessageSubscriber",
-    "ViewPixxTracker",
-    "is_missing_gaze",
-    "make_tracker",
 ]
