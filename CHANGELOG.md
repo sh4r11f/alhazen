@@ -173,6 +173,24 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Changed
 
+- **A queue-based paradigm's `trials_per_block` may no longer be smaller
+  than one block's plan; such a config is now refused.** For `sequence`,
+  `constant` and `adjustment`, every block gets its own full plan (cells ×
+  `n_per_condition`), and `trials_per_block` ended the block by count. Set
+  below the plan, it abandoned whatever was still queued, without a word —
+  and a failed trial re-queues at the end, so the retries were cut first:
+  with two cells, three presentations each and a bound of 4, one cell could
+  finish a block with 1 completed trial and the other with 3. The session
+  builder now raises a `ConfigError` before trial one, naming the task,
+  `trials_per_block`, `n_per_condition` and how many planned trials each
+  block would have dropped. A config that ran before this change can be
+  refused by it; to serve the same trials, omit `trials_per_block` (a block
+  ends when its plan is done) or lower `n_per_condition` so that one block's
+  plan is the block length wanted. A bound equal to or above the plan is
+  accepted — it never cut anything, since a block's completed count reaches
+  its plan exactly as its queue empties — and the adaptive kinds
+  (`staircase`, `questplus`), whose block length `trials_per_block` is, are
+  unchanged.
 - **Training criteria leave out a trial lost to a system fault.** A
   dropped-frames trial and a tracker-stopped trial no longer enter the
   criteria window: no metric, no `min_trials` count and no ramp sees them,
@@ -252,6 +270,114 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   nothing is written into its run directory, which a run without a snapshot
   could not be analysed from. The original error is raised either way. See
   [docs/architecture.md](docs/architecture.md) §10.
+
+- **A session build that failed part-way left the window, the tracker link
+  and the sync lines open.** `build_session`'s failure path released only the
+  dashboard, the mid-trial reward worker and the spike source. A failure once
+  the devices were up (a scheduler that raised, a refresh rate that disagreed
+  with the config) left the window open, the eye tracker connected and
+  `NidaqSync`'s NI-DAQ tasks reserved, which blocks the next session, and a
+  dispenser not wrapped for mid-trial reward was never closed. The display was
+  also constructed before the guard began, so a failure there left the
+  dashboard's child process running. And the dashboard's `stop()` was the one
+  unguarded release: if it raised, the reward worker and spike source were
+  skipped and its error replaced the build's. Now every resource the build
+  acquires registers its release as soon as it is held. A failure, or a
+  Ctrl-C, releases them all in reverse order, each attempted even when
+  another fails. A release that fails is logged with its traceback, and the
+  build's own error is the one raised. The tracker is released with
+  `shutdown(None)` once it has connected. Devices handed in (`tracker=`,
+  `reward=`, `sync=`, `spikes=`) are released like the rig's own, as the
+  runner's teardown already did. See
+  [docs/architecture.md](docs/architecture.md) §9.
+
+- **`experiment_git_sha` says `-dirty` when the experiment ran from
+  uncommitted code.** It was `git rev-parse --short HEAD`, which names the
+  commit and nothing else, so a session run from edited experiment code
+  recorded a clean-looking SHA whose checkout does not reproduce it. The
+  experiment's tree is now read exactly as `alhazen_git_describe` reads
+  alhazen's own — `git describe --always --dirty`, through one shared
+  function — so the value is `abc1234-dirty` for uncommitted changes to
+  tracked files. The key keeps its name. In a repository with no annotated
+  tag (every downstream experiment repo today) a clean tree records the
+  same short SHA as before; a tagged one records a describe string such as
+  `v2.0-3-gabc1234`, which git accepts as a revision. Every failure used to
+  read `unknown`; a directory outside any git repository now reads `not a
+  source checkout`, and `unknown` is kept for git being absent or not
+  answering, as in `alhazen_git_describe`. Git's output is now decoded as
+  UTF-8, which it is: in the Windows code page, a folder name such as `Ída`
+  made reading alhazen's own tree crash, and would have done the same to
+  the experiment's.
+
+- **An EyeLink whose link was down at teardown left its run marked
+  complete.** `EyeLinkTracker.shutdown()` logged a WARNING and returned, so
+  nothing machine-readable said the EDF never left the Host PC: the database
+  mirrored the run as `complete`, and the link was never closed. A failure
+  partway through (stopping the trial, closing the EDF, the transfer) also
+  skipped `close()`. With a run behind it, a link that is down, or dies
+  before the transfer, now raises a `TrackerError` naming the EDF on the
+  Host PC, where to copy it, and why before the next session (which opens
+  its EDF under the same name); the run is recorded as `failed`. With no
+  destination (`check-rig`, the accuracy measurement) a dead link loses
+  nothing and is still only logged. `close()` now runs in a `finally`
+  whatever failed; if it fails too, the first error is raised and close()'s
+  is logged. See [docs/eye-tracker.md](docs/eye-tracker.md).
+
+- **Events shown by one flip were stamped later than the flip, and with
+  different times.** The engine read the flip's time right after `flip()`,
+  then stamped each event a phase had queued with `emit_on_flip` — and each
+  mid-trial `REWARD` — with the clock read again as it was emitted: after
+  the frame's own bookkeeping and, for every event but the frame's first,
+  after the bus's subscribers (the tracker's message, the sync pulse) had
+  handled the one before it. So `events.csv` and the row's `t_<event>`
+  columns ran late by that time, two events on one flip got two times, and a
+  reaction time a phase measured from `t_<onset_event>` came out short by
+  the same amount. Every event queued on a flip, and every mid-trial
+  `REWARD`, now carries that flip's own time — the time `frames.csv` and the
+  database's `frames` table record for it — and the engine reads its flips
+  on its own clock, never the trial context's. Events with no flip
+  (`TRIAL_START`, `TRIAL_END`, `PAUSED`, a manual `REWARD`, a drop's end) are
+  stamped as they are emitted, as before. **In data recorded before this
+  fix** a flip-locked event's `t` is later than its flip by the subscribers'
+  run time. Its flip is the last one of its trial at or before that `t`: the
+  database's `frames` table has every flip (`t_session`, by `trial_index` and
+  `frame_index`), while `frames.csv` leaves out each trial's first. A
+  mid-trial `REWARD` names its flip outright, as `frame`. See
+  [docs/architecture.md](docs/architecture.md) §2.
+
+- **A key pressed before the response cue was on screen was scored as the
+  answer.** `ResponseWindow` accepted bound keys from its first frame, whose
+  keys are read before the flip that shows its cue (`RESPONSE_CUE` by
+  default), and timed such a key from the phase's entry because the cue had no
+  flip time yet. So a key pressed in the frame before — the end of the
+  stimulus phase, in `examples/staircase_detection` — decided the trial (and,
+  in a staircase, moved it) with a reaction time of about zero. The second
+  frame did the same one frame later: its keys were pressed while the cue
+  waited for its flip. Keys now count only once the frame before has already
+  seen the cue's `t_<onset_event>` stamp, so every key in the batch followed
+  the cue on screen; earlier presses are ignored, the way `StimulusResponse`
+  waits for its own onset stamp. A window built with `onset_event=None` is
+  unchanged: keys count from its first frame, timed from phase entry. Runs
+  recorded before this fix may hold such trials, `SubjectMode.KEYBOARD` ones
+  included, with the pre-cue key as their response. `trials.csv` shows them:
+  their `rt_ms` (or the window's `rt_record_key`) is under one frame period
+  (16.7 ms at 60 Hz) — only the engine's own work between two clock reads —
+  where a key read once the cue had been up a full frame scores at least about
+  one frame period. See [docs/architecture.md](docs/architecture.md) §5.2.
+
+- **A task's `score_trial` did not reach an up-down staircase.**
+  `Task.score_trial` is how a task titrating something other than accuracy (a
+  bias magnitude, a settling error) says what a success is, but
+  `make_scheduler` handed it to `kind: questplus` only. `kind: staircase`,
+  single or interleaved, stepped on `outcome.success` whatever the task said,
+  so a task that overrode the hook titrated accuracy instead, with nothing to
+  say so. `UpDownStaircase` now takes a `score` callable, as `QuestPlus` does,
+  and `make_scheduler` builds every staircase with the task's, blocks or
+  not. The scorer is asked about completed trials only; an attempt with no
+  measurement is still served again at the same level and never scored. A
+  task that does not override `score_trial` runs exactly the session it ran
+  before, seed for seed. See [docs/architecture.md](docs/architecture.md)
+  §5.4.
 
 - **The same run number on a later day wrote into the earlier run's
   folder.** `SessionPaths.create` refused only this run's own trials file,

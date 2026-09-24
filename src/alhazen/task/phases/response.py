@@ -25,6 +25,19 @@ class ResponseWindow:
     Reaction time runs from the flip that showed the response window's own
     onset event, for the same reason as everywhere else: that flip is when the
     subject could first have seen anything to respond to.
+
+    Keys pressed before that flip are not responses, and are ignored rather
+    than scored: a bound key is only read as a choice once every key in the
+    frame's batch was pressed after the cue was on screen (see
+    ``_reference_time``). Ignored, not recorded as an anticipation, because
+    nothing in the library records one yet — ``StimulusResponse`` likewise
+    just waits for its onset stamp.
+
+    With ``onset_event=None`` there is no cue flip to wait for: the window
+    opens when the phase is entered, keys count from its first frame, and the
+    reaction time runs from ``on_enter``. A key read on that first frame may
+    have been pressed before the phase began, during the frame before it; a
+    task that drops the onset event has chosen that.
     """
 
     name = "response_window"
@@ -55,32 +68,65 @@ class ResponseWindow:
 
     def on_enter(self, ctx: TrialContext) -> None:
         self._t0 = ctx.clock.now()
+        # Whether the frame before this one already saw the onset flip's
+        # stamp. Reset on every entry, so a phase object reused across trials
+        # never carries one trial's cue into the next.
+        self._onset_seen_last_frame = False
         if self._onset_event is not None:
             ctx.emit_on_flip(self._onset_event)
 
-    def _reference_time(self, ctx: TrialContext) -> float:
+    def _reference_time(self, ctx: TrialContext) -> float | None:
+        """The time this frame's keys are timed from, or None while they
+        cannot be credited to the cue. Called exactly once per frame, since
+        it notes whether this frame has seen the onset stamp.
+
+        A frame's keys are everything pressed since the *previous* frame's
+        read (``ResponseDevice.poll`` reports each press once). So a
+        batch is all post-cue only if that previous read came after the cue's
+        flip — that is, if the previous frame already saw the
+        ``t_<onset_event>`` stamp the engine writes right after the flip.
+        That rules out two frames.
+        """
         if self._onset_event is None:
             return self._t0
-        # Falls back to phase entry only until the onset flip has happened —
-        # a response cannot arrive before the window was drawn anyway.
         onset_t = ctx.record.get(f"t_{self._onset_event.lower()}")
-        return float(onset_t) if onset_t is not None else self._t0
+        if onset_t is None:
+            # The first frame: the cue has been drawn but not yet flipped, so
+            # these keys were pressed with nothing on screen to answer — the
+            # same wait StimulusResponse makes for its onset stamp.
+            return None
+        if not self._onset_seen_last_frame:
+            # The first frame to see the stamp. Its keys were pressed between
+            # the first frame's read and the cue's flip, while the cue was
+            # waiting to be shown: the pre-cue queue arriving one frame late,
+            # which would otherwise score with a reaction time of zero. The
+            # only post-cue presses lost with it are those made in the
+            # engine's bookkeeping just after the flip — far under any real
+            # reaction time.
+            self._onset_seen_last_frame = True
+            return None
+        return float(onset_t)
 
     def on_frame(self, ctx: TrialContext) -> str | Outcome:
         _draw(ctx, self._stimulus_keys)
         now = ctx.clock.now()
-        for key in ctx.inputs.keys:
-            outcome = self._keys.get(key)
-            if outcome is None:
-                # A key the task did not bind is not a response. Ignored
-                # rather than counted as a wrong answer: the subject's hand
-                # slipping onto an unbound key is not a decision.
-                continue
-            ctx.record[self._key_record_key] = key
-            ctx.record[self._rt_record_key] = (now - self._reference_time(ctx)) * 1000.0
-            if self._response_event is not None:
-                ctx.emit_on_flip(self._response_event)
-            return outcome
+        reference_t = self._reference_time(ctx)
+        # Before the cue, bound keys are dropped with the rest of the batch.
+        # The poll that read them reported them for the last time, so they
+        # cannot turn up on a later frame as a response either.
+        if reference_t is not None:
+            for key in ctx.inputs.keys:
+                outcome = self._keys.get(key)
+                if outcome is None:
+                    # A key the task did not bind is not a response. Ignored
+                    # rather than counted as a wrong answer: the subject's
+                    # hand slipping onto an unbound key is not a decision.
+                    continue
+                ctx.record[self._key_record_key] = key
+                ctx.record[self._rt_record_key] = (now - reference_t) * 1000.0
+                if self._response_event is not None:
+                    ctx.emit_on_flip(self._response_event)
+                return outcome
         if now - self._t0 >= self._timeout_s:
             return self._on_timeout
         return PhaseAction.CONTINUE

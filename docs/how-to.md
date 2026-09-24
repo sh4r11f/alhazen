@@ -81,6 +81,10 @@ class MyScheduler:
 - Read `TrialResult.outcome`, never the record. A scheduler that reaches into
   measurements is how a scheduler and an analysis end up disagreeing about
   what "correct" meant.
+- An adaptive scheduler asks a `score(result) -> bool` whether a *completed*
+  trial was a success, defaulting to `outcome.success`, as the built-in
+  staircases and QUEST+ do. Pass it the task's `score_trial` from
+  `make_source`, or a task that titrates something else gets accuracy.
 - `record()` is called for *every* outcome, including PAUSED and ABORTED.
 
 ## Add a device backend
