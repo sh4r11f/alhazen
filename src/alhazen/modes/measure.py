@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import Any
 
 from alhazen.config.models import RigConfig
+from alhazen.display.ruler import draw_ruler_on, ruler_report
 from alhazen.display.screen import Screen
 
 # How many flips to time the display over. Two seconds at 60 Hz: long enough
@@ -294,8 +295,6 @@ def measure_geometry(rig: RigConfig, size_dva: float = 10.0) -> Measurement:
     report is what tells whoever is holding one what they should be reading.
     ``alhazen calibrate ruler`` draws the bar to hold it against.
     """
-    from alhazen.cli.calibrate import ruler_report
-
     screen = Screen.from_monitor(rig.monitor)
     return Measurement(
         "display geometry",
@@ -566,8 +565,6 @@ def run_measurements(
             # Last, and on the window everything else was measured through:
             # the bar whose expected length "geometry" reported, for a tape
             # to be held against. Skippable, since it needs a person.
-            from alhazen.cli.calibrate import draw_ruler_on
-
             measurement = ruler_measurement(rig)
             echo(f"{measurement.summary}; any key when done")
             draw_ruler_on(display, rig, RULER_DVA)

@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
@@ -36,7 +37,7 @@ from alhazen.config.models import (
     SessionInfo,
     resolve_refresh,
 )
-from alhazen.core.clock import MonotonicClock
+from alhazen.core.clock import Clock, MonotonicClock
 from alhazen.core.commands import CommandSource, KeyboardCommands, NullCommands
 from alhazen.core.engine import TrialEngine
 from alhazen.core.events import EventBus, EventSchema
@@ -227,6 +228,24 @@ def validate_event_names(
             )
 
 
+def _release_on_abort(what: str, release: Callable[..., object], *args: object) -> None:
+    """One release in a failed build's cleanup: attempted, and logged rather
+    than raised when it fails.
+
+    The build's own error is already propagating when this runs, and it is
+    the one that says what went wrong. A release that raised would replace
+    it: ExitStack chains the two, but the one a caller catches and the CLI
+    reports would be the release's. An unguarded ``dashboard.stop()`` did
+    exactly that. ExitStack runs every later release either way; catching
+    here is what keeps the build's error on top. Logged with its traceback,
+    so the failed release is not lost either.
+    """
+    try:
+        release(*args)
+    except Exception:
+        log.exception("could not %s while aborting the build", what)
+
+
 def build_session(
     *,
     rig: RigConfig | str | Path,
@@ -251,6 +270,7 @@ def build_session(
     reward: RewardDispenser | None = None,
     sync: SyncOutput | None = None,
     spikes: SpikeSource | None = None,
+    clock: Clock | None = None,
     curriculum: Curriculum | None = None,
     windowed: bool = False,
     sources: dict[str, str] | None = None,
@@ -276,6 +296,30 @@ def build_session(
     trace through this same function rather than through a hand-wired copy of
     it — a copy is how an experiment's tests end up exercising different
     wiring from the sessions they are meant to rehearse.
+
+    A device handed in is the session's to release from then on, like one
+    the rig config built: the runner's teardown releases it when the session
+    ends, and a build that fails releases it before raising.
+
+    ``clock`` is the session clock: every time the session records — events,
+    the trial rows' ``t_*`` stamps, flips, gaze — is read from it (the
+    one-clock invariant, CONTRIBUTING.md). None makes a ``MonotonicClock``,
+    which is what a real session wants. A caller that builds its own tracker
+    or subject stand-in must build it on this same clock, not a second one:
+    create the clock first and hand it to both. A tracker configured by the
+    session is given this clock anyway (``configure(screen, clock)``), but an
+    object that only reads the clock it was constructed with would otherwise
+    stamp its samples on a timebase nothing else in the run shares.
+
+    A clock that moves only when it is told to — one with an ``advance``
+    method, such as ``alhazen.testing.FakeClock`` — runs the session in
+    simulated time: the simulated display advances it one frame per flip,
+    and the runner's waits (the inter-trial interval, a timed rest's key
+    polls) advance it instead of sleeping. Every recorded time is then
+    exact and the same on every run, however loaded the machine, which is
+    what a test of a whole session wants. It needs the simulated display: a
+    real one's flips do not move it, and every timed phase would run forever,
+    so that pairing is refused before a run directory is created.
     """
     rig_cfg = rig if isinstance(rig, RigConfig) else load_rig(rig)
     if dashboard is not None or open_dashboard is not None:
@@ -377,52 +421,96 @@ def build_session(
             f"--mode simulate or --mode test, which stand in a simulated one."
         )
 
+    # A session clock that moves only when it is told to (FakeClock's
+    # `advance`) is simulated time, and a session on it has exactly two
+    # things that tell it to: the simulated display's flip and the runner's
+    # waits. Found by its method rather than its type because the builder
+    # may not import alhazen.testing (the layering contract), and any clock
+    # an experiment writes with the same shape needs the same wiring.
+    # None for every clock that moves by itself.
+    advance: Callable[[float], None] | None = getattr(clock, "advance", None)
+    # Refused here, before a run directory exists, for the same reason as the
+    # reward check above: nothing but the simulated display advances such a
+    # clock, so on a real window the first timed phase would never end, and
+    # a session that hangs says nothing about why.
+    if advance is not None and rig_cfg.display.backend != "simulated":
+        raise ConfigError(
+            f"build_session was given a clock that moves only when advanced "
+            f"({type(clock).__name__}), on a rig whose display backend is "
+            f"{rig_cfg.display.backend!r}. Only the simulated display advances such a clock; "
+            f"use display.backend: simulated, or leave clock unset for a real one."
+        )
+
     # Paths first: refusing to overwrite an existing run must fail before a
     # window ever opens or a device is touched.
     paths = SessionPaths.create(rig_cfg.data_root, subject, session, run, task_name, date_yyyymmdd)
 
-    dashboard_controller = (
-        DashboardController(port=rig_cfg.dashboard.port, auto_open=rig_cfg.dashboard.auto_open)
-        if rig_cfg.dashboard.enabled
-        else None
-    )
-    if dashboard_controller is not None:
-        dashboard_controller.start()
-
-    display: DisplayBackend
-    commands: CommandSource
-    on_pause: Callable[[PauseMenu], str] | None
-    if rig_cfg.display.backend == "simulated":
-        display = SimulatedDisplay(
-            rig_cfg.monitor.refresh_rate_hz, frame_period_s=simulated_frame_period_s
-        )
-        commands = NullCommands()
-        on_pause = None  # unattended: a pause resolves by resuming
-    else:
-        display = PsychoPyDisplay(rig_cfg.monitor, windowed=windowed)
-        commands = KeyboardCommands()
-
-        # The runner builds the menu (only it knows what is wired); the
-        # builder supplies the two ends the runner has no business owning —
-        # where the menu is drawn and where the keys come from.
-        def on_pause(menu: PauseMenu) -> str:
-            return run_pause_menu(
-                menu,
-                lambda m: display.show_menu(m.title, m.render(), color=m.color),
-                commands.poll_raw_keys,
-                time.sleep,
-            )
-
-    # Everything from here to the end of the build runs inside this guard, not
-    # just `display.open()`. The dashboard is a CHILD PROCESS: a tracker that
-    # fails to connect, a refresh rate that disagrees with the config, an
-    # event name the rig maps but the task never declares — any of those left
-    # a server running with nothing driving it, and the next session's port
-    # already taken.
+    # Everything from here to the end of the build runs inside this guard, and
+    # each thing the build acquires registers its release on `on_failure` as
+    # soon as it is held: the dashboard's CHILD PROCESS, the window, the
+    # tracker's link, the sync lines' NI-DAQ tasks, the reward dispenser and
+    # any worker thread wrapped around it, the spike source's connection. A
+    # tracker that will not connect, a refresh rate that disagrees with the
+    # config, an event name the rig maps but the task never declares, a
+    # scheduler that raises: each of those used to leave some of these behind,
+    # and the next session found the port taken, the NI lines reserved or the
+    # window still up.
     #
-    # Bound before the guard so its cleanup can test it whatever step failed.
-    queued_reward: QueuedReward | None = None
-    try:
+    # On a failure the releases run in reverse order, each one attempted even
+    # when another fails, and the build's own error is the one that propagates
+    # (_release_on_abort). A Ctrl-C mid-build releases them too. A build that
+    # succeeds drops them unrun (`pop_all` at the end): from then on the
+    # runner's teardown owns every one.
+    with ExitStack() as on_failure:
+        dashboard_controller = (
+            DashboardController(port=rig_cfg.dashboard.port, auto_open=rig_cfg.dashboard.auto_open)
+            if rig_cfg.dashboard.enabled
+            else None
+        )
+        if dashboard_controller is not None:
+            # Registered before start(), which spawns the child: stop() does
+            # nothing to a controller whose child never started, and a start()
+            # that spawned it and then failed is covered without relying on
+            # start() to clean up after itself.
+            on_failure.callback(
+                _release_on_abort, "stop the dashboard server", dashboard_controller.stop
+            )
+            dashboard_controller.start()
+
+        display: DisplayBackend
+        commands: CommandSource
+        on_pause: Callable[[PauseMenu], str] | None
+        if rig_cfg.display.backend == "simulated":
+            display = SimulatedDisplay(
+                rig_cfg.monitor.refresh_rate_hz,
+                frame_period_s=simulated_frame_period_s,
+                # On simulated time each flip moves the session clock on by
+                # one frame instead of waiting on the host's clock
+                # (display/simulated.py); None paces as before.
+                advance=advance,
+            )
+            commands = NullCommands()
+            on_pause = None  # unattended: a pause resolves by resuming
+        else:
+            display = PsychoPyDisplay(rig_cfg.monitor, windowed=windowed)
+            commands = KeyboardCommands()
+
+            # The runner builds the menu (only it knows what is wired); the
+            # builder supplies the two ends the runner has no business owning —
+            # where the menu is drawn and where the keys come from.
+            def on_pause(menu: PauseMenu) -> str:
+                return run_pause_menu(
+                    menu,
+                    lambda m: display.show_menu(m.title, m.render(), color=m.color),
+                    commands.poll_raw_keys,
+                    time.sleep,
+                )
+
+        # Registered before open(): closing a display that never opened does
+        # nothing, and PsychoPy's open() creates the window before it checks
+        # the framebuffer against the rig config, so a refusal there leaves a
+        # window up that only this release closes.
+        on_failure.callback(_release_on_abort, "close the display", display.close)
         display.open()
 
         # The other half of `alhazen calibrate gamma`. The fit is stored beside
@@ -447,7 +535,15 @@ def build_session(
         )
 
         screen = Screen.from_monitor(rig_cfg.monitor)
-        clock = MonotonicClock()
+        # The one session clock, and from here every consumer below takes
+        # this object: the tracker the rig config builds and any tracker
+        # handed in (configure), the eye-tracker monitor, the spike source,
+        # a live analysis, the engine and the runner. A clock the builder
+        # makes itself is made HERE, after the window is up and its refresh
+        # measured, as it always was: MonotonicClock zeroes at construction,
+        # so session times still start near zero at the first trial rather
+        # than counting the seconds a window and a dashboard took to open.
+        clock = clock if clock is not None else MonotonicClock()
 
         # Config that names events can only be checked against the *experiment's*
         # vocabulary, which is why this happens here and not in the models.
@@ -474,29 +570,52 @@ def build_session(
         # package tests its own task end to end with no tracker attached. The rig
         # config itself still refuses test-only backends — what is allowed here
         # is passing a real object, not naming a fake one in YAML.
+        #
+        # Each device's release is registered as soon as the build holds it,
+        # whether the rig config built it or the caller handed it in: the
+        # runner's teardown releases either, so a failed build does too. Each
+        # registration follows its own construction at once, not the last
+        # device's, because NidaqSync reserves its NI lines in its constructor
+        # and the step after it can fail. The tracker's waits for connect()
+        # (below).
         devices = rig_cfg.devices
-        config_tracker = (
-            make_tracker(devices.eyetracker, display, screen, clock)
-            if tracker is None and devices.eyetracker is not None
-            else None
-        )
-        config_reward = (
-            make_reward(devices.reward) if reward is None and devices.reward is not None else None
-        )
-        config_sync = make_sync(devices.sync) if sync is None and devices.sync is not None else None
+        if tracker is None and devices.eyetracker is not None:
+            tracker = make_tracker(devices.eyetracker, display, screen, clock)
+        if reward is None and devices.reward is not None:
+            reward = make_reward(devices.reward)
+        if reward is not None:
+
+            def close_reward() -> None:
+                # Whatever `reward` names when this runs, on purpose: a task
+                # that asks for reward mid-trial rebinds it below to the
+                # QueuedReward wrapped around this device, whose close() stops
+                # the worker and then closes the device. Registering the
+                # device and the wrapper apart would close the device twice.
+                # (Never None by then; the check is for the type checker.)
+                if reward is not None:
+                    reward.close()
+
+            on_failure.callback(_release_on_abort, "close the reward dispenser", close_reward)
+        if sync is None and devices.sync is not None:
+            sync = make_sync(devices.sync)
+        if sync is not None:
+            on_failure.callback(_release_on_abort, "close the sync output", sync.close)
         # The recorder is annotated once, before trial 1: a run directory should
         # say which external recording it belongs to even if the session then
         # crashes, and the manifest hashes that pointer along with everything
         # else the run produced.
         if rig_cfg.devices.recording is not None:
             make_recording(rig_cfg.devices.recording).annotate_session(info, paths.run_dir)
-        tracker = tracker if tracker is not None else config_tracker
-        reward = reward if reward is not None else config_reward
-        sync = sync if sync is not None else config_sync
-        config_spikes = (
-            make_spikes(devices.spikes) if spikes is None and devices.spikes is not None else None
-        )
-        spikes = spikes if spikes is not None else config_spikes
+        if spikes is None and devices.spikes is not None:
+            spikes = make_spikes(devices.spikes)
+        if spikes is not None:
+            # The source holds a connection and a background thread once
+            # connect()/start() below have run. Registered before them because
+            # the build's failure path has always closed it whether or not it
+            # had connected, so every SpikeSource's close() already has to be
+            # harmless on one that never did. (The tracker's has no such
+            # history; its release waits for connect().)
+            on_failure.callback(_release_on_abort, "close the spike source", spikes.close)
         # The subject's own keyboard and wheel exist only where there is a real
         # window to focus. A simulated session has nobody at the keys, and a
         # scripted test supplies its inputs directly.
@@ -508,6 +627,17 @@ def build_session(
             # the refresh rate: a rig fault must surface before the snapshot is
             # written and before a subject is sitting in the chair.
             tracker.connect()
+            # Registered once connect() has returned, not before: the protocol
+            # does not promise shutdown() is safe on a tracker that never
+            # connected, and a tracker handed in may be any implementation. A
+            # connect() that fails is the backend's own to clean up.
+            # configure() is covered: the TRACKPixx3 starts its recording and
+            # reader thread there, and shutdown() stops both. None: a session
+            # that never began has no recording to retrieve (the protocol's
+            # "no recording wanted" call, as check-rig makes).
+            on_failure.callback(
+                _release_on_abort, "shut down the eye tracker", tracker.shutdown, None
+            )
             tracker.configure(screen, clock)
             # Calibration is deliberately NOT automatic. It blocks on an
             # experimenter at the rig, so it stays an explicit action — the
@@ -609,6 +739,10 @@ def build_session(
         # wrapper — the task's requests, the manual key, the end-of-trial pay
         # — so no two ever overlap on the valve. Any other task keeps the
         # device itself: all its deliveries already run on the session thread.
+        #
+        # The worker needs no release of its own: rebinding `reward` makes the
+        # dispenser's release above (close_reward) close this wrapper instead.
+        queued_reward: QueuedReward | None = None
         if mid_trial_reward:
             assert reward is not None  # refused above when the rig has none
             queued_reward = QueuedReward(reward)
@@ -666,6 +800,12 @@ def build_session(
             refresh_rate_hz=refresh_hz,
             task_rng=streams["task"],
             iti_s=iti.seconds(refresh_hz) if iti is not None else 0.0,
+            # How the runner lets time pass: the inter-trial interval, and the
+            # key polls of a rest that resumes by itself, which loop until
+            # the session clock reaches a deadline. On simulated time they
+            # advance the clock, since a real sleep would leave it where it
+            # was and such a rest would never end; None sleeps for real.
+            wait=advance,
             # Read off the task's params by name, the way `iti` is by the
             # modes: a limit on failed trials in a row is the experiment's
             # number, and belongs in its task config next to the trial
@@ -715,28 +855,9 @@ def build_session(
             spikes=spikes,
             live=live,
         )
-    except Exception:
-        if dashboard_controller is not None:
-            dashboard_controller.stop()
-        # The reward worker is a thread holding the dispenser. Same rule as
-        # the spike source below: the thread is stopped and the dispenser
-        # closed, and a failure to do so is logged rather than raised over
-        # the build failure itself.
-        if queued_reward is not None:
-            try:
-                queued_reward.close()
-            except Exception:
-                log.exception("could not close the reward worker while aborting the build")
-        # The spike source may already hold a connection and a background
-        # thread; a build that fails after starting it must not leak either.
-        # Logged rather than raised: the build failure propagating below is
-        # the error that matters, and close() must not mask it.
-        if spikes is not None:
-            try:
-                spikes.close()
-            except Exception:
-                log.exception("could not close the spike source while aborting the build")
-        raise
+        # Built. Every release registered above now belongs to the runner's
+        # teardown, so they are dropped here without running.
+        on_failure.pop_all()
     return runner
 
 

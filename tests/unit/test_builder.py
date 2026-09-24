@@ -61,6 +61,10 @@ def build(tmp_path, schema, **kwargs):
     build_trial = kwargs.pop(
         "build_trial", lambda setup: TrialPlan(phases=[RunForFrames(1, COMPLETED)])
     )
+    make_source = kwargs.pop(
+        "make_source",
+        lambda params, rng: SimpleSequence([Condition({"c": "a"})], n_repeats=1, rng=rng),
+    )
     return build_session(
         rig=rig,
         subject="t01",
@@ -70,11 +74,10 @@ def build(tmp_path, schema, **kwargs):
         task_params=Params(),
         event_schema=schema,
         build_trial=build_trial,
-        make_source=lambda params, rng: SimpleSequence(
-            [Condition({"c": "a"})], n_repeats=1, rng=rng
-        ),
+        make_source=make_source,
         seed=1,
-        iti=Duration(ms=0),
+        # Zero unless a test is about the pause between trials.
+        iti=kwargs.pop("iti", Duration(ms=0)),
         simulated_frame_period_s=0.0,
         date_yyyymmdd="20260826",
         **kwargs,
@@ -325,6 +328,244 @@ class TestDeviceOverrides:
         assert runner._reward is reward
 
 
+def refusing_scheduler(params, rng):
+    """A make_source that raises: the build's last step before the runner,
+    so every device is already held when it fails."""
+    raise ValueError("the scheduler refused")
+
+
+class TestAFailedBuildReleasesWhatItHeld:
+    """A build that fails part-way must release everything it already holds.
+
+    Its guard released only the dashboard, the reward worker and the spike
+    source. A failure once the devices were up left the window open, the
+    tracker's link connected and the sync lines' NI-DAQ tasks reserved, so
+    the next session on the rig found them taken. And the display was built
+    outside the guard, so a failure there left the dashboard's child process
+    running.
+
+    The devices here come from the rig config, built by the builder itself,
+    with spies standing in for the factories: an EyeLink or a NidaqSync
+    cannot be built on a test machine, and what is pinned is the builder's
+    releasing them, not the backends' own close().
+    """
+
+    # Every release a build that got as far as its scheduler must make.
+    EVERY_RELEASE = (
+        "dashboard.stop",
+        "display.close",
+        "tracker.shutdown",
+        "sync.close",
+        "reward.close",
+        "spikes.close",
+    )
+
+    def wire(self, monkeypatch, failing=None):
+        """Swap the dashboard, the simulated display and the device
+        factories for spies that write each release into one list, returned
+        with the list of trackers built. The release named ``failing``
+        raises, after it has been recorded."""
+        from alhazen.devices.spikes import SimulatedSpikeSource
+        from alhazen.devices.sync import SimulatedSync
+        from alhazen.display.simulated import SimulatedDisplay
+        from alhazen.session import builder as builder_module
+        from alhazen.testing import ScriptedReward
+
+        released: list[str] = []
+
+        def note(name):
+            released.append(name)
+            if name == failing:
+                raise RuntimeError(f"{name} failed")
+
+        class SpyController:
+            def __init__(self, port=0, auto_open=True):
+                self.url = "http://127.0.0.1:0/"
+
+            def start(self):
+                pass
+
+            def stop(self):
+                note("dashboard.stop")
+
+            def publish(self, state):
+                pass
+
+        class SpyDisplay(SimulatedDisplay):
+            def close(self):
+                super().close()
+                note("display.close")
+
+        class SpyTracker(ScriptedTracker):
+            def shutdown(self, recording_destination, /):
+                super().shutdown(recording_destination)
+                note("tracker.shutdown")
+
+        class SpyReward(ScriptedReward):
+            def close(self):
+                super().close()
+                note("reward.close")
+
+        class SpySync(SimulatedSync):
+            def close(self):
+                super().close()
+                note("sync.close")
+
+        class SpySpikes(SimulatedSpikeSource):
+            def close(self):
+                super().close()
+                note("spikes.close")
+
+        trackers: list[SpyTracker] = []
+
+        def make_tracker(cfg, display, screen, clock):
+            trackers.append(SpyTracker([], clock))
+            return trackers[-1]
+
+        monkeypatch.setattr(builder_module, "DashboardController", SpyController)
+        monkeypatch.setattr(builder_module, "SimulatedDisplay", SpyDisplay)
+        monkeypatch.setattr(builder_module, "make_tracker", make_tracker)
+        monkeypatch.setattr(builder_module, "make_reward", lambda cfg: SpyReward())
+        monkeypatch.setattr(builder_module, "make_sync", lambda cfg: SpySync(cfg.event_lines))
+        monkeypatch.setattr(builder_module, "make_spikes", lambda cfg: SpySpikes(cfg))
+        return released, trackers
+
+    def build_with_every_device(self, tmp_path, **kwargs):
+        """A rig naming a tracker, a dispenser, sync lines and a spike
+        source, with the dashboard on."""
+        from alhazen.config.models import SpikeSourceConfig
+
+        return build(
+            tmp_path,
+            EventSchema(("FIX_ON",)),
+            rig_eyetracker=EyeTrackerConfig(backend="eyelink"),
+            rig_reward=RewardHwConfig(backend="simulated"),
+            rig_sync=SyncHwConfig(backend="simulated", event_lines={"TRIAL_START": "Dev1/line0"}),
+            rig_spikes=SpikeSourceConfig(backend="simulated", sim_respond_to="FIX_ON"),
+            dashboard=True,
+            open_dashboard=False,
+            **kwargs,
+        )
+
+    def test_a_failure_once_every_device_is_up_releases_each_of_them_once(
+        self, tmp_path, monkeypatch
+    ):
+        released, trackers = self.wire(monkeypatch)
+
+        with pytest.raises(ValueError, match="the scheduler refused"):
+            self.build_with_every_device(tmp_path, make_source=refusing_scheduler)
+
+        assert sorted(released) == sorted(self.EVERY_RELEASE)
+        # None: a session that never began has no recording to retrieve.
+        assert trackers[0].shutdowns == [None]
+
+    def test_a_build_that_succeeds_releases_nothing(self, tmp_path, monkeypatch):
+        # The releases belong to the runner's teardown from here on; a build
+        # that ran them anyway would hand over a closed window and a dead link.
+        released, trackers = self.wire(monkeypatch)
+
+        runner = self.build_with_every_device(tmp_path)
+
+        assert runner is not None
+        assert released == []
+        assert trackers[0].shutdowns == []
+
+    def test_a_display_that_cannot_be_built_still_stops_the_dashboard(self, tmp_path, monkeypatch):
+        from alhazen.errors import DisplayError
+        from alhazen.session import builder as builder_module
+
+        released, _ = self.wire(monkeypatch)
+
+        class NoRenderer:
+            def __init__(self, monitor, windowed=False):
+                raise DisplayError("no renderer on this machine")
+
+        monkeypatch.setattr(builder_module, "PsychoPyDisplay", NoRenderer)
+
+        with pytest.raises(DisplayError, match="no renderer"):
+            build(
+                tmp_path,
+                EventSchema(()),
+                display=DisplayConfig(backend="psychopy"),
+                dashboard=True,
+                open_dashboard=False,
+            )
+
+        assert released == ["dashboard.stop"]
+
+    def test_a_window_refused_by_its_own_open_is_closed(self, tmp_path, monkeypatch):
+        # PsychoPy's open() creates the window, then refuses it when the
+        # framebuffer is not the size the rig config says. The window is up
+        # at that point, and nothing else will ever close it.
+        from alhazen.errors import DisplayError
+        from alhazen.session import builder as builder_module
+
+        released, _ = self.wire(monkeypatch)
+
+        class RefusedWindow:
+            kind = "psychopy"
+
+            def __init__(self, monitor, windowed=False):
+                self.window = None
+
+            def open(self):
+                self.window = object()
+                raise DisplayError("the fullscreen drawing surface is 2880x1800 pixels")
+
+            def close(self):
+                self.window = None
+                released.append("display.close")
+
+        monkeypatch.setattr(builder_module, "PsychoPyDisplay", RefusedWindow)
+
+        with pytest.raises(DisplayError, match="2880x1800"):
+            build(
+                tmp_path,
+                EventSchema(()),
+                display=DisplayConfig(backend="psychopy"),
+                dashboard=True,
+                open_dashboard=False,
+            )
+
+        assert sorted(released) == ["dashboard.stop", "display.close"]
+
+    @pytest.mark.parametrize("failing", EVERY_RELEASE)
+    def test_a_release_that_fails_stops_neither_the_others_nor_the_build_error(
+        self, tmp_path, monkeypatch, caplog, failing
+    ):
+        import logging
+
+        released, _ = self.wire(monkeypatch, failing=failing)
+
+        # The scheduler's error is the one that says what went wrong; a
+        # release failing over it must not take its place.
+        with (
+            caplog.at_level(logging.ERROR, logger="alhazen.session.builder"),
+            pytest.raises(ValueError, match="the scheduler refused"),
+        ):
+            self.build_with_every_device(tmp_path, make_source=refusing_scheduler)
+
+        assert sorted(released) == sorted(self.EVERY_RELEASE)
+        # Not swallowed either: the failed release is in the log, traceback
+        # and all.
+        logged = [r for r in caplog.records if "while aborting the build" in r.getMessage()]
+        assert len(logged) == 1
+        assert logged[0].exc_info is not None
+        assert str(logged[0].exc_info[1]) == f"{failing} failed"
+
+    def test_a_handed_in_tracker_is_released_like_the_rigs_own(self, tmp_path, monkeypatch):
+        # The runner's teardown shuts down whatever tracker the session ran
+        # with, handed in or built; a build that fails after connecting it
+        # releases it the same way.
+        self.wire(monkeypatch)
+        tracker = ScriptedTracker([], FakeClock())
+
+        with pytest.raises(ValueError, match="the scheduler refused"):
+            build(tmp_path, EventSchema(()), tracker=tracker, make_source=refusing_scheduler)
+
+        assert tracker.shutdowns == [None]
+
+
 class TestGazeInputProvider:
     def test_screen_px_become_centered_px(self, tmp_path):
         # The one conversion site in the codebase: trackers report y down
@@ -465,3 +706,102 @@ class TestTheRestTimeoutReachesTheRunner:
     def test_a_wait_of_zero_is_refused(self, tmp_path):
         with pytest.raises(ValueError, match="rest_resume_after_s must be > 0"):
             build(tmp_path, EventSchema(("FIX_ON",)), rest_resume_after_s=0)
+
+
+def read_table(tmp_path, suffix: str) -> list[dict[str, str]]:
+    """One of the run's tables, read back from the file the session wrote."""
+    (path,) = tmp_path.rglob(f"*_{suffix}.csv")
+    with path.open(newline="", encoding="utf-8") as f:
+        return list(csv.DictReader(f))
+
+
+class TestTheSessionClock:
+    """``build_session(clock=...)``: the one clock every recorded time comes from.
+
+    The builder used to make its own MonotonicClock with no way to pass one
+    in. A test that handed in a tracker had to build that tracker on a
+    second clock, and every phase of a built session was timed by the host's
+    real clock: on a loaded machine a 3-frame stimulus could end after one
+    frame (issue #62).
+    """
+
+    # Far from zero, where a real clock made at build time would start, so a
+    # time read from any other clock cannot pass for one read from this.
+    START = 1000.0
+    FRAME = 1.0 / MONITOR.refresh_rate_hz
+
+    def run(self, tmp_path, clock, **kwargs):
+        runner = build(
+            tmp_path,
+            EventSchema(("STIM_ON",)),
+            clock=clock,
+            build_trial=lambda setup: TrialPlan(
+                phases=[RunForFrames(3, COMPLETED, emit_on_enter="STIM_ON")]
+            ),
+            make_source=lambda params, rng: SimpleSequence(
+                [Condition({"c": "a"}), Condition({"c": "b"})], n_repeats=1, rng=rng
+            ),
+            **kwargs,
+        )
+        runner.run()
+        return runner
+
+    def on_the_frame_lattice(self, t: float) -> bool:
+        """This clock moves only a whole frame at a time (with no ITI), so
+        every time read from it is START plus a whole number of frames. The
+        tolerance covers frames.csv's six written decimals."""
+        frames = (t - self.START) / self.FRAME
+        return abs(frames - round(frames)) < 1e-3
+
+    def test_every_recorded_time_is_on_the_clock_handed_in(self, tmp_path):
+        clock = FakeClock(start=self.START)
+        self.run(tmp_path, clock)
+
+        events = [float(row["t"]) for row in read_table(tmp_path, "events")]
+        stamps = [
+            float(value)
+            for row in read_table(tmp_path, "trials")
+            for column, value in row.items()
+            if column.startswith("t_") and value
+        ]
+        frame_rows = read_table(tmp_path, "frames")
+        flips = [float(row["t"]) for row in frame_rows]
+        assert events and stamps and flips
+
+        # The session moved the clock itself: the simulated display advanced
+        # it on every flip. Nothing else could have, since nothing else knows
+        # it is a fake.
+        assert clock.now() > self.START
+        for t in events + stamps + flips:
+            assert self.START <= t <= clock.now(), t
+            assert self.on_the_frame_lattice(t), t
+        # And every frame lasted exactly one frame, which is what makes a
+        # phase timed in frames span the same flips on any machine.
+        assert all(
+            float(row["interval_s"]) == pytest.approx(self.FRAME, abs=1e-5) for row in frame_rows
+        )
+
+    def test_the_pause_between_trials_passes_on_that_clock_too(self, tmp_path):
+        # The runner's wait advances a clock like this one rather than
+        # sleeping: slept for real, the ITI would leave the fake where it was
+        # (and a rest that resumes by itself at a deadline would never end).
+        clock = FakeClock(start=self.START)
+        self.run(tmp_path, clock, iti=Duration(ms=500))
+
+        events = read_table(tmp_path, "events")
+        ends = [float(r["t"]) for r in events if r["event"] == "TRIAL_END"]
+        starts = [float(r["t"]) for r in events if r["event"] == "TRIAL_START"]
+        assert len(starts) == 2
+        assert starts[1] - ends[0] == pytest.approx(0.5)
+
+    def test_a_clock_that_moves_only_when_told_needs_the_simulated_display(self, tmp_path):
+        # On a real window nothing advances it, so the first timed phase
+        # would never end: refused with a reason, before any run directory.
+        with pytest.raises(ConfigError, match="Only the simulated display advances"):
+            build(
+                tmp_path,
+                EventSchema(()),
+                clock=FakeClock(),
+                display=DisplayConfig(backend="psychopy"),
+            )
+        assert not list(tmp_path.rglob("run-*"))

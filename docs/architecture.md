@@ -16,7 +16,8 @@ src/alhazen/
 ├── errors.py       # shared exceptions; outside the layer contract (anything may import)
 ├── core/           # clock, rng streams, events+bus, commands, trial vocabulary, TrialEngine
 ├── display/        # DisplayBackend protocol, simulated + psychopy backends, Screen, FrameMonitor,
-│                   #   text.reflow (hard-wrapped prose → paragraphs, for show_message)
+│                   #   text.reflow (hard-wrapped prose → paragraphs, for show_message),
+│                   #   ruler.py (the bar `calibrate ruler` and measure mode draw)
 ├── stimuli/        # Stimulus protocol, NullStimulus, FixationPoint, PhotodiodePatch
 ├── scenes/         # illusion-studio scenes: expressions, loader, headless renderer
 ├── devices/        # EyeTracker (eyelink/viewpixx/mouse_sim/scripted), RewardDispenser,
@@ -49,13 +50,18 @@ src/alhazen/
 ```
 
 Layering is enforced by import-linter (pyproject `[tool.importlinter]`),
-top to bottom: `cli` → `session | testing | analysis` → `training` → `task` →
-`dashboard` → `paradigms | devices` → `core | neural` → `stimuli | scenes` →
-`display` → `config | data`. Imports point only downward; `errors` and
-`version` sit outside the contract. `neural` shares core's line so that
-both the device layer (live, during a session) and the analysis layer
-(offline, over the files) can run the same spike detection and the same
-map arithmetic without either importing the other.
+top to bottom: `cli` → `modes` → `session | testing | analysis` → `training` →
+`task` → `dashboard` → `paradigms | devices` → `core | neural` →
+`stimuli | scenes` → `display` → `config | data | _scaffold`. Imports point
+only downward; `errors` and `version` sit outside the contract. `neural`
+shares core's line so that both the device layer (live, during a session) and
+the analysis layer (offline, over the files) can run the same spike detection
+and the same map arithmetic without either importing the other. `modes` sits
+directly under `cli`, the only package that imports it, and above `session`,
+which every mode builds or drives; the ruler that `--mode measure` and
+`alhazen calibrate ruler` both draw lives in `display/ruler.py` so that
+`modes` never imports from `cli`. `_scaffold` imports nothing from alhazen but
+`errors`, and the bottom line keeps it that way.
 
 Three placements carry the weight:
 
@@ -103,7 +109,8 @@ command source, and the bus:
 4. `phase.on_frame(ctx)` draws and decides (CONTINUE / ADVANCE / Outcome)
 5. draw the rig's `overlay(ctx)`, if any — today, the photodiode patch
 6. `display.flip()` — the only moment photons change
-7. stamp the session clock; compute `ctx.dt` (duration of the just-shown frame)
+7. read the session clock once — the flip's time, which steps 8–10 all
+   record — and compute `ctx.dt` (duration of the just-shown frame)
 8. feed the FrameMonitor (dropped-frame policy:
    log/warn/mark_trial/recycle_trial/abort_run; at the trial's end its
    `end_trial()` logs one line per trial with drops and, under
@@ -126,8 +133,12 @@ command source, and the bus:
    is `0` on a clean trial, never absent. On a simulated display the policy is stood
    down to `log` at build time — the flip times there measure how accurately
    the host can wait, not whether a panel is holding its refresh)
-9. emit the events the phase queued via `ctx.emit_on_flip`, stamped now —
-   the photon-honest timestamp
+9. emit the events the phase queued via `ctx.emit_on_flip`, every one
+   stamped with the flip's time from step 7 — the photon-honest timestamp.
+   Not with the clock read again as each is emitted: by then the bus's
+   subscribers (a tracker message, a sync pulse) have run for the events
+   before it, and events shown by one flip would carry different, later
+   times
 10. hand the phase's mid-trial reward requests (`ctx.request_reward`) to the
     reward worker and emit a `REWARD` for each, stamped with that same flip;
     then report every delivery the worker has finished since the last frame
@@ -141,7 +152,10 @@ an event's timestamp refers to.
 Invariants the tests pin:
 
 - `TRIAL_START` emits immediately (it precedes every other event in the
-  trial); visual events emit only after their flip.
+  trial); visual events emit only after their flip, and carry that flip's
+  time — as do the frame log and the per-frame inputs for that frame.
+  Events with no flip of their own (`TRIAL_START`, `TRIAL_END`, `PAUSED`, a
+  manual `REWARD`, a drop's end) are stamped as they are emitted.
 - Every emitted event mirrors into the trial record as `t_<name>`.
 - Every record carries `fault`: `none` unless a system fault hit the trial
   (`dropped_frames`, `tracker_stopped`) — a value on every row, never an
@@ -420,7 +434,13 @@ trial's segment. At teardown the runner adds `tracker.shutdown(...)`,
 retrieved recording is covered by it, and each as its own step, so one
 device's failure never prevents another's release. Only the run directory and
 the base name in that path are a promise; the suffix belongs to the backend
-(§4.7).
+(§4.7). A build that fails before there is a runner releases the same devices
+itself, by the same one-failure-never-blocks-another rule (§9, the dashboard's
+guard). A recording a backend cannot hand over is a failed step, never only a
+log line: an EyeLink whose link is down at teardown raises a `TrackerError`
+naming the EDF left on its Host PC, and the database records the run as
+`failed`. Both real backends release their device in a `finally`, whatever
+else failed.
 
 **Reward policy is not here.** Inside a trial the device layer is reached two
 ways. The experimenter's manual-reward key: the engine delivers, *then* emits
@@ -690,7 +710,7 @@ none, that the model's defaults are running.
 | `StimulusResponse` | gaze leaves the depart-region, or the deadline passes | `rt_ms`, `<depart_region>_x/y_dva` (where the eye left from — measured, never assumed to be the fixation point) |
 | `LandingCheck` | gaze enters the target region, or the window times out. **Records where gaze first crossed into the region — mid-flight for any usable window — not where the saccade ended**; use `LandingSample` for landing error | `endpoint_x/y_dva`, `endpoint_error_dva`, `endpoint_in_target` |
 | `LandingSample` | a fixed dwell after saccade onset (`dwell_s`), **or** saccade offset: the first *new* sample slower than `settle_speed_dva_per_s`, capped at `max_wait_s`. The region is ignored until then; the last valid sample is the endpoint, judged once. With `depart_region` (the fixation window), a sample still inside that window is never the endpoint and never settles — a blink at the cue counts as departure, and would otherwise end the trial as a miss at fixation | `endpoint_measured`, `endpoint_in_target`, `endpoint_x/y_dva`, `endpoint_error_dva`, `endpoint_latency_ms`, `endpoint_reference_x/y_dva`; `endpoint_settled` in the saccade-offset mode |
-| `ResponseWindow` | a bound key is pressed, or the deadline passes | `response_key`, `rt_ms` |
+| `ResponseWindow` | a bound key is pressed, or the deadline passes. **Keys pressed before the cue was on screen are ignored**: a frame's keys are everything pressed since the previous frame's read, so they count only once that read came after the flip stamped `t_<onset_event>` — never on the phase's first frame (before the flip) or its second (the presses made while the cue waited for its flip). With `onset_event=None` keys count from the first frame, timed from phase entry | `response_key`, `rt_ms` (from the cue's flip) |
 | `AdjustmentLoop` | the commit key is pressed, or the deadline passes | `adjusted_value`, `adjustment_turns` |
 | `FrameSequence` | a compiled `FrameTimeline` finishes | `sequence_frames` |
 | `Blank` / `Feedback` | a fixed duration elapses | — |
@@ -1095,9 +1115,13 @@ All of them: draw randomness only from the injected Generator, hear about
 **every** outcome, and re-serve any condition whose outcome was not
 `completed`. Schedulers read `TrialResult.outcome` and never the record — a
 scheduler reaching into measurements is how a scheduler and an analysis end
-up disagreeing about what "correct" meant. `QuestPlus` takes a
-`score: Callable[[TrialResult], bool]` for tasks titrating something other
-than accuracy.
+up disagreeing about what "correct" meant. The adaptive ones —
+`UpDownStaircase` (so each of `InterleavedStaircases`) and `QuestPlus` —
+take a `score: Callable[[TrialResult], bool]` for tasks titrating something
+other than accuracy, and `make_scheduler` builds every adaptive kind with the
+task's `score_trial` (default: `outcome.success`). The scorer is asked about
+completed trials only; an attempt with no measurement is re-served, never
+scored.
 
 `SchedulerConfig` (+ `StaircaseConfig`, `QuestConfig`, `BlockConfig`) is the
 config surface, so moving from constant stimuli to a staircase is a YAML edit
@@ -1125,6 +1149,13 @@ Two composition rules fall out of blocks and are worth stating:
   *completed* trials, so the inner scheduler's own re-queue already lands the
   retry inside the same block. A second queue in the wrapper could
   double-serve a condition.
+- `trials_per_block` is an adaptive kind's block length. A queue-based
+  kind's block already ends when its plan (cells × `n_per_condition`) is
+  done — the completed count reaches the plan exactly as the queue empties —
+  so `make_scheduler` refuses a `trials_per_block` below that plan with a
+  `ConfigError` giving both numbers: it could only end the block with
+  planned trials still queued, the retries at the tail first, and leave the
+  cells uneven. A bound at or above the plan is accepted; it cuts nothing.
 
 ### 5.5 Live analysis (`task/live.py`)
 
@@ -1552,7 +1583,7 @@ of the page is described in [`dashboard.md`](dashboard.md):
 - **The browser draws; it does not analyse.** `dashboard/panels.py` computes
   every mark in Python, over the whole session and thinned to a bounded
   number of points — so each snapshot costs the same on trial 4000 as on
-  trial 40, and no statistic lives in untested page JavaScript. A live
+  trial 40, and no statistic lives in page JavaScript. A live
   analysis (§5.5) obeys the same division: its `panels()` are finished
   payloads (a receptive-field map travels as a `heatmap` form the page
   only renders), appended after the spec's own panels. So does the
@@ -1566,9 +1597,20 @@ of the page is described in [`dashboard.md`](dashboard.md):
   vsync (frames under half a period, impossible on a locked panel), and no
   dropped-frame count can.
 
-The child starts before the display opens, so the whole remainder of
-`build_session` runs inside a guard that stops it on any failure — otherwise
-a tracker that will not connect leaves an orphaned server holding the port.
+The child starts before the display opens, inside a guard that covers the
+whole remainder of `build_session` — otherwise a tracker that will not connect
+leaves an orphaned server holding the port. The guard is an `ExitStack`, and
+it covers more than the child: everything the build acquires registers its
+release as soon as it is held — the child, the window, the tracker once it
+has connected (`shutdown(None)`: no recording is wanted from a session that
+never began), the sync output, the reward dispenser (or the `QueuedReward`
+wrapped around it), the spike source — whether the rig config built the
+device or the caller handed it in, because the runner's teardown releases
+either. A failure anywhere, or a Ctrl-C, runs those releases in reverse
+order; each is attempted even when another fails, and a release that fails is
+logged with its traceback rather than raised, so the build's own error is
+what propagates. A build that succeeds drops them unrun, and the runner's
+teardown takes over.
 
 `devices/automated.py` supplies a scripted subject — gaze that moves from
 fixation to a target on `STIM_ON`, alternating key answers after a response
@@ -1584,8 +1626,14 @@ every backend precisely so a backend cannot quietly reach for
 `build_session(...)` wires everything; `SessionRunner.run()` then:
 
 1. writes `config_snapshot.yaml` **before trial 1** (a crashed session still
-   documents itself) — merged config + seed + versions + git SHA + an
-   environment digest (sha256 over installed distributions);
+   documents itself) — merged config + seed + versions + an environment
+   digest (sha256 over installed distributions) + both git trees, the
+   experiment's (`experiment_git_sha`) and alhazen's own
+   (`alhazen_git_describe`). Both are read with `git describe --always
+   --dirty`, so a session run from uncommitted changes to tracked files says
+   `-dirty` rather than naming a commit that would not reproduce it; where
+   there is no answer they read `not a source checkout` (not in a git
+   repository) or `unknown` (git absent or not answering);
 2. registers the subject in `participants.tsv`;
 3. loops: `source.next()` → build → engine → `source.record()` for **every**
    outcome (schedulers own re-queueing) → recorder row for every outcome
@@ -1892,9 +1940,11 @@ mkdocstrings, and the site builds under `--strict`.
 
 ### Compatibility
 
-The public API is everything exported from `alhazen` and everything in the
-documented modules. Deprecations warn for one minor version before removal
-(`alhazen._deprecation`), naming the version and the replacement.
+The public API is everything exported from `alhazen` and the members
+`docs/reference.md` lists for each documented module; any other name is
+internal, whether or not it starts with `_`. A deprecated name keeps working,
+and warns, until the next major version removes it (`alhazen._deprecation`);
+the warning names that version and the replacement.
 
 Three contracts outlast any version because they live on disk:
 `core.rng.STREAMS` is append-only, `RESERVED_EVENTS` only ever gains names,
@@ -1909,7 +1959,29 @@ and the device doubles (`ScriptedTracker`, `SimulatedReward`, `SimulatedSync`)
 in `alhazen.devices` alongside the real backends. `tests/support.py`'s
 `SessionHarness` wires a full session to them, reusing the builder's own
 closures so there stays exactly one gaze coordinate conversion in the
-codebase. Markers: `display` (excluded by default) is reserved for real-window
+codebase.
+
+A test that builds a whole session through `build_session` passes it the
+session clock (`clock=`), and builds any tracker it hands in on that same
+clock. A `FakeClock` there runs the session in simulated time:
+
+```mermaid
+graph LR
+    FC["FakeClock<br/>(moves only when advanced)"]
+    SD["SimulatedDisplay.flip()"] -->|"advance(one frame)"| FC
+    RW["runner wait<br/>(ITI, timed rest polls)"] -->|"advance(seconds)"| FC
+    FC -->|"now()"| EN["engine: flip stamps, events, t_* columns"]
+    FC -->|"now()"| TR["tracker handed in: gaze t"]
+```
+
+Every flip is then exactly one frame long, however long the host took to draw
+it, so a phase timed in frames always spans the same flips and every recorded
+time repeats run to run. Only the simulated display advances such a clock;
+`build_session` refuses one on a real display, where the first timed phase
+would never end. Left unset, the clock is a `MonotonicClock` made by the
+builder, as a real session needs.
+
+Markers: `display` (excluded by default) is reserved for real-window
 smoke tests. CI (3 OSes × py3.10/3.12) runs ruff (lint+format), mypy, pytest,
 and the import-layering contract.
 

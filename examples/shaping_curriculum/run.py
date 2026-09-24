@@ -110,6 +110,10 @@ def main() -> None:
     )
     curriculum = load_model(HERE / "curriculum.yaml", Curriculum)
 
+    # One clock, made here so the stand-in subject below can stamp its gaze
+    # on the same timebase as everything else the session records. A real
+    # one: with --auto this runs in a real window.
+    clock = MonotonicClock()
     runner = build_session(
         rig=rig,
         subject="m01",
@@ -125,11 +129,12 @@ def main() -> None:
         sources={"rig": str(rig_path), "task": str(HERE / "task.yaml")},
         instructions=(HERE / "instructions.md").read_text(),
         auto_start=args.auto,
+        clock=clock,
     )
     # The stand-in subject needs the session's own geometry, so it is built
     # after the runner and attached to it. A real rig names its tracker in
     # the rig config and needs none of this.
-    subject = ImprovingSubject(runner._screen, MonotonicClock())
+    subject = ImprovingSubject(runner._screen, clock)
     runner._tracker = subject
     runner._engine._input_provider = _gaze_provider(subject, runner._screen)
     runner._engine._health_checks = ()

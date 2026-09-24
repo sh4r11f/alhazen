@@ -67,6 +67,40 @@ def load_example_task(example_dir: Path):
     return module
 
 
+class TickingClock(FakeClock):
+    """A FakeClock that also moves forward on every read, by ``tick_s``.
+
+    FakeClock holds still between flips, so a timestamp read right after a
+    flip and one read later in the same frame come out as the same number,
+    and no test can tell which of the two an event carries. A real clock
+    moves while code runs; this one moves on each ``now()``, the smallest
+    step that makes the difference visible. ``advance`` still moves it by any
+    amount, which is how a test stands in for a subscriber that takes time.
+    """
+
+    def __init__(self, tick_s: float = 1e-6) -> None:
+        super().__init__()
+        self.tick_s = tick_s
+
+    def now(self) -> float:
+        # The value returned is the time before this read's own tick, so the
+        # first read after a flip sees the flip exactly.
+        t = super().now()
+        self.advance(self.tick_s)
+        return t
+
+
+def record_flips(flips: dict[int, float]) -> Callable[[int, int, float, InputFrame], None]:
+    """An ``on_frame_input`` hook that keeps each frame's flip time under its
+    frame index: the engine's own stamp of that flip, and the time the
+    database's ``frames`` and ``frame_inputs`` tables carry for the frame."""
+
+    def note(trial_index: int, frame_index: int, t: float, inputs: InputFrame) -> None:
+        flips[frame_index] = t
+
+    return note
+
+
 def make_session_config(data_root, task_params: dict[str, Any] | None = None) -> SessionConfig:
     return SessionConfig(
         rig=RigConfig(
@@ -92,8 +126,12 @@ class EngineHarness:
         on_manual_reward: Callable[[], None] | None = None,
         overlay: Callable[[TrialContext], None] | None = None,
         reward_requests: Any = None,
+        clock: FakeClock | None = None,
+        on_frame_input: Callable[[int, int, float, InputFrame], None] | None = None,
     ) -> None:
-        self.clock = FakeClock()
+        # Accepting a clock lets a test run the engine on a TickingClock,
+        # which moves between reads as a real one does.
+        self.clock = clock if clock is not None else FakeClock()
         self.display = FakeDisplay(self.clock, FRAME_S)
         self.bus = EventBus()
         self.collector = EventCollector()
@@ -113,11 +151,14 @@ class EngineHarness:
             on_manual_reward=on_manual_reward,
             overlay=overlay,
             reward_requests=reward_requests,
+            on_frame_input=on_frame_input,
         )
 
     def ctx(self, trial_index: int = 1, **kwargs: Any) -> TrialContext:
         return TrialContext(
-            clock=self.clock,
+            # The harness's own clock unless a test hands the context another
+            # one — which only a test of the one-clock rule does.
+            clock=kwargs.pop("clock", self.clock),
             screen=SCREEN,
             rng=np.random.default_rng(0),
             trial_index=trial_index,
