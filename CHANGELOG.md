@@ -237,6 +237,26 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Fixed
 
+- **A key pressed before the response cue was on screen was scored as the
+  answer.** `ResponseWindow` accepted bound keys from its first frame, whose
+  keys are read before the flip that shows its cue (`RESPONSE_CUE` by
+  default), and timed such a key from the phase's entry because the cue had no
+  flip time yet. So a key pressed in the frame before — the end of the
+  stimulus phase, in `examples/staircase_detection` — decided the trial (and,
+  in a staircase, moved it) with a reaction time of about zero. The second
+  frame did the same one frame later: its keys were pressed while the cue
+  waited for its flip. Keys now count only once the frame before has already
+  seen the cue's `t_<onset_event>` stamp, so every key in the batch followed
+  the cue on screen; earlier presses are ignored, the way `StimulusResponse`
+  waits for its own onset stamp. A window built with `onset_event=None` is
+  unchanged: keys count from its first frame, timed from phase entry. Runs
+  recorded before this fix may hold such trials, `SubjectMode.KEYBOARD` ones
+  included, with the pre-cue key as their response. `trials.csv` shows them:
+  their `rt_ms` (or the window's `rt_record_key`) is under one frame period
+  (16.7 ms at 60 Hz) — only the engine's own work between two clock reads —
+  where a key read once the cue had been up a full frame scores at least about
+  one frame period. See [docs/architecture.md](docs/architecture.md) §5.2.
+
 - **A task's `score_trial` did not reach an up-down staircase.**
   `Task.score_trial` is how a task titrating something other than accuracy (a
   bias magnitude, a settling error) says what a success is, but
