@@ -374,7 +374,14 @@ class TrialEngine:
         # dt reference resets per phase so a phase's first dt means "since
         # this phase started", not whatever the previous phase's last frame
         # happened to take.
-        last_t = ctx.clock.now()
+        #
+        # This loop reads the time from the engine's own clock — the one
+        # _emit stamps events with — never from ctx.clock. The runner hands
+        # the context that same clock, so in a session the two are one
+        # object; reading the engine's here is what keeps a context built on
+        # another clock from putting a flip and its events on two timelines
+        # (CONTRIBUTING, invariant 2: one clock).
+        last_t = self._clock.now()
         # Set once a health check has failed during the closing phase. The
         # fault is on the row by then, and asking again every frame would
         # only find the same device stopped.
@@ -409,7 +416,11 @@ class TrialEngine:
             # The flip is the only moment the photons change. Nothing this
             # frame queued is real until this call returns.
             self._display.flip()
-            now = ctx.clock.now()
+            # The flip's time: read once, here, right after flip() returns,
+            # and handed to everything below that records this flip — dt,
+            # frame QA (frames.csv), the per-frame inputs (the database's
+            # frames), and every event this frame queued.
+            now = self._clock.now()
             # dt = how long the just-shown frame actually took, available to
             # the NEXT on_frame call to advance motion by the right amount.
             # Floored as a divide-by-zero guard against a zero-duration flip.
@@ -424,15 +435,20 @@ class TrialEngine:
                 self._on_frame_input(ctx.trial_index, self._frame_index, now, ctx.inputs)
             self._frame_index += 1
 
-            # Only after the flip do queued events emit, stamped now — the
-            # true photon-onset time, the one that must line up with sync
-            # pulses in device recordings.
-            self._flush_flip_events(ctx)
+            # Only after the flip do queued events emit, each stamped with
+            # `now` — the flip's time, the one that must line up with sync
+            # pulses in device recordings. Not with the clock read again as
+            # each is emitted: that read comes after the frame QA and input
+            # bookkeeping above, and, for every event but the first, after
+            # the bus's subscribers have handled the one before it (a tracker
+            # message, a sync pulse), which take real time. Events that
+            # appeared on one flip would carry different, later times.
+            self._flush_flip_events(ctx, t=now)
             # This frame's reward requests go to the dispenser now, stamped
-            # with the flip that just followed them; then whatever the
-            # dispenser finished since the last frame is reported. Neither
-            # waits for the pump.
-            self._hand_over_reward_requests(ctx, frame=self._frame_index - 1)
+            # with the flip that just followed them — `now` again, for the
+            # same reason — and then whatever the dispenser finished since
+            # the last frame is reported. Neither waits for the pump.
+            self._hand_over_reward_requests(ctx, frame=self._frame_index - 1, t=now)
             self._report_reward_completions(ctx)
 
             if step == PhaseAction.CONTINUE:
@@ -550,38 +566,50 @@ class TrialEngine:
     # Event emission
     # ------------------------------------------------------------------
 
-    def _emit(self, ctx: TrialContext, name: str, payload: dict) -> None:
+    def _emit(self, ctx: TrialContext, name: str, payload: dict, *, t: float | None = None) -> None:
         """The only place an Event is constructed in the engine: validate the
-        name against the schema, stamp the clock, mirror the time into the
-        trial record (``t_<name>``), publish."""
+        name against the schema, stamp it, mirror the time into the trial
+        record (``t_<name>``), publish.
+
+        ``t`` is the flip's time for an event tied to a flip — what a phase
+        queued with ``emit_on_flip``, and a mid-trial REWARD — which the
+        frame loop read once, right after the flip. Left None for every
+        other event (TRIAL_START, TRIAL_END, PAUSED, a manual REWARD, a
+        drop's end): none of them has a flip to carry, so each is stamped
+        with the clock read as it is emitted.
+        """
         self._schema.validate(name)
-        t = self._clock.now()
+        if t is None:
+            t = self._clock.now()
         ctx.record[f"t_{name.lower()}"] = t
         self._bus.emit(Event(name=name, t=t, trial_index=ctx.trial_index, payload=payload))
 
-    def _flush_flip_events(self, ctx: TrialContext) -> None:
+    def _flush_flip_events(self, ctx: TrialContext, *, t: float) -> None:
+        """Emit everything the frame queued, every one stamped ``t``, the
+        time of the flip that showed it — however long the subscribers of
+        the ones before it took."""
         # Snapshot-then-clear so a subscriber that re-entered trial code
         # could never observe a partially-drained queue.
         queued, ctx.pending_flip_events = ctx.pending_flip_events, []
         for name, payload in queued:
-            self._emit(ctx, name, payload)
+            self._emit(ctx, name, payload, t=t)
 
     # ------------------------------------------------------------------
     # Mid-trial reward
     # ------------------------------------------------------------------
 
-    def _hand_over_reward_requests(self, ctx: TrialContext, frame: int) -> None:
+    def _hand_over_reward_requests(self, ctx: TrialContext, frame: int, *, t: float) -> None:
         """Submit this frame's requests and emit a REWARD for each.
 
-        Runs right after the flip, so each REWARD is stamped with the flip
-        that followed the request — the frame the drop was commanded on,
-        which is what events.csv and the tracker's messages must say, since
-        an analysis masks vergence and pupil transients around it. Submitted
-        before the event is emitted (the manual key's hardware-then-event
-        order), but submit only queues: the pump runs on the dispenser's own
-        thread, and its end is reported later as REWARD_DELIVERED or
-        REWARD_FAILED — or as REWARD_CANCELLED, when a manual reward overrode
-        the queue before it reached the valve.
+        Runs right after the flip, and each REWARD is stamped ``t``, the time
+        of the flip that followed the request — the frame the drop was
+        commanded on, which is what events.csv and the tracker's messages
+        must say, since an analysis masks vergence and pupil transients
+        around it. Submitted before the event is emitted (the manual key's
+        hardware-then-event order), but submit only queues: the pump runs on
+        the dispenser's own thread, and its end is reported later as
+        REWARD_DELIVERED or REWARD_FAILED — or as REWARD_CANCELLED, when a
+        manual reward overrode the queue before it reached the valve.
         """
         if not ctx.pending_reward_requests:
             return
@@ -598,7 +626,9 @@ class TrialEngine:
                 # is longer than the task's drop interval shows here that its
                 # drops are delivered late, and behind how many deliveries.
                 payload["queued_behind"] = ahead
-            self._emit(ctx, "REWARD", payload)
+            # The flip's time, not the clock read now: this frame's visual
+            # events have been through the bus by here, and so has submit().
+            self._emit(ctx, "REWARD", payload, t=t)
 
     def _report_reward_completions(self, ctx: TrialContext) -> None:
         """Emit an event for every mid-trial drop that has ended — delivered,

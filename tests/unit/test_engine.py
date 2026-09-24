@@ -9,14 +9,77 @@ from alhazen.config.models import FrameQAConfig, RewardPulses
 from alhazen.core.commands import Command
 from alhazen.core.engine import QuitRequested
 from alhazen.core.trial import HealthFault, InputFrame, PhaseAction
+from alhazen.devices.eyetracker import TrackerMessageSubscriber
 from alhazen.devices.reward import SimulatedReward
+from alhazen.devices.sync import make_sync_subscriber
 from alhazen.errors import FrameQAError
-from alhazen.testing import ScriptedCommands, ScriptedInputs
-from support import COMPLETED, FAILED, FRAME_S, EngineHarness, RunForFrames
+from alhazen.testing import FakeClock, ScriptedCommands, ScriptedInputs
+from support import (
+    COMPLETED,
+    FAILED,
+    FRAME_S,
+    EngineHarness,
+    RunForFrames,
+    TickingClock,
+    record_flips,
+)
 
 
 def events_named(harness, name):
     return [e for e in harness.collector.events if e.name == name]
+
+
+class QueueOnFrame(RunForFrames):
+    """RunForFrames that queues the given events, in order, on one of its
+    frames (0 = its first on_frame call) — a phase that takes the fixation
+    point off and puts the target and a cue on in the same frame."""
+
+    name = "queue_on_frame"
+
+    def __init__(self, n_frames: int, then, on_frame: int, names: tuple[str, ...]) -> None:
+        super().__init__(n_frames, then)
+        self._on_frame = on_frame
+        self._names = names
+
+    def on_frame(self, ctx):
+        # frames_seen grows by one in RunForFrames.on_frame, so before that
+        # call its length is this call's index.
+        if len(self.frames_seen) == self._on_frame:
+            for name in self._names:
+                ctx.emit_on_flip(name)
+        return super().on_frame(ctx)
+
+
+class SlowTracker:
+    """An eye tracker whose every message takes ``message_s`` of session
+    time — an EyeLink message is a round trip to the Host PC — so the bus
+    spends that long in the tracker's subscriber on every event."""
+
+    def __init__(self, clock: FakeClock, message_s: float) -> None:
+        self._clock = clock
+        self._message_s = message_s
+        self.messages: list[str] = []
+
+    def send_message(self, text: str) -> None:
+        self.messages.append(text)
+        self._clock.advance(self._message_s)
+
+
+class SlowSync:
+    """A sync output whose every pulse takes ``pulse_s`` of session time, as
+    a DAQ write does."""
+
+    def __init__(self, clock: FakeClock, pulse_s: float) -> None:
+        self._clock = clock
+        self._pulse_s = pulse_s
+        self.pulses: list[str] = []
+
+    def pulse(self, line: str) -> None:
+        self.pulses.append(line)
+        self._clock.advance(self._pulse_s)
+
+    def close(self) -> None:
+        return  # nothing was opened
 
 
 class TestEventTiming:
@@ -70,6 +133,101 @@ class TestEventTiming:
             harness.engine.run_trial(
                 harness.ctx(), [RunForFrames(1, COMPLETED, emit_on_enter="STIM_ON")]
             )
+
+
+class TestFlipLockedStamps:
+    """Every event a frame queued carries that frame's flip time — however
+    many the frame queued, and however long the bus's subscribers took over
+    the ones before it.
+
+    Run on a TickingClock: FakeClock holds still between flips, so a stamp
+    read at the flip and one read later in the same frame are the same number
+    there, and these tests could not fail."""
+
+    def test_every_event_queued_on_one_frame_carries_that_flips_time(self):
+        flips: dict[int, float] = {}
+        names = ("FIX_OFF", "TARGET_ON", "CUE_ON")
+        harness = EngineHarness(
+            clock=TickingClock(),
+            declared_events=names,
+            on_frame_input=record_flips(flips),
+            frame_qa=FrameQAConfig(),
+        )
+        result = harness.engine.run_trial(
+            harness.ctx(), [QueueOnFrame(3, COMPLETED, on_frame=1, names=names)]
+        )
+
+        # Exactly the flip's own time, all three — not the flip plus however
+        # long it took to emit the ones queued before them.
+        assert [events_named(harness, name)[0].t for name in names] == [flips[1]] * 3
+        # And the record's columns, which a phase reads a reaction time from.
+        assert [result.record[f"t_{name.lower()}"] for name in names] == [flips[1]] * 3
+        # And the frame log's time for that flip (frames.csv). Its first
+        # record is the trial's second flip, frame 1: a trial's first flip
+        # only sets the reference an interval is measured from.
+        assert harness.frame_monitor is not None
+        assert harness.frame_monitor.records[0].t == flips[1]
+
+    def test_a_slow_subscriber_does_not_push_the_next_event_later(self):
+        clock = TickingClock()
+        flips: dict[int, float] = {}
+        harness = EngineHarness(
+            clock=clock,
+            declared_events=("FIX_OFF", "TARGET_ON"),
+            on_frame_input=record_flips(flips),
+        )
+        # The builder's subscribers, on devices that take time: a tracker
+        # message 2 ms, a sync pulse 1 ms, on every event mapped to them.
+        tracker = SlowTracker(clock, message_s=0.002)
+        sync = SlowSync(clock, pulse_s=0.001)
+        harness.bus.subscribe(TrackerMessageSubscriber(tracker))
+        harness.bus.subscribe(
+            make_sync_subscriber(sync, {"FIX_OFF": "fix_line", "TARGET_ON": "target_line"})
+        )
+        result = harness.engine.run_trial(
+            harness.ctx(),
+            [QueueOnFrame(2, COMPLETED, on_frame=0, names=("FIX_OFF", "TARGET_ON"))],
+        )
+
+        # Both subscribers did their slow work on FIX_OFF before TARGET_ON
+        # was emitted...
+        assert tracker.messages[:3] == ["trial_start", "fix_off", "target_on"]
+        assert sync.pulses == ["fix_line", "target_line"]
+        # ...and TARGET_ON still carries the flip that showed it, not the
+        # moment the bus got round to it 3 ms later.
+        (fix_off,) = events_named(harness, "FIX_OFF")
+        (target_on,) = events_named(harness, "TARGET_ON")
+        assert fix_off.t == target_on.t == flips[0]
+        assert result.record["t_fix_off"] == result.record["t_target_on"] == flips[0]
+
+    def test_trial_end_is_stamped_when_emitted_not_with_the_last_phase_flip(self):
+        # Only what a frame queued carries that frame's flip. TRIAL_END is
+        # not queued on a flip: it is emitted after the trial's closing blank
+        # flip, and stamped then, like every event the engine emits outside
+        # the frame loop.
+        flips: dict[int, float] = {}
+        harness = EngineHarness(clock=TickingClock(), on_frame_input=record_flips(flips))
+        harness.engine.run_trial(harness.ctx(), [RunForFrames(1, COMPLETED)])
+
+        (end,) = events_named(harness, "TRIAL_END")
+        # The last phase flip (frame 1), then the blank flip, then TRIAL_END.
+        assert end.t > flips[1] + FRAME_S
+
+    def test_the_flip_is_stamped_on_the_engines_clock_not_the_contexts(self):
+        # One clock (CONTRIBUTING invariant 2): a context built on another
+        # clock must not split the flip's time from its events' times. The
+        # runner hands the context the engine's own clock, so the two never
+        # differ in a session; this pins which one the engine reads.
+        flips: dict[int, float] = {}
+        harness = EngineHarness(on_frame_input=record_flips(flips))
+        phase = RunForFrames(2, COMPLETED, emit_on_enter="FIX_ON")
+        harness.engine.run_trial(harness.ctx(clock=FakeClock(start=100.0)), [phase])
+
+        (fix_on,) = events_named(harness, "FIX_ON")
+        assert flips[0] == fix_on.t == pytest.approx(FRAME_S)
+        # dt is measured on the same clock: one frame period, not the floor a
+        # clock that never moved would give.
+        assert phase.frames_seen[1:] == [pytest.approx(FRAME_S)] * 2
 
 
 class TestFrameLoop:

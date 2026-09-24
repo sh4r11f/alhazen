@@ -19,9 +19,7 @@ from __future__ import annotations
 
 import csv
 import logging
-import math
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 
@@ -32,7 +30,7 @@ from alhazen.config.gamma import (
     write_gamma,
 )
 from alhazen.config.models import RigConfig
-from alhazen.display.screen import Screen
+from alhazen.display.ruler import draw_ruler_on, ruler_report
 from alhazen.errors import ConfigError
 
 log = logging.getLogger(__name__)
@@ -40,6 +38,12 @@ log = logging.getLogger(__name__)
 # Re-exported: `alhazen calibrate gamma` is where an experimenter meets these,
 # but the session builder has to read the same file and sits below the CLI, so
 # they live in the config layer (alhazen.config.gamma).
+#
+# ruler_report and draw_ruler_on are re-exported for the same reason, one layer
+# up: `alhazen calibrate ruler` is where they started, but `--mode measure`
+# draws the same bar and alhazen.modes sits below the CLI, so they live in the
+# display layer (alhazen.display.ruler). The names stay importable from here,
+# where they have always been.
 __all__ = [
     "GAMMA_FILENAME_SUFFIX",
     "draw_ruler",
@@ -51,35 +55,6 @@ __all__ = [
     "ruler_report",
     "write_gamma",
 ]
-
-
-def ruler_report(rig: RigConfig, size_dva: float = 10.0) -> str:
-    """What a bar of ``size_dva`` should measure on this rig, in centimetres.
-
-    The arithmetic is the rig config's own: if the printed number does not
-    match a tape measure held against the screen, the config is wrong, not
-    the ruler.
-    """
-    screen = Screen.from_monitor(rig.monitor)
-    width_px = screen.deg2px(size_dva)
-    cm_per_px = rig.monitor.width_cm / rig.monitor.width_px
-    width_cm = width_px * cm_per_px
-    # The same length worked out from the geometry directly, as a check on
-    # the linear approximation the Screen model uses.
-    exact_cm = 2.0 * rig.monitor.distance_cm * math.tan(math.radians(size_dva / 2.0))
-    return "\n".join(
-        [
-            f"a {size_dva:g} dva bar on this rig:",
-            f"  {width_px:.1f} px wide",
-            f"  {width_cm:.2f} cm on the panel  (measure this with a tape)",
-            f"  {exact_cm:.2f} cm by exact trigonometry at {rig.monitor.distance_cm:g} cm",
-            f"  px per degree: {screen.px_per_deg:.2f}",
-            "",
-            "If the tape disagrees with the second line, fix monitor.width_cm or",
-            "monitor.distance_cm in the rig config — every stimulus size on this rig",
-            "is scaled by that same error until you do.",
-        ]
-    )
 
 
 def draw_ruler(rig: RigConfig, size_dva: float = 10.0, windowed: bool = False) -> str:
@@ -103,69 +78,6 @@ def draw_ruler(rig: RigConfig, size_dva: float = 10.0, windowed: bool = False) -
     finally:
         display.close()
     return report
-
-
-def draw_ruler_on(display: Any, rig: RigConfig, size_dva: float = 10.0) -> None:
-    """Draw the bar in an already-open display until a key is pressed.
-
-    The half of :func:`draw_ruler` that measure mode can reuse on the window
-    it already has: the same bar, ticks and label, without opening a second
-    display to draw them in.
-    """
-    from psychopy import event, visual
-
-    screen = Screen.from_monitor(rig.monitor)
-    width_px = screen.deg2px(size_dva)
-    # A white bar of the computed width, plus end ticks, on black: the
-    # thing a tape measure is held against. Drawn in pixels, because the
-    # px<->cm question is exactly what is being checked.
-    bar = visual.Rect(
-        display.window,
-        units="pix",
-        width=width_px,
-        height=max(round(screen.height_px * 0.02), 4),
-        fillColor="white",
-        lineColor="white",
-    )
-    tick_height = max(round(screen.height_px * 0.10), 20)
-    ticks = [
-        visual.Rect(
-            display.window,
-            units="pix",
-            width=2,
-            height=tick_height,
-            pos=(offset, 0),
-            fillColor="white",
-            lineColor="white",
-        )
-        for offset in (-width_px / 2.0, width_px / 2.0)
-    ]
-    label = visual.TextStim(
-        display.window,
-        units="pix",
-        text=(
-            f"{size_dva:g} dva = {width_px:.1f} px\n"
-            f"measure between the ticks: it should be "
-            f"{width_px * rig.monitor.width_cm / rig.monitor.width_px:.2f} cm\n"
-            f"any key to close"
-        ),
-        pos=(0, -tick_height),
-        height=max(round(screen.height_px * 0.025), 12),
-        color="white",
-    )
-    # Drop whatever is already in psychopy's global key buffer. This used to
-    # run in a process that had just opened its own window, so the buffer was
-    # empty; `--mode measure` calls it on a window that has already collected
-    # presses from the earlier measurements, and one of those left over would
-    # end the ruler before a single flip — a black screen, and a report saying
-    # a bar was drawn.
-    event.clearEvents()
-    while not event.getKeys():
-        bar.draw()
-        for tick in ticks:
-            tick.draw()
-        label.draw()
-        display.flip()
 
 
 def read_measurements(path: Path | str) -> tuple[np.ndarray, np.ndarray]:

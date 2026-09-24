@@ -18,6 +18,7 @@ from alhazen.paradigms.adjustment import AdjustmentTrials
 from alhazen.paradigms.base import Condition, SimpleSequence
 from alhazen.paradigms.blocks import BlockPlan
 from alhazen.paradigms.config import (
+    ADAPTIVE_KINDS,
     BlockConfig,
     QuestConfig,
     SchedulerConfig,
@@ -193,6 +194,152 @@ class TestQuestPlusFromAConfig:
         assert summary is not None and not summary.empty
 
 
+def inverted(result: TrialResult) -> bool:
+    """A scorer that calls a trial a success exactly when its outcome says it
+    was not — the simplest stand-in for a task titrating something other than
+    accuracy, and one whose effect on a staircase cannot be mistaken."""
+    return not result.outcome.success
+
+
+def a_staircase(blocks: BlockConfig | None = None, **overrides) -> SchedulerConfig:
+    """2-down-1-up from 0.5 in steps of 0.1, three completed trials, unless
+    ``overrides`` says otherwise."""
+    fields = {"parameter": "contrast", "start": 0.5, "step": 0.1, "n_trials": 3, **overrides}
+    return SchedulerConfig(kind="staircase", staircase=StaircaseConfig(**fields), blocks=blocks)
+
+
+def a_quest(blocks: BlockConfig | None = None) -> SchedulerConfig:
+    return SchedulerConfig(
+        kind="questplus",
+        quest=QuestConfig(
+            parameter="contrast", intensities=[0.2, 0.5], thresholds=[0.2, 0.5], n_trials=3
+        ),
+        blocks=blocks,
+    )
+
+
+# One config per adaptive kind. Keyed by kind so the test below can check the
+# table against ADAPTIVE_KINDS: a new adaptive kind added to make_scheduler
+# without a row here fails that test instead of silently skipping this check.
+ADAPTIVE_CONFIGS = {"staircase": a_staircase, "questplus": a_quest}
+
+
+class TestTheTasksScorerReachesEveryAdaptiveKind:
+    """`Task.score_trial` is how a task titrating something other than
+    accuracy says what a success is, and `make_scheduler` receives it as
+    `score`. It handed that scorer to QUEST+ only: the up-down staircases read
+    `outcome.success` whatever the task said, so a task that overrode the hook
+    and chose `kind: staircase` titrated accuracy anyway — with nothing in
+    the session to say so."""
+
+    def test_the_default_still_titrates_the_outcomes_own_success(self):
+        # Every trial a HIT: the first two step down once (2-down), and the
+        # third is served at the new, harder level.
+        served = drain(make_scheduler(a_staircase(), sides(), rng()))
+
+        assert [c.params["contrast"] for c in served] == pytest.approx([0.5, 0.5, 0.4])
+
+    def test_a_scorer_that_inverts_success_moves_a_staircase_the_other_way(self):
+        # The same HITs, scored as failures: each one steps up (1-up).
+        source = make_scheduler(a_staircase(), sides(), rng(), score=inverted)
+
+        served = drain(source)
+
+        assert [c.params["contrast"] for c in served] == pytest.approx([0.5, 0.6, 0.7])
+
+    def test_every_interleaved_staircase_hears_the_scorer(self):
+        source = make_scheduler(a_staircase(interleave_by="side"), sides(), rng(), score=inverted)
+
+        served = drain(source)
+
+        for side in ("left", "right"):
+            levels = [c.params["contrast"] for c in served if c.params["side"] == side]
+            assert levels == pytest.approx([0.5, 0.6, 0.7]), side
+
+    def test_a_staircase_in_blocks_hears_the_scorer(self):
+        # BlockPlan wraps the one shared staircase; the scorer must survive
+        # the wrapping, or a blocked design titrates something else again.
+        source = make_scheduler(
+            a_staircase(blocks=BlockConfig(n_blocks=3, trials_per_block=1)),
+            sides(),
+            rng(),
+            score=inverted,
+        )
+
+        served = drain(source)
+
+        assert [c.params["contrast"] for c in served] == pytest.approx([0.5, 0.6, 0.7])
+
+    def test_an_attempt_with_no_measurement_never_reaches_the_scorer(self):
+        """A broken trial produced no measurement, so there is nothing to
+        score: the task's scorer would be judging a trial that never
+        happened, and the staircase would step on it. The attempt is
+        re-served at the same level instead."""
+        scored: list[str] = []
+
+        def spy(result: TrialResult) -> bool:
+            scored.append(result.outcome.name)
+            return bool(result.outcome.success)
+
+        answers = iter([BROKE, HIT, HIT, HIT])
+        source = make_scheduler(a_staircase(), sides(), rng(), score=spy)
+
+        served = drain(source, answer=lambda condition: next(answers))
+
+        assert served[1].params == served[0].params  # the retry, unchanged
+        assert scored == ["HIT", "HIT", "HIT"]
+
+    def test_every_adaptive_kind_has_a_case_here(self):
+        assert set(ADAPTIVE_CONFIGS) == ADAPTIVE_KINDS
+
+    @pytest.mark.parametrize("kind", sorted(ADAPTIVE_CONFIGS))
+    @pytest.mark.parametrize(
+        "blocks", [None, BlockConfig(n_blocks=3, trials_per_block=1)], ids=["plain", "blocks"]
+    )
+    def test_every_adaptive_kind_asks_the_scorer_about_every_completed_trial(self, kind, blocks):
+        scored: list[TrialResult] = []
+
+        def spy(result: TrialResult) -> bool:
+            scored.append(result)
+            return True
+
+        source = make_scheduler(ADAPTIVE_CONFIGS[kind](blocks=blocks), sides(), rng(), score=spy)
+
+        served = drain(source)
+
+        assert len(served) == 3
+        assert len(scored) == 3
+
+    @pytest.mark.parametrize(
+        "score",
+        # No scorer at all, and one that says what `Task.score_trial` says by
+        # default: the two ways a task that never overrode the hook arrives.
+        [None, lambda result: bool(result.outcome.success)],
+        ids=["no-scorer", "the-default-scorer"],
+    )
+    def test_a_task_that_keeps_the_default_gets_the_session_it_always_got(self, score):
+        """Seed discipline: threading the scorer through must not change the
+        session of a task that never overrode `score_trial`. Recorded on the
+        code before the staircases took a scorer: seed 0, two interleaved
+        staircases, answered HIT, HIT, MISS in turn until three reversals
+        each. Both the order the rng picked and every level must match."""
+        answers = iter([HIT, HIT, MISS] * 4)
+        source = make_scheduler(
+            a_staircase(interleave_by="side", n_trials=12, n_reversals=3),
+            sides(),
+            rng(),
+            score=score,
+        )
+
+        served = drain(source, answer=lambda condition: next(answers))
+
+        assert [c.params["side"] for c in served] == (["right"] * 3 + ["left"] * 6 + ["right"] * 3)
+        assert [c.params["contrast"] for c in served] == pytest.approx([0.5, 0.5, 0.4] * 4)
+        summary = source.summary()
+        assert list(summary["n_reversals"]) == [3, 3]
+        assert list(summary["reversal_mean"]) == pytest.approx([0.45, 0.45])
+
+
 class TestBlocksFromAConfig:
     """A `blocks:` block builds ONE source per block, not one shared across
     all of them.
@@ -270,9 +417,12 @@ class TestBlocksFromAConfig:
         assert list(summary["n_completed"]) == [2, 2]
 
     def test_trials_per_block_bounds_a_block(self):
+        # n_per_condition was 4 here, so each block's plan of 4 was cut to 3 —
+        # the dropping TestTrialsPerBlockNeverCutsAPlan now refuses. A plan
+        # of 3 is the config that serves these same six trials honestly.
         cfg = SchedulerConfig(
             kind="sequence",
-            n_per_condition=4,
+            n_per_condition=3,
             shuffle=False,
             blocks=BlockConfig(n_blocks=2, trials_per_block=3),
         )
@@ -310,3 +460,108 @@ class TestBlocksFromAConfig:
 
         with pytest.raises(ValueError, match="trials_per_block"):
             make_scheduler(cfg, sides(), rng())
+
+
+class TestTrialsPerBlockNeverCutsAPlan:
+    """A queue-based kind gives every block its own full plan (cells x
+    `n_per_condition`), and `trials_per_block` then ended the block by COUNT.
+    Set below the plan, it abandoned whatever was still queued — and a retry
+    re-queues at the tail, so retries were the first trials cut. The cells
+    could end uneven, which ConstantStimuli exists to prevent, and nothing
+    said so.
+
+    Completed trials can never outnumber a queue-based plan (each planned
+    trial leaves the queue only by completing), so a bound at or above the
+    plan ends a block only once its plan is done, and one below it can only
+    ever cut. The cutting config is refused when the scheduler is built."""
+
+    def grid(self) -> list[Condition]:
+        return [
+            Condition({"side": side, "contrast": contrast})
+            for side in ("left", "right")
+            for contrast in (0.2, 0.8)
+        ]
+
+    def cfg(self, kind="constant", n_per_condition=2, **blocks) -> SchedulerConfig:
+        return SchedulerConfig(
+            kind=kind,
+            n_per_condition=n_per_condition,
+            blocks=BlockConfig(n_blocks=2, **blocks),
+        )
+
+    def test_a_bound_below_the_plan_is_refused_with_the_numbers(self):
+        # 4 cells x n_per_condition=2 is 8 trials a block; a bound of 5 would
+        # never serve 3 of them in either block.
+        cfg = self.cfg(trials_per_block=5)
+
+        with pytest.raises(ConfigError) as excinfo:
+            make_scheduler(cfg, self.grid(), rng(), task_name="contrast-task")
+
+        message = str(excinfo.value)
+        assert "contrast-task" in message
+        assert "trials_per_block=5" in message
+        assert "n_per_condition=2" in message
+        assert "8 trials" in message  # the plan it would have cut
+        assert "the other 3 planned trials" in message  # dropped from each block
+
+    @pytest.mark.parametrize("kind", ["sequence", "constant", "adjustment"])
+    def test_every_queue_based_kind_is_refused(self, kind):
+        with pytest.raises(ConfigError, match="trials_per_block"):
+            make_scheduler(self.cfg(kind=kind, trials_per_block=7), self.grid(), rng())
+
+    def test_retries_past_the_bound_still_leave_every_cell_its_count(self):
+        """A bound equal to the plan, and every condition failing its first
+        two attempts in every block: each block serves 8 planned trials plus 8
+        retries, twice the bound — and every cell still reaches its count,
+        inside its own block, because the bound counts COMPLETED trials."""
+        source = make_scheduler(self.cfg(trials_per_block=8), self.grid(), rng())
+        failures: dict[tuple, int] = {}
+
+        def fail_twice(condition):
+            key = condition.key()
+            failures[key] = failures.get(key, 0) + 1
+            return BROKE if failures[key] <= 2 else HIT
+
+        answered: list[tuple[Condition, Outcome]] = []
+
+        def answer(condition):
+            outcome = fail_twice(condition)
+            answered.append((condition, outcome))
+            return outcome
+
+        drain(source, answer=answer)
+
+        completed: dict[tuple, int] = {}
+        for condition, outcome in answered:
+            if outcome.completed:
+                completed[condition.key()] = completed.get(condition.key(), 0) + 1
+        # 4 cells x 2 blocks, each (block, cell) pair completed exactly twice.
+        assert len(completed) == 8
+        assert set(completed.values()) == {2}
+        assert list(source.summary()["n_completed"]) == [8, 8]
+        assert len(answered) == 32  # 16 completed + 16 retries, nothing dropped
+
+    def test_a_bound_above_the_plan_is_accepted(self):
+        """Test mode lowers `n_per_condition` and leaves block structure
+        alone, so a config whose bound matched the full plan meets a smaller
+        one in a rehearsal. That must still build: it cuts nothing."""
+        source = make_scheduler(self.cfg(n_per_condition=1, trials_per_block=8), self.grid(), rng())
+
+        served = drain(source)
+
+        assert [condition.params["block"] for condition in served] == [1] * 4 + [2] * 4
+
+    def test_an_adaptive_kind_is_not_measured_against_n_per_condition(self):
+        """An adaptive kind has no plan of cells x `n_per_condition` — it
+        shares one estimator across blocks, and `trials_per_block` is its
+        block length. A bound below what that product would be still builds."""
+        cfg = SchedulerConfig(
+            kind="staircase",
+            n_per_condition=3,  # ignored by a staircase; 4 cells x 3 would be 12
+            staircase=StaircaseConfig(parameter="contrast", start=0.5, step=0.1, n_trials=4),
+            blocks=BlockConfig(n_blocks=2, trials_per_block=2),
+        )
+
+        served = drain(make_scheduler(cfg, self.grid(), rng()))
+
+        assert [condition.params["block"] for condition in served] == [1, 1, 2, 2]

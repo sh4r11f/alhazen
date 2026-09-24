@@ -86,7 +86,8 @@ The split matters: **the browser draws, it does not analyse.** Every count,
 bin edge, mean, error bar and running proportion is computed in
 `alhazen.dashboard.panels`, in Python, where it is unit-tested. A running
 accuracy that divides by the wrong denominator looks entirely plausible in a
-browser, and the page's JavaScript has no test in this suite.
+browser, and the page's JavaScript is tested (`tests/js/`) only for how it
+draws, never for what it computes.
 
 What the reader sees is decided once, after the numbers. `panels.present()`
 rewrites every payload in a journal figure's conventions: labels in sentence

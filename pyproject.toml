@@ -163,8 +163,24 @@ ignore_missing_imports = true
 # Layering is enforced, not folklore: imports point only
 # downward. Modules on the same line are independent of each other.
 # alhazen.errors and alhazen.version sit outside the contract on purpose —
-# anything may import them. task/ and training/ join their line when they land
-# (phases 3 and 5).
+# anything may import them. Every package must be on a line: lint-imports
+# checks nothing about a package it is not told about, and
+# tests/unit/test_layering.py fails until a new one is added here (and to the
+# two drawings of this list, in CONTRIBUTING.md and docs/architecture.md §1,
+# which it also checks against this config).
+#
+# modes sits directly under cli, which is the only package that imports it,
+# and above session because each mode builds or drives a session (and needs
+# task, devices, paradigms, core, display and config, all further down).
+# Nothing in modes may reach up into cli: the ruler measure mode draws lives in
+# display/ruler.py, not in cli/calibrate.py where `calibrate ruler` first drew
+# it, because importing it from there was a cli <-> modes cycle that stayed
+# invisible while modes was off this list.
+#
+# _scaffold shares the bottom line: the template renderer behind `alhazen new`
+# imports nothing from alhazen but errors (it is stdlib string.Template over
+# files), and only cli imports it. The bottom line keeps it that way — it may
+# not import any other alhazen package.
 #
 # devices sits with paradigms: it needs core (the clock, and Event for the
 # tracker-message subscriber), display (calibration graphics draw into the
@@ -203,6 +219,7 @@ type = "layers"
 # nothing above config, and stay mutually independent of core.
 layers = [
   "alhazen.cli",
+  "alhazen.modes",
   "alhazen.session | alhazen.testing | alhazen.analysis",
   "alhazen.training",
   "alhazen.task",
@@ -211,5 +228,5 @@ layers = [
   "alhazen.core | alhazen.neural",
   "alhazen.stimuli | alhazen.scenes",
   "alhazen.display",
-  "alhazen.config | alhazen.data",
+  "alhazen.config | alhazen.data | alhazen._scaffold",
 ]
