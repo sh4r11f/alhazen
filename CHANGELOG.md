@@ -321,6 +321,27 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Fixed
 
+- **The dashboard server checks what it reads, and the page hides its
+  token.** A request id sent as a JSON list or object raised `TypeError`
+  outside any handler and killed the request's thread; a negative
+  `Content-Length` made the server read until the client hung up, and a huge
+  one made it wait for that many bytes. Now a request id must be a string of
+  1 to 64 characters, a command name a string, and a body at most 4 KiB with
+  a length that is not negative (400, or 413 when too large). Commands and
+  tracker settings no longer share one memory of seen ids, so the same id on
+  each no longer drops the second; each queue remembers its most recent 1024
+  ids (the settings one used to grow for the whole session). Query strings
+  are parsed once, and a malformed or repeated integer parameter is a 400
+  everywhere: a bad `revision` used to be silently read as 0. The token is
+  compared in constant time. The page removes `?token=` from the address bar
+  after reading it (the saved copy in `figures/` has none and is untouched).
+  The saved page escapes every `<` in its embedded state, not only `</`, so a
+  `<!--` in a message cannot change how the page parses. In the page's
+  renderer, a trial axis no longer rounds a 2.5 step to 3 (a 0–10 axis read
+  0, 3, 6, 9 and ran to 12; it now steps by 5), and numbers are written
+  exactly as the Python side's `format_number` writes them (`0.5`, not
+  `0.500`; `1,234` whatever the locale; exact halves to the even digit).
+
 - **`experiment_git_sha` recorded the folder a session was started from, not
   the experiment.** The runner wrote the snapshot without saying where the
   experiment's code was, so the revision was read from the working
