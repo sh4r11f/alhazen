@@ -188,6 +188,21 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Changed
 
+- **The `movie` extra now requires `imageio-ffmpeg>=0.4.4`** (was `>=0.4`).
+  imageio 2.31, the extra's own floor, calls `write_frames(audio_path=...)`,
+  which imageio-ffmpeg before 0.4.4 does not accept, so an install at the old
+  floors failed on the first movie written. Found by the new CI job that tests
+  every dependency at its declared minimum.
+
+- **Python 3.11 and 3.13 are tested, and the supported versions are
+  declared.** `requires-python` said `>=3.10`, but CI ran only 3.10 and 3.12,
+  and the package carried no Python classifiers at all, so nothing said which
+  versions were actually checked. CI now also runs the suite on 3.11 and 3.13
+  (on Linux), plus one job on 3.10 with every direct dependency at the lowest
+  version pyproject allows, so the stated floors (`numpy>=1.24`,
+  `pandas>=2.0`, `pydantic>=2.5`, ...) are tested rather than assumed; and
+  pyproject lists the classifiers for 3.10 through 3.13, the versions CI runs.
+
 - **The public API is now exactly the names `docs/reference.md` lists.**
   Most of its entries used to document a whole module, and the policy called
   "everything in the modules on this page" public — so dashboard formatting
@@ -337,6 +352,66 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   `ConfigError` naming the file and what is wrong with it (not UTF-8, with
   the offending byte; a directory; the OS's reason), so the CLI prints
   `INVALID:` rather than a traceback.
+
+- **Six small data and device faults: a registry that a crash could empty,
+  database handles left open, and trackers not released after a failure.**
+  `participants.tsv` was rewritten in place, so a crash or a full disk while
+  adding a subject left a truncated file; it is now written to a temporary
+  file and swapped in whole (the helper training state already used, moved to
+  `alhazen.data.atomic`). A registry row with more cells than its header used
+  to fail with csv's `ValueError` naming no file; it is now a `DataError`
+  naming the file, the line and the extra cells, and the file is left as it
+  was. `ExperimentDatabase` committed its transactions but never closed its
+  connections, leaving the database and its WAL file locked on Windows until
+  garbage collection; every connection is now closed, including one refused
+  for its schema. The TRACKPixx3 gaze reader abandoned a thread stuck in a
+  USB read without a word, and the next `start()` cleared the stop flag that
+  thread shared, so it read on beside the new one; `stop()` now logs the
+  abandonment at ERROR and each thread has its own stop flag. An EyeLink
+  `connect()` that failed after the link opened (at `openDataFile`) left the
+  link open; it is now closed before the `TrackerError`. A link that failed
+  while the EyeLink closed its EDF with no destination (check-rig) raised
+  pylink's bare `RuntimeError`, past check-rig's error handling as a
+  traceback; it is now a `TrackerError`, and check-rig reports a failed
+  check. An unused, unlocked `_gap_samples` counter in the SpikeGLX source was
+  removed.
+
+- **The offline readers name the file when its contents are wrong, and a
+  results directory says what it already held.** In the ViewPixx reader, a
+  run snapshot whose `config.rig.monitor` the monitor model refused raised a
+  pydantic `ValidationError`, and a `TRIAL` mark with no integer index a raw
+  `ValueError`/`IndexError`; both are now a `DataError` naming the file (and
+  the mark), and malformed trial marks are refused when the messages file is
+  read. `max_residual_s=0.0` was treated as unset and replaced by the sample
+  period; it is now the tolerance used. In the SpikeGLX reader, a `.meta`
+  that is not UTF-8 (a Windows path in the local code page) raised
+  `UnicodeDecodeError`; it is now read with undecodable bytes replaced and a
+  warning naming the affected keys — safe because every field read as a
+  number is ASCII. A non-numeric or non-positive `nSavedChans` is a
+  `DataError` naming the file and field (it was a `ValueError` or
+  `ZeroDivisionError`), and a binary whose size differs from the meta's
+  `fileSizeBytes` is refused as truncated, which catches a copy cut exactly
+  at a frame boundary. `ResultsBundle` hashes inputs with the run manifest's
+  own function, and reusing an `out_dir` that already holds files logs a
+  warning listing them and records every one the bundle did not rewrite
+  under a new `preexisting` key in `manifest.json`, so an earlier run's
+  leftovers cannot pass for this run's outputs; reuse itself is still
+  allowed, since reports are routinely re-run into the same directory.
+
+- **A scene expression that failed on a frame raised a bare Python error
+  naming nothing.** Only function calls turned their failures into
+  `ConfigError`. An operator meeting the wrong value (`params.x - 1` with a
+  string param, `10 ** 400`) raised a raw `TypeError` or `OverflowError`
+  mid-frame, with no word of which scene field or expression did it, and a
+  malformed number literal (`1.2.3`) escaped the tokenizer as a `ValueError`
+  that the loader's check did not catch. The `background` expression was
+  never checked at load at all. Now a malformed number, like a syntax error
+  or an unknown name, fails at `load_scene` naming the field (the background
+  included); an operator error on a frame is a `ConfigError` naming the
+  layer path, the scene time, the expression, the operator and the values;
+  and a non-numeric result in a numeric field says so. Dividing by zero is
+  unchanged (infinity, as in the studio). See "What alhazen renders" in
+  [docs/scenes.md](docs/scenes.md).
 
 - **A session that failed while starting up left every device open.**
   `SessionRunner.run` wrote the snapshot, registered the subject, attached
