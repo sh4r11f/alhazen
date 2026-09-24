@@ -18,6 +18,7 @@ from alhazen.paradigms.adjustment import AdjustmentTrials
 from alhazen.paradigms.base import Condition, SimpleSequence
 from alhazen.paradigms.blocks import BlockPlan
 from alhazen.paradigms.config import (
+    ADAPTIVE_KINDS,
     BlockConfig,
     QuestConfig,
     SchedulerConfig,
@@ -191,6 +192,152 @@ class TestQuestPlusFromAConfig:
 
         summary = source.summary()
         assert summary is not None and not summary.empty
+
+
+def inverted(result: TrialResult) -> bool:
+    """A scorer that calls a trial a success exactly when its outcome says it
+    was not — the simplest stand-in for a task titrating something other than
+    accuracy, and one whose effect on a staircase cannot be mistaken."""
+    return not result.outcome.success
+
+
+def a_staircase(blocks: BlockConfig | None = None, **overrides) -> SchedulerConfig:
+    """2-down-1-up from 0.5 in steps of 0.1, three completed trials, unless
+    ``overrides`` says otherwise."""
+    fields = {"parameter": "contrast", "start": 0.5, "step": 0.1, "n_trials": 3, **overrides}
+    return SchedulerConfig(kind="staircase", staircase=StaircaseConfig(**fields), blocks=blocks)
+
+
+def a_quest(blocks: BlockConfig | None = None) -> SchedulerConfig:
+    return SchedulerConfig(
+        kind="questplus",
+        quest=QuestConfig(
+            parameter="contrast", intensities=[0.2, 0.5], thresholds=[0.2, 0.5], n_trials=3
+        ),
+        blocks=blocks,
+    )
+
+
+# One config per adaptive kind. Keyed by kind so the test below can check the
+# table against ADAPTIVE_KINDS: a new adaptive kind added to make_scheduler
+# without a row here fails that test instead of silently skipping this check.
+ADAPTIVE_CONFIGS = {"staircase": a_staircase, "questplus": a_quest}
+
+
+class TestTheTasksScorerReachesEveryAdaptiveKind:
+    """`Task.score_trial` is how a task titrating something other than
+    accuracy says what a success is, and `make_scheduler` receives it as
+    `score`. It handed that scorer to QUEST+ only: the up-down staircases read
+    `outcome.success` whatever the task said, so a task that overrode the hook
+    and chose `kind: staircase` titrated accuracy anyway — with nothing in
+    the session to say so."""
+
+    def test_the_default_still_titrates_the_outcomes_own_success(self):
+        # Every trial a HIT: the first two step down once (2-down), and the
+        # third is served at the new, harder level.
+        served = drain(make_scheduler(a_staircase(), sides(), rng()))
+
+        assert [c.params["contrast"] for c in served] == pytest.approx([0.5, 0.5, 0.4])
+
+    def test_a_scorer_that_inverts_success_moves_a_staircase_the_other_way(self):
+        # The same HITs, scored as failures: each one steps up (1-up).
+        source = make_scheduler(a_staircase(), sides(), rng(), score=inverted)
+
+        served = drain(source)
+
+        assert [c.params["contrast"] for c in served] == pytest.approx([0.5, 0.6, 0.7])
+
+    def test_every_interleaved_staircase_hears_the_scorer(self):
+        source = make_scheduler(a_staircase(interleave_by="side"), sides(), rng(), score=inverted)
+
+        served = drain(source)
+
+        for side in ("left", "right"):
+            levels = [c.params["contrast"] for c in served if c.params["side"] == side]
+            assert levels == pytest.approx([0.5, 0.6, 0.7]), side
+
+    def test_a_staircase_in_blocks_hears_the_scorer(self):
+        # BlockPlan wraps the one shared staircase; the scorer must survive
+        # the wrapping, or a blocked design titrates something else again.
+        source = make_scheduler(
+            a_staircase(blocks=BlockConfig(n_blocks=3, trials_per_block=1)),
+            sides(),
+            rng(),
+            score=inverted,
+        )
+
+        served = drain(source)
+
+        assert [c.params["contrast"] for c in served] == pytest.approx([0.5, 0.6, 0.7])
+
+    def test_an_attempt_with_no_measurement_never_reaches_the_scorer(self):
+        """A broken trial produced no measurement, so there is nothing to
+        score: the task's scorer would be judging a trial that never
+        happened, and the staircase would step on it. The attempt is
+        re-served at the same level instead."""
+        scored: list[str] = []
+
+        def spy(result: TrialResult) -> bool:
+            scored.append(result.outcome.name)
+            return bool(result.outcome.success)
+
+        answers = iter([BROKE, HIT, HIT, HIT])
+        source = make_scheduler(a_staircase(), sides(), rng(), score=spy)
+
+        served = drain(source, answer=lambda condition: next(answers))
+
+        assert served[1].params == served[0].params  # the retry, unchanged
+        assert scored == ["HIT", "HIT", "HIT"]
+
+    def test_every_adaptive_kind_has_a_case_here(self):
+        assert set(ADAPTIVE_CONFIGS) == ADAPTIVE_KINDS
+
+    @pytest.mark.parametrize("kind", sorted(ADAPTIVE_CONFIGS))
+    @pytest.mark.parametrize(
+        "blocks", [None, BlockConfig(n_blocks=3, trials_per_block=1)], ids=["plain", "blocks"]
+    )
+    def test_every_adaptive_kind_asks_the_scorer_about_every_completed_trial(self, kind, blocks):
+        scored: list[TrialResult] = []
+
+        def spy(result: TrialResult) -> bool:
+            scored.append(result)
+            return True
+
+        source = make_scheduler(ADAPTIVE_CONFIGS[kind](blocks=blocks), sides(), rng(), score=spy)
+
+        served = drain(source)
+
+        assert len(served) == 3
+        assert len(scored) == 3
+
+    @pytest.mark.parametrize(
+        "score",
+        # No scorer at all, and one that says what `Task.score_trial` says by
+        # default: the two ways a task that never overrode the hook arrives.
+        [None, lambda result: bool(result.outcome.success)],
+        ids=["no-scorer", "the-default-scorer"],
+    )
+    def test_a_task_that_keeps_the_default_gets_the_session_it_always_got(self, score):
+        """Seed discipline: threading the scorer through must not change the
+        session of a task that never overrode `score_trial`. Recorded on the
+        code before the staircases took a scorer: seed 0, two interleaved
+        staircases, answered HIT, HIT, MISS in turn until three reversals
+        each. Both the order the rng picked and every level must match."""
+        answers = iter([HIT, HIT, MISS] * 4)
+        source = make_scheduler(
+            a_staircase(interleave_by="side", n_trials=12, n_reversals=3),
+            sides(),
+            rng(),
+            score=score,
+        )
+
+        served = drain(source, answer=lambda condition: next(answers))
+
+        assert [c.params["side"] for c in served] == (["right"] * 3 + ["left"] * 6 + ["right"] * 3)
+        assert [c.params["contrast"] for c in served] == pytest.approx([0.5, 0.5, 0.4] * 4)
+        summary = source.summary()
+        assert list(summary["n_reversals"]) == [3, 3]
+        assert list(summary["reversal_mean"]) == pytest.approx([0.45, 0.45])
 
 
 class TestBlocksFromAConfig:

@@ -61,6 +61,52 @@ class TestResponseWindow:
         # frame before anything was on screen.
         assert result.record["rt_ms"] == pytest.approx(FRAME_S * 1000, abs=1.0)
 
+    def test_a_key_read_before_the_cue_flip_is_not_a_response(self):
+        # Frame 1's keys are read before that frame's flip, which is the one
+        # that shows the cue: whatever they are, they were pressed with
+        # nothing on screen to answer. The press is not scored, and no RT is
+        # invented for it from the phase's on_enter.
+        harness, result = run([self.phase(timeout_s=5 * FRAME_S)], [press("left"), NOTHING])
+        assert result.outcome is NO_RESPONSE
+        assert "response_key" not in result.record
+        assert "rt_ms" not in result.record
+        assert "RESPONSE" not in harness.collector.names()
+
+    def test_a_key_pressed_while_the_cue_awaited_its_flip_is_not_a_response(self):
+        # Frame 2 is the first frame that sees the cue's stamp, but its keys
+        # are everything pressed since frame 1's read — almost all of that
+        # interval spent waiting for the very flip that showed the cue. They
+        # are the pre-cue queue arriving one frame late, and read as a
+        # response they would give a reaction time of zero.
+        harness, result = run(
+            [self.phase(timeout_s=5 * FRAME_S)], [NOTHING, press("left"), NOTHING]
+        )
+        assert result.outcome is NO_RESPONSE
+        assert "rt_ms" not in result.record
+
+    def test_a_key_after_the_cue_is_scored_from_the_cue_flip_despite_an_earlier_press(self):
+        # The subject jumps the gun with "right" on the first two frames, then
+        # answers "left" once the cue has been up for a whole frame. The early
+        # presses must neither decide the trial nor start the clock.
+        harness, result = run(
+            [self.phase()], [press("right"), press("right"), press("left"), NOTHING]
+        )
+        assert result.outcome is LEFT
+        assert result.record["response_key"] == "left"
+        # Read at the start of frame 3: one frame period after the flip that
+        # showed the cue (t_response_cue), two after the phase's on_enter —
+        # so one frame, not two, says the clock started at the cue's flip.
+        assert result.record["rt_ms"] == pytest.approx(FRAME_S * 1000, abs=1.0)
+
+    def test_without_an_onset_event_keys_count_from_the_first_frame(self):
+        # No cue flip to wait for: the task has said the window opens when the
+        # phase does, so a key read on the first frame is a response, timed
+        # from the phase's on_enter. Unchanged by the wait for the cue.
+        harness, result = run([self.phase(onset_event=None)], [press("left"), NOTHING])
+        assert result.outcome is LEFT
+        assert result.record["rt_ms"] == pytest.approx(0.0, abs=1.0)
+        assert "RESPONSE_CUE" not in harness.collector.names()
+
     def test_unbound_keys_are_not_responses(self):
         # A hand slipping onto an unbound key is not a decision, and counting
         # it as the wrong answer would be a fabricated data point.
