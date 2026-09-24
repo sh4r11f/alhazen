@@ -102,7 +102,8 @@ command source, and the bus:
 4. `phase.on_frame(ctx)` draws and decides (CONTINUE / ADVANCE / Outcome)
 5. draw the rig's `overlay(ctx)`, if any — today, the photodiode patch
 6. `display.flip()` — the only moment photons change
-7. stamp the session clock; compute `ctx.dt` (duration of the just-shown frame)
+7. read the session clock once — the flip's time, which steps 8–10 all
+   record — and compute `ctx.dt` (duration of the just-shown frame)
 8. feed the FrameMonitor (dropped-frame policy:
    log/warn/mark_trial/recycle_trial/abort_run; at the trial's end its
    `end_trial()` logs one line per trial with drops and, under
@@ -125,8 +126,12 @@ command source, and the bus:
    is `0` on a clean trial, never absent. On a simulated display the policy is stood
    down to `log` at build time — the flip times there measure how accurately
    the host can wait, not whether a panel is holding its refresh)
-9. emit the events the phase queued via `ctx.emit_on_flip`, stamped now —
-   the photon-honest timestamp
+9. emit the events the phase queued via `ctx.emit_on_flip`, every one
+   stamped with the flip's time from step 7 — the photon-honest timestamp.
+   Not with the clock read again as each is emitted: by then the bus's
+   subscribers (a tracker message, a sync pulse) have run for the events
+   before it, and events shown by one flip would carry different, later
+   times
 10. hand the phase's mid-trial reward requests (`ctx.request_reward`) to the
     reward worker and emit a `REWARD` for each, stamped with that same flip;
     then report every delivery the worker has finished since the last frame
@@ -140,7 +145,10 @@ an event's timestamp refers to.
 Invariants the tests pin:
 
 - `TRIAL_START` emits immediately (it precedes every other event in the
-  trial); visual events emit only after their flip.
+  trial); visual events emit only after their flip, and carry that flip's
+  time — as do the frame log and the per-frame inputs for that frame.
+  Events with no flip of their own (`TRIAL_START`, `TRIAL_END`, `PAUSED`, a
+  manual `REWARD`, a drop's end) are stamped as they are emitted.
 - Every emitted event mirrors into the trial record as `t_<name>`.
 - Every record carries `fault`: `none` unless a system fault hit the trial
   (`dropped_frames`, `tracker_stopped`) — a value on every row, never an

@@ -237,6 +237,28 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Fixed
 
+- **Events shown by one flip were stamped later than the flip, and with
+  different times.** The engine read the flip's time right after `flip()`,
+  then stamped each event a phase had queued with `emit_on_flip` — and each
+  mid-trial `REWARD` — with the clock read again as it was emitted: after
+  the frame's own bookkeeping and, for every event but the frame's first,
+  after the bus's subscribers (the tracker's message, the sync pulse) had
+  handled the one before it. So `events.csv` and the row's `t_<event>`
+  columns ran late by that time, two events on one flip got two times, and a
+  reaction time a phase measured from `t_<onset_event>` came out short by
+  the same amount. Every event queued on a flip, and every mid-trial
+  `REWARD`, now carries that flip's own time — the time `frames.csv` and the
+  database's `frames` table record for it — and the engine reads its flips
+  on its own clock, never the trial context's. Events with no flip
+  (`TRIAL_START`, `TRIAL_END`, `PAUSED`, a manual `REWARD`, a drop's end) are
+  stamped as they are emitted, as before. **In data recorded before this
+  fix** a flip-locked event's `t` is later than its flip by the subscribers'
+  run time. Its flip is the last one of its trial at or before that `t`: the
+  database's `frames` table has every flip (`t_session`, by `trial_index` and
+  `frame_index`), while `frames.csv` leaves out each trial's first. A
+  mid-trial `REWARD` names its flip outright, as `frame`. See
+  [docs/architecture.md](docs/architecture.md) §2.
+
 - **The same run number on a later day wrote into the earlier run's
   folder.** `SessionPaths.create` refused only this run's own trials file,
   whose name carries the date; the folder's name does not. So `--run 1` on
