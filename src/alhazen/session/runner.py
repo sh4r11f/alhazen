@@ -3,9 +3,11 @@
 Contract, in order:
 
 1. The config snapshot is written *before anything else* — a session that
-   crashes still documents what it was trying to run.
+   crashes still documents what it was trying to run. A session whose
+   snapshot cannot be written never started: teardown releases its devices
+   and writes nothing into its run directory.
 2. File logging attaches at the root logger so every module's logging lands
-   in this run's ``session.log``.
+   in this run's ``session.log``; then the subject is registered.
 3. Loop: ask the paradigm for a condition, build the trial through the
    task's ``build_trial``, open the tracker's recording segment (and close it
    in a ``finally``), run it through the engine and let its mid-trial reward
@@ -16,7 +18,8 @@ Contract, in order:
    fault — dropped frames, a tracker that stopped — is re-served like any
    non-completed trial, but paid all the same and held against nobody
    (``TrialResult.lost_to_fault``).
-4. However the loop ends, teardown attempts *every* step — a session is
+4. However the session ends (in the loop, or in any step before it that
+   set the session up), teardown attempts *every* step — a session is
    unrepeatable work, so writing the trials table must survive a display
    that fails to close, and vice versa. Step errors are logged and collected;
    the first is re-raised only if no other exception is already propagating.
@@ -404,34 +407,53 @@ class SessionRunner:
     # ------------------------------------------------------------------
 
     def run(self) -> None:
-        write_snapshot(self._cfg, self._paths.snapshot_path)
-        ensure_participant(self._cfg.rig.data_root, self._cfg.info.subject)
-        file_handler = self._attach_file_logging()
-
-        log.info(
-            "session start: subject %s, ses %d, run %d, task %s, seed %d",
-            self._cfg.info.subject,
-            self._cfg.info.session,
-            self._cfg.info.run,
-            self._cfg.info.task_name,
-            self._cfg.info.seed,
-        )
-        log.info("devices: %s", self._devices_line())
-        for note in self.setup_notes:
-            log.info("setup: %s", note)
-        if self._dashboard is not None:
-            log.info("live dashboard: %s", self._dashboard.url)
-            if self._eyetracker is not None:
-                # Camera frames stream to the page on their own channel while
-                # the session is paused or a procedure runs. Wired here, once
-                # the dashboard is known to be open, so a session without one
-                # never reads a frame nobody will see.
-                self._eyetracker.camera_sink = self._send_camera_frame
-                # And the tracker settings the page sends (the iris size),
-                # applied between frames, even while a procedure runs.
-                self._eyetracker.settings_source = self._poll_tracker_settings
-        self._publish_dashboard("running")
+        # How far the start got, for the teardown in the finally below. Every
+        # setup step runs inside that try, not before it: by the time run() is
+        # called the builder has opened the window, the reward and sync
+        # devices, connected the tracker and the spike stream, and started the
+        # dashboard's child process. A setup step that failed before the try —
+        # a session.log that could not be opened, a participants.tsv another
+        # program held, a dashboard publish that raised — left every one of
+        # them held, and no "session end" line anywhere.
+        snapshot_written = False
+        file_handler: logging.FileHandler | None = None
         try:
+            # First, before anything else is written: a session that crashes
+            # still documents what it was trying to run. Until it is on disk
+            # the run directory is not a run, and teardown releases the
+            # devices without writing anything into it (_teardown).
+            write_snapshot(self._cfg, self._paths.snapshot_path)
+            snapshot_written = True
+            # The log before the registry, so a participants.tsv that cannot
+            # be written ends with a "session end: FAILED" line in this run's
+            # own log rather than only on a terminal.
+            file_handler = self._attach_file_logging()
+            ensure_participant(self._cfg.rig.data_root, self._cfg.info.subject)
+
+            log.info(
+                "session start: subject %s, ses %d, run %d, task %s, seed %d",
+                self._cfg.info.subject,
+                self._cfg.info.session,
+                self._cfg.info.run,
+                self._cfg.info.task_name,
+                self._cfg.info.seed,
+            )
+            log.info("devices: %s", self._devices_line())
+            for note in self.setup_notes:
+                log.info("setup: %s", note)
+            if self._dashboard is not None:
+                log.info("live dashboard: %s", self._dashboard.url)
+                if self._eyetracker is not None:
+                    # Camera frames stream to the page on their own channel
+                    # while the session is paused or a procedure runs. Wired
+                    # here, once the dashboard is known to be open, so a
+                    # session without one never reads a frame nobody will see.
+                    self._eyetracker.camera_sink = self._send_camera_frame
+                    # And the tracker settings the page sends (the iris size),
+                    # applied between frames, even while a procedure runs.
+                    self._eyetracker.settings_source = self._poll_tracker_settings
+            self._publish_dashboard("running")
+
             if self._instructions:
                 self._display.show_message(self._instructions)
                 # A simulated session has no subject and therefore no start
@@ -611,7 +633,7 @@ class SessionRunner:
                 if self._iti_s > 0:
                     self._wait(self._iti_s)
         finally:
-            self._teardown(file_handler)
+            self._teardown(file_handler, snapshot_written=snapshot_written)
 
     # ------------------------------------------------------------------
     # The session log's structure
@@ -1671,7 +1693,25 @@ class SessionRunner:
             root.setLevel(logging.INFO)
         return handler
 
-    def _teardown(self, file_handler: logging.FileHandler) -> None:
+    def _teardown(
+        self, file_handler: logging.FileHandler | None, *, snapshot_written: bool
+    ) -> None:
+        """Release every device and write everything the session produced.
+
+        ``file_handler`` is None when the session failed before session.log
+        was attached; every other step still runs.
+
+        ``snapshot_written`` is False when the session failed writing its
+        config snapshot, the first file a run writes. Nothing then says what
+        the run directory was for and `load_run` cannot read it, so it is not
+        a run: every device is still released, but nothing is written into it
+        — no data files, no manifest, no saved dashboard, no database row, and
+        the tracker is not handed a destination for its recording, which
+        holds no trial. A curriculum hands its task back, but the subject's
+        training state is not saved for a session that never started. The
+        directory stays as the build left it, so a run number whose folder is
+        still empty can be used again (data/paths.py).
+        """
         errors: list[Exception] = []
 
         def step(name: str, fn: Callable[[], None]) -> None:
@@ -1681,12 +1721,27 @@ class SessionRunner:
                 log.exception("teardown step %r failed", name)
                 errors.append(e)
 
+        def record_step(name: str, fn: Callable[[], None]) -> None:
+            # A step that records the session — into its run directory, the
+            # subject's training state or the database mirror. Only for a
+            # session whose snapshot was written; see the docstring.
+            if snapshot_written:
+                step(name, fn)
+
         # First, before any other step can fail: the log's own account of how
         # the session ended is worth more than a step's failure message, and
         # a log that simply stops is what this line exists to prevent. A step
         # like every other, so if even this line cannot be written, the data
         # below still is.
         step("log.session_end", self._log_session_end)
+        if not snapshot_written:
+            # Said once, so an experimenter who finds the folder empty knows
+            # it was left that way on purpose.
+            log.warning(
+                "the config snapshot was never written, so %s is not a run: the devices are "
+                "released and nothing is written into it",
+                self._paths.run_dir,
+            )
 
         # Before the recorder writes: a trial cut short by a quit or a fault
         # left the loop before its between-trials settle, and its drops'
@@ -1694,7 +1749,7 @@ class SessionRunner:
         if self._last_ctx is not None:
             last_ctx = self._last_ctx
             step("reward.settle", lambda: self._engine.settle_rewards(last_ctx))
-        step("recorder.write", self._recorder.write)
+        record_step("recorder.write", self._recorder.write)
         # Its own step, and early: a subject's place in its curriculum is
         # weeks of work, and must be written even if something later in
         # teardown fails.
@@ -1702,20 +1757,20 @@ class SessionRunner:
             training = self._training
             # Wrapped rather than passed directly: save() returns the path it
             # wrote, and a teardown step returns nothing.
-            step("training.save", lambda: (training.save(), None)[1])
+            record_step("training.save", lambda: (training.save(), None)[1])
             # A Task instance can outlive this session. The supervisor mutated
             # it stage by stage, so handing it back untouched is what stops a
             # second session from treating this one's last stage as its base.
             step("training.restore_base", training.restore_base)
-        step("paradigm.summary", self._write_paradigm_summary)
-        step("frames.save", lambda: self._frame_monitor.save(self._paths.frames_path))
+        record_step("paradigm.summary", self._write_paradigm_summary)
+        record_step("frames.save", lambda: self._frame_monitor.save(self._paths.frames_path))
         # The live analysis finishes BEFORE the final dashboard publish (so
         # the saved dashboard shows the flushed, final maps), before the
         # spike source closes (finishing drains it one last time), and
         # before the manifest is written (so what it saves is hashed).
         if self._live is not None:
             live = self._live
-            step("live.finish", lambda: live.finish(self._paths.run_dir))
+            record_step("live.finish", lambda: live.finish(self._paths.run_dir))
         if self._dashboard is not None:
             terminal = self._terminal_status(errors)
             dashboard = self._dashboard
@@ -1733,12 +1788,14 @@ class SessionRunner:
             # died mid-session can fail right here. Unguarded, that failure
             # skipped every step below it — the tracker's recording, the
             # manifest, closing the window.
-            step("dashboard.publish", publish_final)
+            record_step("dashboard.publish", publish_final)
             # Saved only when the final state was built. When it was not, that
             # failure is already logged and collected, and an earlier, capped
             # state saved in its place would pose as the session's record.
             if final_state:
-                step("dashboard.save", lambda: dashboard.save(self._paths.figures_dir, final_state))
+                record_step(
+                    "dashboard.save", lambda: dashboard.save(self._paths.figures_dir, final_state)
+                )
             step("dashboard.stop", dashboard.stop)
         # Devices release BEFORE the manifest is written: the tracker's
         # recording is retrieved into this run's directory during shutdown,
@@ -1753,23 +1810,30 @@ class SessionRunner:
             # promise: a backend whose native recording is not an EDF replaces
             # the suffix and may write more than one file (the viewpixx
             # backend writes samples and their clock alignment separately).
-            recording_path = self._paths.run_dir / f"{self._paths.base}.edf"
+            # None when the snapshot was never written: released all the same,
+            # with nothing delivered into a directory that is not a run.
+            recording_path = (
+                self._paths.run_dir / f"{self._paths.base}.edf" if snapshot_written else None
+            )
             step("tracker.shutdown", lambda: tracker.shutdown(recording_path))
         if sync is not None:
             step("sync.close", sync.close)
         if reward is not None:
             step("reward.close", reward.close)
         # Close the log file before the manifest hashes it, so session.log's
-        # recorded hash covers its complete contents.
-        step("log.close", lambda: self._detach_file_logging(file_handler))
-        step(
+        # recorded hash covers its complete contents. None when the session
+        # failed before the log was attached: there is nothing to close.
+        if file_handler is not None:
+            handler = file_handler
+            step("log.close", lambda: self._detach_file_logging(handler))
+        record_step(
             "manifest.write",
             lambda: write_manifest(self._paths.run_dir, self._paths.manifest_path),
         )
         if self._database is not None:
             database = self._database
             status = self._terminal_status(errors)
-            step(
+            record_step(
                 "database.write",
                 lambda: (
                     database.write_run(

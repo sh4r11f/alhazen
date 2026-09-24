@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import csv
+import logging
 
 import pytest
 import yaml
 
 from alhazen.core.commands import Command
 from alhazen.devices.eyetracker.scripted import ScriptedTracker
-from alhazen.testing import FakeClock, ScriptedCommands
+from alhazen.testing import FakeClock, ScriptedCommands, ScriptedReward
 from support import COMPLETED, SessionHarness
 
 
@@ -238,6 +239,187 @@ class TestTeardownResilience:
         harness.recorder.write = broken_write  # type: ignore[method-assign]
         with pytest.raises(RuntimeError, match="task bug"):
             harness.runner.run()
+
+
+class ClosableSync:
+    """A sync output that remembers being closed. A real one holds an NI-DAQ
+    task per line until then, and the next session cannot open them."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    def pulse(self, line: str) -> None:
+        return
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class StoppableDashboard:
+    """A dashboard that remembers being stopped — the real one is a child
+    process — and, with ``fail=True``, refuses every publish the way one
+    whose child has died does, naming the status it was given."""
+
+    url = "http://127.0.0.1:0/"
+
+    def __init__(self, fail: bool = False) -> None:
+        self.fail = fail
+        self.states: list[dict] = []
+        self.stopped = False
+
+    def publish(self, state: dict) -> None:
+        if self.fail:
+            raise RuntimeError(f"the dashboard could not publish the {state['status']!r} state")
+        self.states.append(state)
+
+    def publish_camera(self, pixels, t: float) -> None:
+        return
+
+    def poll_settings(self) -> list:
+        return []
+
+    def poll_commands(self) -> list:
+        return []
+
+    def save(self, figures_dir, state: dict) -> None:
+        # A file on disk, so "nothing was written into the run directory"
+        # covers the saved dashboard too.
+        (figures_dir / "dashboard_state.json").write_text(state["status"])
+
+    def stop(self) -> None:
+        self.stopped = True
+
+
+class HandBackTraining:
+    """The two calls teardown makes on a curriculum, recorded: saving the
+    subject's state, and handing the task back as it was passed in."""
+
+    def __init__(self) -> None:
+        self.saved = False
+        self.restored = False
+
+    def save(self) -> None:
+        self.saved = True
+
+    def restore_base(self) -> None:
+        self.restored = True
+
+
+class TestASetupFailureStillTearsDown:
+    """By the time run() is called the builder has opened the window,
+    connected the tracker, and started the reward device, the sync lines and
+    the dashboard's process. The steps that set the session up before trial 1
+    ran outside the try whose finally tears it down, so one that failed left
+    every device held and wrote no "session end" line anywhere."""
+
+    def session(self, tmp_path, dashboard: StoppableDashboard | None = None):
+        clock = FakeClock()
+        tracker = ScriptedTracker([], clock)
+        reward = ScriptedReward()
+        sync = ClosableSync()
+        dashboard = dashboard if dashboard is not None else StoppableDashboard()
+        harness = SessionHarness(
+            tmp_path,
+            n_trials=1,
+            tracker=tracker,
+            reward=reward,
+            sync=sync,
+            clock=clock,
+            dashboard=dashboard,
+        )
+        return harness, tracker, reward, sync, dashboard
+
+    @staticmethod
+    def assert_released(harness, tracker, reward, sync, dashboard) -> None:
+        assert harness.display.closed, "the window was left open"
+        assert len(tracker.shutdowns) == 1, "the tracker's link was left held"
+        assert reward.closed, "the reward device was left open"
+        assert sync.closed, "the sync lines were left held"
+        assert dashboard.stopped, "the dashboard's process was left running"
+
+    def test_a_session_log_that_cannot_be_opened(self, tmp_path, caplog):
+        harness, *devices = self.session(tmp_path)
+        harness.paths.log_path.mkdir()  # a directory cannot be opened as the log file
+
+        with (
+            caplog.at_level(logging.ERROR, logger="alhazen.session.runner"),
+            pytest.raises(OSError, match="session.log"),
+        ):
+            harness.runner.run()
+
+        self.assert_released(harness, *devices)
+        # No log of its own, so how it ended goes where the program's other
+        # logging goes.
+        assert "session end: FAILED" in caplog.text
+        # The snapshot was written, so this is a run — a failed one — and
+        # teardown writes it like any other.
+        assert harness.paths.trials_path.exists()
+        assert harness.paths.manifest_path.exists()
+
+    def test_a_participants_registry_that_cannot_be_written(self, tmp_path):
+        harness, *devices = self.session(tmp_path)
+        # A directory in the registry's place cannot be opened: the same
+        # OSError a registry locked by another program (a spreadsheet) raises.
+        (tmp_path / "participants.tsv").mkdir()
+
+        with pytest.raises(OSError, match="participants.tsv"):
+            harness.runner.run()
+
+        self.assert_released(harness, *devices)
+        # The log is attached before the subject is registered, so this
+        # failure is in the run's own log.
+        log = harness.paths.log_path.read_text(encoding="utf-8")
+        assert "session end: FAILED" in log
+        assert "participants.tsv" in log
+        assert harness.paths.manifest_path.exists()
+
+    def test_a_first_dashboard_publish_that_fails(self, tmp_path):
+        # Every publish fails, the final one in teardown included: the error
+        # that propagates is still the one that ended the session.
+        harness, *devices = self.session(tmp_path, StoppableDashboard(fail=True))
+
+        with pytest.raises(RuntimeError, match="'running'"):
+            harness.runner.run()
+
+        self.assert_released(harness, *devices)
+        log = harness.paths.log_path.read_text(encoding="utf-8")
+        assert "session end: FAILED" in log
+        assert harness.paths.manifest_path.exists()
+
+    def test_a_snapshot_that_cannot_be_written_releases_and_writes_nothing(self, tmp_path, caplog):
+        harness, tracker, reward, sync, dashboard = self.session(tmp_path)
+        harness.paths.snapshot_path.mkdir()  # a directory cannot be written as the snapshot
+
+        with (
+            caplog.at_level(logging.WARNING, logger="alhazen.session.runner"),
+            pytest.raises(OSError, match="config_snapshot.yaml"),
+        ):
+            harness.runner.run()
+
+        self.assert_released(harness, tracker, reward, sync, dashboard)
+        # A directory with no snapshot is not a run: nothing is written into
+        # it — no data files, no log, no manifest, no saved dashboard — and
+        # the tracker is released without being handed a destination for its
+        # recording.
+        assert [p for p in harness.paths.run_dir.rglob("*") if p.is_file()] == []
+        assert tracker.shutdowns == [None]
+        assert dashboard.states == []
+        assert "session end: FAILED" in caplog.text
+        assert "config snapshot was never written" in caplog.text
+
+    def test_a_snapshot_failure_hands_the_task_back_but_saves_no_training_state(self, tmp_path):
+        harness, *_ = self.session(tmp_path)
+        training = HandBackTraining()
+        harness.runner._training = training
+        harness.paths.snapshot_path.mkdir()
+
+        with pytest.raises(OSError, match="config_snapshot.yaml"):
+            harness.runner.run()
+
+        # The task a caller still holds is put back as it was passed in, but
+        # a session that never started does not move the subject's record.
+        assert training.restored
+        assert not training.saved
 
 
 class TestTrackerCalibrationBeforeTrialOne:

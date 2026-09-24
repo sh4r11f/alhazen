@@ -1658,7 +1658,16 @@ every backend precisely so a backend cannot quietly reach for
    screen a fault puts up;
 4. teardown attempts every step regardless of earlier failures (recorder →
    frame log → close log file → manifest → display), re-raising the first
-   teardown error only if nothing else is propagating.
+   teardown error only if nothing else is propagating. It runs however the
+   session ends, including in a step before the loop — attaching
+   `session.log`, registering the subject, the first dashboard publish —
+   because by then the builder has opened the window, connected the tracker
+   and started the reward, sync and spike devices and the dashboard's child
+   process. A session whose snapshot could not be written never started: a
+   run directory without one is not an analysable run, so teardown releases
+   every device (the tracker without a destination for its recording) and
+   writes nothing into it — no data files, manifest, saved dashboard,
+   database row or training state.
 
 `session.log` (UTF-8, attached at the root logger at INFO) is meant to be
 read as the record of the session's *structure*, so what it carries at INFO
