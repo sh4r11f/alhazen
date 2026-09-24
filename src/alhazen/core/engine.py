@@ -14,7 +14,8 @@ afterwards. A phase's mid-trial reward requests are handed to the dispenser
 at that same moment, so their REWARD events carry the same flip.
 
 Both system faults the engine can see — a failed health check and a frame-QA
-recycle — are written onto the row as its ``fault`` (core/trial.py NO_FAULT).
+recycle — are written onto the row as its ``fault`` (core/trial.py NO_FAULT),
+and what a failed health check said about it as its ``fault_detail``.
 What a fault then costs, pays and counts is the runner's business.
 
 The engine is the only code that touches the display, the command source,
@@ -40,6 +41,7 @@ from alhazen.core.trial import (
     FAULT_DROPPED_FRAMES,
     NO_FAULT,
     PAUSED,
+    HealthFault,
     InputFrame,
     Outcome,
     PhaseAction,
@@ -143,6 +145,20 @@ def _is_interrupted(outcome: Outcome | None) -> bool:
     return outcome is not None and outcome.name in ("PAUSED", "ABORTED")
 
 
+def _write_fault(ctx: TrialContext, failed: HealthFault) -> None:
+    """Put a failed health check on the row: its reason as ``fault``, and
+    what the device said about it as ``fault_detail``.
+
+    The detail is written only when there is one, like every column the
+    engine writes only where it means something (``abort_reason``,
+    ``frame_qa_reason``); ``fault`` itself is on every row already
+    (run_trial), so this only ever overwrites it.
+    """
+    ctx.record["fault"] = failed.reason
+    if failed.detail:
+        ctx.record["fault_detail"] = failed.detail
+
+
 class TrialEngine:
     def __init__(
         self,
@@ -153,7 +169,7 @@ class TrialEngine:
         commands: CommandSource,
         frame_monitor: FrameMonitor | None = None,
         input_provider: Callable[[], InputFrame] | None = None,
-        health_checks: tuple[Callable[[], str | None], ...] = (),
+        health_checks: tuple[Callable[[], HealthFault | str | None], ...] = (),
         on_manual_reward: Callable[[], None] | None = None,
         manual_reward_payload: dict[str, Any] | None = None,
         overlay: Callable[[TrialContext], None] | None = None,
@@ -171,11 +187,14 @@ class TrialEngine:
         # Health checks run every frame, not once at trial start: a trial
         # that believes a device is still recording when it is not would
         # silently produce data with holes and no record of why. A check
-        # returns an abort reason string, or None when healthy. A check that
-        # fails is a system fault — a device stopped, which is never the
-        # subject's doing — so its reason is also the row's `fault`; and
-        # during the closing phase it flags the row without ending the trial
-        # (_run_phase).
+        # returns None when healthy, and otherwise a HealthFault — the reason
+        # and what the device said about it — or, the older shape, the bare
+        # reason string. A check that fails is a system fault — a device
+        # stopped, which is never the subject's doing — so its reason is also
+        # the row's `fault`, and its detail the row's `fault_detail`; during
+        # the closing phase it flags the row without ending the trial
+        # (_run_phase). Every frame means cheap: a check that asked its
+        # device something on every call would cost a round trip per frame.
         self._health_checks = tuple(health_checks)
         self._on_manual_reward = on_manual_reward
         self._manual_reward_payload = dict(manual_reward_payload or {})
@@ -328,8 +347,11 @@ class TrialEngine:
                 # is served again for — so it is what the row's single fault
                 # column names. It replaces a tracker stop the closing phase
                 # may have flagged on this trial: that one cost nothing, and
-                # was logged at WARNING when it happened.
+                # was logged at WARNING, with its detail, when it happened.
+                # The detail goes with it: `fault_detail` describes the fault
+                # `fault` names, and this one's account is `frame_qa_reason`.
                 ctx.record["fault"] = FAULT_DROPPED_FRAMES
+                ctx.record.pop("fault_detail", None)
                 outcome = DROPPED_FRAMES
 
         self._finalize(ctx, outcome)
@@ -362,8 +384,8 @@ class TrialEngine:
             if outcome is not None:
                 return outcome
 
-            reason = None if fault_flagged else self._failed_health_check()
-            if reason is not None:
+            failed = None if fault_flagged else self._failed_health_check()
+            if failed is not None:
                 if not closing:
                     # The measurement is still being made, and it cannot be
                     # made without the device, so the trial is aborted and
@@ -371,10 +393,10 @@ class TrialEngine:
                     # carry the same reason: that pairing is how
                     # core.trial.lost_to_fault tells this abort from the
                     # experimenter's skip, which is ABORTED too.
-                    ctx.record["abort_reason"] = reason
-                    ctx.record["fault"] = reason
+                    ctx.record["abort_reason"] = failed.reason
+                    _write_fault(ctx, failed)
                     return ABORTED
-                self._flag_closing_phase_fault(ctx, phase, reason)
+                self._flag_closing_phase_fault(ctx, phase, failed)
                 fault_flagged = True
 
             ctx.inputs = self._input_provider()
@@ -428,16 +450,22 @@ class TrialEngine:
     # Health checks
     # ------------------------------------------------------------------
 
-    def _failed_health_check(self) -> str | None:
-        """The reason of the first health check that fails this frame, or
-        None when every device reports itself healthy."""
+    def _failed_health_check(self) -> HealthFault | None:
+        """The first health check that fails this frame, or None when every
+        device reports itself healthy.
+
+        A check that answers with a bare reason string — the shape every
+        check had before a device could say more — is read as a HealthFault
+        with no detail, so such a check keeps working unchanged.
+        """
         for check in self._health_checks:
-            reason = check()
-            if reason is not None:
-                return reason
+            failed = check()
+            if failed is None:
+                continue
+            return failed if isinstance(failed, HealthFault) else HealthFault(reason=failed)
         return None
 
-    def _flag_closing_phase_fault(self, ctx: TrialContext, phase: Any, reason: str) -> None:
+    def _flag_closing_phase_fault(self, ctx: TrialContext, phase: Any, failed: HealthFault) -> None:
         """A device failed its health check during the closing phase: flag the
         row, say so, and let the phase run to its end.
 
@@ -450,18 +478,21 @@ class TrialEngine:
         that ADVANCEs, ended ABORTED and was served again), cut the subject's
         feedback off before it was drawn, and wrote an ``abort_reason`` on a
         trial that was not aborted. The trial keeps the outcome its own
-        phases give it; the row's ``fault`` is the only trace, beside this
-        line.
+        phases give it; the row's ``fault`` (and ``fault_detail``) is the only
+        trace, beside this line.
         """
-        ctx.record["fault"] = reason
+        _write_fault(ctx, failed)
         log.warning(
             "trial %d: a device health check failed (%s) during the closing phase %r, after "
             "the measurement: the trial is not aborted — its outcome stands and the phase "
-            "runs to its end — and the row is flagged fault=%s",
+            "runs to its end — and the row is flagged fault=%s%s",
             ctx.trial_index,
-            reason,
+            failed.reason,
             getattr(phase, "name", phase),
-            reason,
+            failed.reason,
+            # What the device said, when it said anything: the half of the
+            # line that tells a pulled cable from a Host PC abort.
+            f". The device said: {failed.detail}" if failed.detail else "",
         )
 
     # ------------------------------------------------------------------

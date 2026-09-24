@@ -112,6 +112,52 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   before the fault stays delivered and counted, and the line says how many.
   The experimenter's skip and a pause are never paid `on_fault`. See "System
   faults" in [docs/architecture.md](docs/architecture.md) §5.3.
+- **A failed health check says what the device said, and the row keeps it
+  in a new `fault_detail` column.** A device health check may now return
+  **`HealthFault(reason, detail)`** (`alhazen.core`) rather than a bare
+  reason: `TrialEngine` writes the reason as `fault` (and `abort_reason`) as
+  before, and the detail — the device's own account, in words — as
+  `fault_detail`, right after `fault` in the trials table. The fault's
+  WARNING line in `session.log`, and the engine's line for a stop during the
+  closing phase, carry the same words. It is only on a row whose fault a
+  health check reported with a detail: a dropped-frames row keeps its account
+  in `frame_qa_reason`, and when frame QA recycles a trial whose closing
+  phase flagged a tracker stop, the detail leaves with the flag. Free text
+  for a person; select on `fault`. A check that returns a bare reason string
+  still works. The trial-column baseline in `tests/fixtures/contracts.json`
+  gains `fault_detail`; nothing was removed or renamed.
+- **Two rig fields for dropout detection** (`devices.eyetracker`):
+  `max_sample_gap_ms` — how long the tracker may go without a new sample
+  mid-trial before its recording is called dead, 50 ms on an EyeLink and
+  100 ms on a TRACKPixx3 by default, written into the config as it loads so
+  the snapshot records it, and refused below 20 ms (EyeLink: five samples at
+  its slowest rate, 250 Hz) or 50 ms (TRACKPixx3: one slow USB read) and above
+  1000 ms; and `max_consecutive_dropouts` (3). Both are refused on
+  `mouse_sim`, which streams nothing that could stop.
+- **A run of dropouts pauses the session.** Every tracker-stopped trial is
+  served again, so a tracker that dies on every recording would loop the
+  session on the same trial, paying the fault reward each time. After
+  `max_consecutive_dropouts` in a row the pause screen, in red, leads with
+  `THE EYE TRACKER DROPPED OUT ON 3 TRIALS IN A ROW — last: <what it said>`,
+  and a WARNING says the same. A trial the tracker records through ends the
+  streak; a pause neither counts nor ends it; the count starts over after its
+  pause. `SessionRunner(max_consecutive_dropouts=...)`, default 3, None never
+  pauses.
+- **`alhazen check-rig` exercises dropout detection on the tracker itself.**
+  After connecting a real EyeLink or TRACKPixx3 it records for a second
+  while polling the session's own health check (nothing may be reported),
+  stops the recording through the SDK behind the session's back (the
+  EyeLink's `stopRecording()`, the TRACKPixx3's `TPxDisableFreeRun()`), and
+  times the report: OK within the limit plus 50 ms, FAIL if it is late,
+  never comes, or the check fired on normal recording. `--record` keeps the
+  limit, the longest gap between samples seen while recording normally, the
+  check's measured per-frame cost, the latency and the tracker's words under
+  the eye tracker's `dropout` key, and the summary prints them. The
+  TRACKPixx3's `shutdown(None)` now removes the test's scratch recording
+  rather than leaving it in the temp folder. A manual cable-pull test and a
+  rig verification checklist are in [docs/eye-tracker.md](docs/eye-tracker.md),
+  "When the tracker drops out mid-trial".
+
 - **`REWARD_CANCELLED`, a reserved event, and `n_mid_trial_rewards_cancelled`,
   a trial column**, for a task that declares `mid_trial_reward`. A drop that
   was commanded (its `REWARD` is in the record) but never delivered, because
@@ -141,6 +187,36 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 - **`by_outcome` is not consulted for a tracker-stopped trial.** Its
   `ABORTED` is the rig's, so it pays `on_fault` or nothing; an `ABORTED`
   entry in `by_outcome` now pays the experimenter's skip only.
+- **`session.builder.make_tracker_health_check` returns a `HealthFault`**
+  (reason `tracker_stopped`, and a detail) rather than the bare string
+  `"tracker_stopped"`. Code comparing its result with that string should
+  read `.reason`.
+- **After a dropout, the rest of the trial no longer raises over it.** On the
+  EyeLink and TRACKPixx3 backends, a device that refuses the stop at the
+  trial's end, or the messages that follow the dropout (the trial's
+  `TRIAL_END`, the fault reward's `REWARD`), is logged — WARNING, or ERROR for
+  TRACKPixx3 samples that could not be drained — instead of raising in the
+  runner's `finally` and losing the trial's row. Without a dropout, the same
+  failures raise as before. A TRACKPixx3 message the device could not stamp
+  is left out of `<base>_gaze-messages.csv` rather than written without a
+  device time.
+- **A tracker that is gone fails the next trial's start in the rig's
+  words.** The EyeLink's `start_trial` raises a `TrackerError` naming the
+  Host PC's address — never pylink's bare `RuntimeError` — and, after a
+  dropout, what the previous trial's recording died of. The TRACKPixx3's
+  `start_trial` now checks the device before a trial relies on it: it
+  restarts a gaze reader that stopped once one read proves the device answers
+  again, re-arms a recording it finds switched off (with a warning), and
+  raises `the TRACKPixx3 is not answering at trial N` when the device does
+  not answer.
+- **A stuck TRACKPixx3 device call fails loudly instead of hanging the
+  session.** Messages and drains wait at most 2 s for the device lock that a
+  USB call to a vanished device can hold forever, then raise a `TrackerError`
+  saying a device call is stuck. `get_gaze()` stops treating a report as a
+  position at 100 ms, or at `max_sample_gap_ms` plus 5 ms when that is
+  later, so a stalled reader is always called a dropout before it can read as
+  a broken fixation.
+
 - **The manual reward overrides the mid-trial reward queue.** In a session
   whose task declares `mid_trial_reward`, the experimenter's reward — `r`
   during a trial, R in the pause menu, the dashboard's Give reward — waited
@@ -160,6 +236,30 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   [docs/architecture.md](docs/architecture.md) §5.3.
 
 ### Fixed
+
+- **The real eye trackers never noticed a recording that died mid-trial.**
+  The EyeLink's and the TRACKPixx3's `is_recording()` returned a flag they
+  set at `start_trial` and cleared at `stop_trial`, so a pulled cable, a Host
+  PC that stopped recording or a DATAPixx3 that lost power went unnoticed:
+  the tracker-stopped handling above could only ever fire on the scripted
+  tracker, and a session ran on with no eye data behind its trials. The
+  session's tracker health check now also calls the backends' new
+  `recording_fault()`. The EyeLink's calls a newest link sample that has not
+  been replaced for `max_sample_gap_ms` a dropout. A blink is a sample saying
+  "no eye", so it never counts. Only then does it ask `isRecording()` why.
+  The TRACKPixx3's calls it a dropout when its gaze reader has stopped or
+  stalled past the limit, or when the device, asked by the reader every half
+  limit, says free-run sampling no longer feeds the session's buffer or does
+  not answer. A healthy frame makes no round trip to either device. What each
+  says lands in `fault_detail`, so the lab can tell a pulled cable from a
+  Host PC abort: "no new sample from the EyeLink for 58 ms (limit 50 ms); the
+  Host PC at 100.1.1.1 reports recording ended (isRecording 3, ABORT_EXPT):
+  its operator aborted the experiment", or "… still reports recording
+  (isRecording 0), so the samples stopped on their way here", or "the
+  TRACKPixx3 stopped recording samples into the session's buffer: free-run
+  sampling is off". See [docs/eye-tracker.md](docs/eye-tracker.md), "When the
+  tracker drops out mid-trial", and [docs/architecture.md](docs/architecture.md)
+  §4.3.
 
 - **`alhazen run --task` showed the subject no instructions.** Only an
   experiment's `run.py` was ever handed the subject's wording, so a real
@@ -213,6 +313,21 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   reproduce is the picture for a given scene time and `dt`. The docs now say
   so, with a worked example. Nothing about how a scene is drawn has changed,
   and a test now pins the behaviour described.
+
+- **Frame QA's percentages no longer contradict their own verdict.** The
+  recycle reason printed the dropped fraction to one decimal and the budget
+  to whole percents. At the shipped 10% budget, a trial that dropped 21 of
+  209 frames was recycled as "(10.0%), over the 10% budget", and a 7.5%
+  budget was written as "8%": "3 of 39 frames dropped (7.7%), over the 8%
+  budget". That text is the trial row's `frame_qa_reason`, the session log's
+  line and `FrameQAError`'s message. The per-trial dropped-frames line and
+  the failure-streak pause ("dropped over 8% of their frames") rounded the
+  same way. A budget is now written as it was set ("7.5%"). A fraction gets
+  as many decimals as it takes to read on the side of the budget it is
+  really on: "(10.05%), over the 10% budget". A fraction clear of the budget
+  keeps its one decimal ("(15.0%)"). The alignment's matched-fraction
+  refusal already worked this way ("79.8% < 80%"); all of these messages now
+  share one rule, and the refusal prints exactly what it did.
 
 ## 1.5.0 - 2026-09-23
 

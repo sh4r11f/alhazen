@@ -26,7 +26,18 @@ from alhazen.core.events import Event
 
 # `fault` leads beside `abort_reason`: whether the rig failed on a trial is
 # read next to how the trial ended, not somewhere in the alphabetical middle.
-_LEADING = ("trial_index", "attempt", "outcome", "completed", "success", "abort_reason", "fault")
+# `fault_detail` follows it, so what the device said sits beside the fault it
+# describes.
+_LEADING = (
+    "trial_index",
+    "attempt",
+    "outcome",
+    "completed",
+    "success",
+    "abort_reason",
+    "fault",
+    "fault_detail",
+)
 
 
 def ordered_trial_columns(rows: list[dict[str, Any]]) -> list[str]:

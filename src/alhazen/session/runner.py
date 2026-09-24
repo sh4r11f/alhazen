@@ -33,7 +33,7 @@ from typing import Any
 
 import numpy as np
 
-from alhazen.config.models import RewardPulses, SessionConfig
+from alhazen.config.models import DEFAULT_MAX_CONSECUTIVE_DROPOUTS, RewardPulses, SessionConfig
 from alhazen.config.snapshot import write_snapshot
 from alhazen.core.clock import Clock
 from alhazen.core.commands import Command, CommandSource
@@ -52,6 +52,7 @@ from alhazen.dashboard.spec import DashboardSpec
 from alhazen.data.manifest import write_manifest
 from alhazen.data.participants import ensure_participant
 from alhazen.data.paths import SessionPaths
+from alhazen.data.percents import threshold_percent
 from alhazen.devices.eyetracker import EyeTracker, HostShape
 from alhazen.devices.eyetracker.procedures import ValidationResult
 from alhazen.devices.eyetracker.protocol import CameraFrame
@@ -204,6 +205,27 @@ def _cut_short_by_device(fault: str | None) -> bool:
     return fault is not None and fault != FAULT_DROPPED_FRAMES
 
 
+def _device_fault(record: dict[str, Any]) -> str | None:
+    """The fault a device health check reported on this trial, from its row,
+    or None.
+
+    Wider than being lost to one: a tracker that stopped during the closing
+    phase flags the row without costing the trial its outcome, and is still a
+    tracker that stopped. Every row's ``fault`` is one of "none", frame QA's
+    "dropped_frames", or a failed health check's reason — so anything but the
+    first two is a device's.
+    """
+    fault = record.get("fault", NO_FAULT)
+    if fault in (None, "", NO_FAULT, FAULT_DROPPED_FRAMES):
+        return None
+    return str(fault)
+
+
+# What the pause a run of dropouts raises leads with, per health-check reason.
+# A check added later reports a reason not listed here; its heading names it.
+_DROPOUT_HEADINGS = {FAULT_TRACKER_STOPPED: "THE EYE TRACKER DROPPED OUT"}
+
+
 class SessionRunner:
     def __init__(
         self,
@@ -244,8 +266,27 @@ class SessionRunner:
         setup_notes: Sequence[str] = (),
         max_consecutive_failures: int | None = None,
         rest_resume_after_s: float | None = None,
+        max_consecutive_dropouts: int | None = DEFAULT_MAX_CONSECUTIVE_DROPOUTS,
     ) -> None:
         self._cfg = cfg
+        # How many trials in a row a device may fail its health check on (the
+        # eye tracker dropping out) before the session stops at the pause
+        # screen, headed with what the device said; None never pauses. Each of
+        # those trials is served again, so without this a tracker that dies at
+        # the start of every recording turns the session into a loop: the
+        # same trial served into a dead tracker, its fault reward paid each
+        # time, and nothing on the rig's screen but trials that never finish.
+        # The rig's number, from eyetracker.max_consecutive_dropouts
+        # (session/builder.py); on by default here too, for a runner built by
+        # hand.
+        if max_consecutive_dropouts is not None and max_consecutive_dropouts < 1:
+            raise ValueError(
+                f"max_consecutive_dropouts must be >= 1 or None, got {max_consecutive_dropouts}"
+            )
+        self._max_consecutive_dropouts = max_consecutive_dropouts
+        self._dropouts_in_a_row = 0
+        # The last dropout's reason and detail, for the pause heading.
+        self._last_dropout: tuple[str, str | None] | None = None
         # How many non-completed trials in a row stop the session at the pause
         # screen. None never pauses. What counts as too many is the task's to
         # say (the builder reads it off the task's params), because a
@@ -533,6 +574,9 @@ class SessionRunner:
                 # fixation breaks, a completed trial with a dead pump, one
                 # more fixation break and the screen said three in a row.
                 too_many_failures = self._too_many_failures_in_a_row(outcome, fault=fault)
+                # Counted here too, for the same reason: before any branch
+                # below can `continue` past it.
+                too_many_dropouts = self._too_many_dropouts_in_a_row(outcome, result.record)
 
                 if outcome.name == "PAUSED" or reward_failed:
                     # A reward failure goes through the same pause flow as a
@@ -545,6 +589,18 @@ class SessionRunner:
                     if not self._handle_pause(result.record, fault=fault):
                         break
                     continue  # the pause menu already gave all the time needed; skip ITI
+
+                if too_many_dropouts:
+                    # Before the subject's failure streak: a device failing
+                    # trial after trial is the rig, and the thing to look at
+                    # first. The count starts again from here, so resuming on
+                    # a tracker that was fixed gets a whole new run of chances
+                    # and one that was not pauses again after as many.
+                    heading = self._dropout_streak_heading()
+                    self._dropouts_in_a_row = 0
+                    if not self._handle_pause(result.record, fault=heading):
+                        break
+                    continue
 
                 if too_many_failures:
                     fault = self._failure_streak_heading(outcome)
@@ -797,13 +853,18 @@ class SessionRunner:
         session, is the rig to fix before the next one.
         """
         cause = _FAULT_CAUSES.get(fault, f"a device health check failed ({fault})")
+        # What the device said about it, when it said anything — the row's
+        # fault_detail — so the lab can tell a pulled cable from a Host PC
+        # abort from this line alone.
+        detail = result.record.get("fault_detail")
         log.warning(
-            "trial %d attempt %d: %s — a system fault, not the subject's. %s. Flagged "
+            "trial %d attempt %d: %s%s — a system fault, not the subject's. %s. Flagged "
             "fault=%s; the condition will be served again, and the trial is not counted "
             "against the subject.",
             self._trial_index,
             attempt,
             cause,
+            f" ({detail})" if detail else "",
             self._describe_fault_pay(result, fault, pay_failed),
             fault,
         )
@@ -949,14 +1010,17 @@ class SessionRunner:
         if display_trials:
             log.warning(
                 "%d trials in a row not completed, the last %s on trial %d, and %d of them "
-                "dropped more than %.0f%% of their frames: pausing. The display was failing "
+                "dropped more than %s of their frames: pausing. The display was failing "
                 "through this streak, and a panel missing vsyncs causes real fixation breaks "
                 "— check the display before recalibrating.",
                 self._failures_in_a_row,
                 outcome.name,
                 self._trial_index,
                 display_trials,
-                self._frame_monitor.dropped_fraction_budget * 100,
+                # The budget exactly as configured. Whole percents wrote a
+                # 7.5% budget as "8%", which the trials counted here (each over
+                # 7.5%) need not have dropped.
+                threshold_percent(self._frame_monitor.dropped_fraction_budget),
             )
         else:
             log.warning(
@@ -996,14 +1060,76 @@ class SessionRunner:
         limit = self._max_consecutive_failures
         display_trials = self._paused_streak_display_trials
         if display_trials:
+            # Written as frame QA writes it (the same rule as the log line in
+            # _too_many_failures_in_a_row): "7.5%", never a rounded "8%".
+            budget = threshold_percent(self._frame_monitor.dropped_fraction_budget)
             return (
                 f"{limit} TRIALS FAILED IN A ROW — last {outcome.name}, and {display_trials} "
-                f"of them dropped over {self._frame_monitor.dropped_fraction_budget:.0%} of "
-                f"their frames; check the display before recalibrating"
+                f"of them dropped over {budget} of their frames; check the display before "
+                f"recalibrating"
             )
         return (
             f"{limit} TRIALS FAILED IN A ROW — last {outcome.name}; check the calibration "
             f"(V), the subject, and the stimulus before resuming"
+        )
+
+    def _too_many_dropouts_in_a_row(self, outcome: Any, record: dict[str, Any]) -> bool:
+        """Count the trials a device failed its health check on, back to back;
+        True once the count has reached ``max_consecutive_dropouts``, which the
+        caller turns into a pause (and resets the count for).
+
+        - A trial whose row names a device's fault (``_device_fault``) counts:
+          the tracker dropped out on it, whether that cost the trial its
+          outcome or only flagged its closing phase.
+        - ``PAUSED`` neither counts nor ends the run, as in the subject's
+          failure streak: the experimenter stopped that trial, and it says
+          nothing about the device either way.
+        - Every other trial ends it: the tracker recorded that one through.
+
+        Separate from the subject's failure streak on purpose. That one leaves
+        a tracker-stopped trial out (it says nothing about the subject); this
+        one is nothing but those trials, and its pause sends the experimenter
+        to the tracker rather than to the calibration.
+
+        The count is left standing when the limit is reached, and reset only
+        when the pause is actually raised: a reward failure on the same trial
+        takes the pause screen first (the pump), and the dropouts are then
+        still owed their own pause if the next trial drops out as well.
+        """
+        limit = self._max_consecutive_dropouts
+        if limit is None or outcome.name == "PAUSED":
+            return False
+        fault = _device_fault(record)
+        if fault is None:
+            self._dropouts_in_a_row = 0
+            return False
+        self._dropouts_in_a_row += 1
+        self._last_dropout = (fault, record.get("fault_detail"))
+        if self._dropouts_in_a_row < limit:
+            return False
+        log.warning(
+            "a device failed its health check (%s) on %d trials in a row, the last trial %d%s: "
+            "pausing so the device can be checked. Every one of them that the fault cut short "
+            "is served again.",
+            fault,
+            self._dropouts_in_a_row,
+            self._trial_index,
+            f" — {record['fault_detail']}" if record.get("fault_detail") else "",
+        )
+        return True
+
+    def _dropout_streak_heading(self) -> str:
+        """What the pause screen leads with when a run of dropouts stops the
+        session: what dropped out and how often, then what the device said
+        the last time — the words that tell a pulled cable from a Host PC that
+        stopped recording — and where to look."""
+        assert self._last_dropout is not None  # set by the dropout that got here
+        fault, detail = self._last_dropout
+        what = _DROPOUT_HEADINGS.get(fault, f"A DEVICE FAILED ITS HEALTH CHECK ({fault})")
+        said = f"last: {detail}. " if detail else ""
+        return (
+            f"{what} ON {self._dropouts_in_a_row} TRIALS IN A ROW — {said}Check the tracker "
+            f"and its connection to this machine before resuming; those trials are served again"
         )
 
     def _require_tracker_calibration(self) -> bool:

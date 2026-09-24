@@ -8,7 +8,7 @@ import pytest
 from alhazen.config.models import FrameQAConfig, RewardPulses
 from alhazen.core.commands import Command
 from alhazen.core.engine import QuitRequested
-from alhazen.core.trial import InputFrame, PhaseAction
+from alhazen.core.trial import HealthFault, InputFrame, PhaseAction
 from alhazen.devices.reward import SimulatedReward
 from alhazen.errors import FrameQAError
 from alhazen.testing import ScriptedCommands, ScriptedInputs
@@ -204,6 +204,39 @@ class TestHealthChecks:
         result = harness.engine.run_trial(harness.ctx(), [RunForFrames(10, COMPLETED)])
         assert result.outcome.name == "ABORTED"
         assert result.record["abort_reason"] == "tracker_stopped"
+        # A bare reason says nothing more, so the row gets no detail column.
+        assert "fault_detail" not in result.record
+
+    def test_a_health_fault_puts_what_the_device_said_on_the_row(self):
+        said = "no new sample from the EyeLink for 57 ms (limit 50 ms); the Host PC ..."
+        harness = EngineHarness(health_checks=(lambda: HealthFault("tracker_stopped", said),))
+        result = harness.engine.run_trial(harness.ctx(), [RunForFrames(10, COMPLETED)])
+        assert result.outcome.name == "ABORTED"
+        assert result.record["abort_reason"] == result.record["fault"] == "tracker_stopped"
+        assert result.record["fault_detail"] == said
+        assert result.lost_to_fault == "tracker_stopped"
+
+    def test_the_first_failing_check_wins(self):
+        harness = EngineHarness(
+            health_checks=(
+                lambda: None,
+                lambda: HealthFault("tracker_stopped", "first"),
+                lambda: 1 / 0,
+            )
+        )
+        result = harness.engine.run_trial(harness.ctx(), [RunForFrames(10, COMPLETED)])
+        assert result.record["fault_detail"] == "first"
+
+    def test_a_healthy_check_is_asked_every_frame(self):
+        asked: list[bool] = []
+
+        def check():
+            asked.append(True)
+
+        harness = EngineHarness(health_checks=(check,))
+        harness.engine.run_trial(harness.ctx(), [RunForFrames(5, COMPLETED)])
+        # Five CONTINUE frames and the frame that returns the outcome.
+        assert len(asked) == 6
 
 
 class TestFrameQAIntegration:
@@ -280,6 +313,18 @@ class TestFrameQAIntegration:
         assert "3 of 9 frames dropped (33.3%)" in result.record["frame_qa_reason"]
         (end,) = events_named(harness, "TRIAL_END")
         assert end.payload == {"outcome": "DROPPED_FRAMES", "completed": False}
+
+    def test_the_recorded_reason_reads_over_the_budget_it_names(self):
+        """21 of 209 is 10.05%, over the shipped 10% budget. The row used to
+        say "(10.0%), over the 10% budget": a trial apparently recycled for
+        sitting exactly on its budget."""
+        result, _ = self._run_with_drops(
+            209, set(range(1, 22)), COMPLETED, max_dropped_fraction=0.1
+        )
+        assert result.record["n_dropped_frames"] == 21
+        assert result.record["frame_qa_reason"] == (
+            "21 of 209 frames dropped (10.05%), over the 10% budget (frame_qa.max_dropped_fraction)"
+        )
 
     def test_a_recycled_result_carries_the_outcome_the_response_earned(self):
         """The scheduler sees DROPPED_FRAMES; the reward path needs the Outcome

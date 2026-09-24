@@ -47,6 +47,7 @@ from alhazen.core.trial import (
     FAULT_TRACKER_STOPPED,
     NO_FAULT,
     TRIAL_RECORD_COLUMNS,
+    HealthFault,
 )
 from alhazen.data import manifest
 from alhazen.data.paths import SessionPaths
@@ -173,6 +174,12 @@ class TestTrialRecordColumns:
         from alhazen.testing import ScriptedCommands
 
         harness = EngineHarness(commands=ScriptedCommands([[Command.SKIP_TRIAL]]))
+        records.append(harness.engine.run_trial(harness.ctx(), [RunForFrames(5, COMPLETED)]).record)
+
+        # A trial a device health check aborted carries what the device said.
+        harness = EngineHarness(
+            health_checks=(lambda: HealthFault(FAULT_TRACKER_STOPPED, "no new sample for 60 ms"),)
+        )
         records.append(harness.engine.run_trial(harness.ctx(), [RunForFrames(5, COMPLETED)]).record)
 
         # A trial recycled by frame QA carries what it would have been.

@@ -53,4 +53,6 @@ nav:
   - Experiment database: database.md
   - Live dashboard: dashboard.md
   - Versioning and releases: versioning.md
+  - Design proposals:
+      - Precomputed sessions: design/precomputed-sessions.md
   - API reference: reference.md
