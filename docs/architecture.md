@@ -464,6 +464,18 @@ pulse and one pulse per mapped sync line, because constructing a backend only
 proves the SDK imports. It never opens a window, and says so rather than
 implying the display was verified.
 
+A real eye tracker gets one step more than a connect: the **dropout test**.
+check-rig opens a recording segment as a trial does, polls the session's own
+health check (`make_tracker_health_check`) at 120 Hz for a second — nothing
+may be reported — then stops the recording through the SDK behind the
+session's back (`simulate_dropout`: the EyeLink's `stopRecording()`, the
+TRACKPixx3's `TPxDisableFreeRun()`) and times the report. A stop that is not
+reported within `max_sample_gap_ms` plus 50 ms, or a check that fires on
+normal recording, fails the line. The record keeps the limit, the longest
+gap seen while recording normally, the check's measured per-frame cost, the
+latency and the tracker's own words ([eye-tracker.md](eye-tracker.md),
+"Checking it before a session").
+
 Each check also carries `evidence`: what that device did, in numbers. `ok`
 answers "may the session start" and is gone as soon as the terminal scrolls;
 the evidence is what makes today's checkout comparable with last week's, and

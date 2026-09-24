@@ -574,6 +574,19 @@ class EyeLinkTracker:
                 return f"{where} reports recording ended (isRecording {code}, {name}): {meaning}"
         return f"{where} reports recording ended (isRecording {code}, a code alhazen does not name)"
 
+    def simulate_dropout(self) -> str:
+        """Optional capability (protocol.py), for ``alhazen check-rig`` only:
+        stop the open recording through pylink without telling this backend,
+        the way the Host PC stops when its operator ends a recording, so the
+        check can prove recording_fault() notices a real stop."""
+        if not self._recording:
+            raise TrackerError("simulate_dropout() needs an open recording: start_trial() first")
+        self._tracker.stopRecording()
+        return (
+            "stopRecording() through pylink, behind the session's back — the Host PC left "
+            "record mode, as it does when its operator stops recording"
+        )
+
     def _note_newest_sample(self, now: float) -> Any:
         """Read pylink's newest link sample and note when it was first seen;
         return it (None before any sample has arrived).

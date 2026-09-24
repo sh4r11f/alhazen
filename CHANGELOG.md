@@ -92,6 +92,20 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   streak; a pause neither counts nor ends it; the count starts over after its
   pause. `SessionRunner(max_consecutive_dropouts=...)`, default 3, None never
   pauses.
+- **`alhazen check-rig` exercises dropout detection on the tracker itself.**
+  After connecting a real EyeLink or TRACKPixx3 it records for a second
+  while polling the session's own health check (nothing may be reported),
+  stops the recording through the SDK behind the session's back (the
+  EyeLink's `stopRecording()`, the TRACKPixx3's `TPxDisableFreeRun()`), and
+  times the report: OK within the limit plus 50 ms, FAIL if it is late,
+  never comes, or the check fired on normal recording. `--record` keeps the
+  limit, the longest gap between samples seen while recording normally, the
+  check's measured per-frame cost, the latency and the tracker's words under
+  the eye tracker's `dropout` key, and the summary prints them. The
+  TRACKPixx3's `shutdown(None)` now removes the test's scratch recording
+  rather than leaving it in the temp folder. A manual cable-pull test and a
+  rig verification checklist are in [docs/eye-tracker.md](docs/eye-tracker.md),
+  "When the tracker drops out mid-trial".
 
 ### Changed
 

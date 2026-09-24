@@ -691,3 +691,21 @@ class TestAfterADropout:
         tracker.start_trial(2, "attempt 2")
         assert host.recordings_started == 2
         assert frames(tracker, clock, 0.5) == [None] * 60
+
+    def test_simulate_dropout_stops_the_host_behind_the_backends_back(self, host_pylink):
+        # What check-rig does to prove detection works on the real tracker.
+        tracker, host, clock = recording(host_pylink)
+        frames(tracker, clock, 0.05)
+        said = tracker.simulate_dropout()
+        assert "stopRecording() through pylink" in said
+        assert tracker.is_recording()  # the backend was not told
+        assert not host.recording
+        detail = next(answer for answer in frames(tracker, clock, 0.1) if answer is not None)
+        assert "isRecording -1, TRIAL_ERROR" in detail
+        assert "the Host PC is no longer recording" in detail
+
+    def test_simulate_dropout_needs_an_open_recording(self, host_pylink):
+        tracker, host, clock = recording(host_pylink)
+        tracker.stop_trial()
+        with pytest.raises(TrackerError, match="needs an open recording"):
+            tracker.simulate_dropout()

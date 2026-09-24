@@ -37,9 +37,12 @@ useful, because it says how far each device got before it stopped.
 What the record carries that the console lines do not: the reward pulse
 **commanded and measured**, every sync line **by name** with what was sent on
 it and which events it carries, what the recorder **returned** (not just
-OK/FAIL), how long the tracker took to answer, and the sorter's measured lag,
-units and dropped-message count — plus the rig file, the alhazen version and
-git revision, and a timestamp.
+OK/FAIL), how long the tracker took to answer and the numbers from its
+**dropout test** (the limit, the longest gap between samples while it
+recorded normally, what the check costs per frame, how fast a stop was
+caught and what the tracker said), and the sorter's measured lag, units and
+dropped-message count — plus the rig file, the alhazen version and git
+revision, and a timestamp.
 
 ```
 OK   reward: simulated on Dev1/ao0, fired one 50 ms pulse (simulated)
@@ -79,9 +82,20 @@ week's, not to replace looking.
   in the chair.
 - **eyetracker** — for EyeLink, printed with the host IP: confirm that's the
   address on the tracker subnet you expect. For TRACKPixx3, no address is
-  printed (it's inside the display chassis) — OK means it responded, nothing
-  else to check by hand. `mouse_sim` always reports OK with no hardware
-  behind it.
+  printed (it's inside the display chassis). `mouse_sim` always reports OK
+  with no hardware behind it.
+
+  On a real tracker the line also carries the **dropout test**: check-rig
+  records for a second, stops the recording through the SDK behind the
+  session's back, and times the session's own check noticing it — `a stop
+  through the SDK was reported in 50 ms (limit 50 ms)`. A FAIL here means a
+  tracker that drops out mid-session would go unnoticed (`NOT reported`), or
+  that the check fires on a tracker recording normally and would abort every
+  trial (`fired while the tracker was recording normally`) — either way, sort
+  it out before the subject is in the chair. The test cannot pull a cable:
+  do that by hand once per rig, and after changing a cable or the network
+  ([eye-tracker.md](eye-tracker.md), "A manual cable-pull test"). The record's
+  `dropout` numbers are what the rig verification checklist there asks for.
 - **reward** — fires one real 50 ms pulse when `--pulse` is given. Physically
   confirm: **do you hear the valve click / see fluid at the spout?** A
   software OK with no audible click means the solenoid line, not the

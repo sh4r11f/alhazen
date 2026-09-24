@@ -320,7 +320,7 @@ flowchart TB
   `isRecording()` is called only once the samples have been stale for the
   limit, once per dropout. How long it takes on the rig is not known yet. It
   may be a round trip to the Host PC, which is why it is kept out of the
-  healthy frames.
+  healthy frames. The checklist below measures it.
 - **TRACKPixx3:** no device call on the render thread. The check reads what
   the reader thread keeps current: its newest report's time and the device's
   latest answer. The reader makes one extra register round trip every half
@@ -388,6 +388,122 @@ backend's, for a person to read; select on `fault`, never on this.
   separate from the subject's failure streak (`max_consecutive_failures`),
   which leaves tracker-stopped trials out altogether.
 
+### Checking it before a session: `alhazen check-rig`
+
+After connecting, check-rig runs the detection on the tracker itself, with
+the session's own code:
+
+1. It opens a recording segment as a trial does. The TRACKPixx3 is configured
+   first, which starts its recording and gaze reader and needs no window.
+   Then it polls the session's own health check at 120 Hz for 1 s. Nothing
+   may be reported. It writes down the longest stretch without a new sample.
+2. It stops the recording through the SDK, behind the session's back: the
+   EyeLink's `stopRecording()` (the Host PC leaves record mode, as when its
+   operator stops recording), or the TRACKPixx3's `TPxDisableFreeRun()`.
+3. It polls until the health check reports. The check passes if the report
+   comes within the limit plus 50 ms.
+
+```
+OK   eyetracker: eyelink at 100.1.1.1 responded; a stop through the SDK was reported in 50 ms (limit 50 ms)
+FAIL eyetracker: eyelink at 100.1.1.1 responded, but a stop through the SDK was NOT reported within 2 s — dropout detection is not working on this tracker, …
+FAIL eyetracker: eyelink at 100.1.1.1 responded, but the dropout check fired while the tracker was recording normally — it would abort every trial: …
+```
+
+The `--record` file keeps all of it under the eye tracker's `dropout` key:
+
+| key | what it is |
+|---|---|
+| `limit_ms` | the `max_sample_gap_ms` tested |
+| `longest_gap_ms` | the longest stretch without a new sample while recording normally. The margin between this and the limit is how close ordinary delivery comes to a false dropout |
+| `check_us_mean`, `check_us_max` | what one health-check call cost, healthy, on this machine: the per-frame price |
+| `stopped_by` | what the check did to stop the recording |
+| `latency_ms`, `detail` | how fast the stop was reported, and the sentence a session's row would carry — for the EyeLink, it includes what `isRecording()` answered after the stop |
+| `detecting_check_us` | what the call that caught it cost (the EyeLink's includes `isRecording()`) |
+| `false_alarm`, `error`, `verdict`, `ok` | what went wrong, if anything, and the verdict |
+
+The summary beside it prints the same numbers.
+
+### A manual cable-pull test
+
+check-rig stops the recording through the SDK, which is not the same as a
+cable coming out. Once per rig, and after changing a cable or the network,
+pull it for real:
+
+1. Start a session in test mode with the tracker live (`--mode test`), and
+   let a few trials run.
+2. Mid-trial, **pull the tracker's cable**: the EyeLink's Ethernet cable
+   between this machine and the Host PC, or the TRACKPixx3's USB cable
+   between this machine and the DATAPixx3. Plug it back in a few seconds
+   later.
+3. Expect that trial to end as `ABORTED` within about the limit (50 ms on
+   the EyeLink, 100 ms on the TRACKPixx3). Its row should say `fault:
+   tracker_stopped`, and `fault_detail` should say what the tracker said.
+   `session.log` should carry the same words in the fault WARNING.
+4. Expect the next trial either to record again (the cable is back) or to end
+   the session with `could not start recording` / `is not answering` naming
+   the rig. Leave the cable out for three trials' worth of starts, if the
+   device keeps answering, and expect the red `THE EYE TRACKER DROPPED OUT ON
+   3 TRIALS IN A ROW` pause.
+5. Do the same with the EyeLink Host PC's own stop, from its record screen,
+   and with the DATAPixx3's power switched off.
+
+### Rig verification checklist
+
+The detection was built against simulated SDKs (`tests/fake_sdk.py`). What
+they assume about the real devices has to be checked on the rig, once per
+tracker, and again after an SDK update:
+
+- [ ] **`alhazen check-rig --record …` passes the dropout test.** Keep the
+      record. Its `dropout.detail` is what the tracker answers after a stop
+      through the SDK. On the EyeLink, it should name a non-zero
+      `isRecording` code (`TRIAL_ERROR` or similar). An answer of 0 means
+      pylink still reports recording after `stopRecording()`: detection then
+      rests on the stale samples alone, which still works, but report it.
+- [ ] **What `isRecording()` returns while recording normally** (EyeLink).
+      Expect `0`. Check it with the session closed and nothing else
+      connected to the Host PC:
+
+      ```python
+      import pylink
+      el = pylink.EyeLink("100.1.1.1")   # the rig's host_ip
+      el.startRecording(1, 1, 1, 1); pylink.pumpDelay(100)
+      print(el.isRecording())            # expect 0
+      # now stop recording on the Host PC's own screen, then:
+      print(el.isRecording())            # expect a code: -1, 1, 2 or 3
+      el.close()
+      ```
+- [ ] **What it returns after a Host PC stop and after a cable pull**
+      (EyeLink). The manual test above: `fault_detail` names the code, or
+      `isRecording 0`, or no answer. Write down which, for each.
+- [ ] **The per-frame cost.** `dropout.check_us_mean` and `check_us_max`
+      should be a small fraction of a frame (8.3 ms at 120 Hz), microseconds
+      rather than milliseconds. Also look at the session's `frames.csv`
+      around trials: turning dropout detection on must not have added
+      dropped frames. On the EyeLink, `detecting_check_us` is the price of
+      `isRecording()`. It is paid once per dropout, but write it down: if it
+      is milliseconds, it is a round trip.
+- [ ] **The limit against the real sample rate.** Read the EyeLink's rate
+      off the Host PC (its setup screen; 250, 500, 1000 or 2000 Hz). The
+      limit should span at least ten samples, which the 50 ms default does at
+      250 Hz and up. On both trackers, `dropout.longest_gap_ms` should sit
+      well under the limit: well under half of it, run after run. On the
+      TRACKPixx3 this is the USB read's tail. If it creeps toward the limit,
+      raise `max_sample_gap_ms` rather than letting normal recording abort
+      trials.
+- [ ] **No false alarm on the TRACKPixx3, calibrated and not.** The
+      device keeps a calibration across runs, so the uncalibrated case comes
+      up rarely. The first time it does (a fresh device, or right after a
+      calibration that did not take), run check-rig then too. The reader
+      treats any libdpx error left behind after its reads as a device that
+      stopped answering. If the uncalibrated gaze read sets such an error,
+      check-rig fails with `fired while the tracker was recording normally:
+      … did not answer a register read`. Report it if so.
+- [ ] **`TPxDisableFreeRun` exists in the rig's pypixxlib.** check-rig says
+      `this pypixxlib has no TPxDisableFreeRun()` if not.
+- [ ] **A real cable pull and a real Host PC stop are caught** (the manual
+      test above), within about the limit, with the next trial recording
+      again once the cable is back.
+
 ## Configuration
 
 ```yaml
@@ -420,8 +536,9 @@ measured on the rig). It can be at most 1000 ms on either: past a second, a
 fixation phase has usually ended the trial as the subject's failure before
 the dropout is called. There is no sample rate in the rig config to check it
 against. The EyeLink's rate is set on its Host PC and the TRACKPixx3's by
-VPixx's tools, so the floor is the slowest delivery each backend can have.
-Left out, the backend's default is written into the config as it loads, so the
+VPixx's tools, so the floor is the slowest delivery each backend can have,
+and the checklist above compares the limit with the rig's real rate. Left
+out, the backend's default is written into the config as it loads, so the
 run's `config_snapshot.yaml` records the number the session ran with. Both
 fields are refused on `mouse_sim`, which streams nothing that could stop.
 

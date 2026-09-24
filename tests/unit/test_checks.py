@@ -6,6 +6,7 @@ import json
 import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -18,10 +19,14 @@ from alhazen.config.models import (
     SpikeSourceConfig,
     SyncHwConfig,
 )
+from alhazen.devices.eyetracker import ViewPixxTracker
 from alhazen.devices.spikes import SortedStreamSource
 from alhazen.errors import ConfigError
 from alhazen.session import checks
+from alhazen.session.checkout import build_record
 from alhazen.session.checks import check_rig, format_result
+from alhazen.testing import FakeClock
+from fake_sdk import FakeEyeLinkHost, install_fake_pylink, install_fake_pypixxlib
 from support import MONITOR
 
 LINES = {"TRIAL_START": "Dev1/port0/line0", "FIX_ON": "Dev1/port0/line1"}
@@ -166,6 +171,149 @@ class TestTestOnlyBackend:
         rig = sim_rig(tmp_path, eyetracker=EyeTrackerConfig(backend="scripted"))
         with pytest.raises(ConfigError, match="test-only"):
             check_rig(rig)
+
+
+class TestTheDropoutTest:
+    """check-rig exercises the dropout detection a session relies on, on the
+    tracker itself: record, stop the recording through the SDK behind the
+    session's back, and time the session's own health check reporting it.
+    Driven here against the simulated SDKs (fake_sdk.py), in simulated time."""
+
+    def check(self, tmp_path, backend: str = "eyelink", **cfg):
+        clock = FakeClock(start=100.0)
+        return clock, lambda: checks._check_eyetracker(
+            sim_rig(tmp_path, eyetracker=EyeTrackerConfig(backend=backend, **cfg)),
+            clock=clock,
+            sleep=clock.advance,
+        )
+
+    def test_an_eyelink_that_notices_a_host_side_stop_passes(self, tmp_path, monkeypatch):
+        clock, run = self.check(tmp_path)
+        sdk = install_fake_pylink(monkeypatch, clock)
+        result = run()
+
+        assert result.ok, result.detail
+        assert result.detail.startswith(
+            "eyelink at 100.1.1.1 responded; a stop through the SDK was reported in "
+        )
+        dropout = result.evidence["dropout"]
+        assert (dropout["tested"], dropout["ok"], dropout["detected"]) == (True, True, True)
+        assert dropout["limit_ms"] == 50.0
+        assert 0.0 < dropout["latency_ms"] <= 50.0 + checks.DROPOUT_SLACK_S * 1000
+        # The sentence a session's row would carry, written down.
+        assert "isRecording -1, TRIAL_ERROR" in dropout["detail"]
+        assert "stopRecording() through pylink" in dropout["stopped_by"]
+        # Recording normally: no false alarm, and the gap seen is the margin
+        # the limit has.
+        assert dropout["false_alarm"] is None
+        assert 0.0 <= dropout["longest_gap_ms"] < 50.0
+        # What the check costs per frame here, measured, not assumed.
+        assert dropout["check_us_max"] >= dropout["check_us_mean"] >= 0.0
+        assert dropout["detecting_check_us"] >= 0.0
+        # Nothing left recording or connected behind the check.
+        (host,) = sdk.hosts
+        assert not host.recording and host.closed
+
+    def test_detection_that_does_not_work_fails_the_check(self, tmp_path, monkeypatch):
+        # A Host PC whose stop the SDK call does not produce: samples keep
+        # coming, so nothing can be noticed — the rig to fix before a session.
+        clock, run = self.check(tmp_path)
+        install_fake_pylink(monkeypatch, clock)
+        monkeypatch.setattr(FakeEyeLinkHost, "stopRecording", lambda self: None)
+        result = run()
+
+        assert not result.ok
+        assert result.detail.startswith("eyelink at 100.1.1.1 responded, but a stop through the")
+        assert "NOT reported within 2 s" in result.detail
+        assert result.evidence["dropout"]["detected"] is False
+
+    def test_a_check_that_fires_on_a_normal_recording_fails(self, tmp_path, monkeypatch):
+        # A tracker delivering a sample every 200 ms against a 50 ms limit
+        # would abort every trial of a session: said before it can.
+        clock, run = self.check(tmp_path)
+        install_fake_pylink(monkeypatch, clock, rate_hz=5.0)
+        result = run()
+
+        assert not result.ok
+        assert "the dropout check fired while the tracker was recording normally" in result.detail
+        dropout = result.evidence["dropout"]
+        assert dropout["false_alarm"].startswith("no new sample from the EyeLink for")
+        assert dropout["stopped_by"] is None  # it never got as far as the stop
+
+    def test_a_recording_that_will_not_start_fails_in_the_rigs_words(self, tmp_path, monkeypatch):
+        clock, run = self.check(tmp_path)
+        sdk = install_fake_pylink(monkeypatch, clock)
+        monkeypatch.setattr(FakeEyeLinkHost, "startRecording", lambda self, *flags: 5)
+        result = run()
+
+        assert not result.ok
+        assert "the dropout test could not run: EyeLink could not start recording" in result.detail
+        assert "startRecording failed (code 5)" in result.evidence["dropout"]["error"]
+        (host,) = sdk.hosts
+        assert host.closed
+
+    def test_the_limit_tested_is_the_rigs(self, tmp_path, monkeypatch):
+        clock, run = self.check(tmp_path, max_sample_gap_ms=120)
+        install_fake_pylink(monkeypatch, clock)
+        dropout = run().evidence["dropout"]
+        assert dropout["limit_ms"] == 120.0
+        assert 110.0 < dropout["latency_ms"] <= 120.0 + checks.DROPOUT_SLACK_S * 1000
+
+    def test_a_trackpixx3_that_notices_its_recording_stop_passes(self, tmp_path, monkeypatch):
+        clock, run = self.check(tmp_path, backend="viewpixx")
+        device = install_fake_pypixxlib(monkeypatch)
+        # No reader thread: the check's own polls read for it, in simulated
+        # time. On the rig the thread reads and the check only looks.
+        monkeypatch.setattr(
+            checks,
+            "make_tracker",
+            lambda cfg, display, screen, clock: ViewPixxTracker(
+                cfg, display, screen, clock, background_gaze=False
+            ),
+        )
+        result = run()
+
+        assert result.ok, result.detail
+        assert result.detail.startswith("viewpixx responded; a stop through the SDK was reported")
+        dropout = result.evidence["dropout"]
+        assert dropout["limit_ms"] == 100.0
+        assert dropout["latency_ms"] <= 100.0 + checks.DROPOUT_SLACK_S * 1000
+        assert dropout["detail"].endswith("free-run sampling is off")
+        assert "TPxDisableFreeRun()" in dropout["stopped_by"]
+        # The device recording again and closed, and the check's own test
+        # recording not left behind in the temp folder.
+        assert device.libdpx.freerun and device.closed
+        assert device.recording_folder is not None
+        assert not Path(device.recording_folder).exists()
+
+    def test_a_tracker_without_dropout_detection_is_not_tested(self, tmp_path, monkeypatch):
+        class SilentTracker:
+            def connect(self) -> None: ...
+
+            def shutdown(self, destination, /) -> None: ...
+
+        monkeypatch.setattr(checks, "make_tracker", lambda *args: SilentTracker())
+        clock, run = self.check(tmp_path)
+        result = run()
+        assert result.ok
+        assert result.detail == "eyelink at 100.1.1.1 responded"
+        assert result.evidence["dropout"]["tested"] is False
+
+    def test_the_record_carries_it(self, tmp_path, monkeypatch):
+        clock, run = self.check(tmp_path)
+        install_fake_pylink(monkeypatch, clock)
+        record = build_record("rig.yaml", [run()], pulse=False)
+
+        summary = record.render()
+        assert "dropout limit 50.0 ms; longest gap between samples while recording normally" in (
+            summary
+        )
+        assert "health check per frame: mean" in summary
+        assert "stopped by stopRecording() through pylink" in summary
+        assert "reported after" in summary and "isRecording -1, TRIAL_ERROR" in summary
+        assert "dropout test: PASS — a stop through the SDK was reported in" in summary
+        written = json.loads(json.dumps(record.to_dict(), default=str))
+        assert written["devices"]["eyetracker"]["evidence"]["dropout"]["ok"] is True
 
 
 def units_msg(unit_ids=(3, 9, 14), rate: float = 30000.0) -> list[bytes]:

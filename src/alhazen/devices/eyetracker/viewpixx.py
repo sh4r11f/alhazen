@@ -1719,6 +1719,31 @@ class ViewPixxTracker:
             return f"stopped recording samples into the session's buffer: {problem}"
         return None
 
+    def simulate_dropout(self) -> str:
+        """Optional capability (protocol.py), for ``alhazen check-rig`` only:
+        switch the device's free-run sampling off through pypixxlib without
+        telling this backend — what another program taking the device over
+        does — so the check can prove recording_fault() notices that the
+        device stopped recording."""
+        if not self._recording:
+            raise TrackerError("simulate_dropout() needs an open recording: start_trial() first")
+        disable = getattr(self._libdpx, "TPxDisableFreeRun", None)
+        if disable is None:
+            raise TrackerError(
+                "this pypixxlib has no TPxDisableFreeRun(), so check-rig cannot stop the "
+                "TRACKPixx3's recording to test dropout detection"
+            )
+        with self._locked("stopping its recording for the dropout check"):
+            disable()
+            self._libdpx.DPxUpdateRegCache()
+            fault = dpx_fault(self._libdpx)
+        if fault is not None:
+            raise TrackerError(f"the TRACKPixx3 refused to stop recording for the check: {fault}")
+        return (
+            "TPxDisableFreeRun() through pypixxlib, behind the session's back — the device "
+            "stopped recording samples, as it does when another program takes it over"
+        )
+
     @contextlib.contextmanager
     def _locked(self, doing: str) -> Iterator[None]:
         """Hold the device lock on the session's thread, or fail loudly.
@@ -1902,6 +1927,17 @@ class ViewPixxTracker:
         try:
             if recording_destination is not None and self._samples_path is not None:
                 self._deliver_recording(recording_destination)
+            elif self._samples_path is not None:
+                # Nothing asked for the recording: a check (check-rig's dropout
+                # test records a second or two), not a session. Removed, and
+                # said so, rather than left behind in the temp folder on every
+                # checkout.
+                log.info(
+                    "no destination for the TRACKPixx3 recording %s: discarded",
+                    self._samples_path,
+                )
+                self._samples_path = None
+                self._discard_scratch_dir()
         finally:
             # Whatever happened to the files, the device link is released —
             # a held DATAPixx3 blocks the next session from opening it.

@@ -38,7 +38,7 @@ today, and must go on doing so without growing methods it has no use for.
   ``("calibrating", "target 3 of 9 · eyes: both tracked")`` — so the
   dashboard can follow a procedure the render thread is busy running.
 
-Two more serve dropout detection (docs/eye-tracker.md, "When the tracker
+Three more serve dropout detection (docs/eye-tracker.md, "When the tracker
 drops out"), offered by the backends that stream real samples — the EyeLink
 and the TRACKPixx3:
 
@@ -52,7 +52,12 @@ and the TRACKPixx3:
   same words until the next ``start_trial``, and asks nothing more.
 - ``newest_sample_age_s() -> float | None``: how long, on the session clock,
   since the newest sample arrived — what ``recording_fault`` compares with
-  the limit.
+  the limit. ``alhazen check-rig`` records its largest value while the
+  tracker records normally, which is what a limit is tuned from.
+- ``simulate_dropout() -> str``: stop the open recording through the vendor
+  SDK *without telling the backend*, the way a Host PC's operator or another
+  program would, and say what was done. ``alhazen check-rig`` only: it is
+  how the check proves ``recording_fault`` sees a real stop.
 
 ``is_recording()`` itself is a flag the backend keeps — True from
 ``start_trial`` to ``stop_trial`` — and asks no device anything. That is

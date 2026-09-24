@@ -1369,6 +1369,22 @@ class TestAfterADropout:
         tracker.start_trial(2, "attempt 1")
         assert tracker.recording_fault() is None
 
+    def test_simulate_dropout_switches_free_run_off_behind_the_backends_back(self, fake_pypixxlib):
+        # What check-rig does to prove detection works on the real device.
+        clock = FakeClock(start=10.0)
+        tracker = recording_trial(clock)
+        said = tracker.simulate_dropout()
+        assert "TPxDisableFreeRun() through pypixxlib" in said
+        assert tracker.is_recording()
+        assert not fake_pypixxlib.libdpx.freerun
+        clock.advance(0.050)
+        detail = tracker.recording_fault()
+        assert detail is not None and "free-run sampling is off" in detail
+
+    def test_simulate_dropout_needs_an_open_recording(self, fake_pypixxlib):
+        with pytest.raises(TrackerError, match="needs an open recording"):
+            connected().simulate_dropout()
+
     def test_a_stuck_device_call_fails_loudly_instead_of_hanging(self, fake_pypixxlib, monkeypatch):
         # A USB call that never returns holds the device lock forever. The
         # session's own calls give up after LOCK_TIMEOUT_S, and say why.
@@ -1382,6 +1398,15 @@ class TestAfterADropout:
                 tracker.send_message("stim_on")
         finally:
             tracker._device_lock.release()
+
+    def test_shutdown_without_a_destination_discards_the_test_recording(self, fake_pypixxlib):
+        # check-rig's dropout test records for a second or two; nothing asks
+        # for that recording, and it must not pile up in the temp folder.
+        tracker = connected()
+        scratch = tracker._scratch_dir
+        assert scratch is not None and scratch.is_dir()
+        tracker.shutdown(None)
+        assert not scratch.exists()
 
 
 class TestCalibrationRecording:
