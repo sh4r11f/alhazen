@@ -51,14 +51,18 @@ class BlockPlan:
     every block. ``trials_per_block`` bounds a block by completed trials;
     without it, a block ends when its source is exhausted.
 
-    When each block has its own queue-based source (a fixed plan,
-    re-queueing what did not complete), the bound must not be smaller than
-    that source's plan. The completed count reaches the plan exactly when the
-    queue empties, so a bound at or above it ends the block only once the
-    plan is done, and one below it ends the block with planned trials — the
-    retries first — still queued in a source nothing asks again.
-    ``make_scheduler`` refuses that config; a plan built by hand is not
-    checked, because a source does not say how many trials it plans.
+    When a block's source is queue-based (a fixed plan, re-queueing what did
+    not complete), the bound must not be smaller than that source's plan.
+    The completed count reaches the plan exactly when the queue empties, so a
+    bound at or above it ends the block only once the plan is done, and one
+    below it ends the block with planned trials — the retries first — still
+    queued in a source nothing asks again. A source that reports its plan
+    (``remaining()``, as SimpleSequence, ConstantStimuli and AdjustmentTrials
+    do) is checked here at construction, and a bound below it is refused; a
+    source shared by several blocks is checked against all of their bounds
+    together. A source that does not report one (an adaptive scheduler, a
+    source written before the hook) is not checked. ``make_scheduler``
+    refuses the same config first, with the config's own numbers.
     """
 
     def __init__(
@@ -106,6 +110,8 @@ class BlockPlan:
 
         if trials_per_block is not None and trials_per_block < 1:
             raise ValueError(f"trials_per_block must be >= 1, got {trials_per_block}")
+        if trials_per_block is not None:
+            _refuse_a_bound_below_a_plan(self._sources, trials_per_block)
         self._trials_per_block = trials_per_block
         self._block_key = block_key
         self._block = 0
@@ -200,3 +206,50 @@ class BlockPlan:
             for index, count in enumerate(completed[: len(self._sources)])
         ]
         return pd.DataFrame(rows)
+
+
+def _refuse_a_bound_below_a_plan(sources: list[TrialSource], bound: int) -> None:
+    """Refuse a ``trials_per_block`` that would end a block while its source
+    still has planned trials queued.
+
+    Only a source that reports its plan (an optional ``remaining()``, see
+    TrialSource) can be checked; the rest pass unchecked, as before. The
+    same source object may serve several blocks (one scheduler shared by all
+    of them, or listed more than once), and then it has all of those blocks
+    to finish its plan in, so the check is per source object: its planned
+    trials against ``bound`` times the number of blocks it serves.
+    """
+    # Block numbers (1-based, after any shuffle_blocks) per source object.
+    # Keyed by id() because a source need not be hashable, and it is object
+    # identity that says two blocks share one queue.
+    blocks_of: dict[int, list[int]] = {}
+    source_of: dict[int, TrialSource] = {}
+    for index, source in enumerate(sources):
+        blocks_of.setdefault(id(source), []).append(index + 1)
+        source_of[id(source)] = source
+    for key, blocks in blocks_of.items():
+        remaining = getattr(source_of[key], "remaining", None)
+        if not callable(remaining):
+            continue
+        planned = int(remaining())
+        capacity = bound * len(blocks)
+        if planned <= capacity:
+            continue
+        if len(blocks) == 1:
+            where = f"block {blocks[0]}'s source"
+            ends = f"ending the block after {bound} completed trials"
+        else:
+            where = f"the one source shared by blocks {', '.join(map(str, blocks))}"
+            ends = (
+                f"ending those {len(blocks)} blocks after {capacity} completed trials in all "
+                f"({len(blocks)} x {bound})"
+            )
+        raise ValueError(
+            f"BlockPlan trials_per_block={bound} is too small for the {planned} planned trials "
+            f"{where} has queued. A block ends on its completed-trial count and its source is "
+            f"not asked again, so {ends} would never serve the other {planned - capacity} "
+            f"planned trials — retries first, since they re-queue at the end — and the "
+            f"conditions can end with uneven counts. Omit trials_per_block (a block of a "
+            f"queue-based source ends when its plan is done), raise it, or give the source a "
+            f"plan that fits."
+        )

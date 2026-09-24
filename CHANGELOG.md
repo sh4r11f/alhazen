@@ -202,6 +202,55 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   subpackage by the experiments built on alhazen, `examples/`, the
   `alhazen new` template or the docs.
 
+- **Blocks that cannot hold a paradigm's planned trials are refused, for
+  adaptive kinds and for a hand-built `BlockPlan`.** An adaptive kind
+  (`staircase`, `questplus`) shares one estimator across its blocks, and the
+  blocks end after `n_blocks × trials_per_block` completed trials. When that
+  was fewer than the estimator's `n_trials` (per interleaved staircase or
+  QUEST+ level), the last block ended the session with the estimate
+  unfinished and nothing in the log said so. `make_scheduler` now raises a
+  `ConfigError` naming `n_blocks`, `trials_per_block`, the total and the
+  trials needed. A staircase stopped by `n_reversals` alone is not checked.
+  Separately, a `BlockPlan` built by hand over queue-based sources could still
+  end a block with planned trials queued (only config-built ones were
+  refused). `SimpleSequence`, `ConstantStimuli` and `AdjustmentTrials` now
+  report the planned trials they still have queued through a new
+  `remaining()` method, and `BlockPlan` refuses at construction, with a
+  `ValueError` giving the numbers, a `trials_per_block` that would cut one
+  (a source shared by several blocks is checked against all their bounds
+  together). `remaining()` is optional: a source without it, adaptive or
+  downstream, is not checked and builds as before. Code that built either
+  kind of cutting plan will now fail to start; lower `n_trials`, raise the
+  bound, or omit it.
+
+- **`SimpleSequence`, `AdjustmentTrials` and `ConstantStimuli` share one
+  queue.** They carried three copies of "shuffle once, serve from the front,
+  re-queue a non-completed trial at the back". `AdjustmentTrials` is now a
+  `SimpleSequence` subclass and `ConstantStimuli` delegates its queue to one.
+  Every seed produces the same session as before — serve order, retries,
+  summaries and Generator draws are pinned by tests recorded on the old code.
+
+- **A health check returning a bare reason string is deprecated.** The
+  1.5.0 shape still works — `TrialEngine` reads it as a `HealthFault` with no
+  detail — but now emits a `DeprecationWarning`: it goes in 2.0. Return
+  `HealthFault(reason)` (`alhazen.core`) instead. The session's own tracker
+  check already does, and no experiment repository returns a string.
+
+- **The `movie` extra now requires `imageio-ffmpeg>=0.4.4`** (was `>=0.4`).
+  imageio 2.31, the extra's own floor, calls `write_frames(audio_path=...)`,
+  which imageio-ffmpeg before 0.4.4 does not accept, so an install at the old
+  floors failed on the first movie written. Found by the new CI job that tests
+  every dependency at its declared minimum.
+
+- **Python 3.11 and 3.13 are tested, and the supported versions are
+  declared.** `requires-python` said `>=3.10`, but CI ran only 3.10 and 3.12,
+  and the package carried no Python classifiers at all, so nothing said which
+  versions were actually checked. CI now also runs the suite on 3.11 and 3.13
+  (on Linux), plus one job on 3.10 with every direct dependency at the lowest
+  version pyproject allows, so the stated floors (`numpy>=1.24`,
+  `pandas>=2.0`, `pydantic>=2.5`, ...) are tested rather than assumed; and
+  pyproject lists the classifiers for 3.10 through 3.13, the versions CI runs.
+
 - **The public API is now exactly the names `docs/reference.md` lists.**
   Most of its entries used to document a whole module, and the policy called
   "everything in the modules on this page" public — so dashboard formatting
@@ -319,6 +368,185 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   [docs/architecture.md](docs/architecture.md) §5.3.
 
 ### Fixed
+
+- **A scorer that does not return a boolean no longer fails silently.** A
+  task whose `score_trial` works out its verdict and forgets to `return` it
+  hands the adaptive schedulers None, which they read as a failure on every
+  trial: the staircase walked to its easiest level and QUEST+ fitted an
+  observer who never succeeds. `UpDownStaircase` (so every interleaved one)
+  and `QuestPlus` now raise `TypeError` at the first scored trial, naming the
+  scorer (e.g. `MyTask.score_trial`) and what it returned. `bool` and numpy's
+  bool are accepted; ints are refused, 0 and 1 included, because a count or a
+  magnitude read as truthy is the same silent mistake the other way round —
+  wrap the comparison in `bool(...)`. The default scorer is now one shared
+  function, and `QuestPlus` replaces a scorer only when none was given (`is
+  not None`), as the staircase already did, not whenever it is falsy.
+
+- **A curriculum's RT criterion could never be met when the task renamed its
+  RT field, and finishing a curriculum happened too early and was announced
+  on every trial.** The training supervisor read the RT from `rt_ms`
+  whatever the task's phases wrote it under (`rt_record_key`), so
+  `mean_rt_ms` was NaN on every window and the criterion never promoted,
+  silently; and an experiment's own metric saw only four fixed keys, not
+  "the whole trial record" its documentation promised. A curriculum now has
+  `rt_key` (the record field holding the RT, default `rt_ms`, still kept as
+  `rt_ms` in the window so existing state files and curricula read as
+  before) and `record_fields` (further record fields copied into the window
+  for custom metrics). A stage gating on `mean_rt_ms` whose session runs
+  `min_trials` completed trials with no RT under `rt_key` logs a WARNING
+  once. Separately, the promote key at the last stage marked the
+  curriculum complete the moment it was pressed, mid-trial, instead of
+  queueing it; and a promotion criterion that kept holding at the last
+  stage logged "curriculum complete" on every later trial. Completion is
+  now carried out between trials like any move, logged once, and the last
+  stage's promotion is not re-decided afterwards (demotion still is). The
+  shaping example's scripted subject is now a proper eye tracker
+  (`configure(screen, clock)`, counting trials from the session's tracker
+  messages), so the example and its test pass it to
+  `build_session(tracker=..., clock=...)` instead of rewiring a built
+  runner's private attributes.
+
+- **`response_phases(SubjectMode.SACCADE_AND_REWARD)` no longer scores "no
+  saccade" as a landing miss.** Without `on_timeout` it fell back to
+  `on_miss`, so a trial the subject never answered ended as a miss — usually
+  a completed outcome — and was neither served again nor kept out of an
+  adaptive scheduler, which recorded it as a wrong answer. The saccade mode
+  now needs `on_timeout` and raises `ValueError` without it, as the keyboard
+  mode always has. Nothing in `examples/`, the `alhazen new` template or the
+  experiment repositories relied on the fallback. The mode still ends with
+  `LandingCheck`, so its endpoint is still where gaze first crossed into the
+  target, not where the saccade came to rest.
+- **`LandingCheck` refuses a verdict that cannot end it.** It checked
+  `on_hit` and `on_miss` only for `None`, so `on_hit=PhaseAction.CONTINUE`
+  was accepted, looped until the timeout and then recorded the hit as a
+  miss, and a typo for `ADVANCE` failed only mid-trial. It now uses
+  `LandingSample`'s check: an `Outcome` or `PhaseAction.ADVANCE`, anything
+  else a `ValueError` at construction naming the phase and the argument.
+- **`ResponseWindow`'s deadline runs from the cue's flip.** The reaction time
+  was timed from the flip that showed the cue, but `timeout_s` from the
+  phase's entry a frame earlier, so the subject had one frame less than
+  `timeout_s` with the cue on screen, and a key pressed with the cue up for
+  exactly `timeout_s` was scored a timeout. The deadline now counts from the
+  `t_<onset_event>` stamp, as `StimulusResponse`'s does, so a timed-out trial
+  ends one frame later than before. With `onset_event=None` it still runs
+  from phase entry.
+- **A misplaced closing phase no longer leaves frame QA mid-trial.**
+  `TrialEngine.run_trial` told the frame monitor a trial had started before
+  refusing a `must_be_last` phase that was not last; the check now comes
+  first.
+
+- **The dashboard server checks what it reads, and the page hides its
+  token.** A request id sent as a JSON list or object raised `TypeError`
+  outside any handler and killed the request's thread; a negative
+  `Content-Length` made the server read until the client hung up, and a huge
+  one made it wait for that many bytes. Now a request id must be a string of
+  1 to 64 characters, a command name a string, and a body at most 4 KiB with
+  a length that is not negative (400, or 413 when too large). Commands and
+  tracker settings no longer share one memory of seen ids, so the same id on
+  each no longer drops the second; each queue remembers its most recent 1024
+  ids (the settings one used to grow for the whole session). Query strings
+  are parsed once, and a malformed or repeated integer parameter is a 400
+  everywhere: a bad `revision` used to be silently read as 0. The token is
+  compared in constant time. The page removes `?token=` from the address bar
+  after reading it (the saved copy in `figures/` has none and is untouched).
+  The saved page escapes every `<` in its embedded state, not only `</`, so a
+  `<!--` in a message cannot change how the page parses. In the page's
+  renderer, a trial axis no longer rounds a 2.5 step to 3 (a 0–10 axis read
+  0, 3, 6, 9 and ran to 12; it now steps by 5), and numbers are written
+  exactly as the Python side's `format_number` writes them (`0.5`, not
+  `0.500`; `1,234` whatever the locale; exact halves to the even digit).
+
+- **`experiment_git_sha` recorded the folder a session was started from, not
+  the experiment.** The runner wrote the snapshot without saying where the
+  experiment's code was, so the revision was read from the working
+  directory: a session started from a home folder, a data drive or another
+  checkout recorded that folder's commit, or `not a source checkout`, for an
+  experiment whose own repository had the answer. `build_session` now passes
+  the folder holding the task class's source file (with no task, the trial
+  builder's), and the snapshot describes that repository. Only code with no
+  source file at all (defined at a prompt) still falls back to the working
+  directory. An experiment installed as a wheel outside any repository now
+  reads `not a source checkout`, which is true, where the working directory
+  gave a guess.
+
+- **A typo at the session-number prompt, or a bad `--curriculum`, ended in a
+  traceback.** `alhazen run` and an experiment's `run.py` read the prompted
+  session number with a bare `int(...)`, so `1a` raised a raw `ValueError`
+  with the rig already loaded; a non-number, or a number below 1, is now
+  named (`INVALID: ...`) and asked for again. The curriculum file was loaded
+  outside the config-error handling, so a misspelled path or a curriculum
+  that did not validate printed a traceback; it now prints `INVALID:` naming
+  the file and exits 1, like the rig and params files.
+
+- **A config file that could not be read escaped as a raw OS or codec
+  error.** `load_model` (and so `load_rig`, `load_params` and every command
+  reading a config) turned only a missing file and bad YAML into a
+  `ConfigError`. A rig file saved as ANSI/Windows-1252 with a `°` or `µ` in
+  it raised a bare `UnicodeDecodeError`; a directory, or a file this user may
+  not read, raised `IsADirectoryError`/`PermissionError`. Each is now a
+  `ConfigError` naming the file and what is wrong with it (not UTF-8, with
+  the offending byte; a directory; the OS's reason), so the CLI prints
+  `INVALID:` rather than a traceback.
+
+- **Six small data and device faults: a registry that a crash could empty,
+  database handles left open, and trackers not released after a failure.**
+  `participants.tsv` was rewritten in place, so a crash or a full disk while
+  adding a subject left a truncated file; it is now written to a temporary
+  file and swapped in whole (the helper training state already used, moved to
+  `alhazen.data.atomic`). A registry row with more cells than its header used
+  to fail with csv's `ValueError` naming no file; it is now a `DataError`
+  naming the file, the line and the extra cells, and the file is left as it
+  was. `ExperimentDatabase` committed its transactions but never closed its
+  connections, leaving the database and its WAL file locked on Windows until
+  garbage collection; every connection is now closed, including one refused
+  for its schema. The TRACKPixx3 gaze reader abandoned a thread stuck in a
+  USB read without a word, and the next `start()` cleared the stop flag that
+  thread shared, so it read on beside the new one; `stop()` now logs the
+  abandonment at ERROR and each thread has its own stop flag. An EyeLink
+  `connect()` that failed after the link opened (at `openDataFile`) left the
+  link open; it is now closed before the `TrackerError`. A link that failed
+  while the EyeLink closed its EDF with no destination (check-rig) raised
+  pylink's bare `RuntimeError`, past check-rig's error handling as a
+  traceback; it is now a `TrackerError`, and check-rig reports a failed
+  check. An unused, unlocked `_gap_samples` counter in the SpikeGLX source was
+  removed.
+
+- **The offline readers name the file when its contents are wrong, and a
+  results directory says what it already held.** In the ViewPixx reader, a
+  run snapshot whose `config.rig.monitor` the monitor model refused raised a
+  pydantic `ValidationError`, and a `TRIAL` mark with no integer index a raw
+  `ValueError`/`IndexError`; both are now a `DataError` naming the file (and
+  the mark), and malformed trial marks are refused when the messages file is
+  read. `max_residual_s=0.0` was treated as unset and replaced by the sample
+  period; it is now the tolerance used. In the SpikeGLX reader, a `.meta`
+  that is not UTF-8 (a Windows path in the local code page) raised
+  `UnicodeDecodeError`; it is now read with undecodable bytes replaced and a
+  warning naming the affected keys — safe because every field read as a
+  number is ASCII. A non-numeric or non-positive `nSavedChans` is a
+  `DataError` naming the file and field (it was a `ValueError` or
+  `ZeroDivisionError`), and a binary whose size differs from the meta's
+  `fileSizeBytes` is refused as truncated, which catches a copy cut exactly
+  at a frame boundary. `ResultsBundle` hashes inputs with the run manifest's
+  own function, and reusing an `out_dir` that already holds files logs a
+  warning listing them and records every one the bundle did not rewrite
+  under a new `preexisting` key in `manifest.json`, so an earlier run's
+  leftovers cannot pass for this run's outputs; reuse itself is still
+  allowed, since reports are routinely re-run into the same directory.
+
+- **A scene expression that failed on a frame raised a bare Python error
+  naming nothing.** Only function calls turned their failures into
+  `ConfigError`. An operator meeting the wrong value (`params.x - 1` with a
+  string param, `10 ** 400`) raised a raw `TypeError` or `OverflowError`
+  mid-frame, with no word of which scene field or expression did it, and a
+  malformed number literal (`1.2.3`) escaped the tokenizer as a `ValueError`
+  that the loader's check did not catch. The `background` expression was
+  never checked at load at all. Now a malformed number, like a syntax error
+  or an unknown name, fails at `load_scene` naming the field (the background
+  included); an operator error on a frame is a `ConfigError` naming the
+  layer path, the scene time, the expression, the operator and the values;
+  and a non-numeric result in a numeric field says so. Dividing by zero is
+  unchanged (infinity, as in the studio). See "What alhazen renders" in
+  [docs/scenes.md](docs/scenes.md).
 
 - **A session that failed while starting up left every device open.**
   `SessionRunner.run` wrote the snapshot, registered the subject, attached

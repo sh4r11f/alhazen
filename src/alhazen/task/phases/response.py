@@ -5,13 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from alhazen.core.trial import Outcome, PhaseAction, TrialContext
-
-
-def _draw(ctx: TrialContext, keys: list[str]) -> None:
-    for key in keys:
-        stimulus = ctx.stimuli[key]
-        stimulus.update(ctx.dt)
-        stimulus.draw()
+from alhazen.task.phases._draw import draw_stimuli
 
 
 class ResponseWindow:
@@ -33,11 +27,17 @@ class ResponseWindow:
     nothing in the library records one yet — ``StimulusResponse`` likewise
     just waits for its onset stamp.
 
+    The deadline runs from that same flip: ``timeout_s`` is how long the
+    subject has with the cue on screen, the window the reaction time is
+    measured in — as in ``StimulusResponse``. Counted from ``on_enter``, it
+    would lose the frame the cue waited for its flip, and a key pressed with
+    the cue up for exactly ``timeout_s`` would be scored a timeout.
+
     With ``onset_event=None`` there is no cue flip to wait for: the window
     opens when the phase is entered, keys count from its first frame, and the
-    reaction time runs from ``on_enter``. A key read on that first frame may
-    have been pressed before the phase began, during the frame before it; a
-    task that drops the onset event has chosen that.
+    reaction time and the deadline both run from ``on_enter``. A key read on
+    that first frame may have been pressed before the phase began, during the
+    frame before it; a task that drops the onset event has chosen that.
     """
 
     name = "response_window"
@@ -108,7 +108,7 @@ class ResponseWindow:
         return float(onset_t)
 
     def on_frame(self, ctx: TrialContext) -> str | Outcome:
-        _draw(ctx, self._stimulus_keys)
+        draw_stimuli(ctx, self._stimulus_keys)
         now = ctx.clock.now()
         reference_t = self._reference_time(ctx)
         # Before the cue, bound keys are dropped with the rest of the batch.
@@ -127,7 +127,17 @@ class ResponseWindow:
                 if self._response_event is not None:
                     ctx.emit_on_flip(self._response_event)
                 return outcome
-        if now - self._t0 >= self._timeout_s:
+        # The deadline's start: the cue's flip, read straight from its stamp
+        # rather than from _reference_time, which withholds the stamp for one
+        # frame to drop the pre-cue keys — the deadline has no such frame to
+        # skip. Before the flip there is no stamp and so no deadline yet,
+        # the same wait StimulusResponse makes.
+        deadline_from = (
+            self._t0
+            if self._onset_event is None
+            else ctx.record.get(f"t_{self._onset_event.lower()}")
+        )
+        if deadline_from is not None and now - float(deadline_from) >= self._timeout_s:
             return self._on_timeout
         return PhaseAction.CONTINUE
 
@@ -177,7 +187,7 @@ class AdjustmentLoop:
         if ctx.inputs.wheel:
             self._adjust(ctx, ctx.inputs.wheel)
             self._turns += 1
-        _draw(ctx, self._stimulus_keys)
+        draw_stimuli(ctx, self._stimulus_keys)
         if self._commit_key in ctx.inputs.keys:
             # Recorded at commit, from the task's own accessor: the setting the
             # subject settled on IS the measurement here.

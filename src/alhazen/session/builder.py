@@ -16,6 +16,7 @@ free of hardware.
 
 from __future__ import annotations
 
+import inspect
 import logging
 import time
 from collections.abc import Callable
@@ -854,11 +855,53 @@ def build_session(
             manual_reward_payload={"pulses": manual_pulses.model_dump(mode="json")},
             spikes=spikes,
             live=live,
+            experiment_dir=_experiment_dir(task, build_trial),
         )
         # Built. Every release registered above now belongs to the runner's
         # teardown, so they are dropped here without running.
         on_failure.pop_all()
     return runner
+
+
+def _experiment_dir(task: Task | None, build_trial: BuildTrial) -> Path | None:
+    """The folder holding the experiment's code, for the snapshot to read the
+    experiment's git revision from; None when there is no file to point at.
+
+    The runner used to leave this unsaid, so the snapshot read the working
+    directory: whatever folder the session happened to be started from,
+    which is the experiment's checkout only by habit. The code is what ran,
+    so the code's location is asked instead:
+
+    - with ``task=``, the file its class is defined in. That is the
+      experiment package (or the run.py that declares it), wherever the
+      session was started from;
+    - without one, the file the trial builder is written in — the part of a
+      hand-wired session that is the experiment's own.
+
+    A class or function with no source file (typed at a prompt, built by
+    ``exec``) gives None, and the snapshot falls back to the working
+    directory as before. An experiment installed as a wheel, outside any
+    repository, is recorded as "not a source checkout" — true, where the
+    working directory's revision would have been a guess.
+    """
+    if task is not None:
+        try:
+            return Path(inspect.getfile(type(task))).resolve().parent
+        except (TypeError, OSError):
+            # TypeError: a class with no module file (defined in a REPL);
+            # OSError: a module whose file cannot be located.
+            return None
+    # Unwrap a bound method to its function; a callable object is described
+    # by its class, like a task.
+    function = getattr(build_trial, "__func__", build_trial)
+    code = getattr(function, "__code__", None)
+    if code is not None:
+        # "<stdin>", "<string>": no file on disk to be in a repository.
+        return None if code.co_filename.startswith("<") else Path(code.co_filename).resolve().parent
+    try:
+        return Path(inspect.getfile(type(build_trial))).resolve().parent
+    except (TypeError, OSError):
+        return None
 
 
 def _start_gate(

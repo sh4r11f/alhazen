@@ -23,8 +23,14 @@ from alhazen.paradigms.base import Condition
 
 @dataclass(frozen=True)
 class TrialSetup:
-    """Everything needed to place and construct one trial, and nothing that
-    could reach hardware: no bus, no tracker, no command source."""
+    """Everything needed to place and construct one trial: no bus, no
+    tracker, no command source.
+
+    It does carry ``display`` — the window — because constructing a
+    stimulus needs one (``make_fixation(setup.display, ...)``). That is for
+    ``build_trial`` to build stimuli with, and nothing else: drawing and
+    flipping are the engine's, and a phase never sees the window (the
+    TrialContext does not carry it)."""
 
     cfg: SessionConfig
     screen: Screen

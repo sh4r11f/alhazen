@@ -84,7 +84,10 @@ class MyScheduler:
 - An adaptive scheduler asks a `score(result) -> bool` whether a *completed*
   trial was a success, defaulting to `outcome.success`, as the built-in
   staircases and QUEST+ do. Pass it the task's `score_trial` from
-  `make_source`, or a task that titrates something else gets accuracy.
+  `make_source`, or a task that titrates something else gets accuracy. The
+  built-in ones refuse (`TypeError`) an answer that is not a `bool`.
+- A queue-based scheduler may define `remaining()` (planned trials still
+  queued); `BlockPlan` then refuses a `trials_per_block` that would cut it.
 - `record()` is called for *every* outcome, including PAUSED and ABORTED.
 
 ## Add a device backend
@@ -119,7 +122,11 @@ register_metric("mean_saccade_error_dva", lambda window: ...)
 ```
 
 The function receives the sliding window of recent trial summaries and
-returns a number; name it in a stage's `promote_when` or `demote_when`.
+returns a number; name it in a stage's `promote_when` or `demote_when`. A
+summary carries `outcome`, `completed`, `success`, `rt_ms` and `stage`; list
+any other record field the metric reads in the curriculum's `record_fields`
+(here, `record_fields: [saccade_error_dva]`). If the task's phases write the
+RT under another name, set the curriculum's `rt_key` to it.
 
 ## Add a display backend
 

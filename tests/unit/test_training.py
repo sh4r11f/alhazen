@@ -252,7 +252,7 @@ class TestState:
         def disk_full(fd):
             raise OSError(28, "No space left on device")
 
-        monkeypatch.setattr("alhazen.training.state.os.fsync", disk_full)
+        monkeypatch.setattr("alhazen.data.atomic.os.fsync", disk_full)
         with pytest.raises(OSError, match="No space left"):
             TrainingState(stage="one").save(tmp_path, "m01")
 
@@ -756,3 +756,167 @@ class TestTaskInstanceIsRestored:
 
         assert first_pass == second_pass
         assert task.params == original
+
+
+def one_stage_supervisor(tmp_path, criteria: StageCriteria, **curriculum_fields):
+    """A supervisor over a single stage, for the tests that only need the
+    criteria window and what reaches it."""
+    return TrainingSupervisor(
+        curriculum=Curriculum(stages=[Stage(name="only", criteria=criteria)], **curriculum_fields),
+        state=TrainingState(stage="only"),
+        task=DemoTask(),
+        data_root=tmp_path,
+        subject="t01",
+        session_id="ses-001_run-01",
+    )
+
+
+class TestTheRecordReachesTheCriteria:
+    """The window used to be built from a fixed four keys, with the RT read
+    from ``rt_ms`` whatever the task's phases wrote it under
+    (``rt_record_key``). A task that renamed it had ``mean_rt_ms`` = NaN on
+    every window, so an RT criterion never promoted — and said nothing."""
+
+    RT_CRITERIA = StageCriteria(window=4, min_trials=2, promote_when={"mean_rt_ms": 0.0})
+
+    def test_the_default_window_entry_is_what_it_always_was(self, tmp_path):
+        # Existing curricula and state files must read exactly as before.
+        supervisor = one_stage_supervisor(tmp_path, StageCriteria(window=4, min_trials=2))
+        supervisor.observe(COMPLETED, {"rt_ms": 250.0, "response_key": "left"})
+        assert supervisor.state.window == [
+            {
+                "outcome": "COMPLETED",
+                "completed": True,
+                "success": True,
+                "rt_ms": 250.0,
+                "stage": "only",
+            }
+        ]
+
+    def test_a_renamed_rt_reaches_mean_rt_ms(self, tmp_path):
+        supervisor = one_stage_supervisor(tmp_path, self.RT_CRITERIA, rt_key="saccade_rt_ms")
+        for rt in (200.0, 300.0):
+            supervisor.observe(COMPLETED, {"saccade_rt_ms": rt})
+        assert mean_rt_ms(supervisor.state.window) == pytest.approx(250.0)
+        # The criterion holds, so the (only) stage is finished.
+        supervisor.transition()
+        assert supervisor.complete is True
+
+    def test_listed_record_fields_reach_a_registered_metric(self, tmp_path):
+        # What docs/how-to.md's own example (a saccade-error metric) needs:
+        # a field the built-in summary never carried.
+        supervisor = one_stage_supervisor(
+            tmp_path,
+            StageCriteria(window=4, min_trials=2),
+            record_fields=["saccade_error_dva"],
+        )
+        supervisor.observe(COMPLETED, {"saccade_error_dva": 0.5, "unlisted": 1})
+        (entry,) = supervisor.state.window
+        assert entry["saccade_error_dva"] == 0.5
+        assert "unlisted" not in entry
+
+    def test_a_numpy_value_is_kept_as_a_plain_number(self, tmp_path):
+        # The window is written to YAML at teardown; a numpy scalar in it
+        # would fail that write after the whole session had run.
+        import numpy as np
+
+        supervisor = one_stage_supervisor(
+            tmp_path, StageCriteria(window=4, min_trials=2), record_fields=["error_dva"]
+        )
+        supervisor.observe(COMPLETED, {"error_dva": np.float64(0.25)})
+        value = supervisor.state.window[0]["error_dva"]
+        assert type(value) is float and value == 0.25
+        supervisor.save()  # and it round-trips through the state file
+
+    def test_a_value_the_state_file_cannot_hold_is_refused_by_name(self, tmp_path):
+        supervisor = one_stage_supervisor(
+            tmp_path, StageCriteria(window=4, min_trials=2), record_fields=["trace"]
+        )
+        with pytest.raises(ConfigError, match="trace"):
+            supervisor.observe(COMPLETED, {"trace": [1.0, 2.0]})
+
+    def test_a_record_field_cannot_shadow_what_the_built_in_metrics_read(self):
+        with pytest.raises(ValueError, match="'completed'.*built-in"):
+            Curriculum(stages=[Stage(name="only")], record_fields=["completed"])
+
+    def test_an_rt_criterion_that_never_sees_an_rt_warns_once(self, tmp_path, caplog):
+        supervisor = one_stage_supervisor(tmp_path, self.RT_CRITERIA)
+        with caplog.at_level("WARNING", logger="alhazen.training.supervisor"):
+            for _ in range(6):
+                # The phases wrote the RT under another name than rt_key.
+                supervisor.observe(COMPLETED, {"saccade_rt_ms": 200.0})
+                supervisor.transition()
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) == 1
+        assert "rt_ms" in warnings[0].getMessage()
+        assert "rt_key" in warnings[0].getMessage()
+
+    def test_no_warning_while_the_rt_is_recorded(self, tmp_path, caplog):
+        supervisor = one_stage_supervisor(tmp_path, self.RT_CRITERIA)
+        with caplog.at_level("WARNING", logger="alhazen.training.supervisor"):
+            for _ in range(6):
+                supervisor.observe(COMPLETED, {"rt_ms": 200.0})
+        assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+
+class TestCompletion:
+    """Finishing the curriculum used to be a side effect of *asking* what a
+    move would be: a manual promote at the last stage marked the curriculum
+    complete the moment the key was pressed (mid-trial, before anything was
+    queued), and a criterion that kept holding re-announced completion on
+    every later trial."""
+
+    def curriculum(self, **criteria) -> Curriculum:
+        return Curriculum(
+            stages=[
+                Stage(name="easy"),
+                Stage(name="last", criteria=StageCriteria(window=4, min_trials=2, **criteria)),
+            ]
+        )
+
+    def at_last_stage(self, tmp_path, **criteria) -> TrainingSupervisor:
+        return TrainingSupervisor(
+            curriculum=self.curriculum(**criteria),
+            state=TrainingState(stage="last"),
+            task=DemoTask(),
+            data_root=tmp_path,
+            subject="t01",
+            session_id="ses-001_run-01",
+        )
+
+    def test_a_manual_promote_at_the_last_stage_is_only_queued(self, tmp_path):
+        supervisor = self.at_last_stage(tmp_path)
+        supervisor.request(+1)
+        # Nothing happens mid-trial: completion lands between trials, like
+        # every other move.
+        assert supervisor.complete is False
+        assert supervisor.transition() is None
+        assert supervisor.complete is True
+
+    def test_completion_is_announced_once(self, tmp_path, caplog):
+        supervisor = self.at_last_stage(tmp_path, promote_when={"success_rate": 0.5})
+        with caplog.at_level("INFO", logger="alhazen.training"):
+            for _ in range(8):
+                supervisor.observe(COMPLETED, {})
+                assert supervisor.transition() is None
+        messages = [r.getMessage() for r in caplog.records]
+        assert sum("curriculum complete" in m for m in messages) == 1
+        # And the promotion that finished it is not re-decided every trial.
+        assert sum("promotion criteria met" in m for m in messages) == 1
+        assert supervisor.complete is True
+
+    def test_a_finished_subject_can_still_be_demoted(self, tmp_path):
+        supervisor = self.at_last_stage(
+            tmp_path,
+            promote_when={"success_rate": 0.5},
+            demote_when={"completed_rate": 0.3},
+        )
+        for _ in range(2):
+            supervisor.observe(COMPLETED, {})
+        supervisor.transition()
+        assert supervisor.complete is True
+        broken = Outcome("BROKE_FIXATION", completed=False)
+        for _ in range(4):
+            supervisor.observe(broken, {})
+        change = supervisor.transition()
+        assert change is not None and change.to_stage == "easy"

@@ -402,6 +402,11 @@ GAZE_STALE_MARGIN_S = 0.005
 # in two seconds is a USB transfer to a device that went away mid-call, and a
 # plain wait behind it would hang the session with a window nobody can close.
 LOCK_TIMEOUT_S = 2.0
+# How long stop() waits for the gaze reader thread to finish its read and
+# end. A read that has not returned by then is the same stuck USB transfer
+# LOCK_TIMEOUT_S describes; the thread is abandoned, said at ERROR, and ends
+# by itself if the read ever returns (GazeReader.stop).
+READER_JOIN_S = 2.0
 # How often the calibration screen refreshes its eye status between keys.
 STATUS_REFRESH_S = 0.1
 # How long a failed calibration's verdict stays on screen before the pause
@@ -493,22 +498,37 @@ class GazeReader:
         # wrong — and the session time it was asked; None before the first.
         self._checked: tuple[str | None, float] | None = None
         self._fault: BaseException | None = None
+        # The running thread's own stop request. Each start() makes a new
+        # one, so a thread abandoned by stop() keeps the request made of it:
+        # with one shared Event, the next start() cleared it, and the
+        # abandoned thread, once its read returned, read on beside the new one.
         self._stop = threading.Event()
         self._paused = threading.Event()
         self._thread: threading.Thread | None = None
         self._release_timer: Callable[[], None] = _no_release
 
     def start(self) -> None:
-        self._stop.clear()
+        self._stop = threading.Event()
         self._release_timer = request_fine_timer()
-        self._thread = threading.Thread(target=self._run, name="trackpixx-gaze", daemon=True)
+        self._thread = threading.Thread(
+            target=self._run, args=(self._stop,), name="trackpixx-gaze", daemon=True
+        )
         self._thread.start()
 
     def stop(self) -> None:
         self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=2.0)
-            self._thread = None
+        thread, self._thread = self._thread, None
+        if thread is not None:
+            thread.join(timeout=READER_JOIN_S)
+            if thread.is_alive():
+                # Stuck in a USB read that has not returned. Nothing can
+                # interrupt it; its own stop Event is set, so it ends when
+                # the read returns, and a later start() cannot revive it.
+                log.error(
+                    "TRACKPixx3 gaze reader thread did not stop within %g s (a device read "
+                    "has not returned); abandoning it",
+                    READER_JOIN_S,
+                )
         self._release_timer()
         self._release_timer = _no_release
 
@@ -612,8 +632,10 @@ class GazeReader:
             raise TrackerError(f"the TRACKPixx3 stopped answering: {self._fault}") from self._fault
         return self._latest
 
-    def _run(self) -> None:
-        while not self._stop.is_set():
+    def _run(self, stop: threading.Event) -> None:
+        # `stop` is this thread's own request (start()), never self._stop,
+        # which a later start() replaces.
+        while not stop.is_set():
             if self._paused.is_set():
                 time.sleep(self._interval * 10)
                 continue
