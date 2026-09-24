@@ -3,6 +3,8 @@ experiment's own event vocabulary."""
 
 from __future__ import annotations
 
+import csv
+
 import pytest
 
 from alhazen import CircleRegion, Model
@@ -73,7 +75,8 @@ def build(tmp_path, schema, **kwargs):
         build_trial=build_trial,
         make_source=make_source,
         seed=1,
-        iti=Duration(ms=0),
+        # Zero unless a test is about the pause between trials.
+        iti=kwargs.pop("iti", Duration(ms=0)),
         simulated_frame_period_s=0.0,
         date_yyyymmdd="20260826",
         **kwargs,
@@ -675,3 +678,102 @@ class TestTheRestTimeoutReachesTheRunner:
     def test_a_wait_of_zero_is_refused(self, tmp_path):
         with pytest.raises(ValueError, match="rest_resume_after_s must be > 0"):
             build(tmp_path, EventSchema(("FIX_ON",)), rest_resume_after_s=0)
+
+
+def read_table(tmp_path, suffix: str) -> list[dict[str, str]]:
+    """One of the run's tables, read back from the file the session wrote."""
+    (path,) = tmp_path.rglob(f"*_{suffix}.csv")
+    with path.open(newline="", encoding="utf-8") as f:
+        return list(csv.DictReader(f))
+
+
+class TestTheSessionClock:
+    """``build_session(clock=...)``: the one clock every recorded time comes from.
+
+    The builder used to make its own MonotonicClock with no way to pass one
+    in. A test that handed in a tracker had to build that tracker on a
+    second clock, and every phase of a built session was timed by the host's
+    real clock: on a loaded machine a 3-frame stimulus could end after one
+    frame (issue #62).
+    """
+
+    # Far from zero, where a real clock made at build time would start, so a
+    # time read from any other clock cannot pass for one read from this.
+    START = 1000.0
+    FRAME = 1.0 / MONITOR.refresh_rate_hz
+
+    def run(self, tmp_path, clock, **kwargs):
+        runner = build(
+            tmp_path,
+            EventSchema(("STIM_ON",)),
+            clock=clock,
+            build_trial=lambda setup: TrialPlan(
+                phases=[RunForFrames(3, COMPLETED, emit_on_enter="STIM_ON")]
+            ),
+            make_source=lambda params, rng: SimpleSequence(
+                [Condition({"c": "a"}), Condition({"c": "b"})], n_repeats=1, rng=rng
+            ),
+            **kwargs,
+        )
+        runner.run()
+        return runner
+
+    def on_the_frame_lattice(self, t: float) -> bool:
+        """This clock moves only a whole frame at a time (with no ITI), so
+        every time read from it is START plus a whole number of frames. The
+        tolerance covers frames.csv's six written decimals."""
+        frames = (t - self.START) / self.FRAME
+        return abs(frames - round(frames)) < 1e-3
+
+    def test_every_recorded_time_is_on_the_clock_handed_in(self, tmp_path):
+        clock = FakeClock(start=self.START)
+        self.run(tmp_path, clock)
+
+        events = [float(row["t"]) for row in read_table(tmp_path, "events")]
+        stamps = [
+            float(value)
+            for row in read_table(tmp_path, "trials")
+            for column, value in row.items()
+            if column.startswith("t_") and value
+        ]
+        frame_rows = read_table(tmp_path, "frames")
+        flips = [float(row["t"]) for row in frame_rows]
+        assert events and stamps and flips
+
+        # The session moved the clock itself: the simulated display advanced
+        # it on every flip. Nothing else could have, since nothing else knows
+        # it is a fake.
+        assert clock.now() > self.START
+        for t in events + stamps + flips:
+            assert self.START <= t <= clock.now(), t
+            assert self.on_the_frame_lattice(t), t
+        # And every frame lasted exactly one frame, which is what makes a
+        # phase timed in frames span the same flips on any machine.
+        assert all(
+            float(row["interval_s"]) == pytest.approx(self.FRAME, abs=1e-5) for row in frame_rows
+        )
+
+    def test_the_pause_between_trials_passes_on_that_clock_too(self, tmp_path):
+        # The runner's wait advances a clock like this one rather than
+        # sleeping: slept for real, the ITI would leave the fake where it was
+        # (and a rest that resumes by itself at a deadline would never end).
+        clock = FakeClock(start=self.START)
+        self.run(tmp_path, clock, iti=Duration(ms=500))
+
+        events = read_table(tmp_path, "events")
+        ends = [float(r["t"]) for r in events if r["event"] == "TRIAL_END"]
+        starts = [float(r["t"]) for r in events if r["event"] == "TRIAL_START"]
+        assert len(starts) == 2
+        assert starts[1] - ends[0] == pytest.approx(0.5)
+
+    def test_a_clock_that_moves_only_when_told_needs_the_simulated_display(self, tmp_path):
+        # On a real window nothing advances it, so the first timed phase
+        # would never end: refused with a reason, before any run directory.
+        with pytest.raises(ConfigError, match="Only the simulated display advances"):
+            build(
+                tmp_path,
+                EventSchema(()),
+                clock=FakeClock(),
+                display=DisplayConfig(backend="psychopy"),
+            )
+        assert not list(tmp_path.rglob("run-*"))
