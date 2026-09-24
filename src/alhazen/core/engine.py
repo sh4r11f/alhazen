@@ -1,7 +1,9 @@
 """TrialEngine: the single per-frame loop that drives one trial end to end.
 
-Once per displayed frame: poll experimenter commands, run health checks,
-snapshot inputs into the context, let the current phase draw and decide, draw
+Once per displayed frame: poll experimenter commands, run health checks
+(a device that stopped aborts the trial — unless it stopped during the
+closing phase, after the measurement, when it is only flagged), snapshot
+inputs into the context, let the current phase draw and decide, draw
 the rig's overlay, flip, stamp the flip on the session clock, feed frame QA
 (which, at the trial's end, may recycle a trial whose display dropped too many
 frames), then emit whatever events that frame queued — stamped with the flip's own
@@ -10,6 +12,10 @@ actually showed it, not to the Python call that requested it. Those
 timestamps are what let analysis line up behavior with device recordings
 afterwards. A phase's mid-trial reward requests are handed to the dispenser
 at that same moment, so their REWARD events carry the same flip.
+
+Both system faults the engine can see — a failed health check and a frame-QA
+recycle — are written onto the row as its ``fault`` (core/trial.py NO_FAULT).
+What a fault then costs, pays and counts is the runner's business.
 
 The engine is the only code that touches the display, the command source,
 and the bus. Phases stay dumb (core/trial.py). Device-specific side effects
@@ -31,6 +37,8 @@ from alhazen.core.events import Event, EventBus, EventSchema
 from alhazen.core.trial import (
     ABORTED,
     DROPPED_FRAMES,
+    FAULT_DROPPED_FRAMES,
+    NO_FAULT,
     PAUSED,
     InputFrame,
     Outcome,
@@ -38,6 +46,7 @@ from alhazen.core.trial import (
     RewardCompletion,
     RewardRequest,
     TrialContext,
+    lost_to_fault,
 )
 from alhazen.display.backend import DisplayBackend
 from alhazen.display.frames import FrameMonitor
@@ -78,6 +87,20 @@ class TrialResult:
             return self.outcome_before_frame_qa
         return self.outcome
 
+    @property
+    def lost_to_fault(self) -> str | None:
+        """The system fault this trial's measurement was lost to —
+        ``"dropped_frames"`` or ``"tracker_stopped"`` — or None.
+
+        Not always what the row's ``fault`` column says: a tracker that
+        stopped during the closing phase is flagged there, but the trial kept
+        its outcome, so nothing was lost and this is None. Derived from the
+        outcome and the record by ``core.trial.lost_to_fault`` rather than
+        stored, so the session and an analysis reading trials.csv apply one
+        rule.
+        """
+        return lost_to_fault(self.outcome.name, self.record)
+
 
 class RewardRequestSink(Protocol):
     """Where the engine hands mid-trial reward requests, and hears back how
@@ -112,10 +135,10 @@ def _is_interrupted(outcome: Outcome | None) -> bool:
     """Did the trial stop rather than end?
 
     PAUSED and ABORTED are not trial results — one is an experimenter
-    stopping the session, the other is a quit — so nothing that closes a
-    trial out runs on them. Showing a subject a red fixation point because
-    somebody pressed P would be telling them they failed a trial they were
-    still in the middle of.
+    stopping the session, the other the experimenter's skip or a device that
+    stopped mid-trial — so nothing that closes a trial out runs on them.
+    Showing a subject a red fixation point because somebody pressed P would
+    be telling them they failed a trial they were still in the middle of.
     """
     return outcome is not None and outcome.name in ("PAUSED", "ABORTED")
 
@@ -148,7 +171,11 @@ class TrialEngine:
         # Health checks run every frame, not once at trial start: a trial
         # that believes a device is still recording when it is not would
         # silently produce data with holes and no record of why. A check
-        # returns an abort reason string, or None when healthy.
+        # returns an abort reason string, or None when healthy. A check that
+        # fails is a system fault — a device stopped, which is never the
+        # subject's doing — so its reason is also the row's `fault`; and
+        # during the closing phase it flags the row without ending the trial
+        # (_run_phase).
         self._health_checks = tuple(health_checks)
         self._on_manual_reward = on_manual_reward
         self._manual_reward_payload = dict(manual_reward_payload or {})
@@ -175,6 +202,10 @@ class TrialEngine:
 
     def run_trial(self, ctx: TrialContext, phases: list[Any]) -> TrialResult:
         self._frame_index = 0
+        # "none" from the start, overwritten only when a fault happens: every
+        # row carries the column, and a clean trial says so with a value, not
+        # an empty cell (core/trial.py NO_FAULT).
+        ctx.record["fault"] = NO_FAULT
         if self._frame_monitor is not None:
             self._frame_monitor.start_trial(ctx.trial_index)
             if self._frame_monitor.marks_trials:
@@ -249,7 +280,9 @@ class TrialEngine:
             # The verdict cannot come first anyway: the closing phase's own
             # frames are part of the trial frame QA judges.
             ctx.outcome = outcome
-            closing_outcome = self._run_phase(closing, ctx)
+            # closing=True: a device that stops during it is flagged, not
+            # allowed to end the trial — see _run_phase.
+            closing_outcome = self._run_phase(closing, ctx, closing=True)
             # A closing phase decides the outcome only when nothing else
             # has. Feedback is shown for a fixation break; it does not turn
             # one into a completed trial.
@@ -290,6 +323,12 @@ class TrialEngine:
                 before_frame_qa = outcome
                 ctx.record["outcome_before_frame_qa"] = outcome.name
                 ctx.record["frame_qa_reason"] = frames.reason
+                # A display fault, not the subject's, and the one the trial
+                # is served again for — so it is what the row's single fault
+                # column names. It replaces a tracker stop the closing phase
+                # may have flagged on this trial: that one cost nothing, and
+                # was logged at WARNING when it happened.
+                ctx.record["fault"] = FAULT_DROPPED_FRAMES
                 outcome = DROPPED_FRAMES
 
         self._finalize(ctx, outcome)
@@ -301,22 +340,41 @@ class TrialEngine:
     # Per-phase frame loop
     # ------------------------------------------------------------------
 
-    def _run_phase(self, phase: Any, ctx: TrialContext) -> Outcome | None:
+    def _run_phase(self, phase: Any, ctx: TrialContext, *, closing: bool = False) -> Outcome | None:
+        """Run one phase frame by frame until it ADVANCEs or ends the trial.
+
+        ``closing`` marks the trial's closing phase (the one declaring
+        ``must_be_last``), the only place a failed health check does not end
+        the trial.
+        """
         phase.on_enter(ctx)
         # dt reference resets per phase so a phase's first dt means "since
         # this phase started", not whatever the previous phase's last frame
         # happened to take.
         last_t = ctx.clock.now()
+        # Set once a health check has failed during the closing phase. The
+        # fault is on the row by then, and asking again every frame would
+        # only find the same device stopped.
+        fault_flagged = False
         while True:
             outcome = self._handle_commands(ctx)  # may raise QuitRequested
             if outcome is not None:
                 return outcome
 
-            for check in self._health_checks:
-                reason = check()
-                if reason is not None:
+            reason = None if fault_flagged else self._failed_health_check()
+            if reason is not None:
+                if not closing:
+                    # The measurement is still being made, and it cannot be
+                    # made without the device, so the trial is aborted and
+                    # its condition served again. `abort_reason` and `fault`
+                    # carry the same reason: that pairing is how
+                    # core.trial.lost_to_fault tells this abort from the
+                    # experimenter's skip, which is ABORTED too.
                     ctx.record["abort_reason"] = reason
+                    ctx.record["fault"] = reason
                     return ABORTED
+                self._flag_closing_phase_fault(ctx, phase, reason)
+                fault_flagged = True
 
             ctx.inputs = self._input_provider()
 
@@ -364,6 +422,46 @@ class TrialEngine:
                 f"phase {getattr(phase, 'name', phase)!r} returned {step!r}; expected "
                 f"PhaseAction.CONTINUE, PhaseAction.ADVANCE, or an Outcome"
             )
+
+    # ------------------------------------------------------------------
+    # Health checks
+    # ------------------------------------------------------------------
+
+    def _failed_health_check(self) -> str | None:
+        """The reason of the first health check that fails this frame, or
+        None when every device reports itself healthy."""
+        for check in self._health_checks:
+            reason = check()
+            if reason is not None:
+                return reason
+        return None
+
+    def _flag_closing_phase_fault(self, ctx: TrialContext, phase: Any, reason: str) -> None:
+        """A device failed its health check during the closing phase: flag the
+        row, say so, and let the phase run to its end.
+
+        Everything was measured before the closing phase began — that is what
+        ``must_be_last`` promises (feedback is never on screen while
+        something is being measured) — so a tracker that stops now has cost
+        the trial only the eye data of its feedback. Aborting, as every other
+        phase does, did real damage here: it discarded a finished measurement
+        (a closing phase that decides the outcome, as after a ``LandingCheck``
+        that ADVANCEs, ended ABORTED and was served again), cut the subject's
+        feedback off before it was drawn, and wrote an ``abort_reason`` on a
+        trial that was not aborted. The trial keeps the outcome its own
+        phases give it; the row's ``fault`` is the only trace, beside this
+        line.
+        """
+        ctx.record["fault"] = reason
+        log.warning(
+            "trial %d: a device health check failed (%s) during the closing phase %r, after "
+            "the measurement: the trial is not aborted — its outcome stands and the phase "
+            "runs to its end — and the row is flagged fault=%s",
+            ctx.trial_index,
+            reason,
+            getattr(phase, "name", phase),
+            reason,
+        )
 
     # ------------------------------------------------------------------
     # Commands

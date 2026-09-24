@@ -6,6 +6,9 @@ from alhazen.core.rng import STREAMS, resolve_seed, spawn_streams
 from alhazen.core.trial import (
     ABORTED,
     DROPPED_FRAMES,
+    FAULT_DROPPED_FRAMES,
+    FAULT_TRACKER_STOPPED,
+    NO_FAULT,
     PAUSED,
     TRIAL_RECORD_COLUMNS,
     CircleRegion,
@@ -15,12 +18,16 @@ from alhazen.core.trial import (
     Phase,
     PhaseAction,
     TrialContext,
+    lost_to_fault,
     outcomes,
 )
 
 __all__ = [
     "ABORTED",
     "DROPPED_FRAMES",
+    "FAULT_DROPPED_FRAMES",
+    "FAULT_TRACKER_STOPPED",
+    "NO_FAULT",
     "PAUSED",
     "TRIAL_RECORD_COLUMNS",
     "RESERVED_EVENTS",
@@ -44,6 +51,7 @@ __all__ = [
     "TrialContext",
     "TrialEngine",
     "TrialResult",
+    "lost_to_fault",
     "outcomes",
     "resolve_seed",
     "spawn_streams",
