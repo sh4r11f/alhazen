@@ -240,6 +240,7 @@ class TrialEngine:
             # an empty cell that reads back as NaN.
             ctx.record["n_mid_trial_rewards"] = 0
             ctx.record["n_mid_trial_reward_failures"] = 0
+            ctx.record["n_mid_trial_rewards_cancelled"] = 0
 
         # A phase that declares it must be last — trial feedback, which must
         # never be on screen while something is still being measured — is
@@ -522,8 +523,20 @@ class TrialEngine:
                 # (session/builder.py); the event is the permanent record.
                 # Hardware first, then the event: an event claiming a reward
                 # the pump never delivered is the one ordering that lies.
+                # So this frame waits for the pump. For a task with mid-trial
+                # reward the hook overrides the queue: it cancels every drop
+                # still waiting and is delivered once, after the train
+                # already on the valve — so the wait is at most that train
+                # plus its own (devices/reward.py, QueuedReward.deliver_manual).
                 if self._on_manual_reward is not None:
                     self._on_manual_reward()
+                # Those cancellations, and a drop that finished on the valve
+                # while the key waited, are reported now, before the manual
+                # REWARD: events.csv then reads in the order things happened
+                # at the valve — the REWARD_CANCELLED events, that drop's
+                # REWARD_DELIVERED, then the manual REWARD that caused them.
+                # A no-op without mid-trial reward.
+                self._report_reward_completions(ctx)
                 self._emit(ctx, "REWARD", {"manual": True, **self._manual_reward_payload})
             elif self._on_session_command is not None:
                 # Not this loop's business. Handed on rather than ignored: a
@@ -567,7 +580,8 @@ class TrialEngine:
         before the event is emitted (the manual key's hardware-then-event
         order), but submit only queues: the pump runs on the dispenser's own
         thread, and its end is reported later as REWARD_DELIVERED or
-        REWARD_FAILED.
+        REWARD_FAILED — or as REWARD_CANCELLED, when a manual reward overrode
+        the queue before it reached the valve.
         """
         if not ctx.pending_reward_requests:
             return
@@ -587,8 +601,8 @@ class TrialEngine:
             self._emit(ctx, "REWARD", payload)
 
     def _report_reward_completions(self, ctx: TrialContext) -> None:
-        """Emit an event for every mid-trial delivery that has finished, and
-        count it on the trial's record.
+        """Emit an event for every mid-trial drop that has ended — delivered,
+        failed or cancelled — and count it on the trial's record.
 
         Called on the session thread only. The dispenser's worker thread never
         touches the bus or the record — it leaves completions in a queue that
@@ -599,12 +613,29 @@ class TrialEngine:
         A failure does not stop the trial. The measurement is still being
         made and a pump fault is no reason to discard it; the runner hands
         the failure to the pause flow once the trial is over, exactly as it
-        does an end-of-trial failure.
+        does an end-of-trial failure. A cancellation is not a failure, and
+        does not take that pause.
         """
         if self._reward_requests is None:
             return
         for done in self._reward_requests.completed():
-            if done.error is None:
+            if done.cancelled_by is not None:
+                # Commanded — its REWARD is already in the record — and never
+                # delivered: a manual reward overrode the queue before it
+                # reached the valve. Its own end event, never REWARD_FAILED:
+                # the pump did not fail, and a REWARD_FAILED would send the
+                # session to the pump-failure pause. `rewarded` is left alone,
+                # since no delivery of it was attempted; the manual reward's
+                # own REWARD says what the subject got instead.
+                ctx.record["n_mid_trial_rewards_cancelled"] = (
+                    ctx.record.get("n_mid_trial_rewards_cancelled", 0) + 1
+                )
+                self._emit(
+                    ctx,
+                    "REWARD_CANCELLED",
+                    {**done.request.payload(), "cancelled_by": done.cancelled_by},
+                )
+            elif done.error is None:
                 ctx.record["n_mid_trial_rewards"] = ctx.record.get("n_mid_trial_rewards", 0) + 1
                 # Any pulse delivered this trial makes it a rewarded trial.
                 ctx.record["rewarded"] = True

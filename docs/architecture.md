@@ -129,8 +129,8 @@ command source, and the bus:
 10. hand the phase's mid-trial reward requests (`ctx.request_reward`) to the
     reward worker and emit a `REWARD` for each, stamped with that same flip;
     then report every delivery the worker has finished since the last frame
-    as `REWARD_DELIVERED` or `REWARD_FAILED`. Neither step waits for the pump
-    (§5.3)
+    as `REWARD_DELIVERED` or `REWARD_FAILED`, and every drop a manual reward
+    cancelled as `REWARD_CANCELLED`. Neither step waits for the pump (§5.3)
 
 The overlay runs *after* the phase and *before* the flip, so it can see what
 that frame queued. That is what lets the photodiode patch mark the exact flip
@@ -423,14 +423,16 @@ the base name in that path are a promise; the suffix belongs to the backend
 **Reward policy is not here.** Inside a trial the device layer is reached two
 ways. The experimenter's manual-reward key: the engine delivers, *then* emits
 `REWARD{manual: true}` — in that order, because an event claiming a reward
-the pump never gave is a lie in the data. And, for a task that declares
-`mid_trial_reward`, a phase's `ctx.request_reward`, which the engine hands to
-the reward worker after the flip (§5.3). Between trials the runner waits for
-that worker to go idle (`engine.settle_rewards`) *inside* the tracker's
-recording segment, so the eye data covers the last drop's whole delivery,
-and before it pays the outcome. Teardown settles once more — as its own step,
-before the recorder writes — for a trial a quit or a fault cut short, and
-`reward.close` then joins the worker before releasing the device.
+the pump never gave is a lie in the data. (For a task with mid-trial reward
+the key cancels every drop still queued and is delivered next, §5.3.) And,
+for a task that declares `mid_trial_reward`, a phase's `ctx.request_reward`,
+which the engine hands to the reward worker after the flip (§5.3). Between
+trials the runner waits for that worker to go idle (`engine.settle_rewards`)
+*inside* the tracker's recording segment, so the eye data covers the last
+drop's whole delivery, and before it pays the outcome. Teardown settles once
+more — as its own step, before the recorder writes — for a trial a quit or a
+fault cut short, and `reward.close` then joins the worker before releasing the
+device.
 
 ### 4.4 Config that names events
 
@@ -821,7 +823,22 @@ sequenceDiagram
     Q->>Q: completion onto a thread-safe queue
     E->>Q: completed()  — drained every frame
     E->>B: REWARD_DELIVERED {pulses, reason, frame: n}  or  REWARD_FAILED {…, error}
+    Note over E,Q: a drop still waiting when a manual reward is asked for never reaches D:<br/>it is cancelled, and drained as REWARD_CANCELLED {…, cancelled_by: manual}
     Note over E,Q: between trials: settle_rewards() waits for idle, drains the rest,<br/>then the runner pays the outcome through the same worker
+```
+
+Which delivery goes on the valve next:
+
+```mermaid
+graph LR
+    DROPS["phase drops<br/>submit()"] --> Q["queue<br/>first in, first out"]
+    PAY["end-of-trial pay<br/>deliver()"] --> Q
+    MAN["manual reward<br/>deliver_manual()"] --> ML["manual line<br/>first in, first out"]
+    MAN -.->|"cancels every drop still waiting<br/>(never the end-of-trial pay)"| Q
+    Q -.->|"each cancelled drop"| RC["REWARD_CANCELLED<br/>never delivered"]
+    ML -->|"taken first"| W["worker thread"]
+    Q -->|"taken when the manual line is empty"| W
+    W -->|"one train at a time, never cut short"| V["dispenser.deliver(pulses)"]
 ```
 
 - **Declared, and checked at build.** `mid_trial_reward` is a class
@@ -837,17 +854,54 @@ sequenceDiagram
   `QueuedReward`, whose worker thread delivers; `submit` returns at once. An
   8 s pursuit at 120 Hz cannot absorb a 200 ms pulse train inside a frame.
 - **One path, one valve, one delivery at a time.** Every delivery of such a
-  session goes through the same worker, in the order asked for: the task's
-  drops, the manual key and the end-of-trial pay (`deliver()` waits its turn
-  and re-raises a failure on the caller's thread). Requests that arrive while
-  one is delivering queue up; none is dropped or merged. A drop requested
-  behind others carries `queued_behind: <count>` on its REWARD, so a rig
-  whose pulse train is longer than the task's drop interval shows in the
-  data that it delivered late. Between trials the runner calls
+  session goes through the same worker: the task's drops, the manual reward
+  and the end-of-trial pay. None ever overlaps another on the valve, and none
+  is merged. Drops and the end-of-trial pay go in the order asked for
+  (`deliver()` waits its turn and re-raises a failure on the caller's
+  thread); requests that arrive while one is delivering queue up, and none is
+  dropped — except by the manual reward, below, and even then each one ends
+  with an event of its own. A drop requested behind others carries
+  `queued_behind: <count>` on its REWARD — every delivery ahead of it when it
+  was commanded, a manual reward still waiting included — so a rig whose
+  pulse train is longer than the task's drop interval shows in the data that
+  it delivered late. Between trials the runner calls
   `engine.settle_rewards(ctx)`, which waits for the worker to go idle, *then*
   pays the outcome — so the end-of-trial pulse train never overlaps a drop.
-  The manual key pressed mid-trial waits behind queued drops on the session
-  thread, exactly as it always blocked the frame it was pressed on.
+- **The manual reward overrides the queue.** The experimenter's reward — `r`
+  during a trial, R in the pause menu or the dashboard's button, all one hook
+  that the builder's `make_manual_reward` routes to
+  `QueuedReward.deliver_manual` — replaces whatever drops are waiting. Every
+  drop still queued is cancelled: taken out of the queue and never
+  delivered, each one ended by its own `REWARD_CANCELLED {pulses, reason,
+  frame, cancelled_by: "manual"}`, and all of them named in one WARNING in
+  the log. The train already on the valve finishes (next bullet), and the
+  manual reward is delivered once, next. Drops asked for after it queue as
+  usual: the queue builds up again by itself. The key stays synchronous, so
+  its `REWARD {manual: true}` is still emitted after the pump and it still
+  blocks the frame it was pressed on — for **at most the rest of the train on
+  the valve plus its own**. The engine reports the cancellations, and any
+  drop that finished on the valve while the key waited, before it emits the
+  manual REWARD, so events.csv reads in the order things happened at the
+  valve: the REWARD_CANCELLED events, then that drop's REWARD_DELIVERED, then
+  the manual REWARD that caused them, all in the frame the key was pressed
+  on. A cancellation is not a failure: it takes no pause, and it leaves
+  `rewarded` alone. The end-of-trial pay is never cancelled — it is the
+  trial's outcome, and it is made after `settle_rewards` has emptied the
+  queue anyway. Between trials the queue is empty, so the pause menu's reward
+  cancels nothing and goes straight to the valve. A manual reward that fails
+  raises on the session thread, as it always has; what it cancelled stays
+  cancelled, and each of those drops still gets its REWARD_CANCELLED — from
+  teardown's settle, if the failure ended the session first.
+- **A train on the valve is never cut short** — neither a drop's nor
+  anything else's: a manual reward cancels only what is still waiting. Pulse
+  width is what sets the volume delivered (it is the pump's calibration), so
+  a train stopped part-way delivers an amount nobody measured, and its
+  REWARD_DELIVERED could not say what arrived. And `NidaqReward` plays a
+  finite buffered waveform: an analog-output task leaves its last generated
+  sample on the line when it stops — the reason every waveform ends at 0 V —
+  so stopping it mid-pulse would leave the valve open until a second write
+  drove the line to 0 V, and a failure of that write would flood the
+  subject. Interrupting would save at most one train's wait.
 - **The worker never touches the bus.** It calls the dispenser and puts a
   plain-data completion on a thread-safe queue. The engine drains that queue
   on the session thread — every frame, and in `settle_rewards` — and emits
@@ -860,32 +914,42 @@ sequenceDiagram
   transients around. `frame` counts the trial's flips from 0, across phases —
   the same `frame_index` as the database's `frame_inputs` table
   ([database.md](database.md)).
-  The delivery's end is its own event: `REWARD_DELIVERED` (reserved for this;
-  an end-of-trial or manual REWARD is already emitted after the pump) or
-  `REWARD_FAILED` with the request's `reason` and the `error`. Both are
-  stamped when drained, within a frame of the pump finishing, and carry the
-  same `frame` as the REWARD they complete. The dashboard's reward panel
-  counts a drop at its `REWARD_DELIVERED`, not at its REWARD.
+  The drop's end is its own event: `REWARD_DELIVERED` (reserved for this;
+  an end-of-trial or manual REWARD is already emitted after the pump),
+  `REWARD_FAILED` with the request's `reason` and the `error`, or
+  `REWARD_CANCELLED` with `cancelled_by` when a manual reward overrode the
+  queue. All three are stamped when drained — within a frame of the pump
+  finishing, or, while a manual reward holds the frame, just before its
+  REWARD — and carry the same `frame` as the REWARD they complete. The
+  dashboard's reward panel counts a drop at its `REWARD_DELIVERED`, not at
+  its REWARD, so a cancelled drop is never counted as juice.
 - **Accounting.** A task that declares `mid_trial_reward` writes
-  `n_mid_trial_rewards` and `n_mid_trial_reward_failures` on every row — 0,
-  never empty, on a trial with no drops. `rewarded` means *juice reached the
-  subject this trial*: True once any drop or the end-of-trial pay is
-  delivered, False when deliveries were attempted and none arrived, absent
-  when none was attempted — which, for a task that does not ask for
-  mid-trial reward, is exactly what it always meant. On a trial lost to a
-  system fault the drops delivered before it stay delivered and counted, and
-  a tracker-stopped trial's `on_fault` is paid after them, through the same
-  worker; the fault's WARNING line says how many drops came first.
+  `n_mid_trial_rewards` (delivered), `n_mid_trial_reward_failures` and
+  `n_mid_trial_rewards_cancelled` on every row — 0, never empty, on a trial
+  with no drops. Together they account for every drop commanded: delivered +
+  failed + cancelled is the number of the trial's drop REWARDs. `rewarded`
+  means *juice reached the subject this trial*: True once any drop or the
+  end-of-trial pay is delivered, False when deliveries were attempted and
+  none arrived, absent when none was attempted — which, for a task that does
+  not ask for mid-trial reward, is exactly what it always meant. A cancelled
+  drop leaves it alone, since no delivery of it was attempted, and the manual
+  reward counts as it always has: by its own REWARD, not in `rewarded`. On a
+  trial lost to a system fault the drops delivered before it stay delivered
+  and counted, and a tracker-stopped trial's `on_fault` is paid after them,
+  through the same worker; the fault's WARNING line says how many drops came
+  first.
 - **`NO_REWARD`** still means "a completed trial that earned nothing". A
   trial whose phases asked for a drop earned it, so it gets no `NO_REWARD`
-  even when its outcome pays nothing at the end — whether or not the pump
-  then delivered (a failed drop is a `REWARD_FAILED`, not a `NO_REWARD`).
+  even when its outcome pays nothing at the end — whether the pump then
+  delivered it, failed, or a manual reward cancelled it (a failed drop is a
+  `REWARD_FAILED` and a cancelled one a `REWARD_CANCELLED`, never a
+  `NO_REWARD`).
 - **A failed drop does not stop the trial.** The measurement is still being
   made. The failure is logged with its traceback, counted, and marked with
   `REWARD_FAILED`; once the trial is over and its row written, the runner
   hands it to the same pause flow an end-of-trial failure takes ("REWARD
   FAILURE — check the pump"), so a human looks at the pump before the session
-  carries on.
+  carries on. A cancelled drop is not a failure and takes no such pause.
 - **A request with no flip to stamp it** — queued in a phase's `on_enter`,
   then the trial skipped or aborted before the next flip — was never
   commanded; `settle_rewards` logs it by reason at WARNING and delivers

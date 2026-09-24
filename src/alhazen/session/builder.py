@@ -180,6 +180,35 @@ def make_tracker_health_check(tracker: EyeTracker) -> Callable[[], HealthFault |
     return check
 
 
+def make_manual_reward(
+    reward: RewardDispenser | None, pulses: RewardPulses
+) -> Callable[[], None] | None:
+    """The experimenter's manual reward: the hook behind the ``r`` key during
+    a trial and R in the pause menu (keyboard or dashboard). None when the
+    rig has no dispenser.
+
+    Through a ``QueuedReward`` — a task that asks for reward mid-trial — it
+    overrides the queue (``QueuedReward.deliver_manual``): every drop still
+    waiting is cancelled, each with its own REWARD_CANCELLED, and the manual
+    reward is delivered once, as soon as the train already on the valve
+    finishes. The key blocks the frame it was pressed on until the pump is
+    done, so that wait is at most that train plus its own. The end-of-trial
+    pay does not come through here — the runner calls ``deliver`` — so it is
+    never cancelled and takes its turn as before.
+
+    Any other dispenser is the device itself, called on the session thread
+    exactly as before.
+
+    One closure serves the engine and the runner's pause menu, and the test
+    harness reuses it, so there is one routing to get right.
+    """
+    if reward is None:
+        return None
+    if isinstance(reward, QueuedReward):
+        return lambda: reward.deliver_manual(pulses)
+    return lambda: reward.deliver(pulses)
+
+
 def validate_event_names(
     names: dict[str, str] | list[str], schema: EventSchema, where: str
 ) -> None:
@@ -573,7 +602,11 @@ def build_session(
             reward = queued_reward
 
         manual_pulses = reward_pulses if reward_pulses is not None else RewardPulses()
-        on_manual_reward = (lambda: reward.deliver(manual_pulses)) if reward is not None else None
+        # One hook for the engine's `r` key and the runner's pause menu.
+        # Through the wrapper it cancels the queued drops and goes next,
+        # while the runner's end-of-trial pay calls deliver(), is never
+        # cancelled, and takes its turn (make_manual_reward).
+        on_manual_reward = make_manual_reward(reward, manual_pulses)
 
         engine = TrialEngine(
             display=display,

@@ -29,7 +29,11 @@ from alhazen.devices.reward import RewardDispenser
 from alhazen.devices.sync import SyncOutput, make_sync_subscriber
 from alhazen.display.frames import FrameMonitor
 from alhazen.display.screen import Screen
-from alhazen.session.builder import make_input_provider, make_tracker_health_check
+from alhazen.session.builder import (
+    make_input_provider,
+    make_manual_reward,
+    make_tracker_health_check,
+)
 from alhazen.testing import EventCollector, FakeClock, FakeDisplay, ScriptedCommands
 
 SCREEN = Screen(width_px=1920, height_px=1080, px_per_deg=40.0)
@@ -260,9 +264,11 @@ class SessionHarness:
             if tracker is not None
             else None
         )
-        # The same closures build_session derives from a tracker — reused
-        # rather than re-implemented, so there stays exactly one gaze
-        # coordinate conversion in the codebase.
+        # The same closures build_session derives from a tracker and a
+        # reward device — reused rather than re-implemented, so there stays
+        # exactly one gaze coordinate conversion in the codebase, and one
+        # routing of the manual reward (ahead of the queue through a
+        # QueuedReward, straight to the device otherwise).
         self.engine = TrialEngine(
             display=self.display,
             clock=self.clock,
@@ -276,11 +282,7 @@ class SessionHarness:
                 else None
             ),
             health_checks=((make_tracker_health_check(tracker),) if tracker is not None else ()),
-            on_manual_reward=(
-                (lambda: session_reward.deliver(RewardPulses()))
-                if session_reward is not None
-                else None
-            ),
+            on_manual_reward=make_manual_reward(session_reward, RewardPulses()),
             overlay=overlay,
             reward_requests=self.queued_reward,
         )
