@@ -1272,7 +1272,7 @@ class TestInASession:
         # on the runner's rule itself: a session only has a trial whose every
         # drop was cancelled when the manual reward beats the worker to the
         # first one, a race a test should not stage.
-        from alhazen.session.runner import _earned_mid_trial
+        from alhazen.session.reward_payer import earned_mid_trial as _earned_mid_trial
 
         counts = {"n_mid_trial_rewards": 0, "n_mid_trial_reward_failures": 0}
         assert _earned_mid_trial({**counts, "n_mid_trial_rewards_cancelled": 1})

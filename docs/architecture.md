@@ -37,7 +37,8 @@ src/alhazen/
 ├── modes/          # the six ways to start an experiment (docs/modes.md)
 ├── session/        # SessionRunner, build_session, DataRecorder, the pause menu,
 │                   #   eyetracker.py (the session's calibration/validation/drift
-│                   #   results and dashboard panels), check_rig
+│                   #   results and dashboard panels), check_rig; the runner's
+│                   #   internal parts: streaks.py, reward_payer.py, pause_control.py
 ├── config/         # pydantic models (extra=forbid, frozen), YAML loader, snapshot writer
 ├── data/           # naming, SessionPaths, manifest, participants registry, percents
 │                   #   (a measured fraction written beside its threshold, §10.2)
@@ -1292,9 +1293,10 @@ transition emits the reserved `STAGE_CHANGED` event.
 
 `SessionRunner._apply_stage_transition` is the single choke point every
 transition flows through, and it re-reads `supervisor.reward_policy` there: a
-stage rebinds `task.reward` to a scaled copy, and the runner pays from its
-own reference, so without the refresh the pump keeps delivering the previous
-stage's amount while every row stamps the new scale.
+stage rebinds `task.reward` to a scaled copy, and the runner's reward payer
+(`session/reward_payer.py`) pays from its own reference, so without the
+refresh the pump keeps delivering the previous stage's amount while every row
+stamps the new scale.
 
 Teardown calls `supervisor.restore_base()`, putting the task's `params` and
 `reward` back as handed over — a `Task` instance can outlive one session, and
@@ -1668,6 +1670,38 @@ every backend precisely so a backend cannot quietly reach for
    every device (the tracker without a destination for its recording) and
    writes nothing into it — no data files, manifest, saved dashboard,
    database row or training state.
+
+The runner itself keeps the trial loop and the session's lifecycle (setup,
+dashboard publishing, the session log's structure, teardown). Three
+decisions it used to hold in shared fields and long methods live in
+module-private collaborators it builds from its own constructor arguments,
+so the constructor `build_session` calls is unchanged:
+
+- `session/streaks.py` — `StreakMonitor`, which trials count toward the
+  subject's failure streak and the device's dropout streak, and when either
+  stops the session. Decisions only, no I/O: it returns the streak that
+  reached its limit, and the runner writes the WARNING and raises the pause.
+- `session/reward_payer.py` — `RewardPayer`, the pay rule (`earned`), its
+  delivery at the end of a trial, and the words a fault trial's log line uses
+  for what was paid. The runner rebinds its `policy` on every stage change.
+- `session/pause_control.py` — `PauseController`, every pause from raised to
+  resumed or quit: the unattended, keyboard and dashboard loops, a rest that
+  resumes by itself, the menu's procedures, manual reward and stage keys, and
+  the RESUMED event.
+
+```mermaid
+flowchart LR
+    RUN["SessionRunner<br/>trial loop · lifecycle · dashboard · session log · teardown"]
+    RUN -->|"count_failure / count_dropout<br/>(outcome, fault, row)"| SM["StreakMonitor<br/>pure decisions"]
+    SM -->|"FailureStreak / DropoutStreak<br/>(heading) or None"| RUN
+    RUN -->|"deliver(ctx, outcome, fault)"| RP["RewardPayer<br/>pay rule + delivery"]
+    RP -->|"REWARD / NO_REWARD / REWARD_FAILED<br/>through the runner's emitter"| RUN
+    RUN -->|"handle(record, fault, rest)"| PC["PauseController<br/>both pause loops + menu actions"]
+    PC -->|"publish · emit · stage commands<br/>through the runner's hooks"| RUN
+```
+
+The collaborators log under the runner's logger name
+(`alhazen.session.runner`), so `session.log` reads as it always has.
 
 `session.log` (UTF-8, attached at the root logger at INFO) is meant to be
 read as the record of the session's *structure*, so what it carries at INFO

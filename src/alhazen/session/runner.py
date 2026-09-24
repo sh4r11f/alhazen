@@ -23,6 +23,12 @@ Contract, in order:
    unrepeatable work, so writing the trials table must survive a display
    that fails to close, and vice versa. Step errors are logged and collected;
    the first is re-raised only if no other exception is already propagating.
+
+This module keeps the loop and the lifecycle. Three decisions the loop
+consults live beside it, built by the runner from its own arguments: when a
+streak of bad trials pauses the session (session/streaks.py), what a trial
+earned and paying it (session/reward_payer.py), and resolving a pause
+(session/pause_control.py).
 """
 
 from __future__ import annotations
@@ -36,7 +42,7 @@ from typing import Any
 
 import numpy as np
 
-from alhazen.config.models import DEFAULT_MAX_CONSECUTIVE_DROPOUTS, RewardPulses, SessionConfig
+from alhazen.config.models import DEFAULT_MAX_CONSECUTIVE_DROPOUTS, SessionConfig
 from alhazen.config.snapshot import write_snapshot
 from alhazen.core.clock import Clock
 from alhazen.core.commands import Command, CommandSource
@@ -57,7 +63,6 @@ from alhazen.data.participants import ensure_participant
 from alhazen.data.paths import SessionPaths
 from alhazen.data.percents import threshold_percent
 from alhazen.devices.eyetracker import EyeTracker, HostShape
-from alhazen.devices.eyetracker.procedures import ValidationResult
 from alhazen.devices.eyetracker.protocol import CameraFrame
 from alhazen.devices.reward import RewardDispenser
 from alhazen.devices.spikes import SpikeSource
@@ -70,10 +75,12 @@ from alhazen.session.database import ExperimentDatabase, FrameInputBuffer
 from alhazen.session.eyetracker import PROCEDURE_STATUS, EyeTrackerMonitor
 from alhazen.session.pause import (
     PauseMenu,
-    build_pause_menu,
     pause_menu,  # noqa: F401 - re-exported: it lived here until 1.1
 )
+from alhazen.session.pause_control import PauseController
 from alhazen.session.recorder import DataRecorder
+from alhazen.session.reward_payer import RewardPayer
+from alhazen.session.streaks import DropoutStreak, FailureStreak, StreakMonitor
 from alhazen.task.live import LiveAnalysis
 
 # Re-exported through this module as well as its own: experiment code and
@@ -114,73 +121,9 @@ def host_overlay_shapes(screen: Screen, regions: dict[str, CircleRegion]) -> lis
     return shapes
 
 
-# Menu action -> the session command it issues. Shared by the keyboard and
-# dashboard pause paths so a stage moved from the browser and one moved from
-# the keyboard go through exactly the same code.
-def _menu_action(actions: dict[str, str], key: str) -> str | None:
-    """The action a raw key name selects on the menu, or None.
-
-    The menu prints one row for "Q or ESC", so its key text is not a key name;
-    the two real names are mapped here. Everything else matches a row's key
-    case-insensitively, which is what lets a rebound key work without the
-    pause screen and the keyboard drifting apart.
-    """
-    if key.lower() in ("q", "escape"):
-        return actions.get("Q or ESC")
-    if key.lower() == "space":
-        return actions.get("SPACE")
-    for row_key, action in actions.items():
-        if row_key.lower() == key.lower():
-            return action
-    return None
-
-
-PAUSE_STAGE_COMMANDS = {
-    "promote_stage": Command.PROMOTE_STAGE,
-    "demote_stage": Command.DEMOTE_STAGE,
-    "hold_stage": Command.HOLD_STAGE,
-}
-
-# The pause-menu actions that are eye-tracker procedures, run through the
-# session's EyeTrackerMonitor. Same names as the menu rows (session/pause.py)
-# and the dashboard's buttons (dashboard/runtime.py _ALLOWED_COMMANDS).
-PROCEDURE_ACTIONS = ("calibrate", "validate", "drift_correct")
-
-# While a session is paused, how often the dashboard is republished so a
-# tracker with a camera shows a live image. A pause is when the experimenter
-# is looking at the subject's eye; the image is the point of the tab.
-CAMERA_REFRESH_S = 1.0
-
 # The statuses during which a camera frame is read for the dashboard: when
 # the device is not busy with a trial and somebody is looking at the image.
 CAMERA_STATUSES = frozenset({"paused", PROCEDURE_STATUS})
-
-
-def _validation_shortfall(validation: ValidationResult) -> str:
-    """How a validation that did not pass fell short, as a heading says it:
-    over the limit, or complete only in part, or measuring nothing at all."""
-    worst = validation.max_error_deg
-    if worst is None:
-        return "VALIDATION MEASURED NO TARGET"
-    limit = f"{validation.threshold_deg:g}°"
-    if worst > validation.threshold_deg:
-        line = f"VALIDATION ABOVE THE {limit} LIMIT — worst {worst:.2f}°"
-    else:
-        line = f"VALIDATION INCOMPLETE — worst {worst:.2f}° within the {limit} limit"
-    if validation.n_missed:
-        line += f", {validation.n_missed} target(s) missed"
-    return line
-
-
-def _earned_mid_trial(record: dict[str, Any]) -> bool:
-    """Did a phase ask for a mid-trial drop this trial? Delivered, failed, or
-    cancelled by the experimenter's manual reward — whichever, the trial
-    earned it, so NO_REWARD ("earned nothing") would be false."""
-    return (
-        record.get("n_mid_trial_rewards", 0)
-        + record.get("n_mid_trial_reward_failures", 0)
-        + record.get("n_mid_trial_rewards_cancelled", 0)
-    ) > 0
 
 
 # What each system fault was, in the words the session log uses. A health
@@ -192,41 +135,6 @@ _FAULT_CAUSES = {
         "the eye tracker stopped recording before the trial's outcome was decided"
     ),
 }
-
-
-def _cut_short_by_device(fault: str | None) -> bool:
-    """Was this trial lost to a device that stopped mid-trial — the eye
-    tracker — rather than to frame QA?
-
-    The two faults a trial can be lost to are handled differently, because
-    they cost the subject different things. A dropped-frames trial ran to its
-    end: the subject responded, is paid for that response, and a completed
-    trial ends a failure streak. A trial a device cut short usually ended
-    before any response existed: it is paid ``RewardPolicy.on_fault``, and it
-    says nothing about the subject either way.
-    """
-    return fault is not None and fault != FAULT_DROPPED_FRAMES
-
-
-def _device_fault(record: dict[str, Any]) -> str | None:
-    """The fault a device health check reported on this trial, from its row,
-    or None.
-
-    Wider than being lost to one: a tracker that stopped during the closing
-    phase flags the row without costing the trial its outcome, and is still a
-    tracker that stopped. Every row's ``fault`` is one of "none", frame QA's
-    "dropped_frames", or a failed health check's reason — so anything but the
-    first two is a device's.
-    """
-    fault = record.get("fault", NO_FAULT)
-    if fault in (None, "", NO_FAULT, FAULT_DROPPED_FRAMES):
-        return None
-    return str(fault)
-
-
-# What the pause a run of dropouts raises leads with, per health-check reason.
-# A check added later reports a reason not listed here; its heading names it.
-_DROPOUT_HEADINGS = {FAULT_TRACKER_STOPPED: "THE EYE TRACKER DROPPED OUT"}
 
 
 class SessionRunner:
@@ -272,37 +180,14 @@ class SessionRunner:
         max_consecutive_dropouts: int | None = DEFAULT_MAX_CONSECUTIVE_DROPOUTS,
     ) -> None:
         self._cfg = cfg
-        # How many trials in a row a device may fail its health check on (the
-        # eye tracker dropping out) before the session stops at the pause
-        # screen, headed with what the device said; None never pauses. Each of
-        # those trials is served again, so without this a tracker that dies at
-        # the start of every recording turns the session into a loop: the
-        # same trial served into a dead tracker, its fault reward paid each
-        # time, and nothing on the rig's screen but trials that never finish.
-        # The rig's number, from eyetracker.max_consecutive_dropouts
-        # (session/builder.py); on by default here too, for a runner built by
-        # hand.
-        if max_consecutive_dropouts is not None and max_consecutive_dropouts < 1:
-            raise ValueError(
-                f"max_consecutive_dropouts must be >= 1 or None, got {max_consecutive_dropouts}"
-            )
-        self._max_consecutive_dropouts = max_consecutive_dropouts
-        self._dropouts_in_a_row = 0
-        # The last dropout's reason and detail, for the pause heading.
-        self._last_dropout: tuple[str, str | None] | None = None
-        # How many non-completed trials in a row stop the session at the pause
-        # screen. None never pauses. What counts as too many is the task's to
-        # say (the builder reads it off the task's params), because a
-        # fixation-break rate that is routine for one design is a subject who
-        # cannot see the stimulus in another. A session that completed none
-        # of 33 trials — every one a fixation break, with the eye sitting just
-        # outside the window on a calibration that passed — ran to its end
-        # with nothing on screen or in the log saying so. This is that line.
-        if max_consecutive_failures is not None and max_consecutive_failures < 1:
-            raise ValueError(
-                f"max_consecutive_failures must be >= 1 or None, got {max_consecutive_failures}"
-            )
-        self._max_consecutive_failures = max_consecutive_failures
+        # The subject's failure streak and the device's dropout streak: which
+        # trials count toward which, and when either stops the session at the
+        # pause screen (session/streaks.py, which also validates both limits).
+        # max_consecutive_dropouts is the rig's number, from
+        # eyetracker.max_consecutive_dropouts (session/builder.py), and on by
+        # default here too, for a runner built by hand;
+        # max_consecutive_failures is the task's, read off its params.
+        self._streaks = StreakMonitor(max_consecutive_failures, max_consecutive_dropouts)
         # How long a rest between blocks waits for somebody before it resumes
         # by itself, or None to wait for a person however long that takes. A
         # real session leaves it None: the break is the subject's, and it ends
@@ -312,13 +197,9 @@ class SessionRunner:
         # SPACE that nobody watching a dry run had a reason to press.
         if rest_resume_after_s is not None and rest_resume_after_s <= 0:
             raise ValueError(f"rest_resume_after_s must be > 0 or None, got {rest_resume_after_s}")
+        # Kept here as well as handed to the pause controller below, so the
+        # builder's wiring of it can be read back off the runner.
         self._rest_resume_after_s = rest_resume_after_s
-        self._failures_in_a_row = 0
-        # How many of the trials counted in the current streak dropped more of
-        # their frames than frame QA allows, and that number as it stood when
-        # the last streak pause was raised (the running count is reset by then).
-        self._failure_streak_display_trials = 0
-        self._paused_streak_display_trials = 0
         # What was decided about this session before it started — a mode's
         # reductions and stood-down devices (modes/session.py describe()),
         # in the experimenter's words. Logged right after "session start",
@@ -337,7 +218,6 @@ class SessionRunner:
         self._build_trial = build_trial
         self._recorder = recorder
         self._frame_monitor = frame_monitor
-        self._commands = commands
         self._refresh_rate_hz = refresh_rate_hz
         self._task_rng = task_rng
         self._iti_s = iti_s
@@ -345,7 +225,6 @@ class SessionRunner:
         # metrics (a saccade bias, a shift estimate) are computed here by
         # experiment code, never inside the engine.
         self._score = score
-        self._on_pause = on_pause
         # The tracker's procedures and their results (session/eyetracker.py).
         # It reports through the runner: its progress lines go out as
         # dashboard publishes, and its results as session events, both of
@@ -362,11 +241,11 @@ class SessionRunner:
         self._tracker = tracker
         self._reward = reward
         self._sync = sync
-        # What each outcome earns. None (or no reward device) means nothing
-        # pays at the end of a trial: what is left is the experimenter's
-        # manual key and, for a task that declares mid_trial_reward, the drops
-        # its phases ask for during the trial.
-        self._reward_policy = reward_policy
+        # The pay rule and its delivery at the end of each trial
+        # (session/reward_payer.py): what each outcome earns under
+        # `reward_policy`, paid through `reward`. The runner keeps `reward`
+        # itself for its lifecycle (teardown closes it).
+        self._payer = RewardPayer(reward, reward_policy, display, self._emit)
         # The curriculum, if this session runs under one. It owns the task's
         # current parameters; the runner only asks it what to stamp on a
         # record, tells it how each trial went, and applies its transitions
@@ -387,8 +266,34 @@ class SessionRunner:
         # Insertion-ordered, so the first factor a task names is the one the
         # spatial panels take their colours from.
         self._condition_fields: list[str] = []
+        # The manual-reward hook the engine's key and the pause menu share,
+        # kept here as well as handed to the pause controller below, so the
+        # builder's wiring of it can be read back off the runner.
         self._manual_reward = manual_reward
         self._manual_reward_payload = dict(manual_reward_payload or {})
+        # The pause screen, from the moment a pause is raised until the
+        # experimenter resumes or quits (session/pause_control.py): the
+        # keyboard loop and the dashboard loop, the menu's procedures, the
+        # manual reward and the stage keys, and the RESUMED event. It acts
+        # on the session through the runner's own publisher, emitter and
+        # stage-command handler.
+        self._pauses = PauseController(
+            display=display,
+            clock=clock,
+            commands=commands,
+            wait=self._wait,
+            on_pause=on_pause,
+            rest_resume_after_s=rest_resume_after_s,
+            eyetracker=eyetracker,
+            dashboard=dashboard,
+            has_training=training is not None,
+            manual_reward=manual_reward,
+            manual_reward_payload=self._manual_reward_payload,
+            publish=self._publish_dashboard,
+            last_message=lambda: self._dashboard_message,
+            emit_session_event=self._emit_session_event,
+            on_session_command=self.on_session_command,
+        )
         self._dashboard_revision = 0
         self._dashboard_message: str | None = None
         # A session cancelled at the instructions screen flows through the
@@ -553,8 +458,8 @@ class SessionRunner:
                 #
                 # A trial the eye tracker cut short has no response to pay
                 # for, so `fault` routes it to the task's fault reward
-                # (RewardPolicy.on_fault) instead — see _deliver_reward.
-                reward_failed = self._deliver_reward(ctx, result.response_outcome, fault=fault)
+                # (RewardPolicy.on_fault) instead — see RewardPayer.deliver.
+                reward_failed = self._payer.deliver(ctx, result.response_outcome, fault=fault)
                 if fault is not None:
                     # After the pay, so the line can say what was paid.
                     self._log_fault_trial(attempt, result, fault, pay_failed=reward_failed)
@@ -595,10 +500,10 @@ class SessionRunner:
                 # to carry the counter past a completed trial untouched: two
                 # fixation breaks, a completed trial with a dead pump, one
                 # more fixation break and the screen said three in a row.
-                too_many_failures = self._too_many_failures_in_a_row(outcome, fault=fault)
+                failure_streak = self._failure_streak(outcome, fault=fault)
                 # Counted here too, for the same reason: before any branch
                 # below can `continue` past it.
-                too_many_dropouts = self._too_many_dropouts_in_a_row(outcome, result.record)
+                dropout_streak = self._dropout_streak(outcome, result.record)
 
                 if outcome.name == "PAUSED" or reward_failed:
                     # A reward failure goes through the same pause flow as a
@@ -608,25 +513,30 @@ class SessionRunner:
                     # after the fact must never discard a trial the subject
                     # actually completed.
                     fault = "REWARD FAILURE — check the pump" if reward_failed else None
-                    if not self._handle_pause(result.record, fault=fault):
+                    if not self._pauses.handle(result.record, fault=fault):
                         break
                     continue  # the pause menu already gave all the time needed; skip ITI
 
-                if too_many_dropouts:
+                if dropout_streak is not None:
                     # Before the subject's failure streak: a device failing
                     # trial after trial is the rig, and the thing to look at
                     # first. The count starts again from here, so resuming on
                     # a tracker that was fixed gets a whole new run of chances
                     # and one that was not pauses again after as many.
-                    heading = self._dropout_streak_heading()
-                    self._dropouts_in_a_row = 0
-                    if not self._handle_pause(result.record, fault=heading):
+                    heading = dropout_streak.heading()
+                    self._streaks.dropout_pause_raised()
+                    if not self._pauses.handle(result.record, fault=heading):
                         break
                     continue
 
-                if too_many_failures:
-                    fault = self._failure_streak_heading(outcome)
-                    if not self._handle_pause(result.record, fault=fault):
+                if failure_streak is not None:
+                    # The budget written as frame QA writes it (the same rule
+                    # as the log line in _failure_streak): "7.5%", never a
+                    # rounded "8%".
+                    fault = failure_streak.heading(
+                        threshold_percent(self._frame_monitor.dropped_fraction_budget)
+                    )
+                    if not self._pauses.handle(result.record, fault=fault):
                         break
                     continue
 
@@ -752,11 +662,11 @@ class SessionRunner:
             )
             self._display.show_message(f"stage: {change.to_stage}")
         # Every transition rebinds the task's reward policy to a copy scaled
-        # for the new stage. The runner pays from its own reference, so it has
-        # to re-read it here — otherwise the pump keeps delivering the
-        # previous stage's amount while every row stamps the new scale, and
-        # the data claims a reward that was never given.
-        self._reward_policy = self._training.reward_policy
+        # for the new stage. The runner's payer pays from its own reference,
+        # so it has to re-read it here — otherwise the pump keeps delivering
+        # the previous stage's amount while every row stamps the new scale,
+        # and the data claims a reward that was never given.
+        self._payer.policy = self._training.reward_policy
         if self._training.complete and self._training.stop_when_complete:
             log.info("curriculum complete; ending the session")
             return False
@@ -780,86 +690,6 @@ class SessionRunner:
             self._display.show_message(
                 "stage transitions held" if held else "stage transitions resumed"
             )
-
-    def _earned(self, outcome: Any, fault: str | None) -> RewardPulses | None:
-        """What this trial earned at its end, scaled — a ``RewardPulses`` — or
-        None for nothing. The one place the pay rule lives: _deliver_reward
-        pays it, and a fault trial's log line reports it.
-
-        A trial the eye tracker cut short is paid the task's fault reward,
-        never its outcome's entry: its ABORTED is the rig's, not something
-        the subject earned. Every other trial — a dropped-frames trial
-        included, since ``outcome`` is then the response it replaced — is
-        paid by its outcome.
-        """
-        assert self._reward_policy is not None
-        if _cut_short_by_device(fault):
-            return self._reward_policy.pulses_for_fault()
-        return self._reward_policy.pulses_for(outcome.name)
-
-    def _deliver_reward(self, ctx: TrialContext, outcome: Any, fault: str | None = None) -> bool:
-        """Pay out what this outcome earned. Returns True if the hardware
-        failed, which the caller turns into a pause.
-
-        ``outcome`` is the subject's response outcome
-        (``TrialResult.response_outcome``), which on a trial frame QA recycled
-        is the one it replaced — so the REWARD / NO_REWARD / REWARD_FAILED
-        payloads name what was paid for, and the row's
-        ``outcome_before_frame_qa`` says the same.
-
-        ``fault`` is the system fault the trial was lost to
-        (``TrialResult.lost_to_fault``), or None. A trial the eye tracker cut
-        short is paid ``RewardPolicy.on_fault`` (_earned), and its REWARD /
-        REWARD_FAILED payloads carry ``fault`` beside ``outcome``: that key
-        is how events.csv tells a fault reward from a reward for a response.
-        A dropped-frames trial pays for its response and its payloads are
-        the ones any response gets.
-
-        The one deliberate catch in this file. Everywhere else a device fault
-        aborts loudly, but here the trial's measurement already exists and is
-        about to be written: letting a pump failure propagate would throw away
-        a completed trial's data to report a problem with the juice line. So
-        it is recorded, marked in the event stream, shown on screen, and
-        handed to a human — loudly, but without losing the trial. A fault
-        reward that fails takes the same path.
-        """
-        if self._reward_policy is None or self._reward is None or outcome.name == "PAUSED":
-            return False
-        pulses = self._earned(outcome, fault)
-        # What the delivery was for, as every event about it says.
-        paid_for: dict[str, Any] = {"outcome": outcome.name}
-        if _cut_short_by_device(fault):
-            paid_for["fault"] = fault
-        if pulses is None:
-            # A completed trial that earned nothing is a fact the subject
-            # experienced. Marked with its own event rather than left as the
-            # absence of REWARD, which is indistinguishable from a REWARD that
-            # failed to be written. "Nothing" includes the trial itself: one
-            # whose phases asked for mid-trial drops earned those, so it gets
-            # no NO_REWARD even when its outcome pays nothing at the end.
-            # A trial the tracker cut short is not completed, so a task with
-            # no on_fault writes nothing here — its fault line in the log says
-            # that nothing was paid, and why.
-            if outcome.completed and not _earned_mid_trial(ctx.record):
-                self._emit(ctx, "NO_REWARD", {"outcome": outcome.name})
-            return False
-        try:
-            self._reward.deliver(pulses)
-        except Exception:
-            log.exception("reward delivery failed on trial %d", self._trial_index)
-            # False unless a mid-trial drop already arrived: `rewarded` says
-            # whether any juice reached the subject this trial.
-            ctx.record.setdefault("rewarded", False)
-            self._emit(ctx, "REWARD_FAILED", paid_for)
-            self._display.show_message("REWARD FAILURE — check the pump")
-            return True
-        ctx.record["rewarded"] = True
-        self._emit(
-            ctx,
-            "REWARD",
-            {"manual": False, **paid_for, "pulses": pulses.model_dump(mode="json")},
-        )
-        return False
 
     def _log_fault_trial(
         self, attempt: int, result: TrialResult, fault: str, *, pay_failed: bool
@@ -887,53 +717,9 @@ class SessionRunner:
             attempt,
             cause,
             f" ({detail})" if detail else "",
-            self._describe_fault_pay(result, fault, pay_failed),
+            self._payer.describe_fault_pay(result, fault, pay_failed),
             fault,
         )
-
-    def _describe_fault_pay(self, result: TrialResult, fault: str, pay_failed: bool) -> str:
-        """What a fault trial was paid at its end, in words, for its log line.
-
-        Reports the decision _deliver_reward made (it asks the same _earned),
-        and says why when nothing was paid — above all when the task sets no
-        ``on_fault``, which is a choice the experimenter may not know they
-        made.
-        """
-        record = result.record
-        # Drops a mid-trial-reward task delivered before the fault stay paid,
-        # and stay on the row (n_mid_trial_rewards); said here so the line
-        # accounts for everything the subject got.
-        drops = record.get("n_mid_trial_rewards", 0)
-        before = ""
-        if drops:
-            before = f"; {drops} mid-trial drop(s) delivered before the fault stay counted"
-        policy, device = self._reward_policy, self._reward
-        if policy is None or device is None:
-            missing = "reward policy" if policy is None else "reward device"
-            return f"Nothing paid at the trial's end: this session has no {missing}{before}"
-        outcome = result.response_outcome
-        pulses = self._earned(outcome, fault)
-        if _cut_short_by_device(fault):
-            if policy.on_fault is None:
-                return (
-                    f"The task sets no fault reward (RewardPolicy.on_fault), so nothing was "
-                    f"paid for it{before}"
-                )
-            if pulses is None:
-                return (
-                    f"The task's fault reward (RewardPolicy.on_fault) comes to no pulses at "
-                    f"reward scale {policy.scale:g}, so nothing was paid{before}"
-                )
-            paid = f"Paid the task's fault reward (RewardPolicy.on_fault), {pulses}"
-        else:
-            if pulses is None:
-                return (
-                    f"Paid for the subject's response as on any trial: {outcome.name} pays "
-                    f"nothing{before}"
-                )
-            paid = f"Paid for the subject's response, {outcome.name}, {pulses}"
-        delivered = " — the delivery FAILED at the pump" if pay_failed else ", delivered"
-        return f"{paid}{delivered}{before}"
 
     def _emit_session_event(self, name: str, payload: dict[str, Any]) -> None:
         """An event between trials, with no trial record to mirror it into."""
@@ -969,76 +755,31 @@ class SessionRunner:
         self._emit_session_event(
             "PAUSED", {"reason": "block_break", "blocks_done": done, "blocks_total": total}
         )
-        return self._handle_pause({}, rest=f"BLOCK {done} OF {total} COMPLETE — REST")
+        return self._pauses.handle({}, rest=f"BLOCK {done} OF {total} COMPLETE — REST")
 
-    def _too_many_failures_in_a_row(self, outcome: Any, fault: str | None = None) -> bool:
-        """Count the subject's failed trials back to back; True on the one that
+    def _failure_streak(self, outcome: Any, fault: str | None) -> FailureStreak | None:
+        """Count this trial toward the subject's failure streak (the rules are
+        StreakMonitor.count_failure's); the streak, logged, on the trial that
         reaches the task's limit, which the caller turns into a pause.
 
         ``fault`` is the system fault the trial was lost to
         (``TrialResult.lost_to_fault``), or None.
-
-        What counts is what the SUBJECT did, trial by trial:
-
-        - A completed trial ends the streak.
-        - ``DROPPED_FRAMES`` ends it too. The engine only recycles a trial the
-          subject completed (core/engine.py): the display failed, not the eye,
-          and the row keeps what the subject did as ``outcome_before_frame_qa``.
-          Recycles used to be skipped over instead, neither counted nor ending
-          anything, and that let a failing display join separate runs of
-          failures into one. A rehearsal whose completed trials were all
-          recycled paused on "6 trials in a row" for fixation breaks and missed
-          saccades that those completed trials had separated, and told the
-          operator to check a calibration while the panel dropped half its
-          frames. Frame QA counts recycles on its own and stops the run with
-          the display's message. Ending the streak never counts against the
-          subject, so a dropped-frames trial keeps ending it even though it is
-          a system fault.
-        - ``PAUSED`` neither counts nor ends it: the experimenter stopped the
-          trial, and that says nothing about the subject. The count restarts
-          after the pause this raises, so a subject still not fixating gets a
-          whole new run of chances rather than a pause every trial.
-        - A trial the eye tracker cut short (``ABORTED``, lost to
-          ``tracker_stopped``) neither counts nor ends it, like ``PAUSED``,
-          and for the same reason: the rig stopped the trial, usually before
-          the subject had responded, so it says nothing about the subject in
-          either direction. Counted, a tracker dropping out between fixation
-          breaks would send the operator to recalibrate a subject for the
-          tracker's fault; ending the streak, it would hide a subject who was
-          breaking fixation on every trial the tracker let finish.
-        - Every other outcome that did not complete counts — the
-          experimenter's skip included, as it always has.
-
-        Beside the count it keeps how many of the counted trials dropped more
-        of their frames than frame QA's budget, so the pause can say when the
-        display was failing through the streak. A panel missing vsyncs can
-        cause real fixation breaks, and what must not happen is sending the
-        experimenter to recalibrate while it does.
         """
-        limit = self._max_consecutive_failures
-        if limit is None or outcome.name == "PAUSED" or _cut_short_by_device(fault):
-            return False
-        if outcome.completed or outcome.name == "DROPPED_FRAMES":
-            self._failures_in_a_row = 0
-            self._failure_streak_display_trials = 0
-            return False
-        self._failures_in_a_row += 1
-        if self._display_was_failing():
-            self._failure_streak_display_trials += 1
-        if self._failures_in_a_row < limit:
-            return False
-
-        display_trials = self._failure_streak_display_trials
-        if display_trials:
+        streak = self._streaks.count_failure(
+            outcome, fault=fault, display_failing=self._display_was_failing()
+        )
+        if streak is None:
+            return None
+        if streak.display_trials:
             log.warning(
                 "%d trials in a row not completed, the last %s on trial %d, and %d of them "
                 "dropped more than %s of their frames: pausing. The display was failing "
                 "through this streak, and a panel missing vsyncs causes real fixation breaks "
                 "— check the display before recalibrating.",
-                self._failures_in_a_row,
+                streak.count,
                 outcome.name,
                 self._trial_index,
-                display_trials,
+                streak.display_trials,
                 # The budget exactly as configured. Whole percents wrote a
                 # 7.5% budget as "8%", which the trials counted here (each over
                 # 7.5%) need not have dropped.
@@ -1050,14 +791,11 @@ class SessionRunner:
                 "subject may not be seeing what this session is measuring — a calibration "
                 "that passed but sits at the edge of the fixation window looks exactly like "
                 "this.",
-                self._failures_in_a_row,
+                streak.count,
                 outcome.name,
                 self._trial_index,
             )
-        self._paused_streak_display_trials = display_trials
-        self._failures_in_a_row = 0
-        self._failure_streak_display_trials = 0
-        return True
+        return streak
 
     def _display_was_failing(self) -> bool:
         """Did the trial that just ended drop more of its frames than frame QA's
@@ -1075,84 +813,23 @@ class SessionRunner:
             and frames.dropped_fraction > self._frame_monitor.dropped_fraction_budget
         )
 
-    def _failure_streak_heading(self, outcome: Any) -> str:
-        """What the pause screen leads with when the failure streak stops the
-        session: the display first when it was failing through the streak,
-        the subject-side checks otherwise."""
-        limit = self._max_consecutive_failures
-        display_trials = self._paused_streak_display_trials
-        if display_trials:
-            # Written as frame QA writes it (the same rule as the log line in
-            # _too_many_failures_in_a_row): "7.5%", never a rounded "8%".
-            budget = threshold_percent(self._frame_monitor.dropped_fraction_budget)
-            return (
-                f"{limit} TRIALS FAILED IN A ROW — last {outcome.name}, and {display_trials} "
-                f"of them dropped over {budget} of their frames; check the display before "
-                f"recalibrating"
-            )
-        return (
-            f"{limit} TRIALS FAILED IN A ROW — last {outcome.name}; check the calibration "
-            f"(V), the subject, and the stimulus before resuming"
-        )
-
-    def _too_many_dropouts_in_a_row(self, outcome: Any, record: dict[str, Any]) -> bool:
-        """Count the trials a device failed its health check on, back to back;
-        True once the count has reached ``max_consecutive_dropouts``, which the
-        caller turns into a pause (and resets the count for).
-
-        - A trial whose row names a device's fault (``_device_fault``) counts:
-          the tracker dropped out on it, whether that cost the trial its
-          outcome or only flagged its closing phase.
-        - ``PAUSED`` neither counts nor ends the run, as in the subject's
-          failure streak: the experimenter stopped that trial, and it says
-          nothing about the device either way.
-        - Every other trial ends it: the tracker recorded that one through.
-
-        Separate from the subject's failure streak on purpose. That one leaves
-        a tracker-stopped trial out (it says nothing about the subject); this
-        one is nothing but those trials, and its pause sends the experimenter
-        to the tracker rather than to the calibration.
-
-        The count is left standing when the limit is reached, and reset only
-        when the pause is actually raised: a reward failure on the same trial
-        takes the pause screen first (the pump), and the dropouts are then
-        still owed their own pause if the next trial drops out as well.
-        """
-        limit = self._max_consecutive_dropouts
-        if limit is None or outcome.name == "PAUSED":
-            return False
-        fault = _device_fault(record)
-        if fault is None:
-            self._dropouts_in_a_row = 0
-            return False
-        self._dropouts_in_a_row += 1
-        self._last_dropout = (fault, record.get("fault_detail"))
-        if self._dropouts_in_a_row < limit:
-            return False
+    def _dropout_streak(self, outcome: Any, record: dict[str, Any]) -> DropoutStreak | None:
+        """Count this trial toward the device's dropout streak (the rules are
+        StreakMonitor.count_dropout's); the streak, logged, on every trial from
+        ``max_consecutive_dropouts`` on until its pause is raised."""
+        streak = self._streaks.count_dropout(outcome, record)
+        if streak is None:
+            return None
         log.warning(
             "a device failed its health check (%s) on %d trials in a row, the last trial %d%s: "
             "pausing so the device can be checked. Every one of them that the fault cut short "
             "is served again.",
-            fault,
-            self._dropouts_in_a_row,
+            streak.fault,
+            streak.count,
             self._trial_index,
-            f" — {record['fault_detail']}" if record.get("fault_detail") else "",
+            f" — {streak.detail}" if streak.detail else "",
         )
-        return True
-
-    def _dropout_streak_heading(self) -> str:
-        """What the pause screen leads with when a run of dropouts stops the
-        session: what dropped out and how often, then what the device said
-        the last time — the words that tell a pulled cable from a Host PC that
-        stopped recording — and where to look."""
-        assert self._last_dropout is not None  # set by the dropout that got here
-        fault, detail = self._last_dropout
-        what = _DROPOUT_HEADINGS.get(fault, f"A DEVICE FAILED ITS HEALTH CHECK ({fault})")
-        said = f"last: {detail}. " if detail else ""
-        return (
-            f"{what} ON {self._dropouts_in_a_row} TRIALS IN A ROW — {said}Check the tracker "
-            f"and its connection to this machine before resuming; those trials are served again"
-        )
+        return streak
 
     def _require_tracker_calibration(self) -> bool:
         """Before trial 1: a tracker that can say it holds no calibration
@@ -1174,7 +851,7 @@ class SessionRunner:
             "the eye tracker reports NO calibration before trial 1; pausing until one is "
             "done (C on the pause screen, or the dashboard's Calibrate button)"
         )
-        return self._handle_pause({}, fault="TRACKER NOT CALIBRATED — press C to calibrate")
+        return self._pauses.handle({}, fault="TRACKER NOT CALIBRATED — press C to calibrate")
 
     def _start_tracker_trial(self, ctx: TrialContext, attempt: int) -> None:
         """Open the tracker's recording segment and refresh its operator
@@ -1183,428 +860,6 @@ class SessionRunner:
             return
         self._tracker.start_trial(ctx.trial_index, f"attempt {attempt}")
         self._tracker.draw_host_overlay(host_overlay_shapes(self._screen, ctx.regions))
-
-    def _pause_menu(
-        self,
-        fault: str | None = None,
-        rest: str | None = None,
-        resumes_in_s: float | None = None,
-        warning: str | None = None,
-    ) -> PauseMenu:
-        """The menu for this session, built from what is actually wired.
-
-        Built fresh at each pause rather than once at construction, because
-        what is available can change during a session: a curriculum's stage
-        keys are meaningless until a curriculum is running, and a fault
-        heading belongs only to the pause it describes.
-        """
-        return build_pause_menu(
-            has_tracker=self._eyetracker is not None,
-            has_reward=self._manual_reward is not None,
-            has_training=self._training is not None,
-            has_dashboard=self._dashboard is not None,
-            fault=fault,
-            rest=rest,
-            resumes_in_s=resumes_in_s,
-            warning=warning,
-        )
-
-    def _show_pause_menu(self, menu: PauseMenu) -> None:
-        self._display.show_menu(menu.title, menu.render(), color=menu.color)
-
-    def _handle_pause(
-        self, record: dict[str, Any], *, fault: str | None = None, rest: str | None = None
-    ) -> bool:
-        """Resolve a PAUSED trial; returns False when the experimenter chose
-        to quit. With no pause strategy wired (unattended runs), resume
-        immediately — blocking forever with nobody at the keyboard would
-        hang a simulated session. That check comes FIRST, before the
-        dashboard: whether anyone is at the rig and whether a browser is
-        serving are different questions, and answering the second one first
-        hung every unattended run of a rig with the dashboard turned on.
-
-        ``fault`` makes this an involuntary pause — a reward failure, a
-        tracker with no calibration — and the screen leads with what went
-        wrong rather than with the word PAUSED. ``rest`` is the opposite: a
-        scheduled break, headed and coloured as one.
-
-        The menu stays up across everything except resume and quit. Pressing
-        the calibrate key used to calibrate and then resume in one press,
-        which meant an experimenter who wanted to calibrate AND give a reward
-        had to pause twice; and after a recalibration the natural thing to
-        want is a look at the menu again, not the next trial.
-        """
-        notice = "Paused — browser controls are enabled."
-        if record.get("pause_action") == "calibrate":
-            # The in-trial calibrate key: a pause that arrives with the
-            # procedure already chosen. Its verdict becomes the pause notice,
-            # so the browser says "calibrated …" or "NOT calibrated …" rather
-            # than only that the session is paused.
-            notice = self._apply_pause_action("calibrate") or notice
-        elif fault is not None:
-            notice = f"{fault} — browser controls are enabled."
-        elif rest is not None:
-            notice = f"{rest.capitalize()} — resume when the subject is ready."
-        # A rest can resume by itself when nobody acts in time: a simulation's
-        # break, and only with someone who could act, since an unattended run
-        # below resumes at once anyway. Never a fault: a pump or a
-        # calibration that failed is exactly what somebody has to look at.
-        resume_after_s = (
-            self._rest_resume_after_s if rest is not None and self._on_pause is not None else None
-        )
-        menu = self._pause_menu(fault=fault, rest=rest, resumes_in_s=resume_after_s)
-        if self._on_pause is None:
-            # Nobody is going to answer. `on_pause` is wired only for a
-            # rendering display with a keyboard behind it (session/builder.py),
-            # so None means an unattended run — and that is true whether or
-            # not the rig file turned the dashboard on. A dashboard is a
-            # window onto the session, not a person at it; waiting for a
-            # browser click that will never come hung every unattended run of
-            # a rig with `dashboard.enabled`, and a scheduled block break made
-            # that every simulated run of a multi-block experiment.
-            #
-            # The menu is still drawn and the skipped pause still logged, at
-            # WARNING: a pause that did not pause is a real difference between
-            # what the session was asked to do and what it did, and the run
-            # that finds out is the dry run, not the one with a subject in it.
-            self._show_pause_menu(menu)
-            log.warning(
-                "pause with nobody to answer it (no keyboard wired — unattended run): "
-                "resuming immediately. %s",
-                notice,
-            )
-            if self._dashboard is not None:
-                # Left out, a dashboard open on a dry run would sit on the
-                # last state it was told about while the session ran on.
-                self._publish_dashboard("running", f"{notice} Unattended — resumed.")
-            return self._resumed()
-        if self._dashboard is not None:
-            return self._handle_dashboard_pause(
-                menu, notice, fault=fault, rest=rest, resume_after_s=resume_after_s
-            )
-        deadline: float | None = None
-        if resume_after_s is not None:
-            deadline = self._clock.now() + resume_after_s
-        while True:
-            if deadline is not None:
-                # `on_pause` blocks until a key is pressed, so a pause that can
-                # time out polls the keyboard here instead, until the deadline.
-                timed = self._next_menu_action_before(menu, deadline)
-                if timed is None:
-                    return self._resumed_by_itself(resume_after_s or 0.0)
-                # Somebody is there after all. From here the rest waits for
-                # them, and the screen stops promising otherwise.
-                action = timed
-                deadline = None
-                menu = self._pause_menu(fault=fault, rest=rest)
-            else:
-                action = self._on_pause(menu)
-            if action == "quit":
-                return False
-            if action == "resume":
-                return self._resumed()
-            self._apply_pause_action(action)
-            # The menu is rebuilt after every procedure, not only after one
-            # that failed. A procedure that failed becomes the heading of the
-            # menu that comes back, on the screen the experimenter is actually
-            # facing — and a procedure that then SUCCEEDS has to take that
-            # heading back down again. Without this, a red VALIDATION FAILED
-            # stays up after the recalibration that fixed it, and the pause's
-            # own heading (a block break's REST) never comes back.
-            if action in PROCEDURE_ACTIONS:
-                menu = self._menu_after_procedure(action, fault=fault, rest=rest)
-
-    def _next_menu_action_before(self, menu: PauseMenu, deadline: float) -> str | None:
-        """Draw the menu and poll the keyboard until a key picks an action or
-        the deadline passes. None when it passed.
-
-        The keyboard half of a pause that can time out. ``on_pause`` blocks
-        until a key is pressed, which is right for a pause a person has to
-        resolve and wrong for one that resumes by itself, so the runner polls
-        the same keys, through the same row mapping the dashboard path uses.
-        """
-        self._show_pause_menu(menu)
-        keys = menu.actions()
-        while self._clock.now() < deadline:
-            for key in self._commands.poll_raw_keys():
-                action = _menu_action(keys, key)
-                if action is not None:
-                    return action
-            self._wait(0.01)
-        return None
-
-    def _resumed_by_itself(self, after_s: float) -> bool:
-        """End a rest that nobody resolved in time: say so, then resume."""
-        log.info(
-            "the rest between blocks resumed by itself after %g s: nothing was pressed "
-            "(simulation)",
-            after_s,
-        )
-        if self._dashboard is not None:
-            self._publish_dashboard(
-                "running", f"Resumed by itself after {after_s:g} s (simulation)."
-            )
-        return self._resumed()
-
-    def _apply_pause_action(self, action: str) -> str | None:
-        """One non-terminal menu choice; returns the line the dashboard shows
-        for it, or None when the action published its own.
-
-        Anything unrecognised is logged rather than ignored: a key that
-        silently does nothing is the fault this menu exists to prevent.
-        """
-        if action in PROCEDURE_ACTIONS:
-            return self._run_procedure(action)
-        if action == "manual_reward":
-            self._manual_reward_while_paused()
-            return None  # publishes its own outcome, which is more specific
-        if action in PAUSE_STAGE_COMMANDS:
-            self.on_session_command(PAUSE_STAGE_COMMANDS[action])
-            return f"{action.replace('_', ' ')} requested."
-        log.warning("unhandled pause action %r", action)
-        return f"unhandled action {action!r}."
-
-    def _run_procedure(self, action: str) -> str:
-        """One eye-tracker procedure from the pause menu, and its one-line
-        outcome. The monitor keeps the results and shows them on the
-        dashboard's Eye tracker tab; this line is what the pause notice says.
-        """
-        monitor = self._eyetracker
-        if monitor is None:
-            log.warning("%s requested while paused, but no eye tracker is wired", action)
-            return "No eye tracker is wired."
-        if action == "calibrate":
-            calibration = monitor.calibrate()
-            line = calibration.summary()
-            validation = monitor.validation
-            # The validation the calibration triggered, if the rig asks for
-            # one: newer than the calibration, so not a stale result.
-            if validation is not None and validation.t >= calibration.t:
-                line += f" · {validation.summary()}"
-            return line
-        if action == "validate":
-            return monitor.validate().summary()
-        return monitor.drift_correct().summary()
-
-    def _menu_after_procedure(
-        self, action: str, *, fault: str | None, rest: str | None
-    ) -> PauseMenu:
-        """The pause menu to show once a procedure has run.
-
-        A procedure that failed heads it as a fault, and a validation that did
-        not pass heads it as a warning; either replaces the pause's own
-        heading while it stands. After a procedure that succeeded, the pause's
-        own heading comes back: a block break's REST, or the fault that
-        opened the pause.
-        """
-        failed = self._procedure_fault(action)
-        if failed is not None:
-            return self._pause_menu(fault=failed)
-        warned = self._procedure_warning(action)
-        if warned is not None:
-            return self._pause_menu(warning=warned)
-        return self._pause_menu(fault=fault, rest=rest)
-
-    def _procedure_fault(self, action: str) -> str | None:
-        """The heading the pause screen leads with after a procedure that
-        failed, or None.
-
-        The verdict already goes to the dashboard's notice line and the log.
-        Neither is the screen the experimenter is looking at while they stand
-        at the rig, so a calibration the tracker did not take, or a drift
-        correction it refused, leads the menu that comes back. A validation
-        that did not pass is a warning instead (_procedure_warning).
-        """
-        monitor = self._eyetracker
-        if monitor is None or action not in PROCEDURE_ACTIONS:
-            return None
-        calibration, drift = monitor.calibration, monitor.drift
-        if action == "calibrate" and calibration is not None and calibration.ok is False:
-            return f"CALIBRATION FAILED — {calibration.note or 'the tracker reports none'}"
-        if action == "drift_correct" and drift is not None and not drift.applied:
-            return f"DRIFT CORRECTION REFUSED — {drift.note or drift.summary()}"
-        return None
-
-    def _procedure_warning(self, action: str) -> str | None:
-        """The heading after a validation that did not pass, or None.
-
-        A warning, not a fault. Whether a calibration is good enough is the
-        experimenter's call: a validation a little over its limit can be the
-        best a subject manages that day, and a heading that said "recalibrate
-        before resuming" kept an experimenter recalibrating a subject who was
-        not going to do better. So the heading says how the validation fell
-        short and offers both ways on. Resuming on it is recorded (_resumed).
-        """
-        monitor = self._eyetracker
-        if monitor is None or action not in ("calibrate", "validate"):
-            return None
-        validation = monitor.validation
-        if validation is None or validation.accepted or validation.aborted:
-            return None
-        return f"{_validation_shortfall(validation)} — SPACE resumes on it, C recalibrates"
-
-    def _resumed(self) -> bool:
-        payload: dict[str, Any] = {}
-        monitor = self._eyetracker
-        validation = monitor.validation if monitor is not None else None
-        if validation is not None and not validation.accepted and not validation.aborted:
-            # The session is going on under a validation that did not pass.
-            # That is the experimenter's decision to make, and it is recorded
-            # where an analysis and a later reader will look: in this event,
-            # with the numbers, and in the log, in words. The VALIDATION event
-            # and its per-target errors were written when it ran.
-            payload["on_failed_validation"] = {
-                "t": validation.t,
-                "mean_error_deg": validation.mean_error_deg,
-                "max_error_deg": validation.max_error_deg,
-                "threshold_deg": validation.threshold_deg,
-                "n_missed": validation.n_missed,
-            }
-            log.warning(
-                "resumed on a validation that did not pass, as the experimenter chose: %s",
-                validation.summary(),
-            )
-        self._bus.emit(
-            Event(
-                name="RESUMED", t=self._clock.now(), trial_index=self._trial_index, payload=payload
-            )
-        )
-        return True
-
-    def _handle_dashboard_pause(
-        self,
-        menu: PauseMenu,
-        notice: str,
-        *,
-        fault: str | None = None,
-        rest: str | None = None,
-        resume_after_s: float | None = None,
-    ) -> bool:
-        """Drive the local browser controls only after a keyboard pause.
-
-        The browser is server-enforced read-only before this state is
-        published. Keyboard polling remains available so closing the browser
-        can never strand an experimenter in the pause screen. `notice` is the
-        line the browser shows as the pause begins; `fault` and `rest` are the
-        pause's own heading, kept so that a procedure run from the browser can
-        put it back after replacing it.
-        """
-        assert self._dashboard is not None
-        dashboard = self._dashboard
-        # Drain and discard whatever is already queued. A command accepted in
-        # the milliseconds between the browser seeing "paused" and the runner
-        # resuming would otherwise sit in the queue and fire at the NEXT
-        # pause — a reward delivered, or a session quit, minutes after the
-        # click that asked for it and with nobody expecting it.
-        stale = dashboard.poll_commands()
-        if stale:
-            log.info("discarding %d command(s) queued before this pause", len(stale))
-        # The menu goes on the subject display here too. It did not used to,
-        # so turning the dashboard on silently removed the only thing the
-        # person standing at the rig could see — and the rig is where a pause
-        # is usually resolved, browser or no browser.
-        self._show_pause_menu(menu)
-        self._publish_dashboard("paused", notice)
-        keys = menu.actions()
-        # A tracker with a camera gets its image refreshed through the pause,
-        # so the Eye tracker tab shows the eye as it is now, not as it was
-        # when the pause began.
-        live_camera = self._eyetracker is not None and self._eyetracker.has_camera
-        monitor = self._eyetracker
-        published_at = self._clock.now()
-        # A rest that can resume by itself: the same deadline as the keyboard
-        # path, cancelled by the first thing anybody does.
-        deadline: float | None = None
-        if resume_after_s is not None:
-            deadline = self._clock.now() + resume_after_s
-        while True:
-            # What the page asks of the tracker between clicks: a camera frame
-            # whenever one is due (session/eyetracker.py CAMERA_STREAM_S), and
-            # any tracker setting it sent, applied and reported in the notice.
-            # The refresh further down republishes the panel's words about once
-            # a second.
-            if monitor is not None:
-                for setting_line in monitor.service_dashboard():
-                    self._publish_dashboard("paused", setting_line)
-                    published_at = self._clock.now()
-            actions = [command.name for command in dashboard.poll_commands()]
-            actions += [
-                action
-                for key in self._commands.poll_raw_keys()
-                if (action := _menu_action(keys, key)) is not None
-            ]
-            if deadline is not None:
-                if actions:
-                    # Somebody acted, at the rig or in the browser: the rest
-                    # waits for them from here, and the menu drawn after their
-                    # action no longer says it will resume by itself.
-                    deadline = None
-                    menu = self._pause_menu(fault=fault, rest=rest)
-                elif self._clock.now() >= deadline:
-                    return self._resumed_by_itself(resume_after_s or 0.0)
-            for index, action in enumerate(actions):
-                if action == "resume":
-                    self._publish_dashboard("running", "Resumed.")
-                    return self._resumed()
-                if action == "quit":
-                    self._publish_dashboard("stopping", "Quit requested.")
-                    return False
-                message = self._apply_pause_action(action)
-                # Every non-terminal action redraws the menu, because
-                # _apply_pause_action may have put a calibration screen over
-                # it, and a menu that vanishes after one keypress looks like
-                # a session that has crashed. A procedure that failed becomes
-                # the menu's heading: the browser gets the verdict as its
-                # notice, but the rig's own screen must say it too.
-                if action in PROCEDURE_ACTIONS:
-                    # Rebuilt after every procedure, so a heading that a
-                    # failure put up comes back down when a later procedure
-                    # succeeds, and the pause's own heading returns with it.
-                    menu = self._menu_after_procedure(action, fault=fault, rest=rest)
-                self._show_pause_menu(menu)
-                if action in PROCEDURE_ACTIONS:
-                    # A procedure runs for seconds to minutes, and the browser
-                    # keeps accepting clicks until it learns of the
-                    # "calibrating" status — about 0.2 s after the first
-                    # click. A double-click on Calibrate, or Validate pressed
-                    # right after it, would otherwise sit in the queue and run
-                    # NOW, after the procedure, with nobody expecting a second
-                    # walk. Discard it, and the rest of this batch, before the
-                    # buttons come back; the keys a walk polls are already
-                    # consumed by the walk itself.
-                    dropped = actions[index + 1 :] + [c.name for c in dashboard.poll_commands()]
-                    if dropped:
-                        log.info(
-                            "discarding %d command(s) queued while %s ran: %s",
-                            len(dropped),
-                            action,
-                            ", ".join(dropped),
-                        )
-                if message is not None:
-                    # Back to "paused" whatever the action published while it
-                    # ran: the buttons are live again.
-                    self._publish_dashboard("paused", message)
-                published_at = self._clock.now()
-                if action in PROCEDURE_ACTIONS:
-                    break
-            if live_camera and self._clock.now() - published_at >= CAMERA_REFRESH_S:
-                self._publish_dashboard("paused", self._dashboard_message)
-                published_at = self._clock.now()
-            self._wait(0.01)
-
-    def _manual_reward_while_paused(self) -> None:
-        if self._manual_reward is None:
-            self._publish_dashboard("paused", "No reward device is configured.")
-            return
-        try:
-            self._manual_reward()
-        except Exception as e:
-            log.exception("manual reward failed while paused")
-            self._emit_session_event("REWARD_FAILED", {"manual": True, "error": str(e)})
-            self._publish_dashboard("paused", "Manual reward failed — check the pump.")
-            return
-        self._emit_session_event("REWARD", {"manual": True, **self._manual_reward_payload})
-        self._publish_dashboard("paused", "Manual reward delivered.")
 
     def _publish_dashboard(
         self, status: str, message: str | None = None, full: bool = False

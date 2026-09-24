@@ -315,7 +315,12 @@ class TestASetupFailureStillTearsDown:
     ran outside the try whose finally tears it down, so one that failed left
     every device held and wrote no "session end" line anywhere."""
 
-    def session(self, tmp_path, dashboard: StoppableDashboard | None = None):
+    def session(
+        self,
+        tmp_path,
+        dashboard: StoppableDashboard | None = None,
+        training: HandBackTraining | None = None,
+    ):
         clock = FakeClock()
         tracker = ScriptedTracker([], clock)
         reward = ScriptedReward()
@@ -329,6 +334,7 @@ class TestASetupFailureStillTearsDown:
             sync=sync,
             clock=clock,
             dashboard=dashboard,
+            training=training,
         )
         return harness, tracker, reward, sync, dashboard
 
@@ -411,9 +417,8 @@ class TestASetupFailureStillTearsDown:
         assert "config snapshot was never written" in caplog.text
 
     def test_a_snapshot_failure_hands_the_task_back_but_saves_no_training_state(self, tmp_path):
-        harness, *_ = self.session(tmp_path)
         training = HandBackTraining()
-        harness.runner._training = training
+        harness, *_ = self.session(tmp_path, training=training)
         harness.paths.snapshot_path.mkdir()
 
         with pytest.raises(OSError, match="config_snapshot.yaml"):
