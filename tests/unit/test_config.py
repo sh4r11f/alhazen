@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+from pathlib import Path
 
 import pytest
 import yaml
@@ -389,6 +390,47 @@ class TestLoader:
         path.write_text("monitor: [unclosed")
         with pytest.raises(ConfigError, match="invalid YAML"):
             load_rig(path)
+
+    def test_a_file_saved_as_ansi_is_a_config_error_naming_it(self, tmp_path):
+        """A rig file typed in an editor that saves Windows-1252 ("ANSI"):
+        the ° in a comment is byte B0, which is not UTF-8. The decode error
+        escaped as a raw UnicodeDecodeError that named neither the file nor
+        what to do about it."""
+        path = tmp_path / "rig.yaml"
+        path.write_bytes("# screen tilted 5\xb0 down\ndata_root: data\n".encode("cp1252"))
+
+        with pytest.raises(ConfigError, match=re.escape(str(path))) as caught:
+            load_rig(path)
+
+        assert "UTF-8" in str(caught.value)
+
+    def test_a_directory_is_a_config_error_naming_it(self, tmp_path):
+        """--rig pointed at the configs folder rather than a file in it. Raw,
+        this is IsADirectoryError on POSIX and PermissionError on Windows."""
+        folder = tmp_path / "configs"
+        folder.mkdir()
+
+        with pytest.raises(ConfigError, match=re.escape(str(folder))) as caught:
+            load_rig(folder)
+
+        assert "directory" in str(caught.value)
+
+    def test_an_unreadable_file_is_a_config_error_naming_it(self, tmp_path, monkeypatch):
+        """A file another program holds locked, or one this user may not read.
+        Faked, because a file this process cannot read is not something a
+        test can portably make."""
+        path = tmp_path / "rig.yaml"
+        path.write_text("data_root: data\n")
+
+        def locked(self, *args, **kwargs):
+            raise PermissionError(13, "Permission denied", str(self))
+
+        monkeypatch.setattr(Path, "read_text", locked)
+
+        with pytest.raises(ConfigError, match=re.escape(str(path))) as caught:
+            load_rig(path)
+
+        assert "Permission denied" in str(caught.value)
 
     def test_validation_error_names_file(self, tmp_path):
         path = tmp_path / "rig.yaml"

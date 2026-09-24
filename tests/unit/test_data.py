@@ -9,11 +9,35 @@ import pytest
 import yaml
 
 from alhazen.core.events import Event
+from alhazen.data import naming
 from alhazen.data.manifest import add_to_manifest, verify_manifest, write_manifest
 from alhazen.data.participants import ensure_participant, participants_path
 from alhazen.data.paths import SessionPaths
 from alhazen.errors import DataError
 from alhazen.session.recorder import DataRecorder, ordered_trial_columns
+
+
+class TestParseRunDirname:
+    """`naming.parse_run_dirname` reads back the run number `run_dirname`
+    writes. It is what `next_run` counts with, so a name it misreads is a
+    run number handed out twice, and a stray folder it accepts is a gap."""
+
+    @pytest.mark.parametrize("run", [1, 2, 9, 10, 99, 100, 1234])
+    def test_it_inverts_run_dirname(self, run):
+        assert naming.parse_run_dirname(naming.run_dirname(run, "mib-quest")) == run
+
+    def test_a_run_folder_without_a_task_still_counts(self):
+        """Counted, because a folder that looks like a run is one somebody
+        will think of as that run: skipping it would hand its number out
+        again, into the numbering their notes already use."""
+        assert naming.parse_run_dirname("run-07") == 7
+
+    @pytest.mark.parametrize(
+        "name",
+        ["run-", "run-notes", "run-_task-x", "run-1a_task-x", "run--1", "ses-001", "run", ""],
+    )
+    def test_a_name_that_is_not_a_run_is_none(self, name):
+        assert naming.parse_run_dirname(name) is None
 
 
 class TestSessionPaths:
@@ -248,3 +272,51 @@ class TestParticipants:
         assert rows[0] == "participant_id\tspecies"
         assert rows[1].startswith("sub-s01")
         assert rows[2] == "sub-s02\tmacaque"
+
+    def test_a_failed_write_leaves_the_registry_whole(self, tmp_path, monkeypatch):
+        # The registry is a record, and adding a subject rewrites all of it.
+        # It was rewritten in place, so a crash or a full disk part-way
+        # through left a truncated file: every subject registered before
+        # was gone from the only copy.
+        ensure_participant(tmp_path, "s01", {"species": "macaque"})
+        before = participants_path(tmp_path).read_bytes()
+
+        def disk_full(self):
+            raise OSError(28, "No space left on device")
+
+        # The first thing the rewrite writes: past this point the old code
+        # had already emptied the file.
+        monkeypatch.setattr(csv.DictWriter, "writeheader", disk_full)
+        with pytest.raises(OSError, match="No space left"):
+            ensure_participant(tmp_path, "s02")
+
+        assert participants_path(tmp_path).read_bytes() == before
+        # And no half-written temporary file is left beside it.
+        assert [p.name for p in tmp_path.iterdir()] == ["participants.tsv"]
+
+    def test_the_file_keeps_its_line_endings(self, tmp_path):
+        # The atomic rewrite must write the same bytes the in-place one did:
+        # csv's own CRLF, not a CRLF that a text-mode file doubles on Windows.
+        ensure_participant(tmp_path, "s01")
+        ensure_participant(tmp_path, "s02")
+        assert participants_path(tmp_path).read_bytes() == (
+            b"participant_id\r\nsub-s01\r\nsub-s02\r\n"
+        )
+
+    def test_a_row_wider_than_its_header_is_refused_naming_the_row(self, tmp_path):
+        # A hand edit that left an extra cell (a stray tab) has no column to
+        # go under. csv read it under a None key and then refused to write it
+        # back with a ValueError that named neither the file nor the row.
+        path = participants_path(tmp_path)
+        path.write_text("participant_id\tspecies\nsub-s01\tmacaque\textra\n", encoding="utf-8")
+        before = path.read_bytes()
+
+        with pytest.raises(DataError) as error:
+            ensure_participant(tmp_path, "s02")
+
+        message = str(error.value)
+        assert str(path) in message
+        assert "line 2" in message and "sub-s01" in message
+        assert "'extra'" in message
+        # Refused before anything was written: the file is as the human left it.
+        assert path.read_bytes() == before

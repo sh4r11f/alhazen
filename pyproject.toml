@@ -10,6 +10,17 @@ readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Sharif Saleki", email = "sharif.saleki@gmail.com" }]
 requires-python = ">=3.10"
+# The Python versions CI runs the suite on (.github/workflows/ci.yml), and no
+# others: a classifier is a claim to pip and PyPI readers, so a version joins
+# this list in the same change that adds it to the CI matrix.
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
 # The hardware-free core deliberately stays light: everything a simulated
 # session needs, nothing a laptop can't install. Renderer and vendor SDKs are
 # extras with lazy imports.
@@ -39,7 +50,9 @@ nidaq = ["nidaqmx"]
 # raises a ConfigError naming this extra if it is missing. Pillow is pinned
 # here explicitly rather than inherited through imageio, whose floor (8.3) is
 # far below the APIs the sheet's captions use (load_default(size=...), 10.1).
-movie = ["imageio>=2.31", "imageio-ffmpeg>=0.4", "pillow>=10.1"]
+# imageio-ffmpeg likewise: imageio 2.31 passes write_frames(audio_path=...),
+# which imageio-ffmpeg only accepts from 0.4.4 — found by CI's lowest-deps job.
+movie = ["imageio>=2.31", "imageio-ffmpeg>=0.4.4", "pillow>=10.1"]
 # Analysis-side extras: scipy for the fits some analyses want. The readers
 # and the alignment need only numpy, so a plain install can still read a
 # session and align it to a recording.
@@ -103,6 +116,26 @@ markers = [
   # can be deselected while iterating (`-m 'not slow'`).
   "slow: takes tens of seconds (subprocess installs and full sessions)",
 ]
+
+# CI runs `pytest --cov=alhazen`; without a floor that measurement could fail
+# nothing, and a change that deleted half the tests would still go green.
+# `source` pins what is measured to the package itself (not the tests, not
+# whatever else is importable), and `branch` counts an `if` whose else-side
+# never ran as a miss, which line coverage alone reports as covered.
+[tool.coverage.run]
+source = ["alhazen"]
+branch = true
+
+# The floor sits just under the total measured when it was set — 90.99%
+# (line + branch, full default suite, Windows / Python 3.12, 2026-09) — so it
+# catches a real drop without failing on the noise of one refactor or on the
+# few platform-specific lines another OS's job does not reach. Raise it when
+# coverage rises; never lower it to make CI pass.
+# Subprocess sessions (the scaffold acceptance test, the dashboard child) are
+# not measured, so the true figure is somewhat higher than this reports.
+[tool.coverage.report]
+fail_under = 89
+show_missing = true
 
 [tool.ruff]
 line-length = 100
@@ -177,10 +210,17 @@ ignore_missing_imports = true
 # it, because importing it from there was a cli <-> modes cycle that stayed
 # invisible while modes was off this list.
 #
-# _scaffold shares the bottom line: the template renderer behind `alhazen new`
+# _deprecation (the @deprecated decorator) is a single module, not a package,
+# but it gets a line of its own at the very bottom rather than an exemption
+# like errors and version: it imports nothing from alhazen, and the line is
+# what keeps it that way — while any layer, config included, may still import
+# it to deprecate one of its own names. (Sharing config's line would forbid
+# exactly that: packages on one line may not import each other.)
+#
+# _scaffold shares the config line: the template renderer behind `alhazen new`
 # imports nothing from alhazen but errors (it is stdlib string.Template over
-# files), and only cli imports it. The bottom line keeps it that way — it may
-# not import any other alhazen package.
+# files), and only cli imports it. Its line keeps it that way — it may not
+# import any other alhazen package (only _deprecation, the line below).
 #
 # devices sits with paradigms: it needs core (the clock, and Event for the
 # tracker-message subscriber), display (calibration graphics draw into the
@@ -229,4 +269,5 @@ layers = [
   "alhazen.stimuli | alhazen.scenes",
   "alhazen.display",
   "alhazen.config | alhazen.data | alhazen._scaffold",
+  "alhazen._deprecation",
 ]

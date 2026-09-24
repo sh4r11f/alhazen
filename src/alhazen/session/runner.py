@@ -38,6 +38,7 @@ import sys
 import time
 from collections import Counter
 from collections.abc import Callable, Sequence
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -178,8 +179,15 @@ class SessionRunner:
         max_consecutive_failures: int | None = None,
         rest_resume_after_s: float | None = None,
         max_consecutive_dropouts: int | None = DEFAULT_MAX_CONSECUTIVE_DROPOUTS,
+        experiment_dir: Path | None = None,
     ) -> None:
         self._cfg = cfg
+        # Where the experiment's code lives, so the snapshot's
+        # `experiment_git_sha` describes that repository. None falls back to
+        # the working directory (config.snapshot.build_provenance), which is
+        # only right when the session happens to be started from inside the
+        # experiment's checkout; build_session passes the task's own folder.
+        self._experiment_dir = experiment_dir
         # The subject's failure streak and the device's dropout streak: which
         # trials count toward which, and when either stops the session at the
         # pause screen (session/streaks.py, which also validates both limits).
@@ -327,7 +335,7 @@ class SessionRunner:
             # still documents what it was trying to run. Until it is on disk
             # the run directory is not a run, and teardown releases the
             # devices without writing anything into it (_teardown).
-            write_snapshot(self._cfg, self._paths.snapshot_path)
+            write_snapshot(self._cfg, self._paths.snapshot_path, self._experiment_dir)
             snapshot_written = True
             # The log before the registry, so a participants.tsv that cannot
             # be written ends with a "session end: FAILED" line in this run's
