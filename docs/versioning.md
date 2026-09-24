@@ -15,10 +15,15 @@ alhazen follows [semantic versioning](https://semver.org). Given `MAJOR.MINOR.PA
 | **PATCH** | A fix, with no new surface. | A dropped-frame count that was off by one. |
 
 **The public API** — the surface those rules apply to — is everything exported
-from `alhazen` (its `__all__`) and everything documented in the
-[API reference](reference.md). Anything starting with `_` is not public, and
-neither is anything reachable only by importing a submodule the reference does
-not list.
+from `alhazen` (its `__all__`) and the members the
+[API reference](reference.md) lists for each module on it. A name that is not
+listed is internal even without a leading underscore and even in a listed
+module — a formatting helper, a tuning constant, a real device backend's
+class — and may change or disappear in any release, without a deprecation.
+Anything starting with `_` is not public, and neither is any module the
+reference does not list. `tests/unit/test_docs_snippets.py` fails when a
+listed name stops existing, and when an entry on that page has no explicit
+list, so the public surface cannot grow or shrink without the page saying so.
 
 Three further things are compatibility contracts even though they are not
 Python API, because they live **on disk** and outlast any one version. Section
@@ -106,13 +111,16 @@ make new files claim to be an older format and sail past the readers' checks.
 
 Nothing public disappears without a release in which it still works and says it
 is going — experiment packages live in other repositories on other people's
-schedules. One MINOR version of warning, then removal:
+schedules. Removing a public name is "something that used to work no longer
+does", so by §1 it is a MAJOR change. A name is deprecated in a MINOR release,
+keeps working and warning through every MINOR and PATCH release after it, and
+is removed in the next MAJOR:
 
 ```python
 from alhazen._deprecation import deprecated
 
 
-@deprecated(since="1.1", removed_in="1.2", instead="Task.build_trial")
+@deprecated(since="1.1", removed_in="2.0", instead="Task.build_trial")
 def old_thing(target):
     return target
 ```
@@ -121,6 +129,12 @@ The warning names the version it goes away in and what to use instead, because
 one that says only "deprecated" leaves the reader exactly where they started.
 For a single argument on a function that still exists, use
 `warn_deprecated_argument` from inside the function.
+
+`tests/unit/test_versioning.py` reads every `removed_in` out of the source and
+fails if one is not a MAJOR release, or if `pyproject.toml` has already reached
+it. So bumping to 2.0.0 fails until the names it removes are gone, and no
+warning names a release that has already shipped — `pause_menu` said "removed
+in 1.2" from 1.1 through 1.5.
 
 ## 5. Cutting a release
 

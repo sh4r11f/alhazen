@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 
 import pytest
 import yaml
@@ -580,3 +581,116 @@ dependencies = ["alhazen-vision>=1.3"]
 
     def test_environment_digest_stable_within_process(self):
         assert environment_digest() == environment_digest()
+
+
+class TestExperimentRevision:
+    """`experiment_git_sha` names the experiment code that ran — and says so
+    when a commit alone would not reproduce it.
+
+    It was `git rev-parse --short HEAD`, which names the commit and nothing
+    else, so a session run from edited, uncommitted experiment code recorded
+    a clean-looking SHA: a plausible, wrong provenance value in the one file
+    whose job is reproducibility. It is now read exactly the way alhazen's
+    own tree is (`git describe --always --dirty`), so both keys answer in the
+    same words, including the same two labels when there is no answer.
+
+    Every test builds its own repository under tmp_path and points the
+    snapshot at it, so none depends on the state of the checkout running the
+    suite."""
+
+    @staticmethod
+    def _git(repo, *args):
+        # Identity passed per call so the test does not depend on (or write
+        # to) the machine's git config.
+        return subprocess.run(
+            ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t", *args],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+
+    def _committed_experiment(self, repo):
+        """A repository holding one committed experiment file; returns the
+        short SHA of that commit, which is what a clean tree must record."""
+        repo.mkdir(parents=True)
+        (repo / "task.py").write_text("N_TRIALS = 10\n", encoding="utf-8")
+        self._git(repo, "init", "-q")
+        self._git(repo, "add", "task.py")
+        self._git(repo, "commit", "-q", "-m", "the experiment")
+        return self._git(repo, "rev-parse", "--short", "HEAD")
+
+    @staticmethod
+    def _recorded(tmp_path, experiment_dir):
+        """What a real snapshot, written through the public writer, records
+        for the experiment's tree."""
+        cfg = make_session_config(tmp_path / "data")
+        path = tmp_path / "config_snapshot.yaml"
+        write_snapshot(cfg, path, experiment_dir=experiment_dir)
+        return yaml.safe_load(path.read_text(encoding="utf-8"))["provenance"]["experiment_git_sha"]
+
+    def test_uncommitted_changes_are_marked_dirty(self, tmp_path):
+        """The reported bug: the file that ran is not the file in the commit,
+        and the snapshot has to say so rather than name the commit alone."""
+        repo = tmp_path / "experiment"
+        head = self._committed_experiment(repo)
+        (repo / "task.py").write_text("N_TRIALS = 20\n", encoding="utf-8")
+
+        assert self._recorded(tmp_path, repo) == f"{head}-dirty"
+
+    def test_a_clean_tree_is_recorded_by_its_commit_alone(self, tmp_path):
+        """No `-dirty` when there is nothing uncommitted — a mark that is
+        always there would say nothing. With no tag in the repository (none of
+        the downstream experiment repos has one) the value is the same short
+        SHA the key has always held."""
+        repo = tmp_path / "experiment"
+        head = self._committed_experiment(repo)
+
+        assert self._recorded(tmp_path, repo) == head
+
+    def test_a_directory_outside_any_repository_is_not_a_source_checkout(self, tmp_path):
+        """An experiment with no git history at all is a different fact from
+        git failing to answer, and it was recorded as the same `unknown`."""
+        experiment = tmp_path / "experiment"
+        experiment.mkdir()
+
+        assert self._recorded(tmp_path, experiment) == "not a source checkout"
+
+    def test_no_git_on_the_machine_is_unknown(self, tmp_path, monkeypatch):
+        """A rig without git still runs; the snapshot says it could not tell.
+        PATH pointed at an empty directory is what a machine without git
+        looks like to the process that runs it."""
+        repo = tmp_path / "experiment"
+        self._committed_experiment(repo)
+        empty = tmp_path / "no-git-here"
+        empty.mkdir()
+        monkeypatch.setenv("PATH", str(empty))
+
+        assert self._recorded(tmp_path, repo) == "unknown"
+
+    def test_git_that_does_not_answer_is_unknown(self, tmp_path, monkeypatch):
+        """The third failure the reading is allowed to absorb: git that hangs
+        (a network filesystem, a lock) is stopped by the timeout and read as
+        no answer. Called directly, because faking `subprocess.run` for a
+        whole snapshot would also fake it for everything else the snapshot
+        asks the platform."""
+        from alhazen.config.snapshot import _git_describe
+
+        def hangs(args, **kwargs):
+            raise subprocess.TimeoutExpired(args, kwargs.get("timeout", 0))
+
+        monkeypatch.setattr(subprocess, "run", hangs)
+
+        assert _git_describe(tmp_path) == "unknown"
+
+    def test_a_non_ascii_directory_is_still_described(self, tmp_path):
+        """git writes paths as UTF-8. Decoded in the Windows ANSI code page,
+        the UTF-8 bytes of a letter like `Í` (C3 8D) include one cp1252 does
+        not define; the decode failed inside subprocess, the output came back
+        as None, and reading alhazen's own tree crashed on it. The old
+        experiment lookup printed no path and so never met it — this pins
+        that reading the experiment's tree the same way as alhazen's did not
+        turn an accented folder name into a session that cannot start."""
+        repo = tmp_path / "experiment-Í"
+        head = self._committed_experiment(repo)
+
+        assert self._recorded(tmp_path, repo) == head
