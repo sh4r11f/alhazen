@@ -102,7 +102,8 @@ command source, and the bus:
 4. `phase.on_frame(ctx)` draws and decides (CONTINUE / ADVANCE / Outcome)
 5. draw the rig's `overlay(ctx)`, if any — today, the photodiode patch
 6. `display.flip()` — the only moment photons change
-7. stamp the session clock; compute `ctx.dt` (duration of the just-shown frame)
+7. read the session clock once — the flip's time, which steps 8–10 all
+   record — and compute `ctx.dt` (duration of the just-shown frame)
 8. feed the FrameMonitor (dropped-frame policy:
    log/warn/mark_trial/recycle_trial/abort_run; at the trial's end its
    `end_trial()` logs one line per trial with drops and, under
@@ -125,8 +126,12 @@ command source, and the bus:
    is `0` on a clean trial, never absent. On a simulated display the policy is stood
    down to `log` at build time — the flip times there measure how accurately
    the host can wait, not whether a panel is holding its refresh)
-9. emit the events the phase queued via `ctx.emit_on_flip`, stamped now —
-   the photon-honest timestamp
+9. emit the events the phase queued via `ctx.emit_on_flip`, every one
+   stamped with the flip's time from step 7 — the photon-honest timestamp.
+   Not with the clock read again as each is emitted: by then the bus's
+   subscribers (a tracker message, a sync pulse) have run for the events
+   before it, and events shown by one flip would carry different, later
+   times
 10. hand the phase's mid-trial reward requests (`ctx.request_reward`) to the
     reward worker and emit a `REWARD` for each, stamped with that same flip;
     then report every delivery the worker has finished since the last frame
@@ -140,7 +145,10 @@ an event's timestamp refers to.
 Invariants the tests pin:
 
 - `TRIAL_START` emits immediately (it precedes every other event in the
-  trial); visual events emit only after their flip.
+  trial); visual events emit only after their flip, and carry that flip's
+  time — as do the frame log and the per-frame inputs for that frame.
+  Events with no flip of their own (`TRIAL_START`, `TRIAL_END`, `PAUSED`, a
+  manual `REWARD`, a drop's end) are stamped as they are emitted.
 - Every emitted event mirrors into the trial record as `t_<name>`.
 - Every record carries `fault`: `none` unless a system fault hit the trial
   (`dropped_frames`, `tracker_stopped`) — a value on every row, never an
@@ -419,7 +427,11 @@ trial's segment. At teardown the runner adds `tracker.shutdown(...)`,
 retrieved recording is covered by it, and each as its own step, so one
 device's failure never prevents another's release. Only the run directory and
 the base name in that path are a promise; the suffix belongs to the backend
-(§4.7).
+(§4.7). A recording a backend cannot hand over is a failed step, never only a
+log line: an EyeLink whose link is down at teardown raises a `TrackerError`
+naming the EDF left on its Host PC, and the database records the run as
+`failed`. Both real backends release their device in a `finally`, whatever
+else failed.
 
 **Reward policy is not here.** Inside a trial the device layer is reached two
 ways. The experimenter's manual-reward key: the engine delivers, *then* emits
@@ -689,7 +701,7 @@ none, that the model's defaults are running.
 | `StimulusResponse` | gaze leaves the depart-region, or the deadline passes | `rt_ms`, `<depart_region>_x/y_dva` (where the eye left from — measured, never assumed to be the fixation point) |
 | `LandingCheck` | gaze enters the target region, or the window times out. **Records where gaze first crossed into the region — mid-flight for any usable window — not where the saccade ended**; use `LandingSample` for landing error | `endpoint_x/y_dva`, `endpoint_error_dva`, `endpoint_in_target` |
 | `LandingSample` | a fixed dwell after saccade onset (`dwell_s`), **or** saccade offset: the first *new* sample slower than `settle_speed_dva_per_s`, capped at `max_wait_s`. The region is ignored until then; the last valid sample is the endpoint, judged once. With `depart_region` (the fixation window), a sample still inside that window is never the endpoint and never settles — a blink at the cue counts as departure, and would otherwise end the trial as a miss at fixation | `endpoint_measured`, `endpoint_in_target`, `endpoint_x/y_dva`, `endpoint_error_dva`, `endpoint_latency_ms`, `endpoint_reference_x/y_dva`; `endpoint_settled` in the saccade-offset mode |
-| `ResponseWindow` | a bound key is pressed, or the deadline passes | `response_key`, `rt_ms` |
+| `ResponseWindow` | a bound key is pressed, or the deadline passes. **Keys pressed before the cue was on screen are ignored**: a frame's keys are everything pressed since the previous frame's read, so they count only once that read came after the flip stamped `t_<onset_event>` — never on the phase's first frame (before the flip) or its second (the presses made while the cue waited for its flip). With `onset_event=None` keys count from the first frame, timed from phase entry | `response_key`, `rt_ms` (from the cue's flip) |
 | `AdjustmentLoop` | the commit key is pressed, or the deadline passes | `adjusted_value`, `adjustment_turns` |
 | `FrameSequence` | a compiled `FrameTimeline` finishes | `sequence_frames` |
 | `Blank` / `Feedback` | a fixed duration elapses | — |
@@ -1094,9 +1106,13 @@ All of them: draw randomness only from the injected Generator, hear about
 **every** outcome, and re-serve any condition whose outcome was not
 `completed`. Schedulers read `TrialResult.outcome` and never the record — a
 scheduler reaching into measurements is how a scheduler and an analysis end
-up disagreeing about what "correct" meant. `QuestPlus` takes a
-`score: Callable[[TrialResult], bool]` for tasks titrating something other
-than accuracy.
+up disagreeing about what "correct" meant. The adaptive ones —
+`UpDownStaircase` (so each of `InterleavedStaircases`) and `QuestPlus` —
+take a `score: Callable[[TrialResult], bool]` for tasks titrating something
+other than accuracy, and `make_scheduler` builds every adaptive kind with the
+task's `score_trial` (default: `outcome.success`). The scorer is asked about
+completed trials only; an attempt with no measurement is re-served, never
+scored.
 
 `SchedulerConfig` (+ `StaircaseConfig`, `QuestConfig`, `BlockConfig`) is the
 config surface, so moving from constant stimuli to a staircase is a YAML edit

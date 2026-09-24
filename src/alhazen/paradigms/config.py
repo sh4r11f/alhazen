@@ -143,6 +143,14 @@ def make_scheduler(
     conditions only for the levels they interleave over — so a task can move
     from constant stimuli to a staircase without rewriting ``conditions()``.
 
+    ``score`` is what the task counts as a success — ``Task.make_source``
+    passes ``Task.score_trial`` — and **every** adaptive kind is built with
+    it: the up-down staircases (each one, when interleaved) and QUEST+. A
+    kind left on ``outcome.success`` would titrate accuracy for a task that
+    asked for something else. ``None`` means ``outcome.success``. The
+    queue-based kinds never ask whether a trial succeeded, only whether it
+    completed, so they take no scorer.
+
     With a ``blocks`` block, a **queue-based** kind gets one scheduler per
     block. That is not a style choice: sharing one queue across blocks means a
     failed condition re-queues at the end of the *whole remaining* queue and
@@ -259,7 +267,7 @@ def _make_inner(
         )
     if cfg.kind == "staircase":
         assert cfg.staircase is not None
-        return _make_staircase(cfg.staircase, conditions, rng)
+        return _make_staircase(cfg.staircase, conditions, rng, score)
     assert cfg.quest is not None
     quest = cfg.quest
     return QuestPlus(
@@ -278,9 +286,15 @@ def _make_inner(
 
 
 def _make_staircase(
-    cfg: StaircaseConfig, conditions: list[Condition], rng: np.random.Generator
+    cfg: StaircaseConfig,
+    conditions: list[Condition],
+    rng: np.random.Generator,
+    score: Callable[[TrialResult], bool] | None,
 ) -> TrialSource:
     def build(fixed: dict[str, Any]) -> UpDownStaircase:
+        # Every staircase, interleaved or not, gets the task's scorer: one
+        # left on outcome.success would titrate accuracy for a task that
+        # asked for something else, and nothing would say so.
         return UpDownStaircase(
             parameter=cfg.parameter,
             start=cfg.start,
@@ -292,6 +306,7 @@ def _make_staircase(
             min_value=cfg.min_value,
             max_value=cfg.max_value,
             fixed=fixed,
+            score=score,
         )
 
     if cfg.interleave_by is None:
