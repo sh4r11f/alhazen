@@ -8,6 +8,10 @@ reads a session's whole vocabulary and therefore lives in `session/`.
 compared with) is here because display, session and analysis all need it,
 and only the bottom of the stack is below all three. Like the rest of the
 package, it knows nothing about what its numbers measure.
+
+`atomic` (replacing a file whole, so a crash leaves the old file or the new
+one) is here for the same reason: the registry below and a subject's
+training state in ``training/`` are both records rewritten whole.
 """
 
 from alhazen.data.manifest import add_to_manifest, verify_manifest, write_manifest

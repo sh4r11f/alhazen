@@ -41,7 +41,8 @@ src/alhazen/
 │                   #   internal parts: streaks.py, reward_payer.py, pause_control.py
 ├── config/         # pydantic models (extra=forbid, frozen), YAML loader, snapshot writer
 ├── data/           # naming, SessionPaths, manifest, participants registry, percents
-│                   #   (a measured fraction written beside its threshold, §10.2)
+│                   #   (a measured fraction written beside its threshold, §10.2),
+│                   #   atomic (replace a file whole)
 ├── dashboard/      # isolated local HTTP process, panel statistics, and the browser page
 ├── testing/        # PUBLIC fakes: FakeClock/FakeDisplay/FakeStimulus/Scripted*/EventCollector
 │                  # and SortedSpikePublisher, the sorter that lives outside this repo

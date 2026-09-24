@@ -306,6 +306,29 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Fixed
 
+- **Six small data and device faults: a registry that a crash could empty,
+  database handles left open, and trackers not released after a failure.**
+  `participants.tsv` was rewritten in place, so a crash or a full disk while
+  adding a subject left a truncated file; it is now written to a temporary
+  file and swapped in whole (the helper training state already used, moved to
+  `alhazen.data.atomic`). A registry row with more cells than its header used
+  to fail with csv's `ValueError` naming no file; it is now a `DataError`
+  naming the file, the line and the extra cells, and the file is left as it
+  was. `ExperimentDatabase` committed its transactions but never closed its
+  connections, leaving the database and its WAL file locked on Windows until
+  garbage collection; every connection is now closed, including one refused
+  for its schema. The TRACKPixx3 gaze reader abandoned a thread stuck in a
+  USB read without a word, and the next `start()` cleared the stop flag that
+  thread shared, so it read on beside the new one; `stop()` now logs the
+  abandonment at ERROR and each thread has its own stop flag. An EyeLink
+  `connect()` that failed after the link opened (at `openDataFile`) left the
+  link open; it is now closed before the `TrackerError`. A link that failed
+  while the EyeLink closed its EDF with no destination (check-rig) raised
+  pylink's bare `RuntimeError`, past check-rig's error handling as a
+  traceback; it is now a `TrackerError`, and check-rig reports a failed
+  check. An unused, unlocked `_gap_samples` counter in the SpikeGLX source was
+  removed.
+
 - **A session that failed while starting up left every device open.**
   `SessionRunner.run` wrote the snapshot, registered the subject, attached
   `session.log` and made the first dashboard publish before the `try` whose
