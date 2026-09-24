@@ -103,8 +103,11 @@ class PauseMenu:
         mapped here: Q and ESC share the quit row, and the resume row says
         SPACE. Every other row matches its key text case-insensitively, which
         is what lets a rebound key work without the pause screen and the
-        keyboard drifting apart. Only rows with an action count (``actions``),
-        so a reference row can never be selected.
+        keyboard drifting apart — compared both as the name the keyboard
+        reports and as that name's printed label (``key_label``), because a
+        row prints the label: PsychoPy reports ``]`` as "bracketright", and
+        the promote row, which says "]", never matched it. Only rows with an
+        action count (``actions``), so a reference row can never be selected.
         """
         actions = self.actions()
         name = key.lower()
@@ -112,8 +115,9 @@ class PauseMenu:
             return actions.get(QUIT_ROW_KEY)
         if name == "space":
             return actions.get(RESUME_ROW_KEY)
+        spellings = {name, key_label(name).lower()}
         for row_key, action in actions.items():
-            if row_key.lower() == name:
+            if row_key.lower() in spellings:
                 return action
         return None
 

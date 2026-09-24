@@ -379,6 +379,14 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Fixed
 
+- **The pause menu's promote and demote keys did nothing on a real rig.**
+  The rows print `]` and `[`, but PsychoPy reports those keys as
+  `bracketright` and `bracketleft`, and `PauseMenu.action_for_key` compared
+  the reported name with the printed text, so neither ever matched: an
+  experimenter could not move a subject up or down a training stage from the
+  pause menu. (During a trial the same keys always worked.) A key now matches
+  its row under its reported name or its printed label.
+
 - **A Ctrl-C during teardown no longer abandons the rest of it.** Each
   teardown step caught `Exception` only, so a Ctrl-C while a slow step ran
   (an EDF transfer, the dashboard child's 2 s join) skipped every step after
