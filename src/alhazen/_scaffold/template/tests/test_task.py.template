@@ -112,3 +112,20 @@ def test_a_blink_during_the_hold_is_a_break(task):
     # cannot be credited as continued fixation.
     collector, result = run_trial(task, [LOOKING, LOOKING, BLINK])
     assert result.outcome.name == "FIX_BREAK"
+
+
+def test_the_params_file_the_task_names_is_there_and_loads():
+    # `alhazen run` and run.py both load this file when no --params is
+    # given, and a session that cannot find it stops. Moving or renaming
+    # configs/task.yaml should fail here, not at the rig.
+    from alhazen.config.loader import load_params
+
+    path = $task_class.default_params()
+    assert path.is_file(), path
+    load_params(path, ${task_class}Params)
+
+
+def test_the_subject_is_told_what_to_do(task):
+    # Shown before trial one in every mode that runs trials. Return None
+    # from instructions() for a task whose subject reads nothing.
+    assert task.instructions().strip()

@@ -1445,7 +1445,12 @@ parallel implementation is a tool whose OK means nothing.
 
 The scaffold is vendored as files under `_scaffold/template/` and rendered
 with stdlib `string.Template` — a scaffold needing a dependency to run would
-be one more thing between a new user and their first session.
+be one more thing between a new user and their first session. Its task names
+its own params file (`default_params`, found from the task's own file) and
+its instructions (§5.1), so its `run.py` passes only the task and a default
+rig, and `alhazen run --task` starts the same session: a new experiment
+starts with its two entry points agreeing rather than inheriting a gap
+between them.
 
 The acceptance test **installs** the rendered package (`pip --target`, in a
 subprocess), then lists its entry point, runs its tests and runs a session

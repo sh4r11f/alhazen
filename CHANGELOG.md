@@ -72,6 +72,13 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 - **Sessions say where their params came from before trial one**: `params:
   <file>`, or `params: the defaults of <Model> — no --params given, and <Task>
   declares no default_params()`.
+- **`alhazen new` scaffolds a task that names its params file and its
+  instructions.** The template task's `default_params()` returns
+  `configs/task.yaml`, found from the task's own file (so the package is
+  installed editable, as its README says), and its `instructions()` returns
+  the subject's wording; its `run.py` passes only the task and a default
+  rig. Its tests gain two: the named params file is there and loads, and the
+  task tells its subject what to do.
 
 ### Fixed
 
@@ -96,6 +103,13 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   Both are now settled — from the flags, the prompt, or simulate mode's `sim`
   and `1` — before any params hook runs; the params file is still loaded and
   checked before anyone is prompted.
+- **The scaffold's `run.py` claimed `alhazen run` "does the same job".** It
+  did not: `run.py` was handed the params file, and `alhazen run` ran the
+  params model's defaults. Every experiment scaffolded since inherited the
+  claim and the gap. The template now says what is the same — the params
+  file and the instructions, both declared on the task — and what is not:
+  `alhazen run` needs `--rig`. An experiment scaffolded earlier fixes both by
+  declaring `default_params()` and `instructions()` on its task.
 
 ## 1.5.0 - 2026-09-23
 
