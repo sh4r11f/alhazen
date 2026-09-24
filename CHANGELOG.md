@@ -61,6 +61,18 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   before the fault stays delivered and counted, and the line says how many.
   The experimenter's skip and a pause are never paid `on_fault`. See "System
   faults" in [docs/architecture.md](docs/architecture.md) §5.3.
+- **`REWARD_CANCELLED`, a reserved event, and `n_mid_trial_rewards_cancelled`,
+  a trial column**, for a task that declares `mid_trial_reward`. A drop that
+  was commanded (its `REWARD` is in the record) but never delivered, because
+  the experimenter's manual reward overrode the queue before it reached the
+  valve, ends with `REWARD_CANCELLED` carrying its `{pulses, reason, frame}`
+  and `cancelled_by: "manual"` — its own event, never a `REWARD_FAILED`, so
+  it takes no pump-failure pause. Rows gain the count, 0 on a trial with
+  none, so delivered (`n_mid_trial_rewards`), failed and cancelled add up to
+  every drop commanded. The manual path is the new
+  `QueuedReward.deliver_manual(pulses)`. `RESERVED_EVENTS` and the
+  trial-column baseline in `tests/fixtures/contracts.json` gain the two
+  names; nothing was removed or renamed.
 
 ### Changed
 
@@ -78,6 +90,23 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 - **`by_outcome` is not consulted for a tracker-stopped trial.** Its
   `ABORTED` is the rig's, so it pays `on_fault` or nothing; an `ABORTED`
   entry in `by_outcome` now pays the experimenter's skip only.
+- **The manual reward overrides the mid-trial reward queue.** In a session
+  whose task declares `mid_trial_reward`, the experimenter's reward — `r`
+  during a trial, R in the pause menu, the dashboard's Give reward — waited
+  behind every drop still queued, holding the frame loop for all of their
+  pulse trains and arriving late. It now cancels every drop still waiting
+  (each ends with its own `REWARD_CANCELLED`, and one WARNING in the log
+  names them), lets the train already on the valve finish, and is delivered
+  once, next. Drops asked for after it queue as usual. A train on the valve
+  is never cut short: a partial train is a dose nobody measured, and an
+  NI-DAQ output task stopped mid-pulse leaves the valve line high. The key is
+  still synchronous and its `REWARD {manual: true}` still follows the pump,
+  but it now blocks for at most the train on the valve plus its own, and the
+  cancellations are reported ahead of it, in the same frame. The
+  end-of-trial pay is never cancelled, and a cancelled drop still counts as
+  earned, so its trial gets no `NO_REWARD`. Nothing changes for a task that
+  does not declare `mid_trial_reward`. See "Mid-trial reward" in
+  [docs/architecture.md](docs/architecture.md) §5.3.
 
 ### Fixed
 

@@ -23,6 +23,7 @@
     "PAUSED",
     "RESUMED",
     "REWARD",
+    "REWARD_CANCELLED",
     "REWARD_DELIVERED",
     "REWARD_FAILED",
     "STAGE_CHANGED",
@@ -54,6 +55,7 @@
     "rewarded",
     "n_mid_trial_rewards",
     "n_mid_trial_reward_failures",
+    "n_mid_trial_rewards_cancelled",
     "feedback",
     "fault"
   ],
