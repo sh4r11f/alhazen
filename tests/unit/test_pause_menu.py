@@ -190,6 +190,19 @@ class TestActionForKey:
         # here, and P (the pause key itself) never has one.
         assert build_pause_menu().action_for_key(key) is None
 
+    @pytest.mark.parametrize(
+        ("key", "action"),
+        [("bracketright", "promote_stage"), ("bracketleft", "demote_stage")],
+    )
+    def test_the_stage_keys_work_under_the_names_psychopy_reports(self, key, action):
+        # The bug this pins: the rows print "]" and "[" (key_label), but
+        # PsychoPy reports those keys as "bracketright"/"bracketleft", and
+        # the name was compared with the printed text — so on a real rig the
+        # pause menu's promote and demote keys did nothing at all.
+        menu = build_pause_menu(has_tracker=True, has_reward=True, has_training=True)
+
+        assert menu.action_for_key(key) == action
+
 
 class TestRender:
     def test_the_key_column_is_aligned(self):
