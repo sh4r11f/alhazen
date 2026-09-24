@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import logging
+import queue
 import re
 import time
 import urllib.error
@@ -302,6 +304,213 @@ class TestRuntime:
         )
         with urllib.request.urlopen(request, timeout=2) as response:
             return response.status
+
+    def test_the_saved_page_cannot_be_broken_out_of_by_its_own_data(self, tmp_path: Path):
+        # The saved state sits inside a <script> element, where the HTML
+        # parser decides where the script ends. A "</script>" in a string
+        # value would end it; a "<!--" changes how the rest is parsed, and
+        # escaping only "</" left that one through. Every "<" is escaped, and
+        # the data reads back unchanged.
+        controller = DashboardController(auto_open=False)
+        state = _state(3, "complete")
+        state["message"] = "odd name: <!-- </script><script>alert(1)</script>"
+        controller.save(tmp_path, state)
+        html = (tmp_path / "dashboard.html").read_text(encoding="utf-8")
+        embedded = html.split("const STATIC_STATE = ", 1)[1].split(";</script>", 1)[0]
+        assert "<" not in embedded
+        assert json.loads(embedded) == json.loads(json.dumps(state, default=str))
+
+
+@pytest.fixture(scope="class")
+def server():
+    """One paused dashboard server for a whole test class, as (controller,
+    root URL, token). Paused, so that commands and settings pass the status
+    check and reach whatever validation a test is about."""
+    controller = DashboardController(auto_open=False)
+    url = controller.start()
+    token = url.partition("token=")[2]
+    root = url.partition("/?")[0]
+    try:
+        controller.publish(_state(1, "paused"))
+        TestRuntime._wait_for_revision(root, token, 1)
+        yield controller, root, token
+    finally:
+        controller.stop()
+
+
+class TestRequestValidation:
+    """What the server refuses, and that refusing it leaves the server serving."""
+
+    @staticmethod
+    def _raw(root: str, method: str, path: str, headers: dict[str, str], body: bytes = b""):
+        """Send a request exactly as given, headers included, and return
+        (status, body). urllib would fix a wrong Content-Length for us, and a
+        wrong one is what some of these tests send. The timeout turns a server
+        that never answers into a failure instead of a hung test."""
+        host, _, port = root.removeprefix("http://").partition(":")
+        connection = http.client.HTTPConnection(host, int(port), timeout=5)
+        try:
+            connection.putrequest(method, path, skip_accept_encoding=True)
+            for name, value in headers.items():
+                connection.putheader(name, value)
+            connection.endheaders(body or None)
+            response = connection.getresponse()
+            return response.status, response.read()
+        finally:
+            connection.close()
+
+    def _post(self, root: str, token: str, path: str, body: object) -> int:
+        data = json.dumps(body).encode()
+        status, _ = self._raw(
+            root,
+            "POST",
+            path,
+            {"X-Alhazen-Token": token, "Content-Length": str(len(data))},
+            data,
+        )
+        return status
+
+    def _still_serving(self, root: str, token: str) -> None:
+        with urllib.request.urlopen(f"{root}/api/state?token={token}", timeout=2) as response:
+            assert json.load(response)["revision"] == 1
+
+    @pytest.mark.parametrize("request_id", [["a"], {"a": 1}, 7, None, "", "x" * 65], ids=repr)
+    def test_a_request_id_that_is_not_a_short_string_is_refused(self, server, request_id):
+        # A JSON list or object used to reach `request_id not in seen` and
+        # raise TypeError there, killing the handler thread with no answer.
+        _controller, root, token = server
+        command = {"name": "manual_reward", "request_id": request_id}
+        setting = {"setting": "iris_size_px", "value": 100, "request_id": request_id}
+        assert self._post(root, token, "/api/command", command) == 400
+        assert self._post(root, token, "/api/tracker", setting) == 400
+        self._still_serving(root, token)
+
+    def test_a_command_name_that_is_not_a_string_is_refused(self, server):
+        # Unhashable, like the request id above: the allow-list lookup raised.
+        _controller, root, token = server
+        assert self._post(root, token, "/api/command", {"name": ["quit"], "request_id": "n"}) == 400
+        self._still_serving(root, token)
+
+    @pytest.mark.parametrize(
+        ("length", "expected"),
+        [("-1", 400), ("1000000", 413), ("4097", 413), ("many", 400)],
+    )
+    def test_the_body_length_is_checked_before_anything_is_read(self, server, length, expected):
+        # A negative length made the server read until the client hung up; a
+        # huge one made it wait for (and buffer) that many bytes. Both are
+        # answered at once now, with no body sent at all.
+        _controller, root, token = server
+        for path in ("/api/command", "/api/tracker"):
+            status, _ = self._raw(
+                root, "POST", path, {"X-Alhazen-Token": token, "Content-Length": length}
+            )
+            assert status == expected, (path, length)
+        self._still_serving(root, token)
+
+    def test_a_command_and_a_setting_with_one_id_both_arrive(self, server):
+        # The two queues used to share one memory of seen ids, so a setting
+        # whose id a command had already used was dropped as a duplicate.
+        controller, root, token = server
+        controller.poll_commands()
+        controller.poll_settings()
+        assert (
+            self._post(root, token, "/api/command", {"name": "resume", "request_id": "one"}) == 202
+        )
+        setting = {"setting": "iris_size_px", "value": 100, "request_id": "one"}
+        assert self._post(root, token, "/api/tracker", setting) == 202
+        commands: list[DashboardCommand] = []
+        settings: list[tuple[str, object]] = []
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline and not (commands and settings):
+            commands += controller.poll_commands()
+            settings += controller.poll_settings()
+            time.sleep(0.01)
+        assert [command.name for command in commands] == ["resume"]
+        assert settings == [("iris_size_px", 100)]
+
+    @pytest.mark.parametrize(
+        "query",
+        ["revision=x", "revision=", "revision=1&revision=2"],
+    )
+    def test_a_malformed_revision_is_refused_like_every_other_integer(self, server, query):
+        # It used to be ignored (taken as 0) while a malformed camera `after`
+        # got a 400; every integer parameter now follows the camera's rule.
+        _controller, root, token = server
+        with pytest.raises(urllib.error.HTTPError) as refused:
+            urllib.request.urlopen(f"{root}/api/state?token={token}&{query}", timeout=2)
+        assert refused.value.code == 400
+
+    def test_a_repeated_camera_parameter_is_refused(self, server):
+        _controller, root, token = server
+        with pytest.raises(urllib.error.HTTPError) as refused:
+            urllib.request.urlopen(f"{root}/api/camera?token={token}&after=1&after=2", timeout=2)
+        assert refused.value.code == 400
+
+    @pytest.mark.parametrize("presented", ["wrong", "%C3%A9", ""], ids=repr)
+    def test_a_wrong_token_in_the_query_is_forbidden(self, server, presented):
+        # "%C3%A9" decodes to a non-ASCII character, which the constant-time
+        # comparison refuses as a str; it must be a 403, not a crashed thread.
+        _controller, root, token = server
+        with pytest.raises(urllib.error.HTTPError) as forbidden:
+            urllib.request.urlopen(f"{root}/api/state?token={presented}", timeout=2)
+        assert forbidden.value.code == 403
+        self._still_serving(root, token)
+
+    def test_a_wrong_or_non_ascii_token_header_is_forbidden(self, server):
+        _controller, root, token = server
+        body = json.dumps({"name": "resume", "request_id": "t"}).encode()
+        for presented in ("wrong", "é" * 10):
+            status, _ = self._raw(
+                root,
+                "POST",
+                "/api/command",
+                {"X-Alhazen-Token": presented, "Content-Length": str(len(body))},
+                body,
+            )
+            assert status == 403, presented
+        self._still_serving(root, token)
+
+
+class TestRecentRequestIds:
+    """The server's memory of accepted request ids, one per queue."""
+
+    def test_an_id_is_forwarded_once(self):
+        from alhazen.dashboard.runtime import _RecentRequestIds
+
+        forwarded: list[str] = []
+        seen = _RecentRequestIds()
+        seen.forward_once("a", lambda: forwarded.append("a"))
+        seen.forward_once("a", lambda: forwarded.append("a again"))
+        assert forwarded == ["a"]
+
+    def test_a_full_queue_does_not_mark_the_id_seen(self):
+        # The page retries; the retry must get through once there is room.
+        from alhazen.dashboard.runtime import _RecentRequestIds
+
+        def full() -> None:
+            raise queue.Full
+
+        forwarded: list[str] = []
+        seen = _RecentRequestIds()
+        with pytest.raises(queue.Full):
+            seen.forward_once("a", full)
+        seen.forward_once("a", lambda: forwarded.append("a"))
+        assert forwarded == ["a"]
+
+    def test_memory_is_bounded_and_forgets_the_oldest_first(self):
+        # The settings path used to remember every id for the whole session,
+        # and the commands path forgot all of them at once when full.
+        from alhazen.dashboard.runtime import _RecentRequestIds
+
+        forwarded: list[str] = []
+        seen = _RecentRequestIds(limit=3)
+        for request_id in ("a", "b", "c", "d"):
+            seen.forward_once(request_id, lambda r=request_id: forwarded.append(r))
+        # "a" was forgotten to make room for "d"; "b", "c" and "d" are still
+        # remembered and are not forwarded twice.
+        for request_id in ("b", "c", "d", "a"):
+            seen.forward_once(request_id, lambda r=request_id: forwarded.append(r))
+        assert forwarded == ["a", "b", "c", "d", "a"]
 
 
 class FakeDashboard:
