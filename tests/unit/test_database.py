@@ -308,10 +308,13 @@ class TestCancelledSessions:
         `status="complete"` for a session with zero trials — indistinguishable
         from one that ran and produced nothing."""
         database = ExperimentDatabase(tmp_path / DATABASE_FILENAME)
-        harness = SessionHarness(tmp_path, n_trials=2)
-        harness.runner._database = database
-        harness.runner._instructions = "press space"
-        harness.runner._await_start = lambda: False
+        harness = SessionHarness(
+            tmp_path,
+            n_trials=2,
+            database=database,
+            instructions="press space",
+            await_start=lambda: False,
+        )
 
         harness.runner.run()
 
@@ -321,8 +324,7 @@ class TestCancelledSessions:
 
     def test_a_session_that_ran_is_complete(self, tmp_path):
         database = ExperimentDatabase(tmp_path / DATABASE_FILENAME)
-        harness = SessionHarness(tmp_path, n_trials=2)
-        harness.runner._database = database
+        harness = SessionHarness(tmp_path, n_trials=2, database=database)
 
         harness.runner.run()
 

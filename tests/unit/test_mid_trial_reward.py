@@ -1119,8 +1119,8 @@ class TestInASession:
                 DropsWithTheFirstOnTheValve(5, COMPLETED, device, on_frames=(0, 1, 2, 3))
             ],
             commands=ScriptedCommands([[], [], [], [Command.MANUAL_REWARD]]),
+            on_pause=lambda menu: paused.append(menu) or "resume",
         )
-        harness.runner._on_pause = lambda menu: paused.append(menu) or "resume"
         assert harness.queued_reward is not None
         joined = signal_on_enqueue(harness.queued_reward)
 
@@ -1196,6 +1196,7 @@ class TestInASession:
         # Between trials settle_rewards has emptied the queue, so the pause
         # menu's reward goes straight to the valve, through the same worker.
         device = ScriptedReward()
+        choices = iter(["manual_reward", "resume"])
         harness = session(
             tmp_path,
             device,
@@ -1203,11 +1204,10 @@ class TestInASession:
             phases=lambda: [RequestRewardOnFrames(2, COMPLETED, on_frames=(0,))],
             # Trial 1 runs its three frames; the pause lands on trial 2's first.
             commands=ScriptedCommands([[], [], [], [Command.PAUSE]]),
+            # The pause menu holds the engine's hook, as build_session wires it.
+            pause_menu_reward=True,
+            on_pause=lambda menu: next(choices),
         )
-        # The pause menu holds the engine's hook, as build_session wires it.
-        harness.runner._manual_reward = harness.engine._on_manual_reward
-        choices = iter(["manual_reward", "resume"])
-        harness.runner._on_pause = lambda menu: next(choices)
         harness.runner.run()
 
         # Trial 1's drop, the pause menu's reward, then the re-served trial's
@@ -1229,8 +1229,9 @@ class TestInASession:
     def test_a_failed_drop_takes_the_pause_flow_after_the_trial(self, tmp_path):
         paused: list = []
         device = ScriptedReward(fail=[1])
-        harness = session(tmp_path, device, n_trials=2)
-        harness.runner._on_pause = lambda menu: paused.append(menu) or "resume"
+        harness = session(
+            tmp_path, device, n_trials=2, on_pause=lambda menu: paused.append(menu) or "resume"
+        )
         harness.runner.run()
 
         # Recorded first — the measurement survives — then handed to a human.
@@ -1418,8 +1419,10 @@ class TestBuild:
         simulated = runner._reward.dispenser
         runner.run()
         assert len(simulated.deliveries) == 1
-        rows = runner._recorder.trials
-        assert rows[0]["n_mid_trial_rewards"] == 1
+        # What the run wrote, read back from its trials table.
+        with next(tmp_path.rglob("*_trials.csv")).open() as f:
+            rows = list(csv.DictReader(f))
+        assert rows[0]["n_mid_trial_rewards"] == "1"
 
     def test_a_build_that_fails_after_the_worker_started_stops_it(self, tmp_path):
         # The worker is a thread; a build that fails after starting it must
@@ -1618,4 +1621,8 @@ class TestRehearsalModes:
             headless=True,
         )
         built.runner.run()
-        assert built.runner._recorder.trials[0]["n_mid_trial_rewards"] == 1
+        # What the run wrote, read back from its trials table (a rehearsal
+        # writes under the mode's own data root).
+        with next(built.data_root.rglob("*_trials.csv")).open() as f:
+            rows = list(csv.DictReader(f))
+        assert rows[0]["n_mid_trial_rewards"] == "1"

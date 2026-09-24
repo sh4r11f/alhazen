@@ -13,10 +13,11 @@ import pytest
 from alhazen.config.models import RewardPulses
 from alhazen.core.commands import DEFAULT_KEYMAP, Command, KeyboardCommands, NullCommands
 from alhazen.session.runner import pause_menu
+from alhazen.task.plan import TrialPlan
 from alhazen.task.reward_policy import RewardPolicy
 from alhazen.testing import ScriptedCommands
 from alhazen.training import Curriculum, Stage, StageCriteria, TrainingState, TrainingSupervisor
-from support import SessionHarness
+from support import COMPLETED, RunForFrames, SessionHarness
 
 
 class RecordingGetter:
@@ -216,15 +217,34 @@ class TestStageCommandsMoveTheSubject:
         """The demote path had no coverage anywhere: neither key can fire on
         a real rig today, so nothing noticed."""
         supervisor = self.supervisor(tmp_path)
-        harness = SessionHarness(tmp_path, n_trials=1)
-        harness.runner._training = supervisor
+        # Through a session, as an experimenter presses them: PROMOTE during
+        # trial 1 and DEMOTE during trial 2, each applied between trials.
+        # Each trial is RunForFrames(2) — three polls — so the fourth poll is
+        # trial 2's first frame.
+        commands = ScriptedCommands([[Command.PROMOTE_STAGE], [], [], [Command.DEMOTE_STAGE]])
+        stage_at_build: list[str] = []
+        hold_ms_at_build: list[float] = []
 
-        harness.runner.on_session_command(Command.PROMOTE_STAGE)
-        harness.runner._apply_stage_transition()
-        assert supervisor.stage.name == "real"
+        def build(setup):
+            # The stage each trial is built at, and the task's parameters
+            # then: what the transition before it left the subject on.
+            # (Teardown hands the task back at its base parameters, so the
+            # stage's own have to be read while the session runs.)
+            stage_at_build.append(supervisor.stage.name)
+            hold_ms_at_build.append(supervisor._task.params.hold_ms)
+            return TrialPlan(phases=[RunForFrames(2, COMPLETED)])
 
-        harness.runner.on_session_command(Command.DEMOTE_STAGE)
-        harness.runner._apply_stage_transition()
+        harness = SessionHarness(
+            tmp_path, n_trials=3, commands=commands, build_trial=build, training=supervisor
+        )
+        harness.runner.run()
+
+        # Promoted after trial 1: trial 2 ran at "real".
+        assert stage_at_build[1] == "real"
+        # Demoted after trial 2: trial 3, and the session's end, back at "easy".
+        assert stage_at_build[2] == "easy"
         assert supervisor.stage.name == "easy"
+        changes = [e.payload for e in harness.collector.events if e.name == "STAGE_CHANGED"]
+        assert [(c["from"], c["to"]) for c in changes] == [("easy", "real"), ("real", "easy")]
         # Demotion restores the stage's own parameters, not the harder ones.
-        assert supervisor._task.params.hold_ms == 100.0
+        assert hold_ms_at_build[2] == 100.0

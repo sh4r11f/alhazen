@@ -11,6 +11,7 @@ from typing import Any
 import numpy as np
 
 from alhazen.config.models import (
+    DEFAULT_MAX_CONSECUTIVE_DROPOUTS,
     DisplayConfig,
     EyeTrackerConfig,
     FrameQAConfig,
@@ -246,7 +247,34 @@ class SessionHarness:
         use_pause_menu: bool = False,
         dashboard: Any = None,
         mid_trial_reward: bool = False,
+        # The seams below are SessionRunner's own constructor parameters,
+        # passed straight through. A test states what it needs here instead
+        # of assigning the runner's private attributes after construction,
+        # so the suite keeps testing the runner through the same door
+        # build_session uses, whatever the runner does with them inside.
+        on_pause: Callable | None = None,
+        eyetracker: Any = None,
+        training: Any = None,
+        instructions: str | None = None,
+        await_start: Callable[[], bool] | None = None,
+        database: Any = None,
+        manual_reward: Callable[[], None] | None = None,
+        manual_reward_payload: dict[str, Any] | None = None,
+        pause_menu_reward: bool = False,
+        max_consecutive_failures: int | None = None,
+        max_consecutive_dropouts: int | None = DEFAULT_MAX_CONSECUTIVE_DROPOUTS,
+        rest_resume_after_s: float | None = None,
+        frame_qa: FrameQAConfig | None = None,
     ) -> None:
+        """``on_pause`` is the pause strategy, and wins over ``use_pause_menu``.
+        ``eyetracker`` replaces the monitor the harness builds from ``tracker``
+        (a stub standing in for EyeTrackerMonitor). ``pause_menu_reward``
+        hands the pause menu the engine's own manual-reward hook, as
+        build_session wires it; ``manual_reward`` hands it a hook of the
+        test's own instead. ``frame_qa`` configures the one FrameMonitor the
+        engine and the runner share (the default config otherwise)."""
+        if pause_menu_reward and manual_reward is not None:
+            raise ValueError("pass pause_menu_reward or manual_reward, not both")
         from alhazen.data.paths import SessionPaths
         from alhazen.devices.reward import QueuedReward
         from alhazen.paradigms.base import Condition, SimpleSequence
@@ -287,14 +315,21 @@ class SessionHarness:
         self.bus.subscribe(self.collector)
         self.schema = EventSchema(declared_events)
         self.commands = commands or ScriptedCommands()
-        self.frame_monitor = FrameMonitor(FrameQAConfig(), 1 / FRAME_S)
+        # One monitor, handed to both the engine and the runner, as the
+        # builder does: the engine marks the trials, the runner reads its
+        # verdicts (the failure streak's display heading) and saves it.
+        self.frame_monitor = FrameMonitor(
+            frame_qa if frame_qa is not None else FrameQAConfig(), 1 / FRAME_S
+        )
         # The session's eye-tracker monitor, built the way the builder builds
         # it: it owns the drift correction the input provider applies and the
         # procedures the pause menu's C/V/D keys run. Validation after a
         # calibration is off so a test that presses C gets one calibration,
         # not a calibration plus a validation walk.
-        self.eyetracker = (
-            EyeTrackerMonitor(
+        # A test's own stand-in monitor, when it passes one, replaces it.
+        self.eyetracker = eyetracker
+        if self.eyetracker is None and tracker is not None:
+            self.eyetracker = EyeTrackerMonitor(
                 tracker,
                 self.display,
                 SCREEN,
@@ -302,14 +337,12 @@ class SessionHarness:
                 EyeTrackerConfig(backend="scripted", validate_after_calibration=False),
                 poll_keys=self.commands.poll_raw_keys,
             )
-            if tracker is not None
-            else None
-        )
         # The same closures build_session derives from a tracker and a
         # reward device — reused rather than re-implemented, so there stays
         # exactly one gaze coordinate conversion in the codebase, and one
         # routing of the manual reward (ahead of the queue through a
         # QueuedReward, straight to the device otherwise).
+        manual_hook = make_manual_reward(session_reward, RewardPulses())
         self.engine = TrialEngine(
             display=self.display,
             clock=self.clock,
@@ -323,8 +356,13 @@ class SessionHarness:
                 else None
             ),
             health_checks=((make_tracker_health_check(tracker),) if tracker is not None else ()),
-            on_manual_reward=make_manual_reward(session_reward, RewardPulses()),
+            on_manual_reward=manual_hook,
             overlay=overlay,
+            # Commands the engine has no opinion about (the training stage
+            # keys) reach the runner, as build_session wires them. A closure
+            # over self.runner, which is built below: the engine calls it
+            # only while the runner is running.
+            on_session_command=lambda command: self.runner.on_session_command(command),
             reward_requests=self.queued_reward,
         )
         self.source = source or SimpleSequence(
@@ -332,6 +370,21 @@ class SessionHarness:
             n_repeats=n_trials,
             rng=np.random.default_rng(0),
         )
+
+        def pause_menu(menu):
+            """The builder's own pause strategy, wired the same way: it is the
+            only path that exercises poll_raw_keys end to end."""
+            return run_pause_menu(
+                menu,
+                lambda m: self.display.show_menu(m.title, m.render(), color=m.color),
+                self.commands.poll_raw_keys,
+                lambda s: self.clock.advance(s),
+            )
+
+        # A test's own on_pause wins; use_pause_menu asks for the builder's;
+        # neither is an unattended run, which resumes every pause at once.
+        if on_pause is None and use_pause_menu:
+            on_pause = pause_menu
 
         def default_build_trial(setup):
             return TrialPlan(phases=[RunForFrames(2, COMPLETED, emit_on_enter="FIX_ON")])
@@ -354,24 +407,22 @@ class SessionHarness:
             iti_s=0.0,
             score=score,
             wait=lambda s: self.clock.advance(s),
-            # The builder's own pause strategy, wired the same way: it is the
-            # only path that exercises poll_raw_keys end to end.
-            on_pause=(
-                (
-                    lambda menu: run_pause_menu(
-                        menu,
-                        lambda m: self.display.show_menu(m.title, m.render(), color=m.color),
-                        self.commands.poll_raw_keys,
-                        lambda s: self.clock.advance(s),
-                    )
-                )
-                if use_pause_menu
-                else None
-            ),
+            on_pause=on_pause,
             tracker=tracker,
             reward=session_reward,
             sync=sync,
             reward_policy=reward_policy,
             eyetracker=self.eyetracker,
             dashboard=dashboard,
+            training=training,
+            instructions=instructions,
+            await_start=await_start,
+            database=database,
+            # The pause menu's reward: the engine's own hook (one routing, as
+            # build_session wires it), or the test's, or none at all.
+            manual_reward=manual_hook if pause_menu_reward else manual_reward,
+            manual_reward_payload=manual_reward_payload,
+            max_consecutive_failures=max_consecutive_failures,
+            max_consecutive_dropouts=max_consecutive_dropouts,
+            rest_resume_after_s=rest_resume_after_s,
         )

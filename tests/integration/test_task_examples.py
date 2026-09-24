@@ -65,7 +65,9 @@ class TestSceneStimulusExample:
     suite runs it. Loading a scene proves the JSON parses — this proves the
     frames come out, which is where the renderer's bugs live."""
 
-    def run_session(self, tmp_path, **overrides):
+    def run_session(self, tmp_path, wrap_build_trial=None, **overrides):
+        """Build the example's session. ``wrap_build_trial``, given the task's
+        own build_trial, returns the one the session is built with."""
         from alhazen.core.clock import MonotonicClock
         from alhazen.devices.eyetracker import GazeSample, ScriptedTracker
 
@@ -79,12 +81,17 @@ class TestSceneStimulusExample:
         # is never acquired, the trial's FIX_BREAK outcome is incomplete, the
         # scheduler re-queues it, and the session never ends.
         centre = GazeSample(gx=MONITOR.width_px / 2, gy=MONITOR.height_px / 2, t=0.0)
+        task = task_module.SceneTask(params)
         runner = build_session(
             rig=sim_rig(tmp_path),
             subject="demo",
             session=1,
             run=1,
-            task=task_module.SceneTask(params),
+            task=task,
+            # build_session prefers an explicit build_trial over the task's.
+            build_trial=(
+                wrap_build_trial(task.build_trial) if wrap_build_trial is not None else None
+            ),
             tracker=ScriptedTracker([(0.0, centre)], MonotonicClock()),
             seed=1,
             simulated_frame_period_s=0.0,
@@ -105,19 +112,19 @@ class TestSceneStimulusExample:
         other assertion here."""
         from alhazen.scenes import SceneStimulus
 
-        _module, runner = self.run_session(tmp_path)
         drawn: list[SceneStimulus] = []
-        # Wrapped on the runner rather than on the class: the runner already
-        # holds the task's bound method, so patching the class afterwards
-        # would change nothing.
-        build = runner._build_trial
 
-        def capture(setup):
-            plan = build(setup)
-            drawn.append(plan.stimuli["scene"])
-            return plan
+        # The task's own build_trial, wrapped and handed to build_session:
+        # every trial the session builds passes through it.
+        def capturing(build):
+            def capture(setup):
+                plan = build(setup)
+                drawn.append(plan.stimuli["scene"])
+                return plan
 
-        runner._build_trial = capture
+            return capture
+
+        _module, runner = self.run_session(tmp_path, wrap_build_trial=capturing)
         runner.run()
 
         assert drawn, "no trial was built"

@@ -231,8 +231,11 @@ class TestBuildSessionFromATask:
         )
         runner.run()
         # One trial (the default paradigm), one delivery, from the task's
-        # own table — nothing in the session wiring names an outcome.
-        assert len(runner._reward.deliveries) == 1
+        # own table — nothing in the session wiring names an outcome. A
+        # REWARD is written only once the device has delivered.
+        with next(tmp_path.rglob("*_events.csv")).open() as f:
+            rewards = [row for row in csv.DictReader(f) if row["event"] == "REWARD"]
+        assert len(rewards) == 1
 
     def test_explicit_arguments_still_win(self, tmp_path):
         # A test (or a training harness) overriding one piece of a real task

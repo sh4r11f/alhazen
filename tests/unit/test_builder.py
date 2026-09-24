@@ -3,6 +3,9 @@ experiment's own event vocabulary."""
 
 from __future__ import annotations
 
+import csv
+import re
+
 import pytest
 
 from alhazen import CircleRegion, Model
@@ -187,10 +190,13 @@ class TestDeviceSelection:
             ),
         )
         runner.run()
-        # The device objects are the runner's own; reading them is how a test
-        # sees what a simulated rig "did" without a DAQ attached.
+        # The sync device is the runner's own; reading it is how a test sees
+        # what a simulated rig "did" without a DAQ attached.
         assert runner._sync.pulses == ["Dev1/port0/line0"]
-        assert runner._reward.deliveries == []  # no outcome pays out in this phase
+        # No outcome pays out in this phase: events.csv records no REWARD,
+        # which is written only once the device has delivered.
+        with next(tmp_path.rglob("*_events.csv")).open() as f:
+            assert [row for row in csv.DictReader(f) if row["event"] == "REWARD"] == []
 
 
 class TestSyncDisabledButStillMapped:
@@ -255,23 +261,47 @@ class TestDeviceOverrides:
             build_trial=lambda setup: TrialPlan(phases=[RunForFrames(3, COMPLETED)]),
         )
         runner.run()
-        first, second = runner._recorder.trials
+        # What the run wrote, read back from its trials table.
+        with next(tmp_path.rglob("*_trials.csv")).open() as f:
+            first, second = csv.DictReader(f)
         assert (first["outcome"], first["fault"]) == ("ABORTED", "tracker_stopped")
         assert first["fault_detail"] == "no new sample for 60 ms"
         assert (second["outcome"], second["fault"]) == ("COMPLETED", "none")
 
-    def test_the_rig_says_how_many_dropouts_in_a_row_pause_the_session(self, tmp_path):
+    @staticmethod
+    def dropout_pauses(tmp_path, **kwargs) -> list[int]:
+        """Run a built session whose tracker drops out on its first five
+        trials, and return the length of each run of dropouts the session
+        paused on, as its log reports them. Unattended, so each pause resumes
+        at once; the count restarts after each."""
+
+        class DropsOutFiveTimes(ScriptedTracker):
+            def recording_fault(self) -> str | None:
+                return "no new sample for 60 ms" if len(self.trials_started) <= 5 else None
+
         runner = build(
             tmp_path,
             EventSchema(()),
-            tracker=ScriptedTracker([], FakeClock()),
+            tracker=DropsOutFiveTimes([], FakeClock()),
+            build_trial=lambda setup: TrialPlan(phases=[RunForFrames(3, COMPLETED)]),
+            **kwargs,
+        )
+        runner.run()
+        log = next(tmp_path.rglob("session.log")).read_text(encoding="utf-8")
+        return [int(n) for n in re.findall(r"on (\d+) trials in a row", log)]
+
+    def test_the_rig_says_how_many_dropouts_in_a_row_pause_the_session(self, tmp_path):
+        pauses = self.dropout_pauses(
+            tmp_path,
             rig_eyetracker=EyeTrackerConfig(backend="eyelink", max_consecutive_dropouts=5),
         )
-        assert runner._max_consecutive_dropouts == 5
+        assert pauses == [5]
 
     def test_a_rig_with_no_tracker_config_pauses_at_the_default(self, tmp_path):
-        runner = build(tmp_path, EventSchema(()), tracker=ScriptedTracker([], FakeClock()))
-        assert runner._max_consecutive_dropouts == DEFAULT_MAX_CONSECUTIVE_DROPOUTS
+        pauses = self.dropout_pauses(tmp_path)
+        # Five dropouts hold one full run at the default of three.
+        assert DEFAULT_MAX_CONSECUTIVE_DROPOUTS == 3
+        assert pauses == [DEFAULT_MAX_CONSECUTIVE_DROPOUTS]
 
     def test_a_handed_in_tracker_gets_the_session_monitor(self, tmp_path):
         # The monitor is what the pause menu's C/V/D and the dashboard's

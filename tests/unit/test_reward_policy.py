@@ -155,8 +155,8 @@ class TestDeliveryFailure:
             reward=reward,
             reward_policy=RewardPolicy(by_outcome={"COMPLETED": PAID}),
             build_trial=lambda setup: TrialPlan(phases=[RunForFrames(1, COMPLETED)]),
+            on_pause=on_pause,
         )
-        harness.runner._on_pause = on_pause
         harness.runner.run()
         assert len(paused) == 1
         # The pause screen leads with the fault, not with the word PAUSED: a
@@ -174,8 +174,8 @@ class TestDeliveryFailure:
             reward=reward,
             reward_policy=RewardPolicy(by_outcome={"COMPLETED": PAID}),
             build_trial=lambda setup: TrialPlan(phases=[RunForFrames(1, COMPLETED)]),
+            on_pause=lambda menu: "quit",
         )
-        harness.runner._on_pause = lambda menu: "quit"
         harness.runner.run()
         with harness.paths.trials_path.open() as f:
             assert len(list(csv.DictReader(f))) == 1
@@ -312,7 +312,6 @@ class TestARecycledTrialIsPaidForTheResponse:
         so what the subject is shown is exactly what their response was.
         """
         from alhazen.config.models import FrameQAConfig
-        from alhazen.display.frames import FrameMonitor
         from alhazen.stimuli.base import NullStimulus
         from alhazen.task.phases import TrialFeedback
         from support import FRAME_S
@@ -346,17 +345,12 @@ class TestARecycledTrialIsPaidForTheResponse:
             build_trial=build,
             reward=reward if reward is not None else SimulatedReward(),
             reward_policy=RewardPolicy(by_outcome={"CORRECT": PAID}),
-        )
-        box["harness"] = harness
-        monitor = FrameMonitor(
-            FrameQAConfig(
+            frame_qa=FrameQAConfig(
                 policy="recycle_trial", max_dropped_fraction=0.10, max_consecutive_recycles=50
             ),
-            1 / FRAME_S,
+            on_pause=lambda menu: "resume",
         )
-        harness.engine._frame_monitor = monitor
-        harness.runner._frame_monitor = monitor
-        harness.runner._on_pause = lambda menu: "resume"
+        box["harness"] = harness
         harness.runner.run()
         return harness
 

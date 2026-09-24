@@ -415,9 +415,9 @@ class TestRunnerIntegration:
             n_trials=4,
             build_trial=lambda setup: TrialPlan(phases=[RunForFrames(1, COMPLETED)]),
             declared_events=("FIX_ON",),
+            training=supervisor,
             **kwargs,
         )
-        harness.runner._training = supervisor
         return harness, supervisor
 
     def read_trials(self, harness):
@@ -504,8 +504,8 @@ class TestRewardFollowsTheStage:
             build_trial=lambda setup: TrialPlan(phases=[RunForFrames(1, COMPLETED)]),
             reward=device,
             reward_policy=task.reward,
+            training=supervisor,
         )
-        harness.runner._training = supervisor
 
         harness.runner.run()
 
@@ -532,8 +532,8 @@ class TestRewardFollowsTheStage:
             build_trial=lambda setup: TrialPlan(phases=[RunForFrames(1, COMPLETED)]),
             reward=device,
             reward_policy=task.reward,
+            training=supervisor,
         )
-        harness.runner._training = supervisor
 
         harness.runner.run()
 
@@ -577,7 +577,9 @@ class TestSnapshotRecordsTheStageParams:
         )
         runner.run()
 
-        snapshot = yaml.safe_load(runner._paths.snapshot_path.read_text())
+        # The run's snapshot, found where the run wrote it.
+        (snapshot_path,) = tmp_path.rglob("*config_snapshot.yaml")
+        snapshot = yaml.safe_load(snapshot_path.read_text())
         assert snapshot["config"]["task_params"]["hold_ms"] == 120.0
 
 
@@ -609,8 +611,8 @@ class TestCriteriaSeeTheScoredRecord:
             n_trials=2,
             build_trial=lambda setup: TrialPlan(phases=[RunForFrames(1, COMPLETED)]),
             score=lambda record: {**record, "rt_ms": 321.0},
+            training=supervisor,
         )
-        harness.runner._training = supervisor
 
         harness.runner.run()
 
@@ -696,8 +698,8 @@ class TestStopWhenComplete:
             tmp_path,
             n_trials=6,
             build_trial=lambda setup: TrialPlan(phases=[RunForFrames(1, COMPLETED)]),
+            training=self.supervisor(tmp_path, stop=True),
         )
-        harness.runner._training = self.supervisor(tmp_path, stop=True)
 
         harness.runner.run()
 
@@ -711,8 +713,8 @@ class TestStopWhenComplete:
             tmp_path,
             n_trials=6,
             build_trial=lambda setup: TrialPlan(phases=[RunForFrames(1, COMPLETED)]),
+            training=self.supervisor(tmp_path, stop=False),
         )
-        harness.runner._training = self.supervisor(tmp_path, stop=False)
 
         harness.runner.run()
 

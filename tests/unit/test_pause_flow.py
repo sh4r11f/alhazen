@@ -23,6 +23,19 @@ def read_trials(harness):
         return list(csv.DictReader(f))
 
 
+def two_blocks():
+    """Two blocks of one trial each: the session takes one block break."""
+    import numpy as np
+
+    from alhazen.paradigms.base import Condition, SimpleSequence
+    from alhazen.paradigms.blocks import BlockPlan
+
+    def block():
+        return SimpleSequence([Condition({"condition": "a"})], rng=np.random.default_rng(0))
+
+    return BlockPlan([block(), block()], trials_per_block=1)
+
+
 class TimedKeys(ScriptedCommands):
     """Raw keys pressed at simulated times rather than at polls.
 
@@ -242,14 +255,39 @@ class TestAValidationThatDidNotPassIsAWarning:
         )
 
     def headings(self, tmp_path, errors):
-        harness = SessionHarness(tmp_path, n_trials=1)
-        runner = harness.runner
+        """What the pause screen leads with once this validation has run
+        from the pause menu, as (warning, fault): the heading when it is in
+        the warning colour, and when it is in the fault colour, else None.
+
+        Driven through a session: a pause on trial 1, V on its menu, then
+        SPACE on the menu the validation leaves up.
+        """
+        from alhazen.session.pause import FAULT_COLOR, WARNING_COLOR
+
         monitor = TestAProcedureThatSucceedsTakesTheHeadingBackDown.StubMonitor(
             [self.validation(errors)]
         )
-        monitor.validate()
-        runner._eyetracker = monitor
-        return runner._procedure_warning("validate"), runner._procedure_fault("validate")
+        actions = iter(["validate", "resume"])
+        menus = []
+
+        def on_pause(menu):
+            menus.append(menu)
+            return next(actions)
+
+        harness = SessionHarness(
+            tmp_path,
+            n_trials=1,
+            commands=ScriptedCommands([[Command.PAUSE]]),
+            eyetracker=monitor,
+            on_pause=on_pause,
+        )
+        harness.runner.run()
+
+        assert monitor.validation is not None, "the validation never ran"
+        after = menus[1]  # the menu the validation left up
+        warning = after.title if after.color == WARNING_COLOR else None
+        fault = after.title if after.color == FAULT_COLOR else None
+        return warning, fault
 
     def test_over_the_limit(self, tmp_path):
         warning, fault = self.headings(tmp_path, (0.4, 1.3))
@@ -356,11 +394,6 @@ class TestAProcedureThatSucceedsTakesTheHeadingBackDown:
             return self.validation
 
     def test_the_pauses_own_heading_comes_back(self, tmp_path):
-        harness = SessionHarness(tmp_path, n_trials=1)
-        runner = harness.runner
-        runner._eyetracker = self.StubMonitor(
-            [self.validation(2.3, t=1.0), self.validation(0.4, t=2.0)]
-        )
         actions = iter(["validate", "validate", "resume"])
         seen: list[str] = []
 
@@ -368,9 +401,18 @@ class TestAProcedureThatSucceedsTakesTheHeadingBackDown:
             seen.append(menu.title)
             return next(actions)
 
-        runner._on_pause = on_pause
+        # The rest is a session's break between two blocks.
+        harness = SessionHarness(
+            tmp_path,
+            source=two_blocks(),
+            eyetracker=self.StubMonitor([self.validation(2.3, t=1.0), self.validation(0.4, t=2.0)]),
+            on_pause=on_pause,
+        )
+        harness.runner.run()
 
-        assert runner._handle_pause({}, rest="BLOCK 1 OF 2 COMPLETE — REST")
+        # The break resumed, and the session went on to the second block.
+        assert "RESUMED" in harness.collector.names()
+        assert len(read_trials(harness)) == 2
 
         # First the break's own heading; then the failure; then the break's
         # heading again, because the second validation passed.
@@ -525,8 +567,9 @@ class TestASimulationsBreakResumesByItself:
         return resumed.t - paused.t
 
     def test_nobody_pressing_anything_resumes_after_the_wait(self, tmp_path):
-        harness = SessionHarness(tmp_path, use_pause_menu=True, source=self.two_blocks())
-        harness.runner._rest_resume_after_s = 10.0
+        harness = SessionHarness(
+            tmp_path, use_pause_menu=True, source=self.two_blocks(), rest_resume_after_s=10.0
+        )
 
         harness.runner.run()
 
@@ -541,9 +584,12 @@ class TestASimulationsBreakResumesByItself:
     def test_a_key_pressed_before_the_wait_is_over_is_obeyed(self, tmp_path):
         commands = ScriptedCommands(batches=[], raw_keys=[[], ["space"]])
         harness = SessionHarness(
-            tmp_path, commands=commands, use_pause_menu=True, source=self.two_blocks()
+            tmp_path,
+            commands=commands,
+            use_pause_menu=True,
+            source=self.two_blocks(),
+            rest_resume_after_s=10.0,
         )
-        harness.runner._rest_resume_after_s = 10.0
 
         harness.runner.run()
 
@@ -575,43 +621,65 @@ class TestASimulationsBreakResumesByItself:
                 )
                 return self.validation
 
-        harness = SessionHarness(tmp_path, n_trials=1)
-        runner = harness.runner
-        runner._eyetracker = StubMonitor()
-        runner._rest_resume_after_s = 10.0
-        runner._commands = ScriptedCommands(batches=[], raw_keys=[["v"]])
         seen = []
 
         def on_pause(menu):
             seen.append(menu.subtitle)
             return "resume"
 
-        runner._on_pause = on_pause
+        # V is the first key the break's clock reads: nothing polls the raw
+        # keys during a trial.
+        monitor = StubMonitor()
+        harness = SessionHarness(
+            tmp_path,
+            commands=ScriptedCommands(batches=[], raw_keys=[["v"]]),
+            source=self.two_blocks(),
+            eyetracker=monitor,
+            rest_resume_after_s=10.0,
+            on_pause=on_pause,
+        )
+        harness.runner.run()
 
-        assert runner._handle_pause({}, rest=self.REST)
-        assert runner._eyetracker.validation is not None, "the key was not obeyed"
+        # The break resumed, and the session went on to the second block.
+        assert "RESUMED" in harness.collector.names()
+        assert len(read_trials(harness)) == 2
+        assert monitor.validation is not None, "the key was not obeyed"
         assert len(seen) == 1, "the attended loop never took over from the clock"
         assert "resumes by itself" not in seen[0]
 
     def test_a_fault_never_resumes_by_itself(self, tmp_path):
-        harness = SessionHarness(tmp_path, n_trials=1)
-        runner = harness.runner
-        runner._rest_resume_after_s = 10.0
+        from alhazen.config.models import RewardPulses
+        from alhazen.task.reward_policy import RewardPolicy
+        from alhazen.testing import ScriptedReward
+
         titles = []
-        runner._on_pause = lambda menu: (titles.append(menu.title), "resume")[1]
-        started = harness.clock.now()
+        # The pump fails the one trial's pay: a fault pause, in a session
+        # whose rests would resume by themselves after 10 s.
+        harness = SessionHarness(
+            tmp_path,
+            n_trials=1,
+            reward=ScriptedReward(fail=[1]),
+            reward_policy=RewardPolicy(by_outcome={"COMPLETED": RewardPulses()}),
+            rest_resume_after_s=10.0,
+            on_pause=lambda menu: (titles.append(menu.title), "resume")[1],
+        )
+        harness.runner.run()
 
-        assert runner._handle_pause({}, fault="REWARD FAILURE — check the pump")
-
+        (failed,) = [e for e in harness.collector.events if e.name == "REWARD_FAILED"]
+        (resumed,) = [e for e in harness.collector.events if e.name == "RESUMED"]
         assert titles == ["REWARD FAILURE — check the pump"]
-        assert harness.clock.now() - started < 1.0
+        # Resumed by the person's SPACE at once, not by a 10 s clock.
+        assert resumed.t - failed.t < 1.0
 
     def test_with_the_dashboard_on_the_break_still_resumes_by_itself(self, tmp_path):
         dashboard = FakeDashboard(poll_budget=5000)
         harness = SessionHarness(
-            tmp_path, use_pause_menu=True, source=self.two_blocks(), dashboard=dashboard
+            tmp_path,
+            use_pause_menu=True,
+            source=self.two_blocks(),
+            dashboard=dashboard,
+            rest_resume_after_s=10.0,
         )
-        harness.runner._rest_resume_after_s = 10.0
 
         harness.runner.run()
 
@@ -622,8 +690,7 @@ class TestASimulationsBreakResumesByItself:
     def test_with_no_keyboard_wired_it_still_resumes_at_once(self, tmp_path):
         """Unattended runs already resumed immediately, since nobody can act.
         The wait is only for a run someone could be watching."""
-        harness = SessionHarness(tmp_path, source=self.two_blocks())
-        harness.runner._rest_resume_after_s = 10.0
+        harness = SessionHarness(tmp_path, source=self.two_blocks(), rest_resume_after_s=10.0)
 
         harness.runner.run()
 
