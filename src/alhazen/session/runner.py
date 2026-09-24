@@ -792,13 +792,18 @@ class SessionRunner:
         session, is the rig to fix before the next one.
         """
         cause = _FAULT_CAUSES.get(fault, f"a device health check failed ({fault})")
+        # What the device said about it, when it said anything — the row's
+        # fault_detail — so the lab can tell a pulled cable from a Host PC
+        # abort from this line alone.
+        detail = result.record.get("fault_detail")
         log.warning(
-            "trial %d attempt %d: %s — a system fault, not the subject's. %s. Flagged "
+            "trial %d attempt %d: %s%s — a system fault, not the subject's. %s. Flagged "
             "fault=%s; the condition will be served again, and the trial is not counted "
             "against the subject.",
             self._trial_index,
             attempt,
             cause,
+            f" ({detail})" if detail else "",
             self._describe_fault_pay(result, fault, pay_failed),
             fault,
         )

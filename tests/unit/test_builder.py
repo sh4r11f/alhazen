@@ -334,7 +334,12 @@ class TestGazeInputProvider:
     def test_health_check_reports_a_stopped_tracker(self):
         tracker = ScriptedTracker([], FakeClock())
         check = make_tracker_health_check(tracker)
-        assert check() == "tracker_stopped"
+        failed = check()
+        assert failed is not None
+        # The reason is the fault vocabulary; the detail says which question
+        # failed, for the row's fault_detail and the log.
+        assert failed.reason == "tracker_stopped"
+        assert failed.detail is not None and "is_recording() is False" in failed.detail
         tracker.start_trial(1, "attempt 1")
         assert check() is None
 

@@ -61,6 +61,20 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   before the fault stays delivered and counted, and the line says how many.
   The experimenter's skip and a pause are never paid `on_fault`. See "System
   faults" in [docs/architecture.md](docs/architecture.md) §5.3.
+- **A failed health check says what the device said, and the row keeps it
+  in a new `fault_detail` column.** A device health check may now return
+  **`HealthFault(reason, detail)`** (`alhazen.core`) rather than a bare
+  reason: `TrialEngine` writes the reason as `fault` (and `abort_reason`) as
+  before, and the detail — the device's own account, in words — as
+  `fault_detail`, right after `fault` in the trials table. The fault's
+  WARNING line in `session.log`, and the engine's line for a stop during the
+  closing phase, carry the same words. It is only on a row whose fault a
+  health check reported with a detail: a dropped-frames row keeps its account
+  in `frame_qa_reason`, and when frame QA recycles a trial whose closing
+  phase flagged a tracker stop, the detail leaves with the flag. Free text
+  for a person; select on `fault`. A check that returns a bare reason string
+  still works. The trial-column baseline in `tests/fixtures/contracts.json`
+  gains `fault_detail`; nothing was removed or renamed.
 
 ### Changed
 
@@ -78,6 +92,10 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 - **`by_outcome` is not consulted for a tracker-stopped trial.** Its
   `ABORTED` is the rig's, so it pays `on_fault` or nothing; an `ABORTED`
   entry in `by_outcome` now pays the experimenter's skip only.
+- **`session.builder.make_tracker_health_check` returns a `HealthFault`**
+  (reason `tracker_stopped`, and a detail) rather than the bare string
+  `"tracker_stopped"`. Code comparing its result with that string should
+  read `.reason`.
 
 ### Fixed
 

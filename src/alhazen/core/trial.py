@@ -87,6 +87,28 @@ FAULT_DROPPED_FRAMES = "dropped_frames"
 FAULT_TRACKER_STOPPED = "tracker_stopped"
 
 
+@dataclass(frozen=True)
+class HealthFault:
+    """What a device health check reports when it fails.
+
+    Two fields for two readers. ``reason`` is the fault itself, from a fixed
+    vocabulary — ``FAULT_TRACKER_STOPPED`` for the eye tracker — and is what
+    the row's ``fault`` (and, when the trial is aborted, ``abort_reason``)
+    says: the value an analysis selects on. ``detail`` is the device's own
+    account in words — which signal fired, how long the samples had been
+    stale, what the device answered when asked — and goes to the row's
+    ``fault_detail`` and to the session log, for the person telling a pulled
+    cable from a Host PC abort. Free text, never a value to select on: the
+    wording is the backend's and may change.
+
+    A health check may still return a bare reason string instead; the engine
+    reads that as a HealthFault with nothing more said (core/engine.py).
+    """
+
+    reason: str
+    detail: str | None = None
+
+
 def lost_to_fault(outcome_name: str, record: Mapping[str, Any]) -> str | None:
     """The system fault that cost a trial its measurement, or None.
 
@@ -140,7 +162,8 @@ def lost_to_fault(outcome_name: str, record: Mapping[str, Any]) -> str | None:
 # Not every column is on every row: `abort_reason` only on an abort,
 # `rewarded` only where a pump is wired and a delivery was attempted, the two
 # `n_mid_trial_*` counts only for a task that declares mid-trial reward, the
-# two frame-QA columns only on a recycled trial, `success` only where the
+# two frame-QA columns only on a recycled trial, `fault_detail` only where a
+# health check said what failed, `success` only where the
 # outcome defines one. `fault` IS on every row. Every emitted event also
 # mirrors its time as `t_<event name lowercased>`, which is a pattern rather
 # than a fixed name and so is not listed.
@@ -176,6 +199,13 @@ TRIAL_RECORD_COLUMNS: tuple[str, ...] = (
     # column that says a trial failed, or was flagged, because the rig did;
     # whether that cost the trial its measurement is `lost_to_fault`.
     "fault",
+    # What the failed health check said about the fault `fault` names, in
+    # the device's words (HealthFault.detail): "no new sample from the
+    # EyeLink for 57 ms (limit 50 ms); the Host PC reports recording ended
+    # (isRecording 3, ABORT_EXPT) ...". Only on a row whose fault a health
+    # check reported with a detail — a dropped-frames row carries its account
+    # in `frame_qa_reason` instead. Read by a person, never selected on.
+    "fault_detail",
 )
 
 

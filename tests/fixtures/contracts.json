@@ -55,7 +55,8 @@
     "n_mid_trial_rewards",
     "n_mid_trial_reward_failures",
     "feedback",
-    "fault"
+    "fault",
+    "fault_detail"
   ],
   "schema_versions": {
     "database": 2,

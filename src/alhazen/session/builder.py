@@ -40,7 +40,7 @@ from alhazen.core.commands import CommandSource, KeyboardCommands, NullCommands
 from alhazen.core.engine import TrialEngine
 from alhazen.core.events import EventBus, EventSchema
 from alhazen.core.rng import resolve_seed, spawn_streams
-from alhazen.core.trial import FAULT_TRACKER_STOPPED, InputFrame, TrialContext
+from alhazen.core.trial import FAULT_TRACKER_STOPPED, HealthFault, InputFrame, TrialContext
 from alhazen.dashboard.runtime import DashboardController
 from alhazen.dashboard.spec import DashboardSpec
 from alhazen.data.paths import SessionPaths
@@ -139,18 +139,28 @@ def make_gaze_input_provider(tracker: EyeTracker, screen: Screen) -> Callable[[]
     return provider
 
 
-def make_tracker_health_check(tracker: EyeTracker) -> Callable[[], str | None]:
+def make_tracker_health_check(tracker: EyeTracker) -> Callable[[], HealthFault | None]:
     """Abort a trial the moment the tracker stops recording.
 
     A trial that runs on while its tracker has dropped out produces a record
     that looks like a normal trial but has no eye data behind it — worse than
-    an abort, because nothing in the data says so. The reason string,
+    an abort, because nothing in the data says so. The reason,
     ``FAULT_TRACKER_STOPPED``, lands in the trial record as ``abort_reason``
     and as the row's ``fault``: a tracker that stops is a system fault, not
-    the subject's (core/trial.py). During the trial's closing phase, after
-    the measurement, the engine flags it without aborting.
+    the subject's (core/trial.py). What the tracker said about it lands as
+    ``fault_detail``. During the trial's closing phase, after the
+    measurement, the engine flags it without aborting.
     """
-    return lambda: None if tracker.is_recording() else FAULT_TRACKER_STOPPED
+
+    def check() -> HealthFault | None:
+        if tracker.is_recording():
+            return None
+        return HealthFault(
+            FAULT_TRACKER_STOPPED,
+            "the tracker reports no recording open (is_recording() is False)",
+        )
+
+    return check
 
 
 def validate_event_names(

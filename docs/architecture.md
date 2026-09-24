@@ -84,9 +84,13 @@ command source, and the bus:
 
 1. poll experimenter commands (skip / pause / calibrate / quit / manual reward)
 2. run per-frame health checks (today one: "is the tracker still recording").
-   A failed check is a **system fault** — a device stopped, which is never
-   the subject's doing — and its reason (`tracker_stopped`) is written as the
-   row's `fault` (§2.2). While the trial is still measuring, it also aborts
+   A check returns None, or a `HealthFault`: the reason, and what the device
+   said about it (a bare reason string is still accepted). A failed check is
+   a **system fault** — a device stopped, which is never the subject's doing
+   — and its reason (`tracker_stopped`) is written as the row's `fault`, its
+   words as `fault_detail` (§2.2). A check runs every frame, so it must not
+   make a round trip to its device on the healthy path. While the trial is
+   still measuring, it also aborts
    the trial: the reserved `ABORTED`, with the same reason as
    `abort_reason`, and the condition is served again. During the **closing
    phase** (the one declaring `must_be_last`, e.g. `TrialFeedback`) it
@@ -205,6 +209,14 @@ step 8). Every row names the one that hit its trial in a single column,
 | the display dropped frames, and frame QA recycled it | `DROPPED_FRAMES` | — | `dropped_frames` | yes |
 | the tracker stopped during its closing phase | its own | — | `tracker_stopped` | no |
 | the experimenter skipped it | `ABORTED` | `skipped_by_user` | `none` | no — not a fault |
+
+Beside it, `fault_detail` holds what the failed health check said about the
+fault, in the device's own words (`HealthFault.detail`): which signal fired,
+and what the device answered. It is only on a row whose fault a health check
+reported with a detail; a dropped-frames row carries its own account in
+`frame_qa_reason`, and when frame QA's recycle replaces a closing-phase
+tracker flag, the detail goes with it. Free text, for a person: select on
+`fault`, never on this.
 
 `fault` is on every row, `none` included: a value a reader can select on
 (`trials.fault != "none"`), never an empty cell, for the reason
@@ -681,12 +693,12 @@ engine flags in the row's `fault` (§2.2) — and a trial *lost* to one of them
 | | The display dropped frames | The eye tracker stopped recording |
 |---|---|---|
 | Detected by | frame QA's `recycle_trial`, after the trial ran to its end (§2 step 8) | the tracker health check, while the trial was still measuring (§2 step 2) |
-| Row | `outcome: DROPPED_FRAMES`, the response kept as `outcome_before_frame_qa`, `fault: dropped_frames` | `outcome: ABORTED`, `abort_reason: tracker_stopped`, `fault: tracker_stopped` |
+| Row | `outcome: DROPPED_FRAMES`, the response kept as `outcome_before_frame_qa`, `fault: dropped_frames` | `outcome: ABORTED`, `abort_reason: tracker_stopped`, `fault: tracker_stopped`, and what the tracker said as `fault_detail` |
 | Served again | yes: `completed=False` | yes: `completed=False` |
 | Paid | for the subject's response, as on any trial — `by_outcome` of `outcome_before_frame_qa`, or `NO_REWARD` for a completed response that pays nothing | the task's `RewardPolicy.on_fault`, scaled; nothing when the task sets none. Its REWARD (or REWARD_FAILED) payload carries `fault` beside `outcome: ABORTED` |
 | Failure streak | **ends it** — the subject completed the trial, and ending a streak never counts against anyone | **neither counts nor ends it**, like `PAUSED` |
 | Training criteria | left out of the window | left out of the window |
-| `session.log` | one WARNING: the trial, the cause, what was paid, that it is served again | the same |
+| `session.log` | one WARNING: the trial, the cause, what was paid, that it is served again | the same, with the tracker's words |
 
 The experimenter's skip (`ABORTED`, `skipped_by_user`) and a pause are not
 faults: never flagged, never paid `on_fault`, counted as they always were.
@@ -1347,8 +1359,9 @@ correction verdict, one line per trial (`trial 12 attempt 1: CORRECT`, with
 the abort or frame-QA reason where there is one, or the fault a closing
 phase flagged), one line per trial that dropped frames (per-frame drops are
 DEBUG; the frame log holds every interval), one WARNING per trial lost to a
-system fault (the cause, what the subject was paid — or that the task sets
-no `on_fault` — and that the trial will be served again), and a
+system fault (the cause — for a tracker dropout, in the tracker's own words —
+what the subject was paid, or that the task sets no `on_fault`, and that the
+trial will be served again), and a
 `session end:` line with the status and outcome counts —
 or `session end: FAILED … <exception>` at ERROR, so a log that merely stops is
 a crash and one that ends is a session.
