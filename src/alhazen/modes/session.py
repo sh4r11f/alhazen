@@ -31,10 +31,16 @@ describes the machine; the mode decides what to do with it (``rig_for_mode``):
   rather than fired, and ``--headless`` takes the window away as well.
 
 Every substitution is a line in ``describe()``, printed before trial one.
+
+What the subject reads before trial one is the task's own
+(``Task.instructions``) in all three modes, shown by ``build_session``. Run
+mode alone also checks that the task has *said* — text, or None on purpose —
+and warns when it has not (:func:`build_mode_session`).
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -46,7 +52,9 @@ from alhazen.modes import Mode, flag_refusal
 from alhazen.modes.rehearsal import Reduction, rehearsal_root, shrink_params
 from alhazen.modes.simulation import Simulation
 from alhazen.session.runner import SessionRunner
-from alhazen.task.task import Task
+from alhazen.task.task import Task, declares_instructions
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -248,6 +256,22 @@ def _stand_in_reward(mode: Mode, rig: RigConfig, task: Task, notes: list[str]) -
     return rig.model_copy(update={"devices": devices})
 
 
+def undeclared_instructions_warning(task_class: type) -> str:
+    """The WARNING a run-mode session logs for a task that never said what its
+    subject reads, naming the two ways to say it.
+
+    A function so the wording lives in one place: the tests, the docs and the
+    session all mean this text.
+    """
+    name = task_class.__name__
+    return (
+        f"{name} does not declare instructions(), so this run shows the subject "
+        f"nothing before trial one. Implement {name}.instructions(self) -> str | None: "
+        f"return the text the subject should read, or return None to declare that "
+        f"this task has none (an animal subject, say), which also silences this warning."
+    )
+
+
 # How long simulate mode's break between blocks waits for somebody before it
 # resumes by itself. A rehearsal on a real display has a keyboard wired, so
 # the break used to wait for a SPACE that nobody watching a dry run had a
@@ -285,6 +309,10 @@ def build_mode_session(
     (see :func:`alhazen.modes.flag_refusal`); a mode that cannot honour one
     raises ``ConfigError`` before anything is wired.
 
+    ``instructions`` is the caller's own text for the instruction screen
+    (``run_experiment``'s ``instructions=``) and wins over the task's; None
+    leaves it to ``Task.instructions``, which ``build_session`` asks.
+
     ``build_session`` is injectable only so tests can watch what this passes
     down without opening a window; production always gets the real one.
     """
@@ -300,6 +328,23 @@ def build_mode_session(
     # anything else, so a flag the mode refuses is refused first.
     rig, notes = rig_for_mode(mode, rig, headless=headless, mouse=mouse)
     rig = _stand_in_reward(mode, rig, task, notes)
+
+    # A run-mode session is the one a subject actually sits through, and a
+    # task that never said what that subject reads — neither text nor a
+    # deliberate None — would start trial one with no instruction screen and
+    # nothing anywhere saying so. The WARNING names the method to write; the
+    # note puts the same fact in the lines printed before trial one and in
+    # the run's session.log, which outlive the terminal. Only run mode (a
+    # pilot is run mode with a shorter params file): test mode rehearses
+    # whatever the task declares, and simulate has nobody to read anything.
+    # A caller that passed its own text (run.py's `instructions=`) has
+    # answered for the task, so there is nothing to warn about.
+    if mode is Mode.RUN and instructions is None and not declares_instructions(type(task)):
+        log.warning(undeclared_instructions_warning(type(task)))
+        notes.append(
+            f"instructions: none — {type(task).__name__} does not declare instructions(), "
+            f"so the subject is shown nothing before trial one"
+        )
 
     params = task.params
     reductions: list[Reduction] = []

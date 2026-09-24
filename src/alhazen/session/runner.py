@@ -169,9 +169,14 @@ def _validation_shortfall(validation: ValidationResult) -> str:
 
 
 def _earned_mid_trial(record: dict[str, Any]) -> bool:
-    """Did a phase ask for a mid-trial drop this trial? Delivered or failed —
-    either way the trial earned it."""
-    return (record.get("n_mid_trial_rewards", 0) + record.get("n_mid_trial_reward_failures", 0)) > 0
+    """Did a phase ask for a mid-trial drop this trial? Delivered, failed, or
+    cancelled by the experimenter's manual reward — whichever, the trial
+    earned it, so NO_REWARD ("earned nothing") would be false."""
+    return (
+        record.get("n_mid_trial_rewards", 0)
+        + record.get("n_mid_trial_reward_failures", 0)
+        + record.get("n_mid_trial_rewards_cancelled", 0)
+    ) > 0
 
 
 # What each system fault was, in the words the session log uses. A health

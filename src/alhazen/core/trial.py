@@ -138,7 +138,7 @@ def lost_to_fault(outcome_name: str, record: Mapping[str, Any]) -> str | None:
 # how a reader stops guessing.
 #
 # Not every column is on every row: `abort_reason` only on an abort,
-# `rewarded` only where a pump is wired and a delivery was attempted, the two
+# `rewarded` only where a pump is wired and a delivery was attempted, the three
 # `n_mid_trial_*` counts only for a task that declares mid-trial reward, the
 # two frame-QA columns only on a recycled trial, `success` only where the
 # outcome defines one. `fault` IS on every row. Every emitted event also
@@ -159,13 +159,16 @@ TRIAL_RECORD_COLUMNS: tuple[str, ...] = (
     "outcome_before_frame_qa",
     "frame_qa_reason",
     "rewarded",
-    # Mid-trial reward (TrialContext.request_reward): how many of the drops a
-    # phase asked for during this trial the pump delivered, and how many it
-    # failed. Written — as 0 on a trial that asked for none — on every trial
-    # of a task declaring ``mid_trial_reward``, and absent otherwise, so a
-    # zero is "none this trial" and never "not a mid-trial task".
+    # Mid-trial reward (TrialContext.request_reward): of the drops a phase
+    # asked for during this trial, how many the pump delivered, how many it
+    # failed, and how many a manual reward cancelled before they started.
+    # Together they are every drop commanded — each one's REWARD is in the
+    # event record. Written — as 0 on a trial that asked for none — on every
+    # trial of a task declaring ``mid_trial_reward``, and absent otherwise, so
+    # a zero is "none this trial" and never "not a mid-trial task".
     "n_mid_trial_rewards",
     "n_mid_trial_reward_failures",
+    "n_mid_trial_rewards_cancelled",
     # "success" or "failure": what the subject was told at the end of the
     # trial (task/phases TrialFeedback). Beside the outcome, never derived
     # from it, because the two are different questions — a saccade that
@@ -331,8 +334,8 @@ class RewardRequest:
 
     def payload(self) -> dict[str, Any]:
         """The fields every event about this request carries, so a REWARD and
-        the REWARD_DELIVERED or REWARD_FAILED that follows it can be matched
-        up in events.csv by ``frame`` and ``reason``."""
+        the REWARD_DELIVERED, REWARD_FAILED or REWARD_CANCELLED that follows
+        it can be matched up in events.csv by ``frame`` and ``reason``."""
         return {
             "pulses": self.pulses.model_dump(mode="json"),
             "reason": self.reason,
@@ -342,14 +345,23 @@ class RewardRequest:
 
 @dataclass(frozen=True)
 class RewardCompletion:
-    """How one handed-over request ended: ``error`` is None when the pump
-    delivered it, else the failure's message. Crosses back from the reward
-    worker thread to the session thread, so it is immutable and carries only
-    plain data — never the exception object, whose traceback the worker has
-    already logged."""
+    """How one handed-over request ended — one of three ways:
+
+    - delivered: ``error`` and ``cancelled_by`` are both None;
+    - failed: ``error`` is the failure's message;
+    - cancelled: ``cancelled_by`` names what cancelled it before it reached
+      the valve. Today that is only ``"manual"``: a manual reward overrode
+      the queue (devices/reward.py, ``QueuedReward.deliver_manual``). It was
+      never delivered, and it is not a failure — the pump was never asked.
+
+    Crosses to the session thread from the reward worker (or, for a
+    cancellation, from the thread that asked for the manual reward), so it is
+    immutable and carries only plain data — never the exception object, whose
+    traceback the worker has already logged."""
 
     request: RewardRequest
     error: str | None = None
+    cancelled_by: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -409,9 +421,11 @@ class TrialContext:
         session's reward dispenser, whose worker thread delivers it without
         blocking the frame loop, and emits REWARD stamped with that flip and
         carrying ``{pulses, reason, frame}``. REWARD_DELIVERED or
-        REWARD_FAILED follows when the pump is done. ``reason`` is the task's
-        own label ("pursuit_hold", "end_bonus") and comes back on every one
-        of those events.
+        REWARD_FAILED follows when the pump is done — or REWARD_CANCELLED,
+        when the experimenter's manual reward overrode the queue before the
+        drop reached the valve. ``reason`` is the task's own label
+        ("pursuit_hold", "end_bonus") and comes back on every one of those
+        events.
 
         Raises RewardRequestError when the task never declared
         ``mid_trial_reward = True`` — never ignored, because a task that
