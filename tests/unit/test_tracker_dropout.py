@@ -41,7 +41,6 @@ from alhazen.devices.eyetracker import EyeLinkTracker, ViewPixxTracker
 from alhazen.devices.reward import SimulatedReward
 from alhazen.errors import TrackerError
 from alhazen.session.pause import FAULT_COLOR
-from alhazen.session.runner import SessionRunner
 from alhazen.stimuli.base import NullStimulus
 from alhazen.task.phases import TrialFeedback
 from alhazen.task.plan import TrialPlan
@@ -110,11 +109,19 @@ def clean(device) -> list[Any]:
 
 
 def run(
-    tmp_path, tracker, device, plan: list[Entry], *, n_trials: int = 1, clock: FakeClock
+    tmp_path,
+    tracker,
+    device,
+    plan: list[Entry],
+    *,
+    n_trials: int = 1,
+    clock: FakeClock,
+    **harness_kwargs: Any,
 ) -> SessionHarness:
     """A session of one condition on ``tracker``, serving ``plan`` one entry
     per attempt, until ``n_trials`` have completed. The runner is left to
-    the caller to run, so a test can expect it to raise."""
+    the caller to run, so a test can expect it to raise. Any other keyword
+    goes to SessionHarness."""
     served = iter(plan)
     phases_by_attempt: list[list[Any]] = []
 
@@ -131,6 +138,7 @@ def run(
         clock=clock,
         reward=SimulatedReward(),
         reward_policy=POLICY,
+        **harness_kwargs,
     )
     harness.phases_by_attempt = phases_by_attempt  # type: ignore[attr-defined]
     return harness
@@ -301,32 +309,22 @@ class TestDropoutsInARow:
 
     def test_the_limit_is_the_rigs_and_none_never_pauses(self, tmp_path, eyelink):
         tracker, host, clock = eyelink
-        harness = run(tmp_path, tracker, host, [cable_pulled()] * 3 + [clean], clock=clock)
-        harness.runner._max_consecutive_dropouts = None
+        harness = run(
+            tmp_path,
+            tracker,
+            host,
+            [cable_pulled()] * 3 + [clean],
+            clock=clock,
+            max_consecutive_dropouts=None,
+        )
         harness.runner.run()
         assert self.headings(harness) == []
 
     def test_a_limit_below_one_is_refused(self, tmp_path):
-        harness = SessionHarness(tmp_path)
-        runner = harness.runner
+        # The harness hands the limit to SessionRunner's constructor, which
+        # is what refuses it.
         with pytest.raises(ValueError, match="max_consecutive_dropouts must be >= 1"):
-            SessionRunner(
-                cfg=runner._cfg,
-                paths=runner._paths,
-                display=runner._display,
-                screen=runner._screen,
-                clock=runner._clock,
-                bus=runner._bus,
-                engine=runner._engine,
-                source=runner._source,
-                build_trial=runner._build_trial,
-                recorder=runner._recorder,
-                frame_monitor=runner._frame_monitor,
-                commands=runner._commands,
-                refresh_rate_hz=60.0,
-                task_rng=runner._task_rng,
-                max_consecutive_dropouts=0,
-            )
+            SessionHarness(tmp_path, max_consecutive_dropouts=0)
 
 
 class TestAnEyeLinkThatIsGone:

@@ -334,9 +334,9 @@ class FakeDashboard:
         self.stopped = True
 
 
-def wire_dashboard(harness, dashboard) -> None:
-    """Give the runner a dashboard AND a keyboard, which is what a rig that
-    opens a browser has.
+def wired(dashboard) -> dict:
+    """SessionHarness arguments that give the runner a dashboard AND a
+    keyboard, which is what a rig that opens a browser has.
 
     The builder wires a pause strategy for every rendering display and none
     for a simulated one (session/builder.py), so "a dashboard and no
@@ -345,22 +345,26 @@ def wire_dashboard(harness, dashboard) -> None:
     rather than waiting at a pause for a browser nobody has open. The browser
     is the second control surface at a rig, never the only one.
     """
-    harness.runner._dashboard = dashboard
-    harness.runner._on_pause = lambda menu: "resume"
+    return {"dashboard": dashboard, "on_pause": lambda menu: "resume"}
 
 
 class TestRunnerIntegration:
     def test_keyboard_pause_enables_browser_reward_then_resume(self, tmp_path: Path):
         reward = SimulatedReward()
         commands = ScriptedCommands([[Command.PAUSE]])
-        harness = SessionHarness(tmp_path, n_trials=1, commands=commands, reward=reward)
         # The first batch is drained and discarded on entering the pause, so
         # the commands that matter start in the second.
         dashboard = FakeDashboard([[], ["manual_reward"], ["resume"]])
         pulses = RewardPulses(n_pulses=1, pulse_ms=25, inter_pulse_ms=0)
-        wire_dashboard(harness, dashboard)
-        harness.runner._manual_reward = lambda: reward.deliver(pulses)
-        harness.runner._manual_reward_payload = {"pulses": pulses.model_dump(mode="json")}
+        harness = SessionHarness(
+            tmp_path,
+            n_trials=1,
+            commands=commands,
+            reward=reward,
+            manual_reward=lambda: reward.deliver(pulses),
+            manual_reward_payload={"pulses": pulses.model_dump(mode="json")},
+            **wired(dashboard),
+        )
 
         harness.runner.run()
 
@@ -379,14 +383,18 @@ class TestRunnerIntegration:
         gaze = GazeSample(gx=SCREEN.width_px / 2 + 20.0, gy=SCREEN.height_px / 2, t=0.0)
         tracker = ScriptedTracker([(0.0, gaze)], clock)
         commands = ScriptedCommands([[Command.PAUSE]])
-        harness = SessionHarness(
-            tmp_path, n_trials=1, commands=commands, tracker=tracker, clock=clock
-        )
         # The empty batch after each procedure is what the runner's drain
         # finds: nothing was clicked while the walk ran. The next click comes
         # once the buttons are back.
         dashboard = FakeDashboard([[], ["validate"], [], ["drift_correct"], [], ["resume"]])
-        wire_dashboard(harness, dashboard)
+        harness = SessionHarness(
+            tmp_path,
+            n_trials=1,
+            commands=commands,
+            tracker=tracker,
+            clock=clock,
+            **wired(dashboard),
+        )
 
         harness.runner.run()
 
@@ -419,11 +427,15 @@ class TestRunnerIntegration:
         gaze = GazeSample(gx=SCREEN.width_px / 2, gy=SCREEN.height_px / 2, t=0.0)
         tracker = ScriptedTracker([(0.0, gaze)], clock)
         commands = ScriptedCommands([[Command.PAUSE]])
-        harness = SessionHarness(
-            tmp_path, n_trials=1, commands=commands, tracker=tracker, clock=clock
-        )
         dashboard = FakeDashboard([[], ["calibrate"], [], ["resume"]])
-        wire_dashboard(harness, dashboard)
+        harness = SessionHarness(
+            tmp_path,
+            n_trials=1,
+            commands=commands,
+            tracker=tracker,
+            clock=clock,
+            **wired(dashboard),
+        )
 
         harness.runner.run()
 
@@ -440,11 +452,15 @@ class TestRunnerIntegration:
         gaze = GazeSample(gx=SCREEN.width_px / 2, gy=SCREEN.height_px / 2, t=0.0)
         tracker = ScriptedTracker([(0.0, gaze)], clock)
         commands = ScriptedCommands([[Command.CALIBRATE]])
-        harness = SessionHarness(
-            tmp_path, n_trials=1, commands=commands, tracker=tracker, clock=clock
-        )
         dashboard = FakeDashboard([[], ["resume"]])
-        wire_dashboard(harness, dashboard)
+        harness = SessionHarness(
+            tmp_path,
+            n_trials=1,
+            commands=commands,
+            tracker=tracker,
+            clock=clock,
+            **wired(dashboard),
+        )
 
         harness.runner.run()
 
@@ -456,9 +472,8 @@ class TestRunnerIntegration:
         """The server accepts Validate whether or not a tracker is wired, so
         the runner has to answer the click rather than crash or stay mute."""
         commands = ScriptedCommands([[Command.PAUSE]])
-        harness = SessionHarness(tmp_path, n_trials=1, commands=commands)
         dashboard = FakeDashboard([[], ["validate"], [], ["resume"]])
-        wire_dashboard(harness, dashboard)
+        harness = SessionHarness(tmp_path, n_trials=1, commands=commands, **wired(dashboard))
 
         with caplog.at_level(logging.WARNING, logger="alhazen.session.runner"):
             harness.runner.run()
@@ -492,9 +507,10 @@ class TestTeardownGoesOnWhenTheDashboardFails:
         gaze = GazeSample(gx=SCREEN.width_px / 2, gy=SCREEN.height_px / 2, t=0.0)
         tracker = ScriptedTracker([(0.0, gaze)], clock)
         reward = ScriptedReward()
-        harness = SessionHarness(tmp_path, n_trials=1, tracker=tracker, reward=reward, clock=clock)
         dashboard = FinalPublishFails([])
-        wire_dashboard(harness, dashboard)
+        harness = SessionHarness(
+            tmp_path, n_trials=1, tracker=tracker, reward=reward, clock=clock, **wired(dashboard)
+        )
 
         # Loud: the failure is the session's error once teardown is done.
         with pytest.raises(RuntimeError, match="a panel could not be built"):
@@ -561,12 +577,16 @@ class TestTrackerSettingsThroughThePause:
         gaze = GazeSample(gx=SCREEN.width_px / 2, gy=SCREEN.height_px / 2, t=0.0)
         tracker = IrisScriptedTracker([(0.0, gaze)], clock)
         commands = ScriptedCommands([[Command.PAUSE]])
-        harness = SessionHarness(
-            tmp_path, n_trials=1, commands=commands, tracker=tracker, clock=clock
-        )
         dashboard = FakeDashboard([[], [], ["resume"]])
         dashboard.setting_batches = [[], [("iris_size_px", 124)]]
-        wire_dashboard(harness, dashboard)
+        harness = SessionHarness(
+            tmp_path,
+            n_trials=1,
+            commands=commands,
+            tracker=tracker,
+            clock=clock,
+            **wired(dashboard),
+        )
         harness.runner.run()
 
         assert tracker.iris == 124
@@ -587,11 +607,15 @@ class TestCameraThroughThePause:
         gaze = GazeSample(gx=SCREEN.width_px / 2, gy=SCREEN.height_px / 2, t=0.0)
         tracker = CameraScriptedTracker([(0.0, gaze)], clock)
         commands = ScriptedCommands([[Command.PAUSE]])
-        harness = SessionHarness(
-            tmp_path, n_trials=1, commands=commands, tracker=tracker, clock=clock
-        )
         dashboard = FakeDashboard(batches)
-        wire_dashboard(harness, dashboard)
+        harness = SessionHarness(
+            tmp_path,
+            n_trials=1,
+            commands=commands,
+            tracker=tracker,
+            clock=clock,
+            **wired(dashboard),
+        )
         harness.runner.run()
         return harness, tracker, dashboard
 
@@ -629,11 +653,15 @@ class TestCameraThroughThePause:
         gaze = GazeSample(gx=SCREEN.width_px / 2, gy=SCREEN.height_px / 2, t=0.0)
         tracker = ScriptedTracker([(0.0, gaze)], clock)
         commands = ScriptedCommands([[Command.PAUSE]])
-        harness = SessionHarness(
-            tmp_path, n_trials=1, commands=commands, tracker=tracker, clock=clock
-        )
         dashboard = FakeDashboard([[]] * 250 + [["resume"]])
-        wire_dashboard(harness, dashboard)
+        harness = SessionHarness(
+            tmp_path,
+            n_trials=1,
+            commands=commands,
+            tracker=tracker,
+            clock=clock,
+            **wired(dashboard),
+        )
         harness.runner.run()
         assert [s["status"] for s in dashboard.states].count("paused") == 1
 
@@ -659,11 +687,16 @@ class TestStaleCommandsAreDiscarded:
     def test_a_command_queued_before_the_pause_never_fires(self, tmp_path: Path):
         reward = SimulatedReward()
         commands = ScriptedCommands([[Command.PAUSE]])
-        harness = SessionHarness(tmp_path, n_trials=1, commands=commands, reward=reward)
         # A manual reward left over from before this pause, then a resume.
         dashboard = FakeDashboard([["manual_reward"], ["resume"]])
-        wire_dashboard(harness, dashboard)
-        harness.runner._manual_reward = lambda: reward.deliver(RewardPulses(n_pulses=1))
+        harness = SessionHarness(
+            tmp_path,
+            n_trials=1,
+            commands=commands,
+            reward=reward,
+            manual_reward=lambda: reward.deliver(RewardPulses(n_pulses=1)),
+            **wired(dashboard),
+        )
 
         harness.runner.run()
 
@@ -680,14 +713,18 @@ class TestStaleCommandsAreDiscarded:
         gaze = GazeSample(gx=SCREEN.width_px / 2, gy=SCREEN.height_px / 2, t=0.0)
         tracker = ScriptedTracker([(0.0, gaze)], clock)
         commands = ScriptedCommands([[Command.PAUSE]])
-        harness = SessionHarness(
-            tmp_path, n_trials=1, commands=commands, tracker=tracker, clock=clock
-        )
         # Second batch: a double-click, two Calibrates in one poll. Third: a
         # Validate the server accepted before it saw "calibrating". Then a
         # Resume clicked after the buttons came back, which must still work.
         dashboard = FakeDashboard([[], ["calibrate", "calibrate"], ["validate"], ["resume"]])
-        wire_dashboard(harness, dashboard)
+        harness = SessionHarness(
+            tmp_path,
+            n_trials=1,
+            commands=commands,
+            tracker=tracker,
+            clock=clock,
+            **wired(dashboard),
+        )
 
         harness.runner.run()
 
@@ -699,9 +736,8 @@ class TestStaleCommandsAreDiscarded:
 
     def test_a_stale_quit_does_not_end_the_next_pause(self, tmp_path: Path):
         commands = ScriptedCommands([[Command.PAUSE]])
-        harness = SessionHarness(tmp_path, n_trials=2, commands=commands)
         dashboard = FakeDashboard([["quit"], ["resume"]])
-        wire_dashboard(harness, dashboard)
+        harness = SessionHarness(tmp_path, n_trials=2, commands=commands, **wired(dashboard))
 
         harness.runner.run()
 
