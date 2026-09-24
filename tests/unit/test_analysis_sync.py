@@ -12,11 +12,11 @@ from alhazen.analysis.sync import (
     MAX_SEED_EVENTS,
     AlignmentFit,
     _seed_window,
-    _shortfall_percents,
     bit_index_for_line,
     event_bit_map,
     fit_alignment,
 )
+from alhazen.data.percents import compared_percents
 from alhazen.errors import DataError
 
 
@@ -354,7 +354,12 @@ class TestRefusalPercentages:
     """The matched-fraction refusal once rounded both numbers to whole
     percents, so 399 of 500 against 80% read "(80% < 80%)" — a refusal that
     seemed to contradict itself. The fraction now carries as many decimals as
-    it takes to be visibly below the threshold."""
+    it takes to be visibly below the threshold.
+
+    The rule has since moved to alhazen.data.percents, shared with frame QA
+    and the runner. These are the cases it had here, called the way the
+    refusal calls it ("<", whole percents allowed), with the same expected
+    text: moving it changed nothing the alignment prints."""
 
     def test_399_of_500_reads_as_below_80_percent(self):
         # 101 pulses lost mid-session: the ends anchor the right map, and it
@@ -380,12 +385,12 @@ class TestRefusalPercentages:
         ],
     )
     def test_the_fraction_is_written_visibly_below_the_threshold(self, fraction, threshold, shown):
-        assert _shortfall_percents(fraction, threshold) == shown
+        assert compared_percents(fraction, "<", threshold) == shown
 
     def test_a_threshold_a_rounding_error_away_falls_back_to_full_precision(self):
         # 3 of 10 against 0.1 + 0.2 = 0.30000000000000004: refused, and no
         # number of decimals separates them as percents. Full precision does.
-        assert _shortfall_percents(0.3, 0.1 + 0.2) == ("0.3", "0.30000000000000004")
+        assert compared_percents(0.3, "<", 0.1 + 0.2) == ("0.3", "0.30000000000000004")
 
 
 class TestLineMap:

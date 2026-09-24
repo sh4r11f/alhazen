@@ -281,6 +281,18 @@ class TestFrameQAIntegration:
         (end,) = events_named(harness, "TRIAL_END")
         assert end.payload == {"outcome": "DROPPED_FRAMES", "completed": False}
 
+    def test_the_recorded_reason_reads_over_the_budget_it_names(self):
+        """21 of 209 is 10.05%, over the shipped 10% budget. The row used to
+        say "(10.0%), over the 10% budget": a trial apparently recycled for
+        sitting exactly on its budget."""
+        result, _ = self._run_with_drops(
+            209, set(range(1, 22)), COMPLETED, max_dropped_fraction=0.1
+        )
+        assert result.record["n_dropped_frames"] == 21
+        assert result.record["frame_qa_reason"] == (
+            "21 of 209 frames dropped (10.05%), over the 10% budget (frame_qa.max_dropped_fraction)"
+        )
+
     def test_a_recycled_result_carries_the_outcome_the_response_earned(self):
         """The scheduler sees DROPPED_FRAMES; the reward path needs the Outcome
         the subject's response ended as — the object, because NO_REWARD turns

@@ -43,6 +43,7 @@ from alhazen.dashboard.spec import DashboardSpec
 from alhazen.data.manifest import write_manifest
 from alhazen.data.participants import ensure_participant
 from alhazen.data.paths import SessionPaths
+from alhazen.data.percents import threshold_percent
 from alhazen.devices.eyetracker import EyeTracker, HostShape
 from alhazen.devices.eyetracker.procedures import ValidationResult
 from alhazen.devices.eyetracker.protocol import CameraFrame
@@ -775,14 +776,17 @@ class SessionRunner:
         if display_trials:
             log.warning(
                 "%d trials in a row not completed, the last %s on trial %d, and %d of them "
-                "dropped more than %.0f%% of their frames: pausing. The display was failing "
+                "dropped more than %s of their frames: pausing. The display was failing "
                 "through this streak, and a panel missing vsyncs causes real fixation breaks "
                 "— check the display before recalibrating.",
                 self._failures_in_a_row,
                 outcome.name,
                 self._trial_index,
                 display_trials,
-                self._frame_monitor.dropped_fraction_budget * 100,
+                # The budget exactly as configured. Whole percents wrote a
+                # 7.5% budget as "8%", which the trials counted here (each over
+                # 7.5%) need not have dropped.
+                threshold_percent(self._frame_monitor.dropped_fraction_budget),
             )
         else:
             log.warning(
@@ -822,10 +826,13 @@ class SessionRunner:
         limit = self._max_consecutive_failures
         display_trials = self._paused_streak_display_trials
         if display_trials:
+            # Written as frame QA writes it (the same rule as the log line in
+            # _too_many_failures_in_a_row): "7.5%", never a rounded "8%".
+            budget = threshold_percent(self._frame_monitor.dropped_fraction_budget)
             return (
                 f"{limit} TRIALS FAILED IN A ROW — last {outcome.name}, and {display_trials} "
-                f"of them dropped over {self._frame_monitor.dropped_fraction_budget:.0%} of "
-                f"their frames; check the display before recalibrating"
+                f"of them dropped over {budget} of their frames; check the display before "
+                f"recalibrating"
             )
         return (
             f"{limit} TRIALS FAILED IN A ROW — last {outcome.name}; check the calibration "

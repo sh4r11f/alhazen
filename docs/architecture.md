@@ -38,7 +38,8 @@ src/alhazen/
 │                   #   eyetracker.py (the session's calibration/validation/drift
 │                   #   results and dashboard panels), check_rig
 ├── config/         # pydantic models (extra=forbid, frozen), YAML loader, snapshot writer
-├── data/           # naming, SessionPaths, manifest, participants registry
+├── data/           # naming, SessionPaths, manifest, participants registry, percents
+│                   #   (a measured fraction written beside its threshold, §10.2)
 ├── dashboard/      # isolated local HTTP process, panel statistics, and the browser page
 ├── testing/        # PUBLIC fakes: FakeClock/FakeDisplay/FakeStimulus/Scripted*/EventCollector
 │                  # and SortedSpikePublisher, the sorter that lives outside this repo
@@ -48,9 +49,9 @@ src/alhazen/
 
 Layering is enforced by import-linter (pyproject `[tool.importlinter]`),
 top to bottom: `cli` → `session | testing | analysis` → `training` → `task` →
-`data | dashboard` → `paradigms | devices` → `core | neural` →
-`stimuli | scenes` → `display` → `config`. Imports point only downward;
-`errors` sits outside the contract. `neural` shares core's line so that
+`dashboard` → `paradigms | devices` → `core | neural` → `stimuli | scenes` →
+`display` → `config | data`. Imports point only downward; `errors` and
+`version` sit outside the contract. `neural` shares core's line so that
 both the device layer (live, during a session) and the analysis layer
 (offline, over the files) can run the same spike detection and the same
 map arithmetic without either importing the other.
@@ -948,7 +949,7 @@ Three rules:
   pulses were compared at each end, so a late start is recognisable, and the
   matched-fraction refusal writes the fraction with as many decimals as it
   takes to be visibly below the threshold — "79.8% < 80%", never
-  "80% < 80%".
+  "80% < 80%" (the rule frame QA uses too, §10.2).
 - **Cost stays bounded.** Seeds that draw the same line (event *i* with pulse
   *a* and event *i+1* with pulse *a+1*) are scored once; every seed is
   screened against 64 events spread over the session, and only the best 256
@@ -1285,6 +1286,58 @@ The built-in backends take the argument the same way — keyword-only, default
 `True` — and the ones with no screen keep it: `SimulatedDisplay` and
 `testing.FakeDisplay` record `(text, reflow)` in `message_calls`, and the
 simulated display logs the text as it would have been drawn.
+
+### 10.2 A percent reads on the side of its threshold
+
+Some messages print a measured fraction, a threshold, or both, beside a
+verdict about which side of the threshold the fraction fell on:
+
+| Message | Where it lands | The comparison |
+|---|---|---|
+| frame QA's recycle reason | the trial row's `frame_qa_reason`, `session.log`, `FrameQAError` | dropped fraction > `max_dropped_fraction` |
+| the per-trial dropped-frames line | `session.log` | the same fraction, over or within the same budget |
+| the failure-streak pause | the pause heading, `session.log` | the budget alone ("dropped over 10% of their frames") |
+| the matched-fraction refusal | `DataError` from `fit_alignment` | matched fraction < `min_matched_fraction` |
+
+Printed with a fixed number of decimals, each could state the opposite of
+its own verdict. At the shipped 10% budget, 21 of 209 frames read "(10.0%),
+over the 10% budget". A 7.5% budget read "8%". 399 of 500 matched events
+read "(80% < 80%)". So all of them write their numbers through
+`data/percents.py`:
+
+- `threshold_percent` writes a threshold with the fewest decimals that
+  state it: 0.1 is "10%", 0.075 is "7.5%".
+- `compared_percents(value, relation, threshold, min_places=...)` writes the
+  threshold the same way. It writes the value with the fewest decimals (at
+  least `min_places`) whose printed text stands in `relation` to the
+  threshold's. `relation` is the caller's own test: `>` for a recycled
+  trial, `<=` for a trial within its budget (equal is within), `<` for the
+  refusal. Frame QA asks for at least one decimal, the format its lines have
+  always had, so "(15.0%)" is unchanged and only a fraction that would round
+  onto the budget gains a decimal: "(10.05%)".
+
+Each printed number is a correctly rounded value of its own number; nothing
+is nudged across the line. If no number of percent decimals can separate the
+two (a threshold within a float rounding error of the value), both are
+printed in full as plain fractions, which still reads true. Asking for a
+relation the numbers do not satisfy raises `ValueError`, rather than letting
+the message state something false.
+
+```mermaid
+flowchart LR
+    FM["display/frames.py<br/>FrameMonitor.end_trial"] -->|"fraction over or within the budget,<br/>at least one decimal"| P["data/percents.py<br/>threshold_percent<br/>compared_percents"]
+    RN["session/runner.py<br/>failure-streak pause"] -->|"the budget alone"| P
+    SY["analysis/sync.py<br/>fit_alignment"] -->|"matched fraction below the threshold"| P
+    FM --> O1["trial row frame_qa_reason<br/>session.log, FrameQAError"]
+    RN --> O2["pause heading<br/>session.log"]
+    SY --> O3["DataError<br/>(alignment refused)"]
+```
+
+The rule lives in `data` because three layers need it: display, session and
+analysis. `config | data` is the lowest line of the layering contract, so
+every layer above it, those three included, may import from it. Of the two
+packages on that line, `data` is the one kept ignorant of everything above
+it; `config` holds the configuration models and their loader.
 
 ## 11. Extending
 

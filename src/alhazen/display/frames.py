@@ -32,6 +32,7 @@ from typing import Any
 import numpy as np
 
 from alhazen.config.models import FrameQAConfig
+from alhazen.data.percents import compared_percents
 from alhazen.errors import FrameQAError
 
 log = logging.getLogger(__name__)
@@ -197,36 +198,58 @@ class FrameMonitor:
         row have been recycled — after logging the trial, so the log holds
         the evidence. A display that bad would otherwise be re-served the
         same conditions until somebody noticed the block never ends.
+
+        The dropped fraction in the reason and in the log line is written on
+        the side of the budget it is really on (``alhazen.data.percents``).
+        With one fixed decimal, 21 of 209 frames against the shipped 10%
+        budget read "(10.0%), over the 10% budget", and whole percents wrote
+        a 7.5% budget as "8%". A number that contradicts its own verdict is
+        a number nobody can trust.
         """
         n, dropped = self._frames_this_trial, self._dropped_this_trial
-        recycle, reason = False, None
-        if self._cfg.policy == "recycle_trial" and completed and n > 0:
-            fraction = dropped / n
-            if fraction > self._cfg.max_dropped_fraction:
-                recycle = True
-                reason = (
-                    f"{dropped} of {n} frames dropped ({fraction:.1%}), over the "
-                    f"{self._cfg.max_dropped_fraction:.0%} budget (frame_qa.max_dropped_fraction)"
-                )
-        if completed:
-            self._consecutive_recycles = self._consecutive_recycles + 1 if recycle else 0
+        # A trial with no measured interval dropped nothing, and has no
+        # fraction to divide out.
+        fraction = dropped / n if n else 0.0
+        budget = self._cfg.max_dropped_fraction
+        # Over the budget means MORE than it: a trial exactly at the budget is
+        # within it. The runner's failure-streak pause (session/runner.py)
+        # asks the same question of the same fraction, under every policy.
+        over_budget = fraction > budget
+        recycle = self._cfg.policy == "recycle_trial" and completed and over_budget
+        reason = None
         if dropped:
+            # Written from the comparison just made: a trial over the budget
+            # gets as many decimals as it takes to read over it ("10.05%",
+            # never "10.0%"), and one within it reads at or under it. At
+            # least one decimal, as these lines have always had. The budget is
+            # written exactly as configured ("7.5%", never "8%").
+            shown_fraction, shown_budget = compared_percents(
+                fraction, ">" if over_budget else "<=", budget, min_places=1
+            )
+            if recycle:
+                reason = (
+                    f"{dropped} of {n} frames dropped ({shown_fraction}), over the "
+                    f"{shown_budget} budget (frame_qa.max_dropped_fraction)"
+                )
             # One line per trial that dropped anything. WARNING under every
             # policy that asked to hear about drops; DEBUG under ``log``,
-            # which asked not to.
+            # which asked not to. It shows the same fraction as the reason,
+            # so this line can never read within a budget that the recycle,
+            # or the runner's pause, says the trial went over.
             level = logging.DEBUG if self._cfg.policy == "log" else logging.WARNING
             log.log(
                 level,
-                "trial %d: %d of %d frames dropped (%.1f%%), worst %.1f ms against %.1f ms "
-                "expected%s",
+                "trial %d: %d of %d frames dropped (%s), worst %.1f ms against %.1f ms expected%s",
                 self._trial_index,
                 dropped,
                 n,
-                100.0 * dropped / n if n else 0.0,
+                shown_fraction,
                 self._worst_this_trial * 1000,
                 self._expected * 1000,
                 " — trial recycled" if recycle else "",
             )
+        if completed:
+            self._consecutive_recycles = self._consecutive_recycles + 1 if recycle else 0
         summary = TrialFrameSummary(
             trial_index=self._trial_index,
             n_frames=n,
