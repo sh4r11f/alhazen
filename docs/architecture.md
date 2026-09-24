@@ -1849,8 +1849,9 @@ mkdocstrings, and the site builds under `--strict`.
 
 ### Compatibility
 
-The public API is everything exported from `alhazen` and everything in the
-documented modules. Deprecations warn for one minor version before removal
+The public API is everything exported from `alhazen` and the members
+`docs/reference.md` lists for each documented module; any other name is
+internal, whether or not it starts with `_`. Deprecations warn for one minor version before removal
 (`alhazen._deprecation`), naming the version and the replacement.
 
 Three contracts outlast any version because they live on disk:

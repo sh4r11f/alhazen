@@ -2,7 +2,7 @@
 
 Notable changes, newest first. This project follows [semantic
 versioning](https://semver.org): the public API is everything exported from
-`alhazen` and everything documented in the module reference. Three things are
+`alhazen` and the names the API reference lists module by module. Three things are
 also compatibility contracts, because they live on disk and outlast any one
 version:
 
@@ -173,6 +173,27 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Changed
 
+- **The public API is now exactly the names `docs/reference.md` lists.**
+  Most of its entries used to document a whole module, and the policy called
+  "everything in the modules on this page" public — so dashboard formatting
+  helpers (`format_number`, `present`), the dashboard server's `page_html`,
+  every constant of the TRACKPixx3 backend and the session's eye-tracker
+  monitor were all contract, and refactoring any of them was technically a
+  major bump. Every entry now carries an explicit `members:` list, drawn from
+  what the experiments built on alhazen import, what `examples/`, the
+  `alhazen new` template and the docs' snippets use, and what the guides tell
+  a task author to call; any other name is internal. **Nothing was removed
+  from the code**: every name stays importable. Some modules left the page
+  entirely (among them `session.eyetracker`, `dashboard.runtime`,
+  `display.monitors`, `devices.eyetracker.viewpixx`, `scenes.expr`,
+  `data.naming`). Names experiments already import but the page never
+  listed are now listed, and so public: `session.builder.validate_event_names`,
+  the mode hooks (`alhazen.modes.*`, `cli.modes.run_experiment`), the
+  analysis readers (`analysis.io.spikeglx`, `.kilosort`, `.eyelink`,
+  `.viewpixx`), `display.psychopy_backend.PsychoPyDisplay`,
+  `devices.spikes.SimulatedSpikeSource`, `neural.rfmap` and the feedback
+  colours in `task.phases.simple`. A test fails when a listed name no longer
+  exists or an entry has no explicit list.
 - **Training criteria leave out a trial lost to a system fault.** A
   dropped-frames trial and a tracker-stopped trial no longer enter the
   criteria window: no metric, no `min_trials` count and no ramp sees them,
