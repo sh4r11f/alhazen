@@ -26,7 +26,12 @@ already computed over the whole session, so a cumulative curve does not begin
 partway up in trial 4000 of a long run.
 
 The server binds only to `127.0.0.1`, uses a random per-session token, and
-loads no internet resources. `--dashboard` and `--no-dashboard` override the
+loads no internet resources. The page takes the token out of the address bar
+as soon as it has read it (it keeps it for its own requests, and a reload of
+the tab still works). The server refuses a malformed request with a 400
+rather than guessing: a query parameter that is not an integer or is given
+twice, a request id that is not a string of 1 to 64 characters, or a body
+whose length is negative (larger than 4 KiB gets a 413). `--dashboard` and `--no-dashboard` override the
 rig for one run. `--no-dashboard-browser` starts the server without launching
 the default browser; the URL is written to the session log.
 
@@ -72,7 +77,7 @@ flowchart LR
   R["DataRecorder<br/>trials + events"] --> S["dashboard_state()"]
   P["DashboardSpec<br/>resolved_panels"] --> S
   S -->|"per panel, whole session"| C["panels.panel_payload()<br/>counts · bins · means<br/>s.e.m. · Wilson CI · cumulative"]
-  C -->|"thinned to &le; 180 points"| N["panels.present()<br/>sentence case · ° · minus sign<br/>display twins"]
+  C -->|"thinned to &le; 180 points"| N["presentation.present()<br/>sentence case · ° · minus sign<br/>display twins"]
   N --> W["one JSON snapshot"]
   S -->|"last max_rows rows"| W
   W --> Q(["queue (1 slot)"])
@@ -89,7 +94,7 @@ accuracy that divides by the wrong denominator looks entirely plausible in a
 browser, and the page's JavaScript is tested (`tests/js/`) only for how it
 draws, never for what it computes.
 
-What the reader sees is decided once, after the numbers. `panels.present()`
+What the reader sees is decided once, after the numbers. `presentation.present()`
 rewrites every payload in a journal figure's conventions: labels in sentence
 case, column and outcome names as words (`FIX_BREAK` is "Fix break",
 `saccade_latency_ms` is "Saccade latency (ms)"), abbreviations in their own

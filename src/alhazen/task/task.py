@@ -370,7 +370,12 @@ class Task:
         up-down staircase (each one, when interleaved) and QUEST+. It is asked
         about completed trials only: an attempt with no measurement is served
         again, never scored. A task that overrides ``make_source`` to build
-        its own scheduler passes it on itself."""
+        its own scheduler passes it on itself.
+
+        It must return a ``bool`` (a numpy bool is fine). The built-in
+        adaptive schedulers raise TypeError on anything else — an override
+        that forgets its ``return`` gives None, which would otherwise count
+        as a failure on every trial."""
         return bool(result.outcome.success)
 
 

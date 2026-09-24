@@ -41,7 +41,8 @@ src/alhazen/
 │                   #   internal parts: streaks.py, reward_payer.py, pause_control.py
 ├── config/         # pydantic models (extra=forbid, frozen), YAML loader, snapshot writer
 ├── data/           # naming, SessionPaths, manifest, participants registry, percents
-│                   #   (a measured fraction written beside its threshold, §10.2)
+│                   #   (a measured fraction written beside its threshold, §10.2),
+│                   #   atomic (replace a file whole)
 ├── dashboard/      # isolated local HTTP process, panel statistics, and the browser page
 ├── testing/        # PUBLIC fakes: FakeClock/FakeDisplay/FakeStimulus/Scripted*/EventCollector
 │                  # and SortedSpikePublisher, the sorter that lives outside this repo
@@ -52,16 +53,19 @@ src/alhazen/
 Layering is enforced by import-linter (pyproject `[tool.importlinter]`),
 top to bottom: `cli` → `modes` → `session | testing | analysis` → `training` →
 `task` → `dashboard` → `paradigms | devices` → `core | neural` →
-`stimuli | scenes` → `display` → `config | data | _scaffold`. Imports point
-only downward; `errors` and `version` sit outside the contract. `neural`
-shares core's line so that both the device layer (live, during a session) and
+`stimuli | scenes` → `display` → `config | data | _scaffold` →
+`_deprecation`. Imports point only downward; `errors` and `version` sit
+outside the contract. `_deprecation`, the `@deprecated` decorator, is a single
+module with a line of its own at the bottom, so that every layer may import it
+while it imports nothing else from alhazen. `neural` shares core's line so
+that both the device layer (live, during a session) and
 the analysis layer (offline, over the files) can run the same spike detection
 and the same map arithmetic without either importing the other. `modes` sits
 directly under `cli`, the only package that imports it, and above `session`,
 which every mode builds or drives; the ruler that `--mode measure` and
 `alhazen calibrate ruler` both draw lives in `display/ruler.py` so that
 `modes` never imports from `cli`. `_scaffold` imports nothing from alhazen but
-`errors`, and the bottom line keeps it that way.
+`errors`, and its line keeps it that way.
 
 Three placements carry the weight:
 
@@ -93,8 +97,8 @@ command source, and the bus:
 1. poll experimenter commands (skip / pause / calibrate / quit / manual reward)
 2. run per-frame health checks (today one: "is the tracker still recording,
    and still delivering" — §4.3). A check returns None, or a `HealthFault`:
-   the reason, and what the device said about it (a bare reason string is
-   still accepted). A failed check is a **system fault** — a device stopped,
+   the reason, and what the device said about it (a bare reason string, the
+   1.5.0 shape, still works but warns: it goes in 2.0). A failed check is a **system fault** — a device stopped,
    which is never the subject's doing — and its reason (`tracker_stopped`) is
    written as the row's `fault`, its words as `fault_detail` (§2.2). A check
    runs every frame, so it must not make a round trip to its device on the
@@ -711,7 +715,7 @@ none, that the model's defaults are running.
 | `StimulusResponse` | gaze leaves the depart-region, or the deadline passes | `rt_ms`, `<depart_region>_x/y_dva` (where the eye left from — measured, never assumed to be the fixation point) |
 | `LandingCheck` | gaze enters the target region, or the window times out. **Records where gaze first crossed into the region — mid-flight for any usable window — not where the saccade ended**; use `LandingSample` for landing error | `endpoint_x/y_dva`, `endpoint_error_dva`, `endpoint_in_target` |
 | `LandingSample` | a fixed dwell after saccade onset (`dwell_s`), **or** saccade offset: the first *new* sample slower than `settle_speed_dva_per_s`, capped at `max_wait_s`. The region is ignored until then; the last valid sample is the endpoint, judged once. With `depart_region` (the fixation window), a sample still inside that window is never the endpoint and never settles — a blink at the cue counts as departure, and would otherwise end the trial as a miss at fixation | `endpoint_measured`, `endpoint_in_target`, `endpoint_x/y_dva`, `endpoint_error_dva`, `endpoint_latency_ms`, `endpoint_reference_x/y_dva`; `endpoint_settled` in the saccade-offset mode |
-| `ResponseWindow` | a bound key is pressed, or the deadline passes. **Keys pressed before the cue was on screen are ignored**: a frame's keys are everything pressed since the previous frame's read, so they count only once that read came after the flip stamped `t_<onset_event>` — never on the phase's first frame (before the flip) or its second (the presses made while the cue waited for its flip). With `onset_event=None` keys count from the first frame, timed from phase entry | `response_key`, `rt_ms` (from the cue's flip) |
+| `ResponseWindow` | a bound key is pressed, or the deadline passes. **Keys pressed before the cue was on screen are ignored**: a frame's keys are everything pressed since the previous frame's read, so they count only once that read came after the flip stamped `t_<onset_event>` — never on the phase's first frame (before the flip) or its second (the presses made while the cue waited for its flip). The deadline (`timeout_s`) also runs from the cue's flip, so the subject has all of it with the cue on screen. With `onset_event=None` keys count from the first frame, and the reaction time and the deadline run from phase entry | `response_key`, `rt_ms` (from the cue's flip) |
 | `AdjustmentLoop` | the commit key is pressed, or the deadline passes | `adjusted_value`, `adjustment_turns` |
 | `FrameSequence` | a compiled `FrameTimeline` finishes | `sequence_frames` |
 | `Blank` / `Feedback` | a fixed duration elapses | — |
@@ -1122,7 +1126,16 @@ take a `score: Callable[[TrialResult], bool]` for tasks titrating something
 other than accuracy, and `make_scheduler` builds every adaptive kind with the
 task's `score_trial` (default: `outcome.success`). The scorer is asked about
 completed trials only; an attempt with no measurement is re-served, never
-scored.
+scored. Its answer must be a `bool` (numpy's included): anything else — the
+`None` of a `score_trial` that lost its `return`, or a 0/1 int that may be a
+count — raises `TypeError` naming the scorer, instead of being read as
+truthy on every trial.
+
+The three queue-based schedulers share one queue: `AdjustmentTrials` is a
+`SimpleSequence` with its own defaults, and `ConstantStimuli` builds its
+factorial plan and hands it to one, so the re-serve rule lives in one place.
+A queue-based source reports the planned trials it still has queued through
+an optional `remaining()`, which `BlockPlan` checks its bound against (below).
 
 `SchedulerConfig` (+ `StaircaseConfig`, `QuestConfig`, `BlockConfig`) is the
 config surface, so moving from constant stimuli to a staircase is a YAML edit
@@ -1157,6 +1170,15 @@ Two composition rules fall out of blocks and are worth stating:
   `ConfigError` giving both numbers: it could only end the block with
   planned trials still queued, the retries at the tail first, and leave the
   cells uneven. A bound at or above the plan is accepted; it cuts nothing.
+  A `BlockPlan` built by hand is held to the same rule for every source that
+  reports `remaining()` (a source shared by several blocks against all their
+  bounds together); a source that does not report one is not checked.
+- For an adaptive kind, `n_blocks × trials_per_block` must cover the
+  estimator's `n_trials` (times the number of interleaved staircases or
+  QUEST+ levels). `make_scheduler` refuses a smaller total with a
+  `ConfigError`: the last block would end the session with the estimate
+  unfinished. A staircase stopped by `n_reversals` alone is not checked — its
+  trial count cannot be known in advance.
 
 ### 5.5 Live analysis (`task/live.py`)
 
@@ -1266,6 +1288,22 @@ with an animal already working.
 The window is fed the **scored** record: the same dict written to
 `trials.csv`, after the task's `score` hook ran. A derived measure computed
 there exists nowhere else, so a criterion could otherwise never gate on one.
+
+The window keeps only part of each record, because it is saved in the
+subject's hand-editable state file: the outcome, `completed`, `success`, the
+stage, and `rt_ms` — the RT, read from the record field the curriculum's
+`rt_key` names (default `rt_ms`; set it when the task's phases write the RT
+under another `rt_record_key`). An experiment's own metric reads those plus
+any record fields the curriculum lists in `record_fields` (plain values only;
+a numpy scalar is kept as the number it is). A stage gating on `mean_rt_ms`
+whose session has run `min_trials` completed trials without one RT under
+`rt_key` logs a WARNING once: the metric is NaN there, and the criterion can
+never be met.
+
+Promotion past the last stage finishes the curriculum. Like any move it is
+carried out between trials — the promote key at the last stage only queues
+it — and it is logged once; afterwards the last stage's promotion criteria
+are no longer judged, but its demotion criteria still are.
 
 ### 6.3 What persists, and what a row says
 
@@ -1479,7 +1517,14 @@ since hashing gigabytes to identify it costs more than it is worth), every
 table written, the parameters, and the alhazen version that produced them. An
 empty result still writes its file: nothing on disk is indistinguishable from
 the analysis never having run, which is the question the bundle exists to
-answer.
+answer. Inputs are hashed by the same function the run manifest uses
+(`data.manifest.sha256_file`), so the two can be compared.
+
+An `out_dir` that already holds files is reused — a report re-run into its
+own `analysis/` directory is the normal case — but not silently: opening the
+bundle logs a warning listing them, and the manifest's `preexisting` lists
+every one this bundle did not rewrite, so an earlier run's leftover output
+cannot pass for this run's.
 
 ### 7.6 Readers
 
@@ -1630,8 +1675,10 @@ every backend precisely so a backend cannot quietly reach for
    documents itself) — merged config + seed + versions + an environment
    digest (sha256 over installed distributions) + both git trees, the
    experiment's (`experiment_git_sha`) and alhazen's own
-   (`alhazen_git_describe`). Both are read with `git describe --always
-   --dirty`, so a session run from uncommitted changes to tracked files says
+   (`alhazen_git_describe`). The experiment's tree is the one holding the
+   task class's source file (or, with no task, the trial builder's), not
+   the folder the session was started from. Both are read with
+   `git describe --always --dirty`, so a session run from uncommitted changes to tracked files says
    `-dirty` rather than naming a commit that would not reproduce it; where
    there is no answer they read `not a source checkout` (not in a git
    repository) or `unknown` (git absent or not answering);

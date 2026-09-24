@@ -13,7 +13,6 @@ back a stage on a Monday morning should be able to do it with a text editor.
 from __future__ import annotations
 
 import logging
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -21,6 +20,7 @@ from typing import Any
 import yaml
 
 from alhazen.data import naming
+from alhazen.data.atomic import replace_atomically
 
 log = logging.getLogger(__name__)
 
@@ -169,7 +169,7 @@ class TrainingState:
             },
             sort_keys=False,
         )
-        _replace_atomically(path, text)
+        replace_atomically(path, text)
         return path
 
     def _set_aside(self, path: Path) -> None:
@@ -200,28 +200,3 @@ def _aside_name(path: Path, stamp: str) -> Path:
     """Where an unreadable state file is moved: same folder, same name, plus
     ``.unreadable-<stamp>`` before the suffix."""
     return path.with_name(f"{path.stem}.unreadable-{stamp}{path.suffix}")
-
-
-def _replace_atomically(path: Path, text: str) -> None:
-    """Replace ``path`` with ``text`` so a reader sees the old file or the new
-    one, never half of either.
-
-    Written and flushed to disk under a temporary name in the same folder (a
-    rename is only atomic within one filesystem), then renamed over the
-    target with `os.replace`, which replaces an existing file on Windows as
-    well as on POSIX.
-    """
-    temporary = path.with_name(f"{path.name}.tmp")
-    try:
-        with temporary.open("w", encoding="utf-8") as f:
-            f.write(text)
-            f.flush()
-            # Onto the disk before the rename: otherwise a power cut can
-            # leave the real name pointing at data that was never written.
-            os.fsync(f.fileno())
-        os.replace(temporary, path)
-    finally:
-        # Still there only if something above failed. Removed so a stray,
-        # half-written file is never mistaken for the state; the error that
-        # got us here propagates unchanged.
-        temporary.unlink(missing_ok=True)

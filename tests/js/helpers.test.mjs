@@ -88,6 +88,19 @@ describe('niceTicks', () => {
     }
   });
 
+  it('never rounds a 2.5 step to 3 on an integer axis, taking 5 instead', () => {
+    // 2.5 is the one step on the ladder that is not whole. Rounded, it gave
+    // 0, 3, 6, 9: a step nobody counts in. The next rung up keeps the ticks
+    // nice and never more of them than asked for.
+    assert.deepEqual(niceTicks(0, 10, 4, true), [0, 5, 10]);
+    for (const [lo, hi, target] of [[0, 10, 4], [0, 9, 4], [3, 12, 4], [0, 100, 4], [0, 7, 3]]) {
+      const ticks = niceTicks(lo, hi, target, true);
+      const step = ticks[1] - ticks[0];
+      assert.ok(isNiceStep(step), `niceTicks(${lo}, ${hi}, ${target}, true) = ${JSON.stringify(ticks)}`);
+      assert.ok(ticks.length <= target + 1, JSON.stringify(ticks));
+    }
+  });
+
   it('stops at the last tick inside the range rather than past it', () => {
     // The histogram depends on this and extends the ticks itself: "niceTicks(0, 16)
     // stops at 15".
@@ -131,6 +144,11 @@ describe('niceDomain', () => {
     const domain = niceDomain(1, 79, 4, true);
     assert.deepEqual([domain.lo, domain.hi], [0, 80]);
     domain.ticks.forEach((tick) => assert.ok(Number.isInteger(tick), `${tick}`));
+  });
+
+  it('ends a 0–10 trial axis at 10, not 12', () => {
+    const domain = niceDomain(0, 10, 4, true);
+    assert.deepEqual([domain.lo, domain.hi], [0, 10]);
   });
 
   it('opens a single value into a range around it', () => {
@@ -207,12 +225,41 @@ describe('fmt', () => {
   });
 
   it('groups thousands without decimals', () => {
-    assert.match(fmt(1234.5), /^1\D?235$/);
+    // A comma whatever the browser's locale, as Python writes it; and 1234.5
+    // is exactly halfway, so it goes to the even neighbour, as in Python.
+    assert.equal(fmt(1234.5), '1,234');
+    assert.equal(fmt(1234.6), '1,235');
   });
 
   it('sets a negative value with a true minus sign', () => {
     assert.equal(fmt(-12.34), MINUS + '12.3');
-    assert.match(fmt(-1234.5), new RegExp('^' + MINUS + '1\\D?235$'));
+    assert.equal(fmt(-1234.5), MINUS + '1,234');
+  });
+
+  it("writes every number exactly as the Python side's format_number does", () => {
+    // Produced by alhazen.dashboard.panels.format_number (Python 3.12), with
+    // the leading hyphen then set as U+2212, as the Python side's
+    // presentation pass does. Regenerate when format_number changes:
+    //   json.dumps([[v, format_number(v)] for v in values], ensure_ascii=False)
+    // The rows cover each magnitude band, Python's .3g (0.5, not 0.500;
+    // exponent notation below 1e-4), exact halfway values (ties go to the
+    // even digit), rounding that carries into the next band, and 1e21, where
+    // toFixed would switch to exponent notation.
+    const FROM_PYTHON = [
+      [0.5, '0.5'], [-0.5, '-0.5'], [0.25, '0.25'], [0.1, '0.1'], [0.1234, '0.123'],
+      [0.01234, '0.0123'], [0.001, '0.001'], [0.00012345, '0.000123'],
+      [1.2345e-05, '1.23e-05'], [1e-07, '1e-07'], [0.03125, '0.0312'], [0.0625, '0.0625'],
+      [0.9995, '1'], [0.99949, '0.999'], [0.12345, '0.123'], [1.0, '1.00'], [1.5, '1.50'],
+      [2.125, '2.12'], [2.135, '2.13'], [9.999, '10.00'], [9.995, '9.99'], [10.0, '10.0'],
+      [10.25, '10.2'], [12.34, '12.3'], [99.95, '100.0'], [100.0, '100'], [100.5, '100'],
+      [101.5, '102'], [123.4, '123'], [999.5, '1000'], [1000.0, '1,000'], [1000.5, '1,000'],
+      [1234.5, '1,234'], [1235.5, '1,236'], [-1234.5, '-1,234'], [1234567.891, '1,234,568'],
+      [1e+21, '1,000,000,000,000,000,000,000'], [-0.03125, '-0.0312'], [-12.34, '-12.3'],
+      [-2.125, '-2.12'], [0.0, '0'], [-0.0, '0'],
+    ];
+    for (const [value, python] of FROM_PYTHON) {
+      assert.equal(fmt(value), python.replace(/^-/, MINUS), `fmt(${value})`);
+    }
   });
 
   it('shows a dash for a value that is not a finite number', () => {
@@ -455,7 +502,8 @@ describe('tableRows', () => {
     });
     assert.deepEqual(table.head, ['Group', 'Mean', 'Mean ± s.e.m.', 'n']);
     assert.deepEqual(table.rows, [
-      ['Left', '301', '± 12.3', '12'],
+      // 12.25 is exactly halfway: fmt rounds it to the even digit, as Python does.
+      ['Left', '301', '± 12.2', '12'],
       ['right', '290', '—', '1'],
       ['up', '0.625', '0.512 – 0.713', '30'],
     ]);

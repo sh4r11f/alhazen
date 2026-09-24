@@ -66,6 +66,11 @@ def load_scene(
 
     scene = Scene.model_validate(data)
     known = set(FUNCTIONS) | set(CONSTANTS) | HOST_IDENTIFIERS | set(declared_params or ())
+    # The background may be an expression too (a computed colour), and it is
+    # evaluated on every frame like any layer's field. It used to be the one
+    # expression never looked at here, so its typo waited for the first draw.
+    if isinstance(scene.background, dict) and isinstance(scene.background.get("expr"), str):
+        _check_expression("background", scene.background["expr"], known)
     for index, layer in enumerate(scene.layers):
         _check_layer(layer, f"layers[{index}]", known)
     log.info("scene loaded: %d top-level layers", len(scene.layers))
@@ -143,25 +148,34 @@ def _check_expressions(layer: Layer, path: str, known: set[str]) -> None:
       ternary, which may be minutes into a session.
     """
     for field_path, source in _expressions(layer):
-        where = f"{path}.{field_path}"
-        try:
-            names = identifiers(source)
-        except ConfigError as error:
-            raise ConfigError(f"{where} does not parse: {error}") from error
-        if REF_IDENTIFIER in names:
-            raise ConfigError(
-                f"{where} uses ref() — outside the subset alhazen renders. A cross-layer "
-                f"read makes evaluation order load-bearing, so a scene using one would "
-                f"draw differently depending on which layer was evaluated first. Inline "
-                f"the value, or render this scene in the studio."
-            )
-        unknown = sorted(names - known)
-        if unknown:
-            raise ConfigError(
-                f"{where} reads {unknown}, which nothing defines. Known names are the "
-                f"function library, the builtin variables {sorted(HOST_IDENTIFIERS)}, and "
-                f"the params this scene was loaded with."
-            )
+        _check_expression(f"{path}.{field_path}", source, known)
+
+
+def _check_expression(where: str, source: str, known: set[str]) -> None:
+    """Compile one expression and resolve its identifiers; ``where`` names it.
+
+    Compiling is what catches a malformed literal (``1.2.3``) or a syntax
+    error; resolving is what catches a name nothing defines. Both are facts
+    about the text alone, so both belong here rather than on a frame.
+    """
+    try:
+        names = identifiers(source)
+    except ConfigError as error:
+        raise ConfigError(f"{where} does not parse: {error}") from error
+    if REF_IDENTIFIER in names:
+        raise ConfigError(
+            f"{where} uses ref() — outside the subset alhazen renders. A cross-layer "
+            f"read makes evaluation order load-bearing, so a scene using one would "
+            f"draw differently depending on which layer was evaluated first. Inline "
+            f"the value, or render this scene in the studio."
+        )
+    unknown = sorted(names - known)
+    if unknown:
+        raise ConfigError(
+            f"{where} reads {unknown}, which nothing defines. Known names are the "
+            f"function library, the builtin variables {sorted(HOST_IDENTIFIERS)}, and "
+            f"the params this scene was loaded with."
+        )
 
 
 def _expressions(layer: Layer) -> Iterator[tuple[str, str]]:

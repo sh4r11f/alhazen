@@ -565,3 +565,89 @@ class TestTrialsPerBlockNeverCutsAPlan:
         served = drain(make_scheduler(cfg, self.grid(), rng()))
 
         assert [condition.params["block"] for condition in served] == [1, 1, 2, 2]
+
+
+class TestAdaptiveBlocksLastAsLongAsTheEstimator:
+    """An adaptive kind shares one estimator across its blocks, and the blocks
+    end on ``n_blocks x trials_per_block`` completed trials. When that is fewer
+    than the estimator's ``n_trials`` (per interleaved staircase or level),
+    the last block ended the session with the staircase or QUEST+ unfinished —
+    fewer trials than the config asked for, and nothing in the log to say so.
+    It is refused when the scheduler is built, naming the numbers.
+
+    A staircase stopped by reversals alone has no trial count to compare, so
+    it is not checked: how many trials its reversals take is unknowable in
+    advance."""
+
+    def test_a_staircase_cut_short_by_its_blocks_is_refused_with_the_numbers(self):
+        cfg = a_staircase(blocks=BlockConfig(n_blocks=2, trials_per_block=2), n_trials=6)
+
+        with pytest.raises(ConfigError) as excinfo:
+            make_scheduler(cfg, sides(), rng(), task_name="contrast-task")
+
+        message = str(excinfo.value)
+        assert "contrast-task" in message
+        assert "n_blocks=2" in message
+        assert "trials_per_block=2" in message
+        assert "4 completed trials" in message
+        assert "6" in message  # what the staircase needs
+
+    def test_interleaved_staircases_need_their_trials_each(self):
+        # Two staircases of 3 trials each need 6; three blocks of 1 give 3.
+        cfg = a_staircase(
+            blocks=BlockConfig(n_blocks=3, trials_per_block=1), interleave_by="side", n_trials=3
+        )
+
+        with pytest.raises(ConfigError, match="2 interleaved"):
+            make_scheduler(cfg, sides(), rng())
+
+    def test_a_staircase_with_reversals_too_is_still_checked(self):
+        # n_trials is its ceiling: blocks ending below it can end the session
+        # before either stopping rule fires.
+        cfg = a_staircase(
+            blocks=BlockConfig(n_blocks=2, trials_per_block=2), n_trials=6, n_reversals=4
+        )
+
+        with pytest.raises(ConfigError, match="trials_per_block"):
+            make_scheduler(cfg, sides(), rng())
+
+    def test_a_staircase_stopped_by_reversals_alone_builds(self):
+        cfg = a_staircase(
+            blocks=BlockConfig(n_blocks=2, trials_per_block=2), n_trials=None, n_reversals=4
+        )
+
+        assert isinstance(make_scheduler(cfg, sides(), rng()), BlockPlan)
+
+    def test_quest_cut_short_by_its_blocks_is_refused(self):
+        with pytest.raises(ConfigError, match="n_trials=3"):
+            make_scheduler(
+                a_quest(blocks=BlockConfig(n_blocks=2, trials_per_block=1)), sides(), rng()
+            )
+
+    def test_interleaved_quest_needs_its_trials_per_level(self):
+        cfg = SchedulerConfig(
+            kind="questplus",
+            quest=QuestConfig(
+                parameter="contrast",
+                intensities=[0.2, 0.5],
+                thresholds=[0.2, 0.5],
+                n_trials=3,
+                interleave_by="side",
+            ),
+            blocks=BlockConfig(n_blocks=1, trials_per_block=5),
+        )
+
+        with pytest.raises(ConfigError, match="6"):
+            make_scheduler(cfg, sides(), rng())
+
+    @pytest.mark.parametrize("kind", sorted(ADAPTIVE_CONFIGS))
+    def test_blocks_that_cover_the_estimator_build_and_run_it_to_the_end(self, kind):
+        # 3 trials, in 2 blocks of 2: the second block ends when the
+        # estimator does, one trial in.
+        source = make_scheduler(
+            ADAPTIVE_CONFIGS[kind](blocks=BlockConfig(n_blocks=2, trials_per_block=2)),
+            sides(),
+            rng(),
+        )
+
+        assert [c.params["block"] for c in drain(source)] == [1, 1, 2]

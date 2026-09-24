@@ -17,19 +17,21 @@ rest is enforced by the import contract, not by convention.
 """
 
 from alhazen.analysis.io.session import RunData, load_run
-from alhazen.analysis.photodiode import PhotodiodeReport
-from alhazen.analysis.report import SessionReport, build_report
+from alhazen.analysis.photodiode import PhotodiodeReport as PhotodiodeReport
+from alhazen.analysis.report import SessionReport as SessionReport
+from alhazen.analysis.report import build_report as build_report
 from alhazen.analysis.results import ResultsBundle
 from alhazen.analysis.sync import AlignmentFit, align_run, fit_alignment
 
+# `__all__` holds only the names docs/reference.md lists as public (a test in
+# tests/unit/test_docs_snippets.py holds it to that). The `X as X` imports
+# above are internal: they stay importable from here, for code that already
+# imports them this way, but are not exported.
 __all__ = [
     "AlignmentFit",
-    "PhotodiodeReport",
     "ResultsBundle",
     "RunData",
-    "SessionReport",
     "align_run",
-    "build_report",
     "fit_alignment",
     "load_run",
 ]

@@ -164,13 +164,20 @@ def make_scheduler(
 
     An **adaptive** kind shares one scheduler across every block, because its
     estimate must be continuous. It therefore needs ``trials_per_block`` to
-    say where a block ends, and BlockPlan says so if it is missing.
+    say where a block ends, and BlockPlan says so if it is missing. The
+    blocks must also last as long as the estimator: ``n_blocks x
+    trials_per_block`` below its ``n_trials`` is refused, because the last
+    block would end the session with the estimate unfinished.
     """
     if cfg.blocks is None:
         return _make_inner(cfg, conditions, rng, score, task_name)
     if cfg.kind in ADAPTIVE_KINDS:
+        inner = _make_inner(cfg, conditions, rng, score, task_name)
+        # After the build, so a bad interleave key is refused by _levels for
+        # what it is before its level count is used here.
+        _refuse_blocks_shorter_than_the_estimator(cfg, conditions, task_name)
         return BlockPlan(
-            _make_inner(cfg, conditions, rng, score, task_name),
+            inner,
             n_blocks=cfg.blocks.n_blocks,
             trials_per_block=cfg.blocks.trials_per_block,
             rng=rng,
@@ -237,6 +244,70 @@ def _refuse_a_bound_below_the_plan(
         f"end — and the conditions can end with uneven counts. Omit trials_per_block "
         f"(a block of this kind ends when its plan is done), or set n_per_condition so "
         f"that one block's plan is the block length you want."
+    )
+
+
+def _refuse_blocks_shorter_than_the_estimator(
+    cfg: SchedulerConfig, conditions: list[Condition], task_name: str | None
+) -> None:
+    """Refuse adaptive blocks that end before the estimator has its trials.
+
+    An adaptive kind shares one estimator across its blocks, and the blocks
+    end on completed trials: ``n_blocks x trials_per_block`` in all. The
+    estimator stops on its own ``n_trials`` completed trials — per staircase
+    when interleaved, per level for QUEST+. If the blocks' total is smaller,
+    the last block ends the session with the staircase or QUEST+ unfinished:
+    fewer trials than the config asked for, a threshold from a run cut short,
+    and nothing in the log to say so. Refused at build time, like every other
+    config error.
+
+    A refusal rather than a warning: no design needs a trial count its blocks
+    can never reach. A session meant to stop after the blocks' total should
+    say so with that ``n_trials``, and the numbers in the config then mean
+    what they say. The other direction (blocks longer than the estimator) is
+    fine: the estimator finishes, and the blocks after it are empty.
+
+    Not checked: a staircase stopped by ``n_reversals`` alone, whose trial
+    count is unknowable in advance, and blocks with no ``trials_per_block``
+    (then there is one block, and it ends when the estimator does —
+    BlockPlan refuses more than one without a bound).
+    """
+    assert cfg.blocks is not None
+    bound = cfg.blocks.trials_per_block
+    if bound is None:
+        return
+    if cfg.kind == "staircase":
+        assert cfg.staircase is not None
+        n_trials, interleave_by, what = (
+            cfg.staircase.n_trials,
+            cfg.staircase.interleave_by,
+            "staircase",
+        )
+    else:
+        assert cfg.quest is not None
+        n_trials, interleave_by, what = cfg.quest.n_trials, cfg.quest.interleave_by, "QUEST+ level"
+    if n_trials is None:
+        return
+    # _make_inner has already built the estimators from these same levels,
+    # so this cannot raise here; it only counts them.
+    n_estimators = len(_levels(conditions, interleave_by)) if interleave_by is not None else 1
+    needed = n_trials * n_estimators
+    total = cfg.blocks.n_blocks * bound
+    if total >= needed:
+        return
+    who = f"task {task_name!r}" if task_name else "this task"
+    each = (
+        f"n_trials={n_trials} for each of its {n_estimators} interleaved {what}s"
+        if n_estimators > 1
+        else f"n_trials={n_trials}"
+    )
+    raise ConfigError(
+        f"paradigm blocks give {who} n_blocks={cfg.blocks.n_blocks} x "
+        f"trials_per_block={bound} = {total} completed trials, but its {cfg.kind!r} "
+        f"paradigm needs {needed} to finish ({each}). The blocks share one estimator and "
+        f"end the session after {total}, so it would stop {needed - total} trials short "
+        f"with the estimate unfinished. Raise n_blocks or trials_per_block so the blocks "
+        f"cover {needed} completed trials, or lower n_trials to what the blocks hold."
     )
 
 

@@ -73,13 +73,30 @@ def response_phases(
     if mode is SubjectMode.SACCADE_AND_REWARD:
         if on_hit is None or on_miss is None:
             raise ValueError("SubjectMode.SACCADE_AND_REWARD needs on_hit and on_miss")
+        # Required, never defaulted to on_miss. "No saccade at all" is not a
+        # landing miss: a miss is usually a completed trial, so a trial the
+        # subject never answered would not be served again, and an adaptive
+        # scheduler would record it as a wrong answer. Which outcome it is —
+        # usually a non-completed one — is the task's to say.
+        if on_timeout is None:
+            raise ValueError(
+                "SubjectMode.SACCADE_AND_REWARD needs on_timeout: the outcome for a trial "
+                "with no saccade before timeout_s. It is not on_miss (a saccade that landed "
+                "off target); pass the task's own no-response outcome, usually one with "
+                "completed=False so the condition is served again"
+            )
         return [
             StimulusResponse(
                 stimulus_key=stimulus_key,
                 depart_region=depart_region,
                 timeout_s=timeout_s,
-                on_timeout=on_timeout or on_miss,
+                on_timeout=on_timeout,
             ),
+            # LandingCheck, so its endpoint columns are where gaze first
+            # crossed into the target (mid-flight), not where the saccade
+            # came to rest — see its docstring. Kept, not switched to
+            # LandingSample: that would change what existing runs of this
+            # mode record and when their trials end.
             LandingCheck(
                 region=target_region,
                 timeout_s=landing_timeout_s,

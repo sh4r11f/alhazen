@@ -4,9 +4,14 @@ experiment's own event vocabulary."""
 from __future__ import annotations
 
 import csv
+import importlib.util
 import re
+import shutil
+import subprocess
+from pathlib import Path
 
 import pytest
+import yaml
 
 from alhazen import CircleRegion, Model
 from alhazen.config.models import (
@@ -27,6 +32,7 @@ from alhazen.devices.eyetracker.procedures import GazeCorrection
 from alhazen.devices.reward import SimulatedReward
 from alhazen.errors import ConfigError
 from alhazen.paradigms.base import Condition, SimpleSequence
+from alhazen.paradigms.config import SchedulerConfig
 from alhazen.session.builder import (
     build_session,
     make_gaze_input_provider,
@@ -36,7 +42,9 @@ from alhazen.session.builder import (
 from alhazen.session.runner import host_overlay_shapes
 from alhazen.task.plan import TrialPlan
 from alhazen.testing import FakeClock
-from support import COMPLETED, MONITOR, SCREEN, RunForFrames
+from support import COMPLETED, MONITOR, SCREEN, RunForFrames, load_example_task
+
+EXAMPLES = Path(__file__).parents[2] / "examples"
 
 
 class Params(Model):
@@ -810,3 +818,99 @@ class TestTheSessionClock:
                 display=DisplayConfig(backend="psychopy"),
             )
         assert not list(tmp_path.rglob("run-*"))
+
+
+class TestTheExperimentRevisionIsTheExperiments:
+    """`experiment_git_sha` must describe the repository the experiment's code
+    came from. The runner wrote the snapshot without saying where that was,
+    so the snapshot read the working directory instead: a session started
+    from a home folder, a data drive or another checkout recorded that
+    folder's revision — or "not a source checkout" — for an experiment whose
+    commit was sitting in its own repository all along.
+
+    Each test builds a real repository under tmp_path holding the experiment
+    code, then starts the session from a different folder, so a revision read
+    from the working directory and one read from the code cannot agree."""
+
+    @staticmethod
+    def _git(repo, *args):
+        # Identity per call, so the test neither needs nor writes git config.
+        return subprocess.run(
+            ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t", *args],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+
+    def _commit_all(self, repo):
+        """Commit everything in `repo`; the short SHA a clean tree records."""
+        self._git(repo, "init", "-q")
+        self._git(repo, "add", ".")
+        self._git(repo, "commit", "-q", "-m", "the experiment")
+        return self._git(repo, "rev-parse", "--short", "HEAD")
+
+    @staticmethod
+    def _recorded(data_root):
+        snapshot = next(data_root.rglob("config_snapshot.yaml"))
+        provenance = yaml.safe_load(snapshot.read_text(encoding="utf-8"))["provenance"]
+        return provenance["experiment_git_sha"]
+
+    def test_a_task_is_described_by_the_repository_its_class_lives_in(self, tmp_path, monkeypatch):
+        """The common case: `task=` a Task from an experiment package. Its
+        class's source file is the experiment; that file's repository is the
+        revision that ran."""
+        repo = tmp_path / "experiment"
+        shutil.copytree(
+            EXAMPLES / "minimal_fixation", repo, ignore=shutil.ignore_patterns("__pycache__")
+        )
+        head = self._commit_all(repo)
+        task_module = load_example_task(repo)
+        elsewhere = tmp_path / "started-from-here"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+
+        params = task_module.FixationParams(
+            fixation_duration=Duration(ms=0),
+            iti=Duration(ms=0),
+            paradigm=SchedulerConfig(n_per_condition=1),
+        )
+        rig = RigConfig(
+            monitor=MONITOR, display=DisplayConfig(backend="simulated"), data_root=tmp_path / "d"
+        )
+        build_session(
+            rig=rig,
+            subject="t01",
+            session=1,
+            run=1,
+            task=task_module.MinimalFixationTask(params),
+            seed=1,
+            simulated_frame_period_s=0.0,
+        ).run()
+
+        assert self._recorded(tmp_path / "d") == head
+
+    def test_without_a_task_the_trial_builder_names_the_experiment(self, tmp_path, monkeypatch):
+        """A session wired piece by piece has no task class to ask, but its
+        trial builder is still the experiment's own code."""
+        repo = tmp_path / "experiment"
+        repo.mkdir()
+        (repo / "trials.py").write_text(
+            "from alhazen.task.plan import TrialPlan\n"
+            "from support import COMPLETED, RunForFrames\n"
+            "\n"
+            "def build_trial(setup):\n"
+            "    return TrialPlan(phases=[RunForFrames(1, COMPLETED)])\n",
+            encoding="utf-8",
+        )
+        head = self._commit_all(repo)
+        spec = importlib.util.spec_from_file_location("experiment_trials", repo / "trials.py")
+        assert spec is not None and spec.loader is not None
+        trials = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(trials)
+        elsewhere = tmp_path / "started-from-here"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+
+        build(tmp_path / "d", EventSchema(()), build_trial=trials.build_trial).run()
+
+        assert self._recorded(tmp_path / "d") == head
