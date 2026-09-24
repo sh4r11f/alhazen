@@ -17,8 +17,12 @@ without either importing the other.
   jitter that mapping carries.
 """
 
-from alhazen.neural.detect import SpikeDetector
+from alhazen.neural.detect import SpikeDetector as SpikeDetector
 from alhazen.neural.rfmap import ProbeGrid, RFAccumulator
-from alhazen.neural.timebase import StreamTimebase
+from alhazen.neural.timebase import StreamTimebase as StreamTimebase
 
-__all__ = ["ProbeGrid", "RFAccumulator", "SpikeDetector", "StreamTimebase"]
+# `__all__` holds only the names docs/reference.md lists as public (a test in
+# tests/unit/test_docs_snippets.py holds it to that). The `X as X` imports
+# above are internal: they stay importable from here, for code that already
+# imports them this way, but are not exported.
+__all__ = ["ProbeGrid", "RFAccumulator"]

@@ -188,6 +188,20 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Changed
 
+- **Each subpackage's `__all__` now matches the API reference.** The page
+  says a subpackage's `__all__` does not make a name public, yet sixteen
+  `__all__` lists still exported names it calls internal — the device
+  backends and their `make_*` factories, `resolve_seed`, `SessionPaths`,
+  `write_snapshot`, `TrainingSupervisor`, `SubjectMode`, `mulberry32` and
+  more — so `import *`, editors and linters presented them as API. Every
+  `__all__` now holds only names the page lists for that subpackage or its
+  modules, and a test fails when one exports anything else. **Nothing was
+  removed from importability**: every name that left an `__all__` is still
+  importable from the same subpackage (a test pins that), and no name was
+  added to the reference page — none of them is imported through a
+  subpackage by the experiments built on alhazen, `examples/`, the
+  `alhazen new` template or the docs.
+
 - **Blocks that cannot hold a paradigm's planned trials are refused, for
   adaptive kinds and for a hand-built `BlockPlan`.** An adaptive kind
   (`staircase`, `questplus`) shares one estimator across its blocks, and the
