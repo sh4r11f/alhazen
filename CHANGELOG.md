@@ -301,6 +301,21 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   feedback runs to its end, and the trial keeps its outcome — paid,
   scheduled and counted by it.
 
+- **Frame QA's percentages no longer contradict their own verdict.** The
+  recycle reason printed the dropped fraction to one decimal and the budget
+  to whole percents. At the shipped 10% budget, a trial that dropped 21 of
+  209 frames was recycled as "(10.0%), over the 10% budget", and a 7.5%
+  budget was written as "8%": "3 of 39 frames dropped (7.7%), over the 8%
+  budget". That text is the trial row's `frame_qa_reason`, the session log's
+  line and `FrameQAError`'s message. The per-trial dropped-frames line and
+  the failure-streak pause ("dropped over 8% of their frames") rounded the
+  same way. A budget is now written as it was set ("7.5%"). A fraction gets
+  as many decimals as it takes to read on the side of the budget it is
+  really on: "(10.05%), over the 10% budget". A fraction clear of the budget
+  keeps its one decimal ("(15.0%)"). The alignment's matched-fraction
+  refusal already worked this way ("79.8% < 80%"); all of these messages now
+  share one rule, and the refusal prints exactly what it did.
+
 ## 1.5.0 - 2026-09-23
 
 ### Changed

@@ -405,13 +405,14 @@ class TestTooManyFailuresInARow:
         for outcome in (FAILED, FAILED, DROPPED_FRAMES, FAILED, FAILED):
             assert not harness.runner._too_many_failures_in_a_row(outcome)
 
-    def _frames_session(self, tmp_path, plan, limit, kind):
+    def _frames_session(self, tmp_path, plan, limit, kind, budget=0.10):
         """A session on a display that drops frames when told to.
 
         ``plan`` holds outcomes, and ``("slow", outcome)`` for a trial that ends
         with that outcome after every one of its frames overran. Frame QA
-        recycles, with a consecutive-recycle limit high enough never to be
-        what stops the run. ``kind`` is what the display reports itself as.
+        recycles past ``budget``, with a consecutive-recycle limit high enough
+        never to be what stops the run. ``kind`` is what the display reports
+        itself as.
         """
         from alhazen.config.models import FrameQAConfig
         from alhazen.display.frames import FrameMonitor
@@ -440,7 +441,7 @@ class TestTooManyFailuresInARow:
         harness.display.kind = kind
         monitor = FrameMonitor(
             FrameQAConfig(
-                policy="recycle_trial", max_dropped_fraction=0.10, max_consecutive_recycles=50
+                policy="recycle_trial", max_dropped_fraction=budget, max_consecutive_recycles=50
             ),
             1 / FRAME_S,
         )
@@ -489,6 +490,25 @@ class TestTooManyFailuresInARow:
         assert "check the display before recalibrating" in title
         log = harness.paths.log_path.read_text(encoding="utf-8")
         assert "check the display before recalibrating" in log
+
+    def test_the_pause_states_the_budget_as_configured(self, tmp_path):
+        """Whole percents wrote a 7.5% budget as "8%", so the heading and the
+        log claimed the trials dropped over 8% of their frames: a number
+        nobody set, and one those trials need not have reached."""
+        from support import FAILED
+
+        slow_failure = ("slow", FAILED)
+        plan = [slow_failure, slow_failure, FAILED, COMPLETED]
+
+        harness, pauses = self._frames_session(
+            tmp_path, plan, limit=3, kind="psychopy", budget=0.075
+        )
+
+        (title,) = [t for t in pauses if "FAILED IN A ROW" in t]
+        assert "2 of them dropped over 7.5% of their frames" in title
+        log = harness.paths.log_path.read_text(encoding="utf-8")
+        assert "2 of them dropped more than 7.5% of their frames" in log
+        assert "8%" not in title
 
     def test_on_a_simulated_display_frame_times_are_not_evidence(self, tmp_path):
         """A simulated display's frame times are the host's scheduler, so the

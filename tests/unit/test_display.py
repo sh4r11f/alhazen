@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import types
 
 import pytest
 
 from alhazen.config.models import FrameQAConfig, MonitorConfig
+from alhazen.data.percents import threshold_percent
 from alhazen.display import simulated
 from alhazen.display.frames import FrameMonitor
 from alhazen.display.screen import Screen, within_radius
@@ -302,6 +304,123 @@ class TestFrameMonitor:
         assert lines[0] == "trial_index,t,interval_s,dropped"
         assert len(lines) == 3  # header + 2 measured intervals
         assert lines[2].endswith("True")
+
+
+class TestFrameQAPercentages:
+    """The recycle reason and the per-trial line print the dropped fraction
+    beside a verdict about the budget. With one fixed decimal, 21 of 209
+    frames at the shipped 10% budget read "(10.0%), over the 10% budget";
+    whole percents wrote a 7.5% budget as "8%", so 3 of 39 read "(7.7%), over
+    the 8% budget". Both contradicted the verdict they came with."""
+
+    @staticmethod
+    def monitor(policy="recycle_trial", budget=None, **extra):
+        # A budget is only passed under the policy that reads it: under any
+        # other the config refuses it, and the default 10% stands.
+        thresholds = {} if budget is None else {"max_dropped_fraction": budget}
+        cfg = FrameQAConfig(policy=policy, **thresholds, **extra)
+        return FrameMonitor(cfg, refresh_rate_hz=100.0)  # 10 ms period, drop past 15 ms
+
+    @staticmethod
+    def trial(monitor, n_frames, n_dropped, index=1):
+        """One trial of ``n_frames`` measured intervals, the first
+        ``n_dropped`` of them dropped (30 ms against a 10 ms period)."""
+        monitor.start_trial(index)
+        t = 0.0
+        monitor.note_flip(t)
+        for frame in range(n_frames):
+            t += 0.030 if frame < n_dropped else 0.010
+            monitor.note_flip(t)
+        return monitor.end_trial()
+
+    @staticmethod
+    def warnings(caplog):
+        return [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+
+    @pytest.mark.parametrize(
+        ("n_frames", "n_dropped", "budget", "shown", "shown_budget"),
+        [
+            # At the shipped budget, one decimal printed 10.05% as "10.0%".
+            (209, 21, 0.10, "10.05%", "10%"),
+            (119, 6, 0.05, "5.04%", "5%"),
+            # Whole percents printed this budget as "8%".
+            (39, 3, 0.075, "7.7%", "7.5%"),
+        ],
+    )
+    def test_a_recycled_trial_reads_over_its_budget(
+        self, caplog, n_frames, n_dropped, budget, shown, shown_budget
+    ):
+        monitor = self.monitor(budget=budget)
+        with caplog.at_level(logging.WARNING, logger="alhazen.display.frames"):
+            summary = self.trial(monitor, n_frames, n_dropped)
+
+        assert summary.recycle
+        # The reason is what lands in the trial row (frame_qa_reason).
+        assert summary.reason == (
+            f"{n_dropped} of {n_frames} frames dropped ({shown}), over the {shown_budget} "
+            f"budget (frame_qa.max_dropped_fraction)"
+        )
+        (line,) = self.warnings(caplog)
+        assert f"trial 1: {n_dropped} of {n_frames} frames dropped ({shown})," in line
+        assert line.endswith("— trial recycled")
+
+    def test_the_abort_carries_the_same_reason(self):
+        monitor = self.monitor(budget=0.075, max_consecutive_recycles=1)
+        with pytest.raises(
+            FrameQAError, match=r"trial 1: 3 of 39 frames dropped \(7\.7%\), over the 7\.5% budget"
+        ):
+            self.trial(monitor, 39, 3)
+
+    def test_over_the_budget_reads_over_it_under_every_policy(self, caplog):
+        """The runner's failure-streak pause calls a trial over the budget
+        under any policy, so its line must not read within it either."""
+        monitor = self.monitor(policy="warn")  # the default 10% budget
+        with caplog.at_level(logging.WARNING, logger="alhazen.display.frames"):
+            summary = self.trial(monitor, 209, 21)
+
+        assert not summary.recycle and summary.reason is None
+        (line,) = self.warnings(caplog)
+        assert "21 of 209 frames dropped (10.05%)," in line
+        assert "recycled" not in line
+
+    def test_exactly_at_the_budget_reads_at_it(self, caplog):
+        monitor = self.monitor(budget=0.10)
+        with caplog.at_level(logging.WARNING, logger="alhazen.display.frames"):
+            summary = self.trial(monitor, 30, 3)
+
+        assert not summary.recycle and summary.reason is None
+        (line,) = self.warnings(caplog)
+        assert "3 of 30 frames dropped (10.0%)," in line
+
+    @pytest.mark.parametrize("budget", [0.05, 0.075, 0.10])
+    def test_next_to_the_budget_the_numbers_never_contradict_the_verdict(self, caplog, budget):
+        """Property-style, through the monitor itself: every trial of up to
+        120 frames whose drop count sits next to the budget, where rounding
+        can carry the fraction onto it."""
+        shown_budget = float(threshold_percent(budget).removesuffix("%"))
+        for n_frames in range(1, 121):
+            edge = budget * n_frames
+            near = {math.floor(edge) - 1, math.floor(edge), math.ceil(edge), math.ceil(edge) + 1}
+            for n_dropped in sorted(d for d in near if 0 < d <= n_frames):
+                over = n_dropped / n_frames > budget
+                caplog.clear()
+                # A fresh monitor per trial: the consecutive-recycle abort is
+                # not what this is about.
+                with caplog.at_level(logging.WARNING, logger="alhazen.display.frames"):
+                    summary = self.trial(self.monitor(budget=budget), n_frames, n_dropped)
+
+                assert summary.recycle is over
+                (line,) = self.warnings(caplog)
+                shown = re.search(r"frames dropped \(([\d.]+)%\)", line)
+                assert shown is not None, line
+                printed = float(shown.group(1))
+                assert (printed > shown_budget) if over else (printed <= shown_budget), line
+                if over:
+                    assert summary.reason is not None
+                    stated = re.search(r"\(([\d.]+)%\), over the ([\d.]+)% budget", summary.reason)
+                    assert stated is not None, summary.reason
+                    assert float(stated.group(2)) == shown_budget, summary.reason
+                    assert float(stated.group(1)) == printed > shown_budget, summary.reason
 
 
 class TestSimulatedDisplay:
