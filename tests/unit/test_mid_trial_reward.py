@@ -1404,6 +1404,31 @@ class TestBuild:
         started = set(threading.enumerate()) - threads_before
         assert not [t for t in started if t.name == "alhazen-reward"]
 
+    def test_a_build_that_fails_closes_the_dispenser_once(self, tmp_path):
+        # The worker's close() closes the device it wraps. A failed build
+        # that released the device and the worker separately would close
+        # the device twice, and a dispenser's close() is not promised to
+        # survive that.
+        class BrokenScheduler(Pursuit):
+            name = "broken-scheduler"
+
+            def make_source(self, params, rng):
+                raise ValueError("no scheduler for you")
+
+        class CountingReward(ScriptedReward):
+            def __init__(self) -> None:
+                super().__init__()
+                self.closes = 0
+
+            def close(self) -> None:
+                self.closes += 1
+                super().close()
+
+        device = CountingReward()
+        with pytest.raises(ValueError, match="no scheduler for you"):
+            build(tmp_path, BrokenScheduler(Params()), reward=device)
+        assert device.closes == 1
+
     def test_a_task_without_it_keeps_the_device_itself(self, tmp_path):
         runner = build(
             tmp_path,
