@@ -237,6 +237,24 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Fixed
 
+- **`experiment_git_sha` says `-dirty` when the experiment ran from
+  uncommitted code.** It was `git rev-parse --short HEAD`, which names the
+  commit and nothing else, so a session run from edited experiment code
+  recorded a clean-looking SHA whose checkout does not reproduce it. The
+  experiment's tree is now read exactly as `alhazen_git_describe` reads
+  alhazen's own — `git describe --always --dirty`, through one shared
+  function — so the value is `abc1234-dirty` for uncommitted changes to
+  tracked files. The key keeps its name. In a repository with no annotated
+  tag (every downstream experiment repo today) a clean tree records the
+  same short SHA as before; a tagged one records a describe string such as
+  `v2.0-3-gabc1234`, which git accepts as a revision. Every failure used to
+  read `unknown`; a directory outside any git repository now reads `not a
+  source checkout`, and `unknown` is kept for git being absent or not
+  answering, as in `alhazen_git_describe`. Git's output is now decoded as
+  UTF-8, which it is: in the Windows code page, a folder name such as `Ída`
+  made reading alhazen's own tree crash, and would have done the same to
+  the experiment's.
+
 - **The same run number on a later day wrote into the earlier run's
   folder.** `SessionPaths.create` refused only this run's own trials file,
   whose name carries the date; the folder's name does not. So `--run 1` on

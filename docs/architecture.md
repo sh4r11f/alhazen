@@ -1582,8 +1582,14 @@ every backend precisely so a backend cannot quietly reach for
 `build_session(...)` wires everything; `SessionRunner.run()` then:
 
 1. writes `config_snapshot.yaml` **before trial 1** (a crashed session still
-   documents itself) — merged config + seed + versions + git SHA + an
-   environment digest (sha256 over installed distributions);
+   documents itself) — merged config + seed + versions + an environment
+   digest (sha256 over installed distributions) + both git trees, the
+   experiment's (`experiment_git_sha`) and alhazen's own
+   (`alhazen_git_describe`). Both are read with `git describe --always
+   --dirty`, so a session run from uncommitted changes to tracked files says
+   `-dirty` rather than naming a commit that would not reproduce it; where
+   there is no answer they read `not a source checkout` (not in a git
+   repository) or `unknown` (git absent or not answering);
 2. registers the subject in `participants.tsv`;
 3. loops: `source.next()` → build → engine → `source.record()` for **every**
    outcome (schedulers own re-queueing) → recorder row for every outcome
