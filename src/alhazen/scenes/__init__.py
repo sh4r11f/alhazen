@@ -2,8 +2,9 @@
 
 A scene is JSON — shapes, gratings, dot fields, and expressions that animate
 them. The studio is where they are designed; this renders a documented subset
-of them inside a trial, deterministically: same scene, same params, same time,
-same pixels.
+of them inside a trial, deterministically: same scene, same params, same time
+and dt, same pixels. Inside a trial, time follows the measured flips, so a run
+that drops a frame shows a different sequence of frames (``SceneStimulus``).
 
 Three pieces: an expression evaluator that is a parser rather than ``eval``, a
 loader that refuses anything outside the subset by name, and a renderer whose

@@ -1098,12 +1098,20 @@ in the studio and in a trial.
 
 The full treatment, including the subset table, the language's
 JavaScript-not-Python semantics, and the measured pixel tolerances, is in
-[`scenes.md`](scenes.md). Three things are worth knowing here:
+[`scenes.md`](scenes.md). Four things are worth knowing here:
 
 - **The primary renderer is headless.** `headless_render(scene, params, time,
-  width, height)` returns a numpy array with no display, no window and no
+  width, height, dt)` returns a numpy array with no display, no window and no
   renderer, and the display path blits it. So what an experiment shows is
   exactly what a test inspects, on a machine with nothing installed.
+- **Scene time follows the measured flips.** `SceneStimulus` adds up the `dt`
+  its phase passes, which is the measured duration of each frame shown. A
+  dropped frame moves the scene on by the time it actually took, and the
+  picture due in between is never drawn. The same scene, params, `time` and
+  `dt` always give the same pixels, but two runs of a trial show the same
+  frames only if their flips took the same times. A sequence that must
+  repeat exactly needs a schedule indexed by frame (`FrameTimeline`, §5.2);
+  see [`scenes.md`](scenes.md#what-a-run-shows).
 - **Expressions are parsed, never `eval`'d**, and are pinned to the studio's
   own TypeScript by a fixture generated from it — including where the
   language is deliberately not Python (`round(2.5)` is 3, `-2 ** 2` is 4).
