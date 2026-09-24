@@ -45,7 +45,7 @@ list in the same change that adds it.
 These are what the tests pin. Do not "simplify" one away without a discussion:
 
 1. **Flip-locked events.** Visual events queue via `ctx.emit_on_flip` and emit
-   only after the flip that showed them.
+   only after the flip that showed them, stamped with that flip's time.
 2. **One clock.** Every timestamp comes from the injected session clock.
    Device clocks are aligned offline, never mixed in online.
 3. **Dumb phases.** A phase touches only the `TrialContext` — no hardware, no
