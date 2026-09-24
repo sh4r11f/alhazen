@@ -37,7 +37,7 @@ from alhazen.config.models import (
     SessionInfo,
     resolve_refresh,
 )
-from alhazen.core.clock import MonotonicClock
+from alhazen.core.clock import Clock, MonotonicClock
 from alhazen.core.commands import CommandSource, KeyboardCommands, NullCommands
 from alhazen.core.engine import TrialEngine
 from alhazen.core.events import EventBus, EventSchema
@@ -270,6 +270,7 @@ def build_session(
     reward: RewardDispenser | None = None,
     sync: SyncOutput | None = None,
     spikes: SpikeSource | None = None,
+    clock: Clock | None = None,
     curriculum: Curriculum | None = None,
     windowed: bool = False,
     sources: dict[str, str] | None = None,
@@ -299,6 +300,26 @@ def build_session(
     A device handed in is the session's to release from then on, like one
     the rig config built: the runner's teardown releases it when the session
     ends, and a build that fails releases it before raising.
+
+    ``clock`` is the session clock: every time the session records — events,
+    the trial rows' ``t_*`` stamps, flips, gaze — is read from it (the
+    one-clock invariant, CONTRIBUTING.md). None makes a ``MonotonicClock``,
+    which is what a real session wants. A caller that builds its own tracker
+    or subject stand-in must build it on this same clock, not a second one:
+    create the clock first and hand it to both. A tracker configured by the
+    session is given this clock anyway (``configure(screen, clock)``), but an
+    object that only reads the clock it was constructed with would otherwise
+    stamp its samples on a timebase nothing else in the run shares.
+
+    A clock that moves only when it is told to — one with an ``advance``
+    method, such as ``alhazen.testing.FakeClock`` — runs the session in
+    simulated time: the simulated display advances it one frame per flip,
+    and the runner's waits (the inter-trial interval, a timed rest's key
+    polls) advance it instead of sleeping. Every recorded time is then
+    exact and the same on every run, however loaded the machine, which is
+    what a test of a whole session wants. It needs the simulated display: a
+    real one's flips do not move it, and every timed phase would run forever,
+    so that pairing is refused before a run directory is created.
     """
     rig_cfg = rig if isinstance(rig, RigConfig) else load_rig(rig)
     if dashboard is not None or open_dashboard is not None:
@@ -400,6 +421,26 @@ def build_session(
             f"--mode simulate or --mode test, which stand in a simulated one."
         )
 
+    # A session clock that moves only when it is told to (FakeClock's
+    # `advance`) is simulated time, and a session on it has exactly two
+    # things that tell it to: the simulated display's flip and the runner's
+    # waits. Found by its method rather than its type because the builder
+    # may not import alhazen.testing (the layering contract), and any clock
+    # an experiment writes with the same shape needs the same wiring.
+    # None for every clock that moves by itself.
+    advance: Callable[[float], None] | None = getattr(clock, "advance", None)
+    # Refused here, before a run directory exists, for the same reason as the
+    # reward check above: nothing but the simulated display advances such a
+    # clock, so on a real window the first timed phase would never end, and
+    # a session that hangs says nothing about why.
+    if advance is not None and rig_cfg.display.backend != "simulated":
+        raise ConfigError(
+            f"build_session was given a clock that moves only when advanced "
+            f"({type(clock).__name__}), on a rig whose display backend is "
+            f"{rig_cfg.display.backend!r}. Only the simulated display advances such a clock; "
+            f"use display.backend: simulated, or leave clock unset for a real one."
+        )
+
     # Paths first: refusing to overwrite an existing run must fail before a
     # window ever opens or a device is touched.
     paths = SessionPaths.create(rig_cfg.data_root, subject, session, run, task_name, date_yyyymmdd)
@@ -441,7 +482,12 @@ def build_session(
         on_pause: Callable[[PauseMenu], str] | None
         if rig_cfg.display.backend == "simulated":
             display = SimulatedDisplay(
-                rig_cfg.monitor.refresh_rate_hz, frame_period_s=simulated_frame_period_s
+                rig_cfg.monitor.refresh_rate_hz,
+                frame_period_s=simulated_frame_period_s,
+                # On simulated time each flip moves the session clock on by
+                # one frame instead of waiting on the host's clock
+                # (display/simulated.py); None paces as before.
+                advance=advance,
             )
             commands = NullCommands()
             on_pause = None  # unattended: a pause resolves by resuming
@@ -489,7 +535,15 @@ def build_session(
         )
 
         screen = Screen.from_monitor(rig_cfg.monitor)
-        clock = MonotonicClock()
+        # The one session clock, and from here every consumer below takes
+        # this object: the tracker the rig config builds and any tracker
+        # handed in (configure), the eye-tracker monitor, the spike source,
+        # a live analysis, the engine and the runner. A clock the builder
+        # makes itself is made HERE, after the window is up and its refresh
+        # measured, as it always was: MonotonicClock zeroes at construction,
+        # so session times still start near zero at the first trial rather
+        # than counting the seconds a window and a dashboard took to open.
+        clock = clock if clock is not None else MonotonicClock()
 
         # Config that names events can only be checked against the *experiment's*
         # vocabulary, which is why this happens here and not in the models.
@@ -746,6 +800,12 @@ def build_session(
             refresh_rate_hz=refresh_hz,
             task_rng=streams["task"],
             iti_s=iti.seconds(refresh_hz) if iti is not None else 0.0,
+            # How the runner lets time pass: the inter-trial interval, and the
+            # key polls of a rest that resumes by itself, which loop until
+            # the session clock reaches a deadline. On simulated time they
+            # advance the clock, since a real sleep would leave it where it
+            # was and such a rest would never end; None sleeps for real.
+            wait=advance,
             # Read off the task's params by name, the way `iti` is by the
             # modes: a limit on failed trials in a row is the experiment's
             # number, and belongs in its task config next to the trial

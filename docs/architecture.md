@@ -1925,7 +1925,29 @@ and the device doubles (`ScriptedTracker`, `SimulatedReward`, `SimulatedSync`)
 in `alhazen.devices` alongside the real backends. `tests/support.py`'s
 `SessionHarness` wires a full session to them, reusing the builder's own
 closures so there stays exactly one gaze coordinate conversion in the
-codebase. Markers: `display` (excluded by default) is reserved for real-window
+codebase.
+
+A test that builds a whole session through `build_session` passes it the
+session clock (`clock=`), and builds any tracker it hands in on that same
+clock. A `FakeClock` there runs the session in simulated time:
+
+```mermaid
+graph LR
+    FC["FakeClock<br/>(moves only when advanced)"]
+    SD["SimulatedDisplay.flip()"] -->|"advance(one frame)"| FC
+    RW["runner wait<br/>(ITI, timed rest polls)"] -->|"advance(seconds)"| FC
+    FC -->|"now()"| EN["engine: flip stamps, events, t_* columns"]
+    FC -->|"now()"| TR["tracker handed in: gaze t"]
+```
+
+Every flip is then exactly one frame long, however long the host took to draw
+it, so a phase timed in frames always spans the same flips and every recorded
+time repeats run to run. Only the simulated display advances such a clock;
+`build_session` refuses one on a real display, where the first timed phase
+would never end. Left unset, the clock is a `MonotonicClock` made by the
+builder, as a real session needs.
+
+Markers: `display` (excluded by default) is reserved for real-window
 smoke tests. CI (3 OSes × py3.10/3.12) runs ruff (lint+format), mypy, pytest,
 and the import-layering contract.
 

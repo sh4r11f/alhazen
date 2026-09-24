@@ -16,6 +16,7 @@ from alhazen.display.frames import FrameMonitor
 from alhazen.display.screen import Screen, within_radius
 from alhazen.display.simulated import _SPIN_MARGIN_S, SimulatedDisplay, _wait_until
 from alhazen.errors import DisplayError, FrameQAError
+from alhazen.testing import FakeClock
 
 
 class TestScreen:
@@ -558,6 +559,56 @@ class TestSimulatedDisplayPacing:
         monkeypatch.setattr(simulated.sys, "platform", "linux")
         release = simulated._request_fine_timer()
         release()  # a no-op, not an error
+
+
+class TestSimulatedDisplayInSimulatedTime:
+    """Handed a clock's ``advance``, a flip moves that clock on by one frame
+    and waits for nothing — what lets ``build_session(clock=FakeClock())``
+    run a whole session in exact, repeatable time."""
+
+    FRAME = 1.0 / 60.0
+
+    @staticmethod
+    def never_sleep(seconds: float) -> None:
+        pytest.fail(f"a display in simulated time slept for {seconds} s")
+
+    def test_each_flip_advances_the_clock_one_period(self):
+        clock = FakeClock(start=5.0)
+        display = SimulatedDisplay(
+            nominal_refresh_hz=60.0, advance=clock.advance, sleep=self.never_sleep
+        )
+        for _ in range(3):
+            display.flip()
+        assert display.flip_count == 3
+        assert clock.now() == pytest.approx(5.0 + 3 * self.FRAME)
+
+    def test_an_unpaced_display_still_advances_by_the_nominal_frame(self):
+        # "As fast as the machine allows" has no meaning when no real time
+        # passes; a zero-length frame would stop the clock and every timed
+        # phase with it.
+        clock = FakeClock()
+        display = SimulatedDisplay(
+            nominal_refresh_hz=60.0, frame_period_s=0.0, advance=clock.advance
+        )
+        display.flip()
+        assert clock.now() == pytest.approx(self.FRAME)
+
+    def test_a_deliberate_period_is_the_one_advanced_and_reported(self):
+        clock = FakeClock()
+        display = SimulatedDisplay(
+            nominal_refresh_hz=60.0, frame_period_s=0.02, advance=clock.advance
+        )
+        display.flip()
+        assert clock.now() == pytest.approx(0.02)
+        assert display.measure_refresh_rate(10) == pytest.approx(50.0)
+
+    def test_simulated_time_asks_for_no_fine_timer(self, monkeypatch):
+        monkeypatch.setattr(
+            simulated, "_request_fine_timer", lambda: pytest.fail("should not be asked")
+        )
+        display = SimulatedDisplay(nominal_refresh_hz=60.0, advance=FakeClock().advance)
+        display.open()
+        display.close()
 
 
 class _FakePygletFont:

@@ -68,8 +68,8 @@ class TestSceneStimulusExample:
     def run_session(self, tmp_path, wrap_build_trial=None, **overrides):
         """Build the example's session. ``wrap_build_trial``, given the task's
         own build_trial, returns the one the session is built with."""
-        from alhazen.core.clock import MonotonicClock
         from alhazen.devices.eyetracker import GazeSample, ScriptedTracker
+        from alhazen.testing import FakeClock
 
         task_module = load_example_task(EXAMPLES / "scene_stimulus")
         params = task_module.SceneParams(
@@ -81,6 +81,13 @@ class TestSceneStimulusExample:
         # is never acquired, the trial's FIX_BREAK outcome is incomplete, the
         # scheduler re-queues it, and the session never ends.
         centre = GazeSample(gx=MONITOR.width_px / 2, gy=MONITOR.height_px / 2, t=0.0)
+        # ONE clock for the tracker and the session, and a fake one: the
+        # simulated display advances it exactly one frame per flip, so the
+        # 3-frame stimulus spans the same flips on every run. On the host's
+        # real clock, unpaced, a slow scene render under machine load could
+        # use the whole 3 frames' worth of time in one flip, leaving a trial
+        # with a single drawn frame and nothing that moved (issue #62).
+        clock = FakeClock()
         task = task_module.SceneTask(params)
         runner = build_session(
             rig=sim_rig(tmp_path),
@@ -92,7 +99,8 @@ class TestSceneStimulusExample:
             build_trial=(
                 wrap_build_trial(task.build_trial) if wrap_build_trial is not None else None
             ),
-            tracker=ScriptedTracker([(0.0, centre)], MonotonicClock()),
+            tracker=ScriptedTracker([(0.0, centre)], clock),
+            clock=clock,
             seed=1,
             simulated_frame_period_s=0.0,
             date_yyyymmdd="20260826",

@@ -29,6 +29,21 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Added
 
+- **`build_session(clock=...)` takes the session clock.** The builder made
+  its own `MonotonicClock` with no way to pass one in, so a test (or an
+  example's stand-in subject) that built its own tracker had to give it a
+  second, unrelated clock, and every phase of a built session was timed by
+  the host's real clock: on a loaded machine a 3-frame stimulus could end
+  after one frame (#62). Now a caller creates the clock and hands the same
+  one to its tracker and to `build_session`; unset, it is a `MonotonicClock`
+  as before. A clock that moves only when told to (`alhazen.testing.FakeClock`)
+  runs the session in simulated time: the simulated display advances it one
+  frame per flip (`SimulatedDisplay(advance=...)`) and the runner's waits
+  advance it instead of sleeping, so every recorded time is exact and
+  repeatable. Such a clock on a real display is refused with a `ConfigError`,
+  since nothing there would advance it. The scene-example and
+  shaping-curriculum tests now run on one fake clock.
+
 - **A task says what its subject reads: `Task.instructions()`.** It returns
   the text shown before trial one, or `None` to declare that the task has
   none (an animal subject); declared on a shared base class, it covers every

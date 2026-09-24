@@ -7,7 +7,10 @@ simulated session feels like (and times like) the real one; pass
 ``frame_period_s=0`` to run as fast as the machine allows.
 
 For deterministic unit tests, prefer ``alhazen.testing.FakeDisplay``, which
-advances a FakeClock instead of sleeping.
+advances a FakeClock instead of sleeping. A whole session built by
+``build_session(clock=FakeClock())`` gets the same from this backend: handed
+the clock's ``advance``, a flip moves simulated time on by one frame instead
+of waiting for real time to pass.
 """
 
 from __future__ import annotations
@@ -48,6 +51,7 @@ class SimulatedDisplay:
         *,
         now: Callable[[], float] = time.perf_counter,
         sleep: Callable[[float], None] = time.sleep,
+        advance: Callable[[float], None] | None = None,
     ) -> None:
         self._nominal_hz = nominal_refresh_hz
         self._period = 1.0 / nominal_refresh_hz if frame_period_s is None else frame_period_s
@@ -55,6 +59,20 @@ class SimulatedDisplay:
         # by timing real sleeps, which the test suite forbids.
         self._now = now
         self._sleep = sleep
+        # Simulated time: the ``advance`` of a session clock that moves only
+        # when it is told to (alhazen.testing.FakeClock). Given one, a flip
+        # moves that clock on by one frame and waits for nothing — pacing
+        # against real time would leave such a clock standing still, and
+        # every timed phase would then run forever.
+        #
+        # The frame it moves by is the rate measure_refresh_rate reports, so
+        # the frame math the session does on that rate lines up with what
+        # the clock then shows: the paced period, or the nominal one when the
+        # display is unpaced — "as fast as the machine allows" means nothing
+        # when no real time passes, and a flip of zero length would stop the
+        # clock just the same.
+        self._advance = advance
+        self._simulated_frame_s = self._period if self._period > 0 else 1.0 / nominal_refresh_hz
         self.window = _RecordingWindow()
         self.flip_count = 0
         self.messages: list[str] = []
@@ -76,7 +94,10 @@ class SimulatedDisplay:
 
     def open(self) -> None:
         self._opened = True
-        if self._period > 0 and self._release_timer is None:
+        # Fine ticks are for waiting accurately, and a display in simulated
+        # time never waits: asking would change a process-wide Windows
+        # setting for nothing.
+        if self._period > 0 and self._advance is None and self._release_timer is None:
             self._release_timer = _request_fine_timer()
 
     def close(self) -> None:
@@ -86,10 +107,16 @@ class SimulatedDisplay:
             self._release_timer = None
 
     def flip(self, clear: bool = True) -> None:
+        if self._advance is not None:
+            # Simulated time: every frame is exactly one frame long, however
+            # long the host took to draw it. That is what makes a session on
+            # a fake clock deterministic — a phase timed in frames always
+            # spans the same flips, on a loaded machine or an idle one.
+            self._advance(self._simulated_frame_s)
         # Pace against the *previous* flip, not a fixed sleep, so per-frame
         # work doesn't accumulate drift — the same discipline a vsync'd
         # renderer gives for free.
-        if self._period > 0:
+        elif self._period > 0:
             if self._last_flip is not None:
                 _wait_until(self._last_flip + self._period, now=self._now, sleep=self._sleep)
             self._last_flip = self._now()
