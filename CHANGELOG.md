@@ -25,6 +25,183 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+### Added
+
+- **A task says what its subject reads: `Task.instructions()`.** It returns
+  the text shown before trial one, or `None` to declare that the task has
+  none (an animal subject); declared on a shared base class, it covers every
+  task under it. Every way of starting a session shows it — `alhazen run
+  --task`, an experiment's `run.py` through `run_experiment`,
+  `build_mode_session` and `build_session(task=...)` — because the task is
+  the one thing all of them are handed. `run` and `test` wait on it for
+  SPACE; `simulate` shows it and starts by itself two seconds later (at once
+  with `--headless`), as it did for a `run.py` that passed its wording. It is
+  asked once, after a curriculum has set the stage's params and before the
+  run directory exists; text that is not a string, or is empty, is refused
+  there. `instructions=` given to `run_experiment`, `build_mode_session` or
+  `build_session` still works and **takes precedence** over the task's;
+  `instructions=""` turns the screen off. A task that does not override the
+  method behaves exactly as before — except that `--mode run` now logs a
+  WARNING naming it, and prints and records `instructions: none — …` before
+  trial one, so a task that forgot is not mistaken for one that decided. See
+  "What the subject reads first" in [docs/architecture.md](docs/architecture.md)
+  §5.1 and [docs/modes.md](docs/modes.md).
+- **A task names its own params file: `Task.default_params()`**, a
+  classmethod returning a path — absolute, or relative to the file the method
+  is written in. Every entry point loads it when `--params` is not given, in
+  every mode. A declared file that is not there stops the session with
+  `INVALID`, naming the path; the params model's defaults are never run in
+  its place. `--params` takes precedence, and so does
+  `run_experiment(default_params=...)` for the sessions a `run.py` starts. A
+  task that declares no file runs its model's defaults, as before. The
+  snapshot's `sources.task` names the file that was loaded, including the
+  task's own.
+- **A task derives params from the invocation: `Task.params_hook(params,
+  args)`**, a classmethod with the same contract as `run_experiment`'s
+  `params_hook=`: it runs between loading the params and constructing the
+  task, its result is re-validated through `params_model`, and it is not
+  called for a task that does not override it. `alhazen run --task` applies
+  it, so a task whose scheduler needs the subject and session (an adaptive
+  search carrying state across sessions) now starts from `alhazen run`.
+  `run_experiment(params_hook=...)`, when given, **replaces** the task's hook
+  for that `run.py`; the two are not chained. `default_params` or
+  `params_hook` written as an ordinary method or as a value is refused when
+  the class is defined.
+- **Sessions say where their params came from before trial one**: `params:
+  <file>`, or `params: the defaults of <Model> — no --params given, and <Task>
+  declares no default_params()`.
+- **`alhazen new` scaffolds a task that names its params file and its
+  instructions.** The template task's `default_params()` returns
+  `configs/task.yaml`, found from the task's own file (so the package is
+  installed editable, as its README says), and its `instructions()` returns
+  the subject's wording; its `run.py` passes only the task and a default
+  rig. Its tests gain two: the named params file is there and loads, and the
+  task tells its subject what to do.
+
+- **Every trial row names the system fault that hit it, in a new `fault`
+  column.** Two failures are the rig's, never the subject's: the display
+  dropping frames (frame QA's `recycle_trial` turned the trial into
+  `DROPPED_FRAMES`: `fault` is `dropped_frames`), and the eye tracker
+  stopping recording (the tracker health check fired: `fault` is
+  `tracker_stopped`). Every other row says `none` — a value, never an empty
+  cell, so a clean trial can be selected on (`trials.fault != "none"`). The
+  experimenter's skip is not a fault. The trials table lists `fault` among
+  its leading columns, right after `abort_reason`, and the trial-column
+  baseline in `tests/fixtures/contracts.json` gains it; nothing was removed
+  or renamed. See [docs/architecture.md](docs/architecture.md) §2.2.
+- **`lost_to_fault(outcome_name, record)`** in `alhazen.core`, and
+  `TrialResult.lost_to_fault`: the system fault a trial's measurement was
+  lost to, or None. A row names the fault that hit its trial; this says
+  whether the fault cost the trial its outcome (`DROPPED_FRAMES`, or
+  `ABORTED` by the health check — not the skip). It reads the row alone, so
+  the same rule applies to trials.csv offline. `NO_FAULT`,
+  `FAULT_DROPPED_FRAMES` and `FAULT_TRACKER_STOPPED` name the column's
+  values.
+- **A trial lost to a system fault is paid, and logged.** Both kinds are
+  served again, as before. A dropped-frames trial is paid for the subject's
+  response, as in 1.5.0. A tracker-stopped trial, usually cut off before
+  any response, is paid the task's new **`RewardPolicy.on_fault`**
+  (`RewardPulses`, scaled by `scale` like every delivery), and its REWARD or
+  REWARD_FAILED payload carries `fault` beside `outcome`. `on_fault`
+  defaults to `None`, which pays nothing, so a task that does not set it is
+  paid as before. Each lost trial gets one WARNING in `session.log` naming
+  the trial, the cause, what the subject was paid (or that the task sets no
+  `on_fault`), and that it will be served again. A mid-trial drop delivered
+  before the fault stays delivered and counted, and the line says how many.
+  The experimenter's skip and a pause are never paid `on_fault`. See "System
+  faults" in [docs/architecture.md](docs/architecture.md) §5.3.
+- **`REWARD_CANCELLED`, a reserved event, and `n_mid_trial_rewards_cancelled`,
+  a trial column**, for a task that declares `mid_trial_reward`. A drop that
+  was commanded (its `REWARD` is in the record) but never delivered, because
+  the experimenter's manual reward overrode the queue before it reached the
+  valve, ends with `REWARD_CANCELLED` carrying its `{pulses, reason, frame}`
+  and `cancelled_by: "manual"` — its own event, never a `REWARD_FAILED`, so
+  it takes no pump-failure pause. Rows gain the count, 0 on a trial with
+  none, so delivered (`n_mid_trial_rewards`), failed and cancelled add up to
+  every drop commanded. The manual path is the new
+  `QueuedReward.deliver_manual(pulses)`. `RESERVED_EVENTS` and the
+  trial-column baseline in `tests/fixtures/contracts.json` gain the two
+  names; nothing was removed or renamed.
+
+### Changed
+
+- **Training criteria leave out a trial lost to a system fault.** A
+  dropped-frames trial and a tracker-stopped trial no longer enter the
+  criteria window: no metric, no `min_trials` count and no ramp sees them,
+  as a paused trial was already left out. Counted, a display dropping frames
+  pulled `completed_rate` down and could demote a subject for the rig's
+  failure.
+- **A trial the eye tracker cut short neither counts toward a failure streak
+  nor ends one** (`max_consecutive_failures`), as a pause does not. It used
+  to count, so a tracker dropping out between fixation breaks could send the
+  operator to recalibrate the subject. A dropped-frames trial still ends the
+  streak, as in 1.5.0, and the experimenter's skip still counts.
+- **`by_outcome` is not consulted for a tracker-stopped trial.** Its
+  `ABORTED` is the rig's, so it pays `on_fault` or nothing; an `ABORTED`
+  entry in `by_outcome` now pays the experimenter's skip only.
+- **The manual reward overrides the mid-trial reward queue.** In a session
+  whose task declares `mid_trial_reward`, the experimenter's reward — `r`
+  during a trial, R in the pause menu, the dashboard's Give reward — waited
+  behind every drop still queued, holding the frame loop for all of their
+  pulse trains and arriving late. It now cancels every drop still waiting
+  (each ends with its own `REWARD_CANCELLED`, and one WARNING in the log
+  names them), lets the train already on the valve finish, and is delivered
+  once, next. Drops asked for after it queue as usual. A train on the valve
+  is never cut short: a partial train is a dose nobody measured, and an
+  NI-DAQ output task stopped mid-pulse leaves the valve line high. The key is
+  still synchronous and its `REWARD {manual: true}` still follows the pump,
+  but it now blocks for at most the train on the valve plus its own, and the
+  cancellations are reported ahead of it, in the same frame. The
+  end-of-trial pay is never cancelled, and a cancelled drop still counts as
+  earned, so its trial gets no `NO_REWARD`. Nothing changes for a task that
+  does not declare `mid_trial_reward`. See "Mid-trial reward" in
+  [docs/architecture.md](docs/architecture.md) §5.3.
+
+### Fixed
+
+- **`alhazen run --task` showed the subject no instructions.** Only an
+  experiment's `run.py` was ever handed the subject's wording, so a real
+  session started with `alhazen run` put trial one in front of the subject
+  with no instruction screen, no SPACE to wait for, and nothing saying so.
+  With `Task.instructions()` implemented, both entry points show the same
+  screen.
+- **`alhazen run --task` ignored the experiment's params file.** With no
+  `--params` it ran the params model's defaults — for one experiment 432
+  trials of a 576-trial design — without a word, while the same experiment's
+  `run.py` loaded its file. With `Task.default_params()` implemented, both
+  load the same file.
+- **`alhazen run --task` could not start a task that needs its params
+  hook**, and started one that feeds results back into shared state without
+  it: only `run.py` was ever handed the hook. With `Task.params_hook()`
+  implemented, both apply it.
+- **A params hook saw a prompted subject as `None`.** The hook ran before the
+  subject and session were asked for, so with `--sub` or `--ses` left to the
+  prompt a hook filing state by subject filed it under `sub-None`, silently.
+  Both are now settled — from the flags, the prompt, or simulate mode's `sim`
+  and `1` — before any params hook runs; the params file is still loaded and
+  checked before anyone is prompted.
+- **The scaffold's `run.py` claimed `alhazen run` "does the same job".** It
+  did not: `run.py` was handed the params file, and `alhazen run` ran the
+  params model's defaults. Every experiment scaffolded since inherited the
+  claim and the gap. The template now says what is the same — the params
+  file and the instructions, both declared on the task — and what is not:
+  `alhazen run` needs `--rig`. An experiment scaffolded earlier fixes both by
+  declaring `default_params()` and `instructions()` on its task.
+
+- **A tracker that stops during feedback no longer throws away the trial.**
+  The health check aborted even the closing phase (`TrialFeedback`), which
+  measures nothing. When the closing phase was the one deciding the outcome
+  (a `LandingCheck` that ADVANCEs into `TrialFeedback(then=...)`), a
+  finished measurement came back `ABORTED` and was served again; when an
+  earlier phase had decided it, the feedback was cut off before it was drawn
+  and the row carried an `abort_reason` for a trial that was not aborted.
+  Now the row is flagged `fault: tracker_stopped`, a WARNING is logged, the
+  feedback runs to its end, and the trial keeps its outcome — paid,
+  scheduled and counted by it.
+
+
 ## 1.5.0 - 2026-09-23
 
 ### Changed

@@ -37,8 +37,8 @@ whose tracker is off.
 
 | | |
 |---|---|
-| `src/$package/task.py` | the experiment: parameters, events, outcomes, and what a trial is made of |
-| `configs/task.yaml` | the task's parameters for a session |
+| `src/$package/task.py` | the experiment: parameters, events, outcomes, what a trial is made of, and what the subject reads before the first (`instructions`) |
+| `configs/task.yaml` | the task's parameters for a session — the file the task names (`default_params`), so every way of starting a session loads it unless `--params` names another |
 | `configs/rig-mac.yaml` | a development laptop: a window, no devices — read its Retina notes before judging a stimulus |
 | `configs/rig-lab.yaml` | the rig: fill in your monitor's real geometry and uncomment the devices it has |
 | `tests/` | the task's tests, using `alhazen.testing`'s doubles |
@@ -61,6 +61,14 @@ pulse per sync line, so you can hear the pump and see the lines. `--record`
 writes down what each device did — the pulse commanded and measured, each
 sync line by name, the sorter's lag — so this morning's checkout can be held
 against last week's instead of scrolling out of the terminal.
+
+`alhazen run --task $task_name` starts the same session `python run.py`
+does. Both load `configs/task.yaml` when `--params` is not given, because the
+task names it (`default_params` in `src/$package/task.py`), and both show the
+subject the task's `instructions()` before trial one — change the wording
+there. The task finds `configs/` from its own file, which works while the
+package is installed editable (`pip install -e .`); a session that cannot
+find it stops and names the path, rather than running other parameters.
 
 The lab config enables the live browser dashboard. It updates after each
 trial but remains read-only while the task is running. Press `P` on the

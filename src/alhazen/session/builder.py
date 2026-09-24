@@ -40,7 +40,7 @@ from alhazen.core.commands import CommandSource, KeyboardCommands, NullCommands
 from alhazen.core.engine import TrialEngine
 from alhazen.core.events import EventBus, EventSchema
 from alhazen.core.rng import resolve_seed, spawn_streams
-from alhazen.core.trial import InputFrame, TrialContext
+from alhazen.core.trial import FAULT_TRACKER_STOPPED, InputFrame, TrialContext
 from alhazen.dashboard.runtime import DashboardController
 from alhazen.dashboard.spec import DashboardSpec
 from alhazen.data.paths import SessionPaths
@@ -68,7 +68,7 @@ from alhazen.session.runner import SessionRunner
 from alhazen.stimuli.photodiode import make_photodiode
 from alhazen.task.live import LiveAnalysis, LiveWiring
 from alhazen.task.plan import BuildTrial
-from alhazen.task.task import Task
+from alhazen.task.task import Task, task_instructions
 from alhazen.training.stages import Curriculum
 from alhazen.training.state import TrainingState
 from alhazen.training.supervisor import TrainingSupervisor
@@ -144,10 +144,42 @@ def make_tracker_health_check(tracker: EyeTracker) -> Callable[[], str | None]:
 
     A trial that runs on while its tracker has dropped out produces a record
     that looks like a normal trial but has no eye data behind it — worse than
-    an abort, because nothing in the data says so. The reason string lands in
-    the trial record as ``abort_reason``.
+    an abort, because nothing in the data says so. The reason string,
+    ``FAULT_TRACKER_STOPPED``, lands in the trial record as ``abort_reason``
+    and as the row's ``fault``: a tracker that stops is a system fault, not
+    the subject's (core/trial.py). During the trial's closing phase, after
+    the measurement, the engine flags it without aborting.
     """
-    return lambda: None if tracker.is_recording() else "tracker_stopped"
+    return lambda: None if tracker.is_recording() else FAULT_TRACKER_STOPPED
+
+
+def make_manual_reward(
+    reward: RewardDispenser | None, pulses: RewardPulses
+) -> Callable[[], None] | None:
+    """The experimenter's manual reward: the hook behind the ``r`` key during
+    a trial and R in the pause menu (keyboard or dashboard). None when the
+    rig has no dispenser.
+
+    Through a ``QueuedReward`` — a task that asks for reward mid-trial — it
+    overrides the queue (``QueuedReward.deliver_manual``): every drop still
+    waiting is cancelled, each with its own REWARD_CANCELLED, and the manual
+    reward is delivered once, as soon as the train already on the valve
+    finishes. The key blocks the frame it was pressed on until the pump is
+    done, so that wait is at most that train plus its own. The end-of-trial
+    pay does not come through here — the runner calls ``deliver`` — so it is
+    never cancelled and takes its turn as before.
+
+    Any other dispenser is the device itself, called on the session thread
+    exactly as before.
+
+    One closure serves the engine and the runner's pause menu, and the test
+    harness reuses it, so there is one routing to get right.
+    """
+    if reward is None:
+        return None
+    if isinstance(reward, QueuedReward):
+        return lambda: reward.deliver_manual(pulses)
+    return lambda: reward.deliver(pulses)
 
 
 def validate_event_names(
@@ -205,9 +237,12 @@ def build_session(
     """Wire one runnable session.
 
     Pass ``task=`` (a Task instance) and everything the experiment declares —
-    name, params, events, trial builder, scheduler, score, reward policy —
-    comes from it. The explicit parameters still work and still win when both
-    are given, which is what a test overriding one piece of a real task needs.
+    name, params, events, trial builder, scheduler, score, reward policy, the
+    subject's instructions — comes from it. The explicit parameters still work
+    and still win when both are given, which is what a test overriding one
+    piece of a real task needs. For ``instructions`` that includes an empty
+    string: ``instructions=""`` shows no instruction screen whatever the task
+    declares.
 
     ``tracker``/``reward``/``sync`` likewise override what the rig config
     would have built, so a simulated session can be driven by a scripted gaze
@@ -292,6 +327,16 @@ def build_session(
     # config's file values for a session that ran at a stage's values, which
     # is the one thing the snapshot exists to prevent.
     cfg = build_session_config(rig_cfg, info, task_params, sources or {})
+
+    # What the subject reads before trial one: the caller's text when it
+    # passed one (run.py's `instructions=`, an example's instructions.md),
+    # otherwise whatever the task declares (Task.instructions). Asked here,
+    # after the curriculum block, because a stage may have rebuilt the params
+    # the text is allowed to depend on; and before the run directory is
+    # created, so a task whose instructions file is missing fails without
+    # leaving an empty run behind.
+    if instructions is None and task is not None:
+        instructions = task_instructions(task)
 
     # Refused here, before a run directory exists or a window opens, rather
     # than at the first drop: a task that pays during the trial on a rig with
@@ -543,7 +588,11 @@ def build_session(
             reward = queued_reward
 
         manual_pulses = reward_pulses if reward_pulses is not None else RewardPulses()
-        on_manual_reward = (lambda: reward.deliver(manual_pulses)) if reward is not None else None
+        # One hook for the engine's `r` key and the runner's pause menu.
+        # Through the wrapper it cancels the queued drops and goes next,
+        # while the runner's end-of-trial pay calls deliver(), is never
+        # cancelled, and takes its turn (make_manual_reward).
+        on_manual_reward = make_manual_reward(reward, manual_pulses)
 
         engine = TrialEngine(
             display=display,
@@ -623,13 +672,7 @@ def build_session(
                 if instructions and auto_start
                 else instructions
             ),
-            await_start=(
-                _psychopy_auto_start
-                if instructions and display.kind == "psychopy" and auto_start
-                else _psychopy_await_start
-                if instructions and display.kind == "psychopy"
-                else None
-            ),
+            await_start=_start_gate(instructions, display.kind, auto_start),
             dashboard=dashboard_controller,
             dashboard_spec=dashboard_spec,
             manual_reward=on_manual_reward,
@@ -660,6 +703,29 @@ def build_session(
                 log.exception("could not close the spike source while aborting the build")
         raise
     return runner
+
+
+def _start_gate(
+    instructions: str | None, display_kind: str, auto_start: bool
+) -> Callable[[], bool] | None:
+    """What stands between the instruction screen and trial one.
+
+    - Nothing, when there is no text to read, or when the display has no
+      keyboard behind it (a simulated one): the runner shows the text, which
+      the simulated display logs, and starts at once.
+    - The two-second auto-start, on a real display in an unattended session
+      (``auto_start``: simulate mode, an example's ``--auto``). It never waits
+      for a key, because nobody is there to press one — which is why an
+      instruction screen can be shown in simulate mode at all.
+    - SPACE (start) or ESC (cancel), on a real display with somebody in the
+      chair.
+
+    A function of its own so the rule can be pinned without a renderer: the
+    two gates it chooses between need PsychoPy, the choice does not.
+    """
+    if not instructions or display_kind != "psychopy":
+        return None
+    return _psychopy_auto_start if auto_start else _psychopy_await_start
 
 
 def _psychopy_await_start() -> bool:
