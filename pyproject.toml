@@ -95,7 +95,7 @@ alhazen = "alhazen.cli.main:main"
 # — both are read at runtime, so a package that omitted them would install
 # fine and fail on first use (`alhazen new`, and a blank dashboard page).
 [tool.setuptools.package-data]
-alhazen = ["py.typed", "_scaffold/template/**/*", "dashboard/assets/*"]
+alhazen = ["py.typed", "_scaffold/template/**/*", "dashboard/assets/*", "cli/assets/*"]
 
 [project.urls]
 Repository = "https://github.com/sh4r11f/alhazen"

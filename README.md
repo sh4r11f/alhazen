@@ -7,6 +7,11 @@ configuration and reproducibility machinery, and the session data management.
 Each experiment is a thin package supplying its own stimuli, phases, configs
 and analysis.
 
+Open the experiment workspace with `alhazen dashboard`. Add downstream
+project folders, select a rig, edit parameters, and launch previews, movies
+or any of the six experiment modes. Images, playable movies, logs and run
+history live in the browser. See [the workspace guide](docs/workspace.md).
+
 ```bash
 pip install alhazen-vision
 alhazen new my_experiment && cd my_experiment

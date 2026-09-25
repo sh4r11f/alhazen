@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Alhazen · Experiment workspace</title><link rel="stylesheet" href="/workspace.css"><script src="/workspace_parameters.js" defer></script><script src="/workspace.js" defer></script></head>
+<body>
+<aside class="sidebar">
+  <a class="brand" href="/" aria-label="Alhazen home"><span class="brandmark">a</span><span>alhazen<small>EXPERIMENT WORKSPACE</small></span></a>
+  <div class="sidebar-label">YOUR EXPERIMENTS <span id="project-count">0</span></div>
+  <nav id="projects" aria-label="Experiments"></nav>
+  <button class="add-project" id="add-project">＋ Add experiment</button>
+  <div class="sidebar-bottom"><span class="connection-dot"></span><span id="connection">Connecting…</span><small>Runs on this computer</small></div>
+</aside>
+<main>
+  <header class="topbar"><div>Workspace <span class="slash">/</span> <span id="breadcrumb">Experiments</span></div><span class="local-badge">LOCAL WORKSPACE</span></header>
+  <div id="error" role="alert" hidden></div>
+  <section id="empty" class="welcome" hidden><div class="welcome-art" aria-hidden="true">◎</div><p class="eyebrow">FROM CONFIGURATION TO OBSERVATION</p><h1>Your experiments,<br>in one place.</h1><p>Add an Alhazen project to choose a rig, tune parameters,<br>and preview, record or run your experiment.</p><button class="primary" id="empty-add">＋ Add your first experiment</button></section>
+  <div id="workspace" hidden>
+    <section class="page-heading"><div><p class="eyebrow">EXPERIMENT</p><h1 id="project-name"></h1><p id="project-path" class="path"></p></div><button class="quiet" id="project-settings">Project settings ↗</button></section>
+    <div class="workspace-grid">
+      <section class="configuration card">
+        <div class="card-heading"><h2>Configure a run</h2><span class="step">01 — SETUP</span></div>
+        <form id="launch-form">
+          <label for="mode">Mode</label><select id="mode"></select><p id="mode-help" class="help"></p>
+          <div class="field-pair"><div><label for="rig">Rig</label><select id="rig" required></select></div><div id="params-preset-field"><label for="params-config">Parameter preset</label><select id="params-config"></select></div></div>
+          <div id="rig-summary" class="rig-summary"></div>
+          <div id="identity" class="field-pair"><div><label for="subject">Subject ID</label><input id="subject" placeholder="e.g. s01"></div><div><label for="session">Session</label><input id="session" type="number" min="1" value="1" required></div></div>
+          <div class="field-pair" id="seed-fields"><div><label for="seed">Random seed</label><input id="seed" type="number" min="0" value="0" required></div><div id="trials-field"><label for="trials">Trials per condition</label><input id="trials" type="number" min="1" value="1" required></div></div>
+          <div class="checks"><label id="headless-field"><input id="headless" type="checkbox" checked> Headless simulation</label><label id="mouse-field"><input id="mouse" type="checkbox"> Mouse as gaze</label><label id="windowed-field"><input id="windowed" type="checkbox" checked> Windowed display</label></div>
+          <div id="movie-options"><div class="field-pair"><div><label for="scale">Movie scale</label><select id="scale"><option value="0.25">¼ resolution</option><option value="0.5" selected>½ resolution</option><option value="1">Full resolution</option></select></div><div><label for="columns">Sheet columns</label><input id="columns" type="number" min="1" placeholder="Automatic"></div></div><label class="check"><input id="sheet" type="checkbox"> Combine clips into a contact sheet</label><label for="clips">Clip names <span class="optional">optional · comma separated</span></label><input id="clips" placeholder="Leave empty to record every clip"></div>
+          <div id="script-options"><label for="script-args">Script arguments <span class="optional">optional</span></label><input id="script-args" placeholder="e.g. --motions occluder --sheet"><p class="help" id="script-help"></p></div>
+          <fieldset id="task-parameters"><div class="parameters-heading"><h3>Task parameters</h3><div class="segmented" role="group" aria-label="Parameter editor"><button type="button" id="fields-tab" aria-pressed="true">Fields</button><button type="button" id="yaml-tab" aria-pressed="false">YAML</button></div></div>
+          <p class="help">Changes apply to this run. Each launch saves a parameter snapshot.</p>
+          <input id="parameter-search" type="search" aria-label="Filter parameters" placeholder="Search parameters…">
+          <p id="choices-notice" class="help" hidden></p><div id="parameter-fields"></div><textarea id="parameter-yaml" spellcheck="false" aria-label="Parameter YAML" hidden></textarea></fieldset>
+          <div class="launch-footer"><p id="launch-note" class="help"></p><button class="primary launch" type="submit" id="launch">▶ Start run</button></div>
+        </form>
+      </section>
+      <div class="results-column">
+        <section class="card output-card"><div class="card-heading"><h2>Run output</h2><span id="run-status" class="status">READY</span></div><div id="run-info" class="run-info"></div>
+          <div class="output-toolbar"><div class="output-tabs"><button id="media-tab" class="selected">Media <span id="media-count">0</span></button><button id="console-tab">Console</button></div><div class="output-actions"><a id="monitor" target="_blank" rel="noreferrer" hidden>Live monitor ↗</a><button id="stop" class="danger" hidden>Stop run</button></div></div>
+          <div id="media-panel"><div id="gallery-empty" class="output-empty"><span class="viewfinder" aria-hidden="true">⊙</span><h3>A closer look at your experiment.</h3><p>Preview images and recorded movies appear here.<br>Choose a mode and start a run to see the results.</p><span class="empty-tag">IMAGES · MOVIES · CONTACT SHEETS</span></div><div id="gallery"></div></div>
+          <div id="console-panel" hidden><pre id="console" tabindex="0">Output will appear when a run starts.</pre><details><summary>Command &amp; working directory</summary><pre id="command"></pre></details></div>
+        </section>
+        <section class="card history-card"><div class="card-heading"><h2>Run history</h2><span id="history-count" class="step">0 RUNS</span></div><div id="history"></div></section>
+      </div>
+    </div>
+  </div>
+  <footer>ALHAZEN <span>Vision science, from stimulus to session.</span></footer>
+</main>
+<dialog id="project-dialog"><form id="project-form"><div class="dialog-heading"><h2 id="dialog-title">Add an experiment</h2><button type="button" id="close-dialog" aria-label="Close">×</button></div><p class="help">Choose a local project containing an Alhazen <code>run.py</code>.</p><label for="project-folder">Project folder</label><input id="project-folder" placeholder="~/projects/amodal-averaging" required><label for="project-python">Python interpreter <span class="optional">optional</span></label><input id="project-python" placeholder="Auto-detect project .venv, then current Python"><p class="help">Use the environment with your experiment’s dependencies and device drivers installed.</p><p id="project-runtime" class="path"></p><p id="dialog-error" role="alert"></p><div class="dialog-footer"><button type="button" id="remove-project" class="danger" hidden>Remove from workspace</button><button type="submit" class="primary">Save experiment</button></div></form></dialog>
+<dialog id="image-dialog"><button id="close-image" aria-label="Close image">×</button><img id="large-image" alt=""><p id="large-caption"></p></dialog>
+</body></html>

@@ -180,6 +180,16 @@ export class FakeElement {
     return this.getAttribute('class') || '';
   }
 
+  get id() { return this.getAttribute('id') || ''; }
+  set id(value) { this.setAttribute('id', value); }
+
+  append(...nodes) {
+    for (const child of nodes) {
+      if (!(child instanceof FakeElement)) throw new Error('Fake append supports elements only');
+      this.appendChild(child);
+    }
+  }
+
   set className(value) {
     this.setAttribute('class', value);
   }

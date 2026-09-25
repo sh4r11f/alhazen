@@ -25,6 +25,23 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+### Added
+
+- **Experiment workspace (`alhazen dashboard`).** Register downstream project
+  folders and Python environments, select rigs and parameter presets, edit
+  parameters, and launch the six modes or discovered preview/movie scripts.
+  The local browser UI shows generated images, playable videos, console output
+  and persistent run history. Each job gets configuration snapshots and its
+  own media directory; source configs and session data paths are preserved.
+  The launcher serializes runs, supports stopping jobs, and links to the
+  existing pause-aware live session monitor. Text task parameters are
+  dropdowns and text lists are multi-selection dropdowns, populated from the
+  task model's enums and defaults. Rig measurement and scripts without
+  parameter-file support hide the task parameter controls and omit those
+  parameters from launches.
+
 ## 1.7.0 - 2026-09-25
 
 ### Changed

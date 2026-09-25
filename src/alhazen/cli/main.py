@@ -52,6 +52,15 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--task", default=None, help="the task's registered name")
     run.add_argument("--list", action="store_true", help="list installed tasks and exit")
     add_mode_arguments(run)
+    dashboard = sub.add_parser("dashboard", help="open the experiment launcher in a browser")
+    dashboard.add_argument(
+        "--project", action="append", default=[], help="experiment folder to add"
+    )
+    dashboard.add_argument("--port", type=int, default=0, help="loopback port (default: automatic)")
+    dashboard.add_argument("--state-dir", default=None, help="registry, logs and media directory")
+    dashboard.add_argument(
+        "--no-browser", action="store_true", help="print the URL without opening it"
+    )
     calibrate = sub.add_parser("calibrate", help="check a monitor's geometry and gamma")
     calibrate_sub = calibrate.add_subparsers(dest="calibration")
     ruler = calibrate_sub.add_parser(
@@ -170,6 +179,16 @@ def main(argv: list[str] | None = None) -> int:
 # top-level parser (the ones with sub-subcommands print their own --help
 # through it) and returns the exit code.
 Handler = Callable[[argparse.Namespace, argparse.ArgumentParser], int]
+
+
+def _dashboard(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    from alhazen.cli.dashboard import serve
+
+    try:
+        return serve(args)
+    except (OSError, ValueError) as exc:
+        print(f"CANNOT OPEN DASHBOARD: {exc}", file=sys.stderr)
+        return 1
 
 
 def _validate(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
@@ -963,6 +982,7 @@ def _sim_sorter(args: argparse.Namespace) -> int:
 # Looked up by name at call time for `run` and `sim-sorter`, whose handlers
 # take other arguments; the rest are the functions themselves.
 _COMMANDS: dict[str, Handler] = {
+    "dashboard": _dashboard,
     "validate": _validate,
     "new": _new,
     "run": lambda args, parser: _run_session(args),
