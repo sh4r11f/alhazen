@@ -44,14 +44,39 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   can import alhazen — refusing with the interpreter's name and what to
   install when it cannot — and records the alhazen and Python versions it
   found; the launcher's own installation is never put on a child's path,
-  so it cannot shadow the project's. **Stop run** ends the child the way Ctrl+C does,
-  on Windows too: `alhazen run` and every `run.py` now turn a console break
-  (`CTRL_BREAK_EVENT`, the only signal a parent can aim at one Windows child)
-  into `KeyboardInterrupt`, so the session tears down — trials file, manifest,
-  tracker recording — instead of dying on the spot with nothing written. The
-  run has thirty seconds; one still alive after that is killed and its history
-  says so (status `killed`, `"stopped": "forced"` in `run.json`, a final
-  console line) rather than reading as a clean cancellation.
+  so it cannot shadow the project's. **Stop run** ends the child the way
+  Ctrl+C does, on Windows too (see Changed, below). The run has thirty
+  seconds to tear down; one still alive after that is killed and its
+  history says so (status `killed`, `"stopped": "forced"` in `run.json`, a
+  final console line) rather than reading as a clean cancellation.
+- **The workspace embeds the live session monitor.** The Run output card
+  gains a **Live monitor** tab beside Media and Console. While a run is
+  active and its session has opened its monitor, the monitor page is framed
+  there (an open-in-new-tab link stays beside the tabs), and the tab comes
+  up on its own the first time a run started from the page shows its
+  monitor URL. When the run ends the frame is emptied and a note points at
+  the saved `figures/dashboard.html`; while an active run has no monitor
+  yet, the tab says it is waiting, or that the rig has
+  `dashboard.enabled: false` and how to turn it on, and the rig summary
+  shows **live monitor: on/off**. To allow the embedding, the monitor
+  server's Content-Security-Policy now carries `frame-ancestors 'self'
+  http://127.0.0.1:* http://localhost:*` (local pages may frame it, nothing
+  else may; it previously said nothing about framing). `python run.py` from
+  a terminal is unchanged. The parameter editor's second tab is now labelled
+  **Text (YAML or JSON)**: switching to it from Fields shows the values as
+  JSON, which the old "YAML" label did not promise; the mechanics are
+  unchanged.
+
+### Changed
+
+- **A Windows console break now ends a session the way Ctrl+C does.**
+  `alhazen run` and every experiment's `run.py` turn `CTRL_BREAK_EVENT` — the
+  one signal a parent process can aim at a single Windows child, and what the
+  workspace's **Stop run** sends — into `KeyboardInterrupt`, so the session
+  runs its teardown (trials file, manifest, tracker recording) and then exits.
+  Before, Python had no handler for it and the process died on the spot with
+  nothing written, while the launcher recorded a clean cancellation. Ctrl+Break
+  in a terminal now does the same as Ctrl+C. POSIX is unchanged.
 
 ## 1.7.0 - 2026-09-25
 

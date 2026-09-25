@@ -662,9 +662,17 @@ def _serve(
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
+            # frame-ancestors: the experiment workspace (`alhazen dashboard`,
+            # another loopback server, so another origin) embeds this page in
+            # an iframe while the session runs. Local pages may frame it;
+            # without the directive any page could, and a framed monitor with
+            # a leaked token would put its pause-menu buttons under someone
+            # else's overlay. `python run.py` from a terminal is unaffected:
+            # the page is then the top-level document and no ancestor exists.
             self.send_header(
                 "Content-Security-Policy",
-                "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'",
+                "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+                "frame-ancestors 'self' http://127.0.0.1:* http://localhost:*",
             )
             # A camera frame's size and time ride in headers, so the body can
             # be the pixels alone; the page reads both from one response.

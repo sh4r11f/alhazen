@@ -30,8 +30,10 @@ cannot, and records the alhazen and Python versions it found.
 3. Choose text parameters from dropdowns; text lists use dropdowns with
    checkboxes. Choices come from the task model's enums and defaults, keeping
    the current value available. Keyboard bindings offer common keys. Unbounded
-   custom strings can still be entered through YAML. Numeric arrays use JSON
-   notation in the fields editor. Search filters nested fields.
+   custom strings can still be entered through the **Text (YAML or JSON)**
+   editor; switching to it from Fields shows the current values as JSON,
+   which is valid YAML, and either notation may be typed. Numeric arrays use
+   JSON notation in the fields editor. Search filters nested fields.
    **Task defaults** leaves parameter loading to the experiment's entry point.
    Measure rig hides the parameter preset and editor entirely, as do standalone
    scripts without a parameter-file option. Hidden task parameters are not sent
@@ -89,8 +91,41 @@ after a crash. On Windows the break is delivered at the run's next Python
 statement (a blocking wait delays it), and a forced termination ends the direct
 child only; descendants may need to be stopped separately.
 
-When an experiment prints its live monitor URL to the console, **Live monitor**
-opens it. That monitor retains its own token and pause-only controls.
+## Live monitor
+
+The [live session monitor](dashboard.md) is a separate loopback server that the
+session process starts when the rig has `dashboard.enabled: true`; the runner
+prints its URL to the console and the launcher relays it. The Run output card's
+**Live monitor** tab embeds that page while the run is active, so the session's
+trials, eye-tracker panels and pause menu are watched from the workspace
+without a second browser tab. **Open monitor in new tab ↗** beside the tabs
+opens the same page on its own. The monitor keeps its own token and its
+pause-only controls; the workspace adds nothing to them, and the launcher
+passes `--no-dashboard-browser` so the session does not open a browser of its
+own as well.
+
+For a run started from the workspace, the tab is brought up automatically the
+first time its monitor URL appears; a run picked from the history keeps whatever
+tab is open. Before the URL appears, the tab says that it is waiting for the
+session to open its monitor — or, when the selected rig has
+`dashboard.enabled: false` (the default for a rig without the block), that the
+setting must be turned on in the rig YAML. The rig summary under the rig menu
+shows the same fact as **live monitor: on/off**.
+
+The monitor's server closes with the session. Once the run has finished, the
+frame is emptied and replaced by a note: the monitor's final state was saved in
+the run's data directory as `figures/dashboard.html` (and
+`figures/dashboard_state.json`), which opens on its own with no server. A
+browser error page for a server that no longer exists is never left in the tab.
+
+Embedding needs the monitor to allow being framed, so its responses carry
+`frame-ancestors 'self' http://127.0.0.1:* http://localhost:*` in their
+Content-Security-Policy: local pages may frame it, nothing else may. The frame
+is sandboxed (`allow-scripts allow-same-origin allow-downloads allow-modals`):
+the monitor page runs its own script against its own server, can save a figure
+and show a dialog, and cannot navigate the workspace or open windows from it.
+Running `python run.py` from a terminal is unchanged: the monitor then opens in
+its own browser tab as before.
 
 ## Storage and local access
 

@@ -3,7 +3,10 @@
 To add experiment repositories, edit parameters, choose rigs, and launch
 previews or recordings from a web app, use `alhazen dashboard`: see the
 [experiment workspace](workspace.md). This page describes the separate live
-monitor for a running session.
+monitor for a running session. During a run started from the workspace, the
+workspace embeds this page in its **Live monitor** tab (see
+[Live monitor](workspace.md#live-monitor)); from a terminal, `python run.py`
+opens it in its own browser tab as before.
 
 Alhazen can open a local browser dashboard before PsychoPy takes focus. The
 dashboard receives a new immutable snapshot after every recorded trial; no

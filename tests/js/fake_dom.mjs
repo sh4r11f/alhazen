@@ -98,11 +98,15 @@ function classListFor(element) {
     add: (...names) => write([...new Set([...read(), ...names])]),
     remove: (...names) => write(read().filter((name) => !names.includes(name))),
     contains: (name) => read().includes(name),
-    toggle: (name) => {
+    /* `toggle(name, force)`: with a boolean `force`, add or remove as it
+     * says (how a tab switcher marks the selected tab); without it, flip.
+     * Returns whether the class is present afterwards, as in the DOM. */
+    toggle: (name, force) => {
       const had = read().includes(name);
-      if (had) write(read().filter((other) => other !== name));
-      else write([...read(), name]);
-      return !had;
+      const want = force === undefined ? !had : Boolean(force);
+      if (want && !had) write([...read(), name]);
+      if (!want && had) write(read().filter((other) => other !== name));
+      return want;
     },
   };
 }
