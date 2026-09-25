@@ -20,7 +20,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from pydantic import ValidationError
 
 from alhazen.cli.console_break import interrupt_on_console_break
-from alhazen.cli.workspace import MEDIA, Launch, Workspace, inside, mapping
+from alhazen.cli.workspace import MEDIA_TYPES, Launch, Workspace, parse_parameters, path_inside
 from alhazen.errors import AlhazenError
 
 ASSETS = Path(__file__).with_name("assets")
@@ -72,8 +72,17 @@ class DashboardServer(ThreadingHTTPServer):
         return f"{self.origin}/#token={self.token}"
 
 
+class RequestTooLarge(ValueError):
+    """A declared body over the limit: answered 413, and never read."""
+
+
 class Handler(BaseHTTPRequestHandler):
     server: DashboardServer
+    # Socket timeout for one connection. A client that declares a longer
+    # Content-Length than it sends would otherwise hold rfile.read — and this
+    # handler thread — for as long as it stays connected. Generous for a
+    # loopback client; one that stalls this long has gone away.
+    timeout = 30
 
     def log_message(self, *args: Any) -> None:
         # Request paths may carry a media token; never put it in console logs.
@@ -102,7 +111,12 @@ class Handler(BaseHTTPRequestHandler):
     def _request(self) -> tuple[str, dict[str, list[str]]]:
         host = f"127.0.0.1:{self.server.server_port}"
         if self.headers.get("Host") != host:
-            raise PermissionError("Invalid host")
+            # Almost always someone who typed localhost:PORT; tell them the
+            # URL that works rather than leaving "Invalid host" to decode.
+            raise PermissionError(
+                f"Invalid host header: open the dashboard at the printed http://{host} URL, "
+                "not through another name such as localhost"
+            )
         origin = self.headers.get("Origin")
         if origin and origin != self.server.origin:
             raise PermissionError("Cross-origin requests are not allowed")
@@ -138,10 +152,10 @@ class Handler(BaseHTTPRequestHandler):
                 if len(parts) != 4 or parts[2] not in workspace.runs:
                     raise FileNotFoundError("Unknown run")
                 root = workspace.directory / "runs" / parts[2] / "media"
-                target = inside(root, parts[3])
-                if target.suffix.lower() not in MEDIA:
+                target = path_inside(root, parts[3])
+                if target.suffix.lower() not in MEDIA_TYPES:
                     raise ValueError("Only images and movies are served as media")
-                self._file(target, MEDIA[target.suffix.lower()], ranges=True)
+                self._file(target, MEDIA_TYPES[target.suffix.lower()], ranges=True)
             elif path in {"/", "/workspace.js", "/workspace_parameters.js", "/workspace.css"}:
                 name, kind = {
                     "/workspace_parameters.js": (
@@ -155,11 +169,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._file(ASSETS / name, kind)
             else:
                 self._json({"error": "Not found"}, 404)
-        except (BrokenPipeError, ConnectionResetError):
-            # The client went away mid-response: a closed tab, a cancelled
-            # fetch. There is nobody left to answer, and nothing to record —
-            # whatever the request did (a launch, a stop) is in the workspace
-            # state the next poll shows.
+        except (BrokenPipeError, ConnectionResetError, TimeoutError):
+            # The client went away mid-response — a closed tab, a cancelled
+            # fetch, a media stream nobody read for longer than `timeout`.
+            # There is nobody left to answer, and nothing to record.
             pass
         except PermissionError as exc:
             self._json({"error": str(exc)}, 403)
@@ -168,21 +181,29 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, OSError, AlhazenError) as exc:
             self._json({"error": str(exc)}, 400)
 
+    def _body(self) -> dict[str, Any]:
+        lengths = self.headers.get_all("Content-Length", [])
+        if len(lengths) != 1 or self.headers.get("Transfer-Encoding"):
+            raise ValueError("One Content-Length is required")
+        length = int(lengths[0])
+        if length < 0 or length > 1024 * 1024:
+            raise RequestTooLarge("Request must be at most 1 MiB")
+        if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
+            raise ValueError("Content-Type must be application/json")
+        body = json.loads(self.rfile.read(length))
+        if not isinstance(body, dict):
+            raise ValueError("Expected a JSON object")
+        return body
+
     def do_POST(self) -> None:
         try:
+            # The body is read before the request is judged. Refusing with its
+            # bytes still unread in the socket makes Windows reset the
+            # connection on close, and the browser then reports "Failed to
+            # fetch" in place of the 403 and its reason (the tests saw it as
+            # WinError 10053 on the auth refusals).
+            body = self._body()
             path, _ = self._request()
-            lengths = self.headers.get_all("Content-Length", [])
-            if len(lengths) != 1 or self.headers.get("Transfer-Encoding"):
-                raise ValueError("One Content-Length is required")
-            length = int(lengths[0])
-            if length < 0 or length > 1024 * 1024:
-                self._json({"error": "Request must be at most 1 MiB"}, 413)
-                return
-            if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
-                raise ValueError("Content-Type must be application/json")
-            body = json.loads(self.rfile.read(length))
-            if not isinstance(body, dict):
-                raise ValueError("Expected a JSON object")
             workspace = self.server.workspace
             if path == "/api/projects":
                 if not isinstance(body.get("path"), str) or not isinstance(
@@ -196,7 +217,7 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/parameters":
                 if not isinstance(body.get("text"), str):
                     raise ValueError("Parameter YAML must be text")
-                self._json({"values": mapping(body["text"])})
+                self._json({"values": parse_parameters(body["text"])})
             elif path == "/api/runs":
                 self._json(workspace.start(Launch.model_validate(body)), 201)
             elif path == "/api/stop":
@@ -210,6 +231,12 @@ class Handler(BaseHTTPRequestHandler):
             # whatever the request did (a launch, a stop) is in the workspace
             # state the next poll shows.
             pass
+        except RequestTooLarge as exc:
+            self._json({"error": str(exc)}, 413)
+        except TimeoutError:
+            # The declared body never fully arrived (see `timeout`); the
+            # connection is still good, so the client is told why.
+            self._json({"error": f"The request body did not arrive within {self.timeout} s"}, 408)
         except PermissionError as exc:
             self._json({"error": str(exc)}, 403)
         except (ValueError, OSError, AlhazenError, ValidationError) as exc:

@@ -7,6 +7,7 @@ import ast
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import threading
@@ -18,14 +19,14 @@ import yaml
 
 import alhazen
 from alhazen.cli import workspace as workspace_module
-from alhazen.cli.dashboard import DashboardServer, workspace_lock
+from alhazen.cli.dashboard import DashboardServer, Handler, workspace_lock
 from alhazen.cli.main import add_mode_arguments
 from alhazen.cli.workspace import (
     STOP_GRACE_S,
     Launch,
     Workspace,
-    inside,
-    mapping,
+    parse_parameters,
+    path_inside,
     script_actions,
 )
 from alhazen.modes import Mode
@@ -323,8 +324,14 @@ class TestLaunches:
         record = json.loads((directory / "run.json").read_text())
         record["status"] = "running"
         (directory / "run.json").write_text(json.dumps(record))
+        # The runner's own line (session/runner.py logs "live dashboard: %s"
+        # through "%(asctime)s %(levelname)s %(name)s: %(message)s") is the
+        # contract; when a run restarts its monitor, the last URL is the live one.
         (directory / "console.log").write_text(
-            "x" * 80000 + "\nhttp://127.0.0.1:1234/?token=abc_-123"
+            "x" * 80000 + "\n2026-09-25 10:00:00,000 INFO alhazen.session.runner: "
+            "live dashboard: http://127.0.0.1:1111/?token=stale\n"
+            "2026-09-25 10:00:05,000 INFO alhazen.session.runner: "
+            "live dashboard: http://127.0.0.1:1234/?token=abc_-123\n"
         )
         restored = Workspace(workspace.directory)
         detail = restored.detail(run["id"])
@@ -396,11 +403,11 @@ class TestBoundaries:
     )
     def test_parameter_errors_are_explicit(self, content):
         with pytest.raises(ValueError):
-            mapping(content)
+            parse_parameters(content)
 
     def test_traversal_and_symlink_media(self, workspace, tmp_path):
         with pytest.raises(ValueError, match="inside"):
-            inside(tmp_path, "../elsewhere")
+            path_inside(tmp_path, "../elsewhere")
         run = finish(workspace, workspace.start(request_for(workspace)))
         secret = tmp_path / "secret.png"
         secret.write_bytes(b"private")
@@ -418,7 +425,7 @@ class TestBoundaries:
             pytest.skip("symlink creation needs a privilege this account lacks")
         assert [a["path"] for a in workspace.detail(run["id"])["artifacts"]] == ["clip.mp4"]
         with pytest.raises(ValueError, match="inside"):
-            inside(root, "escape.png")
+            path_inside(root, "escape.png")
 
 
 @pytest.fixture
@@ -512,6 +519,37 @@ class TestHTTP:
         assert call(f"/media/{run['id']}/../params.yaml")[0] == 400
         assert call(f"/media/{run['id']}/missing.png")[0] == 404
         assert call("/media/missing/clip.mp4")[0] == 404
+
+    def test_a_wrong_host_says_which_url_to_open(self, http):
+        """The likely cause is someone typing localhost:PORT; the refusal has
+        to name the URL that works, not just say "Invalid host"."""
+        call, server = http
+        status, _, body = call("/api/state", headers={"Host": "attacker.example"})
+        assert status == 403
+        assert f"http://127.0.0.1:{server.server_port}" in json.loads(body)["error"]
+
+    def test_a_stalled_client_cannot_hold_a_handler_forever(self, http, monkeypatch):
+        """A body shorter than its Content-Length used to block rfile.read for
+        as long as the client stayed connected, so one stalled tab could pin
+        a handler thread for good. The handler's socket timeout ends the read
+        and answers 408 with the reason; the class-level value is the contract,
+        shortened here only so the test is quick."""
+        assert Handler.timeout == 30
+        call, server = http
+        monkeypatch.setattr(Handler, "timeout", 0.5)
+        with socket.create_connection(("127.0.0.1", server.server_port), timeout=10) as sock:
+            sock.sendall(
+                f"POST /api/parameters HTTP/1.1\r\nHost: 127.0.0.1:{server.server_port}\r\n"
+                f"X-Alhazen-Token: {server.token}\r\nContent-Type: application/json\r\n"
+                'Content-Length: 100\r\n\r\n{"text":'.encode()
+            )
+            # Headers and JSON body arrive in separate segments; the server
+            # closes the connection after the response, so read to EOF.
+            response = b"".join(iter(lambda: sock.recv(65536), b""))
+        assert response.split(b"\r\n")[0].endswith(b" 408 Request Timeout"), response
+        assert b"did not arrive" in response
+        # And the server is still serving.
+        assert call("/api/state")[0] == 200
 
 
 class TestInterpreters:
@@ -611,3 +649,47 @@ class TestParameterSchema:
     def test_missing_schema_is_an_explicit_error(self, workspace):
         with pytest.raises(ValueError, match="Cannot read task parameter choices"):
             workspace.schema(workspace.projects[0]["id"])
+
+    def test_schema_is_cached_until_run_py_or_the_interpreter_changes(self, workspace, monkeypatch):
+        """Reading the schema imports the task in a child interpreter — seconds
+        each time — and the UI asks for it on every project switch. One read
+        per (run.py, interpreter) is enough; editing run.py or choosing another
+        interpreter must read again, because either can change the choices."""
+        spawned = []
+
+        def run(command, **kwargs):
+            spawned.append(command[0])
+            schema = {"properties": {"read": len(spawned)}}
+            return subprocess.CompletedProcess(command, 0, stdout=json.dumps(schema), stderr="")
+
+        monkeypatch.setattr(subprocess, "run", run)
+        key = workspace.projects[0]["id"]
+        assert workspace.schema(key)["properties"]["read"] == 1
+        assert workspace.schema(key)["properties"]["read"] == 1 and len(spawned) == 1
+        run_py = Path(workspace.projects[0]["path"]) / "run.py"
+        stat = run_py.stat()
+        os.utime(run_py, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+        assert workspace.schema(key)["properties"]["read"] == 2
+        other = str(Path(sys.executable).with_name("other-python"))
+        workspace.projects[0]["python"] = other
+        assert workspace.schema(key)["properties"]["read"] == 3 and spawned[-1] == other
+
+
+class TestRecovery:
+    def test_a_corrupt_registry_or_run_record_names_the_file(self, workspace):
+        """A raw JSONDecodeError ("Expecting value: line 1 column 1") does not
+        say which of the workspace's files it means; the person at the rig
+        needs the path to fix or move."""
+        registry = workspace.directory / "projects.json"
+        registry.write_text("{not json")
+        with pytest.raises(ValueError, match=re.escape(str(registry))):
+            Workspace(workspace.directory)
+        registry.write_text("[]")
+        record = workspace.directory / "runs/broken/run.json"
+        record.parent.mkdir()
+        record.write_text("{not json")
+        with pytest.raises(ValueError, match=re.escape(str(record))):
+            Workspace(workspace.directory)
+        record.write_text('{"id": "broken"}')
+        with pytest.raises(ValueError, match=re.escape(str(record))):
+            Workspace(workspace.directory)

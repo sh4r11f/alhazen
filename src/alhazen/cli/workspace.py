@@ -33,7 +33,7 @@ from alhazen.modes import Mode, flag_refusal
 
 log = logging.getLogger(__name__)
 
-MEDIA = {
+MEDIA_TYPES = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
@@ -67,6 +67,25 @@ INTERPRETER_PROBE = (
 
 def now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _load_record(path: Path, kind: type) -> Any:
+    """Read one of the workspace's JSON files, naming it when it cannot be read.
+
+    A corrupt projects.json or run.json used to surface as a raw
+    JSONDecodeError ("Expecting value: line 1 column 1") with no file name in
+    it — and a workspace has one registry plus a run.json per run to choose
+    from. The person at the rig needs the path to fix or move.
+    """
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError as exc:  # JSONDecodeError and UnicodeDecodeError both are
+        raise ValueError(
+            f"Cannot read {path}: {exc}. Fix or move the file, then start the dashboard again."
+        ) from exc
+    if not isinstance(value, kind):
+        raise ValueError(f"Cannot read {path}: expected a JSON {kind.__name__}")
+    return value
 
 
 def _child_env(project: dict[str, Any]) -> dict[str, str]:
@@ -135,14 +154,39 @@ def probe_interpreter(python: str, project_path: str) -> dict[str, str]:
     return {"alhazen_version": report["alhazen"], "python_version": report["python"]}
 
 
-def inside(root: Path, relative: str) -> Path:
+def _read_schema(project: dict[str, Any]) -> dict[str, Any]:
+    """One read of the task's parameter schema, in the project's own interpreter."""
+    try:
+        result = subprocess.run(
+            [
+                project["python"],
+                "-m",
+                "alhazen.cli.workspace_schema",
+                str(Path(project["path"]) / "run.py"),
+            ],
+            cwd=project["path"],
+            env=_child_env(project),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=CHILD_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError("Reading the task's parameter choices timed out") from exc
+    if result.returncode:
+        raise ValueError(f"Cannot read task parameter choices: {result.stderr[-2000:]}")
+    return json.loads(result.stdout)
+
+
+def path_inside(root: Path, relative: str) -> Path:
     path = (root / relative).resolve()
     if not path.is_relative_to(root.resolve()):
         raise ValueError("Path must stay inside its project or run directory")
     return path
 
 
-def mapping(text: str) -> dict[str, Any]:
+def parse_parameters(text: str) -> dict[str, Any]:
     try:
         value = yaml.safe_load(text)
     except yaml.YAMLError as exc:
@@ -242,15 +286,25 @@ class Workspace:
         self.active: str | None = None
         registry = self.directory / "projects.json"
         self.projects: list[dict[str, Any]] = (
-            json.loads(registry.read_text(encoding="utf-8")) if registry.exists() else []
+            _load_record(registry, list) if registry.exists() else []
         )
         self.runs: dict[str, dict[str, Any]] = {}
         for path in sorted((self.directory / "runs").glob("*/run.json")):
-            run = json.loads(path.read_text(encoding="utf-8"))
-            if run["status"] in ACTIVE:
-                run.update(status="interrupted", finished=now())
-                replace_atomically(path, json.dumps(run, indent=2))
-            self.runs[run["id"]] = run
+            run = _load_record(path, dict)
+            try:
+                if run["status"] in ACTIVE:
+                    run.update(status="interrupted", finished=now())
+                    replace_atomically(path, json.dumps(run, indent=2))
+                self.runs[run["id"]] = run
+            except KeyError as exc:
+                raise ValueError(f"Cannot read {path}: the record has no {exc} field") from exc
+        # Task schemas by project id, with the (run.py mtime, interpreter) they
+        # were read under. Reading one imports the task in a child interpreter,
+        # seconds each time, and the UI asks on every project switch; editing
+        # run.py or choosing another interpreter can change the choices, so
+        # either invalidates. The lock makes concurrent requests read once.
+        self._schemas: dict[str, tuple[tuple[int, str], dict[str, Any]]] = {}
+        self._schema_lock = threading.Lock()
 
     def _save_projects(self) -> None:
         replace_atomically(self.directory / "projects.json", json.dumps(self.projects, indent=2))
@@ -298,6 +352,8 @@ class Workspace:
                 raise ValueError("Stop this experiment's run before removing it")
             self.projects = [p for p in self.projects if p["id"] != key]
             self._save_projects()
+        with self._schema_lock:
+            self._schemas.pop(key, None)
 
     def describe(self, key: str) -> dict[str, Any]:
         project = self.project(key)
@@ -324,35 +380,32 @@ class Workspace:
 
     def config(self, key: str, path: str) -> dict[str, Any]:
         root = Path(self.project(key)["path"])
-        target = inside(root, path)
+        target = path_inside(root, path)
         if target.suffix not in {".yaml", ".yml"}:
             raise ValueError("Choose a YAML config")
         content = target.read_text(encoding="utf-8")
-        return {"text": content, "values": mapping(content)}
+        return {"text": content, "values": parse_parameters(content)}
 
     def schema(self, key: str) -> dict[str, Any]:
         project = self.project(key)
+        run_py = Path(project["path"]) / "run.py"
         try:
-            result = subprocess.run(
-                [
-                    project["python"],
-                    "-m",
-                    "alhazen.cli.workspace_schema",
-                    str(Path(project["path"]) / "run.py"),
-                ],
-                cwd=project["path"],
-                env=_child_env(project),
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                timeout=CHILD_TIMEOUT_S,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise ValueError("Reading the task's parameter choices timed out") from exc
-        if result.returncode:
-            raise ValueError(f"Cannot read task parameter choices: {result.stderr[-2000:]}")
-        return json.loads(result.stdout)
+            stamp = (run_py.stat().st_mtime_ns, project["python"])
+        except OSError as exc:
+            raise ValueError(
+                f"Cannot read task parameter choices: no run.py in {project['path']} ({exc})"
+            ) from exc
+        # Held across the read on purpose: a second request for the same
+        # project arriving meanwhile waits for this answer instead of starting
+        # its own interpreter. Serialising two different projects' reads is
+        # the price, and it is smaller than two interpreters at once.
+        with self._schema_lock:
+            cached = self._schemas.get(key)
+            if cached is not None and cached[0] == stamp:
+                return cached[1]
+            schema = _read_schema(project)
+            self._schemas[key] = (stamp, schema)
+            return schema
 
     def state(self) -> dict[str, Any]:
         with self.lock:
@@ -369,7 +422,7 @@ class Workspace:
     def _command(self, request: Launch, run_dir: Path) -> list[str]:
         project = self.project(request.project)
         root = Path(project["path"])
-        rig_path = inside(root, request.rig)
+        rig_path = path_inside(root, request.rig)
         if not request.rig or not rig_path.is_file():
             raise ValueError("Choose an existing rig YAML file")
         load_rig(rig_path)
@@ -449,13 +502,13 @@ class Workspace:
             if request.parameters is not None and request.parameters_yaml is not None:
                 raise ValueError("Supply either parameter fields or YAML, not both")
             values = (
-                mapping(request.parameters_yaml)
+                parse_parameters(request.parameters_yaml)
                 if request.parameters_yaml is not None
                 else request.parameters
             )
             text = yaml.safe_dump(values, sort_keys=False) if values is not None else None
             if text is not None:
-                mapping(text)
+                parse_parameters(text)
             project = self.project(request.project)
             (run_dir / "media").mkdir(parents=True)
             if text is not None:
@@ -463,7 +516,7 @@ class Workspace:
             # Preserve the rig exactly as launched, without relocating it: relative
             # paths in a rig keep their usual experiment-working-directory meaning.
             (run_dir / "rig.yaml").write_bytes(
-                inside(Path(project["path"]), request.rig).read_bytes()
+                path_inside(Path(project["path"]), request.rig).read_bytes()
             )
             run = {
                 "id": key,
@@ -616,7 +669,7 @@ class Workspace:
         root = directory / "media"
         for path in sorted(root.rglob("*")):
             if (
-                path.suffix.lower() in MEDIA
+                path.suffix.lower() in MEDIA_TYPES
                 and path.is_file()
                 and path.resolve().is_relative_to(root)
             ):
@@ -627,7 +680,7 @@ class Workspace:
                         "path": path.relative_to(root).as_posix(),
                         "size": stat.st_size,
                         "modified": stat.st_mtime_ns,
-                        "type": MEDIA[path.suffix.lower()],
+                        "type": MEDIA_TYPES[path.suffix.lower()],
                     }
                 )
                 if len(artifacts) >= 500:
