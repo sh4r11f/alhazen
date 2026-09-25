@@ -11,6 +11,7 @@ import yaml
 
 from alhazen import build_session
 from alhazen.config.loader import load_model, load_rig
+from alhazen.errors import ConfigError
 from alhazen.testing import FakeClock
 from alhazen.training import Curriculum, Ramp, Stage, StageCriteria, TrainingState
 from support import load_example_task
@@ -149,25 +150,21 @@ class TestShapingAcrossSessions:
         # And the transition history is appended to, not replaced.
         assert len(after["history"]) >= len(first["history"])
 
-    def test_a_session_that_could_not_read_the_state_does_not_destroy_it(self, tmp_path):
-        # Through the real teardown: the session starts over (as documented),
-        # and its save moves the unreadable file aside instead of writing the
-        # first stage over the only record of where the subject really was.
+    def test_a_session_that_cannot_read_the_state_is_refused_at_build(self, tmp_path):
+        # Through the real build: a typo in a hand edit stops the session
+        # before a run folder exists or a window opens, rather than giving a
+        # trained subject a first-stage session — and the file is untouched.
         path = TrainingState.path_for(tmp_path, "m01")
         path.parent.mkdir(parents=True)
-        original = "stage: real-task\ncompleted_by_stage: {real-task: 400\n"  # a typo
-        path.write_text(original, encoding="utf-8")
+        original = b"stage: real-task\ncompleted_by_stage: {real-task: 400\n"  # a typo
+        path.write_bytes(original)
 
-        run_session(tmp_path, trials=4, run=1)
+        with pytest.raises(ConfigError, match="training_state.yaml cannot be read"):
+            run_session(tmp_path, trials=4, run=1)
 
-        (aside,) = path.parent.glob("training_state.unreadable-*.yaml")
-        assert aside.read_text(encoding="utf-8") == original
-        rows = trials_of(next(tmp_path.glob("sub-m01/ses-001/run-01*")))
-        assert rows[0]["stage"] == "any-look"
-        # The real name holds this session's state: started over, and
-        # possibly promoted once in four trials — never the typo'd file's.
-        saved = yaml.safe_load(path.read_text(encoding="utf-8"))
-        assert saved["stage"] in {"any-look", "tighten"}
+        assert path.read_bytes() == original
+        # No session folder, no run folder, nothing but the state file.
+        assert [p.name for p in path.parent.iterdir()] == ["training_state.yaml"]
 
     def test_transitions_are_in_the_event_stream(self, tmp_path):
         run_session(tmp_path, trials=60, run=1)
