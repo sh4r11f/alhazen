@@ -63,6 +63,9 @@ async function pageWith({ run = null, dashboardEnabled = true, hash, project = P
     active: run && ACTIVE.includes(run.status) ? run.id : null,
   };
   app.server.details = run ? { [run.id]: run } : {};
+  /* The run the fake server starts on POST /api/runs (id 'launched'), so the
+   * page's refresh after a launch finds it as a real launcher's would. */
+  app.server.details.launched = runDetail({ id: 'launched', log: '' });
   app.server.configs = {
     'configs/rig-mac.yaml': rig(dashboardEnabled),
     'configs/task.yaml': { text: 'trials: 4\n', values: { trials: 4 } },
@@ -385,6 +388,47 @@ describe('launching a run', () => {
       assert.equal(body.windowed, false);
       assert.equal('parameters' in body, false);
       assert.equal('parameters_yaml' in body, false);
+    });
+});
+
+describe('the parameter text editor', () => {
+  it('is labelled for what it shows: the values as JSON, which is also YAML', async () => {
+    const app = await pageWith();
+    assert.equal(app.byId('yaml-tab').textContent.trim(), 'Text (YAML or JSON)');
+    /* Fields → text writes the edited values out as JSON. */
+    app.run("$('launch-form').reportValidity = () => true");
+    app.byId('yaml-tab').fire('click');
+    await settle();
+    assert.equal(app.run('editor'), 'yaml');
+    assert.equal(app.byId('parameter-yaml').hidden, false);
+    assert.equal(app.byId('parameter-fields').hidden, true);
+    assert.equal(app.byId('parameter-yaml').value, JSON.stringify({ trials: 4 }, null, 2));
+    assert.equal(app.byId('yaml-tab').getAttribute('aria-pressed'), 'true');
+  });
+
+  it('sends the text as written for the server to parse, and reads it back the same way',
+    async () => {
+      const app = await pageWith();
+      app.byId('mode').value = 'simulate';
+      app.run('modeChanged()');
+      app.run("$('launch-form').reportValidity = () => true");
+      app.byId('yaml-tab').fire('click');
+      await settle();
+      /* The reader types YAML that is not JSON; the page does not parse it. */
+      app.byId('parameter-yaml').value = 'trials: 9\n';
+      await launch(app);
+      const body = app.server.posted.find((p) => p.path === '/api/runs').body;
+      assert.equal(body.parameters_yaml, 'trials: 9\n');
+      assert.equal('parameters' in body, false);
+      /* Text → fields asks the server, whose YAML errors are the ones a launch
+       * would raise (the fake accepts JSON, a subset of YAML). */
+      app.byId('parameter-yaml').value = '{"trials": 12}';
+      app.byId('fields-tab').fire('click');
+      await settle();
+      const parsed = app.server.posted.find((p) => p.path === '/api/parameters');
+      assert.equal(parsed.body.text, '{"trials": 12}');
+      assert.deepEqual(plain(app.run('values')), { trials: 12 });
+      assert.equal(app.run('editor'), 'fields');
     });
 });
 

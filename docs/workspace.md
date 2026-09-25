@@ -26,8 +26,10 @@ present, then its own interpreter. The project's `src/` and root are placed on
 3. Choose text parameters from dropdowns; text lists use dropdowns with
    checkboxes. Choices come from the task model's enums and defaults, keeping
    the current value available. Keyboard bindings offer common keys. Unbounded
-   custom strings can still be entered through YAML. Numeric arrays use JSON
-   notation in the fields editor. Search filters nested fields.
+   custom strings can still be entered through the **Text (YAML or JSON)**
+   editor; switching to it from Fields shows the current values as JSON,
+   which is valid YAML, and either notation may be typed. Numeric arrays use
+   JSON notation in the fields editor. Search filters nested fields.
    **Task defaults** leaves parameter loading to the experiment's entry point.
    Measure rig hides the parameter preset and editor entirely, as do standalone
    scripts without a parameter-file option. Hidden task parameters are not sent

@@ -170,9 +170,14 @@
             <fieldset id="task-parameters">
               <div class="parameters-heading">
                 <h3>Task parameters</h3>
+                <!-- "Text", not "YAML": switching from Fields fills the
+                     editor with the values as JSON (valid YAML, but not what
+                     a "YAML" label promises); either notation may be typed. -->
                 <div class="segmented" role="group" aria-label="Parameter editor">
                   <button type="button" id="fields-tab" aria-pressed="true">Fields</button>
-                  <button type="button" id="yaml-tab" aria-pressed="false">YAML</button>
+                  <button type="button" id="yaml-tab" aria-pressed="false">
+                    Text (YAML or JSON)
+                  </button>
                 </div>
               </div>
               <p class="help">Changes apply to this run. Each launch saves a parameter snapshot.</p>
@@ -180,8 +185,8 @@
                      placeholder="Search parameters…">
               <p id="choices-notice" class="help" hidden></p>
               <div id="parameter-fields"></div>
-              <textarea id="parameter-yaml" spellcheck="false" aria-label="Parameter YAML"
-                        hidden></textarea>
+              <textarea id="parameter-yaml" spellcheck="false"
+                        aria-label="Parameter text (YAML or JSON)" hidden></textarea>
             </fieldset>
 
             <div class="launch-footer">

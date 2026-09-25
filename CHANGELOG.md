@@ -54,7 +54,10 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   server's Content-Security-Policy now carries `frame-ancestors 'self'
   http://127.0.0.1:* http://localhost:*` (local pages may frame it, nothing
   else may; it previously said nothing about framing). `python run.py` from
-  a terminal is unchanged.
+  a terminal is unchanged. The parameter editor's second tab is now labelled
+  **Text (YAML or JSON)**: switching to it from Fields shows the values as
+  JSON, which the old "YAML" label did not promise; the mechanics are
+  unchanged.
 
 ## 1.7.0 - 2026-09-25
 

@@ -334,7 +334,7 @@ async function loadSchema(id) {
   } catch (e) {
     if (selected !== id) return;
     $('choices-notice').textContent = 'Could not load model choices. '
-      + `Showing current values; use YAML for other values. ${e.message}`;
+      + `Showing current values; use the text editor for other values. ${e.message}`;
     $('choices-notice').hidden = false;
   } finally {
     if (selected === id) {

@@ -55,11 +55,19 @@ export function settle() {
  * Read from the real file so a renamed id breaks these tests instead of
  * drifting from them. */
 function buildPage(document) {
-  for (const [, tag, attributes] of PAGE_HTML.matchAll(/<([a-z][\w-]*)\b([^>]*)>/g)) {
+  for (const match of PAGE_HTML.matchAll(/<([a-z][\w-]*)\b([^>]*)>/g)) {
+    const [opening, tag, attributes] = match;
     const id = /\bid="([^"]+)"/.exec(attributes);
     if (!id) continue;
     const element = document.createElement(tag);
     element.setAttribute('id', id[1]);
+    /* An element whose content is plain text up to its own closing tag (a
+     * button's label, the console's first line) starts with that text,
+     * whitespace collapsed as a browser renders it. Content holding child
+     * elements is not reproduced: the script rewrites those parts itself. */
+    const after = PAGE_HTML.slice(match.index + opening.length);
+    const plainText = new RegExp('^([^<]*)</' + tag + '>').exec(after);
+    if (plainText) element.textContent = plainText[1].replace(/\s+/g, ' ').trim();
     const className = /\bclass="([^"]*)"/.exec(attributes);
     if (className) element.setAttribute('class', className[1]);
     if (/\shidden(?=[\s>]|$)/.test(attributes)) element.hidden = true;
