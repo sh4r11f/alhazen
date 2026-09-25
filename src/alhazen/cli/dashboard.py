@@ -156,6 +156,10 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._json({"error": "Not found"}, 404)
         except (BrokenPipeError, ConnectionResetError):
+            # The client went away mid-response: a closed tab, a cancelled
+            # fetch. There is nobody left to answer, and nothing to record —
+            # whatever the request did (a launch, a stop) is in the workspace
+            # state the next poll shows.
             pass
         except PermissionError as exc:
             self._json({"error": str(exc)}, 403)
@@ -201,6 +205,10 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._json({"error": "Not found"}, 404)
         except (BrokenPipeError, ConnectionResetError):
+            # The client went away mid-response: a closed tab, a cancelled
+            # fetch. There is nobody left to answer, and nothing to record —
+            # whatever the request did (a launch, a stop) is in the workspace
+            # state the next poll shows.
             pass
         except PermissionError as exc:
             self._json({"error": str(exc)}, 403)
@@ -269,6 +277,10 @@ def _serve(args: argparse.Namespace, directory: Path) -> int:
     try:
         server.serve_forever(poll_interval=0.25)
     except KeyboardInterrupt:
+        # Ctrl+C — or the console break armed above — is the documented way
+        # to stop the server, not a fault: the finally stops the active run
+        # and releases the workspace lock, and a traceback here would read as
+        # a crash to the person who just asked it to stop.
         pass
     finally:
         server.server_close()

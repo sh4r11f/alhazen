@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import logging
 import os
 import re
 import shlex
@@ -29,6 +30,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from alhazen.config.loader import load_rig
 from alhazen.data.atomic import replace_atomically
 from alhazen.modes import Mode, flag_refusal
+
+log = logging.getLogger(__name__)
 
 MEDIA = {
     ".png": "image/png",
@@ -170,7 +173,16 @@ def script_actions(root: Path) -> list[dict[str, Any]]:
         text = source.read_text(encoding="utf-8")
         try:
             tree = ast.parse(text)
-        except SyntaxError:
+        except SyntaxError as exc:
+            # No button for a script that cannot parse — but said out loud,
+            # or the missing button reads as "not a generator" when the truth
+            # is "broken". The others are still offered.
+            log.warning(
+                "%s is not offered as a script: it does not parse (line %s: %s)",
+                source,
+                exc.lineno,
+                exc.msg,
+            )
             continue
         flags = {
             arg.value
@@ -549,6 +561,8 @@ class Workspace:
             else:
                 os.killpg(process.pid, signal.SIGKILL if force else signal.SIGINT)
         except ProcessLookupError:
+            # The run exited between poll() and the signal. There is nothing
+            # left to interrupt, and _finish is already recording how it ended.
             pass
 
     def _kill_later(self, key: str, process: subprocess.Popen) -> None:

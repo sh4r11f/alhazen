@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import re
@@ -132,6 +133,29 @@ class TestProjects:
                 request_for(workspace, mode=actions[0]["id"], script_args="--out=/tmp/elsewhere"),
                 workspace.directory,
             )
+
+    def test_a_preview_that_does_not_parse_is_reported_not_hidden(self, workspace, caplog):
+        """A preview.py with a syntax error gets no button — but silently, the
+        missing button reads as "not a generator" instead of "broken". The
+        warning names the file and the error, and the other scripts are still
+        offered."""
+        root = Path(workspace.projects[0]["path"])
+        broken = root / "src/broken/preview.py"
+        broken.parent.mkdir(parents=True)
+        broken.write_text("parser.add_argument('--out'\nif __name__ == '__main__': main(\n")
+        good = root / "src/good/preview.py"
+        good.parent.mkdir(parents=True)
+        good.write_text("parser.add_argument('--out')\nif __name__ == '__main__': main()\n")
+        with caplog.at_level("WARNING", logger="alhazen.cli.workspace"):
+            actions = script_actions(root)
+        assert [a["module"] for a in actions] == ["good.preview"]
+        assert len(caplog.records) == 1 and caplog.records[0].levelname == "WARNING"
+        # The line and wording of a SyntaxError vary by Python version; the
+        # warning must carry whatever this interpreter says about this file.
+        with pytest.raises(SyntaxError) as error:
+            ast.parse(broken.read_text())
+        assert str(broken) in caplog.text
+        assert f"line {error.value.lineno}: {error.value.msg}" in caplog.text
 
 
 class TestLaunches:
@@ -377,13 +401,21 @@ class TestBoundaries:
     def test_traversal_and_symlink_media(self, workspace, tmp_path):
         with pytest.raises(ValueError, match="inside"):
             inside(tmp_path, "../elsewhere")
-        if os.name == "nt":
-            pytest.skip("symlink creation needs Windows developer mode")
         run = finish(workspace, workspace.start(request_for(workspace)))
         secret = tmp_path / "secret.png"
         secret.write_bytes(b"private")
         root = Path(run["directory"]) / "media"
-        (root / "escape.png").symlink_to(secret)
+        try:
+            (root / "escape.png").symlink_to(secret)
+        except OSError as exc:
+            # Windows refuses symlinks to an account without the privilege
+            # (ERROR_PRIVILEGE_NOT_HELD, 1314) unless Developer Mode is on. CI
+            # runners have it, so the escape check runs there; skipping on
+            # the platform alone would have hidden this test from Windows
+            # entirely. Any other error is a real one.
+            if getattr(exc, "winerror", None) != 1314:
+                raise
+            pytest.skip("symlink creation needs a privilege this account lacks")
         assert [a["path"] for a in workspace.detail(run["id"])["artifacts"]] == ["clip.mp4"]
         with pytest.raises(ValueError, match="inside"):
             inside(root, "escape.png")
