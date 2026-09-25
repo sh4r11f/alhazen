@@ -152,6 +152,41 @@ class TestRuntime:
             controller.stop()
         assert not controller.alive()
 
+    def test_the_page_may_be_framed_by_local_pages_only(self):
+        """The experiment workspace (``alhazen dashboard``) embeds this page
+        from another loopback port, so the policy must let a local page
+        frame it — and, now that it says anything about framing at all, keep
+        every other origin out. Read from the page itself and from an API
+        answer: _send_bytes writes the header for every response."""
+        controller = DashboardController(auto_open=False)
+        url = controller.start()
+        token = url.partition("token=")[2]
+        root = url.partition("/?")[0]
+        try:
+            # /api/state long-polls for a revision newer than `after`, so a
+            # state has to exist before the request can answer at all.
+            controller.publish(_state(1, "running"))
+            self._wait_for_revision(root, token, 1)
+            policies = []
+            for target in (url, f"{root}/api/state?token={token}&after=0"):
+                with urllib.request.urlopen(target, timeout=2) as response:
+                    policies.append(response.headers["Content-Security-Policy"])
+        finally:
+            controller.stop()
+        for policy in policies:
+            directives = {
+                part.split()[0]: part.split()[1:] for part in policy.split(";") if part.strip()
+            }
+            assert directives["frame-ancestors"] == [
+                "'self'",
+                "http://127.0.0.1:*",
+                "http://localhost:*",
+            ], policy
+            # The rest of the policy is as it was: the page is still allowed
+            # only its own inline script and style.
+            assert directives["default-src"] == ["'self'"], policy
+            assert directives["script-src"] == ["'unsafe-inline'"], policy
+
     def test_camera_frames_stream_on_their_own_channel(self):
         controller = DashboardController(auto_open=False)
         url = controller.start()

@@ -205,9 +205,12 @@
                   Media <span id="media-count">0</span>
                 </button>
                 <button id="console-tab">Console</button>
+                <button id="monitor-tab">Live monitor</button>
               </div>
               <div class="output-actions">
-                <a id="monitor" target="_blank" rel="noreferrer" hidden>Live monitor ↗</a>
+                <a id="monitor" target="_blank" rel="noreferrer" hidden>
+                  Open monitor in new tab ↗
+                </a>
                 <button id="stop" class="danger" hidden>Stop run</button>
               </div>
             </div>
@@ -234,6 +237,20 @@
                 <summary>Command &amp; working directory</summary>
                 <pre id="command"></pre>
               </details>
+            </div>
+
+            <!-- Live monitor tab: the session's own dashboard, a separate
+                 loopback server the session process starts, framed here while
+                 the run is active (renderMonitor() in workspace.js). The frame
+                 is cross-origin (another port) and sandboxed: it may run its
+                 scripts against its own server, save a figure and show a
+                 dialog, but not navigate this page or open windows from it.
+                 When there is nothing to frame, the note says why. -->
+            <div id="monitor-panel" hidden>
+              <p id="monitor-note" class="monitor-note"></p>
+              <iframe id="monitor-frame" title="Live session monitor"
+                      sandbox="allow-scripts allow-same-origin allow-downloads allow-modals"
+                      referrerpolicy="no-referrer" hidden></iframe>
             </div>
           </section>
 

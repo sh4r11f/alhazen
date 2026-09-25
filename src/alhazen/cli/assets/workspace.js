@@ -11,6 +11,11 @@
  * JSON "signature" of what it last drew and skips the DOM work when nothing
  * moved; a playing video must not be replaced under the reader on every poll.
  *
+ * The Run output card has three tabs: Media (the run's images and finished
+ * movies), Console (its output tail) and Live monitor, which frames the
+ * session's own dashboard — a separate loopback server the session starts —
+ * while the run is active (see renderMonitor).
+ *
  * Companion: workspace_parameters.js (ParameterChoices) holds the schema
  * lookups that decide which parameter fields become dropdowns. It is loaded
  * first by workspace.html and tested on its own.
@@ -77,6 +82,18 @@ let loadingSchema = false;
 /* The task's JSON schema, read once per project for the parameter dropdowns;
  * {} until it arrives or when it could not be read. */
 let parameterSchema = {};
+/* Whether each rig YAML the page has read turns the live dashboard on, keyed
+ * "<project id>:<rig path>" (two projects may both have a configs/rig.yaml).
+ * The Live monitor tab reads it to say why an active run shows no monitor. */
+const rigMonitor = {};
+/* The run most recently started from this page, and the run whose monitor
+ * tab has already been brought up on its own: the tab is switched once, for
+ * the reader who is waiting on the run they launched, and never again. */
+let launchedRun = null;
+let monitorShown = null;
+/* The URL loaded in the monitor frame, '' when it shows about:blank. The
+ * frame is (re)loaded only when this changes, never on a poll. */
+let framedMonitor = '';
 
 /* A restarted launcher issues a new token and reopens the same tab with it in
  * the fragment: take it, hide it, and redraw everything that embeds it. */
@@ -345,11 +362,17 @@ async function loadRig() {
   if (epoch !== rigEpoch) return;
   const rig = data.values;
   const m = rig.monitor || {};
+  // The live dashboard is opt-in (DashboardConfig.enabled defaults to false),
+  // so a rig without the block, or without the key, has it off. Remembered
+  // for the Live monitor tab, which cannot re-read the YAML on every poll.
+  const monitorOn = rig.dashboard?.enabled === true;
+  rigMonitor[`${p.id}:${path}`] = monitorOn;
   // '?' rather than 'undefined' for a field the YAML leaves to its default.
   $('rig-summary').textContent =
     `${m.width_px ?? '?'} × ${m.height_px ?? '?'} px · ${m.refresh_rate_hz ?? '?'} Hz`
     + ` · ${rig.display?.backend || 'default display'}\n`
-    + `${m.width_cm ?? '?'} cm wide · ${m.distance_cm ?? '?'} cm viewing distance`;
+    + `${m.width_cm ?? '?'} cm wide · ${m.distance_cm ?? '?'} cm viewing distance`
+    + ` · live monitor: ${monitorOn ? 'on' : 'off'}`;
 }
 
 /**
@@ -616,12 +639,82 @@ function renderHistory() {
   }
 }
 
-/** Show one output panel — 'media' or 'console' — and mark its tab. */
+/** Show one output panel — 'media', 'console' or 'monitor' — and mark its tab. */
 function outputTab(tab) {
-  $('media-panel').hidden = tab !== 'media';
-  $('console-panel').hidden = tab !== 'console';
-  $('media-tab').classList.toggle('selected', tab === 'media');
-  $('console-tab').classList.toggle('selected', tab === 'console');
+  for (const name of ['media', 'console', 'monitor']) {
+    $(`${name}-panel`).hidden = tab !== name;
+    $(`${name}-tab`).classList.toggle('selected', tab === name);
+  }
+}
+
+/** Fill the Live monitor tab's note. Strings become spans so a <code> part
+ *  (a YAML key the reader should copy) can sit between them. */
+function setMonitorNote(...parts) {
+  const nodes = parts.map((part) => (typeof part === 'string' ? node('span', '', part) : part));
+  $('monitor-note').replaceChildren(...nodes);
+}
+
+/**
+ * The Live monitor tab for `run`. The session's dashboard is a separate
+ * loopback server that the session process starts and that dies with it,
+ * and the runner prints its URL (which carries that server's own token)
+ * to the console; the launcher relays it as `run.monitor`.
+ *
+ * While the run is active and that URL is known, the monitor page is framed
+ * at it, loaded once — a reload on every poll would restart the page under
+ * the reader — and the open-in-new-tab link points at it too. In every
+ * other case the frame is emptied, so a browser error page for a server
+ * that no longer exists never sits in the tab, and a note says what the
+ * reader is looking at instead: the saved copy, a rig with the dashboard
+ * off, or a session that has not opened its monitor yet.
+ */
+function renderMonitor(run, active) {
+  const frame = $('monitor-frame');
+  const note = $('monitor-note');
+  const url = run && active ? run.monitor : null;
+  $('monitor').hidden = !url;
+  if (url) {
+    $('monitor').href = url;
+    if (framedMonitor !== url) {
+      frame.src = url;
+      framedMonitor = url;
+    }
+    frame.hidden = false;
+    note.hidden = true;
+    // Bring the tab up once, for the run the reader started from this page:
+    // they are waiting for exactly this. A run picked from the history, or a
+    // reader who has moved to another tab since, keeps the tab they chose.
+    if (run.id === launchedRun && monitorShown !== run.id) {
+      monitorShown = run.id;
+      outputTab('monitor');
+    }
+    return;
+  }
+  if (framedMonitor) {
+    frame.src = 'about:blank';
+    framedMonitor = '';
+  }
+  frame.hidden = true;
+  note.hidden = false;
+  if (!run) {
+    setMonitorNote('Start a run to watch its live monitor here.');
+  } else if (!active) {
+    setMonitorNote(
+      'The live monitor closes with the session. Its final state was saved in the run’s '
+      + 'data directory as ',
+      node('code', '', 'figures/dashboard.html'),
+      '.',
+    );
+  } else if (rigMonitor[`${run.project}:${run.rig}`] === false) {
+    setMonitorNote(
+      'This rig has ',
+      node('code', '', 'dashboard.enabled: false'),
+      '; set it to true in the rig YAML to watch the session here.',
+    );
+  } else {
+    // The rig has it on, or this page has not read that rig's YAML.
+    setMonitorNote('Waiting for the session to open its monitor…');
+  }
 }
 
 /**
@@ -636,6 +729,9 @@ async function refreshRun() {
   const run = key ? await api('/api/runs/' + key) : null;
   // The reader picked another run while this one was loading.
   if (key !== runId) return;
+  // "Active": its process is alive, so its monitor may be up and its movies
+  // may still be being written.
+  const active = run ? ['running', 'stopping'].includes(run.status) : false;
   $('run-status').textContent = run ? run.status.toUpperCase() : 'READY';
   $('run-status').className = 'status ' + (run?.status || '');
   let info = '';
@@ -649,9 +745,8 @@ async function refreshRun() {
   $('stop').hidden = !run || run.id !== state.active;
   $('stop').disabled = run?.status === 'stopping';
   $('stop').textContent = run?.status === 'stopping' ? 'Stopping…' : 'Stop run';
-  // The session's own live monitor, once the runner has printed its URL.
-  $('monitor').hidden = !run?.monitor;
-  if (run?.monitor) $('monitor').href = run.monitor;
+  // The Live monitor tab and its open-in-new-tab link.
+  renderMonitor(run, active);
   // Console: follow the tail only if the reader was already at the bottom,
   // so scrolling up to read an earlier line is not undone by the next poll.
   const consoleEl = $('console');
@@ -672,7 +767,6 @@ async function refreshRun() {
   }
   $('command').textContent = command;
   const artifacts = run?.artifacts || [];
-  const active = run ? ['running', 'stopping'].includes(run.status) : false;
   $('media-count').textContent = artifacts.length;
   $('gallery-empty').hidden = artifacts.length > 0;
   // The empty state's wording follows the run's situation.
@@ -899,6 +993,9 @@ $('launch-form').addEventListener('submit', guard(async (event) => {
     }
     const run = await api('/api/runs', request);
     runId = run.id;
+    // Remembered so the Live monitor tab comes up on its own when this run's
+    // monitor appears (renderMonitor); until then the media tab shows.
+    launchedRun = run.id;
     gallerySignature = '';
     outputTab('media');
     await refresh();

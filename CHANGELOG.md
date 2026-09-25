@@ -41,6 +41,20 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   task model's enums and defaults. Rig measurement and scripts without
   parameter-file support hide the task parameter controls and omit those
   parameters from launches.
+- **The workspace embeds the live session monitor.** The Run output card
+  gains a **Live monitor** tab beside Media and Console. While a run is
+  active and its session has opened its monitor, the monitor page is framed
+  there (an open-in-new-tab link stays beside the tabs), and the tab comes
+  up on its own the first time a run started from the page shows its
+  monitor URL. When the run ends the frame is emptied and a note points at
+  the saved `figures/dashboard.html`; while an active run has no monitor
+  yet, the tab says it is waiting, or that the rig has
+  `dashboard.enabled: false` and how to turn it on, and the rig summary
+  shows **live monitor: on/off**. To allow the embedding, the monitor
+  server's Content-Security-Policy now carries `frame-ancestors 'self'
+  http://127.0.0.1:* http://localhost:*` (local pages may frame it, nothing
+  else may; it previously said nothing about framing). `python run.py` from
+  a terminal is unchanged.
 
 ## 1.7.0 - 2026-09-25
 

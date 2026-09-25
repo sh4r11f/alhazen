@@ -779,6 +779,32 @@ details {
   overflow-wrap: anywhere;
 }
 
+/* ---- Live monitor panel: the framed session monitor, or a note ---- */
+.monitor-note {
+  padding: 26px 23px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.monitor-note code {
+  font: 10px var(--mono);
+  background: #f0f3f7;
+  padding: 1px 5px;
+  border-radius: 3px;
+  color: var(--ink);
+}
+
+/* Same height as the gallery's scroll area, so the card does not jump when
+ * the reader switches between Media and Live monitor. */
+#monitor-frame {
+  display: block;
+  width: 100%;
+  height: 650px;
+  border: 0;
+  background: var(--white);
+}
+
 /* ---- Run history ---- */
 .history-empty {
   padding: 26px 23px;
