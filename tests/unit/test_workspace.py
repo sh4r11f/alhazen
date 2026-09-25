@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
@@ -17,6 +18,7 @@ import yaml
 import alhazen
 from alhazen.cli import workspace as workspace_module
 from alhazen.cli.dashboard import DashboardServer, workspace_lock
+from alhazen.cli.main import add_mode_arguments
 from alhazen.cli.workspace import (
     STOP_GRACE_S,
     Launch,
@@ -25,6 +27,7 @@ from alhazen.cli.workspace import (
     mapping,
     script_actions,
 )
+from alhazen.modes import Mode
 
 RIG = Path(__file__).parents[2] / "examples/minimal_fixation/rig-sim.yaml"
 # The real probe, kept from before the fixture stubs it, for the tests of the
@@ -304,6 +307,53 @@ class TestLaunches:
         assert detail["status"] == "interrupted"
         assert len(detail["log"]) == 65536
         assert detail["monitor"] == "http://127.0.0.1:1234/?token=abc_-123"
+
+
+class TestCommandContract:
+    """The launcher hand-builds run.py's flags; ``add_mode_arguments`` is the
+    parser that has to accept them. A flag renamed in cli/main.py would
+    otherwise break every launch silently: the child would exit on a usage
+    error and the run would just read "failed". So every command the launcher
+    can build is parsed with the runner's own parser — strictly (parse_args,
+    not parse_known_args), so a flag the runner no longer knows is a failure.
+    """
+
+    @pytest.mark.parametrize("mode, sheet", [(m.value, False) for m in Mode] + [("movie", True)])
+    def test_every_mode_command_parses_with_the_runner_parser(self, workspace, mode, sheet):
+        request = request_for(
+            workspace,
+            mode=mode,
+            subject="s01",
+            session=2,
+            seed=3,
+            trials=4,
+            parameters=None if mode == "measure" else {"speed": 2},
+            headless=mode == "simulate",
+            mouse=mode == "test",
+            windowed=True,
+            scale=0.25,
+            sheet=sheet,
+            columns=2 if sheet else None,
+            clips=["one", "two"] if mode == "movie" else [],
+        )
+        command = workspace._command(request, workspace.directory / "job")
+        parser = argparse.ArgumentParser()
+        add_mode_arguments(parser)
+        args = parser.parse_args(command[3:])  # after <python> -u run.py
+        assert args.mode == mode and args.seed == 3 and args.windowed
+        assert args.rig.endswith("rig-sim.yaml") and args.no_dashboard_browser
+        assert (args.params is not None) == (mode != "measure")
+        if Mode(mode).runs_trials:
+            assert args.sub == "s01" and args.ses == 2
+        if mode in {"test", "simulate"}:
+            assert args.trials_per_condition == 4
+        assert args.headless == (mode == "simulate") and args.mouse == (mode == "test")
+        if mode == "demo":
+            assert args.screenshots.endswith("media")
+        if mode == "movie":
+            assert args.out.endswith("media") and args.scale == 0.25
+            assert args.clip == ["one", "two"]
+            assert (args.sheet is not None) == sheet and args.columns == (2 if sheet else None)
 
 
 class TestBoundaries:
