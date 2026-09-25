@@ -99,7 +99,10 @@ class Handler(BaseHTTPRequestHandler):
             "Content-Security-Policy",
             "default-src 'self'; img-src 'self'; "
             "media-src 'self'; style-src 'self'; script-src 'self'; "
-            "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'",
+            # The page embeds the live session monitor, which the run serves
+            # on another loopback port; nothing else may be framed.
+            "connect-src 'self'; frame-src http://127.0.0.1:*; "
+            "frame-ancestors 'none'; base-uri 'none'",
         )
 
     def _json(self, payload: Any, status: int = 200) -> None:

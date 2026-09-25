@@ -462,6 +462,9 @@ class TestHTTP:
         status, headers, page = call("/")
         assert status == 200 and b"Configure a run" in page
         assert "frame-ancestors 'none'" in headers["Content-Security-Policy"]
+        # The page frames the live session monitor, which runs on another
+        # loopback port; nothing else may be framed.
+        assert "frame-src http://127.0.0.1:*" in headers["Content-Security-Policy"]
         assert call("/workspace.js")[0] == 200
         assert call("/workspace.css")[0] == 200
         assert json.loads(call("/api/state")[2])["projects"][0]["name"] == "experiment with spaces"
