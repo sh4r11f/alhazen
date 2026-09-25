@@ -19,6 +19,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from pydantic import ValidationError
 
+from alhazen.cli.console_break import interrupt_on_console_break
 from alhazen.cli.workspace import MEDIA, Launch, Workspace, inside, mapping
 from alhazen.errors import AlhazenError
 
@@ -250,6 +251,11 @@ def serve(args: argparse.Namespace) -> int:
 
 
 def _serve(args: argparse.Namespace, directory: Path) -> int:
+    # The server is stopped the way it stops its runs: Ctrl+C, or on Windows a
+    # console break — which must become the KeyboardInterrupt handled below,
+    # so the active run is stopped and the workspace lock released rather than
+    # both being abandoned by a process that simply vanished.
+    interrupt_on_console_break()
     workspace = Workspace(directory)
     for path in args.project:
         workspace.add(path)

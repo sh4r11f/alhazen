@@ -40,7 +40,14 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   dropdowns and text lists are multi-selection dropdowns, populated from the
   task model's enums and defaults. Rig measurement and scripts without
   parameter-file support hide the task parameter controls and omit those
-  parameters from launches.
+  parameters from launches. **Stop run** ends the child the way Ctrl+C does,
+  on Windows too: `alhazen run` and every `run.py` now turn a console break
+  (`CTRL_BREAK_EVENT`, the only signal a parent can aim at one Windows child)
+  into `KeyboardInterrupt`, so the session tears down — trials file, manifest,
+  tracker recording — instead of dying on the spot with nothing written. The
+  run has thirty seconds; one still alive after that is killed and its history
+  says so (status `killed`, `"stopped": "forced"` in `run.json`, a final
+  console line) rather than reading as a clean cancellation.
 
 ## 1.7.0 - 2026-09-25
 

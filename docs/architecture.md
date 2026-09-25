@@ -80,6 +80,9 @@ package remains the session monitor, with its own pause-only controls. See
 Parameter dropdowns read the task's Pydantic schema through an isolated
 `cli/workspace_schema.py` subprocess in the project's interpreter. The server
 does not import task modules itself. Rig measurement omits task parameters.
+`cli/console_break.py` makes a Windows console break — how the workspace stops
+a child — raise the same `KeyboardInterrupt` as Ctrl+C, so a stopped session
+still tears down; `_run_session` and the workspace server both arm it.
 
 Three placements carry the weight:
 

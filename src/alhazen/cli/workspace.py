@@ -40,6 +40,13 @@ MEDIA = {
     ".webm": "video/webm",
 }
 ACTIVE = {"running", "stopping"}
+# How long a stopped run gets to tear down before it is killed. Teardown is
+# real work — the recorder writes trials.csv, the manifest hashes every file,
+# an EyeLink transfers its EDF over the link — and on a rig it routinely
+# outlasts the ten seconds this used to be. Killing early is exactly what
+# loses that data, so the grace is generous; a run that has still not exited
+# is then killed, and its record says so (`_force_kill`).
+STOP_GRACE_S = 30
 
 
 def now() -> str:
@@ -431,13 +438,14 @@ class Workspace:
         code = process.wait()
         with self.lock:
             run = self.runs[key]
-            status = (
-                "cancelled"
-                if run["status"] == "stopping"
-                else "completed"
-                if code == 0
-                else "failed"
-            )
+            if run["status"] == "stopping":
+                # "cancelled" is the clean ending: the interrupt reached the run
+                # and its teardown finished on its own. A run that had to be
+                # killed has no such guarantee — no trials file, no manifest —
+                # and its history must not read as if it had.
+                status = "killed" if run.get("stopped") == "forced" else "cancelled"
+            else:
+                status = "completed" if code == 0 else "failed"
             run.update(status=status, returncode=code, finished=now())
             self._save_run(run)
             self.active = None
@@ -451,35 +459,63 @@ class Workspace:
             self.runs[key]["status"] = "stopping"
             self._save_run(self.runs[key])
             self._signal(process, force=False)
-        threading.Thread(target=self._kill_later, args=(process,), daemon=True).start()
+        threading.Thread(target=self._kill_later, args=(key, process), daemon=True).start()
 
     @staticmethod
     def _signal(process: subprocess.Popen, *, force: bool) -> None:
         if process.poll() is not None:
             return
         try:
-            if os.name == "nt":
+            # sys.platform rather than os.name: mypy narrows on it, so the
+            # branch for the other platform is not checked against this one's
+            # stubs (Windows has no os.killpg or SIGKILL; POSIX no CTRL_BREAK).
+            if sys.platform == "win32":
                 if force:
                     process.kill()
                 else:
-                    process.send_signal(getattr(signal, "CTRL_BREAK_EVENT", signal.SIGTERM))
+                    # The child runs in its own group (CREATE_NEW_PROCESS_GROUP),
+                    # so the break reaches it alone; its run.py turns the break
+                    # into KeyboardInterrupt (alhazen.cli.console_break).
+                    process.send_signal(signal.CTRL_BREAK_EVENT)
             else:
                 os.killpg(process.pid, signal.SIGKILL if force else signal.SIGINT)
         except ProcessLookupError:
             pass
 
-    def _kill_later(self, process: subprocess.Popen) -> None:
+    def _kill_later(self, key: str, process: subprocess.Popen) -> None:
         try:
-            process.wait(timeout=10)
+            process.wait(timeout=STOP_GRACE_S)
         except subprocess.TimeoutExpired:
-            self._signal(process, force=True)
+            self._force_kill(key, process)
+
+    def _force_kill(self, key: str, process: subprocess.Popen) -> None:
+        """Kill a run that outlived the grace — and say so wherever its history is read."""
+        with self.lock:
+            if process.poll() is not None:
+                # It exited on its own at the last moment: nothing was forced,
+                # and _finish will record the clean ending.
+                return
+            run = self.runs[key]
+            run["stopped"] = "forced"
+            self._save_run(run)
+        # Written before the kill so that it is the log's last line: a killed
+        # child writes nothing more, and _finish (which waits for the exit) runs
+        # after this, so whoever reads the tail finds the verdict at the end.
+        with (self.directory / "runs" / key / "console.log").open("ab") as log:
+            log.write(
+                f"\n[workspace] Run killed after {STOP_GRACE_S} s without exiting; "
+                "its data may be incomplete because teardown did not finish.\n".encode()
+            )
+        self._signal(process, force=True)
 
     def close(self) -> None:
         with self.lock:
             if self.active:
                 self.stop(self.active)
         if self.worker:
-            self.worker.join(timeout=12)
+            # Long enough for the grace and the kill: leaving earlier would
+            # strand the run as "stopping" for the next start to call interrupted.
+            self.worker.join(timeout=STOP_GRACE_S + 5)
 
     def detail(self, key: str) -> dict[str, Any]:
         with self.lock:

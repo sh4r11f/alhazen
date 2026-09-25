@@ -67,14 +67,23 @@ starts, so unsupported values produce the same errors as the CLI. The rig
 passed to the process stays at its original path to preserve relative-path
 semantics. Session data retains the experiment's normal real/rehearsal paths.
 
-Only one job runs at a time in a workspace. **Stop run** interrupts its process
-group on POSIX (a console break on Windows), giving the experiment ten seconds
-to tear down before terminating it. Closing the browser does not stop a run;
-Ctrl+C in the launcher terminal does. Runs and their output survive restart.
-A job left marked running after an unexpected server exit is shown as
-**interrupted**, not successful; inspect the OS for surviving processes before
-restarting hardware after a crash. Windows forced termination ends the direct
-child; descendants may need to be stopped separately.
+Only one job runs at a time in a workspace. **Stop run** interrupts the run:
+SIGINT to its process group on POSIX, a console break (`CTRL_BREAK_EVENT`) on
+Windows, which `alhazen run` and every `run.py` built on `run_experiment` turn
+into the same `KeyboardInterrupt` as Ctrl+C. The session then tears down as
+usual — trials file, manifest, tracker recording — and has thirty seconds to
+finish, because an EyeLink EDF transfer plus manifest hashing can take that
+long. A run still alive after that is killed: its status becomes **killed**
+rather than **cancelled**, its `run.json` records `"stopped": "forced"`, and its
+console log ends with a line saying the data may be incomplete. Standalone
+preview and movie scripts do not go through `run_experiment`, so a break ends
+them at once. Closing the browser does not stop a run; Ctrl+C in the launcher
+terminal does. Runs and their output survive restart. A job left marked
+running after an unexpected server exit is shown as **interrupted**, not
+successful; inspect the OS for surviving processes before restarting hardware
+after a crash. On Windows the break is delivered at the run's next Python
+statement (a blocking wait delays it), and a forced termination ends the direct
+child only; descendants may need to be stopped separately.
 
 When an experiment prints its live monitor URL to the console, **Live monitor**
 opens it. That monitor retains its own token and pause-only controls.

@@ -27,6 +27,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from alhazen.cli.console_break import interrupt_on_console_break
 from alhazen.config.loader import load_rig
 from alhazen.errors import AlhazenError, ConfigError
 from alhazen.modes import Mode, flag_refusal
@@ -406,6 +407,13 @@ def _run_session(
     ``params_hook=``), and replaces the task's; ``alhazen run`` passes None,
     which leaves the task's in charge.
     """
+    # Armed before anything else, so a stop that arrives while the rig or the
+    # task is still loading already ends the session through teardown rather
+    # than on the spot. The workspace's Stop run is a console break on Windows,
+    # which Python would otherwise let kill the process with no `finally` run
+    # at all (alhazen.cli.console_break); elsewhere this does nothing.
+    interrupt_on_console_break()
+
     from alhazen.cli.tasks import installed_tasks, load_task_class
 
     mode = Mode(args.mode)

@@ -14,7 +14,14 @@ import pytest
 import yaml
 
 from alhazen.cli.dashboard import DashboardServer, workspace_lock
-from alhazen.cli.workspace import Launch, Workspace, inside, mapping, script_actions
+from alhazen.cli.workspace import (
+    STOP_GRACE_S,
+    Launch,
+    Workspace,
+    inside,
+    mapping,
+    script_actions,
+)
 
 RIG = Path(__file__).parents[2] / "examples/minimal_fixation/rig-sim.yaml"
 
@@ -211,6 +218,50 @@ class TestLaunches:
         assert finish(workspace, run)["status"] == "cancelled"
         with pytest.raises(ValueError, match="no longer active"):
             workspace.stop(run["id"])
+
+    def test_a_forced_kill_is_recorded_honestly(self, workspace, monkeypatch):
+        """A run that ignores the interrupt for the whole grace period is
+        killed — and the history must say so, because a killed session has
+        no trials file and no manifest, and "cancelled" would read as clean.
+        """
+        started, exited = threading.Event(), threading.Event()
+        graces, signals = [], []
+
+        class Process:
+            pid = 123
+
+            def wait(self, timeout=None):
+                started.set()
+                if timeout is not None:
+                    # The child never reacts to the interrupt: the grace runs out.
+                    graces.append(timeout)
+                    raise subprocess.TimeoutExpired("run.py", timeout)
+                assert exited.wait(timeout=5)
+                return -9
+
+            def poll(self):
+                return -9 if exited.is_set() else None
+
+        def send(process, force):
+            signals.append(force)
+            if force:
+                exited.set()
+
+        monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: Process())
+        monkeypatch.setattr(workspace, "_signal", send)
+        run = workspace.start(request_for(workspace))
+        assert started.wait(timeout=5)
+        workspace.stop(run["id"])
+        detail = finish(workspace, run)
+        # docs/workspace.md promises thirty seconds; an EDF transfer plus
+        # manifest hashing does not fit in the ten it used to be.
+        assert STOP_GRACE_S == 30 and graces == [STOP_GRACE_S]
+        assert signals == [False, True]
+        assert detail["status"] == "killed" and detail["stopped"] == "forced"
+        assert f"killed after {STOP_GRACE_S} s" in detail["log"]
+        assert "may be incomplete" in detail["log"]
+        record = json.loads((Path(detail["directory"]) / "run.json").read_text())
+        assert record["status"] == "killed" and record["stopped"] == "forced"
 
     def test_interrupted_history_and_log_tail(self, workspace):
         run = finish(workspace, workspace.start(request_for(workspace)))
