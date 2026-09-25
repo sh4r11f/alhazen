@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -13,6 +14,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+import alhazen
+from alhazen.cli import workspace as workspace_module
 from alhazen.cli.dashboard import DashboardServer, workspace_lock
 from alhazen.cli.workspace import (
     STOP_GRACE_S,
@@ -24,10 +27,20 @@ from alhazen.cli.workspace import (
 )
 
 RIG = Path(__file__).parents[2] / "examples/minimal_fixation/rig-sim.yaml"
+# The real probe, kept from before the fixture stubs it, for the tests of the
+# probe itself.
+REAL_PROBE = workspace_module.probe_interpreter
 
 
 @pytest.fixture
-def workspace(tmp_path):
+def workspace(tmp_path, monkeypatch):
+    # Registering an experiment imports alhazen in the project's interpreter,
+    # which costs seconds per test; TestInterpreters runs the real probe.
+    monkeypatch.setattr(
+        workspace_module,
+        "probe_interpreter",
+        lambda python, path: {"alhazen_version": "stub", "python_version": "stub"},
+    )
     root = tmp_path / "experiment with spaces"
     (root / "configs/rigs").mkdir(parents=True)
     (root / "configs/rig-sim.yaml").write_bytes(RIG.read_bytes())
@@ -417,6 +430,81 @@ class TestHTTP:
         assert call(f"/media/{run['id']}/../params.yaml")[0] == 400
         assert call(f"/media/{run['id']}/missing.png")[0] == 404
         assert call("/media/missing/clip.mp4")[0] == 404
+
+
+class TestInterpreters:
+    def test_children_see_the_project_first_and_nothing_of_the_launcher(
+        self, workspace, monkeypatch
+    ):
+        """From an installed wheel the launcher's root is its whole
+        site-packages; put first on the *project's* interpreter's path it
+        shadowed the project's pinned alhazen and every package beside it.
+        Both children — the launch and the schema probe — must get the
+        project's src/, its root, then whatever PYTHONPATH was inherited, and
+        nothing else."""
+        monkeypatch.setenv("PYTHONPATH", "INHERITED")
+        root = workspace.projects[0]["path"]
+        expected = os.pathsep.join([str(Path(root) / "src"), root, "INHERITED"])
+        launcher_root = str(Path(workspace_module.__file__).resolve().parents[2])
+        seen = {}
+
+        class Process:
+            pid = 123
+
+            def wait(self, timeout=None):
+                return 0
+
+            def poll(self):
+                return 0
+
+        def popen(command, **kwargs):
+            seen["launch"] = kwargs["env"]["PYTHONPATH"]
+            return Process()
+
+        def run(command, **kwargs):
+            seen["schema"] = kwargs["env"]["PYTHONPATH"]
+            return subprocess.CompletedProcess(command, 0, stdout='{"properties": {}}', stderr="")
+
+        monkeypatch.setattr(subprocess, "Popen", popen)
+        monkeypatch.setattr(subprocess, "run", run)
+        finish(workspace, workspace.start(request_for(workspace)))
+        workspace.schema(workspace.projects[0]["id"])
+        assert seen == {"launch": expected, "schema": expected}
+        assert launcher_root not in expected
+
+    def test_registration_records_which_alhazen_the_interpreter_has(self, workspace, monkeypatch):
+        monkeypatch.setattr(workspace_module, "probe_interpreter", REAL_PROBE)
+        project = workspace.add(workspace.projects[0]["path"], sys.executable)
+        assert project["alhazen_version"] == alhazen.__version__
+        assert project["python_version"] == sys.version
+        restored = Workspace(workspace.directory)
+        assert restored.projects[0]["alhazen_version"] == alhazen.__version__
+
+    def test_an_interpreter_without_alhazen_is_refused_at_registration(
+        self, workspace, monkeypatch
+    ):
+        """The wrong env used to register fine and die at the first launch's
+        `import alhazen`. The refusal names the interpreter and the package to
+        install, and leaves the registry as it was."""
+        monkeypatch.setattr(workspace_module, "probe_interpreter", REAL_PROBE)
+        root = Path(workspace.projects[0]["path"])
+        # Shadow alhazen on the child's path with one that cannot import: the
+        # project's own src/ comes first, so this is what the child sees.
+        (root / "src/alhazen").mkdir(parents=True)
+        (root / "src/alhazen/__init__.py").write_text("raise ImportError('not installed here')\n")
+        before = [dict(p) for p in workspace.projects]
+        with pytest.raises(ValueError, match=re.escape(sys.executable)) as refused:
+            workspace.add(str(root), sys.executable)
+        assert "alhazen-vision" in str(refused.value)
+        assert "not installed here" in str(refused.value)
+        assert workspace.projects == before
+
+    def test_a_file_that_is_not_an_interpreter_is_refused(self, workspace, monkeypatch, tmp_path):
+        monkeypatch.setattr(workspace_module, "probe_interpreter", REAL_PROBE)
+        bogus = tmp_path / "not-python.txt"
+        bogus.write_text("not an executable")
+        with pytest.raises(ValueError, match="Cannot run the Python interpreter"):
+            workspace.add(workspace.projects[0]["path"], str(bogus))
 
 
 class TestParameterSchema:

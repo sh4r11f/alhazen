@@ -14,8 +14,12 @@ with **Add experiment**, using the path to a checkout containing `run.py`.
 Nothing is installed by registering a folder. Choose a Python interpreter in
 **Project settings** if the experiment needs a particular conda environment or
 virtual environment. Otherwise the launcher uses the project's `.venv` when
-present, then its own interpreter. The project's `src/` and root are placed on
-`PYTHONPATH`, alongside the running Alhazen installation.
+present, then its own interpreter. The project's `src/` and root are placed
+first on the child's `PYTHONPATH`; nothing of the launcher's own installation
+is, so the interpreter you choose must have `alhazen-vision` installed (an
+experiment's `pyproject.toml` requires it). Registering a folder checks this by
+importing alhazen with that interpreter, refuses with the reason when it
+cannot, and records the alhazen and Python versions it found.
 
 ## Configure and run
 

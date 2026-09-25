@@ -49,8 +49,87 @@ ACTIVE = {"running", "stopping"}
 STOP_GRACE_S = 30
 
 
+# How long a project's interpreter gets to answer a one-off question (import
+# alhazen, print a schema). A cold conda env importing numpy and pydantic takes
+# a few seconds; one that hangs this long is not going to answer.
+CHILD_TIMEOUT_S = 20
+# What `add()` asks the project's interpreter, as a single -c program: which
+# alhazen it can import, and which Python it is. JSON on the last line so the
+# answer survives anything the import itself prints.
+INTERPRETER_PROBE = (
+    "import json, sys, alhazen; "
+    "print(json.dumps({'alhazen': alhazen.__version__, 'python': sys.version}))"
+)
+
+
 def now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _child_env(project: dict[str, Any]) -> dict[str, str]:
+    """The environment a project's interpreter runs in: its own paths, then ours.
+
+    The project's ``src/`` and root come first so a src-layout checkout works
+    without an editable install. The launcher's own checkout is deliberately
+    NOT added. From an installed wheel that directory is the launcher's whole
+    site-packages, and putting it first on the path of the *project's*
+    interpreter — possibly another env or another Python version — shadowed
+    the project's pinned alhazen and every package beside it (a numpy built
+    for another interpreter fails to import). The project's interpreter must
+    have alhazen installed itself; ``probe_interpreter`` checks that when the
+    project is registered, which is the moment the message can still be acted on.
+    """
+    env = os.environ.copy()
+    root = Path(project["path"])
+    inherited = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(root / "src"), str(root)] + ([inherited] if inherited else [])
+    )
+    return env
+
+
+def probe_interpreter(python: str, project_path: str) -> dict[str, str]:
+    """Which alhazen and which Python does this interpreter have? Refuse if none.
+
+    Run in the same environment a launch gets, so what is checked is what a
+    run would import. Every failure is a ValueError that names the
+    interpreter and says what to install, because the alternative is a
+    registration that looks fine and a launch that dies on ``import alhazen``.
+    """
+    env = _child_env({"path": project_path})
+    try:
+        result = subprocess.run(
+            [python, "-c", INTERPRETER_PROBE],
+            cwd=project_path,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=CHILD_TIMEOUT_S,
+        )
+    except OSError as exc:
+        raise ValueError(f"Cannot run the Python interpreter {python}: {exc}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError(
+            f"The Python interpreter {python} did not answer within {CHILD_TIMEOUT_S} s; "
+            "check that it starts from a terminal"
+        ) from exc
+    if result.returncode:
+        raise ValueError(
+            f"The Python interpreter {python} cannot import alhazen: "
+            f"{result.stderr.strip()[-2000:]}\n"
+            "Install alhazen-vision in that environment (pip install alhazen-vision), "
+            "or choose the interpreter that has it in Project settings."
+        )
+    lines = result.stdout.strip().splitlines()
+    try:
+        report = json.loads(lines[-1])
+    except (IndexError, ValueError) as exc:
+        raise ValueError(
+            f"Unexpected reply from {python} while checking alhazen: {result.stdout[-500:]!r}"
+        ) from exc
+    return {"alhazen_version": report["alhazen"], "python_version": report["python"]}
 
 
 def inside(root: Path, relative: str) -> Path:
@@ -186,6 +265,10 @@ class Workspace:
             "name": root.name,
             "path": str(root),
             "python": str(interpreter),
+            # Refuses here, with the reason, rather than at the first launch:
+            # the wrong interpreter is a registration mistake, and this is the
+            # moment the person who made it is looking at the screen.
+            **probe_interpreter(str(interpreter), str(root)),
         }
         with self.lock:
             if self.active and self.runs[self.active]["project"] == project["id"]:
@@ -237,15 +320,6 @@ class Workspace:
 
     def schema(self, key: str) -> dict[str, Any]:
         project = self.project(key)
-        env = os.environ.copy()
-        env["PYTHONPATH"] = os.pathsep.join(
-            [
-                str(Path(__file__).resolve().parents[2]),
-                str(Path(project["path"]) / "src"),
-                project["path"],
-                env.get("PYTHONPATH", ""),
-            ]
-        )
         try:
             result = subprocess.run(
                 [
@@ -255,12 +329,12 @@ class Workspace:
                     str(Path(project["path"]) / "run.py"),
                 ],
                 cwd=project["path"],
-                env=env,
+                env=_child_env(project),
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
-                timeout=20,
+                timeout=CHILD_TIMEOUT_S,
             )
         except subprocess.TimeoutExpired as exc:
             raise ValueError("Reading the task's parameter choices timed out") from exc
@@ -397,17 +471,7 @@ class Workspace:
             }
             self.runs[key] = run
             self._save_run(run)
-            env = os.environ.copy()
-            # The project may be a src-layout checkout without an editable install.
-            # Keep THIS alhazen checkout first so the launcher and runner agree.
-            env["PYTHONPATH"] = os.pathsep.join(
-                [
-                    str(Path(__file__).resolve().parents[2]),
-                    str(Path(project["path"]) / "src"),
-                    project["path"],
-                    env.get("PYTHONPATH", ""),
-                ]
-            )
+            env = _child_env(project)
             env["PYTHONUNBUFFERED"] = "1"
             try:
                 with (run_dir / "console.log").open("wb") as log:

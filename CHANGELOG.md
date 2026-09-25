@@ -40,7 +40,11 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   dropdowns and text lists are multi-selection dropdowns, populated from the
   task model's enums and defaults. Rig measurement and scripts without
   parameter-file support hide the task parameter controls and omit those
-  parameters from launches. **Stop run** ends the child the way Ctrl+C does,
+  parameters from launches. Registering a folder checks that its interpreter
+  can import alhazen — refusing with the interpreter's name and what to
+  install when it cannot — and records the alhazen and Python versions it
+  found; the launcher's own installation is never put on a child's path,
+  so it cannot shadow the project's. **Stop run** ends the child the way Ctrl+C does,
   on Windows too: `alhazen run` and every `run.py` now turn a console break
   (`CTRL_BREAK_EVENT`, the only signal a parent can aim at one Windows child)
   into `KeyboardInterrupt`, so the session tears down — trials file, manifest,
