@@ -275,6 +275,85 @@ class Launch(BaseModel):
     script_args: str = ""
 
 
+def _mode_command(
+    mode: Mode, request: Launch, root: Path, rig_path: Path, run_dir: Path
+) -> list[str]:
+    """run.py's arguments for one of the six modes: the flags add_mode_arguments takes.
+
+    Refusals come first, before anything is written to the run directory,
+    in the words the person at the screen needs. TestCommandContract parses
+    the result with the runner's own parser, so a flag renamed there fails
+    here rather than in a child's console.
+    """
+    refusal = flag_refusal(mode, headless=request.headless, mouse=request.mouse)
+    if refusal:
+        raise ValueError(refusal)
+    has_parameters = request.parameters is not None or request.parameters_yaml is not None
+    if mode is Mode.MEASURE and has_parameters:
+        raise ValueError("Measure rig does not use task parameters")
+    if request.script_args.strip():
+        raise ValueError("Extra script arguments are only used with standalone scripts")
+    if mode in {Mode.RUN, Mode.TEST} and not request.subject.strip():
+        raise ValueError("A subject ID is required for run and test modes")
+    output = run_dir / "media"
+    command = [
+        str(root / "run.py"),
+        "--mode",
+        mode.value,
+        "--rig",
+        str(rig_path),
+        "--seed",
+        str(request.seed),
+        "--no-dashboard-browser",
+    ]
+    if has_parameters:
+        command += ["--params", str(run_dir / "params.yaml")]
+    if mode.runs_trials:
+        command += ["--ses", str(request.session)]
+        if request.subject.strip():
+            command += ["--sub", request.subject.strip()]
+    if mode in {Mode.TEST, Mode.SIMULATE}:
+        command += ["--trials-per-condition", str(request.trials)]
+    for flag in ("headless", "mouse", "windowed"):
+        if getattr(request, flag):
+            command += ["--" + flag]
+    if mode is Mode.MOVIE:
+        command += ["--out", str(output), "--scale", str(request.scale)]
+        if request.sheet:
+            command += ["--sheet", str(output / "all-clips.mp4")]
+        if request.columns:
+            command += ["--columns", str(request.columns)]
+        for clip in request.clips:
+            command += ["--clip", clip]
+    if mode is Mode.DEMO:
+        command += ["--screenshots", str(output)]
+    return command
+
+
+def _script_command(request: Launch, root: Path, rig_path: Path, run_dir: Path) -> list[str]:
+    """A standalone preview/movie module's arguments, from the flags it declares.
+
+    The rig, parameters and output directory are the launcher's to set (they
+    are what makes the run reproducible from its directory), so the free-form
+    arguments may not name them.
+    """
+    action = next((s for s in script_actions(root) if s["id"] == request.mode), None)
+    if action is None:
+        raise ValueError("Unknown experiment mode or script")
+    command = ["-m", action["module"], "--out", str(run_dir / "media")]
+    if action["rig_flag"]:
+        command += ["--rig", str(rig_path)]
+    if request.parameters is not None or request.parameters_yaml is not None:
+        if not action["params_flag"]:
+            raise ValueError("This script has no parameter-file option; use its own arguments")
+        command += [action["params_flag"], str(run_dir / "params.yaml")]
+    extra = shlex.split(request.script_args)
+    reserved = {"--out", "--rig", "--params", "--task-config"}
+    if any(token.split("=", 1)[0] in reserved for token in extra):
+        raise ValueError("Set the rig, parameters and output through the dashboard controls")
+    return command + extra
+
+
 class Workspace:
     def __init__(self, directory: Path):
         self.directory = directory.expanduser().resolve()
@@ -420,75 +499,22 @@ class Workspace:
             }
 
     def _command(self, request: Launch, run_dir: Path) -> list[str]:
+        """The child's argv: run.py in one of the six modes, or a standalone script.
+
+        What both share — the project's interpreter, the rig checked for
+        existence and validity — is settled here; the two argument lists have
+        nothing else in common and are built apart.
+        """
         project = self.project(request.project)
         root = Path(project["path"])
         rig_path = path_inside(root, request.rig)
         if not request.rig or not rig_path.is_file():
             raise ValueError("Choose an existing rig YAML file")
         load_rig(rig_path)
-        params = run_dir / "params.yaml"
-        output = run_dir / "media"
         base = [project["python"], "-u"]
         if request.mode in {m.value for m in Mode}:
-            mode = Mode(request.mode)
-            refusal = flag_refusal(mode, headless=request.headless, mouse=request.mouse)
-            if refusal:
-                raise ValueError(refusal)
-            if mode is Mode.MEASURE and (
-                request.parameters is not None or request.parameters_yaml is not None
-            ):
-                raise ValueError("Measure rig does not use task parameters")
-            if request.script_args.strip():
-                raise ValueError("Extra script arguments are only used with standalone scripts")
-            if mode in {Mode.RUN, Mode.TEST} and not request.subject.strip():
-                raise ValueError("A subject ID is required for run and test modes")
-            command = base + [
-                str(root / "run.py"),
-                "--mode",
-                mode.value,
-                "--rig",
-                str(rig_path),
-                "--seed",
-                str(request.seed),
-                "--no-dashboard-browser",
-            ]
-            if request.parameters is not None or request.parameters_yaml is not None:
-                command += ["--params", str(params)]
-            if mode.runs_trials:
-                command += ["--ses", str(request.session)]
-                if request.subject.strip():
-                    command += ["--sub", request.subject.strip()]
-            if mode in {Mode.TEST, Mode.SIMULATE}:
-                command += ["--trials-per-condition", str(request.trials)]
-            for flag in ("headless", "mouse", "windowed"):
-                if getattr(request, flag):
-                    command += ["--" + flag]
-            if mode is Mode.MOVIE:
-                command += ["--out", str(output), "--scale", str(request.scale)]
-                if request.sheet:
-                    command += ["--sheet", str(output / "all-clips.mp4")]
-                if request.columns:
-                    command += ["--columns", str(request.columns)]
-                for clip in request.clips:
-                    command += ["--clip", clip]
-            if mode is Mode.DEMO:
-                command += ["--screenshots", str(output)]
-            return command
-        action = next((s for s in script_actions(root) if s["id"] == request.mode), None)
-        if action is None:
-            raise ValueError("Unknown experiment mode or script")
-        command = base + ["-m", action["module"], "--out", str(output)]
-        if action["rig_flag"]:
-            command += ["--rig", str(rig_path)]
-        if request.parameters is not None or request.parameters_yaml is not None:
-            if not action["params_flag"]:
-                raise ValueError("This script has no parameter-file option; use its own arguments")
-            command += [action["params_flag"], str(params)]
-        extra = shlex.split(request.script_args)
-        reserved = {"--out", "--rig", "--params", "--task-config"}
-        if any(token.split("=", 1)[0] in reserved for token in extra):
-            raise ValueError("Set the rig, parameters and output through the dashboard controls")
-        return command + extra
+            return base + _mode_command(Mode(request.mode), request, root, rig_path, run_dir)
+        return base + _script_command(request, root, rig_path, run_dir)
 
     def start(self, request: Launch) -> dict[str, Any]:
         with self.lock:
