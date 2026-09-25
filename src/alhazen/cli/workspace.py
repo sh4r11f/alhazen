@@ -204,7 +204,9 @@ class Workspace:
         for path in sorted((root / "configs").rglob("*")):
             if path.suffix not in {".yaml", ".yml"} or not path.resolve().is_relative_to(root):
                 continue
-            relative = str(path.relative_to(root))
+            # Forward slashes on every OS: the page splits these on "/" and sends
+            # them back as request paths, which inside() also accepts on Windows.
+            relative = path.relative_to(root).as_posix()
             if path.stem.startswith("rig"):
                 rigs.append(relative)
             elif path.stem.startswith(("task", "params")):
@@ -458,7 +460,10 @@ class Workspace:
         if process.poll() is not None:
             return
         try:
-            if os.name == "nt":
+            # sys.platform rather than os.name: mypy narrows only on sys.platform,
+            # so a Windows type check skips the POSIX branch below, where
+            # os.killpg and signal.SIGKILL do not exist.
+            if sys.platform == "win32":
                 if force:
                     process.kill()
                 else:
@@ -504,7 +509,8 @@ class Workspace:
                 stat = path.stat()
                 artifacts.append(
                     {
-                        "path": str(path.relative_to(root)),
+                        # Forward slashes: the page builds media URLs by splitting on "/".
+                        "path": path.relative_to(root).as_posix(),
                         "size": stat.st_size,
                         "modified": stat.st_mtime_ns,
                         "type": MEDIA[path.suffix.lower()],
