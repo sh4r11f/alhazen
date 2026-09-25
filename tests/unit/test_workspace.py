@@ -29,8 +29,11 @@ RIG = Path(__file__).parents[2] / "examples/minimal_fixation/rig-sim.yaml"
 @pytest.fixture
 def workspace(tmp_path):
     root = tmp_path / "experiment with spaces"
-    (root / "configs").mkdir(parents=True)
+    (root / "configs/rigs").mkdir(parents=True)
     (root / "configs/rig-sim.yaml").write_bytes(RIG.read_bytes())
+    # A rig in a subdirectory: its relative path has a separator, which is
+    # where Windows and POSIX records used to differ.
+    (root / "configs/rigs/rig-lab.yaml").write_bytes(RIG.read_bytes())
     (root / "configs/task.yaml").write_text("speed: 3\nduration: {ms: 100}\n")
     (root / "run.py").write_text(
         "import json, sys\nfrom pathlib import Path\n"
@@ -65,9 +68,13 @@ def finish(workspace, run):
 class TestProjects:
     def test_registry_discovery_and_roundtrip(self, workspace):
         p = workspace.describe(workspace.projects[0]["id"])
-        assert p["rigs"] == ["configs/rig-sim.yaml"]
+        # Posix form on every OS, so a registry or run record written on a
+        # Windows rig reads the same on a Mac — and CI is green on both.
+        assert p["rigs"] == ["configs/rig-sim.yaml", "configs/rigs/rig-lab.yaml"]
         assert p["configs"] == ["configs/task.yaml"]
+        assert not any("\\" in path for path in p["rigs"] + p["configs"])
         assert workspace.config(p["id"], p["configs"][0])["values"]["speed"] == 3
+        assert "monitor" in workspace.config(p["id"], p["rigs"][1])["values"]
         workspace.add(p["path"], sys.executable)
         assert len(workspace.projects) == 1
         restored = Workspace(workspace.directory)
@@ -124,6 +131,13 @@ class TestLaunches:
         assert run["status"] == "completed" and run["returncode"] == 0
         assert workspace.active is None
         assert run["artifacts"][0]["path"] == "clip.mp4"
+        # Relative paths in the record and the gallery are posix on every OS.
+        assert run["rig"] == "configs/rig-sim.yaml"
+        frames = Path(run["directory"]) / "media/frames"
+        frames.mkdir()
+        (frames / "first.png").write_bytes(b"png")
+        listed = [a["path"] for a in workspace.detail(run["id"])["artifacts"]]
+        assert listed == ["clip.mp4", "frames/first.png"]
         assert '--mode", "movie"' in run["log"]
         assert yaml.safe_load((Path(run["directory"]) / "params.yaml").read_text())["speed"] == 7
         assert (Path(run["directory"]) / "rig.yaml").read_bytes() == RIG.read_bytes()

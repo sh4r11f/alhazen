@@ -211,7 +211,10 @@ class Workspace:
         for path in sorted((root / "configs").rglob("*")):
             if path.suffix not in {".yaml", ".yml"} or not path.resolve().is_relative_to(root):
                 continue
-            relative = str(path.relative_to(root))
+            # Posix form on every OS: these strings go into the registry, the
+            # browser and run.json, and a record written on a Windows rig must
+            # read the same elsewhere. Path accepts '/' back on Windows.
+            relative = path.relative_to(root).as_posix()
             if path.stem.startswith("rig"):
                 rigs.append(relative)
             elif path.stem.startswith(("task", "params")):
@@ -381,7 +384,9 @@ class Workspace:
                 "project": project["id"],
                 "name": project["name"],
                 "mode": request.mode,
-                "rig": request.rig,
+                # Stored as posix whatever the client typed, so run.json reads
+                # the same on every OS; the rig itself was resolved above.
+                "rig": Path(request.rig).as_posix(),
                 "started": now(),
                 "finished": None,
                 "status": "running",
@@ -540,7 +545,8 @@ class Workspace:
                 stat = path.stat()
                 artifacts.append(
                     {
-                        "path": str(path.relative_to(root)),
+                        # Posix, like every relative path the workspace hands out.
+                        "path": path.relative_to(root).as_posix(),
                         "size": stat.st_size,
                         "modified": stat.st_mtime_ns,
                         "type": MEDIA[path.suffix.lower()],
