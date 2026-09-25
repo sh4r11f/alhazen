@@ -768,9 +768,15 @@ async function refreshRun() {
   $('command').textContent = command;
   const artifacts = run?.artifacts || [];
   $('media-count').textContent = artifacts.length;
-  $('gallery-empty').hidden = artifacts.length > 0;
-  // The empty state's wording follows the run's situation.
+  // Do not replace a playing video on every poll. Defer videos until the
+  // encoder closes them; an unfinished MP4 has no readable index yet.
+  const visible = artifacts.filter((a) => !a.type.startsWith('video/') || !active);
+  // The empty state stands in for the gallery whenever nothing is shown —
+  // also while every artifact so far is a deferred video — so it follows
+  // `visible`, and is set on every pass, before the early return below.
   const empty = $('gallery-empty');
+  empty.hidden = visible.length > 0;
+  // Its wording follows the run's situation.
   let heading;
   let detail;
   if (!run) {
@@ -791,13 +797,9 @@ async function refreshRun() {
   }
   empty.querySelector('h3').textContent = heading;
   empty.querySelector('p').textContent = detail;
-  // Do not replace a playing video on every poll. Defer videos until the
-  // encoder closes them; an unfinished MP4 has no readable index yet.
-  const visible = artifacts.filter((a) => !a.type.startsWith('video/') || !active);
   const signature = JSON.stringify([key, visible]);
   if (signature === gallerySignature) return;
   gallerySignature = signature;
-  $('gallery-empty').hidden = visible.length > 0;
   const cards = visible.map((artifact) => {
     // Each path segment is encoded on its own, so '/' stays a separator and
     // a '#' or '?' inside a file name does not end the URL. The token rides

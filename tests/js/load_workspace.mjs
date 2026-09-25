@@ -63,8 +63,15 @@ function buildPage(document) {
     const className = /\bclass="([^"]*)"/.exec(attributes);
     if (className) element.setAttribute('class', className[1]);
     if (/\shidden(?=[\s>]|$)/.test(attributes)) element.hidden = true;
-    /* Form controls read back '' when untouched, as in a browser. */
-    element.value = '';
+    /* A control starts at the value and checked state its markup gives it
+     * (`value="1"`, `checked`), else '' and false, as in a browser: the
+     * launch request is built from these, and an `undefined` would simply
+     * vanish from its JSON instead of being the `false` the server gets. */
+    const value = /\bvalue="([^"]*)"/.exec(attributes);
+    element.value = value ? value[1] : '';
+    if (/\btype="checkbox"/.test(attributes)) {
+      element.checked = /\schecked(?=[\s>]|$)/.test(attributes);
+    }
     document.body.appendChild(element);
     if (id[1] === 'gallery-empty') {
       element.appendChild(document.createElement('h3'));
