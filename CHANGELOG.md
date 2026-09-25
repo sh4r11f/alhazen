@@ -50,6 +50,19 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   Nothing in `examples/`, the `alhazen new` template or the experiment
   repositories calls `response_phases`, so no recorded data changes meaning.
 
+- **A training state that cannot be read now stops the session instead of
+  starting the subject over.** When `training_state.yaml` existed but could
+  not be read (a YAML error, a missing `stage`, a wrong type, bytes that are
+  not UTF-8), the session started the subject at the curriculum's first
+  stage, logged an ERROR, and renamed the file to
+  `training_state.unreadable-<UTC time>.yaml` when it saved — so a typo in a
+  hand edit gave a trained animal a first-stage session. `build_session` now
+  raises a `ConfigError` naming the file and the parse error, before a run
+  folder is created or a window opens, and leaves the file untouched. To
+  carry on, fix the file; to start the subject over on purpose, rename it in
+  the same folder (for example to `training_state.unreadable.yaml`) and start
+  again. A missing file is still a first session.
+
 ## 1.6.0 - 2026-09-24
 
 ### Added
