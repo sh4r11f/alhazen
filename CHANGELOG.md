@@ -29,6 +29,27 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Changed
 
+- **`response_phases(SubjectMode.SACCADE_AND_REWARD)` records where the eye
+  came to rest, not where it crossed into the target.** Its landing phase
+  was `LandingCheck`, which stops on the first gaze sample inside the target
+  — mid-flight, biased toward the edge the eye came from — so the endpoint
+  columns were the crossing, and a saccade that overshot through the target
+  scored a hit. It is now `LandingSample` in its fixed-dwell mode:
+  `landing_timeout_s` is the dwell (the landing is judged once, that long
+  after the `RESPONSE_ONSET` flip), and `depart_region` is passed on, so a
+  blink at the cue is not recorded as a landing at fixation. In each row:
+  `endpoint_x/y_dva`, `endpoint_error_dva` and `endpoint_in_target` describe
+  the last valid sample outside the fixation window at the end of the dwell;
+  `endpoint_measured`, `endpoint_latency_ms` and
+  `endpoint_reference_x/y_dva` are new; with no valid sample outside the
+  fixation window `endpoint_measured` is False, no coordinates are written
+  and the trial is `on_miss`. A trial now ends `landing_timeout_s` after
+  onset on a hit too (it ended on the first frame inside the target), and
+  `LANDED` goes out then for any measured endpoint, a miss included. No
+  argument changed, and a trial with no saccade is still `on_timeout`.
+  Nothing in `examples/`, the `alhazen new` template or the experiment
+  repositories calls `response_phases`, so no recorded data changes meaning.
+
 - **A training state that cannot be read now stops the session instead of
   starting the subject over.** When `training_state.yaml` existed but could
   not be read (a YAML error, a missing `stage`, a wrong type, bytes that are
