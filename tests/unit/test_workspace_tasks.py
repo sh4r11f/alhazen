@@ -81,6 +81,46 @@ class TestReadingTheTable:
         )
         assert project_tasks(tmp_path)["tasks"][0] == {"name": "mt-tuning", "params": None}
 
+    @pytest.mark.parametrize(
+        "binding",
+        [
+            "HERE = Path(__file__).parent",
+            "HERE = Path(__file__).resolve().parent",
+            "HERE: Path = Path(__file__).parent",
+        ],
+    )
+    def test_run_pys_own_folder_form_is_read(self, tmp_path, binding):
+        """`HERE / "configs" / "x.yaml"` is how amodal-averaging's run.py
+        names its files: relative to run.py, so the command works from any
+        directory. The workspace reads it as the project-relative path."""
+        text = MULTI.replace('"configs/task-tuning.yaml"', 'HERE / "configs" / "task-tuning.yaml"')
+        write_run_py(tmp_path, f"from pathlib import Path\n{binding}\n{text}")
+        tasks = project_tasks(tmp_path)["tasks"]
+        assert tasks[0]["params"] == "configs/task-tuning.yaml"
+        # The string entry beside it is read as before.
+        assert tasks[1]["params"] == "configs/task-search.yaml"
+
+    @pytest.mark.parametrize(
+        "binding, entry",
+        [
+            # A folder that is not run.py's: not the project, not guessed.
+            ('HERE = Path("/data")', 'HERE / "configs" / "x.yaml"'),
+            ("HERE = Path.home()", 'HERE / "configs" / "x.yaml"'),
+            # A non-string operand in the chain.
+            ("HERE = Path(__file__).parent", 'HERE / "configs" / NAME'),
+            # A bare name with no path after it.
+            ("HERE = Path(__file__).parent", "HERE"),
+            # A call rather than a chain.
+            ("HERE = Path(__file__).parent", 'HERE.joinpath("x.yaml")'),
+        ],
+    )
+    def test_other_expressions_are_unknown_not_guessed(self, tmp_path, binding, entry):
+        text = MULTI.replace('"configs/task-tuning.yaml"', entry)
+        write_run_py(tmp_path, f"from pathlib import Path\n{binding}\n{text}")
+        result = project_tasks(tmp_path)
+        assert result["error"] is None
+        assert result["tasks"][0] == {"name": "mt-tuning", "params": None}
+
     def test_a_windows_path_in_the_table_is_recorded_in_posix_form(self, tmp_path):
         write_run_py(
             tmp_path, MULTI.replace("configs/task-tuning.yaml", "configs\\\\task-tuning.yaml")

@@ -235,6 +235,45 @@ def _module_assignment(tree: ast.Module, name: str) -> ast.expr | None:
     return None
 
 
+def _params_path(tree: ast.Module, node: ast.expr) -> str | None:
+    """A task table entry's params file, relative to the project, when the
+    file alone says what it is; otherwise None.
+
+    Two forms are read. A string, as written: relative to the directory the
+    session is started from, which the launcher sets to the project. And the
+    form amodal-averaging's run.py uses for its own defaults, ``HERE /
+    "configs" / "task.yaml"``: a chain of ``/`` whose left end is a
+    module-level name bound from ``__file__`` (``HERE = Path(__file__).parent``)
+    and whose other operands are strings — relative to run.py's folder, which
+    is the project, and so found wherever the command is typed. A left end
+    bound to anything else (a data root, a home directory) is not the
+    project's folder and is not guessed at.
+    """
+    parts: list[str] = []
+    while isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        if not (isinstance(node.right, ast.Constant) and isinstance(node.right.value, str)):
+            return None
+        parts.insert(0, node.right.value)
+        node = node.left
+    if isinstance(node, ast.Constant) and isinstance(node.value, str) and not parts:
+        text = node.value
+    elif isinstance(node, ast.Name) and parts:
+        bound = _module_assignment(tree, node.id)
+        if bound is None or not any(
+            isinstance(inner, ast.Name) and inner.id == "__file__" for inner in ast.walk(bound)
+        ):
+            return None
+        text = "/".join(parts)
+    else:
+        return None
+    # Posix form on every OS, like the rigs and presets it is matched against.
+    # `Path.as_posix()` alone would not do it: on macOS and Linux a backslash
+    # is a filename character, so a table written on Windows as
+    # "configs\\x.yaml" would keep its backslash there and never match the
+    # preset menu.
+    return PureWindowsPath(text).as_posix()
+
+
 def project_tasks(root: Path) -> dict[str, Any]:
     """The tasks a project's run.py declares, read from the file without running it.
 
@@ -250,9 +289,11 @@ def project_tasks(root: Path) -> dict[str, Any]:
 
     Returns ``{"tasks": [{"name", "params"}, ...], "default": name, "error":
     None}``; a run.py declaring one task (``task_class=``) gives an empty
-    list and no default. ``params`` is the task's params file as written, in
-    posix form, or None when the table gives none or gives it as an
-    expression the file alone cannot evaluate.
+    list and no default. ``params`` is the task's params file relative to
+    the project, in posix form: a string as written, or run.py's own-folder
+    form ``HERE / "configs" / "x.yaml"`` (`_params_path`). It is None when the
+    table gives none or gives it as an expression the file alone cannot
+    evaluate.
     """
     empty: dict[str, Any] = {"tasks": [], "default": None, "error": None}
     run_py = root / "run.py"
@@ -285,14 +326,7 @@ def project_tasks(root: Path) -> dict[str, Any]:
             return {**empty, "error": TASK_TABLE_SHAPE}
         params = None
         if isinstance(value, ast.Tuple | ast.List) and len(value.elts) >= 2:
-            second = value.elts[1]
-            if isinstance(second, ast.Constant) and isinstance(second.value, str):
-                # Posix form on every OS, like the rigs and presets it is
-                # matched against. `Path.as_posix()` alone would not do it:
-                # on macOS and Linux a backslash is a filename character, so
-                # a table written on Windows as "configs\\x.yaml" would keep
-                # its backslash there and never match the preset menu.
-                params = PureWindowsPath(second.value).as_posix()
+            params = _params_path(tree, value.elts[1])
         tasks.append({"name": key.value, "params": params})
     if not tasks:
         return {**empty, "error": "run.py's tasks= table is empty; name at least one task"}

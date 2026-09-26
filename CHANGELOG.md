@@ -25,6 +25,17 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+### Fixed
+
+- **The workspace reads a task table's params files written as run.py's own
+  folder**, `HERE / "configs" / "task.yaml"` with `HERE = Path(__file__).parent`,
+  the form amodal-averaging uses for `default_rig`, which keeps `python run.py`
+  working from any directory. 1.10.0 read only bare strings, which are
+  resolved against the directory the command is typed in, and showed no preset
+  for this form. `docs/modes.md` and `docs/workspace.md` now recommend it.
+
 ## 1.10.0 - 2026-09-26
 
 ### Added

@@ -57,8 +57,8 @@ table and hands it to alhazen —
 
 ```python
 TASKS = {
-    "mib-search": (MIBSearchTask, "configs/task-search-rdk.yaml"),
-    "mt-tuning": (MTTuningTask, "configs/task-tuning.yaml"),
+    "mib-search": (MIBSearchTask, HERE / "configs" / "task-search-rdk.yaml"),
+    "mt-tuning": (MTTuningTask, HERE / "configs" / "task-tuning.yaml"),
 }
 run_experiment(tasks=TASKS, default_task="mib-search", default_rig=..., argv=sys.argv[1:])
 ```
@@ -69,7 +69,8 @@ parameter file as the preset when the table names one, sends `--task <name>`
 right after the mode, and shows the task beside the mode in the history. The
 launcher reads the table from `run.py` itself (the way it finds rigs and
 scripts), so it must be a module-level dict literal with string keys and, for
-the preset, a string path as each entry's second element; a `tasks=` written
+the preset, each entry's second element written as `HERE / "configs" / "x.yaml"`
+(with `HERE` bound from `__file__`) or as a string path; a `tasks=` written
 any other way is reported under the menu, with the shape expected, and a
 launch of that project is refused with the same words. A `run.py` that
 declares one task (`task_class=`) has no menu and takes no task.

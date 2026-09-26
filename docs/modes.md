@@ -469,8 +469,8 @@ first declared) runs when no task is named:
 
 ```python
 TASKS = {
-    "rf-map-v4": (V4RFMapTask, "configs/task.yaml"),
-    "rf-map-mt": (MTRFMapTask, "configs/task.yaml"),
+    "rf-map-v4": (V4RFMapTask, HERE / "configs" / "task.yaml"),
+    "rf-map-mt": (MTRFMapTask, HERE / "configs" / "task.yaml"),
 }
 
 raise SystemExit(
@@ -483,7 +483,11 @@ raise SystemExit(
 )
 ```
 
-Write the table as a module-level dict literal: the experiment workspace
+Name each params file as `HERE / "configs" / "task.yaml"` (with
+`HERE = Path(__file__).parent`), like `default_rig`: a bare string is resolved
+against the directory the command is typed in, so `python ~/exp/run.py` from
+elsewhere would not find it. Write the table as a module-level dict literal:
+the experiment workspace
 ([workspace](workspace.md)) reads it out of `run.py` to offer the tasks in its
 Task menu, so the two never disagree about which tasks there are. Exactly one
 of `task_class=` and `tasks=` is given.
