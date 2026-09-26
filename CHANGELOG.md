@@ -55,6 +55,9 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   configs/shaping.yaml` — after the launcher's own flags, and refuses by name
   an argument that would contradict a form setting (`--seed`, `--sub`,
   `--out`, …).
+  A second `alhazen dashboard` on a workspace another server holds is refused
+  naming that server's process and the address of its page.
+
 - **A session prints where its live dashboard is.** `alhazen run` and every
   `run.py` now print `dashboard: http://127.0.0.1:PORT/?token=…` after the
   `params:` line when the rig enables the dashboard. The runner logged that

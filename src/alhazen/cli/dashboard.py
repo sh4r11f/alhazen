@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hmac
 import json
+import os
 import re
 import secrets
 import sys
@@ -20,15 +21,61 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from pydantic import ValidationError
 
 from alhazen.cli.console_break import interrupt_on_console_break
-from alhazen.cli.workspace import MEDIA_TYPES, Launch, Workspace, parse_parameters, path_inside
+from alhazen.cli.workspace import (
+    MEDIA_TYPES,
+    Launch,
+    Workspace,
+    now,
+    parse_parameters,
+    path_inside,
+)
 from alhazen.errors import AlhazenError
 
 ASSETS = Path(__file__).with_name("assets")
+# Written beside the lock by the server that holds it: its process id, when it
+# took the workspace and, once bound, the address of its page. The lock alone
+# says only that *someone* has the workspace; this says who, so the refusal
+# can tell the person which window to go back to or which process to stop.
+HOLDER_RECORD = "server.json"
+
+
+def record_holder(directory: Path, *, url: str | None = None) -> None:
+    """Record this process as the workspace's holder, with its page's address
+    once the server has bound a port (the lock is taken before that)."""
+    record: dict[str, Any] = {"pid": os.getpid(), "started": now()}
+    if url is not None:
+        record["url"] = url
+    (directory / HOLDER_RECORD).write_text(json.dumps(record, indent=2), encoding="utf-8")
+
+
+def _holder_note(directory: Path) -> str:
+    """Describe the server holding `directory` from its record, for the
+    refusal message. A missing record (a holder from before the record
+    existed) leaves the message with just the directory; an unreadable one
+    is reported rather than passed over, so a corrupt file is noticed."""
+    path = directory / HOLDER_RECORD
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return ""
+    except (OSError, ValueError) as exc:
+        return f" (its record {path} could not be read: {exc})"
+    if not isinstance(record, dict):
+        return f" (its record {path} is not an object)"
+    note = f" — process {record.get('pid')}, started {record.get('started')}"
+    if record.get("url"):
+        note += f", at {record['url']}. Open that address"
+    else:
+        note += ". Wait for it to finish starting"
+    return note
 
 
 @contextmanager
 def workspace_lock(directory: Path) -> Iterator[None]:
-    """Hold an OS lock, released even on a crash, before recovering history."""
+    """Hold an OS lock, released even on a crash, before recovering history.
+
+    While held, `server.json` beside it names this process; a second server
+    refused the lock reads it to say what to open or stop."""
     directory.mkdir(parents=True, exist_ok=True)
     with (directory / "server.lock").open("a+b") as lock:
         try:
@@ -44,10 +91,18 @@ def workspace_lock(directory: Path) -> Iterator[None]:
 
                 fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
-            raise ValueError(f"A dashboard already has this workspace open: {directory}") from exc
+            raise ValueError(
+                f"A dashboard already has this workspace open: {directory}"
+                f"{_holder_note(directory)}, stop that process, or run with --state-dir "
+                "to use another workspace."
+            ) from exc
+        record_holder(directory)
         try:
             yield
         finally:
+            # The record goes before the lock does: a stale one would name a
+            # dead process to the next server, which must simply take over.
+            (directory / HOLDER_RECORD).unlink(missing_ok=True)
             if sys.platform == "win32":
                 lock.seek(0)
                 msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
@@ -298,6 +353,9 @@ def _serve(args: argparse.Namespace, directory: Path) -> int:
     for path in args.project:
         workspace.add(path)
     server = DashboardServer(workspace, args.port)
+    # Now that the port is known, the holder record can carry the address a
+    # second `alhazen dashboard` should open instead of starting its own.
+    record_holder(workspace.directory, url=server.url)
     print(f"Alhazen dashboard: {server.url}", flush=True)
     print(
         f"Workspace: {workspace.directory}\nCtrl+C stops the server and any active run.", flush=True
