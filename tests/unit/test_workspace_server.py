@@ -23,7 +23,7 @@ from urllib.parse import urlsplit
 import pytest
 
 from alhazen.cli import dashboard as dashboard_module
-from alhazen.cli.dashboard import DashboardServer, serve, workspace_lock
+from alhazen.cli.dashboard import DashboardServer, record_holder, serve, workspace_lock
 from alhazen.cli.main import main
 from alhazen.cli.workspace import Workspace
 
@@ -39,7 +39,12 @@ class TestServeInProcess:
         armed, closed = [], []
         monkeypatch.setattr(dashboard_module, "interrupt_on_console_break", lambda: armed.append(1))
 
+        recorded = []
+
         def interrupted(self, poll_interval):
+            # What a second `alhazen dashboard` would read while this one
+            # serves: the holder record, with the address to open instead.
+            recorded.append(json.loads((state / "server.json").read_text(encoding="utf-8")))
             raise KeyboardInterrupt
 
         monkeypatch.setattr(DashboardServer, "serve_forever", interrupted)
@@ -51,16 +56,38 @@ class TestServeInProcess:
         assert out.startswith("Alhazen dashboard: http://127.0.0.1:")
         assert "#token=" in out.splitlines()[0]
         assert armed == [1] and closed == [1]
+        assert recorded[0]["pid"] == os.getpid()
+        assert recorded[0]["url"] == out.splitlines()[0].removeprefix("Alhazen dashboard: ")
+        # Released with the lock: a record left behind would name a dead
+        # process to the next server, which must simply take the workspace.
+        assert not (state / "server.json").exists()
         with workspace_lock(state):
             pass
 
-    def test_a_workspace_already_open_is_refused_with_the_reason(self, tmp_path, capsys):
+    def test_a_workspace_already_open_is_refused_naming_its_holder(self, tmp_path, capsys):
+        """The refusal says which process has the workspace and where its page
+        is, so the person who forgot a server in another terminal can open
+        that page or stop that process, instead of guessing which of their
+        windows holds it. It used to name only the directory."""
         state = tmp_path / "state"
         with workspace_lock(state):
+            record_holder(state, url="http://127.0.0.1:4242/#token=abc")
             assert main(["dashboard", "--no-browser", "--state-dir", str(state)]) == 1
-        assert "CANNOT OPEN DASHBOARD: A dashboard already has this workspace open" in (
-            capsys.readouterr().err
-        )
+        err = capsys.readouterr().err
+        assert "CANNOT OPEN DASHBOARD: A dashboard already has this workspace open" in err
+        assert f"process {os.getpid()}" in err
+        assert "http://127.0.0.1:4242/#token=abc" in err
+        assert "--state-dir" in err
+
+    def test_a_refusal_with_no_record_still_names_the_directory(self, tmp_path, capsys):
+        # A holder from a build before the record existed, or one whose
+        # record was removed by hand: the lock alone is still the truth.
+        state = tmp_path / "state"
+        with workspace_lock(state):
+            (state / "server.json").unlink()
+            assert main(["dashboard", "--no-browser", "--state-dir", str(state)]) == 1
+        err = capsys.readouterr().err
+        assert "already has this workspace open" in err and str(state) in err
 
 
 class TestTheCommand:

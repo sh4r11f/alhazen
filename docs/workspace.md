@@ -162,7 +162,11 @@ runs/<unique-id>/
 ```
 
 Use `--state-dir PATH` for a different workspace, `--port PORT` for a fixed
-port, or `--no-browser` to print the URL without opening it. The UI requires
+port, or `--no-browser` to print the URL without opening it. One server holds a
+workspace at a time: a second `alhazen dashboard` on the same workspace is refused,
+and the refusal names the process that has it and the address of its page, so you
+can open that page, stop that process, or start another workspace with
+`--state-dir`. The UI requires
 no Node server, build step, external fonts or internet resources. Its assets
 ship in the Python wheel.
 
