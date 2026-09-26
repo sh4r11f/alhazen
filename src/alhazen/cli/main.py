@@ -800,6 +800,14 @@ def _trial_session(args: argparse.Namespace, rig: Any, task: Any, params: Any, m
     # The task's own name, not args.task: an experiment's run.py has no
     # --task flag, because it already knows which experiment it is.
     print(f"running {task.name}: sub-{subject} ses-{session:03d} run-{built.run:02d}")
+    # The live dashboard's address, on the console like everything else the
+    # experimenter needs before trial one. The runner also logs it, but only
+    # into the run's session.log — and with --no-dashboard-browser nothing
+    # opens it, so this line is the only place a terminal user sees it. The
+    # experiment workspace (`alhazen dashboard`) reads the same line from a
+    # launched run's console to embed the page; that contract is tested.
+    if built.runner.dashboard_url is not None:
+        print(f"dashboard: {built.runner.dashboard_url}")
     built.runner.run()
     print(f"session complete — data under {built.data_root.resolve()}")
     return 0

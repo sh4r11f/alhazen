@@ -95,7 +95,8 @@ child only; descendants may need to be stopped separately.
 
 The [live session monitor](dashboard.md) is a separate loopback server that the
 session process starts when the rig has `dashboard.enabled: true`; the runner
-prints its URL to the console and the launcher relays it. The Run output card's
+prints its address on the console before trial one (`dashboard: http://127.0.0.1:…`)
+and the launcher relays it. The Run output card's
 **Live monitor** tab embeds that page while the run is active, so the session's
 trials, eye-tracker panels and pause menu are watched from the workspace
 without a second browser tab. **Open monitor in new tab ↗** beside the tabs

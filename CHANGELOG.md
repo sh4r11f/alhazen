@@ -49,6 +49,13 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   seconds to tear down; one still alive after that is killed and its
   history says so (status `killed`, `"stopped": "forced"` in `run.json`, a
   final console line) rather than reading as a clean cancellation.
+- **A session prints where its live dashboard is.** `alhazen run` and every
+  `run.py` now print `dashboard: http://127.0.0.1:PORT/?token=…` after the
+  `params:` line when the rig enables the dashboard. The runner logged that
+  address at INFO, which reaches only the run's `session.log`, so a terminal
+  with `--no-dashboard-browser` never learned it — and neither could the
+  experiment workspace, which reads a launched run's console for exactly this
+  line. `SessionRunner.dashboard_url` (read-only) is the address it prints.
 - **The workspace embeds the live session monitor.** The Run output card
   gains a **Live monitor** tab beside Media and Console. While a run is
   active and its session has opened its monitor, the monitor page is framed

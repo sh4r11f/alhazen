@@ -1100,3 +1100,75 @@ class TestTheTasksParamsHook:
 
         assert code == 0
         assert seen["params"] == Params()
+
+
+class TestTheDashboardAddressIsPrinted:
+    """The runner logs the live dashboard's address at INFO, which reaches
+    only the run's session.log: the console never said where the page was.
+    With --no-dashboard-browser nothing opened it either, and the experiment
+    workspace, which reads a launched run's console to embed the page, could
+    never find it. The CLI now prints a `dashboard:` line before trial one."""
+
+    class FakeController:
+        """What the builder constructs and the runner talks to, minus the
+        child process: the address is the only thing this test is about."""
+
+        def __init__(self, port=0, auto_open=True):
+            self.url = "http://127.0.0.1:4242/?token=abc-123"
+
+        def start(self):
+            return self.url
+
+        def stop(self):
+            pass
+
+        def publish(self, state):
+            pass
+
+        def publish_camera(self, pixels, t):
+            pass
+
+        def poll_settings(self):
+            return []
+
+        def poll_commands(self):
+            return []
+
+        def save(self, figures_dir, state):
+            pass
+
+    def run_with(self, tmp_path, monkeypatch, *, dashboard: bool) -> str:
+        declared = params_file(tmp_path / "task.yaml", 1)
+        install(monkeypatch, task_with_file(declared))
+        rig = rig_file(tmp_path)
+        if dashboard:
+            config = yaml.safe_load(rig.read_text(encoding="utf-8"))
+            config["dashboard"] = {"enabled": True, "auto_open": False}
+            rig.write_text(yaml.safe_dump(config), encoding="utf-8")
+        monkeypatch.setattr("alhazen.session.builder.DashboardController", self.FakeController)
+        from alhazen.cli.main import main
+
+        code = main(
+            ["run", "--task", "file-task", "--rig", str(rig)]
+            + ["--sub", "s01", "--ses", "1", "--no-dashboard-browser"]
+        )
+        assert code == 0
+        return code
+
+    def test_a_session_with_a_dashboard_prints_its_address_before_trial_one(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        self.run_with(tmp_path, monkeypatch, dashboard=True)
+
+        out = capsys.readouterr().out
+        assert "dashboard: http://127.0.0.1:4242/?token=abc-123" in out
+        # After the params line and before the session ran: the experimenter
+        # reads it with everything else they need before trial one.
+        assert out.index("params: ") < out.index("dashboard: ") < out.index("session complete")
+
+    def test_a_session_without_a_dashboard_says_nothing_about_one(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        self.run_with(tmp_path, monkeypatch, dashboard=False)
+
+        assert "dashboard:" not in capsys.readouterr().out

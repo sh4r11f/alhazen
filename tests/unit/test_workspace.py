@@ -324,14 +324,16 @@ class TestLaunches:
         record = json.loads((directory / "run.json").read_text())
         record["status"] = "running"
         (directory / "run.json").write_text(json.dumps(record))
-        # The runner's own line (session/runner.py logs "live dashboard: %s"
-        # through "%(asctime)s %(levelname)s %(name)s: %(message)s") is the
-        # contract; when a run restarts its monitor, the last URL is the live one.
+        # The contract is the line the CLI prints before trial one
+        # (cli/main.py _trial_session: "dashboard: <url>", pinned in
+        # test_task_hooks.py). The runner's own "live dashboard:" line goes
+        # only to session.log, never to the console, so it is not what a
+        # launched run's console holds. The last URL in the tail wins.
         (directory / "console.log").write_text(
-            "x" * 80000 + "\n2026-09-25 10:00:00,000 INFO alhazen.session.runner: "
-            "live dashboard: http://127.0.0.1:1111/?token=stale\n"
-            "2026-09-25 10:00:05,000 INFO alhazen.session.runner: "
-            "live dashboard: http://127.0.0.1:1234/?token=abc_-123\n"
+            "x" * 80000 + "\nparams: configs/task.yaml\n"
+            "running demo: sub-s01 ses-001 run-01\n"
+            "dashboard: http://127.0.0.1:1111/?token=stale\n"
+            "dashboard: http://127.0.0.1:1234/?token=abc_-123\n"
         )
         restored = Workspace(workspace.directory)
         detail = restored.detail(run["id"])
