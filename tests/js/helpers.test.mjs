@@ -1,5 +1,5 @@
 /* The renderer's pure helpers: scales, tick labels, number formats, units,
- * labels and colours. Each test states a behaviour a comment in dashboard.js
+ * labels and colours. Each test states a behaviour a comment in live_monitor.js
  * promises, and checks it by calling the real function — so a rename passes
  * and a wrong answer fails, the reverse of a test that searches the source.
  *
@@ -9,14 +9,14 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { loadDashboard, plain } from './load_dashboard.mjs';
+import { loadLiveMonitor, plain } from './load_live_monitor.mjs';
 
 /* One saved page for the whole file: nothing here touches the page, and
  * none of these functions keeps state between calls. */
-const dashboard = loadDashboard();
+const live_monitor = loadLiveMonitor();
 const fn = (name) => {
-  const found = dashboard.get(name);
-  assert.equal(typeof found, 'function', name + ' is not a function in dashboard.js');
+  const found = live_monitor.get(name);
+  assert.equal(typeof found, 'function', name + ' is not a function in live_monitor.js');
   return found;
 };
 
@@ -237,7 +237,7 @@ describe('fmt', () => {
   });
 
   it("writes every number exactly as the Python side's format_number does", () => {
-    // Produced by alhazen.dashboard.panels.format_number (Python 3.12), with
+    // Produced by alhazen.live_monitor.panels.format_number (Python 3.12), with
     // the leading hyphen then set as U+2212, as the Python side's
     // presentation pass does. Regenerate when format_number changes:
     //   json.dumps([[v, format_number(v)] for v in values], ensure_ascii=False)
@@ -409,7 +409,7 @@ describe('heatmap colours', () => {
   const heatColor = fn('heatColor');
 
   it('reads the five ramp colours from the theme as RGB triples', () => {
-    // dashboard.css's light theme: --ramp-1 is #7fb3da, --ramp-5 is #0a3a5c.
+    // live_monitor.css's light theme: --ramp-1 is #7fb3da, --ramp-5 is #0a3a5c.
     const stops = plain(fn('heatStops')());
     assert.equal(stops.length, 5);
     assert.deepEqual(stops[0], [0x7f, 0xb3, 0xda]);
@@ -474,7 +474,7 @@ describe('shown', () => {
 describe('plot geometry', () => {
   const plotHeight = fn('plotHeight');
   const chartHeight = fn('chartHeight');
-  const PAD = plain(dashboard.get('PAD'));
+  const PAD = plain(live_monitor.get('PAD'));
 
   it('scales the plot height with width, between 210 and 340 px', () => {
     assert.equal(plotHeight(100), 210);

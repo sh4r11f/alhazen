@@ -46,6 +46,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from alhazen._deprecation import warn_deprecated_argument
 from alhazen.config.models import EyeTrackerConfig, RewardHwConfig, RigConfig
 from alhazen.data import naming
 from alhazen.errors import ConfigError
@@ -147,7 +148,7 @@ def rig_for_mode(
     notes: list[str] = []
     devices = rig.devices
     display = rig.display
-    dashboard = rig.dashboard
+    live_monitor = rig.live_monitor
 
     if mode is Mode.SIMULATE:
         # Nobody is in the chair, so nothing that acts on a subject or reads
@@ -191,15 +192,15 @@ def rig_for_mode(
             )
             devices = devices.model_copy(update={"spikes": None})
         if headless:
-            # No window, and no browser either: the dashboard still serves
+            # No window, and no browser either: the live monitor still serves
             # its page, but whoever started this over ssh has no browser to
             # open it in, and CI has nobody to look.
             notes.append(
-                "display: none (--headless) — no window opens, and the dashboard "
+                "display: none (--headless) — no window opens, and the live monitor "
                 "does not open a browser"
             )
             display = display.model_copy(update={"backend": "simulated"})
-            dashboard = dashboard.model_copy(update={"auto_open": False})
+            live_monitor = live_monitor.model_copy(update={"auto_open": False})
 
     elif mode is Mode.TEST:
         # A person is in the chair. Their gaze has to come from somewhere,
@@ -232,9 +233,13 @@ def rig_for_mode(
                     update={"eyetracker": EyeTrackerConfig(backend="mouse_sim")}
                 )
 
-    if devices is not rig.devices or display is not rig.display or dashboard is not rig.dashboard:
+    if (
+        devices is not rig.devices
+        or display is not rig.display
+        or live_monitor is not rig.live_monitor
+    ):
         rig = rig.model_copy(
-            update={"devices": devices, "display": display, "dashboard": dashboard}
+            update={"devices": devices, "display": display, "live_monitor": live_monitor}
         )
     return rig, notes
 
@@ -300,11 +305,13 @@ def build_mode_session(
     sources: dict[str, str] | None = None,
     instructions: str | None = None,
     curriculum: Any = None,
-    dashboard: bool | None = None,
-    open_dashboard: bool | None = None,
+    live_monitor: bool | None = None,
+    open_live_monitor: bool | None = None,
     headless: bool = False,
     mouse: bool = False,
     build_session: Callable[..., SessionRunner] | None = None,
+    dashboard: bool | None = None,
+    open_dashboard: bool | None = None,
     **extra: Any,
 ) -> ModeSession:
     """Wire one session in the given mode.
@@ -383,6 +390,24 @@ def build_mode_session(
         rig = rig.model_copy(update={"data_root": data_root})
     run_number = run if run is not None else next_run(data_root, subject, session)
 
+    # The two live-monitor arguments under their pre-1.9 names, translated
+    # here so the builder receives one spelling whichever the caller used;
+    # both spellings at once is refused. Inline, not through a helper, so the
+    # warning's stacklevel reaches the caller of this function.
+    if dashboard is not None:
+        warn_deprecated_argument("dashboard", since="1.9", removed_in="2.0", instead="live_monitor")
+        if live_monitor is not None:
+            raise ValueError("pass live_monitor=, not both live_monitor= and dashboard=")
+        live_monitor = dashboard
+    if open_dashboard is not None:
+        warn_deprecated_argument(
+            "open_dashboard", since="1.9", removed_in="2.0", instead="open_live_monitor"
+        )
+        if open_live_monitor is not None:
+            raise ValueError(
+                "pass open_live_monitor=, not both open_live_monitor= and open_dashboard="
+            )
+        open_live_monitor = open_dashboard
     runner = build_session(
         rig=rig,
         subject=subject,
@@ -395,8 +420,8 @@ def build_mode_session(
         windowed=windowed,
         sources=sources,
         instructions=instructions,
-        dashboard=dashboard,
-        open_dashboard=open_dashboard,
+        live_monitor=live_monitor,
+        open_live_monitor=open_live_monitor,
         tracker=simulation.tracker if simulation else None,
         response=simulation.response if simulation else None,
         # The rig's own probe has already been stood down by rig_for_mode;

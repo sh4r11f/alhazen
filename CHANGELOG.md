@@ -25,6 +25,37 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+### Changed
+
+- **The live session monitor is now called the live monitor; "dashboard" means
+  the experiment workspace (`alhazen dashboard`).** The package is
+  `alhazen.live_monitor`; its classes are `LiveMonitorSpec`, `LiveMonitorPanel`
+  and `LiveMonitorConfig`; a task declares its panels as `live_monitor = …`;
+  the rig file's section is `live_monitor:`; the flags are `--live-monitor`,
+  `--no-live-monitor` and `--no-live-monitor-browser`; `build_session` and
+  `build_mode_session` take `live_monitor=` and `open_live_monitor=`; the console
+  line before trial one reads `live monitor: <url>`; the page is
+  `docs/live_monitor.md`. The saved page and its state keep their file names
+  (`figures/dashboard.html`, `figures/dashboard_state.json`) until 2.0, because
+  run-directory file names are an on-disk contract (docs/versioning.md §3).
+  The experiment workspace launches a project on an older alhazen with the flag
+  that alhazen understands (`--no-dashboard-browser`), and its page reads a rig
+  file's `dashboard:` section as the monitor's setting.
+
+### Deprecated
+
+- **Every pre-1.9 spelling of the live monitor's names**, each still working
+  and warning with a `DeprecationWarning` that names its replacement; all go in
+  2.0: importing `alhazen.dashboard` or `alhazen.dashboard.spec`;
+  `alhazen.DashboardConfig`, `alhazen.DashboardPanel`, `alhazen.DashboardSpec`;
+  a rig file's `dashboard:` section (a file naming both sections is refused);
+  `--dashboard`, `--no-dashboard`, `--no-dashboard-browser`; `Task.dashboard`
+  (a task setting both is refused); `dashboard=` and `open_dashboard=` on
+  `build_session` and `build_mode_session` (a call passing both spellings is
+  refused).
+
 ## 1.8.0 - 2026-09-25
 
 ### Added

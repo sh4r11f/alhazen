@@ -1,4 +1,4 @@
-/* The fake page itself (fake_dom.mjs, load_dashboard.mjs). Every other test
+/* The fake page itself (fake_dom.mjs, load_live_monitor.mjs). Every other test
  * here trusts it, so the parts a wrong answer would hide in — selector
  * matching, attribute reflection, text — and its refusals are pinned first.
  *
@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { FakeDocument, SVG_NS, compileSelector } from './fake_dom.mjs';
-import { loadDashboard } from './load_dashboard.mjs';
+import { loadLiveMonitor } from './load_live_monitor.mjs';
 
 describe('the fake DOM', () => {
   function page() {
@@ -76,35 +76,35 @@ describe('the fake DOM', () => {
   });
 });
 
-describe('loadDashboard', () => {
+describe('loadLiveMonitor', () => {
   it('builds every element index.html gives an id or a command', () => {
-    const dashboard = loadDashboard();
+    const live_monitor = loadLiveMonitor();
     for (const id of ['identity', 'counts', 'status', 'sections', 'notice', 'theme', 'grid']) {
-      assert.ok(dashboard.byId(id), 'no #' + id);
+      assert.ok(live_monitor.byId(id), 'no #' + id);
     }
-    const commands = dashboard.document.querySelectorAll('[data-command]')
+    const commands = live_monitor.document.querySelectorAll('[data-command]')
       .map((button) => button.dataset.command);
     assert.ok(commands.includes('resume') && commands.includes('quit'), String(commands));
   });
 
   it('refuses to load the live page without a server to answer it', () => {
-    assert.throws(() => loadDashboard({ staticState: null }), /pass options.fetch/);
+    assert.throws(() => loadLiveMonitor({ staticState: null }), /pass options.fetch/);
   });
 
   it('fails a fetch no stub answers, naming the URL', () => {
-    const dashboard = loadDashboard();
-    assert.throws(() => dashboard.window.fetch('/api/anything'), /fetched \/api\/anything/);
-    assert.deepEqual(dashboard.fetches.map((call) => call.url), ['/api/anything']);
+    const live_monitor = loadLiveMonitor();
+    assert.throws(() => live_monitor.window.fetch('/api/anything'), /fetched \/api\/anything/);
+    assert.deepEqual(live_monitor.fetches.map((call) => call.url), ['/api/anything']);
   });
 
   it('runs timers and frames only when the test says so', () => {
-    const dashboard = loadDashboard();
+    const live_monitor = loadLiveMonitor();
     let ran = 0;
-    dashboard.window.setTimeout(() => { ran += 1; }, 10);
-    dashboard.window.requestAnimationFrame(() => { ran += 10; });
+    live_monitor.window.setTimeout(() => { ran += 1; }, 10);
+    live_monitor.window.requestAnimationFrame(() => { ran += 10; });
     assert.equal(ran, 0);
-    assert.equal(dashboard.runTimers(), 1);
-    assert.equal(dashboard.runFrames(), 1);
+    assert.equal(live_monitor.runTimers(), 1);
+    assert.equal(live_monitor.runFrames(), 1);
     assert.equal(ran, 11);
   });
 });

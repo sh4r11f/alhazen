@@ -35,7 +35,7 @@ scaffolds a laptop (`rig-mac.yaml`) and the rig (`rig-lab.yaml`) — and every
 mode takes either of them as it stands.
 
 The framework used to ship a file per *purpose* as well: `rig-sim` for a
-headless run, `rig-auto` for a dry run with the dashboard, `rig-mouse` for
+headless run, `rig-auto` for a dry run with the live monitor, `rig-mouse` for
 playing the task by hand. Each was the machine's file with a device left out
 or swapped for a stand-in, which meant the machine's numbers lived in five
 places and a change to a rig's tracker had to be made in the one file that
@@ -64,7 +64,7 @@ flowchart LR
 ```
 
 Two flags override the machine itself, and each belongs to exactly one mode:
-`--headless` to `simulate` (CI, ssh: no window opens and the dashboard does
+`--headless` to `simulate` (CI, ssh: no window opens and the live monitor does
 not open a browser) and `--mouse` to `test`. Any other mode refuses them by
 name, with the reason — `--headless` on `test` is refused because a person
 needs a window, not silently ignored — because an experimenter who typed
@@ -246,7 +246,7 @@ autopilot: seed=1
 eyetracker: eyelink stands down — the task's autopilot supplies gaze
 reward: nidaq stands down — deliveries are logged, not pumped
 sync: nidaq stands down — pulses are logged, not fired
-display: none (--headless) — no window opens, and the dashboard does not open a browser
+display: none (--headless) — no window opens, and the live monitor does not open a browser
 ```
 
 The data still lands in the rehearsal root, so an invented subject never
@@ -260,7 +260,7 @@ press SPACE, but on a real display it still has a keyboard wired, so its rest
 screen used to wait for a key the person watching a dry run had no reason to
 press. In simulate mode the rest screen says it resumes by itself in 10
 seconds, and it does unless a key is pressed first. Resume and quit do what
-they say; any other key, at the rig or in the dashboard, means somebody is
+they say; any other key, at the rig or in the live monitor, means somebody is
 there, and the break then waits for them. Fault pauses never time out. With no
 keyboard wired at all (`--headless`), the break resumes at once, as before.
 The wait is `SIMULATION_REST_RESUME_S` in `modes/session.py`.

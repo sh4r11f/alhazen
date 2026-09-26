@@ -1535,7 +1535,7 @@ class TestCalibrationRecording:
         tracker.stop_trial()
         assert fake_pypixxlib.drains == 2
 
-    def test_the_dashboards_camera_read_leaves_the_ring_alone_mid_walk(
+    def test_the_live_monitors_camera_read_leaves_the_ring_alone_mid_walk(
         self, fake_pypixxlib, fake_psychopy, caplog
     ):
         """The session's monitor reads the camera image on every progress
@@ -1556,13 +1556,13 @@ class TestCalibrationRecording:
         arms_before = libdpx.arms
         reads = 0
 
-        def dashboard_refresh(stage: str, detail: str) -> None:
+        def live_monitor_refresh(stage: str, detail: str) -> None:
             nonlocal reads
             tracker.camera_frame()
             reads += 1
             assert libdpx.arms == arms_before, "the camera read re-armed the ring mid-walk"
 
-        tracker.set_progress_hook(dashboard_refresh)
+        tracker.set_progress_hook(live_monitor_refresh)
         fake_psychopy.keys.extend([START] + ["space"] * 5)
         with caplog.at_level(logging.WARNING, logger="alhazen.devices.eyetracker.viewpixx"):
             tracker.calibrate()
@@ -1621,7 +1621,7 @@ class TestCalibrationRecording:
             "Calibration FAILED: the tracker reports no calibration.",
             "Check the camera sees the eyes (position, focus, LED), then calibrate again.",
         ]
-        # And the result says so, for the dashboard and the log.
+        # And the result says so, for the live monitor and the log.
         assert result.ok is False and not result.aborted
         assert result.verdict == "NOT calibrated"
         assert "calibrate again" in result.note
@@ -1634,7 +1634,7 @@ class TestCalibrationRecording:
 
 
 class TestCameraImage:
-    """The camera frame: the optional capability the dashboard's eye-tracker
+    """The camera frame: the optional capability the live monitor's eye-tracker
     tab draws. The pixel copy and the shrink are free functions; the method
     is the device calls around them."""
 
@@ -1683,7 +1683,7 @@ class TestCameraImage:
         assert frame.t == 3.0
         assert fake_pypixxlib.libdpx.image_reads == 1
 
-    def test_a_large_image_is_shrunk_for_the_dashboard(self, fake_pypixxlib):
+    def test_a_large_image_is_shrunk_for_the_live_monitor(self, fake_pypixxlib):
         tracker = connected()
         fake_pypixxlib.libdpx.image = np.zeros((1200, 1600), dtype=np.uint8)
         assert tracker.camera_frame().pixels.shape == (240, 320)

@@ -80,12 +80,12 @@ jobs:
       - run: uv pip list --system
       - run: pytest
 
-  # The dashboard's renderer (src/alhazen/dashboard/assets/dashboard.js) is
+  # The live monitor's renderer (src/alhazen/live_monitor/assets/live_monitor.js) is
   # browser JavaScript that pytest cannot run. tests/js runs it in a fake
   # page with Node's built-in test runner: no npm install, no package.json.
   # Node 22 because it expands the quoted glob itself on every OS.
-  dashboard-js:
-    name: dashboard renderer / node22
+  live-monitor-js:
+    name: live monitor renderer / node22
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

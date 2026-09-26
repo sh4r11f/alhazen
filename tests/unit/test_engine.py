@@ -118,7 +118,7 @@ class TestEventTiming:
         """Incomplete outcomes DO write rows, and the row said nothing about
         whether the trial completed — the flag existed only inside a
         TRIAL_END payload, where the trials table cannot see it. Downstream
-        (the report, the dashboard) was left guessing from the outcome name."""
+        (the report, the live monitor) was left guessing from the outcome name."""
         harness = EngineHarness()
 
         completed = harness.engine.run_trial(harness.ctx(), [RunForFrames(0, COMPLETED)])

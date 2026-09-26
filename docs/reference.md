@@ -40,7 +40,7 @@ The names an experiment imports directly.
     options:
       members: [ABORTED, DROPPED_FRAMES, PAUSED, TRIAL_RECORD_COLUMNS, AlhazenError,
         build_session, BuildTrial, CircleRegion, Condition, ConfigError, Curriculum,
-        DataError, DashboardConfig, DatabaseConfig, DashboardPanel, DashboardSpec,
+        DataError, LiveMonitorConfig, DatabaseConfig, LiveMonitorPanel, LiveMonitorSpec,
         DevicesConfig, DisplayConfig, DisplayError, DeviceSample, Duration, Event,
         EventBus, EventSchema, ExperimentDatabase, EyeTrackerConfig, FrameQAConfig,
         FrameQAError, InputFrame, Model, MonitorConfig, Outcome, outcomes, OutcomeSet,
@@ -222,7 +222,7 @@ explains each.
 ::: alhazen.config.models
     options:
       members: [Model, Duration, MonitorConfig, FrameQAConfig, PhotodiodeConfig,
-        DisplayConfig, DashboardConfig, DatabaseConfig, SELF_DRIVEN_CALIBRATION_TYPES,
+        DisplayConfig, LiveMonitorConfig, DatabaseConfig, SELF_DRIVEN_CALIBRATION_TYPES,
         EyeTrackerConfig, RewardHwConfig, SyncHwConfig, RewardPulses, RecordingConfig,
         SpikeSourceConfig, DevicesConfig, RigConfig, SessionInfo, SessionConfig]
 
@@ -371,15 +371,25 @@ listed here are public because tests and the rehearsal modes construct them.
     options:
       members: [ResultsBundle]
 
-## The live dashboard
+## The live monitor
 
-::: alhazen.dashboard.spec
+::: alhazen.live_monitor.spec
     options:
-      members: [DashboardPanel, DashboardSpec]
+      members: [LiveMonitorPanel, LiveMonitorSpec]
 
-::: alhazen.dashboard.panels
+::: alhazen.live_monitor.panels
     options:
       members: [panel_payload]
+
+### Deprecated spellings
+
+Until 1.8 the live monitor was "the dashboard". These names resolve to the
+classes above and warn when imported; they go in 2.0
+([versioning](versioning.md) §4, and the table in [live monitor](live_monitor.md)).
+
+::: alhazen.dashboard
+    options:
+      members: [DashboardPanel, DashboardSpec]
 
 ## Testing helpers
 

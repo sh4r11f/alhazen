@@ -20,6 +20,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
+from alhazen._deprecation import warn_deprecated_name
 from alhazen.errors import ConfigError
 
 
@@ -234,8 +235,8 @@ class DisplayConfig(Model):
     feedback_beeps: bool = True
 
 
-class DashboardConfig(Model):
-    """The local, between-trial browser dashboard.
+class LiveMonitorConfig(Model):
+    """The local, between-trial live monitor in the browser.
 
     It is opt-in so existing rig files and unattended sessions never start a
     server unexpectedly.  Port zero asks the OS for an unused local port.
@@ -253,9 +254,9 @@ class DashboardConfig(Model):
     max_rows: int = 1000
 
     @model_validator(mode="after")
-    def _valid(self) -> DashboardConfig:
+    def _valid(self) -> LiveMonitorConfig:
         if self.port != 0 and not 1024 <= self.port <= 65535:
-            raise ValueError("dashboard port must be 0 or between 1024 and 65535")
+            raise ValueError("live monitor port must be 0 or between 1024 and 65535")
         if self.max_rows < 1:
             raise ValueError("max_rows must be >= 1")
         return self
@@ -293,7 +294,7 @@ VIEWPIXX_ONLY_FIELDS = ("eye", "led_intensity", "camera_image", "iris_size_px")
 # The TRACKPixx3's expected iris size, in camera px: from 1 up to the height of
 # the camera image it is searched for in (512 px, pypixxlib's TPxGetEyeImage),
 # since an iris cannot be larger than the image. The rig config, the backend
-# and the dashboard server all check against these same bounds.
+# and the live monitor server all check against these same bounds.
 IRIS_SIZE_RANGE_PX = (1, 512)
 
 # Target layouts alhazen can lay out itself, for backends whose calibration
@@ -390,7 +391,7 @@ class EyeTrackerConfig(Model):
     # Run a validation right after every calibration that took — not one the
     # experimenter aborted, nor one the tracker itself called bad, since there
     # is nothing to measure against then: the same targets shown again, gaze
-    # measured against them, and the errors reported on the dashboard. Off
+    # measured against them, and the errors reported on the live monitor. Off
     # only for a rig that validates some other way.
     validate_after_calibration: bool = True
     # A validation passes when its WORST target error is at most this many
@@ -411,7 +412,7 @@ class EyeTrackerConfig(Model):
     # set on the device — the same division of labour as the EyeLink, whose
     # camera setup lives on its Host PC and not in this file.
     led_intensity: int | None = None
-    # Show the TRACKPixx3's camera image on the dashboard's eye-tracker
+    # Show the TRACKPixx3's camera image on the live monitor's eye-tracker
     # panel, read while the session is paused or calibrating. The EyeLink's
     # camera lives on its Host PC, which has its own screen for it.
     camera_image: bool = True
@@ -419,7 +420,7 @@ class EyeTrackerConfig(Model):
     # searches its camera image for when it fits each eye's pupil, the setting
     # LabMaestro adjusts from its camera view. When an eye keeps dropping out
     # of tracking, this is the setting to try first. None leaves whatever the
-    # device holds; the dashboard's camera panel can change it during a
+    # device holds; the live monitor's camera panel can change it during a
     # session, and every change is recorded as a TRACKER_SETTING event.
     iris_size_px: int | None = None
     # Dropout detection (docs/eye-tracker.md, "When the tracker drops out"):
@@ -855,10 +856,35 @@ class RigConfig(Model):
 
     monitor: MonitorConfig
     display: DisplayConfig = DisplayConfig()
-    dashboard: DashboardConfig = DashboardConfig()
+    live_monitor: LiveMonitorConfig = LiveMonitorConfig()
     database: DatabaseConfig = DatabaseConfig()
     devices: DevicesConfig = DevicesConfig()
     data_root: Path
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_the_old_live_monitor_key(cls, data: Any) -> Any:
+        """A rig file written before 1.9 says ``dashboard:`` where
+        ``live_monitor:`` now goes. Read it as that section, with a
+        DeprecationWarning, until 2.0 (docs/versioning.md §4). A file naming
+        both is refused: there is no right answer to which one the session
+        should run with, and ``extra="forbid"`` would otherwise refuse only
+        the old one, with a message about an unknown key.
+        """
+        if isinstance(data, dict) and "dashboard" in data:
+            if "live_monitor" in data:
+                raise ValueError(
+                    "rig names both `dashboard` and `live_monitor`; keep `live_monitor` only"
+                )
+            warn_deprecated_name(
+                "the rig file's `dashboard:` section",
+                since="1.9",
+                removed_in="2.0",
+                instead="`live_monitor:`",
+            )
+            rest = {key: value for key, value in data.items() if key != "dashboard"}
+            return {**rest, "live_monitor": data["dashboard"]}
+        return data
 
 
 class SessionInfo(Model):

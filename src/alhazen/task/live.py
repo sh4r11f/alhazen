@@ -1,9 +1,9 @@
 """The live-analysis seam: computation that watches a session as it runs.
 
-An experiment sometimes needs more than the dashboard's trial-record panels
+An experiment sometimes needs more than the live monitor's trial-record panels
 — a receptive-field map accumulating over a spike stream, a running PSTH, a
 tuning curve. That computation has three needs the trial machinery must not
-absorb: it consumes a *device* (a spike source), it produces *dashboard
+absorb: it consumes a *device* (a spike source), it produces *live monitor
 panels* of its own, and it leaves an *artifact* in the run directory. This
 module is the narrow contract for all three.
 
@@ -20,7 +20,7 @@ The rules that keep it safe:
   and a rig with no ``spikes:`` entry hands over ``spikes=None`` — the
   analysis then says so on its panels instead of silently showing nothing.
 - **Panels are computed here, drawn by the browser** — the same division as
-  every dashboard panel (dashboard/panels.py): each entry of ``panels()``
+  every live monitor panel (live monitor/panels.py): each entry of ``panels()``
   is a finished payload the page only renders.
 - **``finish`` runs in teardown, before the manifest is written**, so
   whatever it saves into the run directory is hashed with everything else.
@@ -61,8 +61,8 @@ class LiveAnalysis(Protocol):
         ...
 
     def panels(self) -> list[dict[str, Any]]:
-        """Extra dashboard panels, each ``{"title", "section", "data"}`` with
-        ``data`` a finished payload in the dashboard's wire shapes."""
+        """Extra live monitor panels, each ``{"title", "section", "data"}`` with
+        ``data`` a finished payload in the live monitor's wire shapes."""
         ...
 
     def finish(self, run_dir: Path) -> None:

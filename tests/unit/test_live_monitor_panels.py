@@ -1,6 +1,6 @@
-"""What each dashboard panel plots.
+"""What each live monitor panel plots.
 
-Every statistic the dashboard shows is computed in Python precisely so it can
+Every statistic the live monitor shows is computed in Python precisely so it can
 be tested here: a running accuracy with the wrong denominator, a cumulative
 curve that restarts mid-session, or a histogram whose bins do not add up to n
 all look perfectly plausible in a browser.
@@ -13,7 +13,7 @@ import math
 
 import pytest
 
-from alhazen.dashboard.panels import (
+from alhazen.live_monitor.panels import (
     MAX_CLASSES,
     MAX_POINTS,
     MAX_SHAPES,
@@ -27,7 +27,7 @@ from alhazen.dashboard.panels import (
     sentence_start,
     split_unit,
 )
-from alhazen.dashboard.spec import DEFAULT_PANELS, DashboardPanel
+from alhazen.live_monitor.spec import DEFAULT_PANELS, LiveMonitorPanel
 
 
 def trial(index: int, **fields):
@@ -45,7 +45,7 @@ def reward_event(index: int, *, n_pulses: int = 2, pulse_ms: int = 200, manual: 
     }
 
 
-def payload(panel: DashboardPanel, trials=(), events=()):
+def payload(panel: LiveMonitorPanel, trials=(), events=()):
     return panel_payload(panel, list(trials), list(events))
 
 
@@ -84,17 +84,17 @@ class TestRowSelection:
             trial(2, completed=False, success=True),
             trial(3, completed=True),
         ]
-        panel = DashboardPanel(kind="outcomes", title="x", completed_only=True)
+        panel = LiveMonitorPanel(kind="outcomes", title="x", completed_only=True)
         assert [row["trial_index"] for row in select_rows(panel, rows)] == [1, 3]
 
     def test_rolling_window_keeps_the_most_recent(self):
         rows = [trial(i) for i in range(1, 11)]
-        panel = DashboardPanel(kind="outcomes", title="x", rolling_window=3)
+        panel = LiveMonitorPanel(kind="outcomes", title="x", rolling_window=3)
         assert [row["trial_index"] for row in select_rows(panel, rows)] == [8, 9, 10]
 
     def test_the_window_is_announced_on_the_panel(self):
         rows = [trial(i, outcome="CORRECT") for i in range(1, 11)]
-        panel = DashboardPanel(kind="outcomes", title="x", rolling_window=4)
+        panel = LiveMonitorPanel(kind="outcomes", title="x", rolling_window=4)
         assert payload(panel, rows)["note"] == "Most recent 4 trials"
 
 
@@ -102,7 +102,7 @@ class TestCategoryBars:
     def test_counts_shares_and_ordering(self):
         rows = [trial(i, outcome="CORRECT") for i in range(8)]
         rows += [trial(i, outcome="FIX_BREAK") for i in range(2)]
-        data = payload(DashboardPanel(kind="outcomes", title="Outcomes"), rows)
+        data = payload(LiveMonitorPanel(kind="outcomes", title="Outcomes"), rows)
 
         assert data["form"] == "bars"
         assert data["total"] == 10
@@ -112,21 +112,21 @@ class TestCategoryBars:
 
     def test_a_long_tail_folds_rather_than_growing_unreadable(self):
         rows = [trial(i, outcome=f"O{i:02d}") for i in range(MAX_CLASSES + 4)]
-        data = payload(DashboardPanel(kind="outcomes", title="Outcomes"), rows)
+        data = payload(LiveMonitorPanel(kind="outcomes", title="Outcomes"), rows)
 
         assert len(data["items"]) == MAX_CLASSES + 1
         assert data["items"][-1]["label"] == "Other (4 more)"
         assert sum(item["value"] for item in data["items"]) == data["total"]
 
     def test_missing_column_says_so_instead_of_drawing_nothing(self):
-        data = payload(DashboardPanel(kind="responses", title="Responses", value="response_key"))
+        data = payload(LiveMonitorPanel(kind="responses", title="Responses", value="response_key"))
         assert data == {"form": "empty", "message": "No response key recorded yet"}
 
 
 class TestHistogram:
     def test_bins_tile_the_range_and_account_for_every_trial(self):
         rows = [trial(i, rt_ms=200 + 7 * i) for i in range(60)]
-        data = payload(DashboardPanel(kind="histogram", title="RT", value="rt_ms"), rows)
+        data = payload(LiveMonitorPanel(kind="histogram", title="RT", value="rt_ms"), rows)
 
         assert data["form"] == "histogram"
         assert sum(b["count"] for b in data["bins"]) == 60
@@ -140,7 +140,7 @@ class TestHistogram:
         # cannot collapse the other sixty into one spike — and the excluded
         # trial is stated, never quietly dropped.
         rows = [trial(i, rt_ms=300 + i) for i in range(60)] + [trial(99, rt_ms=8000)]
-        data = payload(DashboardPanel(kind="histogram", title="RT", value="rt_ms"), rows)
+        data = payload(LiveMonitorPanel(kind="histogram", title="RT", value="rt_ms"), rows)
 
         # Without the robust window the axis would run to 8000 ms and every
         # real trial would land in the first bar.
@@ -153,14 +153,14 @@ class TestHistogram:
 
     def test_the_window_note_never_replaces_what_the_panel_already_said(self):
         rows = [trial(i, rt_ms=300 + i) for i in range(60)] + [trial(99, rt_ms=8000)]
-        panel = DashboardPanel(kind="histogram", title="RT", value="rt_ms", rolling_window=61)
+        panel = LiveMonitorPanel(kind="histogram", title="RT", value="rt_ms", rolling_window=61)
         note = payload(panel, rows)["note"]
         assert note.startswith("Most recent 61 trials · ")
         assert "outside the axis" in note
 
     def test_identical_values_produce_one_bin_not_a_division_by_zero(self):
         rows = [trial(i, rt_ms=250) for i in range(5)]
-        data = payload(DashboardPanel(kind="histogram", title="RT", value="rt_ms"), rows)
+        data = payload(LiveMonitorPanel(kind="histogram", title="RT", value="rt_ms"), rows)
 
         assert len(data["bins"]) == 1
         assert data["bins"][0]["count"] == 5
@@ -168,7 +168,7 @@ class TestHistogram:
 
     def test_the_median_is_reported_with_its_unit(self):
         rows = [trial(i, rt_ms=v) for i, v in enumerate([100, 200, 300])]
-        data = payload(DashboardPanel(kind="histogram", title="RT", value="rt_ms"), rows)
+        data = payload(LiveMonitorPanel(kind="histogram", title="RT", value="rt_ms"), rows)
         stats = {stat["label"]: stat["value"] for stat in data["stats"]}
         assert stats["Median"] == "200 ms"
         assert stats["n"] == "3"
@@ -176,7 +176,7 @@ class TestHistogram:
 
 class TestScatter:
     def panel(self):
-        return DashboardPanel(
+        return LiveMonitorPanel(
             kind="scatter",
             title="Landings",
             x="endpoint_x_dva",
@@ -245,7 +245,7 @@ class TestVectors:
             "x": "endpoint_x_dva",
             "y": "endpoint_y_dva",
         }
-        return DashboardPanel(**{**fields, **kwargs})
+        return LiveMonitorPanel(**{**fields, **kwargs})
 
     def test_each_point_is_measured_from_its_own_trials_origin(self):
         rows = [
@@ -306,7 +306,7 @@ class TestVectors:
 class TestSeries:
     def test_a_moving_mean_rides_on_top_of_the_raw_trace(self):
         rows = [trial(i, gain=float(i % 4)) for i in range(1, 41)]
-        data = payload(DashboardPanel(kind="series", title="Gain", value="gain"), rows)
+        data = payload(LiveMonitorPanel(kind="series", title="Gain", value="gain"), rows)
 
         assert [s["name"] for s in data["series"]][0] == "Gain"
         assert data["series"][0]["marker"] is True and data["series"][0]["line"] is False
@@ -315,29 +315,29 @@ class TestSeries:
 
     def test_short_sessions_get_no_smoothing_line(self):
         rows = [trial(i, gain=1.0) for i in range(1, 6)]
-        data = payload(DashboardPanel(kind="series", title="Gain", value="gain"), rows)
+        data = payload(LiveMonitorPanel(kind="series", title="Gain", value="gain"), rows)
         assert len(data["series"]) == 1
 
     def test_long_sessions_are_thinned_to_a_drawable_size(self):
         rows = [trial(i, gain=float(i)) for i in range(1, 2001)]
-        data = payload(DashboardPanel(kind="series", title="Gain", value="gain"), rows)
+        data = payload(LiveMonitorPanel(kind="series", title="Gain", value="gain"), rows)
 
         for series in data["series"]:
             assert len(series["points"]) <= MAX_POINTS
             # Thinning never loses the ends: the newest value is what a live
-            # dashboard is being watched for.
+            # live monitor is being watched for.
             assert series["points"][-1][0] == 2000
             assert series["points"][0][0] == 1
 
     def test_x_falls_back_to_position_when_a_record_has_no_trial_index(self):
         rows = [{"gain": 1.0}, {"gain": 2.0}]
-        data = payload(DashboardPanel(kind="series", title="Gain", value="gain"), rows)
+        data = payload(LiveMonitorPanel(kind="series", title="Gain", value="gain"), rows)
         assert [p[0] for p in data["series"][0]["points"]] == [1.0, 2.0]
 
 
 class TestGroupedMean:
     def panel(self):
-        return DashboardPanel(
+        return LiveMonitorPanel(
             kind="grouped_mean", title="Bias", value="bias_dva", group="coherence"
         )
 
@@ -370,7 +370,7 @@ class TestGroupedMean:
 
 class TestPerformance:
     def panel(self):
-        return DashboardPanel(kind="performance", title="Performance")
+        return LiveMonitorPanel(kind="performance", title="Performance")
 
     def test_running_accuracy_uses_scored_trials_only(self):
         rows = [
@@ -415,7 +415,7 @@ class TestPerformance:
 
 class TestReward:
     def panel(self):
-        return DashboardPanel(kind="rewards", title="Reward earned")
+        return LiveMonitorPanel(kind="rewards", title="Reward earned")
 
     def test_cumulative_valve_open_time_steps_at_each_delivery(self):
         events = [reward_event(2), reward_event(5, n_pulses=1)]
@@ -505,7 +505,7 @@ class TestStat:
     def test_a_scalar_is_shown_as_a_scalar(self):
         rows = [trial(i, rt_ms=v) for i, v in enumerate([100, 200, 300])]
         data = payload(
-            DashboardPanel(kind="stat", title="Median RT", value="rt_ms", agg="median"), rows
+            LiveMonitorPanel(kind="stat", title="Median RT", value="rt_ms", agg="median"), rows
         )
 
         assert data["form"] == "stat"
@@ -518,12 +518,12 @@ class TestStat:
     )
     def test_each_aggregate(self, agg, expected):
         rows = [trial(i, rt_ms=v) for i, v in enumerate([100, 200, 300])]
-        panel = DashboardPanel(kind="stat", title="RT", value="rt_ms", agg=agg)
+        panel = LiveMonitorPanel(kind="stat", title="RT", value="rt_ms", agg=agg)
         assert payload(panel, rows)["value"] == expected
 
     def test_count_works_on_a_column_that_is_not_a_number(self):
         rows = [trial(1, response_key="left"), trial(2), trial(3, response_key="right")]
-        panel = DashboardPanel(kind="stat", title="Responses", value="response_key", agg="count")
+        panel = LiveMonitorPanel(kind="stat", title="Responses", value="response_key", agg="count")
         data = payload(panel, rows)
         assert data["value"] == "2"
         assert data["secondary"] == "of 3 trials"
@@ -534,7 +534,7 @@ class TestConditionColours:
     for, so the spatial panels are split by it without anyone declaring it."""
 
     def panel(self, color_by):
-        return DashboardPanel(
+        return LiveMonitorPanel(
             kind="scatter",
             title="Landings",
             x="endpoint_x_dva",
@@ -628,7 +628,9 @@ class TestGroupedRate:
     one level of their factor is harder than another."""
 
     def panel(self, **kwargs):
-        return DashboardPanel(kind="grouped_rate", title="Accuracy by side", group="side", **kwargs)
+        return LiveMonitorPanel(
+            kind="grouped_rate", title="Accuracy by side", group="side", **kwargs
+        )
 
     def test_proportion_correct_per_level_with_an_asymmetric_interval(self):
         rows = [trial(i, side="left", completed=True, success=i < 8) for i in range(1, 11)]
@@ -671,14 +673,14 @@ class TestGroupedRate:
 class TestGroupedStyle:
     def test_a_mean_panel_can_be_drawn_as_bars(self):
         rows = [trial(i, side="left", bias_dva=2.0) for i in range(1, 5)]
-        panel = DashboardPanel(
+        panel = LiveMonitorPanel(
             kind="grouped_mean", title="Bias", value="bias_dva", group="side", style="bars"
         )
         assert payload(panel, rows)["style"] == "bars"
 
     def test_dots_are_the_default_for_a_signed_mean(self):
         rows = [trial(i, side="left", bias_dva=2.0) for i in range(1, 5)]
-        panel = DashboardPanel(kind="grouped_mean", title="Bias", value="bias_dva", group="side")
+        panel = LiveMonitorPanel(kind="grouped_mean", title="Bias", value="bias_dva", group="side")
         assert payload(panel, rows)["style"] == "dots"
 
 
@@ -694,12 +696,12 @@ class TestValidation:
     )
     def test_a_panel_cannot_be_built_without_the_fields_its_kind_needs(self, kind, message):
         with pytest.raises(ValueError, match=message):
-            DashboardPanel(kind=kind, title="Broken")
+            LiveMonitorPanel(kind=kind, title="Broken")
 
     def test_a_panel_forced_past_its_validator_fails_loudly(self):
         # model_construct skips validation, which is the only way to reach the
         # guard — an empty plot with no explanation would be worse.
-        panel = DashboardPanel.model_construct(kind="histogram", title="Broken", value=None)
+        panel = LiveMonitorPanel.model_construct(kind="histogram", title="Broken", value=None)
         with pytest.raises(ValueError, match="has no value"):
             panel_payload(panel, [trial(1, rt_ms=1.0)], [])
 
@@ -762,7 +764,7 @@ def test_grouped_mean_over_several_factors_puts_them_on_one_axis():
     """Four proportions on four axes cannot be compared by eye; the same four
     on one axis can. Each bar keeps the name of the factor it came from, which
     is what the colours and the legend are drawn from."""
-    panel = DashboardPanel(
+    panel = LiveMonitorPanel(
         kind="grouped_mean",
         title="P(occluder)",
         value="hit",
@@ -786,7 +788,7 @@ def test_grouped_mean_over_several_factors_puts_them_on_one_axis():
 def test_one_factor_still_labels_its_own_axis():
     """The common case is unchanged — a single factor keeps its axis label and
     needs no legend to say what the bars are."""
-    panel = DashboardPanel(
+    panel = LiveMonitorPanel(
         kind="grouped_mean", title="P", value="hit", group="alignment", style="bars"
     )
     data = panel_payload(panel, _cells(), [])
@@ -802,7 +804,9 @@ def test_two_factors_sharing_a_level_name_are_not_merged():
         trial(0, completed=True, hit=1.0, size="near", distance="near"),
         trial(1, completed=True, hit=0.0, size="far", distance="near"),
     ]
-    panel = DashboardPanel(kind="grouped_mean", title="P", value="hit", group=("size", "distance"))
+    panel = LiveMonitorPanel(
+        kind="grouped_mean", title="P", value="hit", group=("size", "distance")
+    )
     data = panel_payload(panel, rows, [])
     assert [(g["series"], g["label"], g["mean"], g["n"]) for g in data["groups"]] == [
         ("size", "far", 0.0, 1),
@@ -815,13 +819,13 @@ def test_grouped_rate_refuses_several_factors():
     """Its bars are proportions of the same trials split one way. Several
     factors at once would put every trial in several bars."""
     with pytest.raises(ValueError, match="grouped_rate takes one group"):
-        DashboardPanel(kind="grouped_rate", title="Accuracy", group=("a", "b"))
+        LiveMonitorPanel(kind="grouped_rate", title="Accuracy", group=("a", "b"))
 
 
 def test_where_shows_only_the_trials_it_names():
     """A landing plot per separation, rather than one pooled panel that hides
     the difference being looked for."""
-    panel = DashboardPanel(
+    panel = LiveMonitorPanel(
         kind="grouped_mean",
         title="P, far only",
         value="hit",
@@ -835,14 +839,16 @@ def test_where_shows_only_the_trials_it_names():
 def test_where_compares_as_text_so_numeric_levels_match():
     """A level written as 8.25 in the record is named "8.25" in a config."""
     rows = [trial(0, separation_dva=3.75), trial(1, separation_dva=8.25)]
-    panel = DashboardPanel(kind="histogram", title="h", value="x", where={"separation_dva": "8.25"})
+    panel = LiveMonitorPanel(
+        kind="histogram", title="h", value="x", where={"separation_dva": "8.25"}
+    )
     assert [row["trial_index"] for row in select_rows(panel, rows)] == [1]
 
 
 def test_where_on_a_column_the_task_never_writes_matches_nothing():
     """Empty and captioned, rather than quietly showing every trial — a filter
     that silently does nothing is worse than one that fails."""
-    panel = DashboardPanel(
+    panel = LiveMonitorPanel(
         kind="grouped_mean",
         title="P",
         value="hit",
@@ -854,7 +860,7 @@ def test_where_on_a_column_the_task_never_writes_matches_nothing():
 
 
 def test_where_combines_with_completed_only():
-    panel = DashboardPanel(
+    panel = LiveMonitorPanel(
         kind="grouped_mean",
         title="P",
         value="hit",
@@ -875,7 +881,7 @@ class TestFrameIntervals:
     THRESHOLD = EXPECTED * 1.5
 
     def panel(self, intervals, **kwargs):
-        from alhazen.dashboard.panels import frame_intervals_panel
+        from alhazen.live_monitor.panels import frame_intervals_panel
 
         return frame_intervals_panel(intervals, self.EXPECTED, self.THRESHOLD, **kwargs)
 
@@ -1028,7 +1034,7 @@ class TestPresentation:
         rows = [
             trial(i, completed=True, endpoint_x_dva=float(i), endpoint_y_dva=0.0) for i in range(5)
         ]
-        panel = DashboardPanel(
+        panel = LiveMonitorPanel(
             kind="scatter", title="Landings", x="endpoint_x_dva", y="endpoint_y_dva"
         )
         data = payload(panel, rows)
@@ -1051,7 +1057,7 @@ class TestScatterShapes:
 
     @staticmethod
     def panel(**fields):
-        return DashboardPanel(
+        return LiveMonitorPanel(
             kind="scatter",
             title="Landings",
             x="endpoint_x_dva",
@@ -1160,7 +1166,7 @@ class TestScatterShapes:
 
     def test_shapes_are_refused_on_a_panel_that_cannot_draw_them(self):
         with pytest.raises(ValueError, match="shapes are drawn on scatter panels only"):
-            DashboardPanel(kind="vectors", title="V", x="a", y="b", shapes="regions")
+            LiveMonitorPanel(kind="vectors", title="V", x="a", y="b", shapes="regions")
 
 
 # ----------------------------------------------------------------------
@@ -1182,7 +1188,7 @@ def _crossable():
 
 
 def test_crossing_two_factors_makes_one_bar_per_combination():
-    panel = DashboardPanel(
+    panel = LiveMonitorPanel(
         kind="grouped_mean",
         title="P",
         value="hit",
@@ -1209,7 +1215,7 @@ def test_crossing_two_factors_makes_one_bar_per_combination():
 def test_factors_side_by_side_say_they_are_averaged_separately():
     """Bars for several factors on one axis read as the cells of a design
     unless the panel says otherwise."""
-    panel = DashboardPanel(
+    panel = LiveMonitorPanel(
         kind="grouped_mean", title="P", value="hit", group=("separation", "motion")
     )
     data = panel_payload(panel, _crossable(), [])
@@ -1218,7 +1224,7 @@ def test_factors_side_by_side_say_they_are_averaged_separately():
         "not by combination of levels"
     )
 
-    one = DashboardPanel(kind="grouped_mean", title="P", value="hit", group="separation")
+    one = LiveMonitorPanel(kind="grouped_mean", title="P", value="hit", group="separation")
     assert "note" not in panel_payload(one, _crossable(), [])
 
 
@@ -1234,4 +1240,4 @@ def test_factors_side_by_side_say_they_are_averaged_separately():
 )
 def test_cross_is_refused_where_there_is_nothing_to_cross(fields, message):
     with pytest.raises(ValueError, match=message):
-        DashboardPanel(title="P", cross=True, **fields)
+        LiveMonitorPanel(title="P", cross=True, **fields)

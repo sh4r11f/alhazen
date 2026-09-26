@@ -81,7 +81,7 @@ class FrameMonitor:
         self._expected = 1.0 / refresh_rate_hz
         self._threshold = self._expected * (1.0 + cfg.tolerance)
         self._records: list[FrameRecord] = []
-        # The intervals alone, kept beside the records so the dashboard's
+        # The intervals alone, kept beside the records so the live monitor's
         # frame-timing panel can histogram a long session without copying
         # every record on every publish.
         self._intervals: list[float] = []

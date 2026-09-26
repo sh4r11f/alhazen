@@ -72,3 +72,17 @@ def warn_deprecated_argument(
         DeprecationWarning,
         stacklevel=3,
     )
+
+
+def warn_deprecated_name(
+    name: str, since: str, removed_in: str, instead: str | None = None
+) -> None:
+    """Warn about a name that still resolves under an old spelling — a module
+    path, a class alias, a rig-file key, a command-line flag — from the place
+    that resolves it. ``stacklevel=3``: past this helper and that resolver,
+    to the line that wrote the old name."""
+    warnings.warn(
+        deprecation_message(name, since, removed_in, instead),
+        DeprecationWarning,
+        stacklevel=3,
+    )

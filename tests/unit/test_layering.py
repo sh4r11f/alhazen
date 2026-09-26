@@ -10,7 +10,7 @@ adds it; this is the test that notices when one does not.
 
 The same list is drawn twice more for people: the diagram in CONTRIBUTING.md
 and the sentence in docs/architecture.md §1. Both had drifted from the config
-(neither showed modes; CONTRIBUTING also lacked dashboard and neural), and a
+(neither showed modes; CONTRIBUTING also lacked live monitor and neural), and a
 drawing that disagrees with the gate teaches the wrong layering to whoever
 reads it first — so the drawings are checked against the config too.
 """

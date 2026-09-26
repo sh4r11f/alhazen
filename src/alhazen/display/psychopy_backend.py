@@ -438,7 +438,7 @@ class PsychoPyDisplay:
         if centre_y:
             panel.pos = (0.0, centre_y)
         # The instructions are the first frame after the build, and on the rig
-        # the dashboard's browser window arrived at that moment and took the
+        # the live monitor's browser window arrived at that moment and took the
         # foreground; Windows never presented the frame, and nothing flips
         # again while the runner waits for a key, so the subject's screen kept
         # the previous one. Claim the foreground, and present twice.

@@ -126,8 +126,8 @@ GUIDE_KEYS = (
 AUTO_SETTLE_S = 0.5
 AUTO_STEADY_REFRESHES = 5
 
-# The camera image on the dashboard is capped to this many px on its longer
-# side. The full frame is over a megapixel; the dashboard polls twice a
+# The camera image on the live monitor is capped to this many px on its longer
+# side. The full frame is over a megapixel; the live monitor polls twice a
 # second through a one-slot queue and a JSON long-poll, and a pupil can be
 # judged at a quarter of the resolution.
 CAMERA_MAX_PX = 320
@@ -376,7 +376,7 @@ def read_keys(event: Any, key_list: Sequence[str], wait_s: float) -> list[str] |
     Deliberately not ``event.waitKeys``'s default, which empties PsychoPy's
     keyboard buffer every time it starts waiting. The calibration screens
     wait in short slices, and between two slices they read the eye status,
-    flip, and tell the dashboard. A SPACE pressed during that work was thrown
+    flip, and tell the live monitor. A SPACE pressed during that work was thrown
     away when the next slice began, so an experimenter had to press again and
     again until a press happened to land inside a wait. The buffer is cleared
     on purpose instead, once, when the guide or a new target first appears.
@@ -843,7 +843,7 @@ class ViewPixxTracker:
         # per-target call un-arms the sample ring for the whole walk
         # (recording_armed), and calibrate() re-arms it once at the end;
         # anything that reads the device meanwhile (the camera image the
-        # dashboard shows) must leave the ring alone.
+        # live monitor shows) must leave the ring alone.
         self._calibrating = False
         # Whether the device holds a calibration: read from it at
         # configure() (it keeps one across runs) and after every
@@ -959,7 +959,7 @@ class ViewPixxTracker:
         else:
             log.warning(
                 "the TRACKPixx3 has NO calibration: every gaze read reports no position "
-                "until one is done (press C while paused, or the dashboard's Calibrate)."
+                "until one is done (press C while paused, or the live monitor's Calibrate)."
             )
         # Gaze is read off the render thread from here on (GazeReader),
         # through libdpx directly so the raw eye vectors come back too.
@@ -1081,7 +1081,7 @@ class ViewPixxTracker:
 
         A plot that cannot be made never fails the calibration the device just
         kept: the reason is logged as an error and returned for the result's
-        note, which the dashboard shows.
+        note, which the live monitor shows.
         """
         raws = [raw_by_target.get(index) for index in range(len(targets))]
         if any(raw is None for raw in raws):
@@ -1134,7 +1134,7 @@ class ViewPixxTracker:
 
     def _report(self, stage: str, detail: str) -> None:
         """Tell the progress hook, if there is one — outside the device lock,
-        because the hook publishes to the dashboard and must not hold up the
+        because the hook publishes to the live monitor and must not hold up the
         gaze reader for that."""
         if self._progress is not None:
             self._progress(stage, detail)
@@ -1395,11 +1395,11 @@ class ViewPixxTracker:
         return "no eye in the camera image (blink, or the eye is lost)"
 
     def camera_frame(self) -> CameraFrame:
-        """The tracker's current eye image, shrunk for the dashboard.
+        """The tracker's current eye image, shrunk for the live monitor.
 
         Raises ``TrackerError`` rather than returning an empty frame when the
         rig turned the image off, the device is not open, or the device hands
-        back no image: the dashboard shows the reason in place of a picture,
+        back no image: the live monitor shows the reason in place of a picture,
         and an experimenter never mistakes "no image" for "no eye".
         """
         if not self._cfg.camera_image:
@@ -1424,7 +1424,7 @@ class ViewPixxTracker:
             # and never during a calibration walk: there the ring is un-armed
             # by the device's own per-target call, from the first accepted
             # target to the end, and calibrate() re-arms it once when the
-            # walk is over. Re-arming here — which the dashboard's camera
+            # walk is over. Re-arming here — which the live monitor's camera
             # refresh would do every half second of the walk — would blame
             # this read for it and toggle the device's ring between its own
             # calibration calls.
@@ -1442,7 +1442,7 @@ class ViewPixxTracker:
     def iris_size(self) -> int:
         """The expected iris size the device holds now, in camera px.
 
-        Optional capability (protocol.py), for the dashboard's camera panel.
+        Optional capability (protocol.py), for the live monitor's camera panel.
         """
         self._require_device("iris_size()")
         with self._device_lock:

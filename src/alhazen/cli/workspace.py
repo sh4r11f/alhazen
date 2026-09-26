@@ -286,7 +286,7 @@ class Launch(BaseModel):
 # naming one of these is refused: the form's controls are what the run record
 # and its history show, and a `--seed 5` typed behind a seed field saying 0
 # would make the record lie about the run. The runner's other flags — `--run`,
-# `--curriculum`, `--dashboard`, measure's `--skip` — are not the form's and
+# `--curriculum`, `--live-monitor`, measure's `--skip` — are not the form's and
 # pass through. TestCommandContract pins this set to what `_mode_command`
 # actually emits, so a flag added there without joining it fails a test.
 MODE_FLAGS = frozenset(
@@ -295,6 +295,9 @@ MODE_FLAGS = frozenset(
         "--rig",
         "--params",
         "--seed",
+        "--no-live-monitor-browser",
+        # The same flag as alhazen spelled it before 1.9: emitted for a
+        # project whose interpreter runs an older alhazen (no_browser_flag).
         "--no-dashboard-browser",
         "--ses",
         "--sub",
@@ -338,8 +341,32 @@ def _extra_arguments(text: str, reserved: frozenset[str]) -> list[str]:
     return extra
 
 
+def no_browser_flag(alhazen_version: str | None) -> str:
+    """The flag that keeps a launched session from opening its own browser
+    tab (the page embeds the monitor instead), spelled the way the project's
+    alhazen understands it. It is `--no-live-monitor-browser` since 1.9; an
+    older alhazen knows only `--no-dashboard-browser`, which 1.9 still
+    accepts with a warning until 2.0. Registration records the version, so a
+    launch never dies on argparse in the child's console. A version this
+    cannot read means the record is not one registration wrote: re-register.
+    """
+    match = re.match(r"(\d+)\.(\d+)", alhazen_version or "")
+    if match is None:
+        raise ValueError(
+            f"Cannot tell which alhazen this project runs ({alhazen_version!r}); "
+            "remove the project and register it again"
+        )
+    recent = (int(match.group(1)), int(match.group(2))) >= (1, 9)
+    return "--no-live-monitor-browser" if recent else "--no-dashboard-browser"
+
+
 def _mode_command(
-    mode: Mode, request: Launch, root: Path, rig_path: Path, run_dir: Path
+    mode: Mode,
+    request: Launch,
+    root: Path,
+    rig_path: Path,
+    run_dir: Path,
+    no_browser: str = "--no-live-monitor-browser",
 ) -> list[str]:
     """run.py's arguments for one of the six modes: the launcher's flags, then the extras.
 
@@ -367,7 +394,7 @@ def _mode_command(
         str(rig_path),
         "--seed",
         str(request.seed),
-        "--no-dashboard-browser",
+        no_browser,
     ]
     if has_parameters:
         command += ["--params", str(run_dir / "params.yaml")]
@@ -574,7 +601,14 @@ class Workspace:
         load_rig(rig_path)
         base = [project["python"], "-u"]
         if request.mode in {m.value for m in Mode}:
-            return base + _mode_command(Mode(request.mode), request, root, rig_path, run_dir)
+            return base + _mode_command(
+                Mode(request.mode),
+                request,
+                root,
+                rig_path,
+                run_dir,
+                no_browser_flag(project.get("alhazen_version")),
+            )
         return base + _script_command(request, root, rig_path, run_dir)
 
     def start(self, request: Launch) -> dict[str, Any]:

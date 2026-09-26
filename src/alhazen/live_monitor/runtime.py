@@ -1,4 +1,4 @@
-"""Isolated local HTTP runtime for the live dashboard.
+"""Isolated local HTTP runtime for the live monitor.
 
 The child process owns every socket and every byte of browser rendering. The
 experiment process only performs non-blocking queue operations between trials.
@@ -26,10 +26,10 @@ from typing import Any
 from urllib.parse import parse_qs
 
 from alhazen.config.models import IRIS_SIZE_RANGE_PX
-from alhazen.dashboard.panels import panel_payload
-from alhazen.dashboard.presentation import present
-from alhazen.dashboard.spec import DashboardSpec
 from alhazen.errors import SessionError
+from alhazen.live_monitor.panels import panel_payload
+from alhazen.live_monitor.presentation import present
+from alhazen.live_monitor.spec import LiveMonitorSpec
 
 log = logging.getLogger(__name__)
 
@@ -76,12 +76,12 @@ _REQUEST_ID_RULE = f"request_id must be a string of 1 to {_MAX_REQUEST_ID_CHARS}
 
 
 @dataclass(frozen=True)
-class DashboardCommand:
+class LiveMonitorCommand:
     request_id: str
     name: str
 
 
-class DashboardController:
+class LiveMonitorController:
     """Parent-side lifecycle and IPC facade."""
 
     def __init__(self, *, port: int = 0, auto_open: bool = True) -> None:
@@ -131,7 +131,7 @@ class DashboardController:
                 self._token,
                 self._port,
             ),
-            name="alhazen-dashboard",
+            name="alhazen-live-monitor",
             daemon=True,
         )
         self._process = process
@@ -149,20 +149,20 @@ class DashboardController:
             )
             self.stop()
             raise SessionError(
-                f"dashboard server did not start within {timeout_s:g} seconds ({fate})"
+                f"live monitor server did not start within {timeout_s:g} seconds ({fate})"
             ) from e
         if "error" in result:
             self.stop()
-            raise SessionError(f"dashboard server failed to start: {result['error']}")
+            raise SessionError(f"live monitor server failed to start: {result['error']}")
         self.url = f"http://127.0.0.1:{result['port']}/?token={self._token}"
         if self._auto_open and not webbrowser.open(self.url, new=1):
-            log.warning("could not open dashboard browser; open %s", self.url)
+            log.warning("could not open live monitor browser; open %s", self.url)
         return self.url
 
     def publish(self, state: dict[str, Any]) -> None:
         """Replace any unread snapshot; monitoring must never block a session."""
         if self._process is not None and not self._process.is_alive():
-            log.error("dashboard process exited; the experiment will continue without it")
+            log.error("live monitor process exited; the experiment will continue without it")
             return
         # One serialisation, not two plus a pickle: the queue carries the
         # JSON the child is going to send anyway, with the revision beside it
@@ -182,7 +182,7 @@ class DashboardController:
         try:
             self._updates.put_nowait(snapshot)
         except queue.Full:
-            log.warning("dashboard update queue remained full; dropping revision")
+            log.warning("live monitor update queue remained full; dropping revision")
 
     def publish_camera(self, pixels: Any, t: float) -> None:
         """Replace any unread camera frame with this one.
@@ -201,7 +201,7 @@ class DashboardController:
         """
         if self._process is not None and not self._process.is_alive():
             if not self._camera_down_reported:
-                log.error("dashboard process exited; camera frames are no longer sent")
+                log.error("live monitor process exited; camera frames are no longer sent")
                 self._camera_down_reported = True
             return
         shape = tuple(getattr(pixels, "shape", ()))
@@ -230,14 +230,14 @@ class DashboardController:
             # replaces it.
             log.debug("camera frame dropped: the queue refilled while it was being replaced")
 
-    def poll_commands(self) -> list[DashboardCommand]:
-        commands: list[DashboardCommand] = []
+    def poll_commands(self) -> list[LiveMonitorCommand]:
+        commands: list[LiveMonitorCommand] = []
         while True:
             try:
                 item = self._commands.get_nowait()
             except queue.Empty:
                 return commands
-            commands.append(DashboardCommand(request_id=item["request_id"], name=item["name"]))
+            commands.append(LiveMonitorCommand(request_id=item["request_id"], name=item["name"]))
 
     def poll_settings(self) -> list[tuple[str, object]]:
         """The tracker settings the page sent since the last call, oldest first."""
@@ -257,6 +257,10 @@ class DashboardController:
         # record.
         figures_dir.mkdir(parents=True, exist_ok=True)
         payload = json.dumps(state, indent=2, sort_keys=True, default=str)
+        # Still `dashboard_state.json` and `dashboard.html` after the rename
+        # to "live monitor": run-directory file names are an on-disk contract
+        # that changes only in a MAJOR version (docs/versioning.md §3), so
+        # these two follow in 2.0 with a migration note.
         state_path = figures_dir / "dashboard_state.json"
         state_path.write_text(payload + "\n", encoding="utf-8")
         page = page_html(payload)
@@ -692,7 +696,7 @@ def _serve(
             in a ``server_name`` this server never reads. That is a reverse
             DNS lookup, and on a machine with a slow or absent resolver — a
             macOS rig with no network, most of all — it blocks for tens of
-            seconds while the experimenter waits for a dashboard that has
+            seconds while the experimenter waits for a live monitor that has
             already been told which port to use.
             """
             socketserver.TCPServer.server_bind(self)
@@ -735,14 +739,14 @@ def _serve(
     server.server_close()
 
 
-def dashboard_state(
+def live_monitor_state(
     *,
     revision: int,
     status: str,
     identity: dict[str, Any],
     trials: list[dict[str, Any]],
     events: list[dict[str, Any]],
-    spec: DashboardSpec,
+    spec: LiveMonitorSpec,
     condition_fields: Sequence[str] = (),
     training: dict[str, Any] | None = None,
     message: str | None = None,
@@ -752,14 +756,14 @@ def dashboard_state(
     """Construct the stable wire shape consumed by the bundled frontend.
 
     Each panel travels with the data it draws, computed by
-    :func:`alhazen.dashboard.panels.panel_payload` over the *whole* session —
+    :func:`alhazen.live_monitor.panels.panel_payload` over the *whole* session —
     never over the truncated echo below, or a long session's cumulative curve
     would start wherever the window happened to begin.
 
     ``condition_fields`` are the factors the paradigm varies, in the order the
     task names them. They colour the spatial panels and earn accuracy and
     landing panels of their own, so an experiment's own conditions appear on
-    its dashboard without being declared twice.
+    its live monitor without being declared twice.
 
     ``max_rows`` caps how many of the most RECENT trials and events travel as
     that echo. Every update serialises what it sends, so sending the whole
@@ -781,7 +785,7 @@ def dashboard_state(
         missing = [key for key in ("title", "data") if key not in panel]
         if missing:
             raise SessionError(
-                f"an extra dashboard panel is missing {missing}; each entry of "
+                f"an extra live monitor panel is missing {missing}; each entry of "
                 f"panels() must carry title and data (got keys {sorted(panel)})"
             )
     return {
@@ -835,25 +839,25 @@ def _page_template() -> str:
     copy saved into ``figures/`` must open from a filesystem with no server at
     all.
     """
-    wanted = ("index.html", "dashboard.css", "dashboard.js")
+    wanted = ("index.html", "live_monitor.css", "live_monitor.js")
     missing = [name for name in wanted if not (_ASSETS / name).is_file()]
     if missing:
         # An installed package that shipped without its assets would otherwise
         # serve a blank page and look like a browser problem.
         raise SessionError(
-            f"dashboard assets are missing from the installed package: {', '.join(missing)} "
+            f"live monitor assets are missing from the installed package: {', '.join(missing)} "
             f"(expected under {_ASSETS})"
         )
     return (
         (_ASSETS / "index.html")
         .read_text(encoding="utf-8")
-        .replace("__STYLE__", (_ASSETS / "dashboard.css").read_text(encoding="utf-8"))
-        .replace("__SCRIPT__", (_ASSETS / "dashboard.js").read_text(encoding="utf-8"))
+        .replace("__STYLE__", (_ASSETS / "live_monitor.css").read_text(encoding="utf-8"))
+        .replace("__SCRIPT__", (_ASSETS / "live_monitor.js").read_text(encoding="utf-8"))
     )
 
 
 def page_html(static_state: str) -> str:
-    """The dashboard page with its snapshot embedded.
+    """The live monitor page with its snapshot embedded.
 
     ``static_state`` is ``"null"`` for the live page, which polls the server,
     and a JSON document for the standalone copy written to ``figures/``.

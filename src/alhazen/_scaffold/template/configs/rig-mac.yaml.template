@@ -67,7 +67,7 @@ display:
     # one it would ignore.
     policy: mark_trial
 
-dashboard:
+live_monitor:
   # Opens in a browser BEFORE PsychoPy takes focus. On macOS a fullscreen
   # PsychoPy window gets its own Space, so switch back with Mission Control —
   # or stay windowed (fullscreen: false above) to keep both in view.

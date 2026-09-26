@@ -51,7 +51,7 @@ nav:
       - Add a stimulus, phase or paradigm: how-to.md
   - Scenes: scenes.md
   - Experiment database: database.md
-  - Live dashboard: dashboard.md
+  - Live monitor: live_monitor.md
   - Experiment workspace: workspace.md
   - Versioning and releases: versioning.md
   - Design proposals:

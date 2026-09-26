@@ -27,6 +27,7 @@ from alhazen.cli.workspace import (
     STOP_GRACE_S,
     Launch,
     Workspace,
+    no_browser_flag,
     parse_parameters,
     path_inside,
     script_actions,
@@ -46,7 +47,9 @@ def workspace(tmp_path, monkeypatch):
     monkeypatch.setattr(
         workspace_module,
         "probe_interpreter",
-        lambda python, path: {"alhazen_version": "stub", "python_version": "stub"},
+        # A version the launcher can read (it picks a flag's spelling by it,
+        # no_browser_flag); the interpreter is never really probed here.
+        lambda python, path: {"alhazen_version": "1.9.0", "python_version": "stub"},
     )
     root = tmp_path / "experiment with spaces"
     (root / "configs/rigs").mkdir(parents=True)
@@ -331,7 +334,7 @@ class TestLaunches:
         (directory / "run.json").write_text(json.dumps(record))
         # The contract is the line the CLI prints before trial one
         # (cli/main.py _trial_session: "dashboard: <url>", pinned in
-        # test_task_hooks.py). The runner's own "live dashboard:" line goes
+        # test_task_hooks.py). The runner's own "live monitor:" line goes
         # only to session.log, never to the console, so it is not what a
         # launched run's console holds. The last URL in the tail wins.
         (directory / "console.log").write_text(
@@ -401,7 +404,7 @@ class TestCommandContract:
         # After <python> -u run.py, before the extras.
         args = parser.parse_args(command[3 : -len(extras)])
         assert args.mode == mode and args.seed == 3 and args.windowed
-        assert args.rig.endswith("rig-sim.yaml") and args.no_dashboard_browser
+        assert args.rig.endswith("rig-sim.yaml") and args.no_live_monitor_browser
         assert (args.params is not None) == (mode != "measure")
         if Mode(mode).runs_trials:
             assert args.sub == "s01" and args.ses == 2
@@ -415,30 +418,58 @@ class TestCommandContract:
             assert args.clip == ["one", "two"]
             assert (args.sheet is not None) == sheet and args.columns == (2 if sheet else None)
 
-    def test_the_reserved_flags_are_exactly_the_ones_the_launcher_emits(self, workspace):
+    def test_the_reserved_flags_are_exactly_the_ones_the_launcher_emits(
+        self, workspace, monkeypatch
+    ):
         """MODE_FLAGS is the refusal rule for the extra arguments, so it must
         be neither wider nor narrower than what _mode_command emits: a flag
         added there without joining the set could be contradicted from the
         text field; one dropped there but kept in the set would refuse an
         argument the form no longer owns. Every option on, across the six
-        modes, is every flag the launcher can produce."""
+        modes, is every flag the launcher can produce — for a project on the
+        current alhazen and for one on a pre-1.9 alhazen, which is told
+        `--no-dashboard-browser` because that is the spelling it knows."""
         emitted: set[str] = set()
-        for mode in Mode:
-            request = request_for(
-                workspace,
-                mode=mode.value,
-                subject="s01",
-                parameters=None if mode is Mode.MEASURE else {"speed": 2},
-                headless=mode is Mode.SIMULATE,
-                mouse=mode is Mode.TEST,
-                windowed=True,
-                sheet=True,
-                columns=2,
-                clips=["one"],
-            )
-            command = workspace._command(request, workspace.directory / "job")
-            emitted.update(token for token in command if token.startswith("--"))
+        for version in ("1.8.0", "1.9.0"):
+            for mode in Mode:
+                request = request_for(
+                    workspace,
+                    mode=mode.value,
+                    subject="s01",
+                    parameters=None if mode is Mode.MEASURE else {"speed": 2},
+                    headless=mode is Mode.SIMULATE,
+                    mouse=mode is Mode.TEST,
+                    windowed=True,
+                    sheet=True,
+                    columns=2,
+                    clips=["one"],
+                )
+                monkeypatch.setitem(workspace.project(request.project), "alhazen_version", version)
+                command = workspace._command(request, workspace.directory / "job")
+                emitted.update(token for token in command if token.startswith("--"))
         assert emitted == MODE_FLAGS
+
+
+class TestTheNoBrowserFlag:
+    """The launcher tells a session not to open its own browser tab (the page
+    embeds the monitor). The flag was renamed in alhazen 1.9, and the child
+    runs the project's alhazen, not the workspace's — so the spelling follows
+    the version registration recorded."""
+
+    @pytest.mark.parametrize("version", ["1.9.0", "1.10.2", "2.0.0", "1.9.0rc1"])
+    def test_a_project_on_a_recent_alhazen_gets_the_current_spelling(self, version):
+        assert no_browser_flag(version) == "--no-live-monitor-browser"
+
+    @pytest.mark.parametrize("version", ["1.8.0", "1.7.0", "0.9.0"])
+    def test_a_project_on_an_older_alhazen_gets_the_spelling_it_knows(self, version):
+        assert no_browser_flag(version) == "--no-dashboard-browser"
+
+    @pytest.mark.parametrize("version", [None, "", "unknown"])
+    def test_a_record_with_no_readable_version_is_refused_not_guessed(self, version):
+        # Guessing would launch a child that dies on argparse in its console;
+        # re-registering re-probes the interpreter and records the version.
+        with pytest.raises(ValueError, match="register it again"):
+            no_browser_flag(version)
 
 
 class TestExtraArguments:

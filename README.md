@@ -58,13 +58,13 @@ device channels can be queried together.
 - **Live spikes, behind a device seam.** A `SpikeSource` device reads the
   running SpikeGLX acquisition and turns it into threshold-crossing spikes
   on the session clock, and a `Task.live_analysis` hook lets an experiment
-  compute on them between trials and put its own panels on the dashboard —
+  compute on them between trials and put its own panels on the live monitor —
   with a simulated backend whose ground-truth receptive fields let the
   whole pipeline run, and be tested, with no hardware
   ([docs/live-spikes.md](docs/live-spikes.md)). The
   [rf-mapping](https://github.com/sh4r11f/rf-mapping) experiment is built
   on exactly this.
-- **A live browser dashboard between trials.** Outcome, response, reaction-time,
+- **A live monitor in the browser between trials.** Outcome, response, reaction-time,
   landing and reward plots update after every measurement; controls unlock only
   after a keyboard pause so the browser cannot steal focus during an active trial.
 - **Scenes from [illusion-studio](https://github.com/sh4r11f/illusion-studio)**,

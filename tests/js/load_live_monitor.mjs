@@ -1,14 +1,14 @@
-/* Load the real dashboard.js into a fake browser page and hand its top-level
+/* Load the real live_monitor.js into a fake browser page and hand its top-level
  * functions and constants to a test.
  *
  * The script is run unmodified, the way index.html runs it: first a script
- * that defines STATIC_STATE, then dashboard.js itself, in one shared global
+ * that defines STATIC_STATE, then live_monitor.js itself, in one shared global
  * scope (a node:vm context). Everything it declares at top level — functions,
  * `const`s, `let`s — is then reachable by name through `get()`.
  *
  *     index.html ──ids, data-command buttons──▶ fake page (fake_dom.mjs)
- *     dashboard.css ──:root colours──────────▶ getComputedStyle
- *     STATIC_STATE + dashboard.js ─runs in──▶ vm context ─get(name)─▶ test
+ *     live_monitor.css ──:root colours──────────▶ getComputedStyle
+ *     STATIC_STATE + live_monitor.js ─runs in──▶ vm context ─get(name)─▶ test
  *
  * Nothing asynchronous happens behind a test's back: timers and animation
  * frames are recorded, not run, until the test calls runTimers()/runFrames();
@@ -23,17 +23,17 @@ import vm from 'node:vm';
 
 import { FakeDocument, serialize } from './fake_dom.mjs';
 
-const ASSETS = new URL('../../src/alhazen/dashboard/assets/', import.meta.url);
-export const DASHBOARD_JS = fileURLToPath(new URL('dashboard.js', ASSETS));
-const SOURCE = readFileSync(DASHBOARD_JS, 'utf8');
+const ASSETS = new URL('../../src/alhazen/live_monitor/assets/', import.meta.url);
+export const LIVE_MONITOR_JS = fileURLToPath(new URL('live_monitor.js', ASSETS));
+const SOURCE = readFileSync(LIVE_MONITOR_JS, 'utf8');
 const PAGE_HTML = readFileSync(new URL('index.html', ASSETS), 'utf8');
-const STYLESHEET = readFileSync(new URL('dashboard.css', ASSETS), 'utf8');
+const STYLESHEET = readFileSync(new URL('live_monitor.css', ASSETS), 'utf8');
 
 /* The light theme's custom properties, read from the stylesheet's first
  * :root block, so a test that resolves a theme colour (the heatmap's ramp, the
  * figure export) gets the colour the page really has. */
 const ROOT_BLOCK = /:root\s*\{([^}]*)\}/.exec(STYLESHEET);
-if (!ROOT_BLOCK) throw new Error('dashboard.css has no :root block to read the light theme from');
+if (!ROOT_BLOCK) throw new Error('live_monitor.css has no :root block to read the light theme from');
 export const LIGHT_THEME = Object.fromEntries(
   [...ROOT_BLOCK[1].matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)].map((m) => [m[1], m[2].trim()]),
 );
@@ -78,7 +78,7 @@ function fakeStorage(initial) {
 }
 
 /**
- * Run dashboard.js in a fresh fake page and return a handle on it.
+ * Run live_monitor.js in a fresh fake page and return a handle on it.
  *
  * options.staticState  the state a saved page carries (default SAVED_STATE);
  *                      `null` loads the live page, which polls at once and
@@ -90,7 +90,7 @@ function fakeStorage(initial) {
  *                      rewrite it (window.location, window.history.replaced).
  * options.storage      localStorage contents before the script runs.
  */
-export function loadDashboard(options = {}) {
+export function loadLiveMonitor(options = {}) {
   const staticState = options.staticState === undefined ? SAVED_STATE : options.staticState;
   if (staticState === null && !options.fetch) {
     throw new Error('the live page (staticState: null) polls the server as it loads; ' +
@@ -183,7 +183,7 @@ export function loadDashboard(options = {}) {
     fetch: (url, init) => {
       fetches.push({ url: String(url), init: init });
       if (!options.fetch) {
-        throw new Error('dashboard.js fetched ' + url + ' but this test passed no fetch stub');
+        throw new Error('live_monitor.js fetched ' + url + ' but this test passed no fetch stub');
       }
       return Promise.resolve(options.fetch(String(url), init));
     },
@@ -222,8 +222,8 @@ export function loadDashboard(options = {}) {
     filename: 'index.html',
   });
   /* Any error at load propagates: a script that cannot start fails every
-   * test, with dashboard.js's own line numbers in the stack. */
-  vm.runInContext(SOURCE, context, { filename: DASHBOARD_JS });
+   * test, with live_monitor.js's own line numbers in the stack. */
+  vm.runInContext(SOURCE, context, { filename: LIVE_MONITOR_JS });
 
   return {
     document: document,
@@ -233,7 +233,7 @@ export function loadDashboard(options = {}) {
     alerts: alerts,
     consoleErrors: consoleErrors,
     downloads: downloads,
-    /** A top-level binding of dashboard.js (or any expression) by name. */
+    /** A top-level binding of live_monitor.js (or any expression) by name. */
     get: (name) => vm.runInContext(name, context),
     byId: (id) => document.getElementById(id),
     /** Pending timers as [{ms}], for asserting what was scheduled. */
@@ -257,15 +257,15 @@ export function loadDashboard(options = {}) {
 }
 
 /** A fresh element to draw into, `width` CSS pixels wide as if on the page. */
-export function hostFor(dashboard, width) {
-  const host = dashboard.document.createElement('div');
+export function hostFor(live_monitor, width) {
+  const host = live_monitor.document.createElement('div');
   host.clientWidth = width || 400;
-  dashboard.document.body.appendChild(host);
+  live_monitor.document.body.appendChild(host);
   return host;
 }
 
 /* Plain copies of values made inside the script's context. node:assert's
- * deepStrictEqual compares prototypes, and an array built by dashboard.js has
+ * deepStrictEqual compares prototypes, and an array built by live_monitor.js has
  * that context's Array.prototype, not this one's. */
 export function plain(value) {
   return structuredClone(value);

@@ -245,7 +245,7 @@ class SessionHarness:
         source: Any = None,
         declared_outcomes: Any = None,
         use_pause_menu: bool = False,
-        dashboard: Any = None,
+        live_monitor: Any = None,
         mid_trial_reward: bool = False,
         # The seams below are SessionRunner's own constructor parameters,
         # passed straight through. A test states what it needs here instead
@@ -413,7 +413,7 @@ class SessionHarness:
             sync=sync,
             reward_policy=reward_policy,
             eyetracker=self.eyetracker,
-            dashboard=dashboard,
+            live_monitor=live_monitor,
             training=training,
             instructions=instructions,
             await_start=await_start,

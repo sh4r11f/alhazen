@@ -1,15 +1,15 @@
 """The session's view of its eye tracker: run the procedures, keep their
-results, show them on the dashboard.
+results, show them on the live monitor.
 
 A tracker knows how to calibrate itself; it does not know that the session
 wants a validation right after, that a new calibration voids the drift
-corrections measured against the old one, that the dashboard should be
+corrections measured against the old one, that the live monitor should be
 told at every stage, or that the results belong in the events table. That
 is what :class:`EyeTrackerMonitor` holds, in one place, between the runner
-(which calls it from the pause menu and the dashboard's buttons) and the
+(which calls it from the pause menu and the live monitor's buttons) and the
 devices layer (which does the measuring)::
 
-    pause menu / dashboard button
+    pause menu / live monitor button
               │
               ▼
     EyeTrackerMonitor ── calibrate() ──▶ tracker.calibrate()
@@ -17,7 +17,7 @@ devices layer (which does the measuring)::
          │   │   │      drift_correct() ▶ procedures.drift_correct()
          │   │   └── correction (GazeCorrection) ──▶ the input provider
          │   └────── emit(CALIBRATION / VALIDATION / DRIFT_CORRECTION) ──▶ event bus
-         └────────── panels() ──▶ the "Eye tracker" dashboard section
+         └────────── panels() ──▶ the "Eye tracker" live monitor section
                        (camera image, calibration, validation, drift)
 
 Every result is a plain record from the devices layer; this module never
@@ -53,45 +53,45 @@ from alhazen.errors import TrackerError
 
 log = logging.getLogger(__name__)
 
-# The dashboard section every panel here files under.
+# The live monitor section every panel here files under.
 SECTION = "Eye tracker"
 
-# How often a procedure's progress reaches the dashboard. A publish rebuilds
+# How often a procedure's progress reaches the live monitor. A publish rebuilds
 # every panel and, on a rig with a camera, reads a frame; the viewpixx
 # calibration reports every 0.1 s refresh, which is more often than a page
 # needs redrawing.
 PROGRESS_PUBLISH_S = 0.5
 
-# How often a camera frame is sent to the dashboard while somebody is looking
+# How often a camera frame is sent to the live monitor while somebody is looking
 # at the image (paused, or a procedure running): about fifteen a second. A
-# frame travels on the dashboard's camera channel, not in a state publish, so
+# frame travels on the live monitor's camera channel, not in a state publish, so
 # each one costs a device read and a copy of a few tens of kilobytes rather
 # than a rebuild of every panel. A TRACKPixx3 calibration reports every 0.1 s,
 # which caps the stream at ten a second while it runs.
 CAMERA_STREAM_S = 1.0 / 15.0
 
-# The dashboard status while any procedure runs. One word for all three: the
+# The live monitor status while any procedure runs. One word for all three: the
 # server refuses commands unless the status is "paused", so this is also what
 # keeps a second button press from landing mid-procedure.
 PROCEDURE_STATUS = "calibrating"
 
 # Where the panel's key hints send the experimenter. The pause menu lists the
-# same keys (session/pause.py) and the dashboard has buttons for them.
-CALIBRATE_HINT = "press C while paused, or the dashboard's Calibrate button"
-VALIDATE_HINT = "press V while paused, or the dashboard's Validate button"
-DRIFT_HINT = "press D while paused, or the dashboard's Drift-correct button"
+# same keys (session/pause.py) and the live monitor has buttons for them.
+CALIBRATE_HINT = "press C while paused, or the live monitor's Calibrate button"
+VALIDATE_HINT = "press V while paused, or the live monitor's Validate button"
+DRIFT_HINT = "press D while paused, or the live monitor's Drift-correct button"
 
 # What a publish carries about a procedure: (status, message). Whatever the
 # callable returns is ignored, so the runner's own publish method fits as is.
 Publisher = Callable[[str, str], object]
 # What a finished procedure emits: (event name, payload).
 Emitter = Callable[[str, dict[str, Any]], object]
-# Where streamed camera frames go: the dashboard's camera channel.
+# Where streamed camera frames go: the live monitor's camera channel.
 CameraSink = Callable[[CameraFrame], object]
-# Where the dashboard's tracker settings come from: (setting, value) pairs.
+# Where the live monitor's tracker settings come from: (setting, value) pairs.
 SettingsSource = Callable[[], list[tuple[str, object]]]
 
-# The tracker setting the dashboard can change, by the name the page sends:
+# The tracker setting the live monitor can change, by the name the page sends:
 # the TRACKPixx3's expected iris size (devices/eyetracker/viewpixx.py).
 IRIS_SIZE_SETTING = "iris_size_px"
 # How far the camera panel's − and + move it, in camera px.
@@ -122,7 +122,7 @@ class EyeTrackerMonitor:
 
     ``poll_keys`` is where the procedures read the experimenter's keys from;
     ``publisher`` and ``emit`` are set by the runner once it exists, because
-    the dashboard publish and the event bus are its.
+    the live monitor publish and the event bus are its.
     """
 
     def __init__(
@@ -154,7 +154,7 @@ class EyeTrackerMonitor:
         # per distinct reason, not once per publish).
         self._frame: CameraFrame | None = None
         self._camera_fault: str | None = None
-        # Set by the runner when a dashboard is open: frames then stream to it
+        # Set by the runner when a live monitor is open: frames then stream to it
         # (stream_camera), and state publishes stop carrying the pixels.
         self.camera_sink: CameraSink | None = None
         self._last_stream = float("-inf")
@@ -174,7 +174,7 @@ class EyeTrackerMonitor:
         A calibration the tracker reports as good replaces the gaze model, so
         the corrections and the validation measured against the old one are
         cleared here — a "passed" from an hour ago must not sit on the
-        dashboard next to a model it never measured.
+        live monitor next to a model it never measured.
         """
         self._stage("calibrating", "starting")
         # The viewpixx and EyeLink backends report their stages; a tracker
@@ -312,7 +312,7 @@ class EyeTrackerMonitor:
         calibration is exactly when the experimenter is watching the eye, and
         a report is the one moment the procedure hands control back.
         """
-        messages = self.service_dashboard()
+        messages = self.service_live_monitor()
         now = self._clock.now()
         # A setting the page sent is published at once, whatever the throttle
         # says: the experimenter who pressed + is waiting to see it land.
@@ -327,7 +327,7 @@ class EyeTrackerMonitor:
             self.emit(name, payload)
 
     # ------------------------------------------------------------------
-    # Dashboard panels
+    # LiveMonitor panels
     # ------------------------------------------------------------------
 
     @property
@@ -342,7 +342,7 @@ class EyeTrackerMonitor:
         is paused or a procedure is running, when the device is not busy with
         a trial and the image is what the experimenter is looking for. Live,
         the eye line is read, and so is a frame unless frames stream to an
-        open dashboard (stream_camera). ``image=False`` leaves the pixels out
+        open live monitor (stream_camera). ``image=False`` leaves the pixels out
         (the copy saved to disk at teardown keeps the numbers, not a
         photograph of the subject).
         """
@@ -356,7 +356,7 @@ class EyeTrackerMonitor:
         return panels
 
     def _camera(self, live: bool, image: bool) -> dict[str, Any]:
-        # With a dashboard open the frames stream on their own channel
+        # With a live monitor open the frames stream on their own channel
         # (stream_camera), so a state publish neither reads one nor carries
         # its pixels: the panel says it streams, and the page draws the newest
         # frame it received. The copy saved to disk is never a stream.
@@ -427,8 +427,8 @@ class EyeTrackerMonitor:
         """Whether the tracker lets the session read and set its expected iris size."""
         return hasattr(self._tracker, "iris_size") and hasattr(self._tracker, "set_iris_size")
 
-    def service_dashboard(self) -> list[str]:
-        """What the dashboard needs from the tracker between its other work:
+    def service_live_monitor(self) -> list[str]:
+        """What the live monitor needs from the tracker between its other work:
         the settings the page sent, applied in order, and a camera frame when
         one is due. Returns one line per setting, for the caller to publish."""
         requests = self.settings_source() if self.settings_source is not None else []
@@ -439,7 +439,9 @@ class EyeTrackerMonitor:
     def _apply_setting(self, name: str, value: object) -> str:
         if name == IRIS_SIZE_SETTING:
             return self.set_iris_size(value)
-        log.error("the dashboard sent tracker setting %r, which this session does not have", name)
+        log.error(
+            "the live monitor sent tracker setting %r, which this session does not have", name
+        )
         return f"No tracker setting called {name!r}; nothing changed."
 
     def set_iris_size(self, px: object) -> str:
@@ -481,12 +483,12 @@ class EyeTrackerMonitor:
         return self.iris_size_px
 
     def stream_camera(self) -> None:
-        """Send the dashboard a fresh camera frame, if one is due.
+        """Send the live monitor a fresh camera frame, if one is due.
 
         Called on every pass of the pause loop and every progress report of a
         procedure, and a no-op between frames (CAMERA_STREAM_S), so its
         callers need not keep time. Nothing is read without a sink: a session
-        with no dashboard open reads no frames. A read that fails sends
+        with no live monitor open reads no frames. A read that fails sends
         nothing. Its reason goes to the log once and onto the panel at the
         next state publish (_read_camera), and the page keeps its last frame
         with the reason under it.

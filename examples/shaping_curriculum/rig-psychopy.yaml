@@ -10,7 +10,7 @@ display:
   backend: psychopy
   frame_qa:
     policy: warn
-dashboard:
+live_monitor:
   enabled: true
   auto_open: true
   port: 0

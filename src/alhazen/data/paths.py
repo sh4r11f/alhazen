@@ -89,7 +89,7 @@ def _refuse_a_used_run_dir(run_dir: Path) -> None:
     Checking for this run's own trials file was not enough. Its name carries
     the date and the directory's does not, so the same run number on a later
     day passed the check and wrote into the earlier run's folder: over its
-    config_snapshot.yaml, manifest.yaml and dashboard, appending to its
+    config_snapshot.yaml, manifest.yaml and live monitor, appending to its
     session.log — and `load_run` then paired one day's trials with the other
     day's snapshot. A run that crashed before writing its trials file (it has
     a snapshot and a log) is protected the same way.

@@ -1,4 +1,4 @@
-/* Alhazen live dashboard — chrome, typography and chart tokens.
+/* Alhazen live monitor — chrome, typography and chart tokens.
  *
  * Every colour is a token defined once per theme; no chart names a literal.
  *
@@ -227,7 +227,7 @@ main { flex: 1 1 auto; min-width: 0; padding: 22px 28px 56px; }
 .grid {
   display: grid;
   /* Two per row. Three on a wide screen makes every axis fight for room, and
-   * a dashboard is read from across a rig. `minmax(0, 1fr)` rather than
+   * a live monitor is read from across a rig. `minmax(0, 1fr)` rather than
    * `1fr`: a track's default minimum is its content, so one oversized chart
    * would widen its column instead of being contained. */
   grid-template-columns: repeat(2, minmax(0, 1fr));

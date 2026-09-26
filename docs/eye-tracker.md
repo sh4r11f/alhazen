@@ -6,7 +6,7 @@ nudged. This page is about the three procedures a session runs on a tracker,
 who drives them, where their results go, and what the subject and the
 experimenter see while they run.
 
-| Procedure | What it does | How long | Key while paused | Dashboard button |
+| Procedure | What it does | How long | Key while paused | LiveMonitor button |
 |---|---|---|---|---|
 | **Calibration** | fits the gaze model over a target grid | minutes | `C` | Calibrate |
 | **Validation** | shows the same targets again and measures the error at each, in degrees | ~1 s per target | `V` | Validate |
@@ -24,7 +24,7 @@ calibration and how good it was.
 flowchart LR
   subgraph exp["experimenter"]
     K["pause screen<br/>C · V · D"]
-    W["dashboard<br/>Calibrate · Validate · Drift correct"]
+    W["live monitor<br/>Calibrate · Validate · Drift correct"]
   end
   K --> M["session/eyetracker.py<br/><b>EyeTrackerMonitor</b><br/>results · GazeCorrection · panels"]
   W --> M
@@ -34,7 +34,7 @@ flowchart LR
   T -.->|"progress hook"| M
   M -->|"correction.apply()"| I["input provider<br/>(centered px, every frame)"]
   M -->|"CALIBRATION · VALIDATION<br/>DRIFT_CORRECTION"| B["event bus → events.csv"]
-  M -->|"Eye tracker section"| D["dashboard panels<br/>Camera · Calibration · Validation · Drift correction"]
+  M -->|"Eye tracker section"| D["live monitor panels<br/>Camera · Calibration · Validation · Drift correction"]
 ```
 
 - **The backend owns the calibration**, because the two real trackers
@@ -50,8 +50,8 @@ flowchart LR
 - **The monitor** (`session/eyetracker.py`) is the session's one view of all
   of it: it runs the procedures, keeps the latest result of each, owns the
   `GazeCorrection` the input provider applies, publishes progress to the
-  dashboard while a procedure runs, emits the events, and produces the
-  dashboard's *Eye tracker* section.
+  live monitor while a procedure runs, emits the events, and produces the
+  live monitor's *Eye tracker* section.
 
 ## The calibration guide
 
@@ -103,7 +103,7 @@ SPACE is refused while no eye is in the image — a target accepted blind is
 the one mistake a calibration cannot recover from.
 
 One press of SPACE is enough. A key pressed while the walk is busy between
-two refreshes (reading the eye status, drawing, updating the dashboard) is
+two refreshes (reading the eye status, drawing, updating the live monitor) is
 kept, not thrown away, and the keyboard is cleared once when each target
 appears, so a press meant for the previous target never accepts the next.
 P, the session's pause key, stops the walk just as ESC does: the previous
@@ -163,7 +163,7 @@ screen px to centered px and corrected exactly as `make_input_provider`
 does, so a validation error of 0.5° is the error a fixation window will
 experience.
 
-## From the pause screen and the dashboard
+## From the pause screen and the live monitor
 
 Press **P** on the experimenter keyboard, and the pause screen lists what
 this session can do — with a tracker wired, `C` recalibrate, `V` validate
@@ -175,8 +175,8 @@ validation passed: mean 0.41°, worst 0.62° (limit 1°)
 drift correction applied: offset 0.48° (limit 3°)
 ```
 
-With the dashboard on, the same three are buttons, live only while the
-session is paused. While a procedure runs the dashboard's status turns to
+With the live monitor on, the same three are buttons, live only while the
+session is paused. While a procedure runs the live monitor's status turns to
 **calibrating**, the buttons go inert, and the notice follows the walk —
 `calibrating: target 2 of 5 · eyes: both tracked`, `validating: target 4 of
 5` — published at most twice a second so the walk never waits on the
@@ -238,7 +238,7 @@ so the backend does three things about it:
   calibration, and warns once per uncalibrated stretch rather than once per
   frame;
 - the session **pauses before trial 1** with `TRACKER NOT CALIBRATED` as the
-  reason, so the experimenter calibrates (C, or the dashboard's Calibrate)
+  reason, so the experimenter calibrates (C, or the live monitor's Calibrate)
   before any trial runs on gaze that is not a position.
 
 The device keeps a calibration across runs. At `configure()` the log says
@@ -374,7 +374,7 @@ backend's, for a person to read; select on `fault`, never on this.
   a dead link cannot bring it over. Teardown then raises a `TrackerError`
   naming the file (`edf_host_filename`, `alhazen.EDF` by default) and where
   it belongs in the run directory, the run is recorded as `failed` (in the
-  database, the saved dashboard and session.log's last line),
+  database, the saved live monitor and session.log's last line),
   and the link is closed all the same. Copy the file off the Host PC by hand before
   the next session: every session opens its EDF under that same name.
   (With no run behind it — `check-rig` — a dead link loses nothing and is
@@ -526,7 +526,7 @@ devices:
     validate_after_calibration: true
     accuracy_max_deg: 1.0          # worst target error a validation may have
     drift_max_deg: 3.0             # largest offset a drift correction will apply
-    camera_image: true             # TRACKPixx3 only: the dashboard's camera panel
+    camera_image: true             # TRACKPixx3 only: the live monitor's camera panel
     iris_size_px: 120              # TRACKPixx3 only: expected iris size, camera px
     max_sample_gap_ms: 100         # no new sample for this long mid-trial = a dropout
                                    #   (default: 50 on an EyeLink, 100 on a TRACKPixx3)

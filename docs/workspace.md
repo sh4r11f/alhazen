@@ -1,7 +1,7 @@
 # Experiment workspace
 
 `alhazen dashboard` opens a local web app for managing downstream Alhazen
-experiments. The launcher is separate from the [live session monitor](dashboard.md):
+experiments. The launcher is separate from the [live session monitor](live_monitor.md):
 it configures and starts processes, while the monitor receives trial data and
 keeps its existing keyboard-pause policy.
 
@@ -64,7 +64,7 @@ flag the form has no control for is given: `--curriculum configs/shaping.yaml`,
 launcher sets from the form is refused, naming the flag, before anything is
 written, so a run's recorded settings cannot be contradicted from the text
 field. Those flags are `--mode`, `--rig`, `--params`, `--seed`,
-`--no-dashboard-browser`, `--sub`, `--ses`, `--trials-per-condition`,
+`--no-live-monitor-browser`, `--sub`, `--ses`, `--trials-per-condition`,
 `--headless`, `--mouse`, `--windowed`, `--out`, `--scale`, `--sheet`,
 `--columns`, `--clip` and `--screenshots`, in either the `--seed 5` or the
 `--seed=5` spelling; every other flag passes through.
@@ -112,23 +112,23 @@ child only; descendants may need to be stopped separately.
 
 ## Live monitor
 
-The [live session monitor](dashboard.md) is a separate loopback server that the
-session process starts when the rig has `dashboard.enabled: true`; the runner
-prints its address on the console before trial one (`dashboard: http://127.0.0.1:…`)
+The [live session monitor](live_monitor.md) is a separate loopback server that the
+session process starts when the rig has `live_monitor.enabled: true`; the runner
+prints its address on the console before trial one (`live monitor: http://127.0.0.1:…`)
 and the launcher relays it. The Run output card's
 **Live monitor** tab embeds that page while the run is active, so the session's
 trials, eye-tracker panels and pause menu are watched from the workspace
 without a second browser tab. **Open monitor in new tab ↗** beside the tabs
 opens the same page on its own. The monitor keeps its own token and its
 pause-only controls; the workspace adds nothing to them, and the launcher
-passes `--no-dashboard-browser` so the session does not open a browser of its
+passes `--no-live-monitor-browser` so the session does not open a browser of its
 own as well.
 
 For a run started from the workspace, the tab is brought up automatically the
 first time its monitor URL appears; a run picked from the history keeps whatever
 tab is open. Before the URL appears, the tab says that it is waiting for the
 session to open its monitor — or, when the selected rig has
-`dashboard.enabled: false` (the default for a rig without the block), that the
+`live_monitor.enabled: false` (the default for a rig without the block), that the
 setting must be turned on in the rig YAML. The rig summary under the rig menu
 shows the same fact as **live monitor: on/off**.
 
@@ -149,7 +149,7 @@ its own browser tab as before.
 
 ## Storage and local access
 
-By default, state is under `~/.alhazen/dashboard/`:
+By default, state is under `~/.alhazen/live_monitor/`:
 
 ```text
 projects.json

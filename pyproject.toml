@@ -91,11 +91,11 @@ dev = [
 [project.scripts]
 alhazen = "alhazen.cli.main:main"
 
-# The scaffold's templates and the dashboard's frontend ship inside the wheel
+# The scaffold's templates and the live monitor's frontend ship inside the wheel
 # — both are read at runtime, so a package that omitted them would install
-# fine and fail on first use (`alhazen new`, and a blank dashboard page).
+# fine and fail on first use (`alhazen new`, and a blank live monitor page).
 [tool.setuptools.package-data]
-alhazen = ["py.typed", "_scaffold/template/**/*", "dashboard/assets/*", "cli/assets/*"]
+alhazen = ["py.typed", "_scaffold/template/**/*", "live_monitor/assets/*", "cli/assets/*"]
 
 [project.urls]
 Repository = "https://github.com/sh4r11f/alhazen"
@@ -131,7 +131,7 @@ branch = true
 # catches a real drop without failing on the noise of one refactor or on the
 # few platform-specific lines another OS's job does not reach. Raise it when
 # coverage rises; never lower it to make CI pass.
-# Subprocess sessions (the scaffold acceptance test, the dashboard child) are
+# Subprocess sessions (the scaffold acceptance test, the live monitor child) are
 # not measured, so the true figure is somewhat higher than this reports.
 [tool.coverage.report]
 fail_under = 89
@@ -263,7 +263,10 @@ layers = [
   "alhazen.session | alhazen.testing | alhazen.analysis",
   "alhazen.training",
   "alhazen.task",
+  # The live monitor's pre-1.9 import path: a warning re-export, removed in
+  # 2.0. Its own line above live_monitor because it imports it.
   "alhazen.dashboard",
+  "alhazen.live_monitor",
   "alhazen.paradigms | alhazen.devices",
   "alhazen.core | alhazen.neural",
   "alhazen.stimuli | alhazen.scenes",
