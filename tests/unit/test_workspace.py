@@ -341,6 +341,16 @@ class TestLaunches:
         assert len(detail["log"]) == 65536
         assert detail["monitor"] == "http://127.0.0.1:1234/?token=abc_-123"
 
+    def test_nested_media_paths_use_forward_slashes(self, workspace):
+        # The page splits artifact paths on "/" to build media URLs. A Windows
+        # backslash would be percent-encoded into one segment instead.
+        run = finish(workspace, workspace.start(request_for(workspace)))
+        nested = Path(run["directory"]) / "media" / "frames" / "first.png"
+        nested.parent.mkdir()
+        nested.write_bytes(b"png")
+        paths = [a["path"] for a in workspace.detail(run["id"])["artifacts"]]
+        assert paths == ["clip.mp4", "frames/first.png"]
+
 
 class TestCommandContract:
     """The launcher hand-builds run.py's flags; ``add_mode_arguments`` is the
