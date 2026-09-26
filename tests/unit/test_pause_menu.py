@@ -45,7 +45,7 @@ class TestOnlyOffersWhatTheSessionHas:
 
     def test_the_tracker_rows_are_listed_together_in_procedure_order(self):
         # Calibrate, validate, drift-correct: the order they are usually
-        # wanted in, and the order the dashboard's buttons keep.
+        # wanted in, and the order the live monitor's buttons keep.
         actions = list(build_pause_menu(has_tracker=True).actions().items())
         assert actions[1:4] == [
             ("C", "calibrate"),
@@ -163,7 +163,7 @@ class TestTheLoop:
 class TestActionForKey:
     """The one key -> action mapping every pause loop uses: the blocking
     keyboard loop above, and the runner's polling loops (a rest that can time
-    out, a pause with the dashboard on)."""
+    out, a pause with the live monitor on)."""
 
     @pytest.mark.parametrize(
         ("key", "action"),

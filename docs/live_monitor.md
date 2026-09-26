@@ -1,4 +1,4 @@
-# Live dashboard
+# Live monitor
 
 To add experiment repositories, edit parameters, choose rigs, and launch
 previews or recordings from a web app, use `alhazen dashboard`: see the
@@ -8,14 +8,36 @@ workspace embeds this page in its **Live monitor** tab (see
 [Live monitor](workspace.md#live-monitor)); from a terminal, `python run.py`
 opens it in its own browser tab as before.
 
-Alhazen can open a local browser dashboard before PsychoPy takes focus. The
-dashboard receives a new immutable snapshot after every recorded trial; no
+## Renamed in 1.9
+
+Until 1.8 this page and its code were "the dashboard". That word now means the
+experiment workspace only, and the live monitor's names changed with it. The
+old spellings keep working through 1.x with a `DeprecationWarning` naming the
+replacement, and go in 2.0 ([versioning](versioning.md) §4):
+
+| Before 1.9 | Since 1.9 |
+| --- | --- |
+| `alhazen.dashboard` (and `.spec`) | `alhazen.live_monitor` |
+| `DashboardSpec`, `DashboardPanel`, `DashboardConfig` | `LiveMonitorSpec`, `LiveMonitorPanel`, `LiveMonitorConfig` |
+| `Task.dashboard = DashboardSpec(...)` | `Task.live_monitor = LiveMonitorSpec(...)` |
+| rig file `dashboard:` section | `live_monitor:` |
+| `--dashboard`, `--no-dashboard`, `--no-dashboard-browser` | `--live-monitor`, `--no-live-monitor`, `--no-live-monitor-browser` |
+| `build_session(dashboard=, open_dashboard=)`, the same on `build_mode_session` | `build_session(live_monitor=, open_live_monitor=)` |
+| console line `dashboard: http://…` | `live monitor: http://…` |
+
+Two names do not change yet: the saved page `figures/dashboard.html` and its
+state `figures/dashboard_state.json`. Run-directory file names are an on-disk
+contract that changes only in a MAJOR version (§3 of the same page), so they
+are renamed in 2.0.
+
+Alhazen can open a local live monitor in the browser before PsychoPy takes focus. The
+live monitor receives a new immutable snapshot after every recorded trial; no
 HTTP, serialization or plotting runs in the display frame loop.
 
 Enable it in the rig configuration:
 
 ```yaml
-dashboard:
+live_monitor:
   enabled: true
   auto_open: true
   port: 0                 # ask the OS for an unused loopback port
@@ -39,19 +61,19 @@ as soon as it has read it (it keeps it for its own requests, and a reload of
 the tab still works). The server refuses a malformed request with a 400
 rather than guessing: a query parameter that is not an integer or is given
 twice, a request id that is not a string of 1 to 64 characters, or a body
-whose length is negative (larger than 4 KiB gets a 413). `--dashboard` and `--no-dashboard` override the
-rig for one run. `--no-dashboard-browser` starts the server without launching
+whose length is negative (larger than 4 KiB gets a 413). `--live-monitor` and `--no-live-monitor` override the
+rig for one run. `--no-live-monitor-browser` starts the server without launching
 the default browser; the URL is written to the session log.
 
 ## Focus safety and controls
 
-The dashboard is deliberately read-only during a running experiment. Clicking
+The live monitor is deliberately read-only during a running experiment. Clicking
 a browser on the presentation computer necessarily transfers OS focus before
 Python can react, so a web Pause button cannot honestly promise not to affect
 subject input.
 
 Press **P** on the experimenter keyboard first. Once the subject display says
-the run is paused, the dashboard enables Resume, Calibrate, Validate, Drift
+the run is paused, the live monitor enables Resume, Calibrate, Validate, Drift
 correct, Give reward, Quit, and curriculum controls. The server also rejects
 control requests unless its authoritative session state is `paused`;
 disabling the buttons is not the security boundary. Space, C, V, D, R and Q
@@ -82,22 +104,22 @@ goes flat at trial 260 says the subject stopped working, which no total can.
 
 ```mermaid
 flowchart LR
-  R["DataRecorder<br/>trials + events"] --> S["dashboard_state()"]
-  P["DashboardSpec<br/>resolved_panels"] --> S
+  R["DataRecorder<br/>trials + events"] --> S["live_monitor_state()"]
+  P["LiveMonitorSpec<br/>resolved_panels"] --> S
   S -->|"per panel, whole session"| C["panels.panel_payload()<br/>counts · bins · means<br/>s.e.m. · Wilson CI · cumulative"]
   C -->|"thinned to &le; 180 points"| N["presentation.present()<br/>sentence case · ° · minus sign<br/>display twins"]
   N --> W["one JSON snapshot"]
   S -->|"last max_rows rows"| W
   W --> Q(["queue (1 slot)"])
   Q --> H["child process<br/>HTTP + long poll"]
-  H --> B["browser: dashboard.js<br/>scales · axes · marks · hover"]
+  H --> B["browser: live_monitor.js<br/>scales · axes · marks · hover"]
   B -->|"Export figure"| X["SVG 89 / 183 mm<br/>PNG 600 dpi"]
-  W --> F["figures/dashboard.html<br/>figures/dashboard_state.json"]
+  W --> F["figures/dashboard.html<br/>figures/live_monitor_state.json"]
 ```
 
 The split matters: **the browser draws, it does not analyse.** Every count,
 bin edge, mean, error bar and running proportion is computed in
-`alhazen.dashboard.panels`, in Python, where it is unit-tested. A running
+`alhazen.live_monitor.panels`, in Python, where it is unit-tested. A running
 accuracy that divides by the wrong denominator looks entirely plausible in a
 browser, and the page's JavaScript is tested (`tests/js/`) only for how it
 draws, never for what it computes.
@@ -122,7 +144,7 @@ gains a display twin beside it, and the page draws the twin:
 | `maps[].name` | `maps[].display_name` |
 | `color_label` | `display_color_label` |
 
-A dashboard saved before the twins existed still draws, from the raw values.
+A live monitor saved before the twins existed still draws, from the raw values.
 
 ### Reading them
 
@@ -199,20 +221,20 @@ without hand responses or gaze.
 Add experiment-specific panels declaratively:
 
 ```python
-from alhazen import DashboardPanel, DashboardSpec, Task
+from alhazen import LiveMonitorPanel, LiveMonitorSpec, Task
 
 
 class MibTask(Task):
-    dashboard = DashboardSpec(
+    live_monitor = LiveMonitorSpec(
         panels=(
-            DashboardPanel(
+            LiveMonitorPanel(
                 kind="grouped_mean",
                 title="MIB by coherence",
                 value="mib_signed_dva",
                 group="coherence",
                 completed_only=True,
             ),
-            DashboardPanel(
+            LiveMonitorPanel(
                 kind="stat",
                 title="Median saccade latency",
                 value="saccade_rt_ms",
@@ -259,7 +281,7 @@ the fixation point moves between trials, which is what the origin columns are
 for:
 
 ```python
-DashboardPanel(
+LiveMonitorPanel(
     kind="vectors",
     title="Landing relative to fixation",
     x="endpoint_x_dva",
@@ -286,7 +308,7 @@ inducers of an averaging display. Name a record column in `shapes` and the
 scatter outlines them:
 
 ```python
-DashboardPanel(
+LiveMonitorPanel(
     kind="scatter",
     title="Landings by separation",
     x="landing_x_dva",
@@ -316,7 +338,7 @@ exactly when a level reaches double digits.
 
 The panels know what the experiment varies. The session runner collects the
 condition factors from the conditions the paradigm actually served — not from
-a declaration, so they cannot drift — and they reach the dashboard on their
+a declaration, so they cannot drift — and they reach the live monitor on their
 own:
 
 - **the spatial panels are coloured by the first factor**, so a landing cloud
@@ -329,7 +351,7 @@ column, set `color_by` on the panel; to group by more, declare a
 `grouped_mean` or `grouped_rate` panel of your own.
 
 ```python
-DashboardPanel(
+LiveMonitorPanel(
     kind="scatter",
     title="Landings by coherence",
     x="endpoint_x_dva",
@@ -354,7 +376,7 @@ went into it — a sixth colour would be one nobody could distinguish, and an
 indistinguishable legend entry is worse than an honest "other".
 
 The first **two** factors get automatic panels. Every factor adds two, and a
-dashboard nobody can take in at a glance has stopped being monitoring; declare
+live monitor nobody can take in at a glance has stopped being monitoring; declare
 the rest explicitly when you want them.
 
 The landing panel groups `endpoint_error_dva` — how far the response fell from
@@ -394,7 +416,7 @@ Two filters apply to any panel:
   whole session does not.
 
 ```python
-DashboardPanel(
+LiveMonitorPanel(
     kind="histogram",
     title="Reaction time (last 50)",
     value="rt_ms",
@@ -470,7 +492,7 @@ arriving.
 flowchart LR
   L["pause loop pass /<br/>procedure progress report"] --> M["EyeTrackerMonitor.stream_camera()<br/>at most every 1/15 s"]
   M -->|"tracker.camera_frame()"| F["CameraFrame<br/>8-bit grey"]
-  F --> Q["DashboardController.publish_camera()<br/>one-slot queue"]
+  F --> Q["LiveMonitorController.publish_camera()<br/>one-slot queue"]
   Q --> C["server child: /api/camera<br/>long poll, raw bytes"]
   C --> P["page: cameraLoop()<br/>redraws the canvas only"]
 ```
@@ -521,7 +543,7 @@ saving nothing. File names carry the letter, the title and the width, such as
 
 ## Saved output
 
-At shutdown, the final state is saved as `figures/dashboard_state.json` and a
+At shutdown, the final state is saved as `figures/live_monitor_state.json` and a
 self-contained `figures/dashboard.html`. Both are covered by the run manifest.
 The saved page is the same page, with its snapshot baked in and nothing to
 poll: it loads no fonts, scripts or styles from the network, so it still opens

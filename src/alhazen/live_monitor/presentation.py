@@ -1,6 +1,6 @@
-"""Every string a dashboard reader sees, written in a journal figure's conventions.
+"""Every string a live monitor reader sees, written in a journal figure's conventions.
 
-:mod:`alhazen.dashboard.panels` computes what each panel plots and names
+:mod:`alhazen.live_monitor.panels` computes what each panel plots and names
 things in the record's terms (``rt_ms``, ``FIX_BREAK``), because that is what
 its statistics and its tests are about. This module decides how those names,
 numbers and sentences *read*: a column name as words with its unit
@@ -12,7 +12,7 @@ It lives apart from the panel computations so a reader of those can skip it:
 nothing here counts, bins or averages anything, and nothing in the panels
 depends on how a label is cased.
 
-:func:`format_number` has a twin, ``fmt`` in ``assets/dashboard.js``, for the
+:func:`format_number` has a twin, ``fmt`` in ``assets/live_monitor.js``, for the
 numbers the page formats itself (axis ticks, hover read-outs);
 ``tests/js/helpers.test.mjs`` checks the page's side of the same rule. Change one,
 change both.

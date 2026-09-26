@@ -37,13 +37,13 @@ src/alhazen/
 ├── modes/          # the six ways to start an experiment (docs/modes.md)
 ├── session/        # SessionRunner, build_session, DataRecorder, the pause menu,
 │                   #   eyetracker.py (the session's calibration/validation/drift
-│                   #   results and dashboard panels), check_rig; the runner's
+│                   #   results and live monitor panels), check_rig; the runner's
 │                   #   internal parts: streaks.py, reward_payer.py, pause_control.py
 ├── config/         # pydantic models (extra=forbid, frozen), YAML loader, snapshot writer
 ├── data/           # naming, SessionPaths, manifest, participants registry, percents
 │                   #   (a measured fraction written beside its threshold, §10.2),
 │                   #   atomic (replace a file whole)
-├── dashboard/      # isolated local HTTP process, panel statistics, and the browser page
+├── live_monitor/   # isolated local HTTP process, panel statistics, and the browser page
 ├── testing/        # PUBLIC fakes: FakeClock/FakeDisplay/FakeStimulus/Scripted*/EventCollector
 │                  # and SortedSpikePublisher, the sorter that lives outside this repo
 ├── _scaffold/      # the template `alhazen new` renders
@@ -52,10 +52,12 @@ src/alhazen/
 
 Layering is enforced by import-linter (pyproject `[tool.importlinter]`),
 top to bottom: `cli` → `modes` → `session | testing | analysis` → `training` →
-`task` → `dashboard` → `paradigms | devices` → `core | neural` →
+`task` → `dashboard` → `live_monitor` → `paradigms | devices` → `core | neural` →
 `stimuli | scenes` → `display` → `config | data | _scaffold` →
 `_deprecation`. Imports point only downward; `errors` and `version` sit
-outside the contract. `_deprecation`, the `@deprecated` decorator, is a single
+outside the contract. `dashboard` is the live monitor's pre-1.9 import path — a
+warning re-export that goes in 2.0 — with a line above `live_monitor` because it
+imports it. `_deprecation`, the `@deprecated` decorator, is a single
 module with a line of its own at the bottom, so that every layer may import it
 while it imports nothing else from alhazen. `neural` shares core's line so
 that both the device layer (live, during a session) and
@@ -74,7 +76,7 @@ own entry point in a child process. A loopback HTTP server serves the bundled
 `cli/assets/` interface, authenticated control requests, bounded log tails,
 and media with byte-range support. A workspace stores its project registry
 and unique run directories with parameter/rig snapshots and logs. No launcher
-HTTP or process bookkeeping enters the trial engine. The existing `dashboard/`
+HTTP or process bookkeeping enters the trial engine. The existing `live_monitor/`
 package remains the session monitor, with its own pause-only controls. See
 [Experiment workspace](workspace.md) for the launch and storage contracts.
 Parameter dropdowns read the task's Pydantic schema through an isolated
@@ -101,7 +103,7 @@ Three placements carry the weight:
   SDK, and an analysis can never quietly re-declare what the rig was doing
   (§7).
 
-The live dashboard is session infrastructure but runs in a separate spawned
+The live monitor is session infrastructure but runs in a separate spawned
 process. The runner publishes replaceable snapshots only between trials and
 receives browser commands only while paused, so a slow or closed browser
 cannot enter the frame loop or delay a flip.
@@ -456,11 +458,11 @@ retrieved recording is covered by it, and each as its own step, so one
 device's failure never prevents another's release. Only the run directory and
 the base name in that path are a promise; the suffix belongs to the backend
 (§4.7). A build that fails before there is a runner releases the same devices
-itself, by the same one-failure-never-blocks-another rule (§9, the dashboard's
+itself, by the same one-failure-never-blocks-another rule (§9, the live monitor's
 guard). A recording a backend cannot hand over is a failed step, never only a
 log line: an EyeLink whose link is down at teardown raises a `TrackerError`
 naming the EDF left on its Host PC, and the run is recorded as `failed` —
-in the database, in the saved dashboard and in `session.log`'s closing
+in the database, in the saved live monitor and in `session.log`'s closing
 `session end: FAILED in teardown` line. Both real backends release their
 device in a `finally`, whatever else failed.
 
@@ -556,8 +558,8 @@ because the two devices are not the same shape of thing.
 | Eyes | tracker reports which one; binocular ties break to left | always binocular; `eyetracker.eye` picks `left`/`right`/`average` |
 | Calibration | `doTrackerSetup()` runs it on the Host PC, after alhazen's guide screen | alhazen shows the guide, draws the target grid in the session window with a live "eyes:" line, and fits from it |
 | Calibration state | the Host PC's | read from the device at `configure()` and after each `calibrate()`; **the gaze report is a calibrated read**, NaN without one, so `get_gaze()` is gated on it, `gaze_status()` says whether it was the calibration or the eye that was missing (the raw eye vectors are read beside the calibrated positions to tell), and the runner pauses before trial 1 with that reason. The device keeps a calibration across runs; the log says so at `configure()` |
-| Validation, drift correction | `devices/eyetracker/procedures.py`, the same on both: generic over `get_gaze()`, results on the dashboard ([eye-tracker.md](eye-tracker.md)) | |
-| Camera image | on the Host PC's own screen | read through `camera_frame()` into the dashboard's *Eye tracker* group while paused |
+| Validation, drift correction | `devices/eyetracker/procedures.py`, the same on both: generic over `get_gaze()`, results on the live monitor ([eye-tracker.md](eye-tracker.md)) | |
+| Camera image | on the Host PC's own screen | read through `camera_frame()` into the live monitor's *Eye tracker* group while paused |
 | Messages | written into the EDF, which then carries its own alignment | written to a sidecar CSV stamped on **both** clocks, because nothing can be written into the sample stream |
 | Dropout detection | the newest link sample not replaced for `max_sample_gap_ms` (50 ms); `isRecording()` asked once it is, to say why | the gaze reader dead, or stalled past `max_sample_gap_ms` (100 ms); the reader asks the device every half limit whether free-run sampling still feeds the session's buffer |
 | Operator overlay | drawn on the Host PC's eye image | none — the only surface the device can draw on is the subject's screen |
@@ -930,7 +932,7 @@ and `rewarded` behave as on any paid trial. A task cannot get this by
 paying `DROPPED_FRAMES`: that would pay recycled wrong answers too.
 
 The same split holds elsewhere. What describes what the subject received
-or was told — feedback, its tone, the reward events and the dashboard's
+or was told — feedback, its tone, the reward events and the live monitor's
 reward panel built from them — follows the response. What decides the
 schedule and the data — re-serving, adaptive schedulers, `alhazen report`'s
 outcome counts — follows the recycle. The failure streak that pauses a
@@ -1067,7 +1069,7 @@ graph LR
   `engine.settle_rewards(ctx)`, which waits for the worker to go idle, *then*
   pays the outcome — so the end-of-trial pulse train never overlaps a drop.
 - **The manual reward overrides the queue.** The experimenter's reward — `r`
-  during a trial, R in the pause menu or the dashboard's button, all one hook
+  during a trial, R in the pause menu or the live monitor's button, all one hook
   that the builder's `make_manual_reward` routes to
   `QueuedReward.deliver_manual` — replaces whatever drops are waiting. Every
   drop still queued is cancelled: taken out of the queue and never
@@ -1120,7 +1122,7 @@ graph LR
   queue. All three are stamped when drained — within a frame of the pump
   finishing, or, while a manual reward holds the frame, just before its
   REWARD — and carry the same `frame` as the REWARD they complete. The
-  dashboard's reward panel counts a drop at its `REWARD_DELIVERED`, not at
+  live monitor's reward panel counts a drop at its `REWARD_DELIVERED`, not at
   its REWARD, so a cancelled drop is never counted as juice.
 - **Accounting.** A task that declares `mid_trial_reward` writes
   `n_mid_trial_rewards` (delivered), `n_mid_trial_reward_failures` and
@@ -1232,7 +1234,7 @@ Two composition rules fall out of blocks and are worth stating:
 ### 5.5 Live analysis (`task/live.py`)
 
 Some tasks need computation that watches the session as it runs and could
-never fit a dashboard panel's trial-record columns — a receptive-field map
+never fit a live monitor panel's trial-record columns — a receptive-field map
 accumulating over a spike stream, a running PSTH. The seam is one optional
 hook, `Task.live_analysis(wiring)`, returning a `LiveAnalysis`, with three
 rules that keep it safe:
@@ -1244,13 +1246,13 @@ rules that keep it safe:
 - **never inside the frame loop**: the optional `on_event` bus subscriber
   may only take notes; the work happens in `on_trial`, which the runner
   calls between trials, after the scored row is written and before the
-  dashboard publish — so the panels in that publish already include the
+  live monitor publish — so the panels in that publish already include the
   trial;
 - **`finish(run_dir)` runs in teardown before the manifest is written**
   (and before the spike source closes, so it can drain one last time), so
   whatever it saves is hashed with everything else the run produced.
 
-Its `panels()` return finished payloads in the dashboard's own wire shapes
+Its `panels()` return finished payloads in the live monitor's own wire shapes
 (§9), appended after the spec's panels under their own sidebar section.
 The worked example is the
 [rf-mapping](https://github.com/sh4r11f/rf-mapping) experiment, whose
@@ -1658,7 +1660,7 @@ polygon winding, centred strokes, arc-length dashes, replacing (not
 multiplying) layer opacity, and the dot field's stream-per-dot seeding and
 index-ordered signal set — are enumerated in [`scenes.md`](scenes.md).
 
-## 9. The database and the live dashboard
+## 9. The database and the live monitor
 
 Both are *mirrors*: the run directory stays the record, and neither is
 allowed to become one.
@@ -1671,9 +1673,9 @@ rather than `data/` because it speaks a session's whole vocabulary —
 which is pure disk and knows nothing about trials. Schema, run-id shape and
 size policy: [`database.md`](database.md).
 
-**`dashboard/`** runs a small HTTP server in a **child process** and pushes a
+**`live_monitor/`** runs a small HTTP server in a **child process** and pushes a
 snapshot between trials. Three properties constrain the runner, and the rest
-of the page is described in [`dashboard.md`](dashboard.md):
+of the page is described in [`live_monitor.md`](live_monitor.md):
 
 - **It never blocks a session.** The queue holds one unread snapshot; a slow
   or closed browser loses updates rather than stalling a trial.
@@ -1682,7 +1684,7 @@ of the page is described in [`dashboard.md`](dashboard.md):
   the disabled buttons on the page. On entering a pause the runner discards
   whatever is already queued, so a command accepted just before a resume
   cannot fire at the *next* pause.
-- **The browser draws; it does not analyse.** `dashboard/panels.py` computes
+- **The browser draws; it does not analyse.** `live_monitor/panels.py` computes
   every mark in Python, over the whole session and thinned to a bounded
   number of points — so each snapshot costs the same on trial 4000 as on
   trial 40, and no statistic lives in page JavaScript. A live
@@ -1768,22 +1770,22 @@ every backend precisely so a backend cannot quietly reach for
    abandons that step only: the rest still run, the run is recorded as
    `failed`, and the `KeyboardInterrupt` is raised at the end; a second
    Ctrl-C abandons the rest of teardown, so one hung on a device can still be
-   escaped. The dashboard's final state is built while the devices are held
+   escaped. The live monitor's final state is built while the devices are held
    and saved once they are released, so a step that fails in between (a
    tracker whose shutdown cannot retrieve its recording) is in the saved
    status as it is in the database's: `failed`. It runs however the
    session ends, including in a step before the loop — attaching
-   `session.log`, registering the subject, the first dashboard publish —
+   `session.log`, registering the subject, the first live monitor publish —
    because by then the builder has opened the window, connected the tracker
-   and started the reward, sync and spike devices and the dashboard's child
+   and started the reward, sync and spike devices and the live monitor's child
    process. A session whose snapshot could not be written never started: a
    run directory without one is not an analysable run, so teardown releases
    every device (the tracker without a destination for its recording) and
-   writes nothing into it — no data files, manifest, saved dashboard,
+   writes nothing into it — no data files, manifest, saved live monitor,
    database row or training state.
 
 The runner itself keeps the trial loop and the session's lifecycle (setup,
-dashboard publishing, the session log's structure, teardown). Three
+live monitor publishing, the session log's structure, teardown). Three
 decisions it used to hold in shared fields and long methods live in
 module-private collaborators it builds from its own constructor arguments,
 so the constructor `build_session` calls is unchanged:
@@ -1796,13 +1798,13 @@ so the constructor `build_session` calls is unchanged:
   delivery at the end of a trial, and the words a fault trial's log line uses
   for what was paid. The runner rebinds its `policy` on every stage change.
 - `session/pause_control.py` — `PauseController`, every pause from raised to
-  resumed or quit: the unattended, keyboard and dashboard loops, a rest that
+  resumed or quit: the unattended, keyboard and live monitor loops, a rest that
   resumes by itself, the menu's procedures, manual reward and stage keys, and
   the RESUMED event.
 
 ```mermaid
 flowchart LR
-    RUN["SessionRunner<br/>trial loop · lifecycle · dashboard · session log · teardown"]
+    RUN["SessionRunner<br/>trial loop · lifecycle · live monitor · session log · teardown"]
     RUN -->|"count_failure / count_dropout<br/>(outcome, fault, row)"| SM["StreakMonitor<br/>pure decisions"]
     SM -->|"FailureStreak / DropoutStreak<br/>(heading) or None"| RUN
     RUN -->|"deliver(ctx, outcome, fault)"| RP["RewardPayer<br/>pay rule + delivery"]

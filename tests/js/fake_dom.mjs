@@ -1,6 +1,6 @@
-/* A fake browser page, just big enough to run the dashboard's renderer.
+/* A fake browser page, just big enough to run the live monitor's renderer.
  *
- * dashboard.js is a classic browser script: it builds SVG and HTML with
+ * live_monitor.js is a classic browser script: it builds SVG and HTML with
  * document.createElement(NS), finds its own nodes again with a handful of
  * simple selectors, measures text on a canvas and paints camera frames into
  * one. This file stands in for exactly those DOM APIs and nothing more, so the
@@ -8,7 +8,7 @@
  *
  * It is strict where being lenient would hide a bug: a selector it cannot
  * parse throws instead of matching nothing, and a canvas asked for anything
- * but a 2D context throws. A future change to dashboard.js that needs more of
+ * but a 2D context throws. A future change to live_monitor.js that needs more of
  * the DOM then fails here, by name, rather than letting a test pass against an
  * empty result. Extend the fake when that happens; do not loosen it.
  *
@@ -26,7 +26,7 @@ export const CHAR_WIDTH_PX = 6;
 
 /* One compound selector: an optional tag (or `*`) followed by any number of
  * `.class`, `[attr]` and `[attr="value"]` parts. That is every selector
- * dashboard.js uses; descendant combinators, pseudo-classes and lists are
+ * live_monitor.js uses; descendant combinators, pseudo-classes and lists are
  * refused below rather than half-supported. */
 const SELECTOR = /^([a-zA-Z][\w-]*|\*)?((?:\.[\w-]+|\[[\w-]+(?:="[^"]*"|='[^']*')?\])*)$/;
 const ATTRIBUTE_PART = /\[([\w-]+)(?:="([^"]*)"|='([^']*)')?\]/g;
@@ -45,7 +45,7 @@ export function compileSelector(selector) {
     throw new Error(
       'the fake DOM cannot match the selector ' + JSON.stringify(selector) +
       ': it understands one compound selector (tag, .class, [attr], [attr="value"]).' +
-      ' Extend tests/js/fake_dom.mjs if dashboard.js now needs more.',
+      ' Extend tests/js/fake_dom.mjs if live_monitor.js now needs more.',
     );
   }
   const tag = match[1] && match[1] !== '*' ? match[1].toLowerCase() : null;
@@ -150,7 +150,7 @@ export class FakeElement {
     this.namespaceURI = namespaceURI;
     this.localName = localName;
     /* A browser reports HTML tag names in capitals and SVG ones as written
-     * (`linearGradient`, `text`); dashboard.js compares the SVG ones. */
+     * (`linearGradient`, `text`); live_monitor.js compares the SVG ones. */
     this.tagName = namespaceURI === SVG_NS ? localName : localName.toUpperCase();
     this.attributes = new Map();
     this.children = [];

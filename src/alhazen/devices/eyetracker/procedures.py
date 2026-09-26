@@ -9,7 +9,7 @@ does about a small error:
   measures where the tracker says the subject is looking while they fixate
   each. The per-target error, in degrees of visual angle, is the number that
   decides whether today's fixation window is generous or impossible — and it
-  is reported on the dashboard, not just in the log.
+  is reported on the live monitor, not just in the log.
 - **Drift correction** shows one target at the screen centre, measures the
   offset between it and the reported gaze, and applies that offset to every
   gaze position from then on (:class:`GazeCorrection`, which the session's

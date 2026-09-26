@@ -27,6 +27,7 @@ from typing import Any
 import numpy as np
 from pydantic import BaseModel
 
+from alhazen._deprecation import warn_deprecated_argument, warn_deprecated_name
 from alhazen.config.gamma import gamma_path, load_gamma
 from alhazen.config.loader import build_session_config, load_rig
 from alhazen.config.models import (
@@ -44,8 +45,6 @@ from alhazen.core.engine import TrialEngine
 from alhazen.core.events import EventBus, EventSchema
 from alhazen.core.rng import resolve_seed, spawn_streams
 from alhazen.core.trial import FAULT_TRACKER_STOPPED, HealthFault, InputFrame, TrialContext
-from alhazen.dashboard.runtime import DashboardController
-from alhazen.dashboard.spec import DashboardSpec
 from alhazen.data.paths import SessionPaths
 from alhazen.devices.eyetracker import EyeTracker, TrackerMessageSubscriber, make_tracker
 from alhazen.devices.eyetracker.messages import MessageMap
@@ -61,6 +60,8 @@ from alhazen.display.psychopy_backend import PsychoPyDisplay
 from alhazen.display.screen import Screen
 from alhazen.display.simulated import SimulatedDisplay
 from alhazen.errors import ConfigError
+from alhazen.live_monitor.runtime import LiveMonitorController
+from alhazen.live_monitor.spec import LiveMonitorSpec
 from alhazen.paradigms.base import TrialSource
 from alhazen.session.database import ExperimentDatabase, FrameInputBuffer
 from alhazen.session.eyetracker import EyeTrackerMonitor
@@ -186,7 +187,7 @@ def make_manual_reward(
     reward: RewardDispenser | None, pulses: RewardPulses
 ) -> Callable[[], None] | None:
     """The experimenter's manual reward: the hook behind the ``r`` key during
-    a trial and R in the pause menu (keyboard or dashboard). None when the
+    a trial and R in the pause menu (keyboard or live monitor). None when the
     rig has no dispenser.
 
     Through a ``QueuedReward`` — a task that asks for reward mid-trial — it
@@ -236,7 +237,7 @@ def _release_on_abort(what: str, release: Callable[..., object], *args: object) 
     The build's own error is already propagating when this runs, and it is
     the one that says what went wrong. A release that raised would replace
     it: ExitStack chains the two, but the one a caller catches and the CLI
-    reports would be the release's. An unguarded ``dashboard.stop()`` did
+    reports would be the release's. An unguarded ``live_monitor.stop()`` did
     exactly that. ExitStack runs every later release either way; catching
     here is what keeps the build's error on top. Logged with its traceback,
     so the failed release is not lost either.
@@ -245,6 +246,22 @@ def _release_on_abort(what: str, release: Callable[..., object], *args: object) 
         release(*args)
     except Exception:
         log.exception("could not %s while aborting the build", what)
+
+
+def task_live_monitor(task: Task) -> LiveMonitorSpec | None:
+    """The panels a task declares for the live monitor: ``Task.live_monitor``,
+    or the pre-1.9 ``Task.dashboard`` with a DeprecationWarning. A task that
+    sets both is refused rather than having one of them silently ignored."""
+    if task.dashboard is None:
+        return task.live_monitor
+    warn_deprecated_name(
+        f"{type(task).__name__}.dashboard", since="1.9", removed_in="2.0", instead="live_monitor"
+    )
+    if task.live_monitor is not None:
+        raise ValueError(
+            f"{type(task).__name__} declares both live_monitor and dashboard; keep live_monitor"
+        )
+    return task.dashboard
 
 
 def build_session(
@@ -279,6 +296,8 @@ def build_session(
     date_yyyymmdd: str | None = None,
     instructions: str | None = None,
     auto_start: bool = False,
+    live_monitor: bool | None = None,
+    open_live_monitor: bool | None = None,
     dashboard: bool | None = None,
     open_dashboard: bool | None = None,
 ) -> SessionRunner:
@@ -322,18 +341,37 @@ def build_session(
     real one's flips do not move it, and every timed phase would run forever,
     so that pairing is refused before a run directory is created.
     """
+    # `dashboard=` and `open_dashboard=` were these two arguments' names
+    # before 1.9. Translated first, so everything below knows one spelling;
+    # both spellings at once is refused, since the call cannot mean two
+    # things. Inline rather than through a helper: the warning's stacklevel
+    # is set to reach the caller of *this* function.
+    if dashboard is not None:
+        warn_deprecated_argument("dashboard", since="1.9", removed_in="2.0", instead="live_monitor")
+        if live_monitor is not None:
+            raise ValueError("pass live_monitor=, not both live_monitor= and dashboard=")
+        live_monitor = dashboard
+    if open_dashboard is not None:
+        warn_deprecated_argument(
+            "open_dashboard", since="1.9", removed_in="2.0", instead="open_live_monitor"
+        )
+        if open_live_monitor is not None:
+            raise ValueError(
+                "pass open_live_monitor=, not both open_live_monitor= and open_dashboard="
+            )
+        open_live_monitor = open_dashboard
     rig_cfg = rig if isinstance(rig, RigConfig) else load_rig(rig)
-    if dashboard is not None or open_dashboard is not None:
-        dashboard_cfg = rig_cfg.dashboard.model_copy(
+    if live_monitor is not None or open_live_monitor is not None:
+        live_monitor_cfg = rig_cfg.live_monitor.model_copy(
             update={
-                **({"enabled": dashboard} if dashboard is not None else {}),
-                **({"auto_open": open_dashboard} if open_dashboard is not None else {}),
+                **({"enabled": live_monitor} if live_monitor is not None else {}),
+                **({"auto_open": open_live_monitor} if open_live_monitor is not None else {}),
             }
         )
-        rig_cfg = rig_cfg.model_copy(update={"dashboard": dashboard_cfg})
+        rig_cfg = rig_cfg.model_copy(update={"live_monitor": live_monitor_cfg})
 
     reward_policy = None
-    dashboard_spec = DashboardSpec()
+    live_monitor_spec = LiveMonitorSpec()
     training: TrainingSupervisor | None = None
     if task is not None:
         task_name = task_name if task_name is not None else task.name
@@ -343,7 +381,7 @@ def build_session(
         make_source = make_source if make_source is not None else task.make_source
         score = score if score is not None else task.score
         reward_policy = task.reward
-        dashboard_spec = task.dashboard or DashboardSpec()
+        live_monitor_spec = task_live_monitor(task) or LiveMonitorSpec()
     mid_trial_reward = task.mid_trial_reward if task is not None else False
     missing = [
         name
@@ -448,7 +486,7 @@ def build_session(
 
     # Everything from here to the end of the build runs inside this guard, and
     # each thing the build acquires registers its release on `on_failure` as
-    # soon as it is held: the dashboard's CHILD PROCESS, the window, the
+    # soon as it is held: the live monitor's CHILD PROCESS, the window, the
     # tracker's link, the sync lines' NI-DAQ tasks, the reward dispenser and
     # any worker thread wrapped around it, the spike source's connection. A
     # tracker that will not connect, a refresh rate that disagrees with the
@@ -463,20 +501,22 @@ def build_session(
     # succeeds drops them unrun (`pop_all` at the end): from then on the
     # runner's teardown owns every one.
     with ExitStack() as on_failure:
-        dashboard_controller = (
-            DashboardController(port=rig_cfg.dashboard.port, auto_open=rig_cfg.dashboard.auto_open)
-            if rig_cfg.dashboard.enabled
+        live_monitor_controller = (
+            LiveMonitorController(
+                port=rig_cfg.live_monitor.port, auto_open=rig_cfg.live_monitor.auto_open
+            )
+            if rig_cfg.live_monitor.enabled
             else None
         )
-        if dashboard_controller is not None:
+        if live_monitor_controller is not None:
             # Registered before start(), which spawns the child: stop() does
             # nothing to a controller whose child never started, and a start()
             # that spawned it and then failed is covered without relying on
             # start() to clean up after itself.
             on_failure.callback(
-                _release_on_abort, "stop the dashboard server", dashboard_controller.stop
+                _release_on_abort, "stop the live monitor server", live_monitor_controller.stop
             )
-            dashboard_controller.start()
+            live_monitor_controller.start()
 
         display: DisplayBackend
         commands: CommandSource
@@ -543,7 +583,7 @@ def build_session(
         # makes itself is made HERE, after the window is up and its refresh
         # measured, as it always was: MonotonicClock zeroes at construction,
         # so session times still start near zero at the first trial rather
-        # than counting the seconds a window and a dashboard took to open.
+        # than counting the seconds a window and a live monitor took to open.
         clock = clock if clock is not None else MonotonicClock()
 
         # Config that names events can only be checked against the *experiment's*
@@ -642,7 +682,7 @@ def build_session(
             tracker.configure(screen, clock)
             # Calibration is deliberately NOT automatic. It blocks on an
             # experimenter at the rig, so it stays an explicit action — the
-            # calibrate key, the pause menu, or the dashboard — run through
+            # calibrate key, the pause menu, or the live monitor — run through
             # the session's monitor, which also validates, drift-corrects and
             # shows the results. A caller-supplied tracker with no config of
             # its own gets the procedures' defaults. The procedures read their
@@ -713,7 +753,7 @@ def build_session(
         # Exactly the argument `SimulatedDisplay.measure_refresh_rate` makes
         # for reporting its paced rate rather than a stopwatch's
         # (display/simulated.py). The intervals are still recorded, and still
-        # reach frames.csv and the dashboard's timing panel: the policy that
+        # reach frames.csv and the live monitor's timing panel: the policy that
         # records and does not act is `log`.
         frame_qa = rig_cfg.display.frame_qa
         if display.kind == "simulated" and frame_qa.policy != "log":
@@ -849,8 +889,8 @@ def build_session(
                 else instructions
             ),
             await_start=_start_gate(instructions, display.kind, auto_start),
-            dashboard=dashboard_controller,
-            dashboard_spec=dashboard_spec,
+            live_monitor=live_monitor_controller,
+            live_monitor_spec=live_monitor_spec,
             manual_reward=on_manual_reward,
             manual_reward_payload={"pulses": manual_pulses.model_dump(mode="json")},
             spikes=spikes,

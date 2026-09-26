@@ -26,7 +26,7 @@ Contract, in order:
    A Ctrl-C abandons only the step it lands in (a second one abandons the
    rest), and is raised when teardown is done. A step that fails makes the
    run "failed" everywhere it is recorded: the database, the saved
-   dashboard, and a closing "session end: FAILED in teardown" line.
+   live monitor, and a closing "session end: FAILED in teardown" line.
 
 This module keeps the loop and the lifecycle. Three decisions the loop
 consults live beside it, built by the runner from its own arguments: when a
@@ -62,9 +62,6 @@ from alhazen.core.trial import (
     Outcome,
     TrialContext,
 )
-from alhazen.dashboard.panels import frame_intervals_panel
-from alhazen.dashboard.runtime import DashboardController, dashboard_state
-from alhazen.dashboard.spec import DashboardSpec
 from alhazen.data.manifest import write_manifest
 from alhazen.data.participants import ensure_participant
 from alhazen.data.paths import SessionPaths
@@ -77,6 +74,9 @@ from alhazen.devices.sync import SyncOutput
 from alhazen.display.backend import DisplayBackend
 from alhazen.display.frames import FrameMonitor
 from alhazen.display.screen import Screen
+from alhazen.live_monitor.panels import frame_intervals_panel
+from alhazen.live_monitor.runtime import LiveMonitorController, live_monitor_state
+from alhazen.live_monitor.spec import LiveMonitorSpec
 from alhazen.paradigms.base import Condition, TrialSource
 from alhazen.session.database import ExperimentDatabase, FrameInputBuffer
 from alhazen.session.eyetracker import PROCEDURE_STATUS, EyeTrackerMonitor
@@ -128,7 +128,7 @@ def host_overlay_shapes(screen: Screen, regions: dict[str, CircleRegion]) -> lis
     return shapes
 
 
-# The statuses during which a camera frame is read for the dashboard: when
+# The statuses during which a camera frame is read for the live monitor: when
 # the device is not busy with a trial and somebody is looking at the image.
 CAMERA_STATUSES = frozenset({"paused", PROCEDURE_STATUS})
 
@@ -175,8 +175,8 @@ class SessionRunner:
         await_start: Callable[[], bool] | None = None,
         database: ExperimentDatabase | None = None,
         frame_inputs: FrameInputBuffer | None = None,
-        dashboard: DashboardController | None = None,
-        dashboard_spec: DashboardSpec | None = None,
+        live_monitor: LiveMonitorController | None = None,
+        live_monitor_spec: LiveMonitorSpec | None = None,
         manual_reward: Callable[[], None] | None = None,
         manual_reward_payload: dict[str, Any] | None = None,
         spikes: SpikeSource | None = None,
@@ -241,11 +241,11 @@ class SessionRunner:
         self._score = score
         # The tracker's procedures and their results (session/eyetracker.py).
         # It reports through the runner: its progress lines go out as
-        # dashboard publishes, and its results as session events, both of
+        # live monitor publishes, and its results as session events, both of
         # which are the runner's to send.
         self._eyetracker = eyetracker
         if eyetracker is not None:
-            eyetracker.publisher = self._publish_dashboard
+            eyetracker.publisher = self._publish_live_monitor
             eyetracker.emit = self._emit_session_event
         self._wait = wait if wait is not None else time.sleep
         # Devices are owned here, not by the engine: the engine sees only the
@@ -269,8 +269,8 @@ class SessionRunner:
         self._await_start = await_start
         self._database = database
         self._frame_inputs = frame_inputs or FrameInputBuffer()
-        self._dashboard = dashboard
-        self._dashboard_spec = dashboard_spec or DashboardSpec()
+        self._live_monitor = live_monitor
+        self._live_monitor_spec = live_monitor_spec or LiveMonitorSpec()
         # The live spike stream and the analysis consuming it. The runner
         # owns their *lifecycle* only — the analysis is driven between
         # trials, and both are released in teardown — exactly as it owns the
@@ -287,7 +287,7 @@ class SessionRunner:
         self._manual_reward_payload = dict(manual_reward_payload or {})
         # The pause screen, from the moment a pause is raised until the
         # experimenter resumes or quits (session/pause_control.py): the
-        # keyboard loop and the dashboard loop, the menu's procedures, the
+        # keyboard loop and the live monitor loop, the menu's procedures, the
         # manual reward and the stage keys, and the RESUMED event. It acts
         # on the session through the runner's own publisher, emitter and
         # stage-command handler.
@@ -299,17 +299,17 @@ class SessionRunner:
             on_pause=on_pause,
             rest_resume_after_s=rest_resume_after_s,
             eyetracker=eyetracker,
-            dashboard=dashboard,
+            live_monitor=live_monitor,
             has_training=training is not None,
             manual_reward=manual_reward,
             manual_reward_payload=self._manual_reward_payload,
-            publish=self._publish_dashboard,
-            last_message=lambda: self._dashboard_message,
+            publish=self._publish_live_monitor,
+            last_message=lambda: self._live_monitor_message,
             emit_session_event=self._emit_session_event,
             on_session_command=self.on_session_command,
         )
-        self._dashboard_revision = 0
-        self._dashboard_message: str | None = None
+        self._live_monitor_revision = 0
+        self._live_monitor_message: str | None = None
         # A session cancelled at the instructions screen flows through the
         # same teardown a finished one does, so without this the mirror
         # recorded status="complete" for a run with zero trials —
@@ -326,22 +326,22 @@ class SessionRunner:
     # ------------------------------------------------------------------
 
     @property
-    def dashboard_url(self) -> str | None:
-        """Where the live dashboard is being served, or None when this session
+    def live_monitor_url(self) -> str | None:
+        """Where the live monitor is being served, or None when this session
         has none. Known from the build (the controller starts its server
         before the runner exists), so a caller can print it before trial one
         — the CLI does, and the experiment workspace reads that line to embed
         the page. Read-only: the session, not its caller, owns the server."""
-        return self._dashboard.url if self._dashboard is not None else None
+        return self._live_monitor.url if self._live_monitor is not None else None
 
     def run(self) -> None:
         # How far the start got, for the teardown in the finally below. Every
         # setup step runs inside that try, not before it: by the time run() is
         # called the builder has opened the window, the reward and sync
         # devices, connected the tracker and the spike stream, and started the
-        # dashboard's child process. A setup step that failed before the try —
+        # live monitor's child process. A setup step that failed before the try —
         # a session.log that could not be opened, a participants.tsv another
-        # program held, a dashboard publish that raised — left every one of
+        # program held, a live monitor publish that raised — left every one of
         # them held, and no "session end" line anywhere.
         snapshot_written = False
         file_handler: logging.FileHandler | None = None
@@ -369,18 +369,18 @@ class SessionRunner:
             log.info("devices: %s", self._devices_line())
             for note in self.setup_notes:
                 log.info("setup: %s", note)
-            if self._dashboard is not None:
-                log.info("live dashboard: %s", self._dashboard.url)
+            if self._live_monitor is not None:
+                log.info("live monitor: %s", self._live_monitor.url)
                 if self._eyetracker is not None:
                     # Camera frames stream to the page on their own channel
                     # while the session is paused or a procedure runs. Wired
-                    # here, once the dashboard is known to be open, so a
+                    # here, once the live monitor is known to be open, so a
                     # session without one never reads a frame nobody will see.
                     self._eyetracker.camera_sink = self._send_camera_frame
                     # And the tracker settings the page sends (the iris size),
                     # applied between frames, even while a procedure runs.
                     self._eyetracker.settings_source = self._poll_tracker_settings
-            self._publish_dashboard("running")
+            self._publish_live_monitor("running")
 
             if self._instructions:
                 self._display.show_message(self._instructions)
@@ -410,7 +410,7 @@ class SessionRunner:
                 attempt = self._attempt_counts[condition.key()]
                 # The factors this experiment actually varies, learned from
                 # the conditions served rather than declared in advance. The
-                # dashboard colours and groups its plots by them, so a task
+                # live monitor colours and groups its plots by them, so a task
                 # gets condition-aware monitoring without saying anything.
                 for name in condition.params:
                     if name not in self._condition_fields:
@@ -499,12 +499,12 @@ class SessionRunner:
                         record = self._score(record)
                     self._recorder.add_trial(record)
                     # The live analysis runs between trials, after the row is
-                    # written and before the dashboard publish — so the
+                    # written and before the live monitor publish — so the
                     # panels it contributes to that publish already include
                     # this trial. It sees the SCORED record, like training.
                     if self._live is not None:
                         self._live.on_trial(record)
-                    self._publish_dashboard("running")
+                    self._publish_live_monitor("running")
 
                 # Training hears about the trial after the row is written,
                 # and moves the subject only here — between trials, never
@@ -872,7 +872,7 @@ class SessionRunner:
             return True
         log.warning(
             "the eye tracker reports NO calibration before trial 1; pausing until one is "
-            "done (C on the pause screen, or the dashboard's Calibrate button)"
+            "done (C on the pause screen, or the live monitor's Calibrate button)"
         )
         return self._pauses.handle({}, fault="TRACKER NOT CALIBRATED — press C to calibrate")
 
@@ -884,21 +884,21 @@ class SessionRunner:
         self._tracker.start_trial(ctx.trial_index, f"attempt {attempt}")
         self._tracker.draw_host_overlay(host_overlay_shapes(self._screen, ctx.regions))
 
-    def _publish_dashboard(
+    def _publish_live_monitor(
         self, status: str, message: str | None = None, full: bool = False
     ) -> dict[str, Any]:
         """Push one snapshot to the browser.
 
         Between trials the snapshot carries only the most recent
-        ``dashboard.max_rows`` trials and events. Sending the whole history
+        ``live_monitor.max_rows`` trials and events. Sending the whole history
         after every trial makes publishing cost grow with the square of the
         session's length, and a long session spends that time between trials
         where a subject is waiting. ``full=True`` — used once, at teardown —
         builds the complete state that gets written to disk.
         """
-        if self._dashboard is None:
+        if self._live_monitor is None:
             return {}
-        self._dashboard_revision += 1
+        self._live_monitor_revision += 1
         # The panels no trial record produces: the live analysis's, then the
         # eye tracker's. A camera frame is read only while the device is
         # between trials and somebody is looking (paused, or a procedure
@@ -910,8 +910,8 @@ class SessionRunner:
             extra_panels += self._eyetracker.panels(
                 camera=status in CAMERA_STATUSES and not full, image=not full
             )
-        state = dashboard_state(
-            revision=self._dashboard_revision,
+        state = live_monitor_state(
+            revision=self._live_monitor_revision,
             status=status,
             identity={
                 "subject": self._cfg.info.subject,
@@ -921,25 +921,25 @@ class SessionRunner:
             },
             trials=self._recorder.trials,
             events=self._recorder.events,
-            spec=self._dashboard_spec,
+            spec=self._live_monitor_spec,
             condition_fields=self._condition_fields,
             training=self._training.stamp() if self._training is not None else None,
             message=message,
-            max_rows=None if full else self._cfg.rig.dashboard.max_rows,
+            max_rows=None if full else self._cfg.rig.live_monitor.max_rows,
             extra_panels=extra_panels,
         )
-        self._dashboard_message = message
-        self._dashboard.publish(state)
+        self._live_monitor_message = message
+        self._live_monitor.publish(state)
         return state
 
     def _poll_tracker_settings(self) -> list[tuple[str, object]]:
         """The tracker settings the page sent, for the monitor to apply."""
-        return self._dashboard.poll_settings() if self._dashboard is not None else []
+        return self._live_monitor.poll_settings() if self._live_monitor is not None else []
 
     def _send_camera_frame(self, frame: CameraFrame) -> None:
-        """The monitor's streamed camera frames, onto the dashboard's camera channel."""
-        if self._dashboard is not None:
-            self._dashboard.publish_camera(frame.pixels, frame.t)
+        """The monitor's streamed camera frames, onto the live monitor's camera channel."""
+        if self._live_monitor is not None:
+            self._live_monitor.publish_camera(frame.pixels, frame.t)
 
     def _frame_timing_panel(self) -> dict[str, Any]:
         """The frame-interval histogram, from the monitor's own record: the
@@ -983,7 +983,7 @@ class SessionRunner:
         config snapshot, the first file a run writes. Nothing then says what
         the run directory was for and `load_run` cannot read it, so it is not
         a run: every device is still released, but nothing is written into it
-        — no data files, no manifest, no saved dashboard, no database row, and
+        — no data files, no manifest, no saved live monitor, no database row, and
         the tracker is not handed a destination for its recording, which
         holds no trial. A curriculum hands its task back, but the subject's
         training state is not saved for a session that never started. The
@@ -1001,7 +1001,7 @@ class SessionRunner:
         # step. At most one: a second one abandons teardown on the spot.
         interrupts: list[BaseException] = []
         # Every step that did not finish, named with what stopped it, for the
-        # session log's corrected verdict and the dashboard's final notice.
+        # session log's corrected verdict and the live monitor's final notice.
         failed_steps: list[str] = []
 
         def step(name: str, fn: Callable[[], object]) -> None:
@@ -1013,7 +1013,7 @@ class SessionRunner:
                 failed_steps.append(f"{name} ({type(e).__name__}: {e})")
             except BaseException as e:
                 # A Ctrl-C, most likely, landing in a slow step (an EDF
-                # transfer, the dashboard child's 2 s join). Left uncaught, it
+                # transfer, the live monitor child's 2 s join). Left uncaught, it
                 # used to abort every step after this one: session.log left
                 # unclosed, no manifest, no database row, the window open. So
                 # the first one abandons only this step, and is raised once
@@ -1080,22 +1080,22 @@ class SessionRunner:
             step("training.restore_base", training.restore_base)
         record_step("paradigm.summary", self._write_paradigm_summary)
         record_step("frames.save", lambda: self._frame_monitor.save(self._paths.frames_path))
-        # The live analysis finishes BEFORE the final dashboard publish (so
-        # the saved dashboard shows the flushed, final maps), before the
+        # The live analysis finishes BEFORE the final live monitor publish (so
+        # the saved live monitor shows the flushed, final maps), before the
         # spike source closes (finishing drains it one last time), and
         # before the manifest is written (so what it saves is hashed).
         if self._live is not None:
             live = self._live
             record_step("live.finish", lambda: live.finish(self._paths.run_dir))
         final_state: dict[str, Any] = {}
-        if self._dashboard is not None:
+        if self._live_monitor is not None:
             terminal = self._terminal_status(teardown_failed=bool(failed_steps))
 
             def publish_final() -> None:
                 # Complete state, not the capped one: what lands in figures/
                 # is the record of the session, and it is written once.
                 final_state.update(
-                    self._publish_dashboard(terminal, f"Session {terminal}.", full=True)
+                    self._publish_live_monitor(terminal, f"Session {terminal}.", full=True)
                 )
 
             # A step, not a bare call: building the final state asks the live
@@ -1104,7 +1104,7 @@ class SessionRunner:
             # skipped every step below it — the tracker's recording, the
             # manifest, closing the window. Built here, while every device is
             # still held; saved once they are released (below).
-            record_step("dashboard.publish", publish_final)
+            record_step("live_monitor.publish", publish_final)
         # Devices release BEFORE the manifest is written: the tracker's
         # recording is retrieved into this run's directory during shutdown,
         # and a manifest written first would not cover the very file the
@@ -1128,26 +1128,26 @@ class SessionRunner:
             step("sync.close", sync.close)
         if reward is not None:
             step("reward.close", reward.close)
-        if self._dashboard is not None:
-            dashboard = self._dashboard
+        if self._live_monitor is not None:
+            live_monitor = self._live_monitor
             # Saved after the devices are released, not when the state was
             # built: a tracker that fails only at teardown (an EyeLink whose
             # link died after the last trial, and its EDF with it) fails the
-            # run, and a dashboard saved before that shutdown said "complete"
+            # run, and a live monitor saved before that shutdown said "complete"
             # for a run the database records as failed. Saved only when the
             # final state was built. When it was not, that failure is already
             # logged and collected, and an earlier, capped state saved in its
             # place would pose as the session's record.
             if final_state:
                 record_step(
-                    "dashboard.save",
-                    lambda: self._save_final_dashboard(dashboard, final_state, failed_steps),
+                    "live_monitor.save",
+                    lambda: self._save_final_live_monitor(live_monitor, final_state, failed_steps),
                 )
-            step("dashboard.stop", dashboard.stop)
+            step("live_monitor.stop", live_monitor.stop)
         # The session log's last word on the run, before it closes. The
         # "session end:" line at the top of teardown said how the session
         # ended; if a step has failed since, the run is "failed" in the
-        # database and the saved dashboard, and the log must not be the one
+        # database and the saved live monitor, and the log must not be the one
         # record still saying "complete". A second line rather than a later
         # first one: the first is written before anything can fail, which is
         # its point. The steps after this one (closing the log, the manifest,
@@ -1200,10 +1200,10 @@ class SessionRunner:
             if errors:
                 raise errors[0]
 
-    def _save_final_dashboard(
-        self, dashboard: DashboardController, state: dict[str, Any], failed_steps: list[str]
+    def _save_final_live_monitor(
+        self, live_monitor: LiveMonitorController, state: dict[str, Any], failed_steps: list[str]
     ) -> None:
-        """Save the final dashboard state as the run finally ended.
+        """Save the final live monitor state as the run finally ended.
 
         ``state`` was built before the devices were released, with the status
         known then. When a step has failed since, the run is "failed": the
@@ -1212,18 +1212,18 @@ class SessionRunner:
         """
         status = self._terminal_status(teardown_failed=bool(failed_steps))
         if status != state.get("status"):
-            self._dashboard_revision += 1
+            self._live_monitor_revision += 1
             message = f"Session {status} — teardown step(s) did not finish: " + "; ".join(
                 failed_steps
             )
-            state.update(revision=self._dashboard_revision, status=status, message=message)
-            self._dashboard_message = message
-            dashboard.publish(state)
-        dashboard.save(self._paths.figures_dir, state)
+            state.update(revision=self._live_monitor_revision, status=status, message=message)
+            self._live_monitor_message = message
+            live_monitor.publish(state)
+        live_monitor.save(self._paths.figures_dir, state)
 
     def _terminal_status(self, *, teardown_failed: bool) -> str:
         """How this session ended, in one word, for the mirror, the saved
-        dashboard and session.log's closing line. "cancelled" is its own
+        live monitor and session.log's closing line. "cancelled" is its own
         answer: a run abandoned before the first trial is not a run that
         completed with no data. ``teardown_failed`` is whether a teardown
         step has failed or been interrupted so far; either fails the run."""

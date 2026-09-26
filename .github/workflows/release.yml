@@ -72,7 +72,7 @@ jobs:
   smoke:
     # twine checks the metadata, not whether the wheel works. A wheel can pass
     # it and still be broken where only an install shows it: a runtime file
-    # left out of package-data (the scaffold templates, the dashboard page), a
+    # left out of package-data (the scaffold templates, the live monitor page), a
     # dependency the code imports but pyproject does not declare, a console
     # script pointing at a moved function. So the wheel just built is
     # installed into a fresh venv — no checkout, so nothing can be imported

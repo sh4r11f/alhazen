@@ -46,11 +46,11 @@ from alhazen.core.trial import (
     PhaseAction,
     lost_to_fault,
 )
-from alhazen.dashboard.panels import panel_payload
-from alhazen.dashboard.spec import DashboardPanel
 from alhazen.devices.eyetracker import ScriptedTracker
 from alhazen.devices.reward import SimulatedReward
 from alhazen.errors import RewardError
+from alhazen.live_monitor.panels import panel_payload
+from alhazen.live_monitor.spec import LiveMonitorPanel
 from alhazen.session.builder import make_tracker_health_check
 from alhazen.stimuli.base import NullStimulus
 from alhazen.task.phases import TrialFeedback
@@ -1044,7 +1044,7 @@ class TestMidTrialDropsOnAFaultTrial:
         ]
         assert len(fault_rewards) == 1
         data = panel_payload(
-            DashboardPanel(kind="rewards", title="Reward"), harness.recorder.trials, events
+            LiveMonitorPanel(kind="rewards", title="Reward"), harness.recorder.trials, events
         )
         stats = {stat["label"]: stat["value"] for stat in data["stats"]}
         # Two drops (each at its REWARD_DELIVERED), the fault reward, and the
@@ -1052,11 +1052,11 @@ class TestMidTrialDropsOnAFaultTrial:
         assert stats["deliveries"] == "4"
 
 
-class TestTheDashboardStillAddsUp:
+class TestTheLiveMonitorStillAddsUp:
     def test_the_outcomes_panel_shows_what_each_trial_ended_as(self, tmp_path):
         harness = run_session(tmp_path, [tracker_stops(), dropped_frames(), clean()], recycle=True)
         data = panel_payload(
-            DashboardPanel(kind="outcomes", title="Outcomes"), harness.recorder.trials, []
+            LiveMonitorPanel(kind="outcomes", title="Outcomes"), harness.recorder.trials, []
         )
         counts = {item["label"]: item["value"] for item in data["items"]}
         assert counts == {"ABORTED": 1, "DROPPED_FRAMES": 1, "CORRECT": 1}
@@ -1065,7 +1065,7 @@ class TestTheDashboardStillAddsUp:
     def test_the_reward_panel_counts_a_fault_reward_as_a_delivery(self, tmp_path, policy):
         harness = run_session(tmp_path, [tracker_stops(), clean()], policy=policy)
         data = panel_payload(
-            DashboardPanel(kind="rewards", title="Reward"), [], harness.recorder.events
+            LiveMonitorPanel(kind="rewards", title="Reward"), [], harness.recorder.events
         )
         stats = {stat["label"]: stat["value"] for stat in data["stats"]}
         assert stats["deliveries"] == ("2" if policy.on_fault is not None else "1")

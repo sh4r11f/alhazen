@@ -70,7 +70,7 @@ there. The task finds `configs/` from its own file, which works while the
 package is installed editable (`pip install -e .`); a session that cannot
 find it stops and names the path, rather than running other parameters.
 
-The lab config enables the live browser dashboard. It updates after each
+The lab config enables the live monitor in the browser. It updates after each
 trial but remains read-only while the task is running. Press `P` on the
 experimenter keyboard before using Resume, Calibrate, Give reward, Quit, or
 training-stage controls in the browser; this prevents browser focus from

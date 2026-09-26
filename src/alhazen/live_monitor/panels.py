@@ -1,7 +1,7 @@
-"""What each dashboard panel actually plots, computed in Python.
+"""What each live monitor panel actually plots, computed in Python.
 
 The browser page is a *renderer*, not an analysis. Every count, bin edge,
-mean, error bar, confidence interval and running proportion the dashboard
+mean, error bar, confidence interval and running proportion the live monitor
 shows is computed here and travels to the page ready to draw. Two reasons,
 both practical:
 
@@ -40,7 +40,7 @@ index into the page's categorical palette; colour is never chosen here.
 
 How any of this *reads* — labels in sentence case, column names as words,
 numbers with the decimals they deserve — is not decided here but in
-:mod:`alhazen.dashboard.presentation`, which every payload passes through on
+:mod:`alhazen.live_monitor.presentation`, which every payload passes through on
 its way out (:func:`panel_payload` ends with its ``present``).
 """
 
@@ -59,18 +59,18 @@ import numpy as np
 # the old location, import them from here, so they stay importable from
 # here. The ``name as name`` form marks the ones this module does not itself
 # call as deliberate re-exports, not dead imports.
-from alhazen.dashboard.presentation import (
+from alhazen.live_monitor.presentation import (
     axis_label,
     display_name,
     format_number,
     present,
     split_unit,
 )
-from alhazen.dashboard.presentation import display_value as display_value
-from alhazen.dashboard.presentation import sentence_start as sentence_start
-from alhazen.dashboard.spec import DashboardPanel
+from alhazen.live_monitor.presentation import display_value as display_value
+from alhazen.live_monitor.presentation import sentence_start as sentence_start
+from alhazen.live_monitor.spec import LiveMonitorPanel
 
-# More points than this in one series cannot be resolved on a dashboard panel
+# More points than this in one series cannot be resolved on a live monitor panel
 # a few hundred pixels wide, so sending them only costs serialisation time.
 MAX_POINTS = 180
 
@@ -152,7 +152,7 @@ def _thin_indices(count: int, cap: int = MAX_POINTS) -> list[int]:
 def _wilson(successes: int, total: int) -> tuple[float, float]:
     """95% Wilson score interval for a proportion.
 
-    Wilson rather than the textbook normal interval because a dashboard shows
+    Wilson rather than the textbook normal interval because a live monitor shows
     proportions computed from a handful of trials, where the normal interval
     is badly wrong (and can run past 0 or 1) exactly when the experimenter is
     most tempted to read it.
@@ -171,10 +171,10 @@ def _wilson(successes: int, total: int) -> tuple[float, float]:
 # ----------------------------------------------------------------------
 
 
-def _required(panel: DashboardPanel, field: str) -> str:
+def _required(panel: LiveMonitorPanel, field: str) -> str:
     """The panel field this kind cannot be drawn without.
 
-    ``DashboardPanel`` validates these at construction, so reaching the raise
+    ``LiveMonitorPanel`` validates these at construction, so reaching the raise
     means a panel was built past its own validator. Loud, because the
     alternative is a permanently and inexplicably empty plot.
     """
@@ -184,7 +184,7 @@ def _required(panel: DashboardPanel, field: str) -> str:
     return str(value)
 
 
-def select_rows(panel: DashboardPanel, trials: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def select_rows(panel: LiveMonitorPanel, trials: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The trials one panel reads, after its two declared filters.
 
     ``completed_only`` uses the row's own ``completed`` column — the engine
@@ -392,12 +392,12 @@ def _category_bars(labels: list[str], *, value_label: str, empty_message: str) -
     }
 
 
-def _outcomes(panel: DashboardPanel, rows: list[dict[str, Any]]) -> dict[str, Any]:
+def _outcomes(panel: LiveMonitorPanel, rows: list[dict[str, Any]]) -> dict[str, Any]:
     labels = [str(row["outcome"]) for row in rows if row.get("outcome") is not None]
     return _category_bars(labels, value_label="trials", empty_message="No trials recorded yet")
 
 
-def _responses(panel: DashboardPanel, rows: list[dict[str, Any]]) -> dict[str, Any]:
+def _responses(panel: LiveMonitorPanel, rows: list[dict[str, Any]]) -> dict[str, Any]:
     # The only panel whose column has a sensible default: a task that records
     # keypresses at all records them under this name.
     field = panel.value or "response_key"
@@ -405,7 +405,7 @@ def _responses(panel: DashboardPanel, rows: list[dict[str, Any]]) -> dict[str, A
     return _category_bars(labels, value_label="trials", empty_message=f"No {field} recorded yet")
 
 
-def _histogram(panel: DashboardPanel, rows: list[dict[str, Any]]) -> dict[str, Any]:
+def _histogram(panel: LiveMonitorPanel, rows: list[dict[str, Any]]) -> dict[str, Any]:
     field = _required(panel, "value")
     values = _numbers(rows, field)
     if not values:
@@ -522,7 +522,7 @@ def _parse_shapes(value: Any, where: str) -> list[dict[str, Any]]:
 
 
 def _scatter_shapes(
-    panel: DashboardPanel,
+    panel: LiveMonitorPanel,
     rows: list[dict[str, Any]],
     series: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], str | None]:
@@ -568,7 +568,7 @@ def _scatter_shapes(
     return drawn, note
 
 
-def _scatter(panel: DashboardPanel, rows: list[dict[str, Any]]) -> dict[str, Any]:
+def _scatter(panel: LiveMonitorPanel, rows: list[dict[str, Any]]) -> dict[str, Any]:
     x_field = _required(panel, "x")
     y_field = _required(panel, "y")
 
@@ -639,7 +639,7 @@ def _scatter(panel: DashboardPanel, rows: list[dict[str, Any]]) -> dict[str, Any
     return payload
 
 
-def _vectors(panel: DashboardPanel, rows: list[dict[str, Any]]) -> dict[str, Any]:
+def _vectors(panel: LiveMonitorPanel, rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Every response as a displacement from where the eye started.
 
     The landing panel answers "did it hit the target". This one answers "how
@@ -728,7 +728,7 @@ def _moving_window(n: int) -> int:
     return max(5, min(51, round(n / 10) or 5))
 
 
-def _series(panel: DashboardPanel, rows: list[dict[str, Any]]) -> dict[str, Any]:
+def _series(panel: LiveMonitorPanel, rows: list[dict[str, Any]]) -> dict[str, Any]:
     field = _required(panel, "value")
     xs = _x_values(rows)
     pairs = [[xs[i], float(row[field])] for i, row in enumerate(rows) if _num(row.get(field))]
@@ -790,7 +790,7 @@ def _group_order(label: str) -> tuple[int, float, str]:
         return (1, 0.0, label)
 
 
-def _grouped_mean(panel: DashboardPanel, rows: list[dict[str, Any]]) -> dict[str, Any]:
+def _grouped_mean(panel: LiveMonitorPanel, rows: list[dict[str, Any]]) -> dict[str, Any]:
     field = _required(panel, "value")
     fields = panel.group_fields
     if not fields:
@@ -913,7 +913,7 @@ def _score(
     )
 
 
-def _grouped_rate(panel: DashboardPanel, rows: list[dict[str, Any]]) -> dict[str, Any]:
+def _grouped_rate(panel: LiveMonitorPanel, rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Proportion correct per condition level, with a 95% interval.
 
     Bars rather than dots: a proportion is measured from zero, so the length
@@ -964,7 +964,7 @@ def _grouped_rate(panel: DashboardPanel, rows: list[dict[str, Any]]) -> dict[str
     }
 
 
-def _performance(panel: DashboardPanel, rows: list[dict[str, Any]]) -> dict[str, Any]:
+def _performance(panel: LiveMonitorPanel, rows: list[dict[str, Any]]) -> dict[str, Any]:
     """A running proportion over trials — the panel a session is watched on.
 
     Accuracy when the task scores its outcomes, completion rate when it does
@@ -1079,7 +1079,7 @@ def _reward_deliveries(events: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _rewards(panel: DashboardPanel, events: list[dict[str, Any]]) -> dict[str, Any]:
+def _rewards(panel: LiveMonitorPanel, events: list[dict[str, Any]]) -> dict[str, Any]:
     """Cumulative reward as a function of trial.
 
     A session's total reward is one number and is shown as one number. The
@@ -1176,7 +1176,7 @@ def _cumulative_at(points: list[list[float]], x: float) -> float:
     return total
 
 
-def _stat(panel: DashboardPanel, rows: list[dict[str, Any]]) -> dict[str, Any]:
+def _stat(panel: LiveMonitorPanel, rows: list[dict[str, Any]]) -> dict[str, Any]:
     """One number, shown as one number.
 
     A single scalar drawn as a one-bar bar chart tells the reader nothing the
@@ -1239,7 +1239,7 @@ def frame_intervals_panel(
     a glance. Bins are an eighth of a frame period, from zero to two and a
     half periods; anything longer is counted in the note, with the longest.
 
-    Not a ``DashboardPanel`` kind: those read trial records, and frame
+    Not a ``LiveMonitorPanel`` kind: those read trial records, and frame
     intervals live in the frame log. Built by the runner from its
     FrameMonitor and delivered finished, like a live analysis's panels.
     """
@@ -1324,7 +1324,7 @@ _TRIAL_PANELS = {
 
 
 def panel_payload(
-    panel: DashboardPanel,
+    panel: LiveMonitorPanel,
     trials: list[dict[str, Any]],
     events: list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -1335,7 +1335,7 @@ def panel_payload(
         return _rewards(panel, events)
     build = _TRIAL_PANELS.get(panel.kind)
     if build is None:  # pragma: no cover - the Literal makes this unreachable
-        raise ValueError(f"no renderer for dashboard panel kind {panel.kind!r}")
+        raise ValueError(f"no renderer for live monitor panel kind {panel.kind!r}")
     payload = build(panel, select_rows(panel, trials))
     if panel.rolling_window and payload["form"] != "empty":
         # Appended, never assigned: a panel may already have something to say

@@ -1,10 +1,10 @@
 """The session's eye-tracker monitor (session/eyetracker.py).
 
 The monitor sits between the runner and the tracker: it runs the three
-procedures, keeps their results, tells the dashboard, and files the events.
+procedures, keeps their results, tells the live monitor, and files the events.
 It measures nothing itself, so it is tested against a tracker whose gaze
 follows the target (the procedures' own test subject) and trackers that
-report a chosen calibration outcome, with the dashboard publisher and the
+report a chosen calibration outcome, with the live monitor publisher and the
 event bus replaced by lists.
 """
 
@@ -358,7 +358,7 @@ class TestProcedures:
 
 
 # ----------------------------------------------------------------------
-# Reporting to the dashboard
+# Reporting to the live monitor
 # ----------------------------------------------------------------------
 
 
@@ -575,7 +575,7 @@ class TestCameraPanel:
 
 
 class TestCameraStream:
-    """With a dashboard open, frames stream on their own channel as often as
+    """With a live monitor open, frames stream on their own channel as often as
     one is due, and the state's Camera panel stops carrying the pixels."""
 
     @staticmethod
@@ -586,7 +586,7 @@ class TestCameraStream:
         return s, frames
 
     def test_without_a_sink_nothing_is_read(self, session) -> None:
-        """A session with no dashboard open must not spend device reads on
+        """A session with no live monitor open must not spend device reads on
         frames nobody will see."""
         s = session(CameraTracker)
         s.monitor.stream_camera()
@@ -618,7 +618,7 @@ class TestCameraStream:
 
     def test_every_progress_report_streams_while_publishes_stay_throttled(self, session) -> None:
         """A calibration is when the eye is watched: its 0.1 s reports each
-        carry a frame, and only every 0.5 s rebuilds the dashboard state."""
+        carry a frame, and only every 0.5 s rebuilds the live monitor state."""
         s, frames = self.streaming(session)
         for _ in range(10):
             s.monitor._on_progress("calibrating", "target 1 of 5")
@@ -855,8 +855,8 @@ class IrisTracker(CameraTracker):
         return px
 
 
-class TestIrisSizeFromTheDashboard:
-    """The iris size is changed from the dashboard and every change is on the
+class TestIrisSizeFromTheLiveMonitor:
+    """The iris size is changed from the live monitor and every change is on the
     record; a change the tracker refuses is said, and recorded as nothing."""
 
     def test_a_change_is_applied_logged_and_recorded(self, session, caplog) -> None:
@@ -908,7 +908,7 @@ class TestIrisSizeFromTheDashboard:
         s = session(IrisTracker)
         s.monitor.settings_source = lambda: [("gain", 3)]
         with caplog.at_level(logging.ERROR, logger="alhazen.session.eyetracker"):
-            messages = s.monitor.service_dashboard()
+            messages = s.monitor.service_live_monitor()
         assert messages == ["No tracker setting called 'gain'; nothing changed."]
         assert "tracker setting 'gain'" in caplog.text
         assert s.tracker.iris == 90

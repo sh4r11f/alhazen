@@ -318,7 +318,7 @@ class TestDeviceOverrides:
         assert pauses == [DEFAULT_MAX_CONSECUTIVE_DROPOUTS]
 
     def test_a_handed_in_tracker_gets_the_session_monitor(self, tmp_path):
-        # The monitor is what the pause menu's C/V/D and the dashboard's
+        # The monitor is what the pause menu's C/V/D and the live monitor's
         # buttons act on, and it holds the drift correction the engine's
         # input provider applies — so a tracker handed in must get one, with
         # the rig's eye-tracker config when there is one and the test-only
@@ -350,11 +350,11 @@ def refusing_scheduler(params, rng):
 class TestAFailedBuildReleasesWhatItHeld:
     """A build that fails part-way must release everything it already holds.
 
-    Its guard released only the dashboard, the reward worker and the spike
+    Its guard released only the live monitor, the reward worker and the spike
     source. A failure once the devices were up left the window open, the
     tracker's link connected and the sync lines' NI-DAQ tasks reserved, so
     the next session on the rig found them taken. And the display was built
-    outside the guard, so a failure there left the dashboard's child process
+    outside the guard, so a failure there left the live monitor's child process
     running.
 
     The devices here come from the rig config, built by the builder itself,
@@ -365,7 +365,7 @@ class TestAFailedBuildReleasesWhatItHeld:
 
     # Every release a build that got as far as its scheduler must make.
     EVERY_RELEASE = (
-        "dashboard.stop",
+        "live_monitor.stop",
         "display.close",
         "tracker.shutdown",
         "sync.close",
@@ -374,7 +374,7 @@ class TestAFailedBuildReleasesWhatItHeld:
     )
 
     def wire(self, monkeypatch, failing=None):
-        """Swap the dashboard, the simulated display and the device
+        """Swap the live monitor, the simulated display and the device
         factories for spies that write each release into one list, returned
         with the list of trackers built. The release named ``failing``
         raises, after it has been recorded."""
@@ -399,7 +399,7 @@ class TestAFailedBuildReleasesWhatItHeld:
                 pass
 
             def stop(self):
-                note("dashboard.stop")
+                note("live_monitor.stop")
 
             def publish(self, state):
                 pass
@@ -435,7 +435,7 @@ class TestAFailedBuildReleasesWhatItHeld:
             trackers.append(SpyTracker([], clock))
             return trackers[-1]
 
-        monkeypatch.setattr(builder_module, "DashboardController", SpyController)
+        monkeypatch.setattr(builder_module, "LiveMonitorController", SpyController)
         monkeypatch.setattr(builder_module, "SimulatedDisplay", SpyDisplay)
         monkeypatch.setattr(builder_module, "make_tracker", make_tracker)
         monkeypatch.setattr(builder_module, "make_reward", lambda cfg: SpyReward())
@@ -445,7 +445,7 @@ class TestAFailedBuildReleasesWhatItHeld:
 
     def build_with_every_device(self, tmp_path, **kwargs):
         """A rig naming a tracker, a dispenser, sync lines and a spike
-        source, with the dashboard on."""
+        source, with the live monitor on."""
         from alhazen.config.models import SpikeSourceConfig
 
         return build(
@@ -455,8 +455,8 @@ class TestAFailedBuildReleasesWhatItHeld:
             rig_reward=RewardHwConfig(backend="simulated"),
             rig_sync=SyncHwConfig(backend="simulated", event_lines={"TRIAL_START": "Dev1/line0"}),
             rig_spikes=SpikeSourceConfig(backend="simulated", sim_respond_to="FIX_ON"),
-            dashboard=True,
-            open_dashboard=False,
+            live_monitor=True,
+            open_live_monitor=False,
             **kwargs,
         )
 
@@ -483,7 +483,9 @@ class TestAFailedBuildReleasesWhatItHeld:
         assert released == []
         assert trackers[0].shutdowns == []
 
-    def test_a_display_that_cannot_be_built_still_stops_the_dashboard(self, tmp_path, monkeypatch):
+    def test_a_display_that_cannot_be_built_still_stops_the_live_monitor(
+        self, tmp_path, monkeypatch
+    ):
         from alhazen.errors import DisplayError
         from alhazen.session import builder as builder_module
 
@@ -500,11 +502,11 @@ class TestAFailedBuildReleasesWhatItHeld:
                 tmp_path,
                 EventSchema(()),
                 display=DisplayConfig(backend="psychopy"),
-                dashboard=True,
-                open_dashboard=False,
+                live_monitor=True,
+                open_live_monitor=False,
             )
 
-        assert released == ["dashboard.stop"]
+        assert released == ["live_monitor.stop"]
 
     def test_a_window_refused_by_its_own_open_is_closed(self, tmp_path, monkeypatch):
         # PsychoPy's open() creates the window, then refuses it when the
@@ -536,11 +538,11 @@ class TestAFailedBuildReleasesWhatItHeld:
                 tmp_path,
                 EventSchema(()),
                 display=DisplayConfig(backend="psychopy"),
-                dashboard=True,
-                open_dashboard=False,
+                live_monitor=True,
+                open_live_monitor=False,
             )
 
-        assert sorted(released) == ["dashboard.stop", "display.close"]
+        assert sorted(released) == ["display.close", "live_monitor.stop"]
 
     @pytest.mark.parametrize("failing", EVERY_RELEASE)
     def test_a_release_that_fails_stops_neither_the_others_nor_the_build_error(

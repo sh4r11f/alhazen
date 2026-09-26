@@ -62,11 +62,16 @@ def write_repo(root: Path, version: str, changelog: str) -> Path:
 
 SOURCE_ROOT = REPO_ROOT / "src" / "alhazen"
 
-# The two helpers in alhazen._deprecation that promise a removal version, and
+# The helpers in alhazen._deprecation that promise a removal version, and
 # the position `removed_in` takes when it is passed positionally:
-# deprecated(since, removed_in, instead) and
-# warn_deprecated_argument(name, since, removed_in, instead).
-REMOVED_IN_POSITION = {"deprecated": 1, "warn_deprecated_argument": 2}
+# deprecated(since, removed_in, instead),
+# warn_deprecated_argument(name, since, removed_in, instead) and
+# warn_deprecated_name(name, since, removed_in, instead).
+REMOVED_IN_POSITION = {
+    "deprecated": 1,
+    "warn_deprecated_argument": 2,
+    "warn_deprecated_name": 2,
+}
 
 # `removed_in` as the decorator is written: "2.0", or "2.0.0" in full.
 REMOVED_IN_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\.(0|[1-9]\d*))?$")

@@ -258,8 +258,8 @@ class ClosableSync:
         self.closed = True
 
 
-class StoppableDashboard:
-    """A dashboard that remembers being stopped — the real one is a child
+class StoppableLiveMonitor:
+    """A live monitor that remembers being stopped — the real one is a child
     process — and, with ``fail=True``, refuses every publish the way one
     whose child has died does, naming the status it was given."""
 
@@ -272,7 +272,7 @@ class StoppableDashboard:
 
     def publish(self, state: dict) -> None:
         if self.fail:
-            raise RuntimeError(f"the dashboard could not publish the {state['status']!r} state")
+            raise RuntimeError(f"the live monitor could not publish the {state['status']!r} state")
         self.states.append(state)
 
     def publish_camera(self, pixels, t: float) -> None:
@@ -286,7 +286,7 @@ class StoppableDashboard:
 
     def save(self, figures_dir, state: dict) -> None:
         # A file on disk, so "nothing was written into the run directory"
-        # covers the saved dashboard too.
+        # covers the saved live monitor too.
         (figures_dir / "dashboard_state.json").write_text(state["status"])
 
     def stop(self) -> None:
@@ -311,21 +311,21 @@ class HandBackTraining:
 class TestASetupFailureStillTearsDown:
     """By the time run() is called the builder has opened the window,
     connected the tracker, and started the reward device, the sync lines and
-    the dashboard's process. The steps that set the session up before trial 1
+    the live monitor's process. The steps that set the session up before trial 1
     ran outside the try whose finally tears it down, so one that failed left
     every device held and wrote no "session end" line anywhere."""
 
     def session(
         self,
         tmp_path,
-        dashboard: StoppableDashboard | None = None,
+        live_monitor: StoppableLiveMonitor | None = None,
         training: HandBackTraining | None = None,
     ):
         clock = FakeClock()
         tracker = ScriptedTracker([], clock)
         reward = ScriptedReward()
         sync = ClosableSync()
-        dashboard = dashboard if dashboard is not None else StoppableDashboard()
+        live_monitor = live_monitor if live_monitor is not None else StoppableLiveMonitor()
         harness = SessionHarness(
             tmp_path,
             n_trials=1,
@@ -333,18 +333,18 @@ class TestASetupFailureStillTearsDown:
             reward=reward,
             sync=sync,
             clock=clock,
-            dashboard=dashboard,
+            live_monitor=live_monitor,
             training=training,
         )
-        return harness, tracker, reward, sync, dashboard
+        return harness, tracker, reward, sync, live_monitor
 
     @staticmethod
-    def assert_released(harness, tracker, reward, sync, dashboard) -> None:
+    def assert_released(harness, tracker, reward, sync, live_monitor) -> None:
         assert harness.display.closed, "the window was left open"
         assert len(tracker.shutdowns) == 1, "the tracker's link was left held"
         assert reward.closed, "the reward device was left open"
         assert sync.closed, "the sync lines were left held"
-        assert dashboard.stopped, "the dashboard's process was left running"
+        assert live_monitor.stopped, "the live monitor's process was left running"
 
     def test_a_session_log_that_cannot_be_opened(self, tmp_path, caplog):
         harness, *devices = self.session(tmp_path)
@@ -382,10 +382,10 @@ class TestASetupFailureStillTearsDown:
         assert "participants.tsv" in log
         assert harness.paths.manifest_path.exists()
 
-    def test_a_first_dashboard_publish_that_fails(self, tmp_path):
+    def test_a_first_live_monitor_publish_that_fails(self, tmp_path):
         # Every publish fails, the final one in teardown included: the error
         # that propagates is still the one that ended the session.
-        harness, *devices = self.session(tmp_path, StoppableDashboard(fail=True))
+        harness, *devices = self.session(tmp_path, StoppableLiveMonitor(fail=True))
 
         with pytest.raises(RuntimeError, match="'running'"):
             harness.runner.run()
@@ -396,7 +396,7 @@ class TestASetupFailureStillTearsDown:
         assert harness.paths.manifest_path.exists()
 
     def test_a_snapshot_that_cannot_be_written_releases_and_writes_nothing(self, tmp_path, caplog):
-        harness, tracker, reward, sync, dashboard = self.session(tmp_path)
+        harness, tracker, reward, sync, live_monitor = self.session(tmp_path)
         harness.paths.snapshot_path.mkdir()  # a directory cannot be written as the snapshot
 
         with (
@@ -405,14 +405,14 @@ class TestASetupFailureStillTearsDown:
         ):
             harness.runner.run()
 
-        self.assert_released(harness, tracker, reward, sync, dashboard)
+        self.assert_released(harness, tracker, reward, sync, live_monitor)
         # A directory with no snapshot is not a run: nothing is written into
-        # it — no data files, no log, no manifest, no saved dashboard — and
+        # it — no data files, no log, no manifest, no saved live monitor — and
         # the tracker is released without being handed a destination for its
         # recording.
         assert [p for p in harness.paths.run_dir.rglob("*") if p.is_file()] == []
         assert tracker.shutdowns == [None]
-        assert dashboard.states == []
+        assert live_monitor.states == []
         assert "session end: FAILED" in caplog.text
         assert "config snapshot was never written" in caplog.text
 
@@ -483,7 +483,7 @@ def session_end_lines(harness) -> list[str]:
 
 class TestACtrlCDuringTeardown:
     """A Ctrl-C while a slow teardown step runs — an EDF transfer, a 2 s join
-    of the dashboard's child — used to abort every step after it: the log
+    of the live monitor's child — used to abort every step after it: the log
     left attached and unclosed, no manifest, no database row, the window
     open. The first Ctrl-C now abandons only the step it landed in; the rest
     of teardown runs, and the interrupt is raised when it is done. A second
@@ -563,7 +563,7 @@ class TestTheSessionEndAgreesWithTheRecord:
     """A tracker that fails only at teardown (an EyeLink whose link died
     after the last trial) used to leave three accounts of one run: the
     database said `failed`, while session.log ended "session end: complete"
-    and the saved dashboard said `complete` — both written before the
+    and the saved live monitor said `complete` — both written before the
     tracker's shutdown ran. All three now say `failed`."""
 
     def session(self, tmp_path):
@@ -571,22 +571,22 @@ class TestTheSessionEndAgreesWithTheRecord:
 
         clock = FakeClock()
         tracker = FailingShutdownTracker(clock, TrackerError("the link to the Host PC is down"))
-        dashboard = StoppableDashboard()
+        live_monitor = StoppableLiveMonitor()
         database = StatusDatabase()
         harness = SessionHarness(
             tmp_path,
             n_trials=1,
             tracker=tracker,
             clock=clock,
-            dashboard=dashboard,
+            live_monitor=live_monitor,
             database=database,
         )
-        return harness, dashboard, database
+        return harness, live_monitor, database
 
     def test_the_log_ends_on_the_failure(self, tmp_path):
         from alhazen.errors import TrackerError
 
-        harness, _dashboard, database = self.session(tmp_path)
+        harness, _live_monitor, database = self.session(tmp_path)
         with pytest.raises(TrackerError):
             harness.runner.run()
 
@@ -600,19 +600,19 @@ class TestTheSessionEndAgreesWithTheRecord:
         assert "tracker.shutdown" in last
         assert "TrackerError: the link to the Host PC is down" in last
 
-    def test_the_saved_and_published_dashboard_say_failed(self, tmp_path):
+    def test_the_saved_and_published_live_monitor_say_failed(self, tmp_path):
         from alhazen.errors import TrackerError
 
-        harness, dashboard, _database = self.session(tmp_path)
+        harness, live_monitor, _database = self.session(tmp_path)
         with pytest.raises(TrackerError):
             harness.runner.run()
 
         saved = harness.paths.figures_dir / "dashboard_state.json"
         assert saved.read_text() == "failed"
-        # The browser is told too, before the dashboard's child stops.
-        assert dashboard.states[-1]["status"] == "failed"
-        assert "tracker.shutdown" in dashboard.states[-1]["message"]
-        assert dashboard.stopped
+        # The browser is told too, before the live monitor's child stops.
+        assert live_monitor.states[-1]["status"] == "failed"
+        assert "tracker.shutdown" in live_monitor.states[-1]["message"]
+        assert live_monitor.stopped
 
     def test_a_clean_session_ends_on_one_line(self, tmp_path):
         harness = SessionHarness(tmp_path, n_trials=1, database=(database := StatusDatabase()))

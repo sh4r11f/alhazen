@@ -444,7 +444,7 @@ class TestSimulateStartsByItself:
 
         code = main(
             ["run", "--task", "talking-task", "--mode", "simulate", "--headless"]
-            + ["--rig", str(rig_file(tmp_path, backend="psychopy")), "--no-dashboard"]
+            + ["--rig", str(rig_file(tmp_path, backend="psychopy")), "--no-live-monitor"]
         )
 
         assert code == 0, capsys.readouterr().err
@@ -1102,12 +1102,12 @@ class TestTheTasksParamsHook:
         assert seen["params"] == Params()
 
 
-class TestTheDashboardAddressIsPrinted:
-    """The runner logs the live dashboard's address at INFO, which reaches
+class TestTheLiveMonitorAddressIsPrinted:
+    """The runner logs the live monitor's address at INFO, which reaches
     only the run's session.log: the console never said where the page was.
-    With --no-dashboard-browser nothing opened it either, and the experiment
+    With --no-live-monitor-browser nothing opened it either, and the experiment
     workspace, which reads a launched run's console to embed the page, could
-    never find it. The CLI now prints a `dashboard:` line before trial one."""
+    never find it. The CLI now prints a `live_monitor:` line before trial one."""
 
     class FakeController:
         """What the builder constructs and the runner talks to, minus the
@@ -1137,38 +1137,38 @@ class TestTheDashboardAddressIsPrinted:
         def save(self, figures_dir, state):
             pass
 
-    def run_with(self, tmp_path, monkeypatch, *, dashboard: bool) -> str:
+    def run_with(self, tmp_path, monkeypatch, *, live_monitor: bool) -> str:
         declared = params_file(tmp_path / "task.yaml", 1)
         install(monkeypatch, task_with_file(declared))
         rig = rig_file(tmp_path)
-        if dashboard:
+        if live_monitor:
             config = yaml.safe_load(rig.read_text(encoding="utf-8"))
-            config["dashboard"] = {"enabled": True, "auto_open": False}
+            config["live_monitor"] = {"enabled": True, "auto_open": False}
             rig.write_text(yaml.safe_dump(config), encoding="utf-8")
-        monkeypatch.setattr("alhazen.session.builder.DashboardController", self.FakeController)
+        monkeypatch.setattr("alhazen.session.builder.LiveMonitorController", self.FakeController)
         from alhazen.cli.main import main
 
         code = main(
             ["run", "--task", "file-task", "--rig", str(rig)]
-            + ["--sub", "s01", "--ses", "1", "--no-dashboard-browser"]
+            + ["--sub", "s01", "--ses", "1", "--no-live-monitor-browser"]
         )
         assert code == 0
         return code
 
-    def test_a_session_with_a_dashboard_prints_its_address_before_trial_one(
+    def test_a_session_with_a_live_monitor_prints_its_address_before_trial_one(
         self, tmp_path, monkeypatch, capsys
     ):
-        self.run_with(tmp_path, monkeypatch, dashboard=True)
+        self.run_with(tmp_path, monkeypatch, live_monitor=True)
 
         out = capsys.readouterr().out
-        assert "dashboard: http://127.0.0.1:4242/?token=abc-123" in out
+        assert "live monitor: http://127.0.0.1:4242/?token=abc-123" in out
         # After the params line and before the session ran: the experimenter
         # reads it with everything else they need before trial one.
-        assert out.index("params: ") < out.index("dashboard: ") < out.index("session complete")
+        assert out.index("params: ") < out.index("live monitor: ") < out.index("session complete")
 
-    def test_a_session_without_a_dashboard_says_nothing_about_one(
+    def test_a_session_without_a_live_monitor_says_nothing_about_one(
         self, tmp_path, monkeypatch, capsys
     ):
-        self.run_with(tmp_path, monkeypatch, dashboard=False)
+        self.run_with(tmp_path, monkeypatch, live_monitor=False)
 
-        assert "dashboard:" not in capsys.readouterr().out
+        assert "live monitor:" not in capsys.readouterr().out

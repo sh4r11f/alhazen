@@ -10,15 +10,15 @@ engine. It pins the four promises the seam makes:
   and subscribes both the simulated source and the analysis to the bus
   (the spike counts prove the source heard the stimulus event);
 - the runner drives ``on_trial`` between trials;
-- the analysis's panels reach the dashboard state, after the spec's own;
+- the analysis's panels reach the live monitor state, after the spec's own;
 - ``finish`` runs in teardown before the manifest is written, so the saved
   artifact is covered — ``load_run`` verifying is the proof.
 
-The dashboard is the real ``DashboardController`` minus its child process
-(``InProcessDashboard`` below): none of the four promises is about the HTTP
+The live monitor is the real ``LiveMonitorController`` minus its child process
+(``InProcessLiveMonitor`` below): none of the four promises is about the HTTP
 server, and waiting for a spawned interpreter to bind made these tests fail
 on a loaded machine (issue #62). The server itself is tested in
-tests/unit/test_dashboard.py.
+tests/unit/test_live_monitor.py.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ from alhazen.config.models import (
 )
 from alhazen.core.events import EventSchema
 from alhazen.core.trial import Outcome, PhaseAction, TrialContext, outcomes
-from alhazen.dashboard.runtime import DashboardController
+from alhazen.live_monitor.runtime import LiveMonitorController
 from alhazen.modes import Mode
 from alhazen.modes.session import build_mode_session
 from alhazen.paradigms.config import SchedulerConfig
@@ -56,14 +56,14 @@ PING_AT = (1.0, -1.0)
 FAR_AWAY = (8.0, 8.0)
 
 
-class InProcessDashboard(DashboardController):
-    """The real DashboardController with the child process taken out.
+class InProcessLiveMonitor(LiveMonitorController):
+    """The real LiveMonitorController with the child process taken out.
 
     ``start`` spawns a fresh interpreter that must re-import pydantic and bind
     a socket within 20 s; under machine load that wait is what failed (#62),
     and nothing these tests assert depends on it. Everything they do assert
     on stays real: the runner builds each state with the real
-    ``dashboard_state`` and writes the final one with the inherited, real
+    ``live_monitor_state`` and writes the final one with the inherited, real
     ``save`` — the only producer of figures/dashboard_state.json.
 
     ``publish`` and ``publish_camera`` are overridden, not inherited, because
@@ -77,13 +77,13 @@ class InProcessDashboard(DashboardController):
 
     # Every instance the builder made, so a test can reach the one its
     # session used (the builder constructs it; the test never sees it).
-    instances: list[InProcessDashboard] = []
+    instances: list[InProcessLiveMonitor] = []
 
     def __init__(self, *, port: int = 0, auto_open: bool = True) -> None:
         super().__init__(port=port, auto_open=auto_open)
         self.published: list[dict[str, Any]] = []
         self.started = False
-        InProcessDashboard.instances.append(self)
+        InProcessLiveMonitor.instances.append(self)
 
     def start(self, timeout_s: float = 20.0) -> str:
         # No child, so nothing to wait for; the URL is only ever logged.
@@ -101,16 +101,16 @@ class InProcessDashboard(DashboardController):
 
 
 @pytest.fixture(autouse=True)
-def in_process_dashboard(monkeypatch):
-    """Make build_session construct InProcessDashboard instead of the real
+def in_process_live_monitor(monkeypatch):
+    """Make build_session construct InProcessLiveMonitor instead of the real
     controller. build_session reads the name from its module at call time,
     so patching the module attribute is enough (the same seam
     tests/unit/test_builder.py uses); monkeypatch raises if the name ever
     moves, so the swap cannot silently stop happening."""
     from alhazen.session import builder as builder_module
 
-    InProcessDashboard.instances.clear()
-    monkeypatch.setattr(builder_module, "DashboardController", InProcessDashboard)
+    InProcessLiveMonitor.instances.clear()
+    monkeypatch.setattr(builder_module, "LiveMonitorController", InProcessLiveMonitor)
 
 
 class PingParams(Model):
@@ -234,11 +234,11 @@ def sim_rig(tmp_path: Path) -> RigConfig:
             fullscreen=False,
         ),
         display=DisplayConfig(backend="simulated"),
-        # Dashboard on (browser suppressed): the point is that the live
+        # LiveMonitor on (browser suppressed): the point is that the live
         # panels travel through the real publish path into the saved state.
-        # The controller the builder makes is InProcessDashboard (the
+        # The controller the builder makes is InProcessLiveMonitor (the
         # autouse fixture above), so no server process is started.
-        dashboard={"enabled": True, "auto_open": False},
+        live_monitor={"enabled": True, "auto_open": False},
         devices=DevicesConfig(
             spikes=SpikeSourceConfig(
                 backend="simulated",
@@ -293,7 +293,7 @@ def test_live_analysis_seam_end_to_end(tmp_path):
     assert saved["per_channel"][0] > 0
     assert saved["per_channel"][1] == 0
 
-    # The live panel travelled through the real dashboard publish into the
+    # The live panel travelled through the real live monitor publish into the
     # saved state, after the spec's own panels, under its own section.
     state = json.loads((run_dir / "figures" / "dashboard_state.json").read_text())
     live_panels = [p for p in state["panels"] if p.get("section") == "Live"]
@@ -303,10 +303,12 @@ def test_live_analysis_seam_end_to_end(tmp_path):
     assert live_panels[0]["data"]["secondary"] == "2 pings"
 
     # And it went out live, not only into the file: the session's one
-    # dashboard was started, and a state it was sent carried the panel.
-    (dashboard,) = InProcessDashboard.instances
-    assert dashboard.started
-    assert any(p.get("section") == "Live" for state in dashboard.published for p in state["panels"])
+    # live monitor was started, and a state it was sent carried the panel.
+    (live_monitor,) = InProcessLiveMonitor.instances
+    assert live_monitor.started
+    assert any(
+        p.get("section") == "Live" for state in live_monitor.published for p in state["panels"]
+    )
 
 
 # ----------------------------------------------------------------------

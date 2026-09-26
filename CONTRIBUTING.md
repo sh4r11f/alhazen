@@ -11,17 +11,17 @@ pytest                          # must stay green; no display, no hardware neede
 ruff check . && ruff format --check .
 mypy                            # zero errors, src/ only
 lint-imports                    # the layering contract must stay KEPT
-node --test "tests/js/*.test.mjs"  # the dashboard renderer; Node 22+, nothing to install
+node --test "tests/js/*.test.mjs"  # the live monitor renderer; Node 22+, nothing to install
 ```
 
-The last one runs the dashboard's browser script,
-`src/alhazen/dashboard/assets/dashboard.js`, which pytest cannot execute. It
+The last one runs the live monitor's browser script,
+`src/alhazen/live_monitor/assets/live_monitor.js`, which pytest cannot execute. It
 needs only Node 22 or newer (<https://nodejs.org>) — no npm install and no
 `package.json`; keep the quotes, Node expands the pattern itself. The tests in
 `tests/js/` load the real script, unmodified, into a fake page
-(`fake_dom.mjs`, `load_dashboard.mjs`) and check what it draws: tick values,
+(`fake_dom.mjs`, `load_live_monitor.mjs`) and check what it draws: tick values,
 number formats, colours, legends, figure-export sizes, the camera stream. Run
-one file with `node --test tests/js/charts.test.mjs`. When dashboard.js starts
+one file with `node --test tests/js/charts.test.mjs`. When live_monitor.js starts
 using a DOM feature the fake lacks, the fake throws naming it: extend the
 fake, do not loosen it.
 
@@ -46,7 +46,7 @@ fails on you:
 Imports point only downward:
 
 ```
-cli → modes → session | testing | analysis → training → task → dashboard
+cli → modes → session | testing | analysis → training → task → dashboard → live_monitor
     → paradigms | devices → core | neural → stimuli | scenes → display
     → config | data | _scaffold → _deprecation
 ```

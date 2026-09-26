@@ -16,7 +16,7 @@ display:
     corner: br
     size_px: 60
     events: [FIX_ACQUIRED]
-dashboard:
+live_monitor:
   enabled: true
   auto_open: true
   port: 0

@@ -6,8 +6,8 @@ constructor arguments and hands it every pause: a PAUSED trial, a reward
 failure, a streak, a tracker with no calibration, a rest between blocks.
 
 The decision it hides is *how a pause is resolved*: whether anybody can
-answer it at all (no keyboard wired resumes at once, dashboard or not), the
-keyboard loop and the dashboard loop that wait for an answer, a rest that
+answer it at all (no keyboard wired resumes at once, live monitor or not), the
+keyboard loop and the live monitor loop that wait for an answer, a rest that
 resumes by itself when nobody acts, the menu choices that are not resume or
 quit (eye-tracker procedures, the manual reward, the stage keys) and the
 heading the menu leads with after each of them, and the RESUMED event —
@@ -16,10 +16,10 @@ with the failed validation the session went on under, when there was one.
 Interface: ``handle(record, fault=..., rest=...)``, True to go on and False
 when the experimenter quit. Everything it does to the world it does through
 what the runner handed it: the display, the clock, the keyboard, the
-dashboard, and the runner's own dashboard publisher, session-event emitter
+live monitor, and the runner's own live monitor publisher, session-event emitter
 and stage-command handler.
 
-Callers must not rely on how many times the menu is drawn or the dashboard
+Callers must not rely on how many times the menu is drawn or the live monitor
 published while a pause is up, nor on the order keyboard and browser input
 is read in within one poll; only on what a pause ends with (RESUMED, or
 False for a quit) and on the menu a procedure leaves behind.
@@ -33,9 +33,9 @@ from typing import Any
 
 from alhazen.core.clock import Clock
 from alhazen.core.commands import Command, CommandSource
-from alhazen.dashboard.runtime import DashboardController
 from alhazen.devices.eyetracker.procedures import ValidationResult
 from alhazen.display.backend import DisplayBackend
+from alhazen.live_monitor.runtime import LiveMonitorController
 from alhazen.session.eyetracker import EyeTrackerMonitor
 from alhazen.session.pause import PauseMenu, build_pause_menu
 
@@ -56,10 +56,10 @@ PAUSE_STAGE_COMMANDS = {
 
 # The pause-menu actions that are eye-tracker procedures, run through the
 # session's EyeTrackerMonitor. Same names as the menu rows (session/pause.py)
-# and the dashboard's buttons (dashboard/runtime.py _ALLOWED_COMMANDS).
+# and the live monitor's buttons (live monitor/runtime.py _ALLOWED_COMMANDS).
 PROCEDURE_ACTIONS = ("calibrate", "validate", "drift_correct")
 
-# While a session is paused, how often the dashboard is republished so a
+# While a session is paused, how often the live monitor is republished so a
 # tracker with a camera shows a live image. A pause is when the experimenter
 # is looking at the subject's eye; the image is the point of the tab.
 CAMERA_REFRESH_S = 1.0
@@ -95,7 +95,7 @@ class PauseController:
         on_pause: Callable[[PauseMenu], str] | None,
         rest_resume_after_s: float | None,
         eyetracker: EyeTrackerMonitor | None,
-        dashboard: DashboardController | None,
+        live_monitor: LiveMonitorController | None,
         has_training: bool,
         manual_reward: Callable[[], None] | None,
         manual_reward_payload: dict[str, Any],
@@ -107,7 +107,7 @@ class PauseController:
         """``on_pause`` is the blocking keyboard strategy, None for an
         unattended run. ``rest_resume_after_s`` is how long a rest waits for
         somebody before it resumes by itself (SessionRunner validates it).
-        ``publish(status, message)`` is the runner's dashboard publisher and
+        ``publish(status, message)`` is the runner's live monitor publisher and
         ``last_message()`` the line it published last; ``emit_session_event``
         and ``on_session_command`` are the runner's own."""
         self._display = display
@@ -117,7 +117,7 @@ class PauseController:
         self._on_pause = on_pause
         self._rest_resume_after_s = rest_resume_after_s
         self._eyetracker = eyetracker
-        self._dashboard = dashboard
+        self._live_monitor = live_monitor
         self._has_training = has_training
         self._manual_reward = manual_reward
         self._manual_reward_payload = manual_reward_payload
@@ -144,7 +144,7 @@ class PauseController:
             has_tracker=self._eyetracker is not None,
             has_reward=self._manual_reward is not None,
             has_training=self._has_training,
-            has_dashboard=self._dashboard is not None,
+            has_live_monitor=self._live_monitor is not None,
             fault=fault,
             rest=rest,
             resumes_in_s=resumes_in_s,
@@ -161,9 +161,9 @@ class PauseController:
         to quit. With no pause strategy wired (unattended runs), resume
         immediately — blocking forever with nobody at the keyboard would
         hang a simulated session. That check comes FIRST, before the
-        dashboard: whether anyone is at the rig and whether a browser is
+        live_monitor: whether anyone is at the rig and whether a browser is
         serving are different questions, and answering the second one first
-        hung every unattended run of a rig with the dashboard turned on.
+        hung every unattended run of a rig with the live monitor turned on.
 
         ``fault`` makes this an involuntary pause — a reward failure, a
         tracker with no calibration — and the screen leads with what went
@@ -199,10 +199,10 @@ class PauseController:
             # Nobody is going to answer. `on_pause` is wired only for a
             # rendering display with a keyboard behind it (session/builder.py),
             # so None means an unattended run — and that is true whether or
-            # not the rig file turned the dashboard on. A dashboard is a
+            # not the rig file turned the live monitor on. A live monitor is a
             # window onto the session, not a person at it; waiting for a
             # browser click that will never come hung every unattended run of
-            # a rig with `dashboard.enabled`, and a scheduled block break made
+            # a rig with `live_monitor.enabled`, and a scheduled block break made
             # that every simulated run of a multi-block experiment.
             #
             # The menu is still drawn and the skipped pause still logged, at
@@ -215,13 +215,13 @@ class PauseController:
                 "resuming immediately. %s",
                 notice,
             )
-            if self._dashboard is not None:
-                # Left out, a dashboard open on a dry run would sit on the
+            if self._live_monitor is not None:
+                # Left out, a live monitor open on a dry run would sit on the
                 # last state it was told about while the session ran on.
                 self._publish("running", f"{notice} Unattended — resumed.")
             return self._resumed()
-        if self._dashboard is not None:
-            return self._handle_dashboard_pause(
+        if self._live_monitor is not None:
+            return self._handle_live_monitor_pause(
                 menu, notice, fault=fault, rest=rest, resume_after_s=resume_after_s
             )
         deadline: float | None = None
@@ -282,12 +282,12 @@ class PauseController:
             "(simulation)",
             after_s,
         )
-        if self._dashboard is not None:
+        if self._live_monitor is not None:
             self._publish("running", f"Resumed by itself after {after_s:g} s (simulation).")
         return self._resumed()
 
     def _apply_pause_action(self, action: str) -> str | None:
-        """One non-terminal menu choice; returns the line the dashboard shows
+        """One non-terminal menu choice; returns the line the live monitor shows
         for it, or None when the action published its own.
 
         Anything unrecognised is logged rather than ignored: a key that
@@ -307,7 +307,7 @@ class PauseController:
     def _run_procedure(self, action: str) -> str:
         """One eye-tracker procedure from the pause menu, and its one-line
         outcome. The monitor keeps the results and shows them on the
-        dashboard's Eye tracker tab; this line is what the pause notice says.
+        live monitor's Eye tracker tab; this line is what the pause notice says.
         """
         monitor = self._eyetracker
         if monitor is None:
@@ -349,7 +349,7 @@ class PauseController:
         """The heading the pause screen leads with after a procedure that
         failed, or None.
 
-        The verdict already goes to the dashboard's notice line and the log.
+        The verdict already goes to the live monitor's notice line and the log.
         Neither is the screen the experimenter is looking at while they stand
         at the rig, so a calibration the tracker did not take, or a drift
         correction it refused, leads the menu that comes back. A validation
@@ -407,7 +407,7 @@ class PauseController:
         self._emit_session_event("RESUMED", payload)
         return True
 
-    def _handle_dashboard_pause(
+    def _handle_live_monitor_pause(
         self,
         menu: PauseMenu,
         notice: str,
@@ -425,18 +425,18 @@ class PauseController:
         pause's own heading, kept so that a procedure run from the browser can
         put it back after replacing it.
         """
-        assert self._dashboard is not None
-        dashboard = self._dashboard
+        assert self._live_monitor is not None
+        live_monitor = self._live_monitor
         # Drain and discard whatever is already queued. A command accepted in
         # the milliseconds between the browser seeing "paused" and the runner
         # resuming would otherwise sit in the queue and fire at the NEXT
         # pause — a reward delivered, or a session quit, minutes after the
         # click that asked for it and with nobody expecting it.
-        stale = dashboard.poll_commands()
+        stale = live_monitor.poll_commands()
         if stale:
             log.info("discarding %d command(s) queued before this pause", len(stale))
         # The menu goes on the subject display here too. It did not used to,
-        # so turning the dashboard on silently removed the only thing the
+        # so turning the live monitor on silently removed the only thing the
         # person standing at the rig could see — and the rig is where a pause
         # is usually resolved, browser or no browser.
         self._show_pause_menu(menu)
@@ -459,10 +459,10 @@ class PauseController:
             # The refresh further down republishes the panel's words about once
             # a second.
             if monitor is not None:
-                for setting_line in monitor.service_dashboard():
+                for setting_line in monitor.service_live_monitor():
                     self._publish("paused", setting_line)
                     published_at = self._clock.now()
-            actions = [command.name for command in dashboard.poll_commands()]
+            actions = [command.name for command in live_monitor.poll_commands()]
             actions += [
                 action
                 for key in self._commands.poll_raw_keys()
@@ -507,7 +507,7 @@ class PauseController:
                     # walk. Discard it, and the rest of this batch, before the
                     # buttons come back; the keys a walk polls are already
                     # consumed by the walk itself.
-                    dropped = actions[index + 1 :] + [c.name for c in dashboard.poll_commands()]
+                    dropped = actions[index + 1 :] + [c.name for c in live_monitor.poll_commands()]
                     if dropped:
                         log.info(
                             "discarding %d command(s) queued while %s ran: %s",

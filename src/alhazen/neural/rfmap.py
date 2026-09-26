@@ -3,14 +3,14 @@
 A receptive-field map, reduced to arithmetic: probes flash at the cells of a
 grid, spikes are counted in a fixed window after each flash, and the map is
 counts per flash per second for every (channel, cell). The same accumulator
-serves the live dashboard (fed by the threshold detector during a session)
+serves the live monitor (fed by the threshold detector during a session)
 and the offline analysis (fed by sorted spikes afterwards), which is why it
 lives here, below both, and knows nothing about either.
 
 Coordinates are degrees of visual angle in the *centered* frame the rest of
 the framework uses — x growing right, y growing up — and rows are indexed
 bottom-to-top (row 0 is the lowest row), matching the y axis. Anything that
-draws a map top-first (a screen, the dashboard) does its own flip and says
+draws a map top-first (a screen, the live monitor) does its own flip and says
 so; the math here keeps one orientation.
 """
 

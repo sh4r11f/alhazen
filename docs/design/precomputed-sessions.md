@@ -61,8 +61,8 @@ run layout, which needs alhazen 2.0; (3) storage — modest for parameters
   `HoldFixation` draws its jitter only once fixation is acquired, so one failed
   fixation changes the seeds, baselines and targets of every later trial. In
   mbri the direction shuffle shares a generator with the search's random
-  sampling, which the dashboard's search panel triggers after every trial — so
-  turning the dashboard on or off changes later blocks' direction order.
+  sampling, which the live monitor's search panel triggers after every trial — so
+  turning the live monitor on or off changes later blocks' direction order.
 - **Some stimuli cannot run live.** Measured for this proposal: one step of
   mbri's dot engine takes 0.9 ms at its reference setting, 17 ms mid-space and
   422 ms at its densest corner — 2 and 51 times the 8.33 ms frame at 120 Hz.
@@ -320,7 +320,7 @@ sequenceDiagram
 
 - The planner starts when the session is built and works during the
   instructions and calibration. Trial 1 waits only if segment 0 is unfinished;
-  the console and dashboard show progress.
+  the console and live monitor show progress.
 - Before trial 1 the worker re-plans three trials and compares bytes. A
   mismatch means the planning code is not deterministic: the run refuses to
   start, naming the trial and track.
@@ -355,7 +355,7 @@ What keeps C deterministic and addressable:
    scheduler's state digest, any carried-over state by hash (mbri's search
    state, a subject's training state), and its choice. Replaying the recorded
    outcomes through a fresh scheduler must reproduce every choice (§10.8).
-3. **Nothing else draws from planning streams.** The dashboard, the simulated
+3. **Nothing else draws from planning streams.** The live monitor, the simulated
    subject and any display-only random sampling get their own, so a panel can
    never change a trial.
 
@@ -525,7 +525,7 @@ erDiagram
     }
     PARAM_CHANGE {
         int change_id PK
-        text source "experimenter, dashboard, curriculum"
+        text source "experimenter, live monitor, curriculum"
         text actor
         text path
         text old_value
@@ -829,7 +829,7 @@ none of the addressability.
 | Change | Source | Takes effect |
 |---|---|---|
 | Stage promotion or demotion; ramp steps | the curriculum | the next trial (today's rule) |
-| Any task or stimulus parameter | the experimenter, from the pause menu or the paused dashboard | the next trial |
+| Any task or stimulus parameter | the experimenter, from the pause menu or the paused live monitor | the next trial |
 | Promote, demote, hold | the experimenter's stage keys, as today | the next trial |
 | Live values: feedback colour, visibility, a position offset, window sizes (open question 8) | the experimenter's keys, or phase logic | the next flip |
 

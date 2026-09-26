@@ -26,7 +26,7 @@ purpose: an experiment package's own fake tracker satisfies ``EyeTracker``
 today, and must go on doing so without growing methods it has no use for.
 
 - ``camera_frame() -> CameraFrame``: the tracker's current eye image, for
-  the dashboard. Raises ``TrackerError`` when the device cannot supply one.
+  the live monitor. Raises ``TrackerError`` when the device cannot supply one.
 - ``eye_status() -> str``: one line saying which eyes the camera sees now.
 - ``iris_size() -> int`` and ``set_iris_size(px: int) -> int``: the expected
   iris size, in camera px, that a camera tracker searches its image for (the
@@ -36,7 +36,7 @@ today, and must go on doing so without growing methods it has no use for.
 - ``set_progress_hook(hook: ProgressHook | None)``: a callable the backend
   calls from inside its blocking ``calibrate()`` with ``(stage, detail)`` —
   ``("calibrating", "target 3 of 9 · eyes: both tracked")`` — so the
-  dashboard can follow a procedure the render thread is busy running.
+  live monitor can follow a procedure the render thread is busy running.
 
 Three more serve dropout detection (docs/eye-tracker.md, "When the tracker
 drops out"), offered by the backends that stream real samples — the EyeLink
@@ -113,7 +113,7 @@ class CalibrationResult:
     (a real EyeLink whose SDK could not answer); never for want of asking.
     ``note`` is the backend's own account of what happened — "aborted at
     target 3 of 9", the device's own result message — and is shown on the
-    dashboard beside the verdict.
+    live monitor beside the verdict.
     """
 
     ok: bool | None

@@ -1,7 +1,7 @@
 """PauseController: resolving a pause, without a runner.
 
 The pause flow is pinned through whole sessions in test_pause_flow.py and
-test_pause_menu.py (and the dashboard's side in test_dashboard.py). These
+test_pause_menu.py (and the live monitor's side in test_live_monitor.py). These
 drive the controller directly with the runner's hooks replaced by
 recorders, which is enough to pin how a pause ends: resumed, by itself, or
 quit, and what a menu choice that is neither reaches.
@@ -52,7 +52,7 @@ class Pauses:
             on_pause=on_pause,
             rest_resume_after_s=rest_resume_after_s,
             eyetracker=None,
-            dashboard=None,
+            live_monitor=None,
             has_training=True,
             manual_reward=None,
             manual_reward_payload={},

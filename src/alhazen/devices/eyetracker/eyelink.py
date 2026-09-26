@@ -140,7 +140,7 @@ class EyeLinkTracker:
         # stop_trial() and send_message() log, rather than raise, a link
         # failure that the dropout already explains (see there).
         self._dropout: str | None = None
-        # Where calibrate() reports its stages (the dashboard, via the
+        # Where calibrate() reports its stages (the live monitor, via the
         # session's monitor); None until someone asks to be told.
         self._progress: ProgressHook | None = None
 

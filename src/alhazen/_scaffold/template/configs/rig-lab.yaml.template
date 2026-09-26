@@ -56,7 +56,7 @@ display:
   #   corner: br
   #   size_px: 60
   #   events: [FIX_ON]
-dashboard:
+live_monitor:
   # The browser opens before PsychoPy takes focus. It is read-only until the
   # experimenter pauses with P, so browser clicks cannot affect an active trial.
   enabled: true

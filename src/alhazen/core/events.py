@@ -70,7 +70,7 @@ RESERVED_EVENTS = frozenset(
         # — can sound the beep that goes with it.
         "FEEDBACK",
         # An eye-tracker setting changed during the session, from the
-        # dashboard (session/eyetracker.py), with ``setting``, ``value`` and
+        # live monitor (session/eyetracker.py), with ``setting``, ``value`` and
         # ``previous`` in the payload. On the record because a setting such as
         # the TRACKPixx3's expected iris size changes what the tracker measures
         # from that moment on, and an analysis has to be able to see where.

@@ -1,8 +1,8 @@
-/* Alhazen live dashboard — the renderer.
+/* Alhazen live monitor — the renderer.
  *
  * This file draws; it does not analyse. Every count, bin edge, mean, error
  * bar and running proportion arrives precomputed in `panel.data` from
- * alhazen/dashboard/panels.py, which is where those statistics are tested.
+ * alhazen/live_monitor/panels.py, which is where those statistics are tested.
  * What lives here is the part that has to be here: scales, axes, marks,
  * hover, and the table view that makes every plotted value readable as text.
  *
@@ -45,7 +45,7 @@ function plotHeight(width) {
 const squarePlotHeight = plotHeight;
 
 /* True only while a panel is being redrawn for figure export. The charts that
- * pad themselves out to the height every dashboard panel shares read it, so
+ * pad themselves out to the height every live monitor panel shares read it, so
  * an exported figure is cropped to its content instead. */
 let exportMode = false;
 
@@ -105,7 +105,7 @@ function seriesColor(series) {
 }
 
 /** As many decimals as a number deserves — the same rule, and the same
- *  characters, as the Python side's format_number (dashboard/panels.py),
+ *  characters, as the Python side's format_number (live monitor/panels.py),
  *  which writes the KPI strip, so the two never disagree on screen. Python's
  *  own formatting is followed exactly: `,` between thousands whatever the
  *  browser's locale, 3 significant digits written the way Python's `.3g`
@@ -220,7 +220,7 @@ function minus(text) {
 }
 
 /** What the reader sees for a data value: its display form when the session
- *  sent one, the record's own value otherwise, so a dashboard saved before
+ *  sent one, the record's own value otherwise, so a live monitor saved before
  *  display forms existed still draws. The raw values stay in the payload for
  *  code that maps a panel back to its trials. */
 function shown(object, key) {
@@ -700,7 +700,7 @@ function drawBars(legendHost, host, data) {
 
   const width = host.clientWidth || 380;
   /* Rows at a fixed pitch, each bar filling most of its row: thin bars in
-   * wide gutters read as a sketch, not a figure. On the dashboard the rows
+   * wide gutters read as a sketch, not a figure. On the live monitor the rows
    * are centred in the height every panel shares, so a card with three
    * categories still lines up with its neighbour; an exported figure is
    * cropped to its rows. */
@@ -1760,7 +1760,7 @@ function drawTable(card, data, index, open) {
   } catch (error) {
     /* A payload the table view has not learned to read yet costs its own
      * table, never the whole page: this runs while the panels are being
-     * built, so throwing here leaves the dashboard blank mid-session. */
+     * built, so throwing here leaves the live monitor blank mid-session. */
     console.error('table view failed for a ' + data.form + ' panel', error);
     return;
   }
@@ -1944,7 +1944,7 @@ function rasterize(markup, widthMm) {
   const pixelsWide = Math.round((widthMm / 25.4) * EXPORT_DPI);
   const scale = pixelsWide / markup.width;
   return new Promise((resolve, reject) => {
-    /* A data: URL rather than a blob: URL. A saved dashboard opens from
+    /* A data: URL rather than a blob: URL. A saved live monitor opens from
      * file://, where a blob: image can count as another origin and taint the
      * canvas, and a tainted canvas refuses to hand its pixels back. */
     const url = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(markup.text);
@@ -2003,7 +2003,7 @@ function exportFigure(entry, format, columns) {
   stage.style.width = widthPx + 'px';
   let markup;
   /* Figure proportions for the length of the draw: bar charts crop to their
-   * rows instead of padding out to the dashboard's shared panel height. */
+   * rows instead of padding out to the live monitor's shared panel height. */
   exportMode = true;
   try {
     const host = htmlEl('div', 'plot', null, stage);
@@ -2131,7 +2131,7 @@ let panels = [];
 
 /* Which group of panels is on screen. Panels are read in groups — how the
  * session is going, what the subject did, where it looked, how the conditions
- * compare — and a dashboard that shows all of them at once is a page to
+ * compare — and a live monitor that shows all of them at once is a page to
  * scroll rather than a thing to watch. */
 let section = 'all';
 try { section = localStorage.getItem('alhazen-section') || 'all'; } catch (e) { /* private mode */ }

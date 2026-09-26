@@ -206,7 +206,7 @@ class MyLiveAnalysis:
         batch = self.spikes.drain()   # times on the session clock
         ...
 
-    def panels(self):                 # finished dashboard payloads
+    def panels(self):                 # finished live monitor payloads
         return [{"title": "...", "section": "...", "data": {...}}]
 
     def finish(self, run_dir):        # teardown, before the manifest:
@@ -217,7 +217,7 @@ The builder wires it like a device: the task's hook receives a
 `LiveWiring` carrying the spike source the *rig config* built (or None —
 say so on a panel, never crash and never stay quiet), the screen and the
 session clock. The runner drives `on_trial` after each scored row is
-written and before the dashboard publish, so the panels in that publish
+written and before the live monitor publish, so the panels in that publish
 already include the trial; `finish` runs before the manifest is written
 and before the spike source closes, so the artifact is hashed and one
 last drain is possible.
@@ -225,7 +225,7 @@ last drain is possible.
 ## The `heatmap` panel form
 
 Live analyses introduced one wire form of their own, drawn by the
-dashboard page like every other (dashboard.md): one or many cell matrices
+live monitor page like every other (live_monitor.md): one or many cell matrices
 on a shared colour scale — small multiples with a single colourbar,
 because per-map scales would quietly break the comparison — cells at the
 data's own aspect ratio, and `null` cells drawn muted as *not measured

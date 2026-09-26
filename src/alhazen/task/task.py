@@ -29,8 +29,8 @@ from pydantic import BaseModel
 from alhazen.config.models import Model
 from alhazen.core.events import EventSchema
 from alhazen.core.trial import OutcomeSet
-from alhazen.dashboard.spec import DashboardSpec
 from alhazen.errors import ConfigError
+from alhazen.live_monitor.spec import LiveMonitorSpec
 from alhazen.paradigms.base import Condition, TrialSource
 from alhazen.paradigms.config import SchedulerConfig, make_scheduler
 from alhazen.task.plan import TrialPlan, TrialSetup
@@ -65,7 +65,10 @@ class Task:
     # failing minutes into the session with a subject waiting. And a request
     # from a task that did not declare it is a loud error, not a no-op.
     mid_trial_reward: ClassVar[bool] = False
-    dashboard: ClassVar[DashboardSpec | None] = None
+    live_monitor: ClassVar[LiveMonitorSpec | None] = None
+    # The same declaration under its pre-1.9 name. The session builder reads
+    # it with a DeprecationWarning until 2.0 (docs/versioning.md §4).
+    dashboard: ClassVar[LiveMonitorSpec | None] = None
 
     # The params field a default make_source reads its scheduler from. A task
     # that schedules its own trials never needs one.
@@ -352,7 +355,7 @@ class Task:
         this once, after the devices are wired, and the runner then drives
         the returned object between trials: never inside the frame loop, so
         it can afford real computation (a receptive-field map, a PSTH) and
-        contribute its own panels to the live dashboard.
+        contribute its own panels to the live monitor.
         """
         return None
 

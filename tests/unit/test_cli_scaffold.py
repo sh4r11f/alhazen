@@ -683,7 +683,7 @@ class TestRunCommand:
             )
         )
 
-        code = main(self.run_args(rig, "--mode", "simulate", "--headless", "--no-dashboard"))
+        code = main(self.run_args(rig, "--mode", "simulate", "--headless", "--no-live-monitor"))
 
         assert code == 0
         out = capsys.readouterr().out

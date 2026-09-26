@@ -890,7 +890,7 @@ class TestMessageBox:
 
     def test_the_message_is_presented_twice_from_the_foreground(self, monkeypatch):
         """The instructions are the first frame after the build, when the
-        dashboard's browser may have just taken the foreground. Claim it,
+        live monitor's browser may have just taken the foreground. Claim it,
         and present twice, or Windows keeps the previous frame."""
         display = _open_psychopy_display(monkeypatch)
         display.show_message("hello")

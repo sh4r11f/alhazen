@@ -9,14 +9,14 @@ import assert from 'node:assert/strict';
 import { beforeEach, describe, it } from 'node:test';
 
 import { SVG_NS } from './fake_dom.mjs';
-import { hostFor, loadDashboard, settle } from './load_dashboard.mjs';
+import { hostFor, loadLiveMonitor, settle } from './load_live_monitor.mjs';
 
-let dashboard;
+let live_monitor;
 beforeEach(() => {
-  dashboard = loadDashboard();
+  live_monitor = loadLiveMonitor();
 });
 
-const draw = (name) => dashboard.get(name);
+const draw = (name) => live_monitor.get(name);
 const numberAttr = (element, name) => Number(element.getAttribute(name));
 
 /* The painted marks of a chart, without the invisible hover targets laid over
@@ -56,7 +56,7 @@ describe('drawFrame', () => {
   const scales = { xScale: (v) => 50 + v * 10, yScale: (v) => 210 - v * 150 };
 
   function frame(xTicks, yTicks) {
-    const svg = dashboard.document.createElementNS(SVG_NS, 'svg');
+    const svg = live_monitor.document.createElementNS(SVG_NS, 'svg');
     draw('drawFrame')(svg, box, { ...scales, xTicks: xTicks, yTicks: yTicks });
     return svg;
   }
@@ -112,8 +112,8 @@ describe('drawBars', () => {
   };
 
   function bars(data, width) {
-    const host = hostFor(dashboard, width);
-    const legendHost = hostFor(dashboard);
+    const host = hostFor(live_monitor, width);
+    const legendHost = hostFor(live_monitor);
     draw('drawBars')(legendHost, host, data);
     return { host: host, legendHost: legendHost, svg: host.querySelector('svg') };
   }
@@ -186,8 +186,8 @@ describe('drawDots', () => {
   }
 
   function dots(data) {
-    const host = hostFor(dashboard);
-    const legendHost = hostFor(dashboard);
+    const host = hostFor(live_monitor);
+    const legendHost = hostFor(live_monitor);
     draw('drawDots')(legendHost, host, data);
     return { host: host, legendHost: legendHost, svg: host.querySelector('svg') };
   }
@@ -265,17 +265,17 @@ describe('figure export', () => {
 
   /* A built panel as exportFigure receives it: its data, title and letter. */
   function panel(letter) {
-    const letterNode = dashboard.document.createElement('span');
+    const letterNode = live_monitor.document.createElement('span');
     letterNode.textContent = letter;
     return { data: outcomes, letter: letterNode, title: 'Saccade landings' };
   }
 
-  const root = () => dashboard.document.documentElement;
+  const root = () => live_monitor.document.documentElement;
 
   it('saves a single-column SVG 89 mm wide, drawn at 400 px across', async () => {
     draw('exportFigure')(panel('b'), 'svg', 'single');
-    assert.equal(dashboard.downloads.length, 1);
-    const { filename, blob } = dashboard.downloads[0];
+    assert.equal(live_monitor.downloads.length, 1);
+    const { filename, blob } = live_monitor.downloads[0];
     assert.equal(filename, 'b-saccade-landings-89mm.svg');
     const markup = await blob.text();
     assert.match(markup, /^<\?xml version="1\.0" encoding="UTF-8"\?>\n<svg /);
@@ -286,7 +286,7 @@ describe('figure export', () => {
 
   it('saves a double-column SVG 183 mm wide at the same drawing scale', async () => {
     draw('exportFigure')(panel('c'), 'svg', 'double');
-    const { filename, blob } = dashboard.downloads[0];
+    const { filename, blob } = live_monitor.downloads[0];
     assert.equal(filename, 'c-saccade-landings-183mm.svg');
     const svg = /^[^\n]*\n(<svg [^>]*>)/.exec(await blob.text())[1];
     // 183 mm at 400 px per 89 mm is 822 px: text prints the same size.
@@ -296,7 +296,7 @@ describe('figure export', () => {
 
   it('leaves the screen-only hover targets out of the file', async () => {
     draw('exportFigure')(panel('b'), 'svg', 'single');
-    const markup = await dashboard.downloads[0].blob.text();
+    const markup = await live_monitor.downloads[0].blob.text();
     // The white ground and three bars; the three row hit targets are gone.
     assert.equal(markup.match(/<rect /g).length, 1 + 3);
     assert.doesNotMatch(markup, /class="hit"|data-screen-only/);
@@ -305,8 +305,8 @@ describe('figure export', () => {
   it('rasterises a PNG at 600 dpi', async () => {
     draw('exportFigure')(panel('b'), 'png', 'single');
     await settle();
-    assert.equal(dashboard.downloads.length, 1);
-    const { filename, blob } = dashboard.downloads[0];
+    assert.equal(live_monitor.downloads.length, 1);
+    const { filename, blob } = live_monitor.downloads[0];
     assert.equal(filename, 'b-saccade-landings-89mm-600dpi.png');
     // 89 mm is 3.504 inches; at 600 dpi that is 2102 pixels across.
     assert.equal(JSON.parse(await blob.text()).width, 2102);
@@ -315,10 +315,10 @@ describe('figure export', () => {
   it('draws in the light theme and figure proportions, then puts the page back', () => {
     root().setAttribute('data-theme', 'dark');
     const during = {};
-    const drawBars = dashboard.get('DRAW').bars;
-    dashboard.get('DRAW').bars = (legendHost, host, data) => {
+    const drawBars = live_monitor.get('DRAW').bars;
+    live_monitor.get('DRAW').bars = (legendHost, host, data) => {
       during.theme = root().getAttribute('data-theme');
-      during.exportMode = dashboard.get('exportMode');
+      during.exportMode = live_monitor.get('exportMode');
       drawBars(legendHost, host, data);
     };
 
@@ -326,24 +326,24 @@ describe('figure export', () => {
 
     assert.deepEqual(during, { theme: 'light', exportMode: true });
     assert.equal(root().getAttribute('data-theme'), 'dark');
-    assert.equal(dashboard.get('exportMode'), false);
-    assert.equal(dashboard.document.querySelector('.export-stage'), null);
+    assert.equal(live_monitor.get('exportMode'), false);
+    assert.equal(live_monitor.document.querySelector('.export-stage'), null);
   });
 
   it('puts the page back and says so when the drawing fails', () => {
     // No data-theme is the "auto" theme, and it must come back as no attribute.
     assert.equal(root().getAttribute('data-theme'), null);
-    dashboard.get('DRAW').bars = () => {
+    live_monitor.get('DRAW').bars = () => {
       throw new Error('boom');
     };
 
     draw('exportFigure')(panel('b'), 'svg', 'single');
 
     assert.equal(root().getAttribute('data-theme'), null);
-    assert.equal(dashboard.get('exportMode'), false);
-    assert.equal(dashboard.document.querySelector('.export-stage'), null);
-    assert.deepEqual(dashboard.alerts, ['Figure export failed: boom']);
-    assert.equal(dashboard.consoleErrors.length, 1);
-    assert.equal(dashboard.downloads.length, 0);
+    assert.equal(live_monitor.get('exportMode'), false);
+    assert.equal(live_monitor.document.querySelector('.export-stage'), null);
+    assert.deepEqual(live_monitor.alerts, ['Figure export failed: boom']);
+    assert.equal(live_monitor.consoleErrors.length, 1);
+    assert.equal(live_monitor.downloads.length, 0);
   });
 });

@@ -20,13 +20,17 @@ const PROJECT = Object.freeze({
  * `null` leaves the dashboard block out, as a rig written before the
  * dashboard existed would; the model's default is then off. (Not
  * `undefined`: pageWith's destructuring default would turn that into true.) */
-function rig(dashboardEnabled) {
+function rig(dashboardEnabled, oldKey = false) {
   const values = {
     monitor: {
       width_px: 1920, height_px: 1080, refresh_rate_hz: 60, width_cm: 52, distance_cm: 57,
     },
   };
-  if (dashboardEnabled !== null) values.dashboard = { enabled: dashboardEnabled };
+  /* `oldKey`: the section under its pre-1.9 name `dashboard:`, as a rig file
+   * not yet updated (or a project on an older alhazen) still spells it. */
+  if (dashboardEnabled !== null) {
+    values[oldKey ? 'dashboard' : 'live_monitor'] = { enabled: dashboardEnabled };
+  }
   return { text: '# rig', values: values };
 }
 
@@ -55,7 +59,9 @@ const ACTIVE = ['running', 'stopping'];
  * the run drawn. `hash` is the opening URL's fragment, which carries the
  * token; `dashboardEnabled` is the rig's setting (null: no dashboard block).
  */
-async function pageWith({ run = null, dashboardEnabled = true, hash, project = PROJECT } = {}) {
+async function pageWith({
+  run = null, dashboardEnabled = true, oldKey = false, hash, project = PROJECT,
+} = {}) {
   const app = loadWorkspace({ hash: hash });
   app.server.state = {
     projects: [project],
@@ -67,7 +73,7 @@ async function pageWith({ run = null, dashboardEnabled = true, hash, project = P
    * page's refresh after a launch finds it as a real launcher's would. */
   app.server.details.launched = runDetail({ id: 'launched', log: '' });
   app.server.configs = {
-    'configs/rig-mac.yaml': rig(dashboardEnabled),
+    'configs/rig-mac.yaml': rig(dashboardEnabled, oldKey),
     'configs/task.yaml': { text: 'trials: 4\n', values: { trials: 4 } },
   };
   await app.run('refresh()');
@@ -170,14 +176,14 @@ describe('the Live monitor tab', () => {
     const app = await pageWith({ run: runDetail({ monitor: null }), dashboardEnabled: false });
     const note = app.byId('monitor-note');
     assert.equal(app.byId('monitor-frame').hidden, true);
-    assert.match(note.textContent, /dashboard\.enabled: false/);
+    assert.match(note.textContent, /live_monitor\.enabled: false/);
     assert.match(note.textContent, /rig YAML/);
     assert.match(app.byId('rig-summary').textContent, /live monitor: off/);
   });
 
   it('treats a rig without a dashboard block as off, the model default', async () => {
     const app = await pageWith({ run: runDetail({ monitor: null }), dashboardEnabled: null });
-    assert.match(app.byId('monitor-note').textContent, /dashboard\.enabled: false/);
+    assert.match(app.byId('monitor-note').textContent, /live_monitor\.enabled: false/);
     assert.match(app.byId('rig-summary').textContent, /live monitor: off/);
   });
 
@@ -185,6 +191,17 @@ describe('the Live monitor tab', () => {
     const app = await pageWith({ run: runDetail({ monitor: null }), dashboardEnabled: true });
     assert.match(app.byId('monitor-note').textContent, /waiting for the session/i);
     assert.match(app.byId('rig-summary').textContent, /live monitor: on/);
+  });
+
+  it('reads the pre-1.9 `dashboard:` rig section as the monitor setting', async () => {
+    /* A project on alhazen 1.8, or a rig file nobody has renamed yet: the
+     * session will bring a monitor, so the page must wait for it rather than
+     * declare the rig has it off. Goes with the section's removal in 2.0. */
+    const on = await pageWith({ run: runDetail({ monitor: null }), dashboardEnabled: true, oldKey: true });
+    assert.match(on.byId('monitor-note').textContent, /waiting for the session/i);
+    assert.match(on.byId('rig-summary').textContent, /live monitor: on/);
+    const off = await pageWith({ run: runDetail({ monitor: null }), dashboardEnabled: false, oldKey: true });
+    assert.match(off.byId('rig-summary').textContent, /live monitor: off/);
   });
 });
 

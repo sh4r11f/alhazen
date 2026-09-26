@@ -13,10 +13,10 @@ import pytest
 
 from alhazen import Condition, Model, RigConfig, Task, TrialPlan, TrialSetup, outcomes
 from alhazen.config.models import (
-    DashboardConfig,
     DevicesConfig,
     DisplayConfig,
     EyeTrackerConfig,
+    LiveMonitorConfig,
     RecordingConfig,
     RewardHwConfig,
     SpikeSourceConfig,
@@ -326,7 +326,7 @@ class TestHeadless:
         )
 
         assert spy.kwargs["rig"].display.backend == "simulated"
-        assert spy.kwargs["rig"].dashboard.auto_open is False
+        assert spy.kwargs["rig"].live_monitor.auto_open is False
         assert "display: none (--headless)" in built.describe()
 
     def test_the_rest_of_the_display_config_survives(self, tmp_path):
@@ -422,18 +422,18 @@ class TestRigForMode:
     def test_no_flags_are_never_refused(self):
         assert all(flag_refusal(mode) is None for mode in Mode)
 
-    def test_headless_keeps_the_dashboard_the_rig_configured(self, tmp_path):
+    def test_headless_keeps_the_live_monitor_the_rig_configured(self, tmp_path):
         """--headless stops the browser, not the server: the page is still
         there for whoever wants to point a browser at the port."""
         original = rig(tmp_path).model_copy(
-            update={"dashboard": DashboardConfig(enabled=True, auto_open=True, port=8765)}
+            update={"live_monitor": LiveMonitorConfig(enabled=True, auto_open=True, port=8765)}
         )
 
         driven, _ = rig_for_mode(Mode.SIMULATE, original, headless=True)
 
-        assert driven.dashboard.enabled is True
-        assert driven.dashboard.port == 8765
-        assert driven.dashboard.auto_open is False
+        assert driven.live_monitor.enabled is True
+        assert driven.live_monitor.port == 8765
+        assert driven.live_monitor.auto_open is False
 
 
 class TestModesThatDoNotRunTrials:

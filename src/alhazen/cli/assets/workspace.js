@@ -13,7 +13,7 @@
  *
  * The Run output card has three tabs: Media (the run's images and finished
  * movies), Console (its output tail) and Live monitor, which frames the
- * session's own dashboard — a separate loopback server the session starts —
+ * session's own live monitor — a separate loopback server the session starts —
  * while the run is active (see renderMonitor).
  *
  * Companion: workspace_parameters.js (ParameterChoices) holds the schema
@@ -82,7 +82,7 @@ let loadingSchema = false;
 /* The task's JSON schema, read once per project for the parameter dropdowns;
  * {} until it arrives or when it could not be read. */
 let parameterSchema = {};
-/* Whether each rig YAML the page has read turns the live dashboard on, keyed
+/* Whether each rig YAML the page has read turns the live monitor on, keyed
  * "<project id>:<rig path>" (two projects may both have a configs/rig.yaml).
  * The Live monitor tab reads it to say why an active run shows no monitor. */
 const rigMonitor = {};
@@ -370,10 +370,14 @@ async function loadRig() {
   if (epoch !== rigEpoch) return;
   const rig = data.values;
   const m = rig.monitor || {};
-  // The live dashboard is opt-in (DashboardConfig.enabled defaults to false),
+  // The live monitor is opt-in (LiveMonitorConfig.enabled defaults to false),
   // so a rig without the block, or without the key, has it off. Remembered
   // for the Live monitor tab, which cannot re-read the YAML on every poll.
-  const monitorOn = rig.dashboard?.enabled === true;
+  // `dashboard:` is the same section as alhazen spelled it before 1.9; a
+  // project on an older alhazen (or a rig file not yet updated) still says
+  // it, and alhazen 1.9 still reads it, so the page must agree with the
+  // session about whether a monitor is coming. Goes with alhazen 2.0.
+  const monitorOn = rig.live_monitor?.enabled === true || rig.dashboard?.enabled === true;
   rigMonitor[`${p.id}:${path}`] = monitorOn;
   // '?' rather than 'undefined' for a field the YAML leaves to its default.
   $('rig-summary').textContent =
@@ -663,7 +667,7 @@ function setMonitorNote(...parts) {
 }
 
 /**
- * The Live monitor tab for `run`. The session's dashboard is a separate
+ * The Live monitor tab for `run`. The session's live monitor is a separate
  * loopback server that the session process starts and that dies with it,
  * and the runner prints its URL (which carries that server's own token)
  * to the console; the launcher relays it as `run.monitor`.
@@ -673,7 +677,7 @@ function setMonitorNote(...parts) {
  * the reader — and the open-in-new-tab link points at it too. In every
  * other case the frame is emptied, so a browser error page for a server
  * that no longer exists never sits in the tab, and a note says what the
- * reader is looking at instead: the saved copy, a rig with the dashboard
+ * reader is looking at instead: the saved copy, a rig with the live monitor
  * off, or a session that has not opened its monitor yet.
  */
 function renderMonitor(run, active) {
@@ -716,7 +720,7 @@ function renderMonitor(run, active) {
   } else if (rigMonitor[`${run.project}:${run.rig}`] === false) {
     setMonitorNote(
       'This rig has ',
-      node('code', '', 'dashboard.enabled: false'),
+      node('code', '', 'live_monitor.enabled: false'),
       '; set it to true in the rig YAML to watch the session here.',
     );
   } else {

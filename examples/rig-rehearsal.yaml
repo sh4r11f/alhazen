@@ -47,7 +47,7 @@ display:
   backend: simulated
   frame_qa:
     policy: warn
-dashboard:
+live_monitor:
   enabled: false
   auto_open: false
   port: 0

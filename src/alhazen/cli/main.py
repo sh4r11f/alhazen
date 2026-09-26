@@ -27,6 +27,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from alhazen._deprecation import warn_deprecated_name
 from alhazen.cli.console_break import interrupt_on_console_break
 from alhazen.config.loader import load_rig
 from alhazen.errors import AlhazenError, ConfigError
@@ -275,6 +276,32 @@ def _check_rig(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
     return 0 if all(r.ok for r in results) else 1
 
 
+class _DeprecatedFlag(argparse.Action):
+    """A flag under its pre-1.9 spelling: stores what the new spelling would,
+    and warns naming it. Hidden from --help, so nobody learns the old name
+    from the tool that is retiring it; removed in 2.0 with the warning.
+    """
+
+    def __init__(
+        self, option_strings: list[str], dest: str, instead: str, value: bool, **kwargs: Any
+    ):
+        super().__init__(option_strings, dest, nargs=0, help=argparse.SUPPRESS, **kwargs)
+        self._instead = instead
+        self._value = value
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: Any,
+        option_string: str | None = None,
+    ) -> None:
+        warn_deprecated_name(
+            f"the {option_string} flag", since="1.9", removed_in="2.0", instead=self._instead
+        )
+        setattr(namespace, self.dest, self._value)
+
+
 def add_mode_arguments(parser: argparse.ArgumentParser) -> None:
     """The options every mode-aware entry point takes.
 
@@ -310,18 +337,47 @@ def add_mode_arguments(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="test mode: the mouse cursor as gaze, even on a rig with an eye tracker",
     )
-    dashboard_group = parser.add_mutually_exclusive_group()
-    dashboard_group.add_argument(
-        "--dashboard", action="store_true", default=None, help="enable the live dashboard"
+    live_monitor_group = parser.add_mutually_exclusive_group()
+    live_monitor_group.add_argument(
+        "--live-monitor", action="store_true", default=None, help="enable the live monitor"
     )
-    dashboard_group.add_argument(
-        "--no-dashboard", action="store_false", dest="dashboard", help="disable the dashboard"
+    live_monitor_group.add_argument(
+        "--no-live-monitor",
+        action="store_false",
+        dest="live_monitor",
+        help="disable the live monitor",
     )
-    parser.set_defaults(dashboard=None)
+    parser.set_defaults(live_monitor=None)
+    parser.add_argument(
+        "--no-live-monitor-browser",
+        action="store_true",
+        help="serve the live monitor without opening a browser window",
+    )
+    # The same three flags as they were spelled before 1.9 (the live monitor
+    # was "the dashboard"). Each stores into the new flag's destination and
+    # warns; `alhazen dashboard` launching a project on an older alhazen
+    # still emits the old spelling, which is why the workspace's reserved
+    # set names both (cli/workspace.py, MODE_FLAGS).
+    live_monitor_group.add_argument(
+        "--dashboard",
+        action=_DeprecatedFlag,
+        dest="live_monitor",
+        instead="--live-monitor",
+        value=True,
+    )
+    live_monitor_group.add_argument(
+        "--no-dashboard",
+        action=_DeprecatedFlag,
+        dest="live_monitor",
+        instead="--no-live-monitor",
+        value=False,
+    )
     parser.add_argument(
         "--no-dashboard-browser",
-        action="store_true",
-        help="serve the dashboard without opening a browser window",
+        action=_DeprecatedFlag,
+        dest="no_live_monitor_browser",
+        instead="--no-live-monitor-browser",
+        value=True,
     )
     parser.add_argument("--curriculum", default=None, help="path to a curriculum YAML")
     # test / simulate
@@ -777,8 +833,8 @@ def _trial_session(args: argparse.Namespace, rig: Any, task: Any, params: Any, m
             n_per_condition=args.trials_per_condition,
             windowed=args.windowed,
             curriculum=curriculum,
-            dashboard=args.dashboard,
-            open_dashboard=False if args.no_dashboard_browser else None,
+            live_monitor=args.live_monitor,
+            open_live_monitor=False if args.no_live_monitor_browser else None,
             headless=args.headless,
             mouse=args.mouse,
             # run.py's own override (run_experiment's `instructions=`), or
@@ -800,14 +856,14 @@ def _trial_session(args: argparse.Namespace, rig: Any, task: Any, params: Any, m
     # The task's own name, not args.task: an experiment's run.py has no
     # --task flag, because it already knows which experiment it is.
     print(f"running {task.name}: sub-{subject} ses-{session:03d} run-{built.run:02d}")
-    # The live dashboard's address, on the console like everything else the
+    # The live monitor's address, on the console like everything else the
     # experimenter needs before trial one. The runner also logs it, but only
-    # into the run's session.log — and with --no-dashboard-browser nothing
+    # into the run's session.log — and with --no-live-monitor-browser nothing
     # opens it, so this line is the only place a terminal user sees it. The
     # experiment workspace (`alhazen dashboard`) reads the same line from a
     # launched run's console to embed the page; that contract is tested.
-    if built.runner.dashboard_url is not None:
-        print(f"dashboard: {built.runner.dashboard_url}")
+    if built.runner.live_monitor_url is not None:
+        print(f"live monitor: {built.runner.live_monitor_url}")
     built.runner.run()
     print(f"session complete — data under {built.data_root.resolve()}")
     return 0

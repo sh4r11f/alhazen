@@ -95,7 +95,7 @@ class PauseMenu:
         The one place a key press is turned into a menu choice. Every pause
         loop asks it — the blocking keyboard loop (run_pause_menu), and the
         runner's polling loops for a rest that can time out and for a pause
-        with the dashboard on — so a key cannot mean one thing on one path
+        with the live monitor on — so a key cannot mean one thing on one path
         and another on the next. There used to be two copies of this mapping,
         and a comment claiming there was one.
 
@@ -208,7 +208,7 @@ def build_pause_menu(
     has_tracker: bool = False,
     has_reward: bool = False,
     has_training: bool = False,
-    has_dashboard: bool = False,
+    has_live_monitor: bool = False,
     fault: str | None = None,
     rest: str | None = None,
     warning: str | None = None,
@@ -288,8 +288,8 @@ def build_pause_menu(
             subtitle += (
                 f"\nsimulation: resumes by itself in {resumes_in_s:g} s unless a key is pressed"
             )
-    if has_dashboard:
-        subtitle += "\nthe dashboard's buttons are live too"
+    if has_live_monitor:
+        subtitle += "\nthe live monitor's buttons are live too"
     return PauseMenu(
         title=fault or warning or rest or "PAUSED",
         subtitle=subtitle,
@@ -317,7 +317,7 @@ def run_pause_menu(
 
     Returns the chosen action ("resume", "quit", "calibrate", ...). The caller
     decides what each one means; this only reads the keyboard, so the same
-    loop serves a rig, a test with a scripted key source, and the dashboard
+    loop serves a rig, a test with a scripted key source, and the live monitor
     path.
 
     The short wait keeps an idle pause from spinning a core — a session can

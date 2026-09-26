@@ -422,8 +422,8 @@ class TestAProcedureThatSucceedsTakesTheHeadingBackDown:
         assert seen[2] == seen[0], seen
 
 
-class FakeDashboard:
-    """Enough DashboardController for the runner: a URL, somewhere for
+class FakeLiveMonitor:
+    """Enough LiveMonitorController for the runner: a URL, somewhere for
     snapshots to go, and a command queue that is always empty — a browser
     nobody has opened, which is what an unattended rig has.
 
@@ -444,7 +444,7 @@ class FakeDashboard:
         self._polls += 1
         if self._polls > self._poll_budget:
             raise AssertionError(
-                "the runner is still waiting for a dashboard command in a run with no "
+                "the runner is still waiting for a live monitor command in a run with no "
                 "keyboard wired — an unattended session cannot be resumed by a browser "
                 "nobody has open"
             )
@@ -467,9 +467,9 @@ class FakeDashboard:
 
 
 class TestAnUnattendedRunIsNeverLeftWaiting:
-    """`dashboard.enabled` in a rig file turned every pause in an unattended
-    run into a hang: the runner asked whether a dashboard existed before it
-    asked whether anyone was there to answer. A dashboard is a window onto
+    """`live_monitor.enabled` in a rig file turned every pause in an unattended
+    run into a hang: the runner asked whether a live monitor existed before it
+    asked whether anyone was there to answer. A live monitor is a window onto
     the session, not a person at it. With block breaks that became every
     simulated run of a multi-block experiment — 28 trials and then nothing,
     forever."""
@@ -485,20 +485,22 @@ class TestAnUnattendedRunIsNeverLeftWaiting:
 
         return BlockPlan([block(), block()], trials_per_block=1)
 
-    def test_the_block_break_resumes_itself_when_the_dashboard_is_on(self, tmp_path):
-        dashboard = FakeDashboard()
-        harness = SessionHarness(tmp_path, source=self.two_blocks(), dashboard=dashboard)
+    def test_the_block_break_resumes_itself_when_the_live_monitor_is_on(self, tmp_path):
+        live_monitor = FakeLiveMonitor()
+        harness = SessionHarness(tmp_path, source=self.two_blocks(), live_monitor=live_monitor)
 
         harness.runner.run()
 
         assert len(read_trials(harness)) == 2, "the session did not get past the break"
         titles = [title for title, _body, _color in harness.display.menus]
         assert titles == ["BLOCK 1 OF 2 COMPLETE — REST"]
-        # The browser is told the session carried on, so a dashboard left
+        # The browser is told the session carried on, so a live monitor left
         # open on a dry run does not sit on "paused" while trials go by.
-        statuses = [status for status, _message in dashboard.published]
+        statuses = [status for status, _message in live_monitor.published]
         assert "running" in statuses
-        assert any(message and "Unattended" in message for _status, message in dashboard.published)
+        assert any(
+            message and "Unattended" in message for _status, message in live_monitor.published
+        )
 
     def test_a_skipped_pause_is_a_warning_not_a_silence(self, tmp_path, caplog):
         """A pause that did not pause is a difference between what the
@@ -506,7 +508,7 @@ class TestAnUnattendedRunIsNeverLeftWaiting:
         should be the dry run."""
         import logging
 
-        harness = SessionHarness(tmp_path, source=self.two_blocks(), dashboard=FakeDashboard())
+        harness = SessionHarness(tmp_path, source=self.two_blocks(), live_monitor=FakeLiveMonitor())
         with caplog.at_level(logging.WARNING, logger="alhazen.session.runner"):
             harness.runner.run()
         assert any("nobody to answer it" in record.getMessage() for record in caplog.records), [
@@ -514,28 +516,28 @@ class TestAnUnattendedRunIsNeverLeftWaiting:
         ]
 
     def test_a_keyboard_pause_still_goes_through_the_browser(self, tmp_path):
-        """The fix must not take the dashboard out of an attended run: with a
+        """The fix must not take the live monitor out of an attended run: with a
         pause strategy wired, the browser is still what resolves the pause."""
-        from alhazen.dashboard.runtime import DashboardCommand
+        from alhazen.live_monitor.runtime import LiveMonitorCommand
 
-        class OneResume(FakeDashboard):
+        class OneResume(FakeLiveMonitor):
             def poll_commands(self):
                 super().poll_commands()
-                return [DashboardCommand(name="resume", request_id="r1")]
+                return [LiveMonitorCommand(name="resume", request_id="r1")]
 
-        dashboard = OneResume()
+        live_monitor = OneResume()
         commands = ScriptedCommands(batches=[[Command.PAUSE]], raw_keys=[[], []])
         harness = SessionHarness(
             tmp_path,
             n_trials=2,
             commands=commands,
             use_pause_menu=True,
-            dashboard=dashboard,
+            live_monitor=live_monitor,
         )
 
         harness.runner.run()
 
-        statuses = [status for status, _message in dashboard.published]
+        statuses = [status for status, _message in live_monitor.published]
         assert "paused" in statuses, statuses
         assert len(read_trials(harness)) == 2
 
@@ -671,13 +673,13 @@ class TestASimulationsBreakResumesByItself:
         # Resumed by the person's SPACE at once, not by a 10 s clock.
         assert resumed.t - failed.t < 1.0
 
-    def test_with_the_dashboard_on_the_break_still_resumes_by_itself(self, tmp_path):
-        dashboard = FakeDashboard(poll_budget=5000)
+    def test_with_the_live_monitor_on_the_break_still_resumes_by_itself(self, tmp_path):
+        live_monitor = FakeLiveMonitor(poll_budget=5000)
         harness = SessionHarness(
             tmp_path,
             use_pause_menu=True,
             source=self.two_blocks(),
-            dashboard=dashboard,
+            live_monitor=live_monitor,
             rest_resume_after_s=10.0,
         )
 
@@ -685,7 +687,9 @@ class TestASimulationsBreakResumesByItself:
 
         assert len(read_trials(harness)) == 2
         assert self._break_length(harness) >= 10.0
-        assert any(message and "by itself" in message for _status, message in dashboard.published)
+        assert any(
+            message and "by itself" in message for _status, message in live_monitor.published
+        )
 
     def test_with_no_keyboard_wired_it_still_resumes_at_once(self, tmp_path):
         """Unattended runs already resumed immediately, since nobody can act.
