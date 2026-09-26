@@ -63,12 +63,13 @@ let values = null;
 let editor = 'fields';
 /* The project open in the settings dialog, or null for "Add experiment". */
 let editProject = null;
-/* Epochs for the two loads a reader can re-trigger faster than they finish:
+/* Epochs for the three loads a reader can re-trigger faster than they finish:
  * each load takes the next number and, after awaiting, writes its answer
  * only if no newer load has started. Without this a slow answer for the
- * previous rig or preset would land on top of the current one. */
+ * previous rig, preset or task would land on top of the current one. */
 let configEpoch = 0;
 let rigEpoch = 0;
+let schemaEpoch = 0;
 /* JSON signatures of what each list last drew (see the file comment). */
 let gallerySignature = '';
 let historySignature = '';
@@ -79,8 +80,9 @@ let launching = false;
 let loadingConfig = false;
 let connectionError = false;
 let loadingSchema = false;
-/* The task's JSON schema, read once per project for the parameter dropdowns;
- * {} until it arrives or when it could not be read. */
+/* The selected task's JSON schema, read once per project (and again when
+ * the reader picks another of its tasks) for the parameter dropdowns; {}
+ * until it arrives or when it could not be read. */
 let parameterSchema = {};
 /* Whether each rig YAML the page has read turns the live monitor on, keyed
  * "<project id>:<rig path>" (two projects may both have a configs/rig.yaml).
@@ -170,6 +172,39 @@ function label(mode) {
   return MODES[mode]?.[0] || project()?.scripts.find((s) => s.id === mode)?.label || mode;
 }
 
+/** A run's heading for the history and the summary line: its mode, then the
+ *  task it ran when the experiment ships several — "Simulate · mt-tuning". */
+function title(run) {
+  return run.task ? `${label(run.mode)} · ${run.task}` : label(run.mode);
+}
+
+/** The tasks a project's run.py declares (`run_experiment(tasks=TASKS)`),
+ *  as {name, params}. Empty for a run.py with one task the old way, when
+ *  the table could not be read (see `tasks_error`), and for a project a
+ *  server from before task tables lists without the field at all. */
+function tasks(p) {
+  return p?.tasks || [];
+}
+
+/** The task a launch or a schema request names: the Task menu's choice for
+ *  a project with tasks, null otherwise. Null, not '', so a project without
+ *  tasks never sends a task the server would refuse. */
+function selectedTask() {
+  return tasks(project()).length ? $('task').value : null;
+}
+
+/**
+ * The preset the Parameter preset menu opens on. The selected task's own
+ * parameter file when run.py names one that the project has; otherwise a
+ * plain task.yaml, the usual starting point; otherwise "Task defaults" (''),
+ * no file at all.
+ */
+function defaultPreset(p) {
+  const task = tasks(p).find((t) => t.name === selectedTask());
+  if (task?.params && p.configs.includes(task.params)) return task.params;
+  return p.configs.find((path) => path.endsWith('/task.yaml')) || '';
+}
+
 /** A short local timestamp for history rows and the run summary. */
 function date(value) {
   return new Date(value).toLocaleString([], {
@@ -202,7 +237,9 @@ function usesParameters() {
  * The launch button's state and the note under it. Disabled while a run is
  * active (one job at a time), while a launch is in flight, while parameters
  * are still loading (a launch then would silently use defaults for the
- * rest), and when the project has no rig or its interpreter is missing.
+ * rest), when the project has no rig or its interpreter is missing, and
+ * when run.py's task table could not be read: the server would refuse the
+ * launch with the same message, so the page says so first.
  */
 function updateLaunch() {
   const p = project();
@@ -211,12 +248,18 @@ function updateLaunch() {
     || !p?.rigs.length
     || launching
     || waitingForParameters
-    || !p?.available;
+    || !p?.available
+    || !!p?.tasks_error;
   if (launching) $('launch').textContent = 'Starting…';
   else if (state.active) $('launch').textContent = 'A run is in progress';
   else $('launch').textContent = `▶ ${label($('mode').value) || 'Start run'}`;
   let note;
-  if (state.active) {
+  if (p?.tasks_error) {
+    // Before the active-run note: this one asks the reader to fix run.py,
+    // which a finished run does not change.
+    note = 'Nothing can be launched until run.py’s task table (TASKS) can be read: '
+      + p.tasks_error;
+  } else if (state.active) {
     note = 'One run at a time keeps the rig available to its active experiment.';
   } else if ($('mode').value === 'run') {
     note = 'This mode records real subject data. Check the rig and subject ID before starting.';
@@ -260,25 +303,35 @@ function modeChanged() {
   // change. A script's help lists the flags it declares, less the ones the
   // launcher sets itself, which are not offered for retyping. A mode's says
   // what the field is for: the runner's flags are the form's already, so
-  // what goes here is the experiment's own (--task, for one that ships
-  // several) or a runner flag the form has no control for (--curriculum).
-  // The server refuses a flag the form owns, by name (workspace.py).
+  // what goes here is a runner flag the form has no control for
+  // (--curriculum) or, for an experiment that ships several tasks without
+  // declaring a task table, its own --task; one with a table picks the task
+  // in the Task menu instead, so --task is not suggested. The placeholder
+  // follows the help so it never shows a flag the help does not offer. The
+  // server refuses a flag the form owns, by name (workspace.py).
   $('extra-label').textContent = script ? 'Extra script arguments' : 'Extra run.py arguments';
   if (script) {
     const managed = ['--out', '--rig', '--params', '--task-config'];
     const offered = script.flags.filter((f) => !managed.includes(f));
     $('extra-help').textContent = `Available flags: ${offered.join(', ') || 'none'}`;
+    $('extra-args').placeholder = offered.length ? `e.g. ${offered[0]}` : '';
+  } else if (tasks(project()).length) {
+    $('extra-help').textContent = 'Passed to run.py after the launcher’s own flags: runner '
+      + 'flags the form has no control for, e.g. --curriculum configs/shaping.yaml. '
+      + 'The task is chosen above.';
+    $('extra-args').placeholder = 'e.g. --curriculum configs/shaping.yaml';
   } else {
     $('extra-help').textContent = 'Passed to run.py after the launcher’s own flags — e.g. '
       + '--task mib-detect for an experiment that ships several tasks, or '
       + '--curriculum configs/shaping.yaml.';
+    $('extra-args').placeholder = 'e.g. --task mib-detect';
   }
   updateLaunch();
 }
 
 /**
- * Switch the workspace to project `id`: fill the mode, rig and preset menus,
- * show its most recent run, then load its schema, preset and rig in
+ * Switch the workspace to project `id`: fill the mode, task, rig and preset
+ * menus, show its most recent run, then load its schema, preset and rig in
  * parallel. Remembered in localStorage so a reload lands on the same one.
  */
 async function chooseProject(id) {
@@ -302,17 +355,27 @@ async function chooseProject(id) {
     ...Object.entries(MODES).map(([value, [text]]) => [value, text]),
     ...others.map((s) => [s.id, s.label]),
   ]);
+  // Tasks, in run.py's order, opening on the one that runs when none is
+  // named. The field shows only for an experiment that declares a table —
+  // or whose table could not be read, so the reader learns why from the
+  // help rather than from a refused launch. Filled before the preset menu:
+  // the preset default follows the selected task.
+  const declared = tasks(p);
+  options($('task'), declared.map((t) => [t.name, t.name]), p.default_task);
+  $('task-field').hidden = !declared.length && !p.tasks_error;
+  $('task').disabled = !declared.length;
+  $('task-help').textContent = p.tasks_error
+    || (declared.length ? `Declared in run.py; ${p.default_task} runs when no task is named.` : '');
   // Rigs are shown by file name. rig-mac.yaml — the scaffold's development
   // rig: a window, no devices — is the safe first choice when present.
   const defaultRig = p.rigs.find((r) => r.endsWith('rig-mac.yaml')) || p.rigs[0];
   options($('rig'), p.rigs.map((r) => [r, r.split('/').pop()]), defaultRig);
-  // Presets: "Task defaults" (no file) first, then the configs found; a plain
-  // task.yaml is the usual starting point.
-  const defaultPreset = p.configs.find((path) => path.endsWith('/task.yaml')) || '';
+  // Presets: "Task defaults" (no file) first, then the configs found, opening
+  // on the selected task's own file when it has one (defaultPreset).
   options($('params-config'), [
     ['', 'Task defaults'],
     ...p.configs.map((path) => [path, path.split('/').pop()]),
-  ], defaultPreset);
+  ], defaultPreset(p));
   // The server lists runs newest first, so the first match is the latest.
   runId = state.runs.find((r) => r.project === id)?.id || null;
   $('extra-args').value = '';
@@ -326,31 +389,54 @@ async function chooseProject(id) {
 }
 
 /**
- * Fetch the task's parameter schema for project `id`. Dropdowns need it,
- * but a launch must not be blocked by its absence: on failure the fields
- * render from the current values alone and a notice says why.
+ * Fetch the parameter schema for project `id` — of the selected task when
+ * the project declares tasks, of its one task otherwise (the server refuses
+ * a task name for a project without a table, so none is sent). Dropdowns
+ * need it, but a launch must not be blocked by its absence: on failure the
+ * fields render from the current values alone and a notice says why. The
+ * epoch drops the answer for a task that is no longer the selected one; the
+ * `selected` check, the answer for a project that is not.
  */
 async function loadSchema(id) {
+  const epoch = ++schemaEpoch;
   parameterSchema = {};
   loadingSchema = true;
   updateLaunch();
   $('choices-notice').hidden = true;
+  let query = `project=${encodeURIComponent(id)}`;
+  const task = selectedTask();
+  if (task !== null) query += `&task=${encodeURIComponent(task)}`;
+  // A stale answer must not land on the current task's schema, nor end the
+  // "loading" state of a newer request that is still in flight.
+  const current = () => epoch === schemaEpoch && selected === id;
   try {
-    const schema = await api(`/api/schema?project=${encodeURIComponent(id)}`);
-    if (selected !== id) return;
+    const schema = await api(`/api/schema?${query}`);
+    if (!current()) return;
     parameterSchema = schema;
   } catch (e) {
-    if (selected !== id) return;
+    if (!current()) return;
     $('choices-notice').textContent = 'Could not load model choices. '
       + `Showing current values; use the text editor for other values. ${e.message}`;
     $('choices-notice').hidden = false;
   } finally {
-    if (selected === id) {
+    if (current()) {
       loadingSchema = false;
       renderEditor();
       updateLaunch();
     }
   }
+}
+
+/**
+ * The reader picked another task: open the Parameter preset menu on that
+ * task's own file, then load its schema and that preset together, so the
+ * editor shows the new task's parameters with the new task's choices. Each
+ * load drops its answer if the reader has moved on again meanwhile.
+ */
+async function taskChanged() {
+  const p = project();
+  $('params-config').value = defaultPreset(p);
+  await Promise.all([loadSchema(p.id), loadConfig()]);
 }
 
 /**
@@ -630,7 +716,7 @@ function renderHistory() {
     const button = node('button', 'history-row' + (run.id === runId ? ' selected' : ''));
     const text = node('span', 'history-text');
     text.append(
-      node('strong', '', label(run.mode)),
+      node('strong', '', title(run)),
       node('small', '', `${date(run.started)} · ${run.rig.split('/').pop()}`),
     );
     // A movie run gets a play glyph; every other mode opens a display.
@@ -748,7 +834,7 @@ async function refreshRun() {
   $('run-status').className = 'status ' + (run?.status || '');
   let info = '';
   if (run) {
-    info = `${label(run.mode)} · ${date(run.started)}`;
+    info = `${title(run)} · ${date(run.started)}`;
     if (run.returncode !== null) info += ' · exit ' + run.returncode;
     if (run.error) info += ' · ' + run.error;
   }
@@ -927,6 +1013,7 @@ $('project-settings').addEventListener('click', () => openProject(true));
 $('close-dialog').addEventListener('click', () => $('project-dialog').close());
 $('close-image').addEventListener('click', () => $('image-dialog').close());
 $('mode').addEventListener('change', modeChanged);
+$('task').addEventListener('change', guard(taskChanged));
 $('rig').addEventListener('change', guard(loadRig));
 $('params-config').addEventListener('change', guard(loadConfig));
 $('parameter-search').addEventListener('input', filterParameters);
@@ -972,6 +1059,7 @@ $('launch-form').addEventListener('submit', guard(async (event) => {
   event.preventDefault();
   // The button is disabled in these states, but Enter in a field submits too.
   if (launching || (usesParameters() && (loadingConfig || loadingSchema)) || state.active) return;
+  if (project().tasks_error) return;
   launching = true;
   updateLaunch();
   error('');
@@ -981,6 +1069,10 @@ $('launch-form').addEventListener('submit', guard(async (event) => {
     const request = {
       project: selected,
       mode,
+      // The task the run is for, when the experiment declares several. A
+      // script takes none — the server refuses one — so it is null there,
+      // whatever the Task menu shows.
+      task: isScript ? null : selectedTask(),
       rig: $('rig').value,
       subject: $('subject').value,
       session: Number($('session').value),

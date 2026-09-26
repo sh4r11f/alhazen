@@ -198,7 +198,11 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/state":
                 self._json(workspace.state())
             elif path == "/api/schema":
-                self._json(workspace.schema(query.get("project", [""])[0]))
+                self._json(
+                    workspace.schema(
+                        query.get("project", [""])[0], query.get("task", [None])[0] or None
+                    )
+                )
             elif path == "/api/config":
                 self._json(
                     workspace.config(query.get("project", [""])[0], query.get("path", [""])[0])

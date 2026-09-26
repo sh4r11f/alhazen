@@ -462,6 +462,32 @@ raise SystemExit(
 )
 ```
 
+An experiment that ships several tasks declares them once, as a table, and
+alhazen owns the `--task` flag — its choices are the table's keys, the chosen
+task's params file stands in for `--params`, and `default_task` (else the
+first declared) runs when no task is named:
+
+```python
+TASKS = {
+    "rf-map-v4": (V4RFMapTask, "configs/task.yaml"),
+    "rf-map-mt": (MTRFMapTask, "configs/task.yaml"),
+}
+
+raise SystemExit(
+    run_experiment(
+        tasks=TASKS,
+        default_task="rf-map-v4",
+        default_rig=HERE / "configs" / "rig-mac.yaml",
+        argv=sys.argv[1:],
+    )
+)
+```
+
+Write the table as a module-level dict literal: the experiment workspace
+([workspace](workspace.md)) reads it out of `run.py` to offer the tasks in its
+Task menu, so the two never disagree about which tasks there are. Exactly one
+of `task_class=` and `tasks=` is given.
+
 Everything else the session needs from the experiment is declared on the
 task, because an installed package's entry point hands `alhazen run --task`
 the task class and nothing else — so what is declared there reaches both

@@ -119,10 +119,16 @@ export function response(json, status = 200) {
  *   state     what /api/state returns: {projects, runs, active}
  *   details   run detail by id, for /api/runs/<id>
  *   configs   {text, values} by path, for /api/config (the rig and presets)
- *   schema    the task's JSON schema, for /api/schema
+ *   schema    the task's JSON schema, for /api/schema without a task (a
+ *             project whose run.py declares one task)
+ *   schemas   JSON schema by task name, for /api/schema?…&task=<name> (a
+ *             project with a task table); a name not listed is an error
  *   launch    (body) => the run started by POST /api/runs (default {id})
  *   posted    every POST body, in order, for a test to read back
  *   reject    (url, init) => a response to give instead, or undefined
+ *
+ * Every request's URL is in the handle's `fetches` (loadWorkspace), so a
+ * test can check that `&task=` was, or was not, sent.
  */
 function fakeServer() {
   const server = {
@@ -130,6 +136,7 @@ function fakeServer() {
     details: {},
     configs: {},
     schema: {},
+    schemas: {},
     launch: () => ({ id: 'launched' }),
     posted: [],
     reject: () => undefined,
@@ -155,7 +162,15 @@ function fakeServer() {
       const run = server.details[path.slice('/api/runs/'.length)];
       return run ? response(run) : response({ error: 'Unknown run' }, 404);
     }
-    if (path === '/api/schema') return response(server.schema);
+    if (path === '/api/schema') {
+      /* Like the real server: a task name picks that task's model; without
+       * one the project's single task answers. A task the test did not set
+       * up is refused by name rather than answered with an empty schema. */
+      if (!params.has('task')) return response(server.schema);
+      const schema = server.schemas[params.get('task')];
+      if (!schema) return response({ error: 'Unknown task ' + params.get('task') }, 404);
+      return response(schema);
+    }
     if (path === '/api/config') {
       const config = server.configs[params.get('path')];
       if (!config) return response({ error: 'No such config ' + params.get('path') }, 404);

@@ -58,9 +58,12 @@ const ACTIVE = ['running', 'stopping'];
  * run), after one refresh: the project chosen, its rig and preset loaded,
  * the run drawn. `hash` is the opening URL's fragment, which carries the
  * token; `dashboardEnabled` is the rig's setting (null: no dashboard block).
+ * `configs` adds presets beyond task.yaml (by path, as /api/config answers)
+ * and `schemas` the per-task schemas of a project with a task table.
  */
 async function pageWith({
   run = null, dashboardEnabled = true, oldKey = false, hash, project = PROJECT,
+  configs = {}, schemas = {},
 } = {}) {
   const app = loadWorkspace({ hash: hash });
   app.server.state = {
@@ -75,7 +78,9 @@ async function pageWith({
   app.server.configs = {
     'configs/rig-mac.yaml': rig(dashboardEnabled, oldKey),
     'configs/task.yaml': { text: 'trials: 4\n', values: { trials: 4 } },
+    ...configs,
   };
+  app.server.schemas = schemas;
   await app.run('refresh()');
   await settle();
   return app;
@@ -95,6 +100,24 @@ async function launch(app) {
   app.byId('launch-form').fire('submit', { preventDefault() {} });
   await settle();
   await settle();
+}
+
+/** The one POST /api/runs the page made, as the server received it. */
+function launched(app) {
+  const posts = app.server.posted.filter((p) => p.path === '/api/runs');
+  assert.equal(posts.length, 1);
+  return posts[0].body;
+}
+
+/** Pick a mode as the reader would, so the form shows that mode's fields. */
+function chooseMode(app, mode) {
+  app.byId('mode').value = mode;
+  app.run('modeChanged()');
+}
+
+/** The URLs of every /api/schema request the page made, in order. */
+function schemaRequests(app) {
+  return app.fetches.map((f) => f.url).filter((url) => url.startsWith('/api/schema'));
 }
 
 const MONITOR_URL = 'http://127.0.0.1:41234/?token=monitor-secret';
@@ -323,19 +346,6 @@ describe('the run history', () => {
 });
 
 describe('launching a run', () => {
-  /** The one POST /api/runs the page made, as the server received it. */
-  function launched(app) {
-    const posts = app.server.posted.filter((p) => p.path === '/api/runs');
-    assert.equal(posts.length, 1);
-    return posts[0].body;
-  }
-
-  /** Pick a mode as the reader would, so the form shows that mode's fields. */
-  function chooseMode(app, mode) {
-    app.byId('mode').value = mode;
-    app.run('modeChanged()');
-  }
-
   it('sends a simulate run: identity, seed, trials, its own flags and the edited parameters',
     async () => {
       const app = await pageWith();
@@ -349,8 +359,9 @@ describe('launching a run', () => {
       app.byId('mouse').checked = true;
       await launch(app);
       assert.deepEqual(launched(app), {
-        project: 'p', mode: 'simulate', rig: 'configs/rig-mac.yaml', subject: 's01', session: 2,
-        seed: 7, trials: 3,
+        /* task is null: this project's run.py declares one task the old way. */
+        project: 'p', mode: 'simulate', task: null, rig: 'configs/rig-mac.yaml', subject: 's01',
+        session: 2, seed: 7, trials: 3,
         /* headless and windowed start checked in the markup. */
         headless: true, mouse: false, windowed: true,
         scale: 0.5, sheet: false, columns: null, clips: [], extra_args: '',
@@ -429,6 +440,169 @@ describe('launching a run', () => {
     await app.run("chooseProject('p')");
     await settle();
     assert.equal(app.byId('extra-args').value, '');
+  });
+});
+
+describe('choosing a task', () => {
+  /* An experiment whose run.py declares two tasks, each with its own
+   * parameter file, and runs mib-search when none is named. PROJECT is
+   * frozen, so the task-bearing project is built from a copy of it. */
+  const TASKED = Object.freeze({
+    ...PROJECT,
+    tasks: [
+      { name: 'mt-tuning', params: 'configs/task-tuning.yaml' },
+      { name: 'mib-search', params: 'configs/task-search-rdk.yaml' },
+    ],
+    default_task: 'mib-search',
+    configs: ['configs/task.yaml', 'configs/task-tuning.yaml', 'configs/task-search-rdk.yaml'],
+  });
+  /* Each task's parameter file and model. The files hold one string each and
+   * the schemas give that string a choice list, so the fields editor shows a
+   * dropdown whose options say which task's model it was drawn from. */
+  const CONFIGS = {
+    'configs/task-tuning.yaml': { text: 'speed: fast\n', values: { speed: 'fast' } },
+    'configs/task-search-rdk.yaml': { text: 'motion: moving\n', values: { motion: 'moving' } },
+  };
+  const SCHEMAS = {
+    'mt-tuning': { properties: { speed: { enum: ['slow', 'fast'], default: 'slow' } } },
+    'mib-search': { properties: { motion: { enum: ['static', 'moving'], default: 'static' } } },
+  };
+
+  /** A page on TASKED, its presets and schemas served. */
+  function taskedPage(options = {}) {
+    return pageWith({ project: TASKED, configs: CONFIGS, schemas: SCHEMAS, ...options });
+  }
+
+  /** Change the Task menu as the reader would and let the reloads finish. */
+  async function chooseTask(app, name) {
+    app.byId('task').value = name;
+    app.byId('task').fire('change');
+    await settle();
+  }
+
+  it('hides the field for a project without a task table and asks for its one schema', async () => {
+    const app = await pageWith();
+    assert.equal(app.byId('task-field').hidden, true);
+    assert.equal(app.byId('task').disabled, true);
+    /* No `task` in the query: the server refuses one for such a project. */
+    assert.deepEqual(schemaRequests(app), ['/api/schema?project=p']);
+    /* The plain task.yaml stays the preset to open on. */
+    assert.equal(app.byId('params-config').value, 'configs/task.yaml');
+  });
+
+  it('lists the declared tasks with the default selected, and opens on its preset and schema',
+    async () => {
+      const app = await taskedPage();
+      const select = app.byId('task');
+      assert.equal(app.byId('task-field').hidden, false);
+      assert.equal(select.disabled, false);
+      assert.deepEqual(select.children.map((o) => o.value), ['mt-tuning', 'mib-search']);
+      assert.deepEqual(select.children.map((o) => o.textContent), ['mt-tuning', 'mib-search']);
+      assert.equal(select.value, 'mib-search');
+      assert.match(app.byId('task-help').textContent, /mib-search runs when no task is named/);
+      /* The preset menu opens on the default task's own parameter file, and
+       * the schema asked for is that task's. */
+      assert.equal(app.byId('params-config').value, 'configs/task-search-rdk.yaml');
+      assert.deepEqual(schemaRequests(app), ['/api/schema?project=p&task=mib-search']);
+      /* The editor shows that file's values with that model's choices. */
+      const field = app.byId('param-0');
+      assert.equal(field.localName, 'select');
+      assert.deepEqual(field.children.map((o) => o.value), ['static', 'moving']);
+      assert.equal(field.value, 'moving');
+      assert.equal(app.byId('launch').disabled, false);
+    });
+
+  it('reloads the preset, schema and parameter fields when another task is picked', async () => {
+    const app = await taskedPage();
+    await chooseTask(app, 'mt-tuning');
+    assert.equal(app.byId('params-config').value, 'configs/task-tuning.yaml');
+    assert.deepEqual(schemaRequests(app), [
+      '/api/schema?project=p&task=mib-search',
+      '/api/schema?project=p&task=mt-tuning',
+    ]);
+    /* The fields are the new task's: its file's value, its model's choices. */
+    const field = app.byId('param-0');
+    assert.equal(field.localName, 'select');
+    assert.deepEqual(field.children.map((o) => o.value), ['slow', 'fast']);
+    assert.equal(field.value, 'fast');
+    assert.equal(app.byId('parameter-fields').children.length, 1);
+    assert.deepEqual(plain(app.run('values')), { speed: 'fast' });
+    assert.equal(app.byId('launch').disabled, false);
+  });
+
+  it('falls back to task.yaml for a task without a parameter file the project has', async () => {
+    /* One task names no file; the other names one the project does not have
+     * (run.py may be ahead of configs/). Neither can open the preset menu. */
+    const project = {
+      ...TASKED,
+      tasks: [
+        { name: 'mt-tuning', params: null },
+        { name: 'mib-search', params: 'configs/gone.yaml' },
+      ],
+    };
+    const app = await taskedPage({ project: project });
+    assert.equal(app.byId('params-config').value, 'configs/task.yaml');
+    await chooseTask(app, 'mt-tuning');
+    assert.equal(app.byId('params-config').value, 'configs/task.yaml');
+    assert.deepEqual(plain(app.run('values')), { trials: 4 });
+  });
+
+  it('sends the selected task with a built-in mode, and never with a script', async () => {
+    const script = {
+      id: 'preview', label: 'Preview images', flags: ['--out', '--sheet'], params_flag: null,
+    };
+    const app = await taskedPage({ project: { ...TASKED, scripts: [script] } });
+    await chooseTask(app, 'mt-tuning');
+    chooseMode(app, 'simulate');
+    /* The help no longer suggests --task: the task is chosen in the menu. */
+    const help = app.byId('extra-help').textContent;
+    assert.doesNotMatch(help, /--task/);
+    assert.match(help, /--curriculum configs\/shaping\.yaml/);
+    assert.match(help, /chosen above/);
+    assert.doesNotMatch(app.byId('extra-args').placeholder, /--task/);
+    app.byId('subject').value = 's01';
+    await launch(app);
+    const body = launched(app);
+    assert.equal(body.mode, 'simulate');
+    assert.equal(body.task, 'mt-tuning');
+    assert.deepEqual(body.parameters, { speed: 'fast' });
+
+    /* A script launch: the Task menu stays in view, but the server refuses a
+     * task on a script, so none is sent. */
+    app.server.posted.length = 0;
+    chooseMode(app, 'preview');
+    assert.equal(app.byId('task-field').hidden, false);
+    await launch(app);
+    assert.equal(launched(app).mode, 'preview');
+    assert.equal(launched(app).task, null);
+  });
+
+  it('names the task after the mode in the history and the run summary', async () => {
+    const run = runDetail({ task: 'mt-tuning', status: 'completed', returncode: 0 });
+    const app = await taskedPage({ run: run });
+    const row = app.byId('history').children[0];
+    assert.equal(row.querySelector('strong').textContent, 'Simulate · mt-tuning');
+    assert.match(app.byId('run-info').textContent, /^Simulate · mt-tuning · /);
+  });
+
+  it('shows why the task table could not be read and offers no launch', async () => {
+    const message = 'TASKS in run.py is not a dict literal';
+    const broken = { ...PROJECT, tasks: [], default_task: null, tasks_error: message };
+    const app = await pageWith({ project: broken });
+    assert.equal(app.byId('task-field').hidden, false);
+    assert.equal(app.byId('task').disabled, true);
+    assert.equal(app.byId('task').children.length, 0);
+    assert.equal(app.byId('task-help').textContent, message);
+    assert.equal(app.byId('launch').disabled, true);
+    assert.match(app.byId('launch-note').textContent, /run\.py/);
+    assert.match(app.byId('launch-note').textContent, new RegExp(message));
+    /* No task table, so no task in the schema request either. */
+    assert.deepEqual(schemaRequests(app), ['/api/schema?project=p']);
+    /* Enter in a field submits past the disabled button; nothing is posted. */
+    chooseMode(app, 'simulate');
+    assert.equal(app.byId('launch').disabled, true);
+    await launch(app);
+    assert.equal(app.server.posted.filter((p) => p.path === '/api/runs').length, 0);
   });
 });
 

@@ -154,8 +154,9 @@ def probe_interpreter(python: str, project_path: str) -> dict[str, str]:
     return {"alhazen_version": report["alhazen"], "python_version": report["python"]}
 
 
-def _read_schema(project: dict[str, Any]) -> dict[str, Any]:
-    """One read of the task's parameter schema, in the project's own interpreter."""
+def _read_schema(project: dict[str, Any], task: str | None = None) -> dict[str, Any]:
+    """One read of a task's parameter schema, in the project's own interpreter:
+    the task named, or run.py's only or default one."""
     try:
         result = subprocess.run(
             [
@@ -163,6 +164,7 @@ def _read_schema(project: dict[str, Any]) -> dict[str, Any]:
                 "-m",
                 "alhazen.cli.workspace_schema",
                 str(Path(project["path"]) / "run.py"),
+                *([task] if task is not None else []),
             ],
             cwd=project["path"],
             env=_child_env(project),
@@ -201,6 +203,114 @@ def parse_parameters(text: str) -> dict[str, Any]:
             "Parameters must contain finite numbers and JSON-compatible values"
         ) from exc
     return value
+
+
+TASK_TABLE_SHAPE = (
+    "run.py's tasks= must name a module-level dict literal, "
+    'TASKS = {"name": (TaskClass, "configs/params.yaml"), ...}, passed as '
+    "run_experiment(tasks=TASKS), for the workspace to list the tasks without importing "
+    "the experiment"
+)
+
+
+def _called_name(call: ast.Call) -> str | None:
+    func = call.func
+    if isinstance(func, ast.Name):
+        return func.id
+    return getattr(func, "attr", None)
+
+
+def _module_assignment(tree: ast.Module, name: str) -> ast.expr | None:
+    """The value bound to `name` at run.py's top level, or None."""
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            if any(isinstance(target, ast.Name) and target.id == name for target in node.targets):
+                return node.value
+        elif (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == name
+        ):
+            return node.value
+    return None
+
+
+def project_tasks(root: Path) -> dict[str, Any]:
+    """The tasks a project's run.py declares, read from the file without running it.
+
+    An experiment that ships several tasks writes them as a module-level dict
+    literal and hands it to alhazen: ``TASKS = {"mt-tuning": (MTTuningTask,
+    "configs/task-tuning.yaml"), ...}`` then ``run_experiment(tasks=TASKS,
+    default_task=...)``. Reading the literal — the way rigs and scripts are
+    found, by looking at files — is what lets the page list the tasks and each
+    one's params file without starting the project's interpreter on every
+    poll. A ``tasks=`` this cannot read is reported in ``error`` with what
+    run.py must look like, never shown as "one task": a launch of such a
+    project is refused with the same words (`Workspace._task_for`).
+
+    Returns ``{"tasks": [{"name", "params"}, ...], "default": name, "error":
+    None}``; a run.py declaring one task (``task_class=``) gives an empty
+    list and no default. ``params`` is the task's params file as written, in
+    posix form, or None when the table gives none or gives it as an
+    expression the file alone cannot evaluate.
+    """
+    empty: dict[str, Any] = {"tasks": [], "default": None, "error": None}
+    run_py = root / "run.py"
+    if not run_py.is_file():
+        return empty
+    try:
+        tree = ast.parse(run_py.read_text(encoding="utf-8"))
+    except (SyntaxError, UnicodeDecodeError) as exc:
+        return {**empty, "error": f"run.py cannot be read for its tasks: {exc}"}
+    call = next(
+        (
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and _called_name(node) == "run_experiment"
+        ),
+        None,
+    )
+    keywords = {kw.arg: kw.value for kw in call.keywords if kw.arg} if call is not None else {}
+    table_node = keywords.get("tasks")
+    if table_node is None:
+        return empty
+    if not isinstance(table_node, ast.Name):
+        return {**empty, "error": TASK_TABLE_SHAPE}
+    table = _module_assignment(tree, table_node.id)
+    if not isinstance(table, ast.Dict):
+        return {**empty, "error": TASK_TABLE_SHAPE}
+    tasks: list[dict[str, Any]] = []
+    for key, value in zip(table.keys, table.values, strict=True):
+        if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+            return {**empty, "error": TASK_TABLE_SHAPE}
+        params = None
+        if isinstance(value, ast.Tuple | ast.List) and len(value.elts) >= 2:
+            second = value.elts[1]
+            if isinstance(second, ast.Constant) and isinstance(second.value, str):
+                params = Path(second.value).as_posix()
+        tasks.append({"name": key.value, "params": params})
+    if not tasks:
+        return {**empty, "error": "run.py's tasks= table is empty; name at least one task"}
+    names = [task["name"] for task in tasks]
+    default_node = keywords.get("default_task")
+    default = names[0]
+    if default_node is not None:
+        if isinstance(default_node, ast.Name):
+            default_node = _module_assignment(tree, default_node.id)
+        if not (isinstance(default_node, ast.Constant) and isinstance(default_node.value, str)):
+            return {
+                **empty,
+                "error": "run.py's default_task= must be a string literal, or a module-level "
+                "name bound to one",
+            }
+        default = default_node.value
+        if default not in names:
+            return {
+                **empty,
+                "error": f"run.py's default_task {default!r} is not one of its tasks: "
+                f"{', '.join(names)}",
+            }
+    return {"tasks": tasks, "default": default, "error": None}
 
 
 def script_actions(root: Path) -> list[dict[str, Any]]:
@@ -280,6 +390,11 @@ class Launch(BaseModel):
     # the runner's flags the form has no control for. What the form does
     # control may not be contradicted here (`_extra_arguments`).
     extra_args: str = ""
+    # Which of the experiment's tasks to run, for a run.py that declares
+    # several (`run_experiment(tasks=...)`, read by `project_tasks`); None
+    # runs its default. A project declaring one task takes no task here, and
+    # neither does a standalone script.
+    task: str | None = None
 
 
 # Every flag `_mode_command` can emit, whichever mode. An extra argument
@@ -287,8 +402,11 @@ class Launch(BaseModel):
 # and its history show, and a `--seed 5` typed behind a seed field saying 0
 # would make the record lie about the run. The runner's other flags — `--run`,
 # `--curriculum`, `--live-monitor`, measure's `--skip` — are not the form's and
-# pass through. TestCommandContract pins this set to what `_mode_command`
-# actually emits, so a flag added there without joining it fails a test.
+# pass through. `--task` is the Task menu's for a project whose run.py declares
+# several tasks (`project_tasks`) and is reserved for those launches only; an
+# experiment that reads its own `--task` from argv still gets it from here.
+# TestCommandContract pins this set to what `_mode_command` actually emits, so
+# a flag added there without joining it fails a test.
 MODE_FLAGS = frozenset(
     {
         "--mode",
@@ -367,6 +485,8 @@ def _mode_command(
     rig_path: Path,
     run_dir: Path,
     no_browser: str = "--no-live-monitor-browser",
+    task: str | None = None,
+    reserved: frozenset[str] = MODE_FLAGS,
 ) -> list[str]:
     """run.py's arguments for one of the six modes: the launcher's flags, then the extras.
 
@@ -382,20 +502,16 @@ def _mode_command(
     has_parameters = request.parameters is not None or request.parameters_yaml is not None
     if mode is Mode.MEASURE and has_parameters:
         raise ValueError("Measure rig does not use task parameters")
-    extra = _extra_arguments(request.extra_args, MODE_FLAGS)
+    extra = _extra_arguments(request.extra_args, reserved)
     if mode in {Mode.RUN, Mode.TEST} and not request.subject.strip():
         raise ValueError("A subject ID is required for run and test modes")
     output = run_dir / "media"
-    command = [
-        str(root / "run.py"),
-        "--mode",
-        mode.value,
-        "--rig",
-        str(rig_path),
-        "--seed",
-        str(request.seed),
-        no_browser,
-    ]
+    command = [str(root / "run.py"), "--mode", mode.value]
+    # The task right after the mode, where run_experiment's own --task reads
+    # it; none for an experiment that declares one task.
+    if task is not None:
+        command += ["--task", task]
+    command += ["--rig", str(rig_path), "--seed", str(request.seed), no_browser]
     if has_parameters:
         command += ["--params", str(run_dir / "params.yaml")]
     if mode.runs_trials:
@@ -470,7 +586,7 @@ class Workspace:
         # seconds each time, and the UI asks on every project switch; editing
         # run.py or choosing another interpreter can change the choices, so
         # either invalidates. The lock makes concurrent requests read once.
-        self._schemas: dict[str, tuple[tuple[int, str], dict[str, Any]]] = {}
+        self._schemas: dict[tuple[str, str | None], tuple[tuple[int, str], dict[str, Any]]] = {}
         self._schema_lock = threading.Lock()
 
     def _save_projects(self) -> None:
@@ -520,7 +636,9 @@ class Workspace:
             self.projects = [p for p in self.projects if p["id"] != key]
             self._save_projects()
         with self._schema_lock:
-            self._schemas.pop(key, None)
+            # Every task's cached schema goes with the project.
+            for cached in [entry for entry in self._schemas if entry[0] == key]:
+                del self._schemas[cached]
 
     def describe(self, key: str) -> dict[str, Any]:
         project = self.project(key)
@@ -537,11 +655,15 @@ class Workspace:
                 rigs.append(relative)
             elif path.stem.startswith(("task", "params")):
                 params.append(relative)
+        declared = project_tasks(root)
         return {
             **project,
             "rigs": rigs,
             "configs": params,
             "scripts": script_actions(root),
+            "tasks": declared["tasks"],
+            "default_task": declared["default"],
+            "tasks_error": declared["error"],
             "available": (root / "run.py").is_file(),
         }
 
@@ -553,7 +675,10 @@ class Workspace:
         content = target.read_text(encoding="utf-8")
         return {"text": content, "values": parse_parameters(content)}
 
-    def schema(self, key: str) -> dict[str, Any]:
+    def schema(self, key: str, task: str | None = None) -> dict[str, Any]:
+        """The parameter schema of one of the project's tasks — `task`, or its
+        only or default one — cached per task until run.py or the interpreter
+        changes."""
         project = self.project(key)
         run_py = Path(project["path"]) / "run.py"
         try:
@@ -567,11 +692,11 @@ class Workspace:
         # its own interpreter. Serialising two different projects' reads is
         # the price, and it is smaller than two interpreters at once.
         with self._schema_lock:
-            cached = self._schemas.get(key)
+            cached = self._schemas.get((key, task))
             if cached is not None and cached[0] == stamp:
                 return cached[1]
-            schema = _read_schema(project)
-            self._schemas[key] = (stamp, schema)
+            schema = _read_schema(project, task)
+            self._schemas[(key, task)] = (stamp, schema)
             return schema
 
     def state(self) -> dict[str, Any]:
@@ -599,8 +724,12 @@ class Workspace:
         if not request.rig or not rig_path.is_file():
             raise ValueError("Choose an existing rig YAML file")
         load_rig(rig_path)
+        task = self._task_for(project, request)
         base = [project["python"], "-u"]
         if request.mode in {m.value for m in Mode}:
+            # With a task chosen from the menu, `--task` is the form's too and
+            # may not be contradicted from the extra arguments.
+            reserved = MODE_FLAGS | {"--task"} if task is not None else MODE_FLAGS
             return base + _mode_command(
                 Mode(request.mode),
                 request,
@@ -608,8 +737,40 @@ class Workspace:
                 rig_path,
                 run_dir,
                 no_browser_flag(project.get("alhazen_version")),
+                task=task,
+                reserved=reserved,
             )
         return base + _script_command(request, root, rig_path, run_dir)
+
+    def _task_for(self, project: dict[str, Any], request: Launch) -> str | None:
+        """The task this launch runs: the one asked for, else run.py's default,
+        for an experiment that declares several; None for one that declares
+        one (its run.py takes no --task) and for a standalone script (which
+        has no task). Each refusal says what to change, before anything is
+        written."""
+        declared = project_tasks(Path(project["path"]))
+        if declared["error"]:
+            raise ValueError(declared["error"])
+        names = [task["name"] for task in declared["tasks"]]
+        is_mode = request.mode in {m.value for m in Mode}
+        if not names or not is_mode:
+            if request.task:
+                what = (
+                    "A standalone script"
+                    if not is_mode
+                    else f"{project['name']}'s run.py, which declares one task,"
+                )
+                raise ValueError(
+                    f"{what} takes no task; clear the task, or declare several with "
+                    "run_experiment(tasks=...)"
+                )
+            return None
+        task = request.task or declared["default"]
+        if task not in names:
+            raise ValueError(
+                f"{project['name']} declares no task {task!r}; choose one of {', '.join(names)}"
+            )
+        return task
 
     def start(self, request: Launch) -> dict[str, Any]:
         with self.lock:
@@ -631,6 +792,7 @@ class Workspace:
             if text is not None:
                 parse_parameters(text)
             project = self.project(request.project)
+            task = self._task_for(project, request)
             (run_dir / "media").mkdir(parents=True)
             if text is not None:
                 (run_dir / "params.yaml").write_text(text, encoding="utf-8")
@@ -644,6 +806,9 @@ class Workspace:
                 "project": project["id"],
                 "name": project["name"],
                 "mode": request.mode,
+                # The task run, for the history and anyone reading run.json;
+                # None for a project with one task and for a script.
+                "task": task,
                 # Stored as posix whatever the client typed, so run.json reads
                 # the same on every OS; the rig itself was resolved above.
                 "rig": Path(request.rig).as_posix(),
