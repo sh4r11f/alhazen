@@ -48,7 +48,13 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   Ctrl+C does, on Windows too (see Changed, below). The run has thirty
   seconds to tear down; one still alive after that is killed and its
   history says so (status `killed`, `"stopped": "forced"` in `run.json`, a
-  final console line) rather than reading as a clean cancellation.
+  final console line) rather than reading as a clean cancellation. An
+  **Extra run.py arguments** field, offered for the six modes as well as for
+  scripts, passes whatever else the entry point takes — `--task mib-detect`
+  for an experiment that ships several tasks, `--curriculum
+  configs/shaping.yaml` — after the launcher's own flags, and refuses by name
+  an argument that would contradict a form setting (`--seed`, `--sub`,
+  `--out`, …).
 - **A session prints where its live dashboard is.** `alhazen run` and every
   `run.py` now print `dashboard: http://127.0.0.1:PORT/?token=…` after the
   `params:` line when the rig enables the dashboard. The runner logged that

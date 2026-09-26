@@ -156,13 +156,18 @@
               <input id="clips" placeholder="Leave empty to record every clip">
             </div>
 
-            <!-- Discovered project scripts only. -->
-            <div id="script-options">
-              <label for="script-args">
-                Script arguments <span class="optional">optional</span>
+            <!-- Extra arguments, for every mode and script: what the entry
+                 point takes beyond the form's own flags — an experiment's
+                 --task when it ships several, a curriculum, a discovered
+                 script's options. The label names run.py or the script and
+                 the help says what fits (modeChanged() in workspace.js). -->
+            <div>
+              <label for="extra-args">
+                <span id="extra-label">Extra run.py arguments</span>
+                <span class="optional">optional</span>
               </label>
-              <input id="script-args" placeholder="e.g. --motions occluder --sheet">
-              <p class="help" id="script-help"></p>
+              <input id="extra-args" placeholder="e.g. --task mib-detect">
+              <p class="help" id="extra-help"></p>
             </div>
 
             <!-- Task parameters: a fields editor or a text editor over the

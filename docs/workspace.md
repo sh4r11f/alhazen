@@ -38,9 +38,9 @@ cannot, and records the alhazen and Python versions it found.
    Measure rig hides the parameter preset and editor entirely, as do standalone
    scripts without a parameter-file option. Hidden task parameters are not sent
    to those jobs.
-4. Set the mode's options and start the run. Run and test require a subject ID;
-   simulate can use its own default subject. Only simulate accepts headless,
-   and only test accepts mouse gaze.
+4. Set the mode's options, add any extra `run.py` arguments (below), and start
+   the run. Run and test require a subject ID; simulate can use its own default
+   subject. Only simulate accepts headless, and only test accepts mouse gaze.
 5. Follow the console or view generated media. Images can be enlarged or saved.
    Movies appear once recording finishes, with native playback and seeking.
 
@@ -52,14 +52,33 @@ Movies use the task's `movie_clips` implementation and require the movie extra
 in the selected interpreter. A mode a task has not implemented fails visibly
 in its console, exactly as it would from `run.py`.
 
+**Extra run.py arguments** go to the experiment's entry point after the
+launcher's own flags, in every mode. The field is split like a shell command
+line: quote an argument that contains spaces, and write paths with forward
+slashes, since a backslash escapes the character after it. It is how an
+experiment that ships several tasks is launched — such a `run.py` reads its
+own `--task <name>` from the command line and hands the rest to
+`run_experiment`, so `--task mib-detect` selects the task — and how a runner
+flag the form has no control for is given: `--curriculum configs/shaping.yaml`,
+`--run 3`, or measure mode's `--skip`. An extra argument naming a flag the
+launcher sets from the form is refused, naming the flag, before anything is
+written, so a run's recorded settings cannot be contradicted from the text
+field. Those flags are `--mode`, `--rig`, `--params`, `--seed`,
+`--no-dashboard-browser`, `--sub`, `--ses`, `--trials-per-condition`,
+`--headless`, `--mouse`, `--windowed`, `--out`, `--scale`, `--sheet`,
+`--columns`, `--clip` and `--screenshots`, in either the `--seed 5` or the
+`--seed=5` spelling; every other flag passes through.
+
 The launcher discovers standalone `src/<package>/preview.py` and `movie.py`
 modules when they declare a literal `--out` argparse option and a `__main__`
 entry point. **Preview images** runs Amodal's PNG generator; **Movie script**
 runs its standalone recorder, which offers additional sheet options. The
 launcher passes `--rig` and `--params` or `--task-config` when the script
-supports them. Other script arguments can be entered in the UI. Scripts that
-are only internal viewer helpers (such as KDE's preview module) are not
-presented as runnable image generators; use demo or movie instead.
+supports them; those and `--out` are the flags reserved for a script, and
+anything else it declares goes in the same extra-arguments field, whose help
+lists the flags the script offers. Scripts that are only internal viewer
+helpers (such as KDE's preview module) are not presented as runnable image
+generators; use demo or movie instead.
 
 Parameter choices are read from the class passed to `run_experiment(task_class=...)`
 in a separate process using the project's selected Python interpreter. This
