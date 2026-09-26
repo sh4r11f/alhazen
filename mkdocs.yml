@@ -52,6 +52,7 @@ nav:
   - Scenes: scenes.md
   - Experiment database: database.md
   - Live dashboard: dashboard.md
+  - Experiment workspace: workspace.md
   - Versioning and releases: versioning.md
   - Design proposals:
       - Precomputed sessions: design/precomputed-sessions.md

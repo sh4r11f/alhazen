@@ -325,6 +325,15 @@ class SessionRunner:
 
     # ------------------------------------------------------------------
 
+    @property
+    def dashboard_url(self) -> str | None:
+        """Where the live dashboard is being served, or None when this session
+        has none. Known from the build (the controller starts its server
+        before the runner exists), so a caller can print it before trial one
+        — the CLI does, and the experiment workspace reads that line to embed
+        the page. Read-only: the session, not its caller, owns the server."""
+        return self._dashboard.url if self._dashboard is not None else None
+
     def run(self) -> None:
         # How far the start got, for the teardown in the finally below. Every
         # setup step runs inside that try, not before it: by the time run() is

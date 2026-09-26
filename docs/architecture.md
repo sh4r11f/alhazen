@@ -47,7 +47,7 @@ src/alhazen/
 ├── testing/        # PUBLIC fakes: FakeClock/FakeDisplay/FakeStimulus/Scripted*/EventCollector
 │                  # and SortedSpikePublisher, the sorter that lives outside this repo
 ├── _scaffold/      # the template `alhazen new` renders
-└── cli/            # new · run · validate · check-rig · sim-sorter · calibrate · report
+└── cli/            # new · run · dashboard · validate · check-rig · sim-sorter · calibrate · report
 ```
 
 Layering is enforced by import-linter (pyproject `[tool.importlinter]`),
@@ -66,6 +66,23 @@ which every mode builds or drives; the ruler that `--mode measure` and
 `alhazen calibrate ruler` both draw lives in `display/ruler.py` so that
 `modes` never imports from `cli`. `_scaffold` imports nothing from alhazen but
 `errors`, and its line keeps it that way.
+
+The experiment workspace (`alhazen dashboard`) lives in `cli/workspace.py`
+and `cli/dashboard.py`, above the execution layers. It discovers downstream
+checkouts by reading config and script files, then supervises each project's
+own entry point in a child process. A loopback HTTP server serves the bundled
+`cli/assets/` interface, authenticated control requests, bounded log tails,
+and media with byte-range support. A workspace stores its project registry
+and unique run directories with parameter/rig snapshots and logs. No launcher
+HTTP or process bookkeeping enters the trial engine. The existing `dashboard/`
+package remains the session monitor, with its own pause-only controls. See
+[Experiment workspace](workspace.md) for the launch and storage contracts.
+Parameter dropdowns read the task's Pydantic schema through an isolated
+`cli/workspace_schema.py` subprocess in the project's interpreter. The server
+does not import task modules itself. Rig measurement omits task parameters.
+`cli/console_break.py` makes a Windows console break — how the workspace stops
+a child — raise the same `KeyboardInterrupt` as Ctrl+C, so a stopped session
+still tears down; `_run_session` and the workspace server both arm it.
 
 Three placements carry the weight:
 

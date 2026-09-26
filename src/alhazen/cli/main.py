@@ -27,6 +27,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from alhazen.cli.console_break import interrupt_on_console_break
 from alhazen.config.loader import load_rig
 from alhazen.errors import AlhazenError, ConfigError
 from alhazen.modes import Mode, flag_refusal
@@ -52,6 +53,15 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--task", default=None, help="the task's registered name")
     run.add_argument("--list", action="store_true", help="list installed tasks and exit")
     add_mode_arguments(run)
+    dashboard = sub.add_parser("dashboard", help="open the experiment launcher in a browser")
+    dashboard.add_argument(
+        "--project", action="append", default=[], help="experiment folder to add"
+    )
+    dashboard.add_argument("--port", type=int, default=0, help="loopback port (default: automatic)")
+    dashboard.add_argument("--state-dir", default=None, help="registry, logs and media directory")
+    dashboard.add_argument(
+        "--no-browser", action="store_true", help="print the URL without opening it"
+    )
     calibrate = sub.add_parser("calibrate", help="check a monitor's geometry and gamma")
     calibrate_sub = calibrate.add_subparsers(dest="calibration")
     ruler = calibrate_sub.add_parser(
@@ -170,6 +180,16 @@ def main(argv: list[str] | None = None) -> int:
 # top-level parser (the ones with sub-subcommands print their own --help
 # through it) and returns the exit code.
 Handler = Callable[[argparse.Namespace, argparse.ArgumentParser], int]
+
+
+def _dashboard(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    from alhazen.cli.dashboard import serve
+
+    try:
+        return serve(args)
+    except (OSError, ValueError) as exc:
+        print(f"CANNOT OPEN DASHBOARD: {exc}", file=sys.stderr)
+        return 1
 
 
 def _validate(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
@@ -387,6 +407,13 @@ def _run_session(
     ``params_hook=``), and replaces the task's; ``alhazen run`` passes None,
     which leaves the task's in charge.
     """
+    # Armed before anything else, so a stop that arrives while the rig or the
+    # task is still loading already ends the session through teardown rather
+    # than on the spot. The workspace's Stop run is a console break on Windows,
+    # which Python would otherwise let kill the process with no `finally` run
+    # at all (alhazen.cli.console_break); elsewhere this does nothing.
+    interrupt_on_console_break()
+
     from alhazen.cli.tasks import installed_tasks, load_task_class
 
     mode = Mode(args.mode)
@@ -773,6 +800,14 @@ def _trial_session(args: argparse.Namespace, rig: Any, task: Any, params: Any, m
     # The task's own name, not args.task: an experiment's run.py has no
     # --task flag, because it already knows which experiment it is.
     print(f"running {task.name}: sub-{subject} ses-{session:03d} run-{built.run:02d}")
+    # The live dashboard's address, on the console like everything else the
+    # experimenter needs before trial one. The runner also logs it, but only
+    # into the run's session.log — and with --no-dashboard-browser nothing
+    # opens it, so this line is the only place a terminal user sees it. The
+    # experiment workspace (`alhazen dashboard`) reads the same line from a
+    # launched run's console to embed the page; that contract is tested.
+    if built.runner.dashboard_url is not None:
+        print(f"dashboard: {built.runner.dashboard_url}")
     built.runner.run()
     print(f"session complete — data under {built.data_root.resolve()}")
     return 0
@@ -963,6 +998,7 @@ def _sim_sorter(args: argparse.Namespace) -> int:
 # Looked up by name at call time for `run` and `sim-sorter`, whose handlers
 # take other arguments; the rest are the functions themselves.
 _COMMANDS: dict[str, Handler] = {
+    "dashboard": _dashboard,
     "validate": _validate,
     "new": _new,
     "run": lambda args, parser: _run_session(args),
