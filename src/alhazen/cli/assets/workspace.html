@@ -83,6 +83,16 @@
             <select id="mode"></select>
             <p id="mode-help" class="help"></p>
 
+            <!-- The task, for an experiment whose run.py declares several
+                 (TASKS = {...}). Shown only then; chooseProject() fills it
+                 and the help names the default, or says why the table could
+                 not be read, in which case no launch is offered. -->
+            <div id="task-field">
+              <label for="task">Task</label>
+              <select id="task"></select>
+              <p id="task-help" class="help"></p>
+            </div>
+
             <div class="field-pair">
               <div>
                 <label for="rig">Rig</label>
@@ -157,10 +167,12 @@
             </div>
 
             <!-- Extra arguments, for every mode and script: what the entry
-                 point takes beyond the form's own flags — an experiment's
-                 --task when it ships several, a curriculum, a discovered
-                 script's options. The label names run.py or the script and
-                 the help says what fits (modeChanged() in workspace.js). -->
+                 point takes beyond the form's own flags — a curriculum, a
+                 discovered script's options, or --task for an experiment
+                 that ships several tasks but has no task table for the Task
+                 menu above. The label names run.py or the script and the
+                 help and placeholder say what fits (modeChanged() in
+                 workspace.js). -->
             <div>
               <label for="extra-args">
                 <span id="extra-label">Extra run.py arguments</span>

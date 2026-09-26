@@ -52,22 +52,43 @@ Movies use the task's `movie_clips` implementation and require the movie extra
 in the selected interpreter. A mode a task has not implemented fails visibly
 in its console, exactly as it would from `run.py`.
 
+**Several tasks in one experiment.** A `run.py` that declares its tasks as a
+table and hands it to alhazen —
+
+```python
+TASKS = {
+    "mib-search": (MIBSearchTask, "configs/task-search-rdk.yaml"),
+    "mt-tuning": (MTTuningTask, "configs/task-tuning.yaml"),
+}
+run_experiment(tasks=TASKS, default_task="mib-search", default_rig=..., argv=sys.argv[1:])
+```
+
+— gets a **Task** menu. The page lists the table's names with the default
+selected, reads the chosen task's parameter choices, preselects that task's
+parameter file as the preset when the table names one, sends `--task <name>`
+right after the mode, and shows the task beside the mode in the history. The
+launcher reads the table from `run.py` itself (the way it finds rigs and
+scripts), so it must be a module-level dict literal with string keys and, for
+the preset, a string path as each entry's second element; a `tasks=` written
+any other way is reported under the menu, with the shape expected, and a
+launch of that project is refused with the same words. A `run.py` that
+declares one task (`task_class=`) has no menu and takes no task.
+
 **Extra run.py arguments** go to the experiment's entry point after the
 launcher's own flags, in every mode. The field is split like a shell command
 line: quote an argument that contains spaces, and write paths with forward
-slashes, since a backslash escapes the character after it. It is how an
-experiment that ships several tasks is launched — such a `run.py` reads its
-own `--task <name>` from the command line and hands the rest to
-`run_experiment`, so `--task mib-detect` selects the task — and how a runner
+slashes, since a backslash escapes the character after it. It is how a runner
 flag the form has no control for is given: `--curriculum configs/shaping.yaml`,
-`--run 3`, or measure mode's `--skip`. An extra argument naming a flag the
-launcher sets from the form is refused, naming the flag, before anything is
-written, so a run's recorded settings cannot be contradicted from the text
-field. Those flags are `--mode`, `--rig`, `--params`, `--seed`,
-`--no-live-monitor-browser`, `--sub`, `--ses`, `--trials-per-condition`,
-`--headless`, `--mouse`, `--windowed`, `--out`, `--scale`, `--sheet`,
-`--columns`, `--clip` and `--screenshots`, in either the `--seed 5` or the
-`--seed=5` spelling; every other flag passes through.
+`--run 3`, or measure mode's `--skip` — and, for an experiment that reads its
+own `--task` from the command line instead of declaring a table, how its task
+is named. An extra argument naming a flag the launcher sets from the form is
+refused, naming the flag, before anything is written, so a run's recorded
+settings cannot be contradicted from the text field. Those flags are `--mode`,
+`--rig`, `--params`, `--seed`, `--no-live-monitor-browser`, `--sub`, `--ses`,
+`--trials-per-condition`, `--headless`, `--mouse`, `--windowed`, `--out`,
+`--scale`, `--sheet`, `--columns`, `--clip` and `--screenshots`, in either the
+`--seed 5` or the `--seed=5` spelling, and `--task` for a project with a Task
+menu; every other flag passes through.
 
 The launcher discovers standalone `src/<package>/preview.py` and `movie.py`
 modules when they declare a literal `--out` argparse option and a `__main__`
@@ -81,6 +102,7 @@ helpers (such as KDE's preview module) are not presented as runnable image
 generators; use demo or movie instead.
 
 Parameter choices are read from the class passed to `run_experiment(task_class=...)`
+— or, with a Task menu, from the chosen entry of `run_experiment(tasks=...)` —
 in a separate process using the project's selected Python interpreter. This
 imports the task but does not execute the `run.py` main block or start a session.
 

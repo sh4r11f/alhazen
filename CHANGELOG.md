@@ -25,6 +25,24 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+### Added
+
+- **One `run.py`, several tasks.** `run_experiment(tasks={"name": (TaskClass,
+  "configs/params.yaml"), ...}, default_task=...)` declares an experiment's
+  tasks once; alhazen owns `--task` (its choices are the table's keys, the
+  chosen task's params file stands in for `--params`, the default runs when no
+  task is named), and a `run.py` saying both `task_class=` and `tasks=`, or
+  neither, is refused. The experiment workspace reads the same table out of
+  `run.py` — a module-level dict literal — and gets a **Task** menu: the
+  chosen task's parameter choices and preset, `--task <name>` right after the
+  mode, the task recorded on the run and shown in the history, and `--task`
+  refused in the extra arguments for such a project. A table the workspace
+  cannot read is reported under the menu with the shape expected, and that
+  project's launches are refused with the same words. `alhazen.cli.workspace_schema`
+  takes the task's name as its second argument.
+
 ## 1.9.0 - 2026-09-25
 
 ### Changed
