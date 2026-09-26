@@ -272,18 +272,82 @@ class Launch(BaseModel):
     sheet: bool = False
     columns: int | None = Field(default=None, ge=1)
     clips: list[str] = Field(default_factory=list)
-    script_args: str = ""
+    # Free-form arguments for the entry point, split like a shell line and
+    # appended after the launcher's own flags — for a mode as much as for a
+    # standalone script. An experiment that ships several tasks reads its own
+    # `--task <name>` from argv before run_experiment sees the rest, and
+    # cannot be launched without it; `--curriculum <path>` and `--run <n>` are
+    # the runner's flags the form has no control for. What the form does
+    # control may not be contradicted here (`_extra_arguments`).
+    extra_args: str = ""
+
+
+# Every flag `_mode_command` can emit, whichever mode. An extra argument
+# naming one of these is refused: the form's controls are what the run record
+# and its history show, and a `--seed 5` typed behind a seed field saying 0
+# would make the record lie about the run. The runner's other flags — `--run`,
+# `--curriculum`, `--dashboard`, measure's `--skip` — are not the form's and
+# pass through. TestCommandContract pins this set to what `_mode_command`
+# actually emits, so a flag added there without joining it fails a test.
+MODE_FLAGS = frozenset(
+    {
+        "--mode",
+        "--rig",
+        "--params",
+        "--seed",
+        "--no-dashboard-browser",
+        "--ses",
+        "--sub",
+        "--trials-per-condition",
+        "--headless",
+        "--mouse",
+        "--windowed",
+        "--out",
+        "--scale",
+        "--sheet",
+        "--columns",
+        "--clip",
+        "--screenshots",
+    }
+)
+# The same for a standalone preview/movie module: the flags `_script_command`
+# passes it, which are what makes the run reproducible from its directory.
+SCRIPT_FLAGS = frozenset({"--out", "--rig", "--params", "--task-config"})
+
+
+def _extra_arguments(text: str, reserved: frozenset[str]) -> list[str]:
+    """The free-form arguments as argv, with any flag the launcher owns refused by name.
+
+    A reserved flag is caught in both spellings, `--seed 5` and `--seed=5`,
+    and the refusal names it, because "not allowed" alone sends the person
+    at the screen back to guess which of their tokens it meant. Quoting
+    errors are named too: shlex's own "No closing quotation" does not say
+    which field it is talking about.
+    """
+    try:
+        extra = shlex.split(text)
+    except ValueError as exc:
+        raise ValueError(f"Cannot read the extra arguments ({exc}); check their quoting") from exc
+    for token in extra:
+        flag = token.split("=", 1)[0]
+        if flag in reserved:
+            raise ValueError(
+                f"{flag} is set from the dashboard controls; change it there rather than in "
+                "the extra arguments"
+            )
+    return extra
 
 
 def _mode_command(
     mode: Mode, request: Launch, root: Path, rig_path: Path, run_dir: Path
 ) -> list[str]:
-    """run.py's arguments for one of the six modes: the flags add_mode_arguments takes.
+    """run.py's arguments for one of the six modes: the launcher's flags, then the extras.
 
     Refusals come first, before anything is written to the run directory,
     in the words the person at the screen needs. TestCommandContract parses
-    the result with the runner's own parser, so a flag renamed there fails
-    here rather than in a child's console.
+    the launcher's part of the result with the runner's own parser, so a
+    flag renamed there fails here rather than in a child's console; the
+    extras ride behind it, untouched, for the experiment's run.py to read.
     """
     refusal = flag_refusal(mode, headless=request.headless, mouse=request.mouse)
     if refusal:
@@ -291,8 +355,7 @@ def _mode_command(
     has_parameters = request.parameters is not None or request.parameters_yaml is not None
     if mode is Mode.MEASURE and has_parameters:
         raise ValueError("Measure rig does not use task parameters")
-    if request.script_args.strip():
-        raise ValueError("Extra script arguments are only used with standalone scripts")
+    extra = _extra_arguments(request.extra_args, MODE_FLAGS)
     if mode in {Mode.RUN, Mode.TEST} and not request.subject.strip():
         raise ValueError("A subject ID is required for run and test modes")
     output = run_dir / "media"
@@ -327,7 +390,9 @@ def _mode_command(
             command += ["--clip", clip]
     if mode is Mode.DEMO:
         command += ["--screenshots", str(output)]
-    return command
+    # Last, after every flag of the launcher's own: run.py strips what is
+    # its (`--task`) and hands the rest to run_experiment's parser.
+    return command + extra
 
 
 def _script_command(request: Launch, root: Path, rig_path: Path, run_dir: Path) -> list[str]:
@@ -335,7 +400,7 @@ def _script_command(request: Launch, root: Path, rig_path: Path, run_dir: Path) 
 
     The rig, parameters and output directory are the launcher's to set (they
     are what makes the run reproducible from its directory), so the free-form
-    arguments may not name them.
+    arguments may not name them (SCRIPT_FLAGS).
     """
     action = next((s for s in script_actions(root) if s["id"] == request.mode), None)
     if action is None:
@@ -347,11 +412,7 @@ def _script_command(request: Launch, root: Path, rig_path: Path, run_dir: Path) 
         if not action["params_flag"]:
             raise ValueError("This script has no parameter-file option; use its own arguments")
         command += [action["params_flag"], str(run_dir / "params.yaml")]
-    extra = shlex.split(request.script_args)
-    reserved = {"--out", "--rig", "--params", "--task-config"}
-    if any(token.split("=", 1)[0] in reserved for token in extra):
-        raise ValueError("Set the rig, parameters and output through the dashboard controls")
-    return command + extra
+    return command + _extra_arguments(request.extra_args, SCRIPT_FLAGS)
 
 
 class Workspace:

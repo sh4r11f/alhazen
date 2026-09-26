@@ -256,15 +256,23 @@ function modeChanged() {
   $('mouse-field').hidden = mode !== 'test';
   $('windowed-field').hidden = !['test', 'run', 'demo', 'measure', 'simulate'].includes(mode);
   $('movie-options').hidden = mode !== 'movie';
-  $('script-options').hidden = !script;
-  // The flags the launcher sets itself are not offered for retyping.
-  const managed = ['--out', '--rig', '--params', '--task-config'];
-  let flags = '';
+  // Extra arguments are offered for every mode and script; only the words
+  // change. A script's help lists the flags it declares, less the ones the
+  // launcher sets itself, which are not offered for retyping. A mode's says
+  // what the field is for: the runner's flags are the form's already, so
+  // what goes here is the experiment's own (--task, for one that ships
+  // several) or a runner flag the form has no control for (--curriculum).
+  // The server refuses a flag the form owns, by name (workspace.py).
+  $('extra-label').textContent = script ? 'Extra script arguments' : 'Extra run.py arguments';
   if (script) {
+    const managed = ['--out', '--rig', '--params', '--task-config'];
     const offered = script.flags.filter((f) => !managed.includes(f));
-    flags = `Available flags: ${offered.join(', ') || 'none'}`;
+    $('extra-help').textContent = `Available flags: ${offered.join(', ') || 'none'}`;
+  } else {
+    $('extra-help').textContent = 'Passed to run.py after the launcher’s own flags — e.g. '
+      + '--task mib-detect for an experiment that ships several tasks, or '
+      + '--curriculum configs/shaping.yaml.';
   }
-  $('script-help').textContent = flags;
   updateLaunch();
 }
 
@@ -307,7 +315,7 @@ async function chooseProject(id) {
   ], defaultPreset);
   // The server lists runs newest first, so the first match is the latest.
   runId = state.runs.find((r) => r.project === id)?.id || null;
-  $('script-args').value = '';
+  $('extra-args').value = '';
   $('parameter-search').value = '';
   modeChanged();
   renderState();
@@ -983,7 +991,8 @@ $('launch-form').addEventListener('submit', guard(async (event) => {
       sheet: $('sheet').checked,
       columns: $('columns').value ? Number($('columns').value) : null,
       clips: $('clips').value.split(',').map((s) => s.trim()).filter(Boolean),
-      script_args: MODES[mode] ? '' : $('script-args').value,
+      // For every mode and script alike; the server splits and checks them.
+      extra_args: $('extra-args').value,
     };
     // Parameters travel as the editor shows them: the raw text from the text
     // editor (the server parses and validates it) or the edited values from

@@ -328,16 +328,15 @@ describe('launching a run', () => {
       app.byId('seed').value = '7';
       app.byId('trials').value = '3';
       app.byId('scale').value = '0.5';
-      /* Hidden for simulate: whatever they hold must not reach the server. */
+      /* Hidden for simulate: whatever it holds must not reach the server. */
       app.byId('mouse').checked = true;
-      app.byId('script-args').value = '--ignored';
       await launch(app);
       assert.deepEqual(launched(app), {
         project: 'p', mode: 'simulate', rig: 'configs/rig-mac.yaml', subject: 's01', session: 2,
         seed: 7, trials: 3,
         /* headless and windowed start checked in the markup. */
         headless: true, mouse: false, windowed: true,
-        scale: 0.5, sheet: false, columns: null, clips: [], script_args: '',
+        scale: 0.5, sheet: false, columns: null, clips: [], extra_args: '',
         parameters: { trials: 4 },
       });
       /* The token travels in a header, as JSON, and the page moved on to the
@@ -376,19 +375,44 @@ describe('launching a run', () => {
       };
       const app = await pageWith({ project: { ...PROJECT, scripts: [script] } });
       chooseMode(app, 'preview');
-      assert.equal(app.byId('script-options').hidden, false);
+      /* The field is the script's here, not run.py's, and says so. */
+      assert.equal(app.byId('extra-label').textContent, 'Extra script arguments');
       /* --out is the launcher's own flag and is not offered for retyping. */
-      assert.equal(app.byId('script-help').textContent, 'Available flags: --sheet');
+      assert.equal(app.byId('extra-help').textContent, 'Available flags: --sheet');
       assert.equal(app.byId('task-parameters').hidden, true);
-      app.byId('script-args').value = '--sheet';
+      app.byId('extra-args').value = '--sheet';
       await launch(app);
       const body = launched(app);
       assert.equal(body.mode, 'preview');
-      assert.equal(body.script_args, '--sheet');
+      assert.equal(body.extra_args, '--sheet');
       assert.equal(body.windowed, false);
       assert.equal('parameters' in body, false);
       assert.equal('parameters_yaml' in body, false);
     });
+
+  it('offers extra run.py arguments for a mode too, and sends what was typed', async () => {
+    /* An experiment that ships several tasks needs its own --task before
+     * run_experiment sees the rest; the field used to be a script's alone. */
+    const app = await pageWith();
+    chooseMode(app, 'simulate');
+    assert.equal(app.byId('extra-label').textContent, 'Extra run.py arguments');
+    const help = app.byId('extra-help').textContent;
+    assert.match(help, /after the launcher’s own flags/);
+    assert.match(help, /--task mib-detect/);
+    assert.match(help, /--curriculum configs\/shaping\.yaml/);
+    app.byId('subject').value = 's01';
+    app.byId('extra-args').value = '--task mib-detect';
+    await launch(app);
+    const body = launched(app);
+    assert.equal(body.mode, 'simulate');
+    assert.equal(body.extra_args, '--task mib-detect');
+    /* Switching to another project starts the field empty again: the
+     * arguments were that experiment's. */
+    app.run("$('extra-args').value = '--task other'");
+    await app.run("chooseProject('p')");
+    await settle();
+    assert.equal(app.byId('extra-args').value, '');
+  });
 });
 
 describe('the parameter text editor', () => {

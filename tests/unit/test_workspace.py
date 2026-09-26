@@ -7,6 +7,7 @@ import ast
 import json
 import os
 import re
+import shlex
 import socket
 import subprocess
 import sys
@@ -22,6 +23,7 @@ from alhazen.cli import workspace as workspace_module
 from alhazen.cli.dashboard import DashboardServer, Handler, workspace_lock
 from alhazen.cli.main import add_mode_arguments
 from alhazen.cli.workspace import (
+    MODE_FLAGS,
     STOP_GRACE_S,
     Launch,
     Workspace,
@@ -129,9 +131,10 @@ class TestProjects:
             workspace.directory / "job",
         )
         assert "-m" in args and "--task-config" in args and "--rig" in args
-        with pytest.raises(ValueError, match="dashboard controls"):
+        # The refusal names the flag, in its `--flag=value` spelling too.
+        with pytest.raises(ValueError, match=r"--out is set from the dashboard controls"):
             workspace._command(
-                request_for(workspace, mode=actions[0]["id"], script_args="--out=/tmp/elsewhere"),
+                request_for(workspace, mode=actions[0]["id"], extra_args="--out=/tmp/elsewhere"),
                 workspace.directory,
             )
 
@@ -226,7 +229,9 @@ class TestLaunches:
             ({"mode": "missing"}, "Unknown experiment"),
             ({"rig": "../outside.yaml"}, "inside"),
             ({"rig": "missing.yaml"}, "existing rig"),
-            ({"script_args": "--out bad"}, "standalone scripts"),
+            # Movie mode: --out is the launcher's, so the run record's media
+            # directory cannot be contradicted from the extra arguments.
+            ({"extra_args": "--out elsewhere"}, "--out is set from the dashboard controls"),
             ({"parameters": {}, "parameters_yaml": "speed: 2"}, "either"),
             ({"parameters_yaml": "[1,2]"}, "mapping"),
             ({"mode": "measure", "parameters": {"speed": 2}}, "does not use task parameters"),
@@ -359,6 +364,11 @@ class TestCommandContract:
     error and the run would just read "failed". So every command the launcher
     can build is parsed with the runner's own parser — strictly (parse_args,
     not parse_known_args), so a flag the runner no longer knows is a failure.
+
+    The extra arguments are not the runner's to parse: an experiment's
+    `--task` is stripped by its own run.py before run_experiment sees argv.
+    They ride at the very end of the command, so the contract is the part
+    before them, and the parse stops exactly where they begin.
     """
 
     @pytest.mark.parametrize("mode, sheet", [(m.value, False) for m in Mode] + [("movie", True)])
@@ -378,11 +388,18 @@ class TestCommandContract:
             sheet=sheet,
             columns=2 if sheet else None,
             clips=["one", "two"] if mode == "movie" else [],
+            extra_args="--task mib-detect",
         )
         command = workspace._command(request, workspace.directory / "job")
+        # The extras are last, after every flag of the launcher's own — a
+        # movie's repeated --clip included — so run.py finds them where a
+        # typed command would put them.
+        extras = shlex.split(request.extra_args)
+        assert command[-len(extras) :] == extras
         parser = argparse.ArgumentParser()
         add_mode_arguments(parser)
-        args = parser.parse_args(command[3:])  # after <python> -u run.py
+        # After <python> -u run.py, before the extras.
+        args = parser.parse_args(command[3 : -len(extras)])
         assert args.mode == mode and args.seed == 3 and args.windowed
         assert args.rig.endswith("rig-sim.yaml") and args.no_dashboard_browser
         assert (args.params is not None) == (mode != "measure")
@@ -397,6 +414,99 @@ class TestCommandContract:
             assert args.out.endswith("media") and args.scale == 0.25
             assert args.clip == ["one", "two"]
             assert (args.sheet is not None) == sheet and args.columns == (2 if sheet else None)
+
+    def test_the_reserved_flags_are_exactly_the_ones_the_launcher_emits(self, workspace):
+        """MODE_FLAGS is the refusal rule for the extra arguments, so it must
+        be neither wider nor narrower than what _mode_command emits: a flag
+        added there without joining the set could be contradicted from the
+        text field; one dropped there but kept in the set would refuse an
+        argument the form no longer owns. Every option on, across the six
+        modes, is every flag the launcher can produce."""
+        emitted: set[str] = set()
+        for mode in Mode:
+            request = request_for(
+                workspace,
+                mode=mode.value,
+                subject="s01",
+                parameters=None if mode is Mode.MEASURE else {"speed": 2},
+                headless=mode is Mode.SIMULATE,
+                mouse=mode is Mode.TEST,
+                windowed=True,
+                sheet=True,
+                columns=2,
+                clips=["one"],
+            )
+            command = workspace._command(request, workspace.directory / "job")
+            emitted.update(token for token in command if token.startswith("--"))
+        assert emitted == MODE_FLAGS
+
+
+class TestExtraArguments:
+    """Free-form run.py arguments ride at the end of a mode's command, exactly
+    as they do for a standalone script. Without them an experiment that ships
+    several tasks cannot be launched at all: its run.py needs `--task <name>`
+    (and exits with a usage error without it) before it hands the rest to
+    run_experiment. What the extras may not do is contradict the form, whose
+    settings are what the run record and its history show.
+    """
+
+    def test_a_modes_extras_follow_the_launchers_flags(self, workspace):
+        request = request_for(
+            workspace, mode="simulate", subject="s01", extra_args="--task mib-detect"
+        )
+        command = workspace._command(request, workspace.directory / "job")
+        assert command[3:5] == ["--mode", "simulate"]
+        assert command[-2:] == ["--task", "mib-detect"]
+
+    def test_the_runners_flags_the_form_lacks_pass_through(self, workspace):
+        """--curriculum and --run are add_mode_arguments' own, and the launcher
+        never sets them; a shaping curriculum is exactly what the field is for."""
+        request = request_for(
+            workspace,
+            mode="run",
+            subject="s01",
+            extra_args="--curriculum configs/shaping.yaml --run 3",
+        )
+        command = workspace._command(request, workspace.directory / "job")
+        assert command[-4:] == ["--curriculum", "configs/shaping.yaml", "--run", "3"]
+
+    @pytest.mark.parametrize(
+        "extra, flag",
+        [
+            ("--seed 5", "--seed"),
+            ("--sub=x", "--sub"),
+            ("--task mib-detect --headless", "--headless"),
+            ("--mode run", "--mode"),
+        ],
+    )
+    def test_a_flag_the_form_sets_is_refused_by_name(self, workspace, extra, flag):
+        with pytest.raises(ValueError, match=re.escape(flag) + " is set from the dashboard"):
+            workspace._command(
+                request_for(workspace, mode="simulate", subject="s01", extra_args=extra),
+                workspace.directory / "job",
+            )
+        assert workspace.runs == {}
+
+    def test_a_quoting_error_names_the_field(self, workspace):
+        """shlex's own message is "No closing quotation": true, and silent about
+        which of the form's fields it means."""
+        with pytest.raises(ValueError, match="extra arguments.*No closing quotation"):
+            workspace._command(
+                request_for(workspace, mode="simulate", extra_args='--task "mib'),
+                workspace.directory / "job",
+            )
+
+    def test_a_launched_run_receives_and_records_its_extras(self, workspace):
+        """End to end: the child's argv ends with the extras (the stub run.py
+        prints its argv), and the run record's command shows them, so the
+        history says which task a run was."""
+        run = finish(
+            workspace,
+            workspace.start(request_for(workspace, extra_args="--task mib-detect --run 2")),
+        )
+        assert run["status"] == "completed"
+        assert run["command"][-4:] == ["--task", "mib-detect", "--run", "2"]
+        assert json.loads(run["log"].splitlines()[0])[-4:] == ["--task", "mib-detect", "--run", "2"]
 
 
 class TestBoundaries:
