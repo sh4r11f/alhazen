@@ -21,7 +21,7 @@ import sys
 import threading
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 import yaml
@@ -287,7 +287,12 @@ def project_tasks(root: Path) -> dict[str, Any]:
         if isinstance(value, ast.Tuple | ast.List) and len(value.elts) >= 2:
             second = value.elts[1]
             if isinstance(second, ast.Constant) and isinstance(second.value, str):
-                params = Path(second.value).as_posix()
+                # Posix form on every OS, like the rigs and presets it is
+                # matched against. `Path.as_posix()` alone would not do it:
+                # on macOS and Linux a backslash is a filename character, so
+                # a table written on Windows as "configs\\x.yaml" would keep
+                # its backslash there and never match the preset menu.
+                params = PureWindowsPath(second.value).as_posix()
         tasks.append({"name": key.value, "params": params})
     if not tasks:
         return {**empty, "error": "run.py's tasks= table is empty; name at least one task"}
