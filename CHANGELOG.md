@@ -62,6 +62,14 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   (`ExperimentDatabase.check_schema`, asked by `build_session`) rather than at
   teardown after it: move it aside, and a new one is built from the next
   session.
+- **Breaking: the live monitor's saved files are renamed** to the monitor's
+  1.9 name: `figures/dashboard.html` is now `figures/live_monitor.html`, and
+  `figures/dashboard_state.json` is `figures/live_monitor_state.json`. They
+  kept the old names through 1.x because run-directory file names change only
+  in a major version. Runs recorded before 2.0 keep theirs; a script reading
+  the saved state looks for the new name and falls back to the old one
+  (`docs/data.md` §6). The workspace's Live monitor note names both. The two
+  names join the run-layout baseline in `tests/fixtures/contracts.json`.
 - **Breaking, for code that builds these by hand:** `SessionPaths.create`
   takes `experiment_version=`, and `SessionRunner` requires
   `identity=RunIdentity(...)` (build_session supplies both).

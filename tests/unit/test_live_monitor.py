@@ -316,11 +316,17 @@ class TestRuntime:
         controller = LiveMonitorController(auto_open=False)
         state = _state(3, "complete")
         controller.save(tmp_path, state)
-        saved = json.loads((tmp_path / "dashboard_state.json").read_text())
+        saved = json.loads((tmp_path / "live_monitor_state.json").read_text())
         assert saved["status"] == "complete"
-        html = (tmp_path / "dashboard.html").read_text()
+        html = (tmp_path / "live_monitor.html").read_text()
         assert "__STATIC_STATE__" not in html
         assert '"status": "complete"' in html
+        # The two files, under the names 2.0 gave them and nothing else: the
+        # pre-2.0 names are not written beside them.
+        assert sorted(path.name for path in tmp_path.iterdir()) == [
+            "live_monitor.html",
+            "live_monitor_state.json",
+        ]
 
     @staticmethod
     def _wait_for_revision(root: str, token: str, revision: int) -> None:
@@ -354,7 +360,7 @@ class TestRuntime:
         state = _state(3, "complete")
         state["message"] = "odd name: <!-- </script><script>alert(1)</script>"
         controller.save(tmp_path, state)
-        html = (tmp_path / "dashboard.html").read_text(encoding="utf-8")
+        html = (tmp_path / "live_monitor.html").read_text(encoding="utf-8")
         embedded = html.split("const STATIC_STATE = ", 1)[1].split(";</script>", 1)[0]
         assert "<" not in embedded
         assert json.loads(embedded) == json.loads(json.dumps(state, default=str))
@@ -575,8 +581,8 @@ class FakeLiveMonitor:
         return [LiveMonitorCommand(str(i), name) for i, name in enumerate(names)]
 
     def save(self, figures_dir: Path, state: dict) -> None:
-        (figures_dir / "dashboard.html").write_text(state["status"])
-        (figures_dir / "dashboard_state.json").write_text(json.dumps(state))
+        (figures_dir / "live_monitor.html").write_text(state["status"])
+        (figures_dir / "live_monitor_state.json").write_text(json.dumps(state))
 
     def stop(self) -> None:
         self.stopped = True
@@ -621,7 +627,7 @@ class TestRunnerIntegration:
         assert any(state["status"] == "paused" for state in live_monitor.states)
         assert live_monitor.states[-1]["status"] == "complete"
         assert live_monitor.stopped
-        assert (harness.paths.figures_dir / "dashboard.html").exists()
+        assert (harness.paths.figures_dir / "live_monitor.html").exists()
 
     def test_the_browser_runs_the_eye_tracker_procedures(self, tmp_path: Path):
         """Validate and Drift correct are buttons: each runs its procedure,
@@ -770,7 +776,7 @@ class TestTeardownGoesOnWhenTheLiveMonitorFails:
         assert harness.display.closed
         assert live_monitor.stopped
         # Nothing saved in place of the state that could not be built.
-        assert not (harness.paths.figures_dir / "dashboard.html").exists()
+        assert not (harness.paths.figures_dir / "live_monitor.html").exists()
 
     def test_a_failing_end_of_session_log_line_does_not_stop_teardown(self, tmp_path: Path, caplog):
         harness = SessionHarness(tmp_path, n_trials=1)
@@ -916,7 +922,7 @@ class TestCameraThroughThePause:
     def test_the_saved_copy_leaves_the_pixels_out(self, tmp_path: Path):
         harness, tracker, live_monitor = self._run(tmp_path, [[], ["resume"]])
 
-        saved = json.loads((harness.paths.figures_dir / "dashboard_state.json").read_text())
+        saved = json.loads((harness.paths.figures_dir / "live_monitor_state.json").read_text())
         camera = self._camera(saved)
         assert camera["form"] == "image" and camera["pixels"] == ""
         assert camera["note"] == "Image left out of the saved copy"

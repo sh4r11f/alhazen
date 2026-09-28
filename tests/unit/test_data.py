@@ -102,8 +102,8 @@ class TestSessionPaths:
         paths = SessionPaths.create(
             tmp_path, "M1", 1, 1, "task", "20260826", experiment_version="0.1.0"
         )
-        (paths.figures_dir / "dashboard.html").write_text("<html>")
-        with pytest.raises(DataError, match="figures/dashboard.html"):
+        (paths.figures_dir / "live_monitor.html").write_text("<html>")
+        with pytest.raises(DataError, match="figures/live_monitor.html"):
             SessionPaths.create(
                 tmp_path, "M1", 1, 1, "task", "20260827", experiment_version="0.1.0"
             )

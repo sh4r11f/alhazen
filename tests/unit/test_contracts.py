@@ -53,6 +53,7 @@ from alhazen.data import manifest
 from alhazen.data.paths import SessionPaths
 from alhazen.devices import recording
 from alhazen.devices.reward import SimulatedReward
+from alhazen.live_monitor.runtime import SAVED_PAGE, SAVED_STATE
 from alhazen.scenes import model
 from alhazen.session import database, identity
 from alhazen.session.recorder import _LEADING
@@ -138,6 +139,10 @@ class TestRunLayout:
             "session_json": paths.session_json_path.name,
             "rig_copy": paths.rig_copy_path.name,
             "params_copy": paths.params_copy_path.name,
+            # The live monitor's two files in figures/, written by its
+            # controller at teardown rather than named by SessionPaths.
+            "live_monitor_state": f"{paths.figures_dir.name}/{SAVED_STATE}",
+            "live_monitor_page": f"{paths.figures_dir.name}/{SAVED_PAGE}",
         }
         assert actual == BASELINE["run_layout"], (
             "The run-directory layout changes only in a major version, with a migration. "

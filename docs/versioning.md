@@ -96,8 +96,11 @@ of the experiment that recorded it (`<data_root>/v<version>/sub-...`), so
 data from two versions of a protocol never share a folder; a run folder
 gained `session.json` and byte copies of its rig and params files; the trials
 table gained an `experiment_version` column; the manifest and the database
-record the version. The baseline was updated in the same change, with the
-folder levels pinned beside the file names (`run_folder`). What moved, how
+record the version; the live monitor's two saved files took the name 1.9 gave
+the monitor (`figures/live_monitor.html` and `figures/live_monitor_state.json`,
+were `dashboard.html` and `dashboard_state.json`). The baseline was updated
+in the same changes, with the folder levels pinned beside the file names
+(`run_folder`), and the two saved files pinned with them. What moved, how
 runs recorded before 2.0 are still read, and what a script that globbed
 `data/sub-*` must change: [data on disk](data.md) §6.
 

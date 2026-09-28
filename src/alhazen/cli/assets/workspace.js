@@ -947,11 +947,17 @@ function renderMonitor(run, active) {
   if (!run) {
     setMonitorNote('Start a run to watch its live monitor here.');
   } else if (!active) {
+    // The file is named by the alhazen the session ran, which is the
+    // project's, not this page's. alhazen 2.0 renamed it; a run recorded by
+    // an older alhazen keeps the old name, and the history mixes both. So
+    // both are given rather than one guessed from a version.
     setMonitorNote(
       'The live monitor closes with the session. Its final state was saved in the run’s '
       + 'data directory as ',
+      node('code', '', 'figures/live_monitor.html'),
+      ' (',
       node('code', '', 'figures/dashboard.html'),
-      '.',
+      ' by an alhazen before 2.0).',
     );
   } else if (rigMonitor[`${run.project}:${run.rig}`] === false) {
     setMonitorNote(

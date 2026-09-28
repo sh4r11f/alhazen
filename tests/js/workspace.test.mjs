@@ -202,7 +202,9 @@ describe('the Live monitor tab', () => {
     const note = app.byId('monitor-note');
     assert.equal(note.hidden, false);
     assert.match(note.textContent, /closes with the session/i);
-    assert.match(note.textContent, /figures\/dashboard\.html/);
+    /* The saved page under the name alhazen 2.0 writes, and the name a run
+     * recorded by an older alhazen has: the history holds both kinds. */
+    assert.match(note.textContent, /figures\/live_monitor\.html \(figures\/dashboard\.html by an alhazen before 2\.0\)/);
     /* Nor is a link to a dead server offered. */
     assert.equal(app.byId('monitor').hidden, true);
   });

@@ -186,9 +186,12 @@ shared one, the setting of the merged rig.
 
 The monitor's server closes with the session. Once the run has finished, the
 frame is emptied and replaced by a note: the monitor's final state was saved in
-the run's data directory as `figures/dashboard.html` (and
-`figures/dashboard_state.json`), which opens on its own with no server. A
-browser error page for a server that no longer exists is never left in the tab.
+the run's data directory as `figures/live_monitor.html` (and
+`figures/live_monitor_state.json`), which opens on its own with no server. A
+run recorded by a project on an alhazen before 2.0 has them under their old
+names, `figures/dashboard.html` and `figures/dashboard_state.json`, and the
+note names both. A browser error page for a server that no longer exists is
+never left in the tab.
 
 Embedding needs the monitor to allow being framed, so its responses carry
 `frame-ancestors 'self' http://127.0.0.1:* http://localhost:*` in their

@@ -64,7 +64,7 @@ class InProcessLiveMonitor(LiveMonitorController):
     and nothing these tests assert depends on it. Everything they do assert
     on stays real: the runner builds each state with the real
     ``live_monitor_state`` and writes the final one with the inherited, real
-    ``save`` — the only producer of figures/dashboard_state.json.
+    ``save`` — the only producer of figures/live_monitor_state.json.
 
     ``publish`` and ``publish_camera`` are overridden, not inherited, because
     the inherited ones put onto multiprocessing queues that nothing would
@@ -297,7 +297,7 @@ def test_live_analysis_seam_end_to_end(tmp_path):
 
     # The live panel travelled through the real live monitor publish into the
     # saved state, after the spec's own panels, under its own section.
-    state = json.loads((run_dir / "figures" / "dashboard_state.json").read_text())
+    state = json.loads((run_dir / "figures" / "live_monitor_state.json").read_text())
     live_panels = [p for p in state["panels"] if p.get("section") == "Live"]
     assert len(live_panels) == 1
     assert live_panels[0]["title"] == "Spikes heard"

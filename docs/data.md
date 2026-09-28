@@ -87,7 +87,7 @@ the experimenter's own, given on the command line; alhazen does not count it.
 | `<base>_frames.csv` | teardown | Every frame interval, and which were dropped. | Display quality. |
 | `<base>_paradigm.csv` | teardown | A scheduler's end-of-session state (an adaptive fit, per-cell counts), when it has one. | Adaptive designs. |
 | `session.log` | throughout | The session's structure: start, the experiment and version, devices, every trial, the end. | Something looks wrong. |
-| `figures/` | teardown | The live monitor's final state, when the monitor ran. | Looking back at the session as it was watched. |
+| `figures/` | teardown | The live monitor's final state, when the monitor ran: `live_monitor_state.json`, and `live_monitor.html`, the page with that state baked in (before 2.0: `dashboard_state.json`, `dashboard.html`). | Looking back at the session as it was watched. |
 | `recording_pointer.yaml` | at build | Where the external recording of this run is, when the rig names a recorder. | Aligning to neural data. |
 | `manifest.yaml` | last | A sha256 of every other file, and the experiment version (schema 2). | Checking nothing changed since (`alhazen report`, `verify_manifest`). |
 
@@ -294,3 +294,9 @@ come back.
 - The run manifest is schema 2 (it records `experiment_version`); a schema 1
   manifest from before 2.0 still verifies, and keeps its number when a report
   is saved into its run.
+- The live monitor's saved files are renamed: `figures/dashboard_state.json`
+  is now `figures/live_monitor_state.json`, and `figures/dashboard.html` is
+  `figures/live_monitor.html`. A run from before 2.0 keeps the old names, so a
+  script reading the saved state of runs from both sides looks for the new
+  name and falls back to the old one. The manifest covers whichever names a
+  run has, and nothing in alhazen opens either file by name.
