@@ -205,6 +205,12 @@ Each line is the removed name, then what to write instead.
   `alhazen.session.runner` / `alhazen.session.pause`), deprecated since 1.1 →
   `alhazen.session.build_pause_menu` with `alhazen.session.run_pause_menu`,
   drawn by the display's `show_menu`.
+- **A health check returning a bare reason string**, deprecated since 1.6 →
+  return `HealthFault(reason)` (or `HealthFault(reason, detail)`,
+  `alhazen.core`). `TrialEngine` no longer reads a string as a fault: any
+  answer but None or a `HealthFault` is a `TypeError` naming the check, what
+  it returned and the `HealthFault` to return instead. `health_checks` is
+  typed `Callable[[], HealthFault | None]`.
 
 ## 1.10.1 - 2026-09-26
 

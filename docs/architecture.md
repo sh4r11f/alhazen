@@ -134,7 +134,8 @@ command source, and the bus:
 2. run per-frame health checks (today one: "is the tracker still recording,
    and still delivering" — §4.3). A check returns None, or a `HealthFault`:
    the reason, and what the device said about it (a bare reason string, the
-   1.5.0 shape, still works but warns: it goes in 2.0). A failed check is a **system fault** — a device stopped,
+   1.5.0 shape, is refused since 2.0 with a TypeError naming the check). A
+   failed check is a **system fault** — a device stopped,
    which is never the subject's doing — and its reason (`tracker_stopped`) is
    written as the row's `fault`, its words as `fault_detail` (§2.2). A check
    runs every frame, so it must not make a round trip to its device on the

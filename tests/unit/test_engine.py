@@ -358,13 +358,11 @@ class TestOverlay:
 
 class TestHealthChecks:
     def test_failing_check_aborts_with_its_reason(self):
-        harness = EngineHarness(health_checks=(lambda: "tracker_stopped",))
-        # A bare reason is the deprecated shape (see the test below).
-        with pytest.warns(DeprecationWarning):
-            result = harness.engine.run_trial(harness.ctx(), [RunForFrames(10, COMPLETED)])
+        harness = EngineHarness(health_checks=(lambda: HealthFault("tracker_stopped"),))
+        result = harness.engine.run_trial(harness.ctx(), [RunForFrames(10, COMPLETED)])
         assert result.outcome.name == "ABORTED"
         assert result.record["abort_reason"] == "tracker_stopped"
-        # A bare reason says nothing more, so the row gets no detail column.
+        # A fault with no detail says nothing more, so the row gets no detail column.
         assert "fault_detail" not in result.record
 
     def test_a_health_fault_puts_what_the_device_said_on_the_row(self):
@@ -398,13 +396,28 @@ class TestHealthChecks:
         # Five CONTINUE frames and the frame that returns the outcome.
         assert len(asked) == 6
 
-    def test_a_bare_reason_string_still_works_but_is_deprecated(self):
-        # The shape every check had in 1.5.0. It keeps working until 2.0
-        # (docs/versioning.md §4), and says so, naming what to return instead.
-        harness = EngineHarness(health_checks=(lambda: "tracker_stopped",))
-        with pytest.warns(DeprecationWarning, match="HealthFault"):
-            result = harness.engine.run_trial(harness.ctx(), [RunForFrames(10, COMPLETED)])
-        assert result.record["abort_reason"] == result.record["fault"] == "tracker_stopped"
+    def test_a_bare_reason_string_is_refused_naming_the_healthfault_to_return(self):
+        # The shape every check had in 1.5.0, read as a HealthFault with a
+        # DeprecationWarning from 1.6 until 2.0 removed it (docs/versioning.md
+        # §4). Now a loud error, naming the check and exactly what to return.
+        def tracker_check():
+            return "tracker_stopped"
+
+        harness = EngineHarness(health_checks=(tracker_check,))
+        with pytest.raises(
+            TypeError,
+            match=r"health check .*tracker_check returned 'tracker_stopped'.*"
+            r"return HealthFault\(reason='tracker_stopped'\)",
+        ):
+            harness.engine.run_trial(harness.ctx(), [RunForFrames(10, COMPLETED)])
+
+    @pytest.mark.parametrize("answer", [False, True, 0, ("tracker_stopped", "detail")])
+    def test_any_other_answer_is_refused_too(self, answer):
+        # False reads like "not failed" and a tuple like (reason, detail); a
+        # check that returns either means something the engine cannot know.
+        harness = EngineHarness(health_checks=(lambda: answer,))
+        with pytest.raises(TypeError, match=r"returned .*a health check returns None"):
+            harness.engine.run_trial(harness.ctx(), [RunForFrames(10, COMPLETED)])
 
 
 class _MustBeLast(RunForFrames):

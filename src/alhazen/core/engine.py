@@ -28,12 +28,10 @@ every simulated session can drive it as-is.
 from __future__ import annotations
 
 import logging
-import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from alhazen._deprecation import deprecation_message
 from alhazen.core.clock import Clock
 from alhazen.core.commands import Command, CommandSource
 from alhazen.core.events import Event, EventBus, EventSchema
@@ -175,7 +173,7 @@ class TrialEngine:
         commands: CommandSource,
         frame_monitor: FrameMonitor | None = None,
         input_provider: Callable[[], InputFrame] | None = None,
-        health_checks: tuple[Callable[[], HealthFault | str | None], ...] = (),
+        health_checks: tuple[Callable[[], HealthFault | None], ...] = (),
         on_manual_reward: Callable[[], None] | None = None,
         manual_reward_payload: dict[str, Any] | None = None,
         overlay: Callable[[TrialContext], None] | None = None,
@@ -195,7 +193,7 @@ class TrialEngine:
         # silently produce data with holes and no record of why. A check
         # returns None when healthy, and otherwise a HealthFault — the reason
         # and what the device said about it. (The 1.5.0 shape, a bare reason
-        # string, still works until 2.0 and warns; see _failed_health_check.)
+        # string, is refused since 2.0; see _failed_health_check.)
         # A check that fails is a system fault — a device
         # stopped, which is never the subject's doing — so its reason is also
         # the row's `fault`, and its detail the row's `fault_detail`; during
@@ -487,11 +485,15 @@ class TrialEngine:
         """The first health check that fails this frame, or None when every
         device reports itself healthy.
 
-        A check that answers with a bare reason string — the shape every
-        check had in 1.5.0, before a device could say more — is read as a
-        HealthFault with no detail, so such a check keeps working. Until 2.0:
-        it warns, since removing it then breaks whoever still returns one
-        (docs/versioning.md §4). Warned on the frame it fails rather than at
+        A check answers None or a HealthFault, and anything else is a
+        TypeError naming the check and the HealthFault to return. A bare
+        reason string — the shape every check had in 1.5.0, before a device
+        could say more — was read as a HealthFault with no detail, with a
+        DeprecationWarning, from 1.6 until 2.0 removed it (docs/versioning.md
+        §4). Refused rather than still read: a string is also what a check
+        that means something else entirely might return, and a device fault
+        is recorded in the data (`fault`), so what a check says has to be
+        exactly what it meant. Found on the frame it fails rather than at
         construction, because only its answer shows which shape a check has.
         """
         for check in self._health_checks:
@@ -500,17 +502,17 @@ class TrialEngine:
                 continue
             if isinstance(failed, HealthFault):
                 return failed
-            warnings.warn(
-                deprecation_message(
-                    "a health check returning a bare reason string",
-                    since="1.6",
-                    removed_in="2.0",
-                    instead=f"HealthFault(reason={failed!r}) from alhazen.core",
-                ),
-                DeprecationWarning,
-                stacklevel=2,
+            name = getattr(check, "__qualname__", repr(check))
+            fix = (
+                f"return HealthFault(reason={failed!r}) (alhazen.core) instead; a bare reason "
+                f"string was read as one only until alhazen 2.0"
+                if isinstance(failed, str)
+                else "return HealthFault(reason, detail) (alhazen.core) when its device has failed"
             )
-            return HealthFault(reason=failed)
+            raise TypeError(
+                f"health check {name} returned {failed!r}; a health check returns None while "
+                f"its device is healthy, and a HealthFault when it is not — {fix}"
+            )
         return None
 
     def _flag_closing_phase_fault(
