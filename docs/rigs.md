@@ -212,3 +212,29 @@ Run from a folder with no `configs/`, both refuse before measuring anything.
    `extends:` and those places (§4). `alhazen validate --rig lab` shows the
    result loads, and `alhazen rigs` shows what extends what.
 3. Keep whole files for machines only this experiment uses.
+
+## 9. In the dashboard
+
+The [experiment workspace](workspace.md)'s **Rig** menu lists every rig by
+name — `lab`, not `rig-lab.yaml` — in two groups: **This experiment** and
+**Shared (alhazen)**. The shared rigs are the ones the *project's* alhazen
+ships, which registering the project asks its interpreter for; the workspace's
+own alhazen may be another version. In the menu:
+
+- an experiment rig that extends a shared one reads `lab · extends alhazen/lab`;
+- a shared rig shadowed by the experiment's own reads
+  `alhazen/lab (hidden by this experiment's lab)`, so the two `lab`s cannot be
+  confused once the menu is closed;
+- the summary under it describes the rig as it would run, merged, and says
+  whose it is.
+
+A shared rig launches as `--rig alhazen/<name>`; an experiment rig as its
+file. The run's `run.json` records `rig` (what was launched), `rig_name` and
+`rig_source`, and the history shows the name. The run folder's `rig.yaml` is
+the rig as it ran: the file itself for a whole rig, the merged rig for one
+that extends — with the experiment's file as written beside it, as
+`rig-source.yaml`.
+
+A project registered before the workspace listed shared rigs has none in its
+menu, and the page says so: open **Project settings** and save to register it
+again.

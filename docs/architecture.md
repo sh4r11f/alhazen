@@ -87,6 +87,11 @@ does not import task modules itself. Rig measurement omits task parameters.
 `cli/console_break.py` makes a Windows console break — how the workspace stops
 a child — raise the same `KeyboardInterrupt` as Ctrl+C, so a stopped session
 still tears down; `_run_session` and the workspace server both arm it.
+The Rig menu is the command line's rig list (`config/rigs.py`, §12), with the
+shared half taken from the *project's* alhazen: registering a project asks its
+interpreter which shared rigs it ships, the record keeps their files, and the
+workspace merges an `extends` over exactly those files — for the summary, and
+for the merged `rig.yaml` a run folder keeps.
 
 Three placements carry the weight:
 

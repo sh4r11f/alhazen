@@ -118,7 +118,11 @@ export function response(json, status = 200) {
  *
  *   state     what /api/state returns: {projects, runs, active}
  *   details   run detail by id, for /api/runs/<id>
- *   configs   {text, values} by path, for /api/config (the rig and presets)
+ *   configs   {text, values} by path, for /api/config (the parameter presets)
+ *   rigs      /api/rig's answer — {name, source, extends, values}, the rig as
+ *             it would run — by the Rig menu's value (a project-relative path,
+ *             or alhazen/<name> for a shared rig); a value not listed is an
+ *             error naming it
  *   schema    the task's JSON schema, for /api/schema without a task (a
  *             project whose run.py declares one task)
  *   schemas   JSON schema by task name, for /api/schema?…&task=<name> (a
@@ -135,6 +139,7 @@ function fakeServer() {
     state: { projects: [], runs: [], active: null },
     details: {},
     configs: {},
+    rigs: {},
     schema: {},
     schemas: {},
     launch: () => ({ id: 'launched' }),
@@ -170,6 +175,11 @@ function fakeServer() {
       const schema = server.schemas[params.get('task')];
       if (!schema) return response({ error: 'Unknown task ' + params.get('task') }, 404);
       return response(schema);
+    }
+    if (path === '/api/rig') {
+      const rig = server.rigs[params.get('rig')];
+      if (!rig) return response({ error: 'No such rig ' + params.get('rig') }, 404);
+      return response(rig);
     }
     if (path === '/api/config') {
       const config = server.configs[params.get('path')];

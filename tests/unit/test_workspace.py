@@ -48,8 +48,13 @@ def workspace(tmp_path, monkeypatch):
         workspace_module,
         "probe_interpreter",
         # A version the launcher can read (it picks a flag's spelling by it,
-        # no_browser_flag); the interpreter is never really probed here.
-        lambda python, path: {"alhazen_version": "1.9.0", "python_version": "stub"},
+        # no_browser_flag); the interpreter is never really probed here. No
+        # shared rigs: tests/unit/test_workspace_rigs.py covers those.
+        lambda python, path: {
+            "alhazen_version": "1.9.0",
+            "python_version": "stub",
+            "shared_rigs": [],
+        },
     )
     root = tmp_path / "experiment with spaces"
     (root / "configs/rigs").mkdir(parents=True)
@@ -91,13 +96,31 @@ def finish(workspace, run):
 class TestProjects:
     def test_registry_discovery_and_roundtrip(self, workspace):
         p = workspace.describe(workspace.projects[0]["id"])
-        # Posix form on every OS, so a registry or run record written on a
-        # Windows rig reads the same on a Mac — and CI is green on both.
-        assert p["rigs"] == ["configs/rig-sim.yaml", "configs/rigs/rig-lab.yaml"]
+        # By name, in name order; each path posix on every OS, so a registry
+        # or run record written on a Windows rig reads the same on a Mac — and
+        # CI is green on both.
+        assert p["rigs"] == [
+            {
+                "name": "lab",
+                "source": "experiment",
+                "shadowed": False,
+                "extends": None,
+                "path": "configs/rigs/rig-lab.yaml",
+            },
+            {
+                "name": "sim",
+                "source": "experiment",
+                "shadowed": False,
+                "extends": None,
+                "path": "configs/rig-sim.yaml",
+            },
+        ]
+        assert p["rigs_note"] is None
         assert p["configs"] == ["configs/task.yaml"]
-        assert not any("\\" in path for path in p["rigs"] + p["configs"])
+        paths = [rig["path"] for rig in p["rigs"]] + p["configs"]
+        assert not any("\\" in path for path in paths)
         assert workspace.config(p["id"], p["configs"][0])["values"]["speed"] == 3
-        assert "monitor" in workspace.config(p["id"], p["rigs"][1])["values"]
+        assert "monitor" in workspace.rig(p["id"], p["rigs"][0]["path"])["values"]
         workspace.add(p["path"], sys.executable)
         assert len(workspace.projects) == 1
         restored = Workspace(workspace.directory)
@@ -180,6 +203,7 @@ class TestLaunches:
         assert run["artifacts"][0]["path"] == "clip.mp4"
         # Relative paths in the record and the gallery are posix on every OS.
         assert run["rig"] == "configs/rig-sim.yaml"
+        assert (run["rig_name"], run["rig_source"]) == ("sim", "experiment")
         frames = Path(run["directory"]) / "media/frames"
         frames.mkdir()
         (frames / "first.png").write_bytes(b"png")
@@ -188,6 +212,8 @@ class TestLaunches:
         assert '--mode", "movie"' in run["log"]
         assert yaml.safe_load((Path(run["directory"]) / "params.yaml").read_text())["speed"] == 7
         assert (Path(run["directory"]) / "rig.yaml").read_bytes() == RIG.read_bytes()
+        # A whole rig file is copied as it is, and alone.
+        assert not (Path(run["directory"]) / "rig-source.yaml").exists()
         assert original.read_bytes() == content
         restored = Workspace(workspace.directory)
         assert restored.detail(run["id"])["status"] == "completed"
@@ -753,6 +779,13 @@ class TestInterpreters:
         project = workspace.add(workspace.projects[0]["path"], sys.executable)
         assert project["alhazen_version"] == alhazen.__version__
         assert project["python_version"] == sys.version
+        # The shared rigs THIS interpreter's alhazen ships, by absolute file:
+        # the ones the Rig menu offers and a launch merges `extends` over.
+        from alhazen.config.rigs import shared_rig_files
+
+        assert project["shared_rigs"] == [
+            {"name": name, "path": str(path.resolve())} for name, path in shared_rig_files().items()
+        ]
         restored = Workspace(workspace.directory)
         assert restored.projects[0]["alhazen_version"] == alhazen.__version__
 

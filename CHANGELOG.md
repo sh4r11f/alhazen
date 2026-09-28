@@ -60,9 +60,24 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   `shared_rig_files`. `load_rig` merges `extends`, and takes
   `shared_rigs=` for a caller that must merge over another installation's
   shared rigs.
+- **The workspace's Rig menu names rigs** — `lab`, not `rig-lab.yaml` — in two
+  groups, *This experiment* and *Shared (alhazen)*, with a rig that extends
+  one saying so and a shadowed shared rig spelled `alhazen/lab`. The shared
+  rigs are the ones the project's own alhazen ships, recorded when the
+  project is registered. The summary under the menu describes the merged rig.
+  A shared rig launches as `--rig alhazen/<name>`; `run.json` records `rig`,
+  `rig_name` and `rig_source`, and the history shows the name. A run folder's
+  `rig.yaml` is the merged rig for one that extends, with the experiment's
+  file kept as `rig-source.yaml`.
 
 ### Changed
 
+- **The workspace lists `rig-<name>.yaml` files as rigs**, where it used to
+  list any file under `configs/` whose name began with `rig` — measured gamma
+  fits (`rig-lab_gamma.yaml`) included. A project's `rigs` in `/api/state`
+  are now objects, `{name, source, path, shadowed, extends}`, not paths. A
+  project registered before this has no shared rigs in its menu, and the
+  page says so: save its Project settings to register it again.
 - **A gamma fit or measure-mode report for a shared rig is kept in the
   experiment's `configs/`** (`configs/rig-lab_gamma.yaml`,
   `configs/measurements/`), where the experiment's own file of that name

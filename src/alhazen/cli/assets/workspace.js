@@ -224,6 +224,103 @@ function options(select, items, previous) {
   if (items.some(([value]) => value === previous)) select.value = previous;
 }
 
+/** Refill a <select> from groups of [value, text] pairs, each group under an
+ *  <optgroup> with its heading as the label; an empty group is left out.
+ *  Keeps the reader's previous choice when it is still on offer, else opens
+ *  on the first option, as a browser does. */
+function groupedOptions(select, groups, previous) {
+  const nodes = [];
+  const values = [];
+  for (const [heading, items] of groups) {
+    if (!items.length) continue;
+    const group = node('optgroup');
+    group.label = heading;
+    for (const [value, text] of items) {
+      const option = node('option', '', text);
+      option.value = value;
+      group.append(option);
+      values.push(value);
+    }
+    nodes.push(group);
+  }
+  select.replaceChildren(...nodes);
+  select.value = values.includes(previous) ? previous : (values[0] ?? '');
+}
+
+/* ------------------------------------------------------------------ */
+/* Rigs                                                                */
+/* ------------------------------------------------------------------ */
+
+/* A project's `rigs` are {name, source, path, shadowed, extends}: its own
+ * rigs (source 'experiment', path relative to the project) and then the
+ * shared rigs its alhazen ships (source 'alhazen'). A rig's name is its file
+ * name without rig- and .yaml — `lab` for configs/rig-lab.yaml — and that is
+ * what --rig takes on the command line (docs/rigs.md). */
+
+/** What the Rig menu sends for rig `r`: an experiment rig's project-relative
+ *  path, or alhazen/<name> for a shared rig — the spelling that names the
+ *  shared one even when the experiment has a rig of the same name. */
+function rigValue(r) {
+  return r.source === 'alhazen' ? `alhazen/${r.name}` : r.path;
+}
+
+/** A rig's text in the menu: its name, never its file. A shared rig hidden
+ *  from `--rig lab` by the experiment's own lab is spelled alhazen/lab, as
+ *  the command line spells it, and says why, so the two `lab`s cannot be
+ *  confused in the closed menu, which shows the option but not its group. An
+ *  experiment rig that extends a shared one says which; one whose name two of
+ *  the experiment's files share (`duplicates`) carries its file, since its
+ *  name alone would not say which it is. */
+function rigLabel(r, duplicates) {
+  if (r.source === 'alhazen') {
+    return r.shadowed ? `alhazen/${r.name} (hidden by this experiment’s ${r.name})` : r.name;
+  }
+  let text = duplicates.has(r.name) ? `${r.name} (${r.path})` : r.name;
+  if (r.extends) text += ` · extends alhazen/${r.extends}`;
+  return text;
+}
+
+/** Fill the Rig menu for project `p`: the experiment's own rigs, then the
+ *  shared ones, as two groups. The safe first choice is a machine with a
+ *  window and no devices — the experiment's own mac, else the shared mac —
+ *  and otherwise the first rig listed. */
+function rigMenu(p) {
+  const rigs = p.rigs || [];
+  const own = rigs.filter((r) => r.source === 'experiment');
+  const shared = rigs.filter((r) => r.source === 'alhazen');
+  const seen = new Set();
+  const duplicates = new Set();
+  for (const r of own) {
+    if (seen.has(r.name)) duplicates.add(r.name);
+    seen.add(r.name);
+  }
+  const mac = own.find((r) => r.name === 'mac') || shared.find((r) => r.name === 'mac');
+  const first = mac || rigs[0];
+  groupedOptions($('rig'), [
+    ['This experiment', own.map((r) => [rigValue(r), rigLabel(r, duplicates)])],
+    ['Shared (alhazen)', shared.map((r) => [rigValue(r), rigLabel(r, duplicates)])],
+  ], first ? rigValue(first) : '');
+  // Said under the menu when the registration predates shared rigs, so a
+  // menu without them is explained rather than mistaken for "there are none".
+  $('rig-note').textContent = p.rigs_note || '';
+  $('rig-note').hidden = !p.rigs_note;
+}
+
+/** The selected project's rig entry for a menu value, or undefined. */
+function rigFor(p, value) {
+  return (p?.rigs || []).find((r) => rigValue(r) === value);
+}
+
+/** A run's rig as the history shows it: its name, not its file, and
+ *  alhazen/<name> for a shared rig. A run recorded before runs kept the name
+ *  gets it back from its file name (rig-lab.yaml is lab). */
+function runRig(run) {
+  if (run.rig_name) {
+    return run.rig_source === 'alhazen' ? `alhazen/${run.rig_name}` : run.rig_name;
+  }
+  return run.rig.split('/').pop().replace(/\.ya?ml$/, '').replace(/^rig-/, '');
+}
+
 /** Whether the selected mode takes task parameters (see ParameterChoices). */
 function usesParameters() {
   return ParameterChoices.usesParameters($('mode').value, project()?.scripts || []);
@@ -366,10 +463,8 @@ async function chooseProject(id) {
   $('task').disabled = !declared.length;
   $('task-help').textContent = p.tasks_error
     || (declared.length ? `Declared in run.py; ${p.default_task} runs when no task is named.` : '');
-  // Rigs are shown by file name. rig-mac.yaml — the scaffold's development
-  // rig: a window, no devices — is the safe first choice when present.
-  const defaultRig = p.rigs.find((r) => r.endsWith('rig-mac.yaml')) || p.rigs[0];
-  options($('rig'), p.rigs.map((r) => [r, r.split('/').pop()]), defaultRig);
+  // Rigs by name, the experiment's own and then the shared ones (rigMenu).
+  rigMenu(p);
   // Presets: "Task defaults" (no file) first, then the configs found, opening
   // on the selected task's own file when it has one (defaultPreset).
   options($('params-config'), [
@@ -440,21 +535,38 @@ async function taskChanged() {
 }
 
 /**
- * Read the selected rig's YAML and summarise its monitor. The epoch drops
- * the answer for a rig that is no longer the selected one.
+ * Read the selected rig and summarise its monitor, and say whose rig it is.
+ * The server answers with the rig as it would run — merged over the shared
+ * rig it extends, when it extends one (/api/rig) — so a rig whose own file
+ * says nothing about the live monitor still reports the shared rig's setting.
+ * The epoch drops the answer for a rig that is no longer the selected one.
  */
 async function loadRig() {
   const epoch = ++rigEpoch;
   const p = project();
-  const path = $('rig').value;
-  $('rig-summary').textContent = path
+  const value = $('rig').value;
+  $('rig-summary').textContent = value
     ? 'Reading rig…'
-    : 'No rig YAML found in configs/. Add a rig to this experiment.';
-  if (!path) return;
-  const query = `project=${encodeURIComponent(p.id)}&path=${encodeURIComponent(path)}`;
-  const data = await api(`/api/config?${query}`);
+    : 'No rigs: none in this experiment’s configs/ (rig-<name>.yaml), and none '
+      + 'shared by its alhazen.';
+  if (!value) return;
+  const query = `project=${encodeURIComponent(p.id)}&rig=${encodeURIComponent(value)}`;
+  const data = await api(`/api/rig?${query}`);
   if (epoch !== rigEpoch) return;
   const rig = data.values;
+  const entry = rigFor(p, value);
+  // Whose rig this is, in the words the command line would need.
+  let origin;
+  if (data.source === 'alhazen') {
+    origin = `alhazen’s shared rig ${data.name}`;
+    if (entry?.shadowed) {
+      origin += ` — this experiment has its own ${data.name}, which --rig ${data.name} runs;`
+        + ` this one is --rig alhazen/${data.name}`;
+    }
+  } else {
+    origin = `this experiment’s ${value}`;
+    if (data.extends) origin += `, extending alhazen’s shared ${data.extends}`;
+  }
   const m = rig.monitor || {};
   // The live monitor is opt-in (LiveMonitorConfig.enabled defaults to false),
   // so a rig without the block, or without the key, has it off. Remembered
@@ -464,13 +576,14 @@ async function loadRig() {
   // it, and alhazen 1.9 still reads it, so the page must agree with the
   // session about whether a monitor is coming. Goes with alhazen 2.0.
   const monitorOn = rig.live_monitor?.enabled === true || rig.dashboard?.enabled === true;
-  rigMonitor[`${p.id}:${path}`] = monitorOn;
+  rigMonitor[`${p.id}:${value}`] = monitorOn;
   // '?' rather than 'undefined' for a field the YAML leaves to its default.
   $('rig-summary').textContent =
     `${m.width_px ?? '?'} × ${m.height_px ?? '?'} px · ${m.refresh_rate_hz ?? '?'} Hz`
     + ` · ${rig.display?.backend || 'default display'}\n`
     + `${m.width_cm ?? '?'} cm wide · ${m.distance_cm ?? '?'} cm viewing distance`
-    + ` · live monitor: ${monitorOn ? 'on' : 'off'}`;
+    + ` · live monitor: ${monitorOn ? 'on' : 'off'}\n`
+    + origin;
 }
 
 /**
@@ -717,7 +830,7 @@ function renderHistory() {
     const text = node('span', 'history-text');
     text.append(
       node('strong', '', title(run)),
-      node('small', '', `${date(run.started)} · ${run.rig.split('/').pop()}`),
+      node('small', '', `${date(run.started)} · ${runRig(run)}`),
     );
     // A movie run gets a play glyph; every other mode opens a display.
     const icon = node('span', 'history-icon', run.mode === 'movie' ? '▷' : '↗');

@@ -207,6 +207,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(
                     workspace.config(query.get("project", [""])[0], query.get("path", [""])[0])
                 )
+            elif path == "/api/rig":
+                # The Rig menu's summary: the rig as it would run, merged when
+                # it extends a shared one (Workspace.rig). `rig` is the menu's
+                # value — a project-relative path, or alhazen/<name>.
+                self._json(workspace.rig(query.get("project", [""])[0], query.get("rig", [""])[0]))
             elif path.startswith("/api/runs/"):
                 self._json(workspace.detail(path.removeprefix("/api/runs/")))
             elif path.startswith("/media/"):
