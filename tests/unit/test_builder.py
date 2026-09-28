@@ -1081,6 +1081,19 @@ class TestTheExperimentVersionFilesTheRun:
         assert card["params_file"] is None and card["files"]["params"] is None
         assert card["mode"] is None  # built directly, not through a mode
 
+    def test_the_rig_file_that_was_loaded_wins_over_what_sources_say(self, tmp_path, monkeypatch):
+        # The path handed in is what the builder loaded; a sources entry is
+        # the caller's say-so, and copying it would record another file.
+        repo, task = self.experiment_project(tmp_path)
+        other = tmp_path / "rig-other.yaml"
+        other.write_text("# not the rig that ran\n", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+
+        self.session(tmp_path, task, rig=repo / "rig-sim.yaml", sources={"rig": str(other)}).run()
+
+        (run_dir,) = (p.parent for p in (tmp_path / "data").rglob("session.json"))
+        assert (run_dir / "rig.yaml").read_bytes() == (repo / "rig-sim.yaml").read_bytes()
+
     def test_a_database_from_before_2_0_is_refused_before_the_run_folder(self, tmp_path):
         import sqlite3
 

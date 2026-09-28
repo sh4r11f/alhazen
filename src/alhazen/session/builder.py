@@ -544,16 +544,19 @@ def build_session(
 
     # The files the session was started with, read now for the run folder's
     # byte copies (session/identity.py): an unreadable one stops the session
-    # before the run folder exists. The rig is the path this was handed, when
-    # it was handed one; otherwise the file the caller's sources name. A
-    # layer that came from no file ("<inline>", "<defaults>") has no copy.
+    # before the run folder exists. The rig is the file this was handed, when
+    # it was handed one — that is what was loaded, just above — and otherwise
+    # the file the caller's sources name (the CLI loads the rig itself and
+    # passes the config, with the file in sources). A layer that came from no
+    # file ("<inline>", "<defaults>") has no copy.
     given_sources = sources or {}
+    rig_file = source_file(rig, "rig") if not isinstance(rig, RigConfig) else None
+    if rig_file is None:
+        rig_file = source_file(given_sources.get("rig"), "rig")
     identity = RunIdentity(
         experiment=experiment,
         mode=mode,
-        rig_file=source_file(
-            rig if not isinstance(rig, RigConfig) else given_sources.get("rig"), "rig"
-        ),
+        rig_file=rig_file,
         params_file=source_file(given_sources.get("task"), "params"),
     )
 
