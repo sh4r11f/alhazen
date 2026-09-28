@@ -32,6 +32,7 @@ from importlib import metadata
 from pathlib import Path
 
 from alhazen.errors import ConfigError
+from alhazen.version import experiment_distribution_version
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -114,7 +115,9 @@ def _from_metadata(task_class: type, module_file: Path) -> Experiment:
     name = distributions[0]
     return Experiment(
         name=name,
-        version=_checked(metadata.version(name), f"the installed {name} distribution"),
+        version=_checked(
+            experiment_distribution_version(name), f"the installed {name} distribution"
+        ),
         version_source="installed metadata",
         root=None,
     )
