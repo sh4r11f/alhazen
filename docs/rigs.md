@@ -235,6 +235,13 @@ the rig as it ran: the file itself for a whole rig, the merged rig for one
 that extends — with the experiment's file as written beside it, as
 `rig-source.yaml`.
 
+Before a launch the workspace checks the rig, so one that cannot run is
+refused before a run folder exists. It reads the rig as the project's alhazen
+will: a project still on alhazen 1.x may call the live monitor's section
+`dashboard:` (its name before 1.9, [live monitor](live_monitor.md)), and
+launches; a project on 2.0 whose rig still says `dashboard:` is refused with
+the message its own session would give, naming `live_monitor:`.
+
 A project registered before the workspace listed shared rigs has none in its
 menu, and the page says so: open **Project settings** and save to register it
 again.

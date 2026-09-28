@@ -8,12 +8,16 @@ workspace embeds this page in its **Live monitor** tab (see
 [Live monitor](workspace.md#live-monitor)); from a terminal, `python run.py`
 opens it in its own browser tab as before.
 
-## Renamed in 1.9
+## The old names, and 2.0
 
 Until 1.8 this page and its code were "the dashboard". That word now means the
-experiment workspace only, and the live monitor's names changed with it. The
-old spellings keep working through 1.x with a `DeprecationWarning` naming the
-replacement, and go in 2.0 ([versioning](versioning.md) §4):
+experiment workspace only, and in 1.9 the live monitor's names changed with
+it. The old spellings kept working through 1.9 and 1.10, with a
+`DeprecationWarning` naming the replacement, and **2.0 removed them**
+([versioning](versioning.md) §4). Code or a rig file still using one now
+fails: a rig file's `dashboard:` section and a task's `dashboard = ...` are
+refused with a message naming the new name; the rest fail as any unknown
+import, attribute, keyword or flag does. Use the right-hand column:
 
 | Before 1.9 | Since 1.9 |
 | --- | --- |

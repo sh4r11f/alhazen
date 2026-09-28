@@ -27,7 +27,6 @@ from typing import Any
 import numpy as np
 from pydantic import BaseModel
 
-from alhazen._deprecation import warn_deprecated_argument, warn_deprecated_name
 from alhazen.config.experiment import Experiment, session_experiment
 from alhazen.config.gamma import gamma_path, load_gamma
 from alhazen.config.loader import build_session_config, load_rig
@@ -252,22 +251,6 @@ def _release_on_abort(what: str, release: Callable[..., object], *args: object) 
         log.exception("could not %s while aborting the build", what)
 
 
-def task_live_monitor(task: Task) -> LiveMonitorSpec | None:
-    """The panels a task declares for the live monitor: ``Task.live_monitor``,
-    or the pre-1.9 ``Task.dashboard`` with a DeprecationWarning. A task that
-    sets both is refused rather than having one of them silently ignored."""
-    if task.dashboard is None:
-        return task.live_monitor
-    warn_deprecated_name(
-        f"{type(task).__name__}.dashboard", since="1.9", removed_in="2.0", instead="live_monitor"
-    )
-    if task.live_monitor is not None:
-        raise ValueError(
-            f"{type(task).__name__} declares both live_monitor and dashboard; keep live_monitor"
-        )
-    return task.dashboard
-
-
 def build_session(
     *,
     rig: RigConfig | str | Path,
@@ -302,8 +285,6 @@ def build_session(
     auto_start: bool = False,
     live_monitor: bool | None = None,
     open_live_monitor: bool | None = None,
-    dashboard: bool | None = None,
-    open_dashboard: bool | None = None,
     experiment: Experiment | None = None,
     experiment_version: str | None = None,
     experiment_name: str | None = None,
@@ -379,25 +360,6 @@ def build_session(
     real one's flips do not move it, and every timed phase would run forever,
     so that pairing is refused before a run directory is created.
     """
-    # `dashboard=` and `open_dashboard=` were these two arguments' names
-    # before 1.9. Translated first, so everything below knows one spelling;
-    # both spellings at once is refused, since the call cannot mean two
-    # things. Inline rather than through a helper: the warning's stacklevel
-    # is set to reach the caller of *this* function.
-    if dashboard is not None:
-        warn_deprecated_argument("dashboard", since="1.9", removed_in="2.0", instead="live_monitor")
-        if live_monitor is not None:
-            raise ValueError("pass live_monitor=, not both live_monitor= and dashboard=")
-        live_monitor = dashboard
-    if open_dashboard is not None:
-        warn_deprecated_argument(
-            "open_dashboard", since="1.9", removed_in="2.0", instead="open_live_monitor"
-        )
-        if open_live_monitor is not None:
-            raise ValueError(
-                "pass open_live_monitor=, not both open_live_monitor= and open_dashboard="
-            )
-        open_live_monitor = open_dashboard
     rig_cfg = rig if isinstance(rig, RigConfig) else load_rig(rig)
     if live_monitor is not None or open_live_monitor is not None:
         live_monitor_cfg = rig_cfg.live_monitor.model_copy(
@@ -419,7 +381,7 @@ def build_session(
         make_source = make_source if make_source is not None else task.make_source
         score = score if score is not None else task.score
         reward_policy = task.reward
-        live_monitor_spec = task_live_monitor(task) or LiveMonitorSpec()
+        live_monitor_spec = task.live_monitor or LiveMonitorSpec()
     mid_trial_reward = task.mid_trial_reward if task is not None else False
     missing = [
         name

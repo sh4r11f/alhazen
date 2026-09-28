@@ -46,7 +46,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from alhazen._deprecation import warn_deprecated_argument
 from alhazen.config.experiment import Experiment, session_experiment
 from alhazen.config.models import EyeTrackerConfig, RewardHwConfig, RigConfig
 from alhazen.data import naming
@@ -334,8 +333,6 @@ def build_mode_session(
     headless: bool = False,
     mouse: bool = False,
     build_session: Callable[..., SessionRunner] | None = None,
-    dashboard: bool | None = None,
-    open_dashboard: bool | None = None,
     experiment_version: str | None = None,
     experiment_name: str | None = None,
     initials: str | None = None,
@@ -442,24 +439,6 @@ def build_mode_session(
         else next_run(data_root, subject, session, experiment_version=experiment.version)
     )
 
-    # The two live-monitor arguments under their pre-1.9 names, translated
-    # here so the builder receives one spelling whichever the caller used;
-    # both spellings at once is refused. Inline, not through a helper, so the
-    # warning's stacklevel reaches the caller of this function.
-    if dashboard is not None:
-        warn_deprecated_argument("dashboard", since="1.9", removed_in="2.0", instead="live_monitor")
-        if live_monitor is not None:
-            raise ValueError("pass live_monitor=, not both live_monitor= and dashboard=")
-        live_monitor = dashboard
-    if open_dashboard is not None:
-        warn_deprecated_argument(
-            "open_dashboard", since="1.9", removed_in="2.0", instead="open_live_monitor"
-        )
-        if open_live_monitor is not None:
-            raise ValueError(
-                "pass open_live_monitor=, not both open_live_monitor= and open_dashboard="
-            )
-        open_live_monitor = open_dashboard
     runner = build_session(
         rig=rig,
         subject=subject,

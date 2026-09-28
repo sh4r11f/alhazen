@@ -66,9 +66,6 @@ class Task:
     # from a task that did not declare it is a loud error, not a no-op.
     mid_trial_reward: ClassVar[bool] = False
     live_monitor: ClassVar[LiveMonitorSpec | None] = None
-    # The same declaration under its pre-1.9 name. The session builder reads
-    # it with a DeprecationWarning until 2.0 (docs/versioning.md §4).
-    dashboard: ClassVar[LiveMonitorSpec | None] = None
 
     # The params field a default make_source reads its scheduler from. A task
     # that schedules its own trials never needs one.
@@ -106,6 +103,20 @@ class Task:
                     f"@classmethod, because it runs before the task exists, to decide the "
                     f"params the task is built with"
                 )
+        # `dashboard` is the live monitor's panels under their pre-1.9 name.
+        # 1.9 and 1.10 read it with a DeprecationWarning; 2.0 removed it
+        # (docs/versioning.md §4). Nothing reads the old name any more, so a
+        # task written for 1.x that still declares it would run with no
+        # panels and nothing saying why. Refused now instead, naming the new
+        # attribute, and checked on every subclass (abstract bases included)
+        # for the same reason as `instructions` above: a shared base is where
+        # a family of tasks declares its panels once.
+        if "dashboard" in cls.__dict__:
+            raise TypeError(
+                f"task {cls.__name__} declares `dashboard`, which was renamed to "
+                f"`live_monitor` in alhazen 1.9, and alhazen 2.0 no longer reads the old "
+                f"name; declare live_monitor = LiveMonitorSpec(...) instead"
+            )
         # Abstract intermediate subclasses (a shared base for a family of
         # tasks) declare nothing and are not checked; a task is anything that
         # declares a name.

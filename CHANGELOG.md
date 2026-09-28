@@ -170,6 +170,38 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   `alhazen.modes.session.next_run`, `alhazen.data.paths` (`RunFolder`,
   `find_runs`).
 
+### Removed
+
+Everything deprecated through 1.x for removal in 2.0 (docs/versioning.md §4).
+Each line is the removed name, then what to write instead.
+
+- **The live monitor's pre-1.9 spellings**
+  ([live monitor](docs/live_monitor.md) has the whole table):
+  - `alhazen.dashboard` and `alhazen.dashboard.spec` → `alhazen.live_monitor`
+    (and `alhazen.live_monitor.spec`).
+  - `alhazen.DashboardConfig`, `alhazen.DashboardPanel`, `alhazen.DashboardSpec`
+    → `alhazen.LiveMonitorConfig`, `alhazen.LiveMonitorPanel`,
+    `alhazen.LiveMonitorSpec`.
+  - A rig file's `dashboard:` section → `live_monitor:`, same settings. The
+    old section is refused, naming the new one ("the rig's `dashboard:`
+    section was renamed to `live_monitor:` in alhazen 1.9, and alhazen 2.0
+    no longer reads the old name; rename it to `live_monitor:`").
+  - `Task.dashboard = ...` → `Task.live_monitor = LiveMonitorSpec(...)`. A
+    task class that still declares `dashboard` is refused when it is defined
+    ("task X declares `dashboard`, which was renamed to `live_monitor` in
+    alhazen 1.9 ..."), since nothing would read it any more.
+  - `--dashboard`, `--no-dashboard`, `--no-dashboard-browser` →
+    `--live-monitor`, `--no-live-monitor`, `--no-live-monitor-browser`.
+  - `dashboard=` and `open_dashboard=` on `build_session` and
+    `build_mode_session` → `live_monitor=` and `open_live_monitor=`.
+
+  The experiment workspace still speaks the old spellings to a project whose
+  own alhazen is older than 2.0: it passes `--no-dashboard-browser` to one
+  before 1.9, reads a rig's `dashboard:` section as the monitor setting in
+  the Rig summary, and, before launching, checks such a rig the way that
+  project's alhazen reads it. A project on 2.0 with a `dashboard:` section is
+  refused at launch with 2.0's message.
+
 ## 1.10.1 - 2026-09-26
 
 ### Fixed

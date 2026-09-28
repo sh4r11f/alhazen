@@ -275,9 +275,6 @@ layers = [
   "alhazen.session | alhazen.testing | alhazen.analysis",
   "alhazen.training",
   "alhazen.task",
-  # The live monitor's pre-1.9 import path: a warning re-export, removed in
-  # 2.0. Its own line above live_monitor because it imports it.
-  "alhazen.dashboard",
   "alhazen.live_monitor",
   "alhazen.paradigms | alhazen.devices",
   "alhazen.core | alhazen.neural",

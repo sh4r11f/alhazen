@@ -56,12 +56,10 @@ src/alhazen/
 
 Layering is enforced by import-linter (pyproject `[tool.importlinter]`),
 top to bottom: `cli` → `modes` → `session | testing | analysis` → `training` →
-`task` → `dashboard` → `live_monitor` → `paradigms | devices` → `core | neural` →
+`task` → `live_monitor` → `paradigms | devices` → `core | neural` →
 `stimuli | scenes` → `display` → `config | data | _scaffold` →
 `_deprecation`. Imports point only downward; `errors` and `version` sit
-outside the contract. `dashboard` is the live monitor's pre-1.9 import path — a
-warning re-export that goes in 2.0 — with a line above `live_monitor` because it
-imports it. `_deprecation`, the `@deprecated` decorator, is a single
+outside the contract. `_deprecation`, the `@deprecated` decorator, is a single
 module with a line of its own at the bottom, so that every layer may import it
 while it imports nothing else from alhazen. `neural` shares core's line so
 that both the device layer (live, during a session) and
@@ -98,7 +96,12 @@ The Rig menu is the command line's rig list (`config/rigs.py`, §12), with the
 shared half taken from the *project's* alhazen: registering a project asks its
 interpreter which shared rigs it ships, the record keeps their files, and the
 workspace merges an `extends` over exactly those files — for the summary, and
-for the merged `rig.yaml` a run folder keeps.
+for the merged `rig.yaml` a run folder keeps. The child is the project's
+alhazen, not the workspace's, so the workspace speaks each child's version:
+`--no-dashboard-browser` to one before 1.9 (`no_browser_flag`), and a rig's
+pre-1.9 `dashboard:` section, which 2.0 refuses, read as `live_monitor:` by
+the check before a launch when the project's alhazen is 1.x and still reads
+it (`_as_the_project_reads_it`; `config.loader.validate_rig` is that check).
 
 Three placements carry the weight:
 

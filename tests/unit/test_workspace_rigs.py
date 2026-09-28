@@ -21,6 +21,7 @@ from test_workspace import finish, http  # noqa: F401  (http is a fixture)
 from alhazen.cli import workspace as workspace_module
 from alhazen.cli.workspace import REGISTER_AGAIN, Launch, Workspace
 from alhazen.config.rigs import SHARED_RIG_DIR, rig_mapping
+from alhazen.errors import ConfigError
 
 RIG = Path(__file__).parents[2] / "examples/minimal_fixation/rig-sim.yaml"
 
@@ -220,6 +221,90 @@ class TestLaunchingARig:
         with pytest.raises(Exception, match="distance_cm must be > 0"):
             workspace.start(launch(workspace, "configs/rig-lab.yaml"))
         assert workspace.runs == {}
+
+
+class TestARigSayingDashboard:
+    """`dashboard:` is the live monitor's rig section as alhazen spelled it
+    before 1.9. The workspace's own loader is 2.0's, which refuses it — but
+    the child reads the rig with the PROJECT's alhazen, so the launch check
+    must read it the way that alhazen does: a project on 1.x launches, one on
+    2.0 is refused in 2.0's words. A 1.x rig is a whole file (`extends` is
+    2.0's), so the project's sim rig is the one rewritten here."""
+
+    SIM = "configs/rig-sim.yaml"
+
+    @pytest.fixture
+    def saying_dashboard(self, workspace):
+        own = Path(workspace.projects[0]["path"]) / self.SIM
+        text = own.read_text(encoding="utf-8")
+        assert "live_monitor:" in text
+        own.write_text(text.replace("live_monitor:", "dashboard:"), encoding="utf-8")
+        return own
+
+    def on(self, workspace, monkeypatch, version):
+        monkeypatch.setitem(workspace.projects[0], "alhazen_version", version)
+
+    def command(self, workspace, **overrides):
+        return workspace._command(launch(workspace, self.SIM, **overrides), workspace.directory)
+
+    @pytest.mark.parametrize("version", ["1.5.0", "1.8.0", "1.9.0", "1.10.1"])
+    def test_a_project_on_1_x_launches_it(self, workspace, monkeypatch, saying_dashboard, version):
+        self.on(workspace, monkeypatch, version)
+        # Handed over as the file, which the child reads with its own alhazen.
+        assert rig_argument(self.command(workspace)) == str(saying_dashboard)
+        assert "dashboard:" in saying_dashboard.read_text(encoding="utf-8")
+
+    def test_the_check_still_catches_a_bad_setting_inside_it(
+        self, workspace, monkeypatch, saying_dashboard
+    ):
+        # Moved to the new name for the check, not waved through.
+        text = saying_dashboard.read_text(encoding="utf-8")
+        saying_dashboard.write_text(
+            text.replace("  enabled: false", "  enabled: maybe"), encoding="utf-8"
+        )
+        self.on(workspace, monkeypatch, "1.8.0")
+        with pytest.raises(ConfigError, match=r"live_monitor\.enabled"):
+            self.command(workspace)
+
+    @pytest.mark.parametrize("version", ["2.0.0", "2.1.0", "3.0.0"])
+    def test_a_project_on_2_0_is_refused_naming_the_new_key(
+        self, workspace, monkeypatch, saying_dashboard, version
+    ):
+        self.on(workspace, monkeypatch, version)
+        with pytest.raises(ConfigError, match=r"renamed to `live_monitor:` in alhazen 1\.9"):
+            workspace.start(launch(workspace, self.SIM))
+        assert workspace.runs == {}
+
+    def test_both_sections_are_refused_whatever_the_projects_alhazen(self, workspace, monkeypatch):
+        # Every alhazen refuses this rig: before 1.9 `live_monitor:` is
+        # unknown, 1.9 and 1.10 refuse the pair, 2.0 refuses `dashboard:`.
+        own = Path(workspace.projects[0]["path"]) / self.SIM
+        own.write_text(
+            own.read_text(encoding="utf-8") + "dashboard:\n  enabled: true\n", encoding="utf-8"
+        )
+        self.on(workspace, monkeypatch, "1.8.0")
+        with pytest.raises(ConfigError, match="delete it"):
+            self.command(workspace)
+
+    def test_a_project_whose_version_cannot_be_read_is_asked_to_register_again(
+        self, workspace, monkeypatch, saying_dashboard
+    ):
+        # Which reading is right depends on the version; guessing is refused.
+        self.on(workspace, monkeypatch, "unknown")
+        with pytest.raises(ValueError, match="register it again"):
+            self.command(workspace)
+
+    def test_a_rig_without_it_asks_no_version(self, workspace, monkeypatch):
+        # A standalone script is launched with no version question at all,
+        # and only a rig that says `dashboard:` adds one.
+        package = Path(workspace.projects[0]["path"]) / "src/demo"
+        package.mkdir(parents=True)
+        (package / "preview.py").write_text(
+            "parser.add_argument('--out')\nparser.add_argument('--rig')\n"
+            "if __name__ == '__main__': main()\n"
+        )
+        self.on(workspace, monkeypatch, "unknown")
+        assert rig_argument(self.command(workspace, mode="demo.preview")).endswith("rig-sim.yaml")
 
 
 class TestTheSummary:

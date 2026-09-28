@@ -10,9 +10,6 @@ schedulers from ``alhazen.paradigms``, which are namespaces rather than
 re-exports because a task imports a handful of them by name.
 """
 
-from typing import Any
-
-from alhazen._deprecation import warn_deprecated_name
 from alhazen.config.models import (
     DatabaseConfig,
     DevicesConfig,
@@ -140,22 +137,3 @@ __all__ = [
     "TrialSetup",
     "TrialSource",
 ]
-
-# The live monitor's names as they were spelled before 1.9. They resolve to
-# the same classes and warn (docs/versioning.md §4); a MAJOR release removes
-# them along with this function.
-_RENAMED_IN_1_9 = {
-    "DashboardConfig": "LiveMonitorConfig",
-    "DashboardPanel": "LiveMonitorPanel",
-    "DashboardSpec": "LiveMonitorSpec",
-}
-
-
-def __getattr__(name: str) -> Any:
-    if name in _RENAMED_IN_1_9:
-        new = _RENAMED_IN_1_9[name]
-        warn_deprecated_name(
-            f"alhazen.{name}", since="1.9", removed_in="2.0", instead=f"alhazen.{new}"
-        )
-        return globals()[new]
-    raise AttributeError(f"module 'alhazen' has no attribute {name!r}")

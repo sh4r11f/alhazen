@@ -28,7 +28,6 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from alhazen._deprecation import warn_deprecated_name
 from alhazen.cli.console_break import interrupt_on_console_break
 from alhazen.config.loader import load_rig
 from alhazen.config.models import normalize_initials
@@ -399,32 +398,6 @@ def _check_rig(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
     return 0 if all(r.ok for r in results) else 1
 
 
-class _DeprecatedFlag(argparse.Action):
-    """A flag under its pre-1.9 spelling: stores what the new spelling would,
-    and warns naming it. Hidden from --help, so nobody learns the old name
-    from the tool that is retiring it; removed in 2.0 with the warning.
-    """
-
-    def __init__(
-        self, option_strings: list[str], dest: str, instead: str, value: bool, **kwargs: Any
-    ):
-        super().__init__(option_strings, dest, nargs=0, help=argparse.SUPPRESS, **kwargs)
-        self._instead = instead
-        self._value = value
-
-    def __call__(
-        self,
-        parser: argparse.ArgumentParser,
-        namespace: argparse.Namespace,
-        values: Any,
-        option_string: str | None = None,
-    ) -> None:
-        warn_deprecated_name(
-            f"the {option_string} flag", since="1.9", removed_in="2.0", instead=self._instead
-        )
-        setattr(namespace, self.dest, self._value)
-
-
 def add_mode_arguments(parser: argparse.ArgumentParser) -> None:
     """The options every mode-aware entry point takes.
 
@@ -481,32 +454,6 @@ def add_mode_arguments(parser: argparse.ArgumentParser) -> None:
         "--no-live-monitor-browser",
         action="store_true",
         help="serve the live monitor without opening a browser window",
-    )
-    # The same three flags as they were spelled before 1.9 (the live monitor
-    # was "the dashboard"). Each stores into the new flag's destination and
-    # warns; `alhazen dashboard` launching a project on an older alhazen
-    # still emits the old spelling, which is why the workspace's reserved
-    # set names both (cli/workspace.py, MODE_FLAGS).
-    live_monitor_group.add_argument(
-        "--dashboard",
-        action=_DeprecatedFlag,
-        dest="live_monitor",
-        instead="--live-monitor",
-        value=True,
-    )
-    live_monitor_group.add_argument(
-        "--no-dashboard",
-        action=_DeprecatedFlag,
-        dest="live_monitor",
-        instead="--no-live-monitor",
-        value=False,
-    )
-    parser.add_argument(
-        "--no-dashboard-browser",
-        action=_DeprecatedFlag,
-        dest="no_live_monitor_browser",
-        instead="--no-live-monitor-browser",
-        value=True,
     )
     parser.add_argument("--curriculum", default=None, help="path to a curriculum YAML")
     # test / simulate

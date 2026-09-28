@@ -602,10 +602,14 @@ async function loadRig() {
   // The live monitor is opt-in (LiveMonitorConfig.enabled defaults to false),
   // so a rig without the block, or without the key, has it off. Remembered
   // for the Live monitor tab, which cannot re-read the YAML on every poll.
-  // `dashboard:` is the same section as alhazen spelled it before 1.9; a
-  // project on an older alhazen (or a rig file not yet updated) still says
-  // it, and alhazen 1.9 still reads it, so the page must agree with the
-  // session about whether a monitor is coming. Goes with alhazen 2.0.
+  // `dashboard:` is the same section as alhazen spelled it before 1.9. It
+  // stays here although alhazen 2.0 refuses it, because the rig is read by
+  // the PROJECT's alhazen, not this one: a project still on 1.x (before 1.9
+  // it is the only spelling there is; 1.9 and 1.10 read either) says it, its
+  // session reads it, and the workspace launches it (/api/rig is the rig
+  // file unvalidated; workspace.py _as_the_project_reads_it). The page must
+  // agree with that session about whether a monitor is coming. A project on
+  // 2.0 that still says it is refused at launch, naming `live_monitor:`.
   const monitorOn = rig.live_monitor?.enabled === true || rig.dashboard?.enabled === true;
   rigMonitor[`${p.id}:${value}`] = monitorOn;
   // '?' rather than 'undefined' for a field the YAML leaves to its default.

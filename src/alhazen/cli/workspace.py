@@ -27,7 +27,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
-from alhazen.config.loader import load_rig
+from alhazen.config.loader import validate_rig
 from alhazen.config.models import normalize_initials
 from alhazen.config.rigs import (
     SHARED_PREFIX,
@@ -508,8 +508,10 @@ MODE_FLAGS = frozenset(
         "--params",
         "--seed",
         "--no-live-monitor-browser",
-        # The same flag as alhazen spelled it before 1.9: emitted for a
-        # project whose interpreter runs an older alhazen (no_browser_flag).
+        # The same flag as alhazen spelled it before 1.9: emitted only for a
+        # project whose interpreter runs an alhazen that old (no_browser_flag).
+        # alhazen 2.0 itself no longer accepts it, but the child is not this
+        # alhazen, so the workspace keeps speaking its language.
         "--no-dashboard-browser",
         "--ses",
         "--sub",
@@ -554,23 +556,57 @@ def _extra_arguments(text: str, reserved: frozenset[str]) -> list[str]:
     return extra
 
 
-def no_browser_flag(alhazen_version: str | None) -> str:
-    """The flag that keeps a launched session from opening its own browser
-    tab (the page embeds the monitor instead), spelled the way the project's
-    alhazen understands it. It is `--no-live-monitor-browser` since 1.9; an
-    older alhazen knows only `--no-dashboard-browser`, which 1.9 still
-    accepts with a warning until 2.0. Registration records the version, so a
-    launch never dies on argparse in the child's console. A version this
-    cannot read means the record is not one registration wrote: re-register.
-    """
+def _alhazen_release(alhazen_version: str | None) -> tuple[int, int]:
+    """The (MAJOR, MINOR) of the alhazen a project's interpreter runs, as
+    registration recorded it. A version this cannot read means the record is
+    not one registration wrote, so it is refused rather than guessed: either
+    guess would speak to the child in a language it may not know."""
     match = re.match(r"(\d+)\.(\d+)", alhazen_version or "")
     if match is None:
         raise ValueError(
             f"Cannot tell which alhazen this project runs ({alhazen_version!r}); "
             "remove the project and register it again"
         )
-    recent = (int(match.group(1)), int(match.group(2))) >= (1, 9)
+    return int(match.group(1)), int(match.group(2))
+
+
+def no_browser_flag(alhazen_version: str | None) -> str:
+    """The flag that keeps a launched session from opening its own browser
+    tab (the page embeds the monitor instead), spelled the way the project's
+    alhazen understands it. It is `--no-live-monitor-browser` since 1.9; an
+    alhazen before 1.9 knows only `--no-dashboard-browser`. 1.9 and 1.10
+    accept both, and a 2.0 child refuses the old spelling, so only a child
+    older than 1.9 is given it. Registration records the version, so a launch
+    never dies on argparse in the child's console.
+    """
+    recent = _alhazen_release(alhazen_version) >= (1, 9)
     return "--no-live-monitor-browser" if recent else "--no-dashboard-browser"
+
+
+def _as_the_project_reads_it(merged: MergedRig, alhazen_version: str | None) -> MergedRig:
+    """A project's rig settings as the project's own alhazen will read them,
+    for the workspace's check before a launch.
+
+    The check validates with the workspace's loader, which is alhazen 2.0's,
+    and 2.0 refuses a rig's `dashboard:` section: 1.9 renamed it to
+    `live_monitor:`. But the child reads the rig with the project's alhazen.
+    Before 1.9 that alhazen knows only `dashboard:`, and 1.9 and 1.10 still
+    read it, so for a project on any of them the section is moved to its
+    new name before checking — otherwise this workspace would refuse to launch
+    rigs their own sessions run correctly. Only the check sees the moved
+    section; the child is handed the file as written, and validates it itself.
+    A project on 2.0 or later gets the settings unchanged, and 2.0's refusal,
+    which names the new key. So does a rig that has both sections: every
+    alhazen refuses that one, each in its own words.
+    """
+    values = merged.values
+    if "dashboard" not in values or "live_monitor" in values:
+        return merged
+    if _alhazen_release(alhazen_version) >= (2, 0):
+        return merged
+    moved = {key: value for key, value in values.items() if key != "dashboard"}
+    moved["live_monitor"] = values["dashboard"]
+    return merged._replace(values=moved)
 
 
 def _launch_initials(request: Launch, mode: Mode) -> str | None:
@@ -909,8 +945,10 @@ class Workspace:
         ref, shared = self._launch_rig(project, request.rig)
         # Validated here, with the workspace's own loader, so a rig that
         # cannot run is refused before a run directory exists — merged over
-        # the PROJECT's shared rig when it extends one, not the workspace's.
-        load_rig(ref.path, shared_rigs=shared)
+        # the PROJECT's shared rig when it extends one, not the workspace's,
+        # and read as the project's alhazen reads it (_as_the_project_reads_it).
+        merged = rig_mapping(ref.path, shared=shared)
+        validate_rig(_as_the_project_reads_it(merged, project.get("alhazen_version")), ref.path)
         task = self._task_for(project, request)
         base = [project["python"], "-u"]
         if request.mode in {m.value for m in Mode}:

@@ -11,13 +11,16 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import yaml
 from pydantic import BaseModel, ValidationError
 
 from alhazen.config.models import RigConfig, SessionConfig, SessionInfo
 from alhazen.errors import ConfigError
+
+if TYPE_CHECKING:  # annotations only: rigs.py imports this module (see load_rig)
+    from alhazen.config.rigs import MergedRig
 
 M = TypeVar("M", bound=BaseModel)
 
@@ -105,9 +108,25 @@ def load_rig(path: str | Path, *, shared_rigs: Mapping[str, Path] | None = None)
     from alhazen.config.rigs import rig_mapping
 
     path = Path(path)
-    merged = rig_mapping(path, shared=shared_rigs)
+    rig = validate_rig(rig_mapping(path, shared=shared_rigs), path)
+    if "name" not in rig.monitor.model_fields_set:
+        monitor = rig.monitor.model_copy(update={"name": path.stem})
+        rig = rig.model_copy(update={"monitor": monitor})
+    return rig
+
+
+def validate_rig(merged: MergedRig, path: Path) -> RigConfig:
+    """A rig file's settings, already merged over any shared rig it extends
+    (``alhazen.config.rigs.rig_mapping``), validated as a `RigConfig`; a
+    failure is a ConfigError naming the file.
+
+    ``load_rig`` is ``rig_mapping`` followed by this. It is a function of its
+    own for the experiment workspace, which checks a project's rig before
+    launching it and must first read the settings the way the project's own
+    alhazen will, which may be an older one (``alhazen.cli.workspace``).
+    """
     try:
-        rig = RigConfig.model_validate(merged.values)
+        return RigConfig.model_validate(merged.values)
     except ValidationError as e:
         # An error in the merged result may come from either file, so both
         # are named: the experiment's first, since that is the one usually
@@ -116,10 +135,6 @@ def load_rig(path: str | Path, *, shared_rigs: Mapping[str, Path] | None = None)
         if merged.base is not None:
             where += f" (which extends alhazen's shared rig '{merged.extends}', {merged.base})"
         raise ConfigError(f"invalid config in {where}:\n{e}") from e
-    if "name" not in rig.monitor.model_fields_set:
-        monitor = rig.monitor.model_copy(update={"name": path.stem})
-        rig = rig.model_copy(update={"monitor": monitor})
-    return rig
 
 
 def load_params(path: str | Path, model: type[M]) -> M:

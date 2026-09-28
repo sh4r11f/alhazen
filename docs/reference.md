@@ -400,15 +400,10 @@ is for: [data layout](data.md).
     options:
       members: [panel_payload]
 
-### Deprecated spellings
-
-Until 1.8 the live monitor was "the dashboard". These names resolve to the
-classes above and warn when imported; they go in 2.0
-([versioning](versioning.md) §4, and the table in [live monitor](live_monitor.md)).
-
-::: alhazen.dashboard
-    options:
-      members: [DashboardPanel, DashboardSpec]
+Until 1.8 the live monitor was "the dashboard". The old spellings
+(`alhazen.dashboard`, `DashboardSpec`, `DashboardPanel`, `DashboardConfig`)
+warned through 1.9 and 1.10 and were removed in 2.0; the table in
+[live monitor](live_monitor.md) maps each to its replacement.
 
 ## Testing helpers
 

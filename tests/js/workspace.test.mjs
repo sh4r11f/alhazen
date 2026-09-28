@@ -44,8 +44,8 @@ function rig(dashboardEnabled, oldKey = false, about = {}) {
       width_px: 1920, height_px: 1080, refresh_rate_hz: 60, width_cm: 52, distance_cm: 57,
     },
   };
-  /* `oldKey`: the section under its pre-1.9 name `dashboard:`, as a rig file
-   * not yet updated (or a project on an older alhazen) still spells it. */
+  /* `oldKey`: the section under its pre-1.9 name `dashboard:`, as a project
+   * whose own alhazen is older than 2.0 may still spell it. */
   if (dashboardEnabled !== null) {
     values[oldKey ? 'dashboard' : 'live_monitor'] = { enabled: dashboardEnabled };
   }
@@ -236,9 +236,11 @@ describe('the Live monitor tab', () => {
   });
 
   it('reads the pre-1.9 `dashboard:` rig section as the monitor setting', async () => {
-    /* A project on alhazen 1.8, or a rig file nobody has renamed yet: the
-     * session will bring a monitor, so the page must wait for it rather than
-     * declare the rig has it off. Goes with the section's removal in 2.0. */
+    /* A project still on alhazen 1.x (1.8 knows only this spelling; 1.9 and
+     * 1.10 read either): its session will bring a monitor, so the page must
+     * wait for it rather than declare the rig has it off. alhazen 2.0 refuses
+     * the section, but the rig is read by the project's alhazen, not the
+     * workspace's, so this stays for as long as such projects are launched. */
     const on = await pageWith({ run: runDetail({ monitor: null }), dashboardEnabled: true, oldKey: true });
     assert.match(on.byId('monitor-note').textContent, /waiting for the session/i);
     assert.match(on.byId('rig-summary').textContent, /live monitor: on/);

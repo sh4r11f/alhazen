@@ -20,7 +20,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
-from alhazen._deprecation import warn_deprecated_name
 from alhazen.errors import ConfigError
 
 
@@ -863,27 +862,29 @@ class RigConfig(Model):
 
     @model_validator(mode="before")
     @classmethod
-    def _accept_the_old_live_monitor_key(cls, data: Any) -> Any:
-        """A rig file written before 1.9 says ``dashboard:`` where
-        ``live_monitor:`` now goes. Read it as that section, with a
-        DeprecationWarning, until 2.0 (docs/versioning.md §4). A file naming
-        both is refused: there is no right answer to which one the session
-        should run with, and ``extra="forbid"`` would otherwise refuse only
-        the old one, with a message about an unknown key.
+    def _refuse_the_pre_1_9_live_monitor_key(cls, data: Any) -> Any:
+        """Refuse a rig file's ``dashboard:`` section, naming what replaced it.
+
+        A rig file written before 1.9 says ``dashboard:`` where
+        ``live_monitor:`` now goes. 1.9 and 1.10 read it as that section, with
+        a DeprecationWarning; 2.0 removed it (docs/versioning.md §4).
+        ``extra="forbid"`` would refuse the key anyway, but as "Extra inputs
+        are not permitted", which tells the experimenter holding an old rig
+        file that something is wrong and not what to type instead. So the key
+        is refused here, before that check, with the new name in the message.
         """
         if isinstance(data, dict) and "dashboard" in data:
-            if "live_monitor" in data:
-                raise ValueError(
-                    "rig names both `dashboard` and `live_monitor`; keep `live_monitor` only"
-                )
-            warn_deprecated_name(
-                "the rig file's `dashboard:` section",
-                since="1.9",
-                removed_in="2.0",
-                instead="`live_monitor:`",
+            # A file that already has the new section needs the old one
+            # deleted, not renamed: renaming would give it two.
+            fix = (
+                "delete it: this rig already has a `live_monitor:` section"
+                if "live_monitor" in data
+                else "rename it to `live_monitor:`; its settings are unchanged"
             )
-            rest = {key: value for key, value in data.items() if key != "dashboard"}
-            return {**rest, "live_monitor": data["dashboard"]}
+            raise ValueError(
+                "the rig's `dashboard:` section was renamed to `live_monitor:` in alhazen 1.9, "
+                f"and alhazen 2.0 no longer reads the old name; {fix}"
+            )
         return data
 
 
