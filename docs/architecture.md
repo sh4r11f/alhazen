@@ -1761,8 +1761,9 @@ every backend precisely so a backend cannot quietly reach for
 given explicitly, or the `pyproject.toml` above the task's class — and a
 session with none of them is refused), reads the rig and params files the
 session was started from for their byte copies (`session/identity.py`
-`source_file`), and refuses an experiment database whose schema it cannot
-write (`ExperimentDatabase.check_schema`). The run folder is then made under
+`source_file`), and checks the experiment database's schema
+(`ExperimentDatabase.check_schema`): one from an older schema is moved aside
+and a new one started, one from a newer alhazen refused. The run folder is then made under
 `<data_root>/v<version>/` ([data on disk](data.md)). `SessionRunner.run()`
 then:
 

@@ -1094,16 +1094,34 @@ class TestTheExperimentVersionFilesTheRun:
         (run_dir,) = (p.parent for p in (tmp_path / "data").rglob("session.json"))
         assert (run_dir / "rig.yaml").read_bytes() == (repo / "rig-sim.yaml").read_bytes()
 
-    def test_a_database_from_before_2_0_is_refused_before_the_run_folder(self, tmp_path):
+    def test_a_database_from_a_newer_alhazen_is_refused_before_the_run_folder(self, tmp_path):
+        # 2.0.1: one from an OLDER schema is moved aside instead (below); a
+        # newer one is still refused, and still before anything is made.
         import sqlite3
+
+        from alhazen.session.database import SCHEMA_VERSION
 
         with sqlite3.connect(tmp_path / "experiment.sqlite3") as db:
             db.execute("CREATE TABLE schema_info (version INTEGER NOT NULL)")
-            db.execute("INSERT INTO schema_info(version) VALUES (2)")
+            db.execute("INSERT INTO schema_info(version) VALUES (?)", (SCHEMA_VERSION + 1,))
 
-        with pytest.raises(DataError, match="schema version 2"):
+        with pytest.raises(DataError, match=f"schema version {SCHEMA_VERSION + 1}"):
             build(tmp_path, EventSchema(()))
         assert not list(tmp_path.rglob("run-*"))
+
+    def test_a_database_from_before_2_0_is_moved_aside_and_the_session_builds(self, tmp_path):
+        import sqlite3
+        from contextlib import closing
+
+        # Closed, not just committed: an open handle locks the file on Windows.
+        with closing(sqlite3.connect(tmp_path / "experiment.sqlite3")) as db, db:
+            db.execute("CREATE TABLE schema_info (version INTEGER NOT NULL)")
+            db.execute("INSERT INTO schema_info(version) VALUES (2)")
+
+        build(tmp_path, EventSchema(()))
+
+        assert (tmp_path / "experiment.schema2.sqlite3").is_file()
+        assert list(tmp_path.rglob("run-*")), "the session built its run folder"
 
 
 class TestTheSubjectsInitials:

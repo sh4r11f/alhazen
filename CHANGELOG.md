@@ -25,6 +25,22 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## 2.0.1 - 2026-09-28
+
+### Fixed
+
+- **A data folder used by alhazen 1.x no longer stops the first 2.0
+  session.** Its `experiment.sqlite3` (schema 2) was refused before the
+  session with "move or delete the file", so every rig with existing data
+  needed a hand step first. `ExperimentDatabase.check_schema` now does that
+  step: it renames the old database beside itself to
+  `experiment.schema2.sqlite3` (never overwriting an earlier one; kept, not
+  deleted), logs it on the console, and the session starts a new database.
+  Nothing is lost: the database is a mirror of the run folders beside it, and
+  each subject's `training_state.yaml` is its own file. A database from a
+  newer alhazen is still refused, untouched. `check_schema` returns where an
+  old database went.
+
 ## 2.0.0 - 2026-09-28
 
 ### Changed
