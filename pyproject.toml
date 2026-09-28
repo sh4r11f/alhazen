@@ -31,6 +31,10 @@ dependencies = [
   "pandas>=2.0",
   "pyyaml>=6.0",
   "pydantic>=2.5",
+  # alhazen.config.experiment reads each experiment's pyproject.toml for its
+  # version, which names the data folder. tomllib is stdlib from 3.11; this
+  # is the backport for 3.10.
+  "tomli>=2.0; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]
