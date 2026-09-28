@@ -201,6 +201,10 @@ Each line is the removed name, then what to write instead.
   the Rig summary, and, before launching, checks such a rig the way that
   project's alhazen reads it. A project on 2.0 with a `dashboard:` section is
   refused at launch with 2.0's message.
+- **`pause_menu(show_message, raw_keys, wait)`** (`alhazen.session`, and
+  `alhazen.session.runner` / `alhazen.session.pause`), deprecated since 1.1 →
+  `alhazen.session.build_pause_menu` with `alhazen.session.run_pause_menu`,
+  drawn by the display's `show_menu`.
 
 ## 1.10.1 - 2026-09-26
 

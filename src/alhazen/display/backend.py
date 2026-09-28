@@ -55,8 +55,7 @@ class DisplayBackend(Protocol):
         A backend written before ``reflow`` existed takes the text alone and
         keeps working: framework code never passes ``reflow=`` to a backend
         it did not build (a message whose lines must stay apart is written as
-        paragraphs instead), and the deprecated ``pause_menu`` seam checks the
-        signature before it does.
+        paragraphs instead).
         """
         ...
 

@@ -25,11 +25,9 @@ menu, because it is believed.
 
 from __future__ import annotations
 
-import inspect
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from alhazen._deprecation import deprecated
 from alhazen.core.commands import DEFAULT_KEYMAP, Command
 
 # Orange, in PsychoPy's -1..1 RGB space (0-1 value v maps to 2v-1). Roughly
@@ -332,62 +330,3 @@ def run_pause_menu(
             if action is not None:
                 return action
         wait(0.01)
-
-
-# Removed in 2.0, not sooner: taking a public name away breaks whoever still
-# calls it, and semantic versioning allows that only in a MAJOR release
-# (docs/versioning.md §4). It said 1.2 until 1.5, so every call warned about a
-# removal that had already been skipped; tests/unit/test_versioning.py now
-# fails on a removal version the package has reached. The replacements are
-# named by the import path an experiment package would use.
-@deprecated(
-    since="1.1",
-    removed_in="2.0",
-    instead="alhazen.session.build_pause_menu with alhazen.session.run_pause_menu",
-)
-def pause_menu(
-    show_message: Callable[[str], None],
-    raw_keys: Callable[[], list[str]],
-    wait: Callable[[float], None],
-) -> str:
-    """The pre-1.1 pause loop: three fixed keys drawn through ``show_message``.
-
-    Kept working because it is public API and an experiment package may call
-    it. It builds the default menu and renders it as plain text, so a caller
-    that has not moved yet gets the new wording through the old seam — but
-    not the colour, and not the controls that depend on what a session has
-    wired, because a ``show_message`` callable cannot express either.
-    """
-    # has_tracker=True because the old three-key menu always offered
-    # calibrate, whether or not a tracker was wired. A caller still on this
-    # seam must keep getting "calibrate" back for 'c' — silently dropping the
-    # key would hang them here, since this loop only returns on a match.
-    menu = build_pause_menu(has_tracker=True)
-    return run_pause_menu(
-        menu,
-        lambda m: _show_laid_out(show_message, f"{m.title}\n\n{m.render()}"),
-        raw_keys,
-        wait,
-    )
-
-
-def _show_laid_out(show_message: Callable[..., None], text: str) -> None:
-    """Hand ``text`` to a ``show_message`` callable with its line breaks kept.
-
-    The menu's rows are one key per line and unindented, which is exactly what
-    a display's prose reflow joins into a paragraph — so a caller that passed
-    ``display.show_message`` would see its key list run together. A callable
-    that takes ``reflow`` gets ``reflow=False``. One that does not cannot be
-    reflowing on its own say-so, so it is called with the text alone, as this
-    seam always called it.
-    """
-    try:
-        takes_reflow = "reflow" in inspect.signature(show_message).parameters
-    except (TypeError, ValueError):
-        # No inspectable signature (some builtins): call it the way this seam
-        # always has.
-        takes_reflow = False
-    if takes_reflow:
-        show_message(text, reflow=False)
-    else:
-        show_message(text)

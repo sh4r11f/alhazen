@@ -82,10 +82,7 @@ from alhazen.paradigms.base import Condition, TrialSource
 from alhazen.session.database import ExperimentDatabase, FrameInputBuffer
 from alhazen.session.eyetracker import PROCEDURE_STATUS, EyeTrackerMonitor
 from alhazen.session.identity import RunIdentity, write_run_identity
-from alhazen.session.pause import (
-    PauseMenu,
-    pause_menu,  # noqa: F401 - re-exported: it lived here until 1.1
-)
+from alhazen.session.pause import PauseMenu
 from alhazen.session.pause_control import PauseController
 from alhazen.session.recorder import DataRecorder
 from alhazen.session.reward_payer import RewardPayer

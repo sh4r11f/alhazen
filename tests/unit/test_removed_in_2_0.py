@@ -158,3 +158,20 @@ class TestTheOldTaskAttribute:
 
         assert NewTask(Params()).live_monitor is panels
         assert not hasattr(NewTask, "dashboard")
+
+
+class TestThePre11PauseLoop:
+    """`pause_menu(show_message, raw_keys, wait)`, deprecated since 1.1."""
+
+    @pytest.mark.parametrize(
+        "module", ["alhazen.session", "alhazen.session.pause", "alhazen.session.runner"]
+    )
+    def test_it_is_gone_from_every_path_it_was_imported_by(self, module):
+        with pytest.raises(ImportError, match="pause_menu"):
+            exec(f"from {module} import pause_menu", {})
+
+    def test_its_replacements_are_there(self):
+        import alhazen.session
+
+        assert {"build_pause_menu", "run_pause_menu"} <= set(alhazen.session.__all__)
+        assert "pause_menu" not in alhazen.session.__all__

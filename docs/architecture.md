@@ -1941,7 +1941,6 @@ flowchart LR
     SRC["instructions.md<br/>(hard-wrapped)"] --> RUN["SessionRunner"]
     RUN -->|"show_message(text)"| BE["display backend"]
     CAL["TRACKPixx3: Calibration FAILED<br/>(two paragraphs)"] -->|"show_message(text)"| BE
-    PM["deprecated pause_menu seam<br/>(key rows)"] -->|"show_message(text, reflow=False)<br/>only if it takes reflow"| BE
     BE -->|"reflow=True"| RF["display.text.reflow<br/>(pure string work)"]
     RF --> LAY["layout: wrap at the measure,<br/>size the box, shrink if too tall"]
     BE -->|"reflow=False"| LAY
@@ -1966,12 +1965,11 @@ Reflow is on by default because nearly every message is prose. Text whose
 every break is meaningful can pass `reflow=False` and is drawn exactly as
 given. **Framework code never passes `reflow=` to a backend it did not build
 itself**, so a display backend written before the argument existed, taking
-the text alone, keeps working. The two messages with deliberate breaks get
+the text alone, keeps working. The message with deliberate breaks gets
 them another way: the TRACKPixx3's calibration-failed notice is two
-paragraphs (what happened, then what to do), which reflow keeps apart; the
-deprecated `pause_menu` seam, whose unindented key rows would otherwise run
-together, passes `reflow=False` only to a `show_message` whose signature
-takes it. The real pause menu goes through `show_menu`, which never reflows.
+paragraphs (what happened, then what to do), which reflow keeps apart. The
+pause menu, whose unindented key rows reflow would run together, goes
+through `show_menu`, which never reflows.
 The built-in backends take the argument the same way — keyword-only, default
 `True` — and the ones with no screen keep it: `SimulatedDisplay` and
 `testing.FakeDisplay` record `(text, reflow)` in `message_calls`, and the

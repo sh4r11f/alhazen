@@ -63,7 +63,7 @@ The names an experiment imports directly.
 
 ::: alhazen.session.runner
     options:
-      members: [SessionRunner, pause_menu, host_overlay_shapes]
+      members: [SessionRunner, host_overlay_shapes]
 
 ::: alhazen.session.identity
     options:
