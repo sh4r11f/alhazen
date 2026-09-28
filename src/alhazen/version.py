@@ -29,4 +29,22 @@ def get_version() -> str:
         return "unknown"
 
 
+def experiment_distribution_version(name: str) -> str:
+    """The installed version of an experiment's distribution, by the exact
+    name `importlib.metadata.packages_distributions()` gave for its package.
+
+    Every version lookup in alhazen lives in this module, so the wrong-name
+    trap above has one place to be checked (tests/unit/test_distribution_
+    identity.py holds the rest of the package to that). This one is for the
+    experiment, not for alhazen: `alhazen.config.experiment` falls back to it
+    for a task installed from a wheel. The name is never typed by hand — it
+    comes from the metadata that says which distribution ships the package —
+    so it cannot be the look-alike that `DISTRIBUTION` guards against.
+    Raises `importlib.metadata.PackageNotFoundError` for an unknown name:
+    unlike alhazen's own version, an experiment's names a data folder, and
+    "unknown" there would be invented.
+    """
+    return metadata.version(name)
+
+
 __version__ = get_version()

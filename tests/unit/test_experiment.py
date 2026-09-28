@@ -66,7 +66,9 @@ class TestFromPyproject:
         # file is what the experimenter just bumped.
         task = make_project(tmp_path, '[project]\nname = "exp"\nversion = "0.5.0"\n')
         monkeypatch.setattr(
-            experiment_module.metadata, "version", lambda name: pytest.fail("metadata was read")
+            experiment_module,
+            "experiment_distribution_version",
+            lambda name: pytest.fail("metadata was read"),
         )
         assert find_experiment(task).version == "0.5.0"
 
@@ -104,7 +106,9 @@ class TestFromInstalledMetadata:
             "packages_distributions",
             lambda: {"exp_pkg": ["exp-dist"]},
         )
-        monkeypatch.setattr(experiment_module.metadata, "version", lambda name: "0.7.1")
+        monkeypatch.setattr(
+            experiment_module, "experiment_distribution_version", lambda name: "0.7.1"
+        )
         # tmp_path has no pyproject.toml above it on any CI runner we use; the
         # walk must reach the filesystem root without finding one.
         assert [p for p in tmp_path.parents if (p / "pyproject.toml").is_file()] == []
