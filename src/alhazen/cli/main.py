@@ -30,7 +30,7 @@ from pydantic import ValidationError
 from alhazen._deprecation import warn_deprecated_name
 from alhazen.cli.console_break import interrupt_on_console_break
 from alhazen.config.loader import load_rig
-from alhazen.errors import AlhazenError, ConfigError
+from alhazen.errors import AlhazenError, ConfigError, DataError
 from alhazen.modes import Mode, flag_refusal
 from alhazen.session.checks import check_rig, format_result
 from alhazen.testing.sorter import FAULTS
@@ -843,7 +843,10 @@ def _trial_session(args: argparse.Namespace, rig: Any, task: Any, params: Any, m
             instructions=getattr(args, "instructions", None),
             sources={"rig": str(args.rig), "task": str(args.params or "<defaults>")},
         )
-    except ConfigError as e:
+    except (ConfigError, DataError) as e:
+        # DataError: what is already on disk refuses the session — a used run
+        # folder, an experiment database from before 2.0's schema. Each names
+        # the file and what to do; a traceback would bury that.
         print(f"CANNOT RUN: {e}", file=sys.stderr)
         return 1
 

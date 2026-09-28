@@ -1274,6 +1274,8 @@ class TestTheChildDoesNotLeak:
                 ),
                 simulated_frame_period_s=0.0,
                 date_yyyymmdd="20260826",
+                # Wired from parts, so no task class to read a version from.
+                experiment_version="0.1.0",
                 **kwargs,
             )
 

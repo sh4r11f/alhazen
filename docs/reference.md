@@ -65,6 +65,10 @@ The names an experiment imports directly.
     options:
       members: [SessionRunner, pause_menu, host_overlay_shapes]
 
+::: alhazen.session.identity
+    options:
+      members: [RunIdentity, SourceFile, SESSION_JSON_SCHEMA_VERSION]
+
 ::: alhazen.session.pause
     options:
       members: [build_pause_menu, run_pause_menu, PauseMenu]
@@ -100,7 +104,7 @@ explains each.
 
 ::: alhazen.modes.session
     options:
-      members: [ModeSession, build_mode_session, rig_for_mode]
+      members: [ModeSession, build_mode_session, rig_for_mode, next_run]
 
 ::: alhazen.modes.rehearsal
     options:
@@ -234,6 +238,10 @@ explains each.
     options:
       members: [build_provenance]
 
+::: alhazen.config.experiment
+    options:
+      members: [Experiment, find_experiment, session_experiment]
+
 ## Display and stimuli
 
 ::: alhazen.display.backend
@@ -333,6 +341,13 @@ listed here are public because tests and the rehearsal modes construct them.
       members: [ProbeGrid, RFAccumulator]
 
 ## Data on disk
+
+The folder layout these read and write, and what each file in a run folder
+is for: [data layout](data.md).
+
+::: alhazen.data.paths
+    options:
+      members: [RunFolder, find_runs]
 
 ::: alhazen.data.manifest
     options:

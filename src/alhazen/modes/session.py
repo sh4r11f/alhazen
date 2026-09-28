@@ -47,8 +47,10 @@ from pathlib import Path
 from typing import Any
 
 from alhazen._deprecation import warn_deprecated_argument
+from alhazen.config.experiment import Experiment, session_experiment
 from alhazen.config.models import EyeTrackerConfig, RewardHwConfig, RigConfig
 from alhazen.data import naming
+from alhazen.data.paths import session_dir
 from alhazen.errors import ConfigError
 from alhazen.modes import Mode, flag_refusal
 from alhazen.modes.rehearsal import Reduction, rehearsal_root, shrink_params
@@ -69,11 +71,17 @@ class ModeSession:
 
     mode: Mode
     runner: SessionRunner
+    # The UNversioned root: the rig's data_root, or its rehearsal sibling.
+    # The run itself sits under `v<version>/` inside it (see `experiment`);
+    # participants.tsv and the experiment database sit here, at the top.
     data_root: Path
     run: int
     reductions: list[Reduction] = field(default_factory=list)
     simulation: Simulation | None = None
     notes: list[str] = field(default_factory=list)
+    # The experiment and version the run is filed under. None only for a
+    # ModeSession built by hand; build_mode_session always sets it.
+    experiment: Experiment | None = None
 
     def describe(self) -> str:
         """What is about to happen, for the experimenter to read before it
@@ -83,6 +91,15 @@ class ModeSession:
             lines.append(f"data: {self.data_root}  (NOT the rig's data root)")
         else:
             lines.append(f"data: {self.data_root}")
+        if self.experiment is not None:
+            # Which version folder the run goes in, and where that number came
+            # from: a version nobody bumped files a changed protocol with the
+            # old one's data, and this is the last moment to notice.
+            lines.append(
+                f"experiment: {self.experiment.name} {self.experiment.version} — filed under "
+                f"{naming.version_dirname(self.experiment.version)}/ (version from "
+                f"{self.experiment.version_source})"
+            )
         for reduction in self.reductions:
             lines.append(f"reduced: {reduction}")
         if self.mode is Mode.TEST and not self.reductions:
@@ -103,25 +120,32 @@ class ModeSession:
         return "\n".join(lines)
 
 
-def next_run(data_root: Path | str, subject: str, session: int) -> int:
-    """The next unused run number for this subject and session.
+def next_run(data_root: Path | str, subject: str, session: int, *, experiment_version: str) -> int:
+    """The next unused run number for this subject and session, within one
+    version of the experiment.
 
     The run directories ARE the record, so they are what is counted: a
     counter file that disagreed with them is what would eventually overwrite
     a session's data. Both experiment packages had grown their own identical
     copy of this before it lived here, and so had the CLI.
 
+    Counted inside the version's folder (``v<version>/sub-.../ses-...``),
+    because that is where the run will be made: a new version starts its
+    sessions at run 1, and runs recorded before alhazen 2.0 (directly under
+    the data root) are in no version's folder and never counted.
+    ``experiment_version`` is required for the same reason `SessionPaths`
+    requires it — a default would count one folder and write another.
+
     One past the HIGHEST number taken, not the first gap: filling a gap would
     reuse a number an experimenter's notes may already refer to. The folder
-    names are built and read by `alhazen.data.naming`, the one definition of
-    the layout, so what is counted here is what `SessionPaths` creates.
+    is `data.paths.session_dir` and the names are read by `alhazen.data.naming`,
+    the one definition of the layout, so what is counted here is what
+    `SessionPaths` creates.
     """
-    session_dir = (
-        Path(data_root) / naming.subject_dirname(subject) / naming.session_dirname(session)
-    )
-    if not session_dir.exists():
+    folder = session_dir(data_root, experiment_version, subject, session)
+    if not folder.exists():
         return 1
-    taken = [naming.parse_run_dirname(path.name) for path in session_dir.glob("run-*")]
+    taken = [naming.parse_run_dirname(path.name) for path in folder.glob("run-*")]
     # None is a folder that only looks like a run ("run-notes"): not a number.
     return max((run for run in taken if run is not None), default=0) + 1
 
@@ -312,6 +336,8 @@ def build_mode_session(
     build_session: Callable[..., SessionRunner] | None = None,
     dashboard: bool | None = None,
     open_dashboard: bool | None = None,
+    experiment_version: str | None = None,
+    experiment_name: str | None = None,
     **extra: Any,
 ) -> ModeSession:
     """Wire one session in the given mode.
@@ -319,6 +345,12 @@ def build_mode_session(
     ``headless`` and ``mouse`` are the two flags that override the machine
     (see :func:`alhazen.modes.flag_refusal`); a mode that cannot honour one
     raises ``ConfigError`` before anything is wired.
+
+    The run is filed under its experiment's version — the one the
+    ``pyproject.toml`` above ``task``'s class declares, unless
+    ``experiment_version`` (and ``experiment_name``) say otherwise — and
+    numbered within that version's folder. It is found once, from the task
+    class this was handed, and passed down to the builder as it is.
 
     ``instructions`` is the caller's own text for the instruction screen
     (``run_experiment``'s ``instructions=``) and wins over the task's; None
@@ -339,6 +371,16 @@ def build_mode_session(
     # anything else, so a flag the mode refuses is refused first.
     rig, notes = rig_for_mode(mode, rig, headless=headless, mouse=mouse)
     rig = _stand_in_reward(mode, rig, task, notes)
+
+    # The experiment the run is filed under, found from the task class the
+    # caller handed in — before a rehearsal rebuilds the task around reduced
+    # params or a simulation swaps in its own, whose class may be defined
+    # somewhere else — and before the run is numbered, which counts inside
+    # that version's folder. A project with no version stops here, with the
+    # file to fix named (config/experiment.py).
+    experiment = session_experiment(
+        type(task), task.name, version=experiment_version, name=experiment_name
+    )
 
     # A run-mode session is the one a subject actually sits through, and a
     # task that never said what that subject reads — neither text nor a
@@ -388,7 +430,11 @@ def build_mode_session(
     data_root = rig.data_root if mode.writes_real_data else rehearsal_root(rig.data_root)
     if data_root != rig.data_root:
         rig = rig.model_copy(update={"data_root": data_root})
-    run_number = run if run is not None else next_run(data_root, subject, session)
+    run_number = (
+        run
+        if run is not None
+        else next_run(data_root, subject, session, experiment_version=experiment.version)
+    )
 
     # The two live-monitor arguments under their pre-1.9 names, translated
     # here so the builder receives one spelling whichever the caller used;
@@ -431,6 +477,11 @@ def build_mode_session(
         # A simulated session has nobody to press SPACE at the instructions.
         auto_start=mode is Mode.SIMULATE,
         rest_resume_after_s=SIMULATION_REST_RESUME_S if mode is Mode.SIMULATE else None,
+        # The experiment found above, handed down as it is, so the folder the
+        # run was numbered in is the folder it is made in; and the mode, for
+        # the run's session.json.
+        experiment=experiment,
+        mode=mode.value,
         **extra,
     )
     built = ModeSession(
@@ -441,6 +492,7 @@ def build_mode_session(
         reductions=reductions,
         simulation=simulation,
         notes=notes,
+        experiment=experiment,
     )
     # The same lines the experimenter reads before trial one go into the
     # session log after "session start": the run directory has to say for

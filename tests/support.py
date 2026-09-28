@@ -10,6 +10,7 @@ from typing import Any
 
 import numpy as np
 
+from alhazen.config.experiment import GIVEN_BY_CALLER, Experiment
 from alhazen.config.models import (
     DEFAULT_MAX_CONSECUTIVE_DROPOUTS,
     DisplayConfig,
@@ -35,7 +36,18 @@ from alhazen.session.builder import (
     make_manual_reward,
     make_tracker_health_check,
 )
+from alhazen.session.identity import RunIdentity
 from alhazen.testing import EventCollector, FakeClock, FakeDisplay, ScriptedCommands
+
+# The experiment a hand-wired harness files its run under
+# (<tmp>/v0.1.0/sub-t01/...). A version of its own rather than alhazen's, so a
+# test that reads a run's path does not change with alhazen's releases. A
+# session built from a Task defined in this repository finds alhazen's own
+# pyproject instead (config/experiment.py); such tests read the version off
+# the built session rather than typing it.
+TEST_EXPERIMENT = Experiment(
+    name="test-experiment", version="0.1.0", version_source=GIVEN_BY_CALLER, root=None
+)
 
 SCREEN = Screen(width_px=1920, height_px=1080, px_per_deg=40.0)
 FRAME_S = 1 / 60
@@ -265,6 +277,7 @@ class SessionHarness:
         max_consecutive_dropouts: int | None = DEFAULT_MAX_CONSECUTIVE_DROPOUTS,
         rest_resume_after_s: float | None = None,
         frame_qa: FrameQAConfig | None = None,
+        identity: RunIdentity | None = None,
     ) -> None:
         """``on_pause`` is the pause strategy, and wins over ``use_pause_menu``.
         ``eyetracker`` replaces the monitor the harness builds from ``tracker``
@@ -272,7 +285,10 @@ class SessionHarness:
         hands the pause menu the engine's own manual-reward hook, as
         build_session wires it; ``manual_reward`` hands it a hook of the
         test's own instead. ``frame_qa`` configures the one FrameMonitor the
-        engine and the runner share (the default config otherwise)."""
+        engine and the runner share (the default config otherwise).
+        ``identity`` is what the run records about its setup; by default,
+        TEST_EXPERIMENT and no files. Its version must be TEST_EXPERIMENT's,
+        the one the harness filed the run folder under."""
         if pause_menu_reward and manual_reward is not None:
             raise ValueError("pass pause_menu_reward or manual_reward, not both")
         from alhazen.data.paths import SessionPaths
@@ -289,7 +305,15 @@ class SessionHarness:
         self.clock = clock if clock is not None else FakeClock()
         self.display = FakeDisplay(self.clock, FRAME_S)
         self.cfg = make_session_config(tmp_path)
-        self.paths = SessionPaths.create(tmp_path, "t01", 1, 1, "test-task", "20260826")
+        self.paths = SessionPaths.create(
+            tmp_path,
+            "t01",
+            1,
+            1,
+            "test-task",
+            "20260826",
+            experiment_version=TEST_EXPERIMENT.version,
+        )
         self.bus = EventBus()
         # Subscription order mirrors the builder's: tracker messages, sync
         # pulses, then the recorder.
@@ -425,4 +449,5 @@ class SessionHarness:
             max_consecutive_failures=max_consecutive_failures,
             max_consecutive_dropouts=max_consecutive_dropouts,
             rest_resume_after_s=rest_resume_after_s,
+            identity=identity if identity is not None else RunIdentity(experiment=TEST_EXPERIMENT),
         )

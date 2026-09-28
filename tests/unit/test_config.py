@@ -490,6 +490,41 @@ class TestSnapshot:
             "environment_digest",
         }
 
+    def test_the_experiment_and_its_version_lead_the_provenance(self, tmp_path):
+        # alhazen 2.0: the version the run is filed under, recorded in the
+        # file as well as by the folder, with where it was read.
+        from alhazen.config.experiment import Experiment
+
+        experiment = Experiment("amodal-averaging", "0.4.0", "pyproject.toml", None)
+        path = tmp_path / "config_snapshot.yaml"
+        write_snapshot(make_session_config(tmp_path), path, experiment=experiment)
+
+        prov = yaml.safe_load(path.read_text())["provenance"]
+        assert list(prov)[:4] == [
+            "created",
+            "experiment_name",
+            "experiment_version",
+            "experiment_version_source",
+        ]
+        assert (
+            prov["experiment_name"],
+            prov["experiment_version"],
+            prov["experiment_version_source"],
+        ) == ("amodal-averaging", "0.4.0", "pyproject.toml")
+
+    def test_a_provenance_already_read_is_written_as_it_is(self, tmp_path):
+        # session.json and the snapshot quote one reading (session/identity.py).
+        path = tmp_path / "config_snapshot.yaml"
+        given = {"created": "then", "experiment_version": "0.4.0"}
+        returned = write_snapshot(make_session_config(tmp_path), path, provenance=given)
+
+        assert returned == given
+        assert yaml.safe_load(path.read_text())["provenance"] == given
+        with pytest.raises(ValueError, match="not both"):
+            write_snapshot(
+                make_session_config(tmp_path), path, experiment_dir=tmp_path, provenance=given
+            )
+
     def test_the_version_recorded_is_alhazens_own(self, tmp_path):
         """It was `unknown` in every snapshot alhazen had ever written. The
         lookup used the bare distribution name, which belongs to an unrelated

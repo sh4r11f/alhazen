@@ -3,10 +3,11 @@ fact.
 
 Written *before* trial 1 (the runner enforces the ordering): a session that
 crashes partway still documents exactly what it was trying to run. Contents:
-the fully-merged SessionConfig plus environment provenance — package
-versions, BOTH git trees (the experiment's and alhazen's own), platform, and a
-digest of every installed distribution so "same config, different environment"
-is detectable later.
+the fully-merged SessionConfig plus environment provenance — the experiment
+and the version its data is filed under, package versions, BOTH git trees
+(the experiment's and alhazen's own), platform, and a digest of every
+installed distribution so "same config, different environment" is detectable
+later.
 
 alhazen's own tree is recorded because its version number does not identify
 its code between releases: `main` carries the last release's number until the
@@ -27,6 +28,7 @@ from pathlib import Path
 
 import yaml
 
+from alhazen.config.experiment import Experiment
 from alhazen.config.models import SessionConfig
 from alhazen.version import DISTRIBUTION, get_version
 
@@ -151,8 +153,20 @@ def environment_digest() -> str:
     return hashlib.sha256("\n".join(lines).encode()).hexdigest()
 
 
-def build_provenance(experiment_dir: Path | None = None) -> dict[str, str]:
-    """What produced this run: versions, both git trees, and the environment.
+def build_provenance(
+    experiment_dir: Path | None = None, experiment: Experiment | None = None
+) -> dict[str, str]:
+    """What produced this run: the experiment, versions, both git trees, and
+    the environment.
+
+    ``experiment`` — the one the session's data is filed under
+    (`config.experiment.session_experiment`) — adds three keys:
+    ``experiment_name``, ``experiment_version`` (the ``v<version>`` folder the
+    run sits in) and ``experiment_version_source`` (``pyproject.toml``,
+    ``installed metadata``, or ``given to build_session``). They lead the
+    record because they are its first question — which protocol was this —
+    and the folder answers it only while the run stays where it was written.
+    A snapshot from before alhazen 2.0 has none of the three.
 
     ``alhazen_version`` comes from :func:`alhazen.version.get_version`, which
     looks up the right distribution. This module looked up ``"alhazen"``
@@ -180,8 +194,18 @@ def build_provenance(experiment_dir: Path | None = None) -> dict[str, str]:
     short SHA as before; a tagged one records ``v2.0-3-gabc1234``, which git
     accepts as a revision just as it accepts the bare SHA.
     """
+    named = (
+        {
+            "experiment_name": experiment.name,
+            "experiment_version": experiment.version,
+            "experiment_version_source": experiment.version_source,
+        }
+        if experiment is not None
+        else {}
+    )
     return {
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        **named,
         "alhazen_version": get_version(),
         "alhazen_git_describe": _alhazen_git_describe(Path(__file__).resolve().parent),
         "python": sys.version.split()[0],
@@ -191,9 +215,28 @@ def build_provenance(experiment_dir: Path | None = None) -> dict[str, str]:
     }
 
 
-def write_snapshot(cfg: SessionConfig, path: Path, experiment_dir: Path | None = None) -> None:
-    payload = {
-        "config": cfg.model_dump(mode="json"),
-        "provenance": build_provenance(experiment_dir),
-    }
+def write_snapshot(
+    cfg: SessionConfig,
+    path: Path,
+    experiment_dir: Path | None = None,
+    *,
+    experiment: Experiment | None = None,
+    provenance: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Write the snapshot and return the provenance it recorded.
+
+    ``provenance``, when given, is written as it is instead of being read
+    again: the session writes its session.json from the same reading
+    (session/identity.py), so the two files cannot disagree about a git tree
+    or a timestamp that moved between two reads. It is exclusive with
+    ``experiment_dir`` and ``experiment``, which only say how to build one.
+    """
+    if provenance is None:
+        provenance = build_provenance(experiment_dir, experiment)
+    elif experiment_dir is not None or experiment is not None:
+        raise ValueError(
+            "pass provenance=, or experiment_dir= / experiment= to build one, not both"
+        )
+    payload = {"config": cfg.model_dump(mode="json"), "provenance": provenance}
     path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    return provenance

@@ -83,14 +83,21 @@ chair and no window open — `simulate` stands the rig's devices down and
 attached. Look at what it wrote:
 
 ```
-data-rehearsal/sub-s01/ses-001/run-01_task-saccade-bias/
+data-rehearsal/v0.1.0/sub-s01/ses-001/run-01_task-saccade-bias/
+├── session.json               what this run is: experiment, version, subject, rig
+├── config_snapshot.yaml       exactly what ran: config, seed, versions, git SHA
+├── rig.yaml  params.yaml      the files the session was started from, as they were
 ├── sub-s01_..._trials.csv     one row per trial that produced a measurement
 ├── sub-s01_..._events.csv     every event, timestamped by the flip that showed it
 ├── sub-s01_..._frames.csv     every frame interval, and which were dropped
-├── config_snapshot.yaml       exactly what ran: config, seed, versions, git SHA
 ├── session.log
 └── manifest.yaml              a hash of every file above
 ```
+
+`v0.1.0` is your experiment's version, the `version` in its `pyproject.toml`.
+Every run is filed under the version that recorded it, so data from two
+versions of the protocol never mix: bump it whenever the protocol changes
+([data on disk](data.md) says what counts, and what each file is for).
 
 The snapshot is the important one. It is written *before the first trial*, so
 a session that crashes still documents what it was trying to do, and every
@@ -104,7 +111,7 @@ writes the same layout under `data/`.
 ## Read the run back
 
 ```bash
-alhazen report --run data-rehearsal/sub-s01/ses-001/run-01_task-saccade-bias
+alhazen report --run data-rehearsal/v0.1.0/sub-s01/ses-001/run-01_task-saccade-bias
 ```
 
 Trial counts by outcome, frame-drop statistics, and a manifest check. Exits

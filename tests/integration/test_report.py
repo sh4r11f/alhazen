@@ -74,9 +74,11 @@ def run_session(tmp_path, n_trials: int = 8):
         iti=Duration(ms=50),
         simulated_frame_period_s=0.0,
         date_yyyymmdd="20260826",
+        # Wired from parts, so no task class to read a version from.
+        experiment_version="0.1.0",
     )
     runner.run()
-    return next(tmp_path.glob("sub-t01/ses-001/run-*"))
+    return next(tmp_path.glob("v0.1.0/sub-t01/ses-001/run-*"))
 
 
 def write_matching_recording(tmp_path, run_dir, latency_s: float = PLANTED_LATENCY_S):

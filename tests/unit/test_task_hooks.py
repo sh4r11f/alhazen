@@ -145,7 +145,7 @@ def session_log(data_root: Path) -> str:
     The simulated display logs every message exactly as it would have drawn
     it, so this is the record of what the subject would have read.
     """
-    runs = sorted(data_root.glob("sub-*/ses-*/run-*"))
+    runs = sorted(data_root.glob("v*/sub-*/ses-*/run-*"))
     assert len(runs) == 1, runs
     return (runs[0] / "session.log").read_text(encoding="utf-8")
 
@@ -167,7 +167,10 @@ def build(tmp_path: Path, task: Task, **kwargs):
 
 
 def no_run_was_written(tmp_path: Path) -> bool:
-    return not list((tmp_path / "data").glob("sub-*"))
+    # Since 2.0 a run sits under its version folder (data/v<version>/sub-*);
+    # the old layout's place is checked too, so neither can hide one.
+    data = tmp_path / "data"
+    return not list(data.glob("v*/sub-*")) and not list(data.glob("sub-*"))
 
 
 class TestWhatATaskCanSay:
@@ -589,7 +592,7 @@ def trials(data_root: Path) -> list[dict]:
     """The rows of the one run under ``data_root``."""
     import csv
 
-    runs = sorted(data_root.glob("sub-*/ses-*/run-*"))
+    runs = sorted(data_root.glob("v*/sub-*/ses-*/run-*"))
     assert len(runs) == 1, runs
     with next(runs[0].glob("*_trials.csv")).open() as handle:
         return list(csv.DictReader(handle))
@@ -597,7 +600,7 @@ def trials(data_root: Path) -> list[dict]:
 
 def snapshot_source(data_root: Path) -> str:
     """Where the run's snapshot says its task params came from."""
-    runs = sorted(data_root.glob("sub-*/ses-*/run-*"))
+    runs = sorted(data_root.glob("v*/sub-*/ses-*/run-*"))
     assert len(runs) == 1, runs
     snapshot = yaml.safe_load((runs[0] / "config_snapshot.yaml").read_text(encoding="utf-8"))
     return snapshot["config"]["sources"]["task"]

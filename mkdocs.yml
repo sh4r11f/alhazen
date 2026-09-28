@@ -45,6 +45,7 @@ nav:
   - Getting started: getting-started.md
   - Concepts: architecture.md
   - The six modes: modes.md
+  - Data on disk: data.md
   - Live spikes and live analysis: live-spikes.md
   - Eye tracker procedures: eye-tracker.md
   - How-to:

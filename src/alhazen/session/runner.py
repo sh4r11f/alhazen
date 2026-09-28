@@ -3,7 +3,9 @@
 Contract, in order:
 
 1. The config snapshot is written *before anything else* — a session that
-   crashes still documents what it was trying to run. A session whose
+   crashes still documents what it was trying to run — together with the
+   rest of the run's record of itself: session.json, and byte copies of the
+   rig and params files (session/identity.py), all or none. A session whose
    snapshot cannot be written never started: teardown releases its devices
    and writes nothing into its run directory.
 2. File logging attaches at the root logger so every module's logging lands
@@ -48,7 +50,6 @@ from typing import Any
 import numpy as np
 
 from alhazen.config.models import DEFAULT_MAX_CONSECUTIVE_DROPOUTS, SessionConfig
-from alhazen.config.snapshot import write_snapshot
 from alhazen.core.clock import Clock
 from alhazen.core.commands import Command, CommandSource
 from alhazen.core.engine import QuitRequested, TrialEngine, TrialResult
@@ -80,6 +81,7 @@ from alhazen.live_monitor.spec import LiveMonitorSpec
 from alhazen.paradigms.base import Condition, TrialSource
 from alhazen.session.database import ExperimentDatabase, FrameInputBuffer
 from alhazen.session.eyetracker import PROCEDURE_STATUS, EyeTrackerMonitor
+from alhazen.session.identity import RunIdentity, write_run_identity
 from alhazen.session.pause import (
     PauseMenu,
     pause_menu,  # noqa: F401 - re-exported: it lived here until 1.1
@@ -186,7 +188,21 @@ class SessionRunner:
         rest_resume_after_s: float | None = None,
         max_consecutive_dropouts: int | None = DEFAULT_MAX_CONSECUTIVE_DROPOUTS,
         experiment_dir: Path | None = None,
+        identity: RunIdentity | None = None,
     ) -> None:
+        # What the run records about how it was set up: the experiment and
+        # version its data is filed under, the mode, the files it started
+        # from (session/identity.py). Required, though it comes last with a
+        # None default so the positional parameters before it keep their
+        # places: every row, the manifest and the database are stamped with
+        # the version, and a runner that had none to stamp would write data
+        # nobody could place. build_session always supplies it.
+        if identity is None:
+            raise ValueError(
+                "SessionRunner needs identity=RunIdentity(experiment=...): the experiment "
+                "version the run's data is filed under. build_session supplies it."
+            )
+        self._identity = identity
         self._cfg = cfg
         # Where the experiment's code lives, so the snapshot's
         # `experiment_git_sha` describes that repository. None falls back to
@@ -349,8 +365,11 @@ class SessionRunner:
             # First, before anything else is written: a session that crashes
             # still documents what it was trying to run. Until it is on disk
             # the run directory is not a run, and teardown releases the
-            # devices without writing anything into it (_teardown).
-            write_snapshot(self._cfg, self._paths.snapshot_path, self._experiment_dir)
+            # devices without writing anything into it (_teardown). The
+            # snapshot comes with session.json and the rig and params copies,
+            # all or none (session/identity.py), so "the snapshot was written"
+            # means all four were.
+            write_run_identity(self._cfg, self._paths, self._identity, self._experiment_dir)
             snapshot_written = True
             # The log before the registry, so a participants.tsv that cannot
             # be written ends with a "session end: FAILED" line in this run's
@@ -365,6 +384,16 @@ class SessionRunner:
                 self._cfg.info.run,
                 self._cfg.info.task_name,
                 self._cfg.info.seed,
+            )
+            # Its own line, so the one above reads as it always has. The log
+            # must name the protocol too: a session.log copied out of its
+            # v<version> folder no longer has the folder to say it.
+            experiment = self._identity.experiment
+            log.info(
+                "experiment: %s %s (version from %s)",
+                experiment.name,
+                experiment.version,
+                experiment.version_source,
             )
             log.info("devices: %s", self._devices_line())
             for note in self.setup_notes:
@@ -652,6 +681,10 @@ class SessionRunner:
         record = {
             "trial_index": self._trial_index,
             "attempt": attempt,
+            # Which protocol ran this trial (core/trial.py TRIAL_RECORD_COLUMNS).
+            # On the row, not only in the folder name, because rows travel:
+            # into the database, into a table concatenated across runs.
+            "experiment_version": self._identity.experiment.version,
             # Stage and ramp values first, so a task that records a column of
             # the same name wins — the task's own measurement is never
             # shadowed by bookkeeping.
@@ -1169,7 +1202,11 @@ class SessionRunner:
             step("log.close", lambda: self._detach_file_logging(handler))
         record_step(
             "manifest.write",
-            lambda: write_manifest(self._paths.run_dir, self._paths.manifest_path),
+            lambda: write_manifest(
+                self._paths.run_dir,
+                self._paths.manifest_path,
+                experiment_version=self._identity.experiment.version,
+            ),
         )
         if self._database is not None:
             database = self._database
@@ -1184,6 +1221,7 @@ class SessionRunner:
                     frames=self._frame_monitor.records,
                     frame_inputs=self._frame_inputs.records,
                     status=status,
+                    experiment_version=self._identity.experiment.version,
                 ),
             )
         step("display.close", self._display.close)

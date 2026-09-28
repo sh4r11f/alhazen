@@ -444,21 +444,141 @@ class TestModesThatDoNotRunTrials:
 
 
 class TestNextRun:
+    """Runs are numbered within the version's folder, where they are made
+    (alhazen 2.0)."""
+
     def test_the_first_run_is_one(self, tmp_path):
-        assert next_run(tmp_path, "t01", 1) == 1
+        assert next_run(tmp_path, "t01", 1, experiment_version="0.4.0") == 1
 
     def test_it_counts_the_directories_that_exist(self, tmp_path):
-        session = tmp_path / "sub-t01" / "ses-001"
+        session = tmp_path / "v0.4.0" / "sub-t01" / "ses-001"
         (session / "run-01_task-x").mkdir(parents=True)
         (session / "run-02_task-x").mkdir()
 
-        assert next_run(tmp_path, "t01", 1) == 3
+        assert next_run(tmp_path, "t01", 1, experiment_version="0.4.0") == 3
 
     def test_a_directory_that_is_not_a_run_is_ignored(self, tmp_path):
-        session = tmp_path / "sub-t01" / "ses-001"
+        session = tmp_path / "v0.4.0" / "sub-t01" / "ses-001"
         (session / "run-notanumber").mkdir(parents=True)
 
-        assert next_run(tmp_path, "t01", 1) == 1
+        assert next_run(tmp_path, "t01", 1, experiment_version="0.4.0") == 1
+
+    def test_each_version_counts_its_own_runs(self, tmp_path):
+        (tmp_path / "v0.4.0" / "sub-t01" / "ses-001" / "run-03_task-x").mkdir(parents=True)
+
+        assert next_run(tmp_path, "t01", 1, experiment_version="0.4.0") == 4
+        assert next_run(tmp_path, "t01", 1, experiment_version="0.5.0") == 1
+
+    def test_runs_from_before_2_0_are_in_no_versions_folder(self, tmp_path):
+        # The pre-2.0 layout, directly under the root: not where a new run
+        # is made, so not counted.
+        (tmp_path / "sub-t01" / "ses-001" / "run-05_task-x").mkdir(parents=True)
+
+        assert next_run(tmp_path, "t01", 1, experiment_version="0.4.0") == 1
+
+    def test_the_number_it_gives_is_the_folder_the_session_makes(self, tmp_path):
+        from alhazen.data.paths import SessionPaths
+
+        run = next_run(tmp_path, "t01", 1, experiment_version="0.4.0")
+        made = SessionPaths.create(tmp_path, "t01", 1, run, "x", experiment_version="0.4.0")
+        made.trials_path.write_text("trial_index\n")
+
+        assert next_run(tmp_path, "t01", 1, experiment_version="0.4.0") == run + 1
+
+
+class TestTheExperimentVersion:
+    """A mode finds the experiment once, from the task class it was handed,
+    numbers the run inside that version's folder, and hands the same
+    experiment to the builder — so the run is made where it was numbered."""
+
+    def test_the_version_comes_from_the_tasks_own_project(self, tmp_path):
+        from alhazen.config.experiment import find_experiment
+
+        built, spy = build(tmp_path, Mode.RUN)
+
+        # ModeTask lives in alhazen's own tree, so it is alhazen's project.
+        assert built.experiment == find_experiment(ModeTask)
+        assert spy.kwargs["experiment"] == built.experiment
+        assert built.experiment.version_source == "pyproject.toml"
+
+    def test_an_explicit_version_wins_and_says_so(self, tmp_path):
+        built, spy = build(
+            tmp_path, Mode.RUN, experiment_version="0.9.0", experiment_name="the-study"
+        )
+
+        assert (built.experiment.name, built.experiment.version) == ("the-study", "0.9.0")
+        assert built.experiment.version_source == "given to build_session"
+        assert spy.kwargs["experiment"] is built.experiment
+
+    def test_the_run_is_numbered_within_the_version(self, tmp_path):
+        done = tmp_path / "data" / "v0.9.0" / "sub-t01" / "ses-001" / "run-02_task-mode-task"
+        done.mkdir(parents=True)
+        other = tmp_path / "data" / "v0.8.0" / "sub-t01" / "ses-001" / "run-07_task-mode-task"
+        other.mkdir(parents=True)
+
+        built, spy = build(tmp_path, Mode.RUN, experiment_version="0.9.0")
+
+        assert built.run == spy.kwargs["run"] == 3
+
+    def test_a_rehearsal_is_numbered_within_the_version_under_its_own_root(self, tmp_path):
+        rehearsal = rehearsal_root(tmp_path / "data")
+        (rehearsal / "v0.9.0" / "sub-t01" / "ses-001" / "run-01_task-mode-task").mkdir(parents=True)
+
+        built, _ = build(tmp_path, Mode.TEST, experiment_version="0.9.0")
+
+        assert built.data_root == rehearsal
+        assert built.run == 2
+
+    def test_the_mode_is_handed_down_for_the_record(self, tmp_path):
+        _, spy = build(tmp_path, Mode.TEST)
+        assert spy.kwargs["mode"] == "test"
+
+    def test_the_experiment_is_found_from_the_class_handed_in(self, tmp_path, monkeypatch):
+        # A simulation may swap in a task of another class, defined in
+        # another project; the version is still the one the caller's task
+        # declares, and it is looked up once.
+        from alhazen.config import experiment as experiment_module
+        from alhazen.config.experiment import Experiment
+
+        class StandIn(SimTask):
+            name = "stand-in"
+
+        class SwapsItsTask(SimTask):
+            def simulation(self, seed):
+                return Simulation(tracker=object(), task=StandIn(Params()))
+
+        asked: list[type] = []
+
+        def find(task_class):
+            asked.append(task_class)
+            return Experiment(task_class.__name__, "1.0", "pyproject.toml", None)
+
+        monkeypatch.setattr(experiment_module, "find_experiment", find)
+        _, spy = build(tmp_path, Mode.SIMULATE, task=SwapsItsTask(Params()))
+
+        assert spy.kwargs["task"].name == "stand-in"
+        assert asked == [SwapsItsTask]
+        assert spy.kwargs["experiment"].name == "SwapsItsTask"
+
+    def test_describe_names_the_version_folder_and_where_the_number_came_from(self, tmp_path):
+        built, _ = build(tmp_path, Mode.RUN, experiment_version="0.9.0", experiment_name="s")
+        assert (
+            "experiment: s 0.9.0 — filed under v0.9.0/ (version from given to build_session)"
+            in built.describe().splitlines()
+        )
+
+    def test_a_project_with_no_version_is_refused_before_anything_is_built(
+        self, tmp_path, monkeypatch
+    ):
+        from alhazen.config import experiment as experiment_module
+
+        def no_version(task_class):
+            raise ConfigError("pyproject.toml gives no [project] version")
+
+        monkeypatch.setattr(experiment_module, "find_experiment", no_version)
+        with pytest.raises(ConfigError, match="no \\[project\\] version"):
+            build(tmp_path, Mode.RUN)
+        assert not (tmp_path / "data").exists()
 
 
 class TestDescribe:

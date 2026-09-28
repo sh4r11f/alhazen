@@ -37,10 +37,12 @@ src/alhazen/
 ├── modes/          # the six ways to start an experiment (docs/modes.md)
 ├── session/        # SessionRunner, build_session, DataRecorder, the pause menu,
 │                   #   eyetracker.py (the session's calibration/validation/drift
-│                   #   results and live monitor panels), check_rig; the runner's
+│                   #   results and live monitor panels), check_rig, identity.py (a
+│                   #   run's session.json and file copies); the runner's
 │                   #   internal parts: streaks.py, reward_payer.py, pause_control.py
-├── config/         # pydantic models (extra=forbid, frozen), YAML loader, snapshot writer
-├── data/           # naming, SessionPaths, manifest, participants registry, percents
+├── config/         # pydantic models (extra=forbid, frozen), YAML loader, snapshot writer,
+│                   #   experiment.py (which experiment and version a task belongs to)
+├── data/           # naming, SessionPaths and find_runs, manifest, participants registry, percents
 │                   #   (a measured fraction written beside its threshold, §10.2),
 │                   #   atomic (replace a file whole)
 ├── live_monitor/   # isolated local HTTP process, panel statistics, and the browser page
@@ -1360,6 +1362,11 @@ are no longer judged, but its demotion criteria still are.
 
 `<data_root>/sub-<ID>/training_state.yaml` holds the stage, completed counts
 per stage, the window, and every transition with its timestamp and session.
+It sits at the unversioned data root, beside `participants.tsv`, not under a
+`v<version>/` folder: an animal's training spans versions of the protocol.
+Each transition names its run with the version in front
+(`v0.5.0/ses-001_run-01`), because the same numbers can name one run per
+version.
 Plain YAML on purpose: an experimenter who needs to put an animal back a
 stage on a Monday morning should be able to do it with a text editor. A
 missing file is a first session, which starts at the curriculum's first stage.
@@ -1666,8 +1673,10 @@ Both are *mirrors*: the run directory stays the record, and neither is
 allowed to become one.
 
 **`session/database.py`** mirrors each run into one SQLite file per
-experiment (`data_root/experiment.sqlite3`), so a question about a whole
-season is a query rather than a directory walk. It lives under `session/`
+experiment (`data_root/experiment.sqlite3`, at the unversioned root, holding
+every version's runs — each carries its `experiment_version`, which leads its
+`run_id`), so a question about a whole season is a query rather than a
+directory walk. It lives under `session/`
 rather than `data/` because it speaks a session's whole vocabulary —
 `SessionConfig`, `InputFrame`, `FrameRecord` — and those sit above `data/`,
 which is pure disk and knows nothing about trials. Schema, run-id shape and
@@ -1727,19 +1736,35 @@ every backend precisely so a backend cannot quietly reach for
 
 ## 10. Sessions, data, reproducibility
 
-`build_session(...)` wires everything; `SessionRunner.run()` then:
+`build_session(...)` wires everything. Before it opens anything it settles
+**which experiment and version** the run is filed under
+(`config/experiment.py` `session_experiment`: the one a mode found, a version
+given explicitly, or the `pyproject.toml` above the task's class — and a
+session with none of them is refused), reads the rig and params files the
+session was started from for their byte copies (`session/identity.py`
+`source_file`), and refuses an experiment database whose schema it cannot
+write (`ExperimentDatabase.check_schema`). The run folder is then made under
+`<data_root>/v<version>/` ([data on disk](data.md)). `SessionRunner.run()`
+then:
 
-1. writes `config_snapshot.yaml` **before trial 1** (a crashed session still
-   documents itself) — merged config + seed + versions + an environment
-   digest (sha256 over installed distributions) + both git trees, the
-   experiment's (`experiment_git_sha`) and alhazen's own
-   (`alhazen_git_describe`). The experiment's tree is the one holding the
+1. writes the run's record of itself **before trial 1**, all or none
+   (`session/identity.py` `write_run_identity`): byte copies of the rig and
+   params files (`rig.yaml`, `params.yaml`), the compact identity card
+   `session.json`, and last `config_snapshot.yaml` (a crashed session still
+   documents itself) — merged config + seed + the experiment and version
+   (`experiment_name`, `experiment_version`, `experiment_version_source`) +
+   versions + an environment digest (sha256 over installed distributions) +
+   both git trees, the experiment's (`experiment_git_sha`) and alhazen's own
+   (`alhazen_git_describe`). One reading of that provenance serves both the
+   snapshot and `session.json`. The experiment's tree is the one holding the
    task class's source file (or, with no task, the trial builder's), not
    the folder the session was started from. Both are read with
    `git describe --always --dirty`, so a session run from uncommitted changes to tracked files says
    `-dirty` rather than naming a commit that would not reproduce it; where
    there is no answer they read `not a source checkout` (not in a git
-   repository) or `unknown` (git absent or not answering);
+   repository) or `unknown` (git absent or not answering). Every trial row
+   is stamped with `experiment_version`, and so are the manifest and the
+   database row;
 2. registers the subject in `participants.tsv`;
 3. loops: `source.next()` → build → engine → `source.record()` for **every**
    outcome (schedulers own re-queueing) → recorder row for every outcome
@@ -1842,15 +1867,27 @@ not finish — is written just before the log closes, so the log's last
 verdict agrees with the database. Only the steps after the log closes (the
 manifest, the database row) cannot be reported in it.
 
-On-disk layout per run (see `data/paths.py`; overwriting an existing run's
-trials file is refused):
+On-disk layout per run (see `data/paths.py`; a run folder that already
+holds any file is refused; [data on disk](data.md) says what each file is
+for, how the version is found and when to bump it):
 
 ```
-<data_root>/participants.tsv
-<data_root>/sub-<ID>/ses-<NNN>/run-<NN>_task-<name>/
+<data_root>/participants.tsv          every subject, across versions
+<data_root>/experiment.sqlite3        the mirror of every run of every version
+<data_root>/sub-<ID>/training_state.yaml
+<data_root>/v<version>/sub-<ID>/ses-<NNN>/run-<NN>_task-<name>/
+  ├── session.json   config_snapshot.yaml   rig.yaml   params.yaml
   ├── sub-.._ses-.._run-.._task-.._<YYYYMMDD>_{trials,events,frames}.csv
-  ├── config_snapshot.yaml   session.log   manifest.yaml   figures/
+  ├── session.log   manifest.yaml   figures/
 ```
+
+The version level is alhazen 2.0's: data recorded by two versions of an
+experiment's protocol never share a folder, and run numbers count within a
+version (`modes.session.next_run`). What spans versions — the subject
+registry, the database, training state — stays at the unversioned root.
+Runs recorded before 2.0 sit directly under the root and are still read:
+`data.paths.find_runs` lists both layouts, and every reader handed a run
+folder (`load_run`, `alhazen report`) is unchanged.
 
 Randomness: one resolved seed → `SeedSequence.spawn` into named streams
 (`core/rng.STREAMS`, append-only) — scheduler and task never share bits;

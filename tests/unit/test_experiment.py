@@ -17,7 +17,12 @@ from pathlib import Path
 import pytest
 
 from alhazen.config import experiment as experiment_module
-from alhazen.config.experiment import Experiment, find_experiment
+from alhazen.config.experiment import (
+    GIVEN_BY_CALLER,
+    Experiment,
+    find_experiment,
+    session_experiment,
+)
 from alhazen.errors import ConfigError
 
 
@@ -119,3 +124,52 @@ def test_alhazens_own_example_tasks_belong_to_alhazen():
     # alhazen's pyproject: a session run from there is filed under alhazen's
     # version, which is the honest answer for code that ships with alhazen.
     assert find_experiment(TestFromPyproject).name == "alhazen-vision"
+
+
+class TestSessionExperiment:
+    """`session_experiment`: which experiment a session's data is filed
+    under, from whatever its caller said — and a refusal when nothing says."""
+
+    def test_a_task_class_finds_its_project(self, tmp_path):
+        task = make_project(tmp_path, '[project]\nname = "exp"\nversion = "0.5.0"\n')
+        assert session_experiment(task, "my-task") == find_experiment(task)
+
+    def test_a_name_renames_what_was_found_but_keeps_its_version(self, tmp_path):
+        task = make_project(tmp_path, '[project]\nname = "exp"\nversion = "0.5.0"\n')
+        found = session_experiment(task, "my-task", name="the-study")
+        assert (found.name, found.version, found.version_source) == (
+            "the-study",
+            "0.5.0",
+            "pyproject.toml",
+        )
+
+    def test_an_explicit_version_wins_and_is_recorded_as_given(self, tmp_path):
+        task = make_project(tmp_path, '[project]\nname = "exp"\nversion = "0.5.0"\n')
+        found = session_experiment(task, "my-task", version="9.0")
+        # Named after the task when no name is given: the best label there is.
+        assert found == Experiment("my-task", "9.0", GIVEN_BY_CALLER, None)
+
+    def test_an_explicit_version_needs_no_task_class(self):
+        found = session_experiment(None, "hand-wired", version="0.1.0", name="rig-check")
+        assert found == Experiment("rig-check", "0.1.0", GIVEN_BY_CALLER, None)
+
+    def test_an_explicit_version_is_checked_like_a_pyprojects(self):
+        with pytest.raises(ConfigError, match="cannot name a data folder"):
+            session_experiment(None, "t", version="../elsewhere")
+
+    def test_nothing_to_read_a_version_from_is_refused_saying_what_to_pass(self):
+        with pytest.raises(ConfigError) as refused:
+            session_experiment(None, "hand-wired")
+        message = str(refused.value)
+        assert "experiment_version=" in message and "task=" in message
+        assert "data/v<version>/" in message
+
+    def test_an_experiment_already_found_is_used_as_it_is(self):
+        found = Experiment("exp", "0.5.0", "pyproject.toml", None)
+        assert session_experiment(None, "t", experiment=found) is found
+
+    @pytest.mark.parametrize("extra", [{"version": "1.0"}, {"name": "x"}])
+    def test_two_answers_are_refused(self, extra):
+        found = Experiment("exp", "0.5.0", "pyproject.toml", None)
+        with pytest.raises(ValueError, match="not both"):
+            session_experiment(None, "t", experiment=found, **extra)

@@ -203,7 +203,7 @@ class TestBuildSessionFromATask:
             date_yyyymmdd="20260826",
         )
         runner.run()
-        trials = next((tmp_path / "sub-t01").rglob("*_trials.csv"))
+        trials = next(tmp_path.glob("v*/sub-t01/**/*_trials.csv"))
         with trials.open() as f:
             rows = list(csv.DictReader(f))
         assert len(rows) == 3
@@ -252,7 +252,7 @@ class TestBuildSessionFromATask:
             date_yyyymmdd="20260826",
         )
         runner.run()
-        trials = next((tmp_path / "sub-t01").rglob("*_trials.csv"))
+        trials = next(tmp_path.glob("v*/sub-t01/**/*_trials.csv"))
         assert "COMPLETED" in trials.read_text()
 
     def test_building_with_neither_a_task_nor_the_pieces_says_what_is_missing(self, tmp_path):

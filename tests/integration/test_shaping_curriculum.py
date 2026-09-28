@@ -10,6 +10,7 @@ import pytest
 import yaml
 
 from alhazen import build_session
+from alhazen.config.experiment import find_experiment
 from alhazen.config.loader import load_model, load_rig
 from alhazen.errors import ConfigError
 from alhazen.testing import FakeClock
@@ -17,6 +18,15 @@ from alhazen.training import Curriculum, Ramp, Stage, StageCriteria, TrainingSta
 from support import load_example_task
 
 EXAMPLE_DIR = Path(__file__).parents[2] / "examples" / "shaping_curriculum"
+
+
+def version_folder() -> str:
+    """The folder the example's runs are filed under (alhazen 2.0): an
+    example shipped with alhazen belongs to alhazen's own project, so its
+    version is read rather than typed — it moves with every release. The
+    subject's training state is NOT under it: it spans versions and stays at
+    the unversioned root, sub-m01/training_state.yaml."""
+    return "v" + find_experiment(load_example_task(EXAMPLE_DIR).ShapingTask).version
 
 
 # The shipped curriculum is written in the timescale a real subject works on
@@ -109,7 +119,7 @@ def trials_of(run_dir: Path) -> list[dict[str, str]]:
 class TestShapingAcrossSessions:
     def test_the_subject_walks_up_the_curriculum(self, tmp_path):
         run_session(tmp_path, trials=60, run=1)
-        rows = trials_of(next(tmp_path.glob("sub-m01/ses-001/run-01*")))
+        rows = trials_of(next(tmp_path.glob(f"{version_folder()}/sub-m01/ses-001/run-01*")))
         stages = [row["stage"] for row in rows]
         # It starts where the curriculum starts, and reaches the real task.
         assert stages[0] == "any-look"
@@ -124,7 +134,7 @@ class TestShapingAcrossSessions:
     def test_every_row_says_how_hard_the_task_was(self, tmp_path):
         # The claim that makes training data analysable stand-alone.
         run_session(tmp_path, trials=60, run=1)
-        rows = trials_of(next(tmp_path.glob("sub-m01/ses-001/run-01*")))
+        rows = trials_of(next(tmp_path.glob(f"{version_folder()}/sub-m01/ses-001/run-01*")))
         assert all(row["stage"] for row in rows)
         assert all(row["reward_scale"] for row in rows)
         ramped = [row["ramp_fix_window_dva"] for row in rows if row["ramp_fix_window_dva"]]
@@ -137,7 +147,7 @@ class TestShapingAcrossSessions:
         first = yaml.safe_load(TrainingState.path_for(tmp_path, "m01").read_text())
 
         run_session(tmp_path, trials=10, run=2)
-        second_rows = trials_of(next(tmp_path.glob("sub-m01/ses-001/run-02*")))
+        second_rows = trials_of(next(tmp_path.glob(f"{version_folder()}/sub-m01/ses-001/run-02*")))
         # The new session opens at the stage the old one ended on, rather
         # than starting the subject over.
         assert second_rows[0]["stage"] == first["stage"]
@@ -163,12 +173,16 @@ class TestShapingAcrossSessions:
             run_session(tmp_path, trials=4, run=1)
 
         assert path.read_bytes() == original
-        # No session folder, no run folder, nothing but the state file.
+        # No session folder, no run folder, nothing but the state file —
+        # beside it, or under a version folder where a 2.0 run would go.
         assert [p.name for p in path.parent.iterdir()] == ["training_state.yaml"]
+        assert [p.name for p in tmp_path.iterdir()] == ["sub-m01"]
 
     def test_transitions_are_in_the_event_stream(self, tmp_path):
         run_session(tmp_path, trials=60, run=1)
-        events_path = next((tmp_path / "sub-m01" / "ses-001").glob("run-01*/*_events.csv"))
+        events_path = next(
+            (tmp_path / version_folder() / "sub-m01" / "ses-001").glob("run-01*/*_events.csv")
+        )
         with events_path.open() as f:
             names = [row["event"] for row in csv.DictReader(f)]
         assert names.count("STAGE_CHANGED") == 2  # two promotions

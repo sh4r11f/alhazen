@@ -79,8 +79,12 @@ interfering with an active subject trial.
 ## Afterwards
 
 ```bash
-alhazen report --run data/sub-s01/ses-001/run-01_task-$task_name
+alhazen report --run data/v0.1.0/sub-s01/ses-001/run-01_task-$task_name
 ```
+
+`v0.1.0` is this experiment's version, `version` in `pyproject.toml`: every
+session's data is filed under the version that recorded it. Bump it whenever
+the protocol changes, so data from different versions never mix.
 
 Trial counts by outcome, frame-drop statistics, and a manifest check. With
 `--neural <recording dir>` it also aligns the session's clock to the

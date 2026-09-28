@@ -8,6 +8,7 @@ made from, the thing it copies.
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 
 import numpy as np
 import pytest
@@ -33,6 +34,7 @@ def write_run(
     session=1,
     status="complete",
     into_a_used_folder=False,
+    version="0.1.0",
     **kwargs,
 ):
     """Mirror one run into a database, through the same call the runner makes.
@@ -41,6 +43,7 @@ def write_run(
     `SessionPaths.create` refused a run folder that already holds files: the
     one way two runs with the same numbers still reach a database. Its paths
     are built directly, because ``create`` now refuses exactly that.
+    ``version`` is the experiment version the run is filed under.
     """
     from alhazen.data import naming
     from alhazen.data.paths import SessionPaths
@@ -54,6 +57,7 @@ def write_run(
         paths = SessionPaths(
             run_dir=(
                 tmp_path
+                / naming.version_dirname(version)
                 / naming.subject_dirname(subject)
                 / naming.session_dirname(session)
                 / naming.run_dirname(run, task)
@@ -61,7 +65,9 @@ def write_run(
             base=naming.base_name(subject, session, run, task, date),
         )
     else:
-        paths = SessionPaths.create(tmp_path, subject, session, run, task, date)
+        paths = SessionPaths.create(
+            tmp_path, subject, session, run, task, date, experiment_version=version
+        )
     paths.snapshot_path.write_text("config: {}\nprovenance: {}\n")
     database = ExperimentDatabase(tmp_path / DATABASE_FILENAME, **kwargs)
     return database, database.write_run(
@@ -72,6 +78,7 @@ def write_run(
         frames=[],
         frame_inputs=[],
         status=status,
+        experiment_version=version,
     )
 
 
@@ -251,6 +258,69 @@ class TestRunIdentity:
             write_run(tmp_path, run=2)
 
 
+class TestTheExperimentVersion:
+    """The database sits at the unversioned data root and holds every
+    version's runs, while run numbers count within a version. So the same
+    subject, session, run, task and DAY can be two runs — a protocol bumped
+    between a morning and an afternoon session — and schema 2 called them
+    one: the second hit the unique constraint and was never mirrored."""
+
+    def test_the_same_numbers_and_day_under_two_versions_are_two_runs(self, tmp_path):
+        _db, morning = write_run(tmp_path, version="0.4.0")
+        database, afternoon = write_run(tmp_path, version="0.5.0")
+
+        assert morning.startswith("v0.4.0/sub-t01/ses-001/run-01/")
+        assert afternoon.startswith("v0.5.0/sub-t01/ses-001/run-01/")
+        with closing(database.connect()) as db:
+            rows = db.execute("SELECT run_id, experiment_version FROM runs ORDER BY run_id")
+            assert [tuple(row) for row in rows] == [(morning, "0.4.0"), (afternoon, "0.5.0")]
+
+    def test_a_run_is_found_by_its_version(self, tmp_path):
+        write_run(tmp_path, version="0.4.0")
+        database, afternoon = write_run(tmp_path, version="0.5.0")
+
+        found = database.find_run("t01", 1, run=1, experiment_version="0.5.0")
+
+        assert found["run_id"] == afternoon
+
+    def test_numbers_that_match_under_two_versions_are_not_guessed_between(self, tmp_path):
+        # Taking either would read one protocol's data under the numbers the
+        # caller meant for the other.
+        write_run(tmp_path, version="0.4.0")
+        database, _ = write_run(tmp_path, version="0.5.0")
+
+        with pytest.raises(DataError, match=r"0\.4\.0, 0\.5\.0.*experiment_version="):
+            database.find_run("t01", 1, run=1)
+        with pytest.raises(DataError, match="experiment_version="):
+            database.frame_snapshot(subject="t01", session=1, run=1, trial_index=1, frame_index=0)
+
+
+class TestTheSchemaIsCheckedBeforeTheSession:
+    """`check_schema` is what the builder asks before a session starts, so a
+    database from before 2.0 is refused with nobody in the chair — not at
+    teardown, where it failed a run the subject had already done."""
+
+    def test_an_older_database_is_refused_without_being_touched(self, tmp_path):
+        path = TestSchemaCompatibility().stale(tmp_path, version=2)
+        before = path.read_bytes()
+
+        with pytest.raises(DataError) as error:
+            ExperimentDatabase(path).check_schema()
+
+        message = str(error.value)
+        assert str(path) in message and "schema version 2" in message
+        assert "Move or delete the file" in message
+        assert path.read_bytes() == before
+
+    def test_no_database_yet_is_fine_and_none_is_made(self, tmp_path):
+        ExperimentDatabase(tmp_path / DATABASE_FILENAME).check_schema()
+        assert not (tmp_path / DATABASE_FILENAME).exists()
+
+    def test_a_current_database_passes(self, tmp_path):
+        database, _ = write_run(tmp_path)
+        database.check_schema()
+
+
 class TestFrameIntervals:
     """`frames.interval_s` in the mirror must be the same number as in
     frames.csv. It was recomputed as a delta between consecutive frame-input
@@ -262,7 +332,9 @@ class TestFrameIntervals:
         from alhazen.session.database import FrameInputRecord
 
         cfg = make_session_config(tmp_path)
-        paths = SessionPaths.create(tmp_path, "t01", 1, 1, "test-task", "20260826")
+        paths = SessionPaths.create(
+            tmp_path, "t01", 1, 1, "test-task", "20260826", experiment_version="0.1.0"
+        )
         paths.snapshot_path.write_text("config: {}\nprovenance: {}\n")
         database = ExperimentDatabase(tmp_path / DATABASE_FILENAME)
 
@@ -282,6 +354,7 @@ class TestFrameIntervals:
             frames=frames,
             frame_inputs=inputs,
             status="complete",
+            experiment_version="0.1.0",
         )
 
         with database.connect() as db:
@@ -304,12 +377,21 @@ class TestArtifactSizePolicy:
         from alhazen.data.paths import SessionPaths
 
         cfg = make_session_config(tmp_path)
-        paths = SessionPaths.create(tmp_path, "t01", 1, 1, "test-task", "20260826")
+        paths = SessionPaths.create(
+            tmp_path, "t01", 1, 1, "test-task", "20260826", experiment_version="0.1.0"
+        )
         paths.snapshot_path.write_text("config: {}\nprovenance: {}\n")
         (paths.run_dir / "big.edf").write_bytes(b"\x00" * size)
         database = ExperimentDatabase(tmp_path / DATABASE_FILENAME, **kwargs)
         run_id = database.write_run(
-            cfg, paths, trials=[], events=[], frames=[], frame_inputs=[], status="complete"
+            cfg,
+            paths,
+            trials=[],
+            events=[],
+            frames=[],
+            frame_inputs=[],
+            status="complete",
+            experiment_version="0.1.0",
         )
         return database, run_id
 

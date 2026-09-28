@@ -54,7 +54,7 @@ from alhazen.data.paths import SessionPaths
 from alhazen.devices import recording
 from alhazen.devices.reward import SimulatedReward
 from alhazen.scenes import model
-from alhazen.session import database
+from alhazen.session import database, identity
 from alhazen.session.recorder import _LEADING
 from alhazen.task.plan import TrialPlan
 from alhazen.task.reward_policy import RewardPolicy
@@ -82,6 +82,7 @@ SCHEMA_VERSIONS = {
     "recording_pointer": recording.POINTER_SCHEMA_VERSION,
     "training_state": state.SCHEMA_VERSION,
     "scene_format": model.SUPPORTED_VERSION,
+    "session_json": identity.SESSION_JSON_SCHEMA_VERSION,
 }
 
 
@@ -134,10 +135,25 @@ class TestRunLayout:
             "manifest": paths.manifest_path.name,
             "log": paths.log_path.name,
             "figures": paths.figures_dir.name,
+            "session_json": paths.session_json_path.name,
+            "rig_copy": paths.rig_copy_path.name,
+            "params_copy": paths.params_copy_path.name,
         }
         assert actual == BASELINE["run_layout"], (
             "The run-directory layout changes only in a major version, with a migration. "
             "Every script anyone wrote to find a run's files depends on these names."
+        )
+
+    def test_the_folder_levels_are_unchanged(self, tmp_path):
+        # The levels ABOVE a run's files are the layout too: a script that
+        # finds runs by walking the data root reads them. Since 2.0 the first
+        # level is the experiment's version (docs/data.md has the migration).
+        paths = SessionPaths.create(
+            tmp_path, "M1", 3, 2, "mib-quest", "20260826", experiment_version="0.4.0"
+        )
+        assert paths.run_dir.relative_to(tmp_path).as_posix() == BASELINE["run_folder"], (
+            "The folders above a run changed. They change only in a major version, with a "
+            "migration: every script that walks a data root to find runs depends on them."
         )
 
 

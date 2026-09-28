@@ -25,6 +25,75 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+### Changed
+
+- **Breaking: every run is filed under its experiment's version.** A run
+  folder is now `<data_root>/v<version>/sub-<ID>/ses-<NNN>/run-<NN>_task-<name>/`
+  (and the same under the rehearsal root for `test` and `simulate`), so data
+  recorded by two versions of a protocol never share a folder. The version is
+  the `[project] version` of the `pyproject.toml` above the task's class
+  (`alhazen.config.experiment.find_experiment`); `build_session` and
+  `build_mode_session` take `experiment_version=` (and `experiment_name=`) to
+  give one explicitly, and a session wired from parts with no task and no
+  version is refused with a `ConfigError` before anything is opened or
+  written. Run numbers count within a version (`next_run` takes
+  `experiment_version=`). `participants.tsv`, the experiment database and
+  training state stay at the unversioned root: a subject spans versions. Runs
+  recorded before 2.0 are not moved and are still read. `docs/data.md` is the
+  new page on the layout, what each file is for, when to bump the version, and
+  the migration: a script that globs `data/sub-*` finds none of the new runs.
+- **Breaking: the version is recorded wherever the data goes.** The snapshot's
+  provenance gains `experiment_name`, `experiment_version` and
+  `experiment_version_source`; every trial row gains an `experiment_version`
+  column (in `TRIAL_RECORD_COLUMNS`); the run manifest records it (schema 2 —
+  a schema 1 manifest still verifies and keeps its number when a report is
+  saved beside it); `session.log` names it; a trained subject's transition
+  history names runs as `v<version>/ses-..._run-..`.
+- **Breaking: experiment database schema 3.** A run's version is part of its
+  identity — a `runs.experiment_version` column, the front of every `run_id`
+  (`v0.5.0/sub-01/...`), and the unique key — because the same subject,
+  session, run, task and day can be recorded under two versions, and schema 2
+  mirrored only the first. `ExperimentDatabase.write_run` takes
+  `experiment_version=`; `find_run` and `frame_snapshot` take it too, and
+  refuse to guess between versions when numbers match runs of more than one.
+  A schema 2 database is refused **before** the session starts
+  (`ExperimentDatabase.check_schema`, asked by `build_session`) rather than at
+  teardown after it: move it aside, and a new one is built from the next
+  session.
+- **Breaking, for code that builds these by hand:** `SessionPaths.create`
+  takes `experiment_version=`, and `SessionRunner` requires
+  `identity=RunIdentity(...)` (build_session supplies both).
+- `alhazen run` reports a refusal from what is already on disk — a used run
+  folder, an old database — as `CANNOT RUN:` with the file named, not a
+  traceback.
+
+### Added
+
+- **`session.json` in every run folder**: a compact identity card — the
+  experiment, its version and where the version came from, the experiment's
+  git tree, task, mode, subject, session, run, seed, date, creation time, the
+  rig (name and source for a rig chosen by name, and its file) and params
+  file, alhazen's version and tree, and the relative paths of the snapshot,
+  manifest, copies and data files. `schema_version: 1`, pinned with the other
+  on-disk schema versions.
+- **Byte copies of the files a session started from**: `rig.yaml` and, when a
+  params file was given, `params.yaml`, read when the session is built. They
+  are written with `session.json` and the snapshot, before trial 1, all or
+  none; the snapshot stays the authority on what ran (reduced trial counts, a
+  params hook, a curriculum stage, a rig that extends another).
+- **`alhazen.data.find_runs(data_root)`**: every run folder under a data
+  root, in both layouts, each saying its version (None before 2.0), subject,
+  session, run and task — what replaces a `data/sub-*` glob.
+- The mode summary printed before trial 1 names the experiment, its version
+  folder and where the version came from.
+- Public in the API reference: `alhazen.config.experiment` (`Experiment`,
+  `find_experiment`, `session_experiment`), `alhazen.session.identity`
+  (`RunIdentity`, `SourceFile`, `SESSION_JSON_SCHEMA_VERSION`),
+  `alhazen.modes.session.next_run`, `alhazen.data.paths` (`RunFolder`,
+  `find_runs`).
+
 ## 1.10.1 - 2026-09-26
 
 ### Fixed

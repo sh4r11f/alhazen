@@ -205,6 +205,49 @@ class TestABadCurriculumIsInvalid:
         assert str(missing) in err
 
 
+class TestARefusalFromWhatIsOnDiskIsReported:
+    def test_a_database_from_before_2_0_stops_the_session_with_its_path(self, tmp_path, capsys):
+        """The builder refuses an experiment database it cannot write before
+        the session starts (alhazen 2.0 moved it to schema 3). That refusal is
+        a DataError, which the CLI used to let through as a traceback; it is
+        reported like a bad config, with the file and the fix."""
+        import sqlite3
+
+        from alhazen.cli.modes import run_experiment
+        from alhazen.config.models import Model
+        from alhazen.core.events import EventSchema
+        from alhazen.core.trial import outcomes as make_outcomes
+        from alhazen.task.task import Task
+
+        class DiskParams(Model):
+            pass
+
+        class DiskTask(Task):
+            name = "disk-check"
+            events = EventSchema(())
+            outcomes = make_outcomes(DONE=dict(completed=True, success=True))
+            params_model = DiskParams
+
+        (tmp_path / "data").mkdir()
+        database = tmp_path / "data" / "experiment.sqlite3"
+        with sqlite3.connect(database) as db:
+            db.execute("CREATE TABLE schema_info (version INTEGER NOT NULL)")
+            db.execute("INSERT INTO schema_info(version) VALUES (2)")
+
+        code = run_experiment(
+            task_class=DiskTask,
+            default_rig=rig_file(tmp_path),
+            argv=["--mode", "run", "--sub", "01", "--ses", "1"],
+        )
+
+        assert code == 1
+        err = capsys.readouterr().err
+        assert err.startswith("CANNOT RUN: ")
+        assert str(database) in err and "schema version 2" in err
+        # Refused before a run folder was made.
+        assert not list((tmp_path / "data").glob("v*"))
+
+
 class TestMeasureRejectsAnUnknownSkip:
     def test_a_misspelled_measurement_is_refused(self, tmp_path, capsys):
         """An experimenter who thinks they skipped the tracker and did not

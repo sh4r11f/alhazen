@@ -1,9 +1,10 @@
 # Experiment database
 
 Every session writes its immutable CSV/YAML/native-device artifacts as before
-and mirrors them into `experiment.sqlite3` at the rig's `data_root`. One
-database therefore contains every subject, session, run and task for that
-experiment. SQLite needs no server and can be opened by Python, R, Julia,
+and mirrors them into `experiment.sqlite3` at the rig's `data_root` — the
+unversioned root, above the `v<version>/` folders the runs sit in
+([data on disk](data.md)). One database therefore contains every subject,
+session, run and task for that experiment, of every version of it. SQLite needs no server and can be opened by Python, R, Julia,
 MATLAB, Datasette, DBeaver, or the `sqlite3` command-line tool.
 
 The normalized tables are `runs`, `subjects`, `trials`, `events`, `frames`,
@@ -12,8 +13,22 @@ The normalized tables are `runs`, `subjects`, `trials`, `events`, `frames`,
 
 ## What identifies a run
 
-`run_id` is `sub-<ID>/ses-<NNN>/run-<NN>/task-<name>/<YYYYMMDD>`. The **date**
-is part of it because it is part of what makes a run unique on disk: a run
+`run_id` is `v<version>/sub-<ID>/ses-<NNN>/run-<NN>/task-<name>/<YYYYMMDD>`,
+and `runs.experiment_version` holds the version on its own. The **version**
+leads it (schema 3, alhazen 2.0): run numbers count within a version's folder,
+so the same subject, session, run and task can be recorded under two versions
+— on the same day, when the protocol changed between two sessions — and
+without the version the second of them collided with the first and was never
+mirrored. For the same reason a lookup by numbers (`find_run`,
+`frame_snapshot`) that matches runs of more than one version is refused until
+it names one with `experiment_version=`.
+
+A database written by an older schema is refused — before the session starts,
+by `build_session`, with its path in the message — rather than written to. It
+is a mirror: move it aside and a new one is built from the next session on;
+the run folders are the record.
+
+The **date** is part of it because it is part of what makes a run unique on disk: a run
 directory is named for the subject, session and run number only, and it is the
 date-stamped *filenames* inside it that distinguish two runs. Without the date
 in the id, the same numbers on a later day passed the "do not overwrite"
@@ -79,7 +94,7 @@ from alhazen import DeviceSample, ExperimentDatabase
 
 db = ExperimentDatabase("data/experiment.sqlite3")
 db.ingest_device_samples(
-    "sub-A/ses-003/run-01/task-saccade-to-target",
+    "v0.5.0/sub-A/ses-003/run-01/task-saccade-to-target/20260928",
     device="spikeglx",
     stream="nidq",
     sample_rate_hz=25_000,
