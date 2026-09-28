@@ -701,7 +701,7 @@ flowchart TB
     EX -- yes --> LOAD
     EX -- no --> STOP["INVALID, naming the path;<br/>nothing runs"]
     P2 -- None --> DEF["the params model's defaults<br/>(said before trial one)"]
-    LOAD --> WHO["settle subject and session:<br/>flags, the prompt, or simulate's sim / 1"]
+    LOAD --> WHO["settle subject, session, initials:<br/>flags, the prompt, or simulate's sim / 1"]
     DEF --> WHO
     WHO --> H{"run.py passed<br/>params_hook?"}
     H -- yes --> HR["run.py's hook"]
@@ -719,7 +719,10 @@ Three details carry the weight. **Precedence**: an explicit `--params`, then
 chaining with it, so a `run.py` written before the hooks does exactly what it
 did. **Order**: the subject and session are settled before the hook runs
 (`_settle_subject_and_session`), because deriving params from them is what a
-hook is for — it used to run first, so a subject typed at the prompt reached
+hook is for (the subject's initials are settled there too: required in `run`
+and `test`, the modes that name a real subject, prompted at a terminal and
+refused without one, like the subject and session; §10 says what they are
+checked against) — it used to run first, so a subject typed at the prompt reached
 it as `None` and a search state was filed under `sub-None`. The params file is
 still loaded and checked before anyone is asked anything. **Record**:
 `args.params` is set to the file that was loaded, so the snapshot's
@@ -1765,7 +1768,16 @@ then:
    repository) or `unknown` (git absent or not answering). Every trial row
    is stamped with `experiment_version`, and so are the manifest and the
    database row;
-2. registers the subject in `participants.tsv`;
+2. registers the subject in `participants.tsv`, at the unversioned data root,
+   with the subject's initials when the session was given them (`--initials`;
+   required in `run` and `test`). The first session that names a subject's
+   initials records them; one that gives the same subject id with other
+   initials is refused by `build_session` before anything is written
+   (`data/participants.py` `check_participant`: "sub-01 is recorded as HD;
+   this session says XY — check the subject number"), and a row from before
+   2.0 with no initials has them filled in. Initials are recorded — in the
+   snapshot (`config.info.initials`), `session.json` and the registry — and
+   never put in a file or folder name;
 3. loops: `source.next()` → build → engine → `source.record()` for **every**
    outcome (schedulers own re-queueing) → recorder row for every outcome
    except `PAUSED` (which produced no measurement — its events still land in
@@ -2028,7 +2040,7 @@ parallel implementation is a tool whose OK means nothing.
 | | |
 |---|---|
 | `alhazen new <name>` | scaffold an experiment package: a Task, two rig configs, a task config, tests and a runner. Its tests pass and its session runs before anything is edited |
-| `alhazen run --task ...` | run one session of an installed task, found through the `alhazen.tasks` entry-point group; picks the next free run number, prompts for subject and session if omitted, runs the task's own params file when `--params` is not given, applies its params hook, and shows the subject its instructions (§5.1). An experiment's `run.py` starts the same session through the same dispatch |
+| `alhazen run --task ...` | run one session of an installed task, found through the `alhazen.tasks` entry-point group; picks the next free run number (within the experiment's version), prompts for subject, session and — in `run` and `test` — the subject's initials if omitted, runs the task's own params file when `--params` is not given, applies its params hook, and shows the subject its instructions (§5.1). An experiment's `run.py` starts the same session through the same dispatch |
 | `alhazen validate --rig` | is this config file well-formed? |
 | `alhazen check-rig --rig` | is this rig actually wired? Constructs the real backends; `--pulse` fires the pump and the sync lines |
 | `alhazen sim-sorter` | publish the sorted-spike wire contract, so `check-rig` can be rehearsed with no sorter and no probe; `--fault` publishes a named non-conformance instead |

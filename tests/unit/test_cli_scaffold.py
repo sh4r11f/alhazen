@@ -560,7 +560,7 @@ class TestRunCommand:
     def test_a_simulated_session_runs_through_the_entry_point(self, monkeypatch, tmp_path, capsys):
         rig = self.registered(monkeypatch, tmp_path)
 
-        code = main(self.run_args(rig, "--sub", "s01", "--ses", "1"))
+        code = main(self.run_args(rig, "--sub", "s01", "--ses", "1", "--initials", "SO"))
 
         assert code == 0
         out = capsys.readouterr().out
@@ -572,7 +572,9 @@ class TestRunCommand:
 
     def test_the_subject_and_session_are_prompted_when_omitted(self, monkeypatch, tmp_path, capsys):
         rig = self.registered(monkeypatch, tmp_path)
-        answers = iter(["s02", "3"])
+        # Subject, session and — for run mode, which names a real subject —
+        # initials, each prompted in turn.
+        answers = iter(["s02", "3", "st"])
         monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
         # The prompt only fires at a terminal; this test stands in for one.
         monkeypatch.setattr("sys.stdin", type("Tty", (), {"isatty": lambda self: True})())
@@ -583,10 +585,10 @@ class TestRunCommand:
 
     def test_the_run_number_defaults_to_the_next_free_one(self, monkeypatch, tmp_path, capsys):
         rig = self.registered(monkeypatch, tmp_path)
-        main(self.run_args(rig, "--sub", "s01", "--ses", "1"))
+        main(self.run_args(rig, "--sub", "s01", "--ses", "1", "--initials", "SO"))
         capsys.readouterr()
 
-        main(self.run_args(rig, "--sub", "s01", "--ses", "1"))
+        main(self.run_args(rig, "--sub", "s01", "--ses", "1", "--initials", "SO"))
 
         assert "run-02" in capsys.readouterr().out
 
@@ -602,7 +604,7 @@ class TestRunCommand:
 
         code = main(
             ["run", "--task", "run-demo", "--rig", str(rig), "--mode", "test"]
-            + ["--sub", "s01", "--ses", "1"]
+            + ["--sub", "s01", "--ses", "1", "--initials", "SO"]
         )
 
         assert code == 0

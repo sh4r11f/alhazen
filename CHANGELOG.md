@@ -86,6 +86,20 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 - **`alhazen.data.find_runs(data_root)`**: every run folder under a data
   root, in both layouts, each saying its version (None before 2.0), subject,
   session, run and task — what replaces a `data/sub-*` glob.
+- **The subject's initials.** `--initials` on `alhazen run` and every
+  `run.py` (`add_mode_arguments`): 1 to 5 letters, recorded uppercase.
+  Required by `run` and `test`, the modes that name a real subject — prompted
+  for like `--sub` and `--ses` when omitted at a terminal, refused with the
+  same "not a terminal" message without one — and optional in `simulate`,
+  `demo`, `movie` and `measure`; initials that break the rule are refused in
+  every mode. `SessionInfo.initials` records them in the snapshot, and
+  `session.json` too; `build_session` and `build_mode_session` take
+  `initials=`. `participants.tsv` gains an `initials` column: the first
+  session of a subject records them, a later one giving the same subject id
+  with other initials is refused before any run folder, database row or file
+  is written ("sub-01 is recorded as HD; this session says XY — check the
+  subject number"), and a subject registered before 2.0 has them filled in.
+  Initials never appear in a file or folder name.
 - The mode summary printed before trial 1 names the experiment, its version
   folder and where the version came from.
 - Public in the API reference: `alhazen.config.experiment` (`Experiment`,

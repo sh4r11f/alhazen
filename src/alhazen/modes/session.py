@@ -338,6 +338,7 @@ def build_mode_session(
     open_dashboard: bool | None = None,
     experiment_version: str | None = None,
     experiment_name: str | None = None,
+    initials: str | None = None,
     **extra: Any,
 ) -> ModeSession:
     """Wire one session in the given mode.
@@ -351,6 +352,11 @@ def build_mode_session(
     ``experiment_version`` (and ``experiment_name``) say otherwise — and
     numbered within that version's folder. It is found once, from the task
     class this was handed, and passed down to the builder as it is.
+
+    ``initials`` are the subject's, passed to the builder to be recorded and
+    checked against the registry (``build_session``). The command line makes
+    them required for ``run`` and ``test``, the modes that name a real
+    subject; here, as for every caller in code, None records none.
 
     ``instructions`` is the caller's own text for the instruction screen
     (``run_experiment``'s ``instructions=``) and wins over the task's; None
@@ -482,6 +488,7 @@ def build_mode_session(
         # the run's session.json.
         experiment=experiment,
         mode=mode.value,
+        initials=initials,
         **extra,
     )
     built = ModeSession(

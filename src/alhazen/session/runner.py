@@ -64,7 +64,7 @@ from alhazen.core.trial import (
     TrialContext,
 )
 from alhazen.data.manifest import write_manifest
-from alhazen.data.participants import ensure_participant
+from alhazen.data.participants import check_participant, ensure_participant
 from alhazen.data.paths import SessionPaths
 from alhazen.data.percents import threshold_percent
 from alhazen.devices.eyetracker import EyeTracker, HostShape
@@ -369,13 +369,28 @@ class SessionRunner:
             # snapshot comes with session.json and the rig and params copies,
             # all or none (session/identity.py), so "the snapshot was written"
             # means all four were.
+            #
+            # The subject's initials are checked against the registry once
+            # more just before: the builder checked them, but a built session
+            # can wait (a window up, a tracker connected) while another
+            # session registers the subject. Refused here, nothing has been
+            # written and the folder is not a run.
+            check_participant(
+                self._cfg.rig.data_root, self._cfg.info.subject, self._cfg.info.initials
+            )
             write_run_identity(self._cfg, self._paths, self._identity, self._experiment_dir)
             snapshot_written = True
             # The log before the registry, so a participants.tsv that cannot
             # be written ends with a "session end: FAILED" line in this run's
             # own log rather than only on a terminal.
             file_handler = self._attach_file_logging()
-            ensure_participant(self._cfg.rig.data_root, self._cfg.info.subject)
+            # Records the subject's initials with a new subject, fills them in
+            # on a row from before 2.0, and refuses ones that disagree — the
+            # builder already checked, before anything was written; this is
+            # the same check against the file as it is now.
+            ensure_participant(
+                self._cfg.rig.data_root, self._cfg.info.subject, initials=self._cfg.info.initials
+            )
 
             log.info(
                 "session start: subject %s, ses %d, run %d, task %s, seed %d",

@@ -1077,3 +1077,78 @@ class TestTheExperimentVersionFilesTheRun:
         with pytest.raises(DataError, match="schema version 2"):
             build(tmp_path, EventSchema(()))
         assert not list(tmp_path.rglob("run-*"))
+
+
+class TestTheSubjectsInitials:
+    """alhazen 2.0: build_session records the subject's initials, checks
+    them against the registry before anything is written, and never puts
+    them in a path."""
+
+    def test_they_are_recorded_in_the_snapshot_the_card_and_the_registry(self, tmp_path):
+        build(tmp_path, EventSchema(()), initials="hd").run()
+
+        (run_dir,) = (p.parent for p in tmp_path.rglob("session.json"))
+        snapshot = yaml.safe_load((run_dir / "config_snapshot.yaml").read_text(encoding="utf-8"))
+        assert snapshot["config"]["info"]["initials"] == "HD"
+        card = json.loads((run_dir / "session.json").read_text(encoding="utf-8"))
+        assert card["subject"] == {"id": "t01", "initials": "HD"}
+        registry = (tmp_path / "participants.tsv").read_text(encoding="utf-8").splitlines()
+        assert registry == ["participant_id\tinitials", "sub-t01\tHD"]
+
+    def test_they_are_in_no_file_or_folder_name(self, tmp_path):
+        # Unusual letters, so a match anywhere could only be the initials.
+        build(tmp_path, EventSchema(()), initials="QZX").run()
+
+        names = [p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*")]
+        assert names  # the session did write its files
+        assert not [name for name in names if "qzx" in name.lower()]
+
+    def test_other_initials_for_a_recorded_subject_are_refused_before_anything(self, tmp_path):
+        registry = tmp_path / "participants.tsv"
+        registry.write_text("participant_id\tinitials\nsub-t01\tHD\n", encoding="utf-8")
+        before = registry.read_bytes()
+
+        with pytest.raises(DataError) as refused:
+            build(tmp_path, EventSchema(()), initials="XY")
+
+        assert str(refused.value).startswith(
+            "sub-t01 is recorded as HD; this session says XY — check the subject number"
+        )
+        # No run folder, no database, and the registry as it was.
+        assert [p.name for p in tmp_path.iterdir()] == ["participants.tsv"]
+        assert registry.read_bytes() == before
+
+    def test_a_subject_from_before_2_0_gets_them_filled_in(self, tmp_path):
+        registry = tmp_path / "participants.tsv"
+        registry.write_text("participant_id\nsub-t01\n", encoding="utf-8")
+
+        build(tmp_path, EventSchema(()), initials="HD").run()
+
+        assert registry.read_text(encoding="utf-8").splitlines() == [
+            "participant_id\tinitials",
+            "sub-t01\tHD",
+        ]
+
+    def test_a_session_given_none_records_none(self, tmp_path):
+        build(tmp_path, EventSchema(())).run()
+
+        (card_path,) = tmp_path.rglob("session.json")
+        assert json.loads(card_path.read_text(encoding="utf-8"))["subject"]["initials"] is None
+        assert (tmp_path / "participants.tsv").read_text(encoding="utf-8").splitlines() == [
+            "participant_id",
+            "sub-t01",
+        ]
+
+    def test_a_registry_changed_after_the_build_is_checked_again_at_the_start(self, tmp_path):
+        # A built session can wait while another one registers the subject:
+        # the runner checks once more, before it writes anything.
+        runner = build(tmp_path, EventSchema(()), initials="HD")
+        (tmp_path / "participants.tsv").write_text(
+            "participant_id\tinitials\nsub-t01\tXY\n", encoding="utf-8"
+        )
+
+        with pytest.raises(DataError, match="recorded as XY; this session says HD"):
+            runner.run()
+
+        (run_dir,) = tmp_path.glob("v0.1.0/sub-t01/ses-001/run-*")
+        assert [p for p in run_dir.rglob("*") if p.is_file()] == []

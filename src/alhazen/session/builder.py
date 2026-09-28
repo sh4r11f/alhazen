@@ -47,6 +47,7 @@ from alhazen.core.events import EventBus, EventSchema
 from alhazen.core.rng import resolve_seed, spawn_streams
 from alhazen.core.trial import FAULT_TRACKER_STOPPED, HealthFault, InputFrame, TrialContext
 from alhazen.data import naming
+from alhazen.data.participants import check_participant
 from alhazen.data.paths import SessionPaths
 from alhazen.devices.eyetracker import EyeTracker, TrackerMessageSubscriber, make_tracker
 from alhazen.devices.eyetracker.messages import MessageMap
@@ -307,6 +308,7 @@ def build_session(
     experiment_version: str | None = None,
     experiment_name: str | None = None,
     mode: str | None = None,
+    initials: str | None = None,
 ) -> SessionRunner:
     """Wire one runnable session.
 
@@ -331,6 +333,13 @@ def build_session(
     ``mode`` is the mode that started the session (``"run"``, ``"test"``,
     ``"simulate"``), recorded in the run's session.json; None for a session
     built here directly.
+
+    ``initials`` are the subject's (1 to 5 letters, recorded uppercase —
+    config.models.normalize_initials), recorded in the snapshot, session.json
+    and participants.tsv, never in a path. When the registry already holds
+    other initials for this subject id the session is refused, before
+    anything is written (data.participants.check_participant). None records
+    nothing and checks nothing.
 
     Pass ``task=`` (a Task instance) and everything the experiment declares —
     name, params, events, trial builder, scheduler, score, reward policy, the
@@ -444,7 +453,14 @@ def build_session(
 
     resolved_seed = resolve_seed(seed)
     info = SessionInfo(
-        subject=subject, session=session, run=run, task_name=task_name, seed=resolved_seed
+        subject=subject,
+        session=session,
+        run=run,
+        task_name=task_name,
+        seed=resolved_seed,
+        # Normalised by SessionInfo (uppercase, 1 to 5 letters); what is
+        # checked against the registry below is what is recorded.
+        initials=initials,
     )
 
     if curriculum is not None:
@@ -547,6 +563,14 @@ def build_session(
     # moving. Reads only; the mirror itself is written at teardown.
     if rig_cfg.database.enabled:
         ExperimentDatabase.for_data_root(rig_cfg.data_root, rig_cfg.database).check_schema()
+
+    # The subject's initials against the registry at the (unversioned) data
+    # root: a subject id already recorded with other initials is refused here,
+    # before a run folder, a database row or any file exists — the likeliest
+    # cause is a mistyped subject number, and a session filed under someone
+    # else's id is not undone by deleting a folder. The runner registers the
+    # subject (and fills in initials a pre-2.0 row lacks) once it starts.
+    check_participant(rig_cfg.data_root, subject, info.initials)
 
     # Paths first: refusing to overwrite an existing run must fail before a
     # window ever opens or a device is touched. The run folder sits under

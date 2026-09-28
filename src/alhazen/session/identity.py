@@ -152,7 +152,8 @@ def session_card(
         },
         "task": info.task_name,
         "mode": identity.mode,
-        "subject": {"id": info.subject},
+        # Initials are recorded here and in the registry, never in a path.
+        "subject": {"id": info.subject, "initials": info.initials},
         "session": info.session,
         "run": info.run,
         "seed": info.seed,

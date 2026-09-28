@@ -30,6 +30,7 @@ from pydantic import ValidationError
 from alhazen._deprecation import warn_deprecated_name
 from alhazen.cli.console_break import interrupt_on_console_break
 from alhazen.config.loader import load_rig
+from alhazen.config.models import normalize_initials
 from alhazen.errors import AlhazenError, ConfigError, DataError
 from alhazen.modes import Mode, flag_refusal
 from alhazen.session.checks import check_rig, format_result
@@ -323,6 +324,12 @@ def add_mode_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--run", type=int, default=None, help="run number (default: the next free one)"
     )
+    parser.add_argument(
+        "--initials",
+        default=None,
+        help="the subject's initials, 1-5 letters: recorded, never put in a file name "
+        "(run and test: prompted if omitted)",
+    )
     parser.add_argument("--seed", type=int, default=None, help="session seed")
     parser.add_argument("--windowed", action="store_true", help="bordered window, for dev")
     # The two flags that override the machine rather than the experiment.
@@ -481,6 +488,13 @@ def _run_session(
     if refusal is not None:
         print(f"CANNOT RUN: {refusal}", file=sys.stderr)
         return 2
+    # Initials typed on the command line are held to their rule in every
+    # mode, before anything loads: a typo is a usage error however little
+    # the mode does with them.
+    refused = _normalize_initials_flag(args)
+    if refused is not None:
+        print(refused, file=sys.stderr)
+        return 2
 
     if getattr(args, "list", False):
         tasks = installed_tasks()
@@ -582,27 +596,56 @@ def _load_params(task_class: Any, named: str | None) -> tuple[Any, str | None]:
     return load_model(path, task_class.params_model), path
 
 
-def _settle_subject_and_session(args: argparse.Namespace, mode: Mode) -> str | None:
-    """Fill in ``args.sub`` and ``args.ses`` for a session that runs trials,
-    or return why they cannot be — a usage error for the caller to print.
+def _normalize_initials_flag(args: argparse.Namespace) -> str | None:
+    """``args.initials`` as they are recorded (uppercase), or why they cannot
+    be — the rule's own words, for the caller to print.
 
-    Simulate mode names its own subject: nobody is there to ask. Otherwise a
-    missing flag is prompted for — an experimenter at a rig types this with
-    an animal already waiting and should not have to remember the flag
-    names — but only where a person can answer. With stdin not a terminal
-    (nohup, CI, a batch script) input() blocks forever or dies in a raw
-    EOFError, so the missing flags are refused instead.
+    None (not given) stays None. Read with a default because a namespace
+    built by code other than `add_mode_arguments` may not carry the flag.
+    """
+    given = getattr(args, "initials", None)
+    if given is None:
+        args.initials = None
+        return None
+    try:
+        args.initials = normalize_initials(given)
+    except ValueError as e:
+        return f"INVALID: {e}"
+    return None
+
+
+def _settle_subject_and_session(args: argparse.Namespace, mode: Mode) -> str | None:
+    """Fill in ``args.sub``, ``args.ses`` and ``args.initials`` for a session
+    that runs trials, or return why they cannot be — a usage error for the
+    caller to print.
+
+    Simulate mode names its own subject: nobody is there to ask, and it
+    needs no initials. ``run`` and ``test`` name a real subject, so they need
+    all three — the initials are what catch a mistyped subject number against
+    the registry (data/participants.py). A missing flag is prompted for — an
+    experimenter at a rig types this with an animal already waiting and
+    should not have to remember the flag names — but only where a person can
+    answer. With stdin not a terminal (nohup, CI, a batch script) input()
+    blocks forever or dies in a raw EOFError, so the missing flags are
+    refused instead.
 
     Idempotent: flags already settled are left as they are, and nothing is
     asked twice.
     """
+    refused = _normalize_initials_flag(args)
+    if refused is not None:
+        return refused
     if mode is Mode.SIMULATE:
         if args.sub is None:
             args.sub = "sim"
         if args.ses is None:
             args.ses = 1
         return None
-    missing = [flag for flag, value in (("--sub", args.sub), ("--ses", args.ses)) if value is None]
+    missing = [
+        flag
+        for flag, value in (("--sub", args.sub), ("--ses", args.ses), ("--initials", args.initials))
+        if value is None
+    ]
     if missing and not (sys.stdin and sys.stdin.isatty()):
         return (
             f"{' and '.join(missing)} required: stdin is not a terminal, so "
@@ -612,7 +655,25 @@ def _settle_subject_and_session(args: argparse.Namespace, mode: Mode) -> str | N
         args.sub = input("subject id: ").strip()
     if args.ses is None:
         args.ses = _ask_session_number()
+    if args.initials is None:
+        args.initials = _ask_initials()
     return None
+
+
+def _ask_initials() -> str:
+    """Prompt until the answer is initials by the rule (config.models
+    INITIALS_RULE): 1 to 5 letters, recorded uppercase.
+
+    Asked again on a bad answer, with the same ``INVALID:`` line the flag
+    gets, for the same reason as the session number: the person who mistyped
+    is right there, with a subject waiting.
+    """
+    while True:
+        answer = input("subject initials: ")
+        try:
+            return normalize_initials(answer)
+        except ValueError as e:
+            print(f"INVALID: {e}", file=sys.stderr)
 
 
 def _ask_session_number() -> int:
@@ -842,6 +903,8 @@ def _trial_session(args: argparse.Namespace, rig: Any, task: Any, params: Any, m
             # builder shows what the task declares (Task.instructions).
             instructions=getattr(args, "instructions", None),
             sources={"rig": str(args.rig), "task": str(args.params or "<defaults>")},
+            # Recorded and checked against the registry, never in a path.
+            initials=args.initials,
         )
     except (ConfigError, DataError) as e:
         # DataError: what is already on disk refuses the session — a used run

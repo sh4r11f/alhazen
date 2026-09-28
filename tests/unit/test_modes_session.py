@@ -622,3 +622,13 @@ class TestTheBreakBetweenBlocksInASimulation:
         _, spy = build(tmp_path, Mode.TEST)
 
         assert spy.kwargs["rest_resume_after_s"] is None
+
+
+class TestInitialsReachTheBuilder:
+    def test_the_subjects_initials_are_handed_down(self, tmp_path):
+        _, spy = build(tmp_path, Mode.TEST, initials="HD")
+        assert spy.kwargs["initials"] == "HD"
+
+    def test_none_is_handed_down_as_none(self, tmp_path):
+        _, spy = build(tmp_path, Mode.RUN)
+        assert spy.kwargs["initials"] is None

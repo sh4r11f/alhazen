@@ -20,7 +20,7 @@ alhazen run --mode demo --task kde-vergence --rig configs/rig-mac.yaml
 alhazen run --mode movie --task kde-vergence --rig configs/rig-lab.yaml --out movies
 alhazen run --mode measure --rig configs/rig-lab.yaml
 alhazen run --mode simulate --task kde-vergence --rig configs/rig-lab.yaml --headless
-alhazen run --mode test --task kde-vergence --rig configs/rig-lab.yaml --sub s01 --ses 1
+alhazen run --mode test --task kde-vergence --rig configs/rig-lab.yaml --sub s01 --ses 1 --initials AB
 ```
 
 An experiment's own `run.py` takes the same flags, through the same code —

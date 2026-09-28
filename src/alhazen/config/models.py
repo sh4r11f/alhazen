@@ -18,7 +18,7 @@ import re
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from alhazen._deprecation import warn_deprecated_name
 from alhazen.errors import ConfigError
@@ -887,14 +887,49 @@ class RigConfig(Model):
         return data
 
 
+# The rule a subject's initials are held to, in the words every entry point
+# shows: the CLI's refusal and its prompt, SessionInfo, the experiment
+# workspace. The workspace page carries the same sentence in its JavaScript,
+# and tests/unit/test_workspace.py holds the two together.
+INITIALS_RULE = "initials must be 1 to 5 letters, such as HD"
+
+
+def normalize_initials(text: str) -> str:
+    """A subject's initials as they are recorded: 1 to 5 letters, uppercase.
+
+    Surrounding spaces are dropped and the letters uppercased first, so
+    ``" hd "`` and ``"HD"`` are the same person. Letters in any script count
+    (``"ØY"``), because initials are recorded, never put in a path: a subject
+    is filed by its id alone (docs/data.md). Anything else — a digit, a dot,
+    a space inside, more than five letters — is a ValueError in
+    `INITIALS_RULE`'s words, naming what was given.
+    """
+    initials = text.strip().upper()
+    if not (1 <= len(initials) <= 5 and initials.isalpha()):
+        raise ValueError(f"{INITIALS_RULE}; got {text!r}")
+    return initials
+
+
 class SessionInfo(Model):
-    """Identity of one recorded run, stamped into the snapshot and filenames."""
+    """Identity of one recorded run, stamped into the snapshot and filenames.
+
+    ``initials`` are the subject's, recorded in the snapshot, session.json and
+    participants.tsv (normalised by `normalize_initials`) and never in a file
+    or folder name. None when the session was not told them: ``simulate``,
+    and any session started from code that does not pass them.
+    """
 
     subject: str
     session: int
     run: int
     task_name: str
     seed: int  # always the resolved concrete seed, never None
+    initials: str | None = None
+
+    @field_validator("initials")
+    @classmethod
+    def _recorded_initials(cls, value: str | None) -> str | None:
+        return None if value is None else normalize_initials(value)
 
     @model_validator(mode="after")
     def _valid(self) -> SessionInfo:

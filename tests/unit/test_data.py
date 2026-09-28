@@ -11,7 +11,11 @@ import yaml
 from alhazen.core.events import Event
 from alhazen.data import naming
 from alhazen.data.manifest import add_to_manifest, verify_manifest, write_manifest
-from alhazen.data.participants import ensure_participant, participants_path
+from alhazen.data.participants import (
+    check_participant,
+    ensure_participant,
+    participants_path,
+)
 from alhazen.data.paths import RunFolder, SessionPaths, find_runs
 from alhazen.errors import DataError
 from alhazen.session.recorder import DataRecorder, ordered_trial_columns
@@ -495,3 +499,92 @@ class TestParticipants:
         assert "'extra'" in message
         # Refused before anything was written: the file is as the human left it.
         assert path.read_bytes() == before
+
+
+class TestInitialsInTheRegistry:
+    """alhazen 2.0: a subject's initials are recorded beside its id, and are
+    a check on the subject number — a later session with the same id and
+    other initials is refused, before anything is written."""
+
+    def rows(self, tmp_path):
+        with participants_path(tmp_path).open(newline="", encoding="utf-8") as f:
+            return list(csv.DictReader(f, delimiter="\t"))
+
+    def test_the_first_session_records_them(self, tmp_path):
+        ensure_participant(tmp_path, "01", initials="HD")
+        assert self.rows(tmp_path) == [{"participant_id": "sub-01", "initials": "HD"}]
+
+    def test_the_same_initials_again_change_nothing(self, tmp_path):
+        ensure_participant(tmp_path, "01", initials="HD")
+        before = participants_path(tmp_path).read_bytes()
+
+        ensure_participant(tmp_path, "01", initials="HD")
+        check_participant(tmp_path, "01", "HD")
+
+        assert participants_path(tmp_path).read_bytes() == before
+
+    def test_other_initials_for_the_same_subject_are_refused_naming_both(self, tmp_path):
+        ensure_participant(tmp_path, "01", initials="HD")
+        before = participants_path(tmp_path).read_bytes()
+
+        for attempt in (
+            lambda: check_participant(tmp_path, "01", "XY"),
+            lambda: ensure_participant(tmp_path, "01", initials="XY"),
+        ):
+            with pytest.raises(DataError) as refused:
+                attempt()
+            assert str(refused.value).startswith(
+                "sub-01 is recorded as HD; this session says XY — check the subject number"
+            )
+            assert str(participants_path(tmp_path)) in str(refused.value)
+
+        assert participants_path(tmp_path).read_bytes() == before
+
+    def test_a_hand_edited_cell_is_read_as_recorded(self, tmp_path):
+        # Lowercase or padded by a person editing the file is the same person.
+        participants_path(tmp_path).write_text(
+            "participant_id\tinitials\nsub-01\t hd \n", encoding="utf-8"
+        )
+        check_participant(tmp_path, "01", "HD")
+        ensure_participant(tmp_path, "01", initials="HD")
+        with pytest.raises(DataError, match="recorded as HD"):
+            check_participant(tmp_path, "01", "XY")
+
+    def test_a_subject_from_before_2_0_has_them_filled_in(self, tmp_path):
+        # A registry written before initials existed: no column at all.
+        participants_path(tmp_path).write_text(
+            "participant_id\tspecies\nsub-01\tmacaque\nsub-02\tmacaque\n", encoding="utf-8"
+        )
+
+        check_participant(tmp_path, "01", "HD")  # not refused
+        ensure_participant(tmp_path, "01", initials="HD")
+
+        assert self.rows(tmp_path) == [
+            {"participant_id": "sub-01", "species": "macaque", "initials": "HD"},
+            {"participant_id": "sub-02", "species": "macaque", "initials": ""},
+        ]
+
+    def test_a_blank_cell_is_filled_in_too(self, tmp_path):
+        ensure_participant(tmp_path, "01")  # a session that gave none
+        ensure_participant(tmp_path, "02", initials="AB")
+        ensure_participant(tmp_path, "01", initials="HD")
+
+        assert self.rows(tmp_path) == [
+            {"participant_id": "sub-01", "initials": "HD"},
+            {"participant_id": "sub-02", "initials": "AB"},
+        ]
+
+    def test_a_session_that_gives_none_checks_and_changes_nothing(self, tmp_path):
+        ensure_participant(tmp_path, "01", initials="HD")
+        before = participants_path(tmp_path).read_bytes()
+
+        check_participant(tmp_path, "01", None)
+        ensure_participant(tmp_path, "01")
+
+        assert participants_path(tmp_path).read_bytes() == before
+
+    def test_nothing_to_check_against_is_not_a_refusal(self, tmp_path):
+        check_participant(tmp_path, "01", "HD")  # no registry yet
+        ensure_participant(tmp_path, "02", initials="AB")
+        check_participant(tmp_path, "01", "HD")  # a subject not registered yet
+        assert not [row for row in self.rows(tmp_path) if row["participant_id"] == "sub-01"]

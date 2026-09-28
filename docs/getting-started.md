@@ -139,7 +139,7 @@ Open `src/saccade_bias/task.py`. Four things to try:
 alhazen monitor register --rig configs/rig-lab.yaml  # tell PsychoPy about the panel
 alhazen calibrate ruler --rig configs/rig-lab.yaml   # is the geometry right?
 alhazen check-rig --rig configs/rig-lab.yaml --pulse # is everything wired?
-alhazen run --task saccade-bias --rig configs/rig-lab.yaml --sub s01 --ses 1
+alhazen run --task saccade-bias --rig configs/rig-lab.yaml --sub s01 --ses 1 --initials AB
 ```
 
 `alhazen run --task` starts the same session `run.py` does. With no

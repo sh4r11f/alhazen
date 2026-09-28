@@ -17,7 +17,7 @@ the version that recorded it:
 ```mermaid
 graph TD
     ROOT["data_root/<br/><i>the rig's data_root</i>"]
-    ROOT --> PT["participants.tsv<br/><i>every subject, once</i>"]
+    ROOT --> PT["participants.tsv<br/><i>every subject once, with its initials</i>"]
     ROOT --> DB["experiment.sqlite3<br/><i>a queryable mirror of every run of every version</i>"]
     ROOT --> TS["sub-&lt;ID&gt;/training_state.yaml<br/><i>a subject's place in its curriculum</i>"]
     ROOT --> V1["v0.4.0/"]
@@ -97,6 +97,32 @@ removes what was already written. So a folder with a snapshot always has the
 other three, and a folder whose record could not be written is left as the
 build left it — not a run, and its number can be used again.
 
+### The subject registry and initials
+
+`participants.tsv` lists every subject once — `participant_id` (`sub-01`),
+the subject's `initials`, and any other columns a lab adds by hand. It sits
+at the unversioned root, because a subject spans versions.
+
+`run` and `test` take the subject's **initials** as well as the subject id:
+`--initials HD` on the command line (prompted for when omitted, like `--sub`
+and `--ses`, and refused when there is no terminal to prompt at), or the
+Initials field in the [experiment workspace](workspace.md). They are 1 to 5
+letters, recorded uppercase; `simulate`, `demo`, `movie` and `measure` take
+them but do not need them. Initials are **recorded, never put in a name**: in
+the registry, the snapshot (`config.info.initials`) and `session.json` — no
+file or folder name carries them. They are a check on the subject number:
+
+- the first session that gives a subject's initials records them;
+- a later session with the same subject id and different initials is
+  refused before a run folder, a database row or any file is written:
+  `sub-01 is recorded as HD; this session says XY — check the subject
+  number`. If the registry is what is wrong, correct its `initials` cell by
+  hand;
+- a subject registered before 2.0, whose row has no initials, has them
+  filled in by the first session that gives them — not refused.
+
+A rehearsal (`test`) checks against the rehearsal root's own registry.
+
 ### The copies are the files, not what ran
 
 `rig.yaml` and `params.yaml` are what the session was *started from*, read
@@ -128,7 +154,7 @@ schema versions in [versioning](versioning.md) §3); a reader gates on it.
   },
   "task": "saccade-bias",
   "mode": "run",
-  "subject": {"id": "01"},
+  "subject": {"id": "01", "initials": "HD"},
   "session": 1,
   "run": 1,
   "seed": 2718281828,
@@ -155,6 +181,7 @@ schema versions in [versioning](versioning.md) §3); a reader gates on it.
 | `experiment.version_source` | Where the version was read: `pyproject.toml`, `installed metadata`, or `given to build_session` (§4). |
 | `experiment.git` | `git describe --always --dirty` of the experiment's repository — the snapshot's `experiment_git_sha`. `-dirty` means the commit alone does not reproduce what ran. |
 | `mode` | `run`, `test` or `simulate`; null for a session built with `build_session` directly. |
+| `subject.initials` | The subject's initials, uppercase; null when the session was not given them (`simulate`, a session started from code). |
 | `rig.name`, `rig.source` | For a rig chosen by name, the name and where it was found; null for a rig given as a path. |
 | `rig.file`, `params_file` | Where the originals were, on the machine that ran the session; null when that layer came from no file. |
 | `files` | Paths relative to the run folder, with forward slashes, so the card still reads right after the folder is moved. A file that was not written (no rig or params file) is null. |
@@ -227,6 +254,12 @@ answered with either: pass `experiment_version=`.
 `<data_root>/v<version>/`. Nothing is moved: runs recorded before 2.0 stay
 where they are, directly under the data root, and are still read (§5).
 `participants.tsv`, `experiment.sqlite3` and training state did not move.
+
+**Initials.** `run` and `test` now need the subject's initials (§2): add
+`--initials AB` to scripted commands, or they are prompted for. A
+`participants.tsv` from before 2.0 gains an `initials` column the first time a
+session gives initials; its existing rows are filled in as their subjects
+come back.
 
 **Before the first 2.0 session:**
 
