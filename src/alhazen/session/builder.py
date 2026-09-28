@@ -522,10 +522,10 @@ def build_session(
         params_file=source_file(given_sources.get("task"), "params"),
     )
 
-    # A database this alhazen cannot write (one from before 2.0's schema) is
-    # refused now, with nobody in the chair, rather than at teardown after
-    # the session — where it failed the run over a file that only needs
-    # moving. Reads only; the mirror itself is written at teardown.
+    # A database from before 2.0's schema is moved aside now (kept, renamed
+    # beside itself, and logged), and one from a newer alhazen refused —
+    # with nobody in the chair, rather than at teardown after the session.
+    # The mirror itself is written at teardown.
     if rig_cfg.database.enabled:
         ExperimentDatabase.for_data_root(rig_cfg.data_root, rig_cfg.database).check_schema()
 

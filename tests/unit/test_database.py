@@ -91,7 +91,7 @@ class TestSchemaCompatibility:
     def stale(self, tmp_path, version=1):
         """A database with the shape alhazen used before `runs.date` existed."""
         path = tmp_path / DATABASE_FILENAME
-        with sqlite3.connect(path) as db:
+        with closing(sqlite3.connect(path)) as db, db:
             db.executescript(
                 """
                 CREATE TABLE schema_info (version INTEGER NOT NULL);
@@ -296,21 +296,47 @@ class TestTheExperimentVersion:
 
 
 class TestTheSchemaIsCheckedBeforeTheSession:
-    """`check_schema` is what the builder asks before a session starts, so a
-    database from before 2.0 is refused with nobody in the chair — not at
-    teardown, where it failed a run the subject had already done."""
+    """`check_schema` is what the builder asks before a session starts, with
+    nobody in the chair. A database from before 2.0 is moved aside and the
+    session starts a new one — refusing it stopped the first 2.0 session on
+    every rig with existing data until someone moved the file by hand, which
+    was all the refusal asked for. One from a newer alhazen is still refused,
+    untouched: this alhazen cannot know what it holds."""
 
-    def test_an_older_database_is_refused_without_being_touched(self, tmp_path):
+    def test_an_older_database_is_moved_aside_intact_and_said_so(self, tmp_path, caplog):
         path = TestSchemaCompatibility().stale(tmp_path, version=2)
+        before = path.read_bytes()
+
+        with caplog.at_level("WARNING", logger="alhazen.session.database"):
+            moved = ExperimentDatabase(path).check_schema()
+
+        assert moved == tmp_path / "experiment.schema2.sqlite3"
+        assert moved.read_bytes() == before, "the old mirror is kept byte for byte"
+        assert not path.exists(), "the session's database starts new"
+        assert "moved aside to experiment.schema2.sqlite3" in caplog.text
+        assert "nothing was lost" in caplog.text
+
+    def test_an_earlier_backup_is_never_overwritten(self, tmp_path):
+        first = TestSchemaCompatibility().stale(tmp_path, version=2)
+        ExperimentDatabase(first).check_schema()
+        kept = (tmp_path / "experiment.schema2.sqlite3").read_bytes()
+        TestSchemaCompatibility().stale(tmp_path, version=2)
+
+        moved = ExperimentDatabase(first).check_schema()
+
+        assert moved == tmp_path / "experiment.schema2-2.sqlite3"
+        assert (tmp_path / "experiment.schema2.sqlite3").read_bytes() == kept
+
+    def test_a_newer_database_is_refused_without_being_touched(self, tmp_path):
+        path = TestSchemaCompatibility().stale(tmp_path, version=SCHEMA_VERSION + 1)
         before = path.read_bytes()
 
         with pytest.raises(DataError) as error:
             ExperimentDatabase(path).check_schema()
 
         message = str(error.value)
-        assert str(path) in message and "schema version 2" in message
-        assert "Move or delete the file" in message
-        assert path.read_bytes() == before
+        assert str(path) in message and f"schema version {SCHEMA_VERSION + 1}" in message
+        assert path.read_bytes() == before and not list(tmp_path.glob("*.schema*"))
 
     def test_no_database_yet_is_fine_and_none_is_made(self, tmp_path):
         ExperimentDatabase(tmp_path / DATABASE_FILENAME).check_schema()

@@ -111,8 +111,20 @@ class ExperimentDatabase:
         """
         return cls(Path(data_root) / DATABASE_FILENAME, config)
 
-    def check_schema(self) -> None:
-        """Refuse a database this alhazen cannot write, before a session starts.
+    def check_schema(self) -> Path | None:
+        """Make sure this alhazen can write the database, before a session starts.
+
+        A database from an OLDER schema (a data folder used by alhazen 1.x) is
+        moved aside, not refused: it is renamed beside itself —
+        ``experiment.schema2.sqlite3`` — and the session starts a new one. The
+        database is a mirror whose record is the run folders beside it (and
+        each subject's training_state.yaml), so nothing is lost, and the old
+        mirror is kept, not deleted, for anyone still querying it. Refusing
+        instead stopped the first 2.0 session on every rig with existing data
+        until someone moved the file by hand, which is all the refusal asked
+        for. The move is logged at WARNING, which reaches the console, and the
+        new path is returned. A database from a NEWER schema is still refused:
+        this alhazen cannot know what that one holds, so it touches nothing.
 
         The mirror is written at teardown, so an old database used to be
         found only after the subject had done the session: the run then
@@ -120,12 +132,14 @@ class ExperimentDatabase:
         builder asks this first, so the refusal (the same words `connect`
         uses) comes with nobody in the chair yet.
 
-        Reads only: a database that does not exist yet is fine — the first
-        session creates it — and nothing is created or written here. Only the
-        version is judged; `connect` still checks the whole shape at write.
+        Apart from that move, reads only: a database that does not exist yet
+        is fine — the first session creates it — and nothing is created or
+        written here. Only the version is judged; `connect` still checks the
+        whole shape at write. Returns where an old database was moved, else
+        None.
         """
         if not self.path.exists():
-            return
+            return None
         try:
             with closing(sqlite3.connect(self.path, timeout=30.0)) as db:
                 has_info = db.execute(
@@ -136,8 +150,11 @@ class ExperimentDatabase:
             raise DataError(
                 f"could not read the experiment database {self.path}: {error}"
             ) from error
-        if row is not None and row[0] != SCHEMA_VERSION:
-            raise DataError(_incompatible_message(self.path, f"schema version {row[0]}"))
+        if row is None or row[0] == SCHEMA_VERSION:
+            return None
+        if isinstance(row[0], int) and row[0] < SCHEMA_VERSION:
+            return _move_aside(self.path, row[0])
+        raise DataError(_incompatible_message(self.path, f"schema version {row[0]}"))
 
     def connect(self) -> sqlite3.Connection:
         """An open connection, schema checked; the caller closes it.
@@ -921,6 +938,42 @@ def _require_expected_shape(db: sqlite3.Connection, path: Path | None) -> None:
     if differing:
         shape = f"a different shape for {', '.join(differing)}"
         raise DataError(_incompatible_message(path, shape))
+
+
+def _move_aside(path: Path, version: int) -> Path:
+    """Rename an older-schema database to ``<stem>.schema<N><suffix>`` beside
+    it (with a counter if that name is taken, so an earlier backup is never
+    overwritten), and say so.
+
+    Only the one file moves. `check_schema` has just read it through an
+    ordinary connection and closed it, and SQLite's clean close folds any
+    write-ahead log left by an unclean shutdown back into the file (and
+    rolls back a hot journal) before removing its -wal/-shm/-journal
+    sidecars, so the file renamed here is the whole database."""
+    target = path.with_name(f"{path.stem}.schema{version}{path.suffix}")
+    counter = 2
+    while target.exists():
+        target = path.with_name(f"{path.stem}.schema{version}-{counter}{path.suffix}")
+        counter += 1
+    try:
+        path.rename(target)
+    except OSError as error:
+        raise DataError(
+            f"{path} was written by alhazen's database schema {version}, older than the "
+            f"{SCHEMA_VERSION} this alhazen writes, and moving it aside to {target.name} "
+            f"failed: {error}. Move it yourself (nothing in it is lost: the run folders "
+            f"beside it are the record) and start the session again."
+        ) from error
+    log.warning(
+        "%s was written by alhazen's database schema %s; this alhazen writes schema %s. "
+        "It was moved aside to %s (kept, not deleted) and this session starts a new one. "
+        "The run folders beside it are the record; nothing was lost.",
+        path,
+        version,
+        SCHEMA_VERSION,
+        target.name,
+    )
+    return target
 
 
 def _incompatible_message(path: Path | None, found: str) -> str:

@@ -23,10 +23,12 @@ mirrored. For the same reason a lookup by numbers (`find_run`,
 `frame_snapshot`) that matches runs of more than one version is refused until
 it names one with `experiment_version=`.
 
-A database written by an older schema is refused — before the session starts,
-by `build_session`, with its path in the message — rather than written to. It
-is a mirror: move it aside and a new one is built from the next session on;
-the run folders are the record.
+A database written by an older schema is moved aside before the session
+starts — renamed beside itself to `experiment.schema<N>.sqlite3`, kept, and
+logged on the console — and the session starts a new one: it is a mirror, and
+the run folders are the record. One written by a *newer* schema is refused,
+untouched, with its path in the message: this alhazen cannot know what it
+holds.
 
 The **date** is part of it because it is part of what makes a run unique on disk: a run
 directory is named for the subject, session and run number only, and it is the

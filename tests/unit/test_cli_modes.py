@@ -230,11 +230,15 @@ class TestARefusalFromWhatIsOnDiskIsReported:
             outcomes = make_outcomes(DONE=dict(completed=True, success=True))
             params_model = DiskParams
 
+        # A database from a NEWER alhazen: still refused (one from an older
+        # schema is moved aside since 2.0.1, so it no longer exercises this).
+        from alhazen.session.database import SCHEMA_VERSION
+
         (tmp_path / "data").mkdir()
         database = tmp_path / "data" / "experiment.sqlite3"
         with sqlite3.connect(database) as db:
             db.execute("CREATE TABLE schema_info (version INTEGER NOT NULL)")
-            db.execute("INSERT INTO schema_info(version) VALUES (2)")
+            db.execute("INSERT INTO schema_info(version) VALUES (?)", (SCHEMA_VERSION + 1,))
 
         code = run_experiment(
             task_class=DiskTask,
@@ -245,7 +249,7 @@ class TestARefusalFromWhatIsOnDiskIsReported:
         assert code == 1
         err = capsys.readouterr().err
         assert err.startswith("CANNOT RUN: ")
-        assert str(database) in err and "schema version 2" in err
+        assert str(database) in err and f"schema version {SCHEMA_VERSION + 1}" in err
         # Refused before a run folder was made.
         assert not list((tmp_path / "data").glob("v*"))
 

@@ -266,11 +266,15 @@ come back.
 1. **Give the experiment a version.** Its `pyproject.toml` needs
    `[project] version = "..."`. A project scaffolded with `alhazen new` has
    `0.1.0` already.
-2. **Move the old database aside.** `experiment.sqlite3` is now schema 3 (a
-   run's version is part of its identity), and a schema 2 file is refused
-   before the session starts, with the path in the message. The database is a
-   mirror — the run folders are the record — so moving it loses nothing; a
-   new one is built from the next session onward.
+2. **Nothing to do for the database.** `experiment.sqlite3` is now schema 3
+   (a run's version is part of its identity). The first 2.0 session finds a
+   schema 2 file, renames it beside itself to `experiment.schema2.sqlite3`
+   (kept, never deleted; a counter is added if that name is taken), says so
+   on the console, and starts a new database. It is a mirror — the run
+   folders and each subject's `training_state.yaml` are the record — so
+   nothing is lost. (2.0.0 refused the old file and asked for this by hand;
+   2.0.1 does it.) A database from a *newer* alhazen is still refused,
+   untouched.
 
 **Scripts and code that change:**
 
