@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import inspect
 import warnings
 
 import pytest
 
-from alhazen._deprecation import deprecated, deprecation_message, warn_deprecated_argument
+from alhazen._deprecation import (
+    deprecated,
+    deprecation_message,
+    warn_deprecated_argument,
+    warn_deprecated_name,
+)
 
 
 class TestMessages:
@@ -60,3 +66,28 @@ class TestDecorator:
         with warnings.catch_warnings():
             warnings.simplefilter("error")
             assert still_supported() is None  # silent when unused
+
+    def test_an_old_spelling_warns_at_the_line_that_wrote_it(self):
+        """warn_deprecated_name, for a name that something else resolves — a
+        module __getattr__, a rig loader, a flag's action. 2.0 removed its
+        last users in alhazen, so this is what keeps the helper tested for
+        the next rename."""
+
+        def resolve(name):
+            if name == "OldName":
+                warn_deprecated_name("OldName", "2.1", "3.0", "NewName")
+            return name
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            line = inspect.currentframe().f_lineno + 1
+            assert resolve("OldName") == "OldName"
+        [warning] = caught
+        assert warning.category is DeprecationWarning
+        assert str(warning.message) == (
+            "OldName is deprecated since alhazen 2.1 and will be removed in 3.0; "
+            "use NewName instead"
+        )
+        # Past the helper and the resolver, to the line that wrote the old
+        # name: the place that has to change.
+        assert (warning.filename, warning.lineno) == (__file__, line)

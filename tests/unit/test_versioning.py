@@ -65,13 +65,25 @@ SOURCE_ROOT = REPO_ROOT / "src" / "alhazen"
 # The helpers in alhazen._deprecation that promise a removal version, and
 # the position `removed_in` takes when it is passed positionally:
 # deprecated(since, removed_in, instead),
-# warn_deprecated_argument(name, since, removed_in, instead) and
-# warn_deprecated_name(name, since, removed_in, instead).
+# warn_deprecated_argument(name, since, removed_in, instead),
+# warn_deprecated_name(name, since, removed_in, instead) and
+# deprecation_message(name, since, removed_in, instead) — the words of the
+# warning alone, for code that calls warnings.warn itself. The engine did
+# that for the bare-string health check, and because this list did not name
+# deprecation_message, that "removed in 2.0" was the one promise a 2.0 bump
+# would not have been stopped by.
 REMOVED_IN_POSITION = {
     "deprecated": 1,
     "warn_deprecated_argument": 2,
     "warn_deprecated_name": 2,
+    "deprecation_message": 2,
 }
+
+# The module that defines the helpers. Inside it they call one another with
+# their own caller's arguments (`deprecation_message(..., removed_in, ...)`),
+# which are variables, not promises; the promise is made at the call site in
+# the rest of the package, which is what the scan reads.
+HELPERS_MODULE = "_deprecation.py"
 
 # `removed_in` as the decorator is written: "2.0", or "2.0.0" in full.
 REMOVED_IN_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\.(0|[1-9]\d*))?$")
@@ -154,6 +166,8 @@ def package_deprecations() -> list[Deprecation]:
     found: list[Deprecation] = []
     for path in files:
         name = path.relative_to(SOURCE_ROOT).as_posix()
+        if name == HELPERS_MODULE:
+            continue
         found += find_deprecations(path.read_text(encoding="utf-8"), name)
     return found
 
@@ -428,6 +442,34 @@ class TestTheDeprecationScan:
             ("fake.py:6", None),
         ]
         assert [release_numbers(d.removed_in) for d in found] == [None, None]
+
+    def test_a_warning_built_by_hand_is_read_too(self):
+        # The shape the engine's bare-string health check used until 2.0:
+        # warnings.warn with deprecation_message's words, by keyword and by
+        # position. Missed by the scan before, so its 2.0 promise could ship.
+        source = (
+            "import warnings\n"
+            "from alhazen._deprecation import deprecation_message\n"
+            "def check(answer):\n"
+            "    warnings.warn(deprecation_message('a', since='1.6', removed_in='2.0'))\n"
+            "    warnings.warn(deprecation_message('b', '1.6', '3.0', 'c'))\n"
+        )
+        found = find_deprecations(source, "fake.py")
+        assert [(d.where, d.removed_in) for d in found] == [
+            ("fake.py:4", "2.0"),
+            ("fake.py:5", "3.0"),
+        ]
+
+    def test_the_package_scan_skips_only_the_helpers_own_module(self):
+        # Inside _deprecation.py the helpers pass their caller's removed_in
+        # on as a variable, which would read as an unreadable promise. Every
+        # other module is scanned, and that module does exist to be skipped.
+        assert (SOURCE_ROOT / HELPERS_MODULE).is_file()
+        scanned_helpers = find_deprecations(
+            (SOURCE_ROOT / HELPERS_MODULE).read_text(encoding="utf-8"), HELPERS_MODULE
+        )
+        assert scanned_helpers and all(d.removed_in is None for d in scanned_helpers)
+        assert not [d for d in package_deprecations() if d.where.startswith(HELPERS_MODULE)]
 
     def test_short_and_full_versions_read_the_same(self):
         assert release_numbers("2.0") == release_numbers("2.0.0") == (2, 0, 0)

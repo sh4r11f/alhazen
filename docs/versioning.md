@@ -134,7 +134,7 @@ is removed in the next MAJOR:
 from alhazen._deprecation import deprecated
 
 
-@deprecated(since="1.1", removed_in="2.0", instead="Task.build_trial")
+@deprecated(since="2.1", removed_in="3.0", instead="Task.build_trial")
 def old_thing(target):
     return target
 ```
@@ -142,13 +142,20 @@ def old_thing(target):
 The warning names the version it goes away in and what to use instead, because
 one that says only "deprecated" leaves the reader exactly where they started.
 For a single argument on a function that still exists, use
-`warn_deprecated_argument` from inside the function.
+`warn_deprecated_argument` from inside the function; for an old spelling that
+something resolves (a module path, a rig-file key, a flag),
+`warn_deprecated_name` from the place that resolves it.
 
-`tests/unit/test_versioning.py` reads every `removed_in` out of the source and
-fails if one is not a MAJOR release, or if `pyproject.toml` has already reached
-it. So bumping to 2.0.0 fails until the names it removes are gone, and no
-warning names a release that has already shipped — `pause_menu` said "removed
-in 1.2" from 1.1 through 1.5.
+`tests/unit/test_versioning.py` reads every `removed_in` out of the source —
+from a call to any of those helpers, or to `deprecation_message` when code
+builds the warning itself — and fails if one is not a MAJOR release, or if
+`pyproject.toml` has already reached it. So bumping to a MAJOR fails until the
+names it removes are gone, and no warning names a release that has already
+shipped — `pause_menu` said "removed in 1.2" from 1.1 through 1.5.
+
+2.0 was the first MAJOR to do this: it removed everything 1.x deprecated. The
+list, each name with its replacement, is under "Removed" in the changelog's
+2.0 section.
 
 ## 5. Cutting a release
 
