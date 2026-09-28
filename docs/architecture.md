@@ -37,10 +37,14 @@ src/alhazen/
 ├── modes/          # the six ways to start an experiment (docs/modes.md)
 ├── session/        # SessionRunner, build_session, DataRecorder, the pause menu,
 │                   #   eyetracker.py (the session's calibration/validation/drift
-│                   #   results and live monitor panels), check_rig; the runner's
+│                   #   results and live monitor panels), check_rig, identity.py (a
+│                   #   run's session.json and file copies); the runner's
 │                   #   internal parts: streaks.py, reward_payer.py, pause_control.py
-├── config/         # pydantic models (extra=forbid, frozen), YAML loader, snapshot writer
-├── data/           # naming, SessionPaths, manifest, participants registry, percents
+├── config/         # pydantic models (extra=forbid, frozen), YAML loader, snapshot writer,
+│                   #   rigs.py (rig names, the shared rigs, `extends`; §12),
+│                   #   experiment.py (which experiment and version a task belongs to)
+├── rigs/           # the shared rig files: package data, not a Python package
+├── data/           # naming, SessionPaths and find_runs, manifest, participants registry, percents
 │                   #   (a measured fraction written beside its threshold, §10.2),
 │                   #   atomic (replace a file whole)
 ├── live_monitor/   # isolated local HTTP process, panel statistics, and the browser page
@@ -52,12 +56,10 @@ src/alhazen/
 
 Layering is enforced by import-linter (pyproject `[tool.importlinter]`),
 top to bottom: `cli` → `modes` → `session | testing | analysis` → `training` →
-`task` → `dashboard` → `live_monitor` → `paradigms | devices` → `core | neural` →
+`task` → `live_monitor` → `paradigms | devices` → `core | neural` →
 `stimuli | scenes` → `display` → `config | data | _scaffold` →
 `_deprecation`. Imports point only downward; `errors` and `version` sit
-outside the contract. `dashboard` is the live monitor's pre-1.9 import path — a
-warning re-export that goes in 2.0 — with a line above `live_monitor` because it
-imports it. `_deprecation`, the `@deprecated` decorator, is a single
+outside the contract. `_deprecation`, the `@deprecated` decorator, is a single
 module with a line of its own at the bottom, so that every layer may import it
 while it imports nothing else from alhazen. `neural` shares core's line so
 that both the device layer (live, during a session) and
@@ -82,9 +84,24 @@ package remains the session monitor, with its own pause-only controls. See
 Parameter dropdowns read the task's Pydantic schema through an isolated
 `cli/workspace_schema.py` subprocess in the project's interpreter. The server
 does not import task modules itself. Rig measurement omits task parameters.
+The subject's initials are checked on the page and again by the launcher
+with the command line's own rule (`config.models.normalize_initials`, whose
+sentence `workspace.js` repeats and a test holds equal), then passed as
+`--initials`; the run record keeps subject, session and initials for the
+history.
 `cli/console_break.py` makes a Windows console break — how the workspace stops
 a child — raise the same `KeyboardInterrupt` as Ctrl+C, so a stopped session
 still tears down; `_run_session` and the workspace server both arm it.
+The Rig menu is the command line's rig list (`config/rigs.py`, §12), with the
+shared half taken from the *project's* alhazen: registering a project asks its
+interpreter which shared rigs it ships, the record keeps their files, and the
+workspace merges an `extends` over exactly those files — for the summary, and
+for the merged `rig.yaml` a run folder keeps. The child is the project's
+alhazen, not the workspace's, so the workspace speaks each child's version:
+`--no-dashboard-browser` to one before 1.9 (`no_browser_flag`), and a rig's
+pre-1.9 `dashboard:` section, which 2.0 refuses, read as `live_monitor:` by
+the check before a launch when the project's alhazen is 1.x and still reads
+it (`_as_the_project_reads_it`; `config.loader.validate_rig` is that check).
 
 Three placements carry the weight:
 
@@ -117,7 +134,8 @@ command source, and the bus:
 2. run per-frame health checks (today one: "is the tracker still recording,
    and still delivering" — §4.3). A check returns None, or a `HealthFault`:
    the reason, and what the device said about it (a bare reason string, the
-   1.5.0 shape, still works but warns: it goes in 2.0). A failed check is a **system fault** — a device stopped,
+   1.5.0 shape, is refused since 2.0 with a TypeError naming the check). A
+   failed check is a **system fault** — a device stopped,
    which is never the subject's doing — and its reason (`tracker_stopped`) is
    written as the row's `fault`, its words as `fault_detail` (§2.2). A check
    runs every frame, so it must not make a round trip to its device on the
@@ -699,7 +717,7 @@ flowchart TB
     EX -- yes --> LOAD
     EX -- no --> STOP["INVALID, naming the path;<br/>nothing runs"]
     P2 -- None --> DEF["the params model's defaults<br/>(said before trial one)"]
-    LOAD --> WHO["settle subject and session:<br/>flags, the prompt, or simulate's sim / 1"]
+    LOAD --> WHO["settle subject, session, initials:<br/>flags, the prompt, or simulate's sim / 1"]
     DEF --> WHO
     WHO --> H{"run.py passed<br/>params_hook?"}
     H -- yes --> HR["run.py's hook"]
@@ -717,7 +735,10 @@ Three details carry the weight. **Precedence**: an explicit `--params`, then
 chaining with it, so a `run.py` written before the hooks does exactly what it
 did. **Order**: the subject and session are settled before the hook runs
 (`_settle_subject_and_session`), because deriving params from them is what a
-hook is for — it used to run first, so a subject typed at the prompt reached
+hook is for (the subject's initials are settled there too: required in `run`
+and `test`, the modes that name a real subject, prompted at a terminal and
+refused without one, like the subject and session; §10 says what they are
+checked against) — it used to run first, so a subject typed at the prompt reached
 it as `None` and a search state was filed under `sub-None`. The params file is
 still loaded and checked before anyone is asked anything. **Record**:
 `args.params` is set to the file that was loaded, so the snapshot's
@@ -1360,6 +1381,11 @@ are no longer judged, but its demotion criteria still are.
 
 `<data_root>/sub-<ID>/training_state.yaml` holds the stage, completed counts
 per stage, the window, and every transition with its timestamp and session.
+It sits at the unversioned data root, beside `participants.tsv`, not under a
+`v<version>/` folder: an animal's training spans versions of the protocol.
+Each transition names its run with the version in front
+(`v0.5.0/ses-001_run-01`), because the same numbers can name one run per
+version.
 Plain YAML on purpose: an experimenter who needs to put an animal back a
 stage on a Monday morning should be able to do it with a text editor. A
 missing file is a first session, which starts at the curriculum's first stage.
@@ -1666,8 +1692,10 @@ Both are *mirrors*: the run directory stays the record, and neither is
 allowed to become one.
 
 **`session/database.py`** mirrors each run into one SQLite file per
-experiment (`data_root/experiment.sqlite3`), so a question about a whole
-season is a query rather than a directory walk. It lives under `session/`
+experiment (`data_root/experiment.sqlite3`, at the unversioned root, holding
+every version's runs — each carries its `experiment_version`, which leads its
+`run_id`), so a question about a whole season is a query rather than a
+directory walk. It lives under `session/`
 rather than `data/` because it speaks a session's whole vocabulary —
 `SessionConfig`, `InputFrame`, `FrameRecord` — and those sit above `data/`,
 which is pure disk and knows nothing about trials. Schema, run-id shape and
@@ -1727,20 +1755,45 @@ every backend precisely so a backend cannot quietly reach for
 
 ## 10. Sessions, data, reproducibility
 
-`build_session(...)` wires everything; `SessionRunner.run()` then:
+`build_session(...)` wires everything. Before it opens anything it settles
+**which experiment and version** the run is filed under
+(`config/experiment.py` `session_experiment`: the one a mode found, a version
+given explicitly, or the `pyproject.toml` above the task's class — and a
+session with none of them is refused), reads the rig and params files the
+session was started from for their byte copies (`session/identity.py`
+`source_file`), and refuses an experiment database whose schema it cannot
+write (`ExperimentDatabase.check_schema`). The run folder is then made under
+`<data_root>/v<version>/` ([data on disk](data.md)). `SessionRunner.run()`
+then:
 
-1. writes `config_snapshot.yaml` **before trial 1** (a crashed session still
-   documents itself) — merged config + seed + versions + an environment
-   digest (sha256 over installed distributions) + both git trees, the
-   experiment's (`experiment_git_sha`) and alhazen's own
-   (`alhazen_git_describe`). The experiment's tree is the one holding the
+1. writes the run's record of itself **before trial 1**, all or none
+   (`session/identity.py` `write_run_identity`): byte copies of the rig and
+   params files (`rig.yaml`, `params.yaml`), the compact identity card
+   `session.json`, and last `config_snapshot.yaml` (a crashed session still
+   documents itself) — merged config + seed + the experiment and version
+   (`experiment_name`, `experiment_version`, `experiment_version_source`) +
+   versions + an environment digest (sha256 over installed distributions) +
+   both git trees, the experiment's (`experiment_git_sha`) and alhazen's own
+   (`alhazen_git_describe`). One reading of that provenance serves both the
+   snapshot and `session.json`. The experiment's tree is the one holding the
    task class's source file (or, with no task, the trial builder's), not
    the folder the session was started from. Both are read with
    `git describe --always --dirty`, so a session run from uncommitted changes to tracked files says
    `-dirty` rather than naming a commit that would not reproduce it; where
    there is no answer they read `not a source checkout` (not in a git
-   repository) or `unknown` (git absent or not answering);
-2. registers the subject in `participants.tsv`;
+   repository) or `unknown` (git absent or not answering). Every trial row
+   is stamped with `experiment_version`, and so are the manifest and the
+   database row;
+2. registers the subject in `participants.tsv`, at the unversioned data root,
+   with the subject's initials when the session was given them (`--initials`;
+   required in `run` and `test`). The first session that names a subject's
+   initials records them; one that gives the same subject id with other
+   initials is refused by `build_session` before anything is written
+   (`data/participants.py` `check_participant`: "sub-01 is recorded as HD;
+   this session says XY — check the subject number"), and a row from before
+   2.0 with no initials has them filled in. Initials are recorded — in the
+   snapshot (`config.info.initials`), `session.json` and the registry — and
+   never put in a file or folder name;
 3. loops: `source.next()` → build → engine → `source.record()` for **every**
    outcome (schedulers own re-queueing) → recorder row for every outcome
    except `PAUSED` (which produced no measurement — its events still land in
@@ -1842,15 +1895,27 @@ not finish — is written just before the log closes, so the log's last
 verdict agrees with the database. Only the steps after the log closes (the
 manifest, the database row) cannot be reported in it.
 
-On-disk layout per run (see `data/paths.py`; overwriting an existing run's
-trials file is refused):
+On-disk layout per run (see `data/paths.py`; a run folder that already
+holds any file is refused; [data on disk](data.md) says what each file is
+for, how the version is found and when to bump it):
 
 ```
-<data_root>/participants.tsv
-<data_root>/sub-<ID>/ses-<NNN>/run-<NN>_task-<name>/
+<data_root>/participants.tsv          every subject, across versions
+<data_root>/experiment.sqlite3        the mirror of every run of every version
+<data_root>/sub-<ID>/training_state.yaml
+<data_root>/v<version>/sub-<ID>/ses-<NNN>/run-<NN>_task-<name>/
+  ├── session.json   config_snapshot.yaml   rig.yaml   params.yaml
   ├── sub-.._ses-.._run-.._task-.._<YYYYMMDD>_{trials,events,frames}.csv
-  ├── config_snapshot.yaml   session.log   manifest.yaml   figures/
+  ├── session.log   manifest.yaml   figures/
 ```
+
+The version level is alhazen 2.0's: data recorded by two versions of an
+experiment's protocol never share a folder, and run numbers count within a
+version (`modes.session.next_run`). What spans versions — the subject
+registry, the database, training state — stays at the unversioned root.
+Runs recorded before 2.0 sit directly under the root and are still read:
+`data.paths.find_runs` lists both layouts, and every reader handed a run
+folder (`load_run`, `alhazen report`) is unchanged.
 
 Randomness: one resolved seed → `SeedSequence.spawn` into named streams
 (`core/rng.STREAMS`, append-only) — scheduler and task never share bits;
@@ -1877,7 +1942,6 @@ flowchart LR
     SRC["instructions.md<br/>(hard-wrapped)"] --> RUN["SessionRunner"]
     RUN -->|"show_message(text)"| BE["display backend"]
     CAL["TRACKPixx3: Calibration FAILED<br/>(two paragraphs)"] -->|"show_message(text)"| BE
-    PM["deprecated pause_menu seam<br/>(key rows)"] -->|"show_message(text, reflow=False)<br/>only if it takes reflow"| BE
     BE -->|"reflow=True"| RF["display.text.reflow<br/>(pure string work)"]
     RF --> LAY["layout: wrap at the measure,<br/>size the box, shrink if too tall"]
     BE -->|"reflow=False"| LAY
@@ -1902,12 +1966,11 @@ Reflow is on by default because nearly every message is prose. Text whose
 every break is meaningful can pass `reflow=False` and is drawn exactly as
 given. **Framework code never passes `reflow=` to a backend it did not build
 itself**, so a display backend written before the argument existed, taking
-the text alone, keeps working. The two messages with deliberate breaks get
+the text alone, keeps working. The message with deliberate breaks gets
 them another way: the TRACKPixx3's calibration-failed notice is two
-paragraphs (what happened, then what to do), which reflow keeps apart; the
-deprecated `pause_menu` seam, whose unindented key rows would otherwise run
-together, passes `reflow=False` only to a `show_message` whose signature
-takes it. The real pause menu goes through `show_menu`, which never reflows.
+paragraphs (what happened, then what to do), which reflow keeps apart. The
+pause menu, whose unindented key rows reflow would run together, goes
+through `show_menu`, which never reflows.
 The built-in backends take the argument the same way — keyword-only, default
 `True` — and the ones with no screen keep it: `SimulatedDisplay` and
 `testing.FakeDisplay` record `(text, reflow)` in `message_calls`, and the
@@ -1991,8 +2054,9 @@ parallel implementation is a tool whose OK means nothing.
 | | |
 |---|---|
 | `alhazen new <name>` | scaffold an experiment package: a Task, two rig configs, a task config, tests and a runner. Its tests pass and its session runs before anything is edited |
-| `alhazen run --task ...` | run one session of an installed task, found through the `alhazen.tasks` entry-point group; picks the next free run number, prompts for subject and session if omitted, runs the task's own params file when `--params` is not given, applies its params hook, and shows the subject its instructions (§5.1). An experiment's `run.py` starts the same session through the same dispatch |
+| `alhazen run --task ...` | run one session of an installed task, found through the `alhazen.tasks` entry-point group; picks the next free run number (within the experiment's version), prompts for subject, session and — in `run` and `test` — the subject's initials if omitted, runs the task's own params file when `--params` is not given, applies its params hook, and shows the subject its instructions (§5.1). An experiment's `run.py` starts the same session through the same dispatch |
 | `alhazen validate --rig` | is this config file well-formed? |
+| `alhazen rigs` | which rigs can `--rig` name from here, whose is each, and what does each extend? |
 | `alhazen check-rig --rig` | is this rig actually wired? Constructs the real backends; `--pulse` fires the pump and the sync lines |
 | `alhazen sim-sorter` | publish the sorted-spike wire contract, so `check-rig` can be rehearsed with no sorter and no probe; `--fault` publishes a named non-conformance instead |
 | `alhazen calibrate ruler\|gamma` | draw a bar of a known angular size on the rig's own display and say what it should measure; fit and store a gamma curve from photometer readings |
@@ -2038,7 +2102,32 @@ numbers from the ones just written, so a stale file under the same name is
 found at registration rather than by the next window. `monitor.name` is the
 rig file's stem unless the file says otherwise (`load_rig`): a rig file is
 one machine, and two files sharing PsychoPy's one default name would
-overwrite each other's geometry.
+overwrite each other's geometry. For a file that extends a shared rig the stem
+is the experiment file's: it names the machine.
+
+**A rig is named, not pathed.** alhazen ships the machines several
+experiments share (`alhazen/rigs/`), and `--rig lab` — like `run_experiment`'s
+`default_rig="lab"` — finds the experiment's own `configs/**/rig-lab.yaml`
+first and alhazen's shared one otherwise; `alhazen/lab` is always the shared
+one, and a path is still that file ([Rigs](rigs.md)). The lookup is one
+function in the config layer, `config/rigs.resolve_rig`, which every command
+calls, because a second implementation in the workspace or a mode would be a
+second answer to "which file is lab". "The experiment" is the task's: the
+folder holding its `pyproject.toml` (`config/experiment.find_experiment`),
+found only when a name needs it, so a `--rig` path keeps working for a task
+with none; without a task it is the current folder.
+
+An experiment rig may say `extends: <shared name>` and only what differs;
+`load_rig` merges it over the shared file (sections key by key, anything else
+replaced) and validates the result as one rig, so everything below the loader
+sees a whole `RigConfig` and nothing else needs to know. Only shared rigs can
+be extended and they extend nothing: what a rig builds on is one file, the
+same wherever alhazen is installed. A shared rig names no events, because a
+session refuses a rig naming an event its task does not declare; each
+experiment adds its own. And what is measured on a shared rig's machine — a
+gamma fit, measure mode's reports — is kept where the experiment's own file of
+that name would be, not inside alhazen's installation, which a reinstall
+replaces.
 
 The two then have one rule each. **The config owns the geometry**: every
 degree goes through `Screen`, which reads the config, so a registration that

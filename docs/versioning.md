@@ -85,11 +85,24 @@ in `tests/fixtures/contracts.json`.
 | --- | --- | --- |
 | **`core.rng.STREAMS`** | Append-only. Never remove, never reorder. | `spawn_streams` splits the session seed by a name's *position*, so a reorder changes what every past seed produces. Re-running a study's own seed would give different trials, with nothing to say why. |
 | **`RESERVED_EVENTS`** | May gain names, never lose them. | An analysis reads these names out of data recorded years earlier. |
-| **The run-directory layout** | File names, column meanings, manifest and snapshot formats change only in a MAJOR version, with a documented migration. | Every script anyone wrote to find a run's trials file. |
+| **The run-directory layout** | The folder levels (`v<version>/sub-<ID>/ses-<NNN>/run-<NN>_task-<name>/`), file names, column meanings, and the manifest, snapshot and `session.json` formats change only in a MAJOR version, with a documented migration. | Every script anyone wrote to find a run's trials file. |
 
 Adding to any of them is normal: append the stream, add the event, and update
 `tests/fixtures/contracts.json` in the same commit. A test failing on a
 *removal* is the contract doing its job.
+
+**2.0 changed the layout, on purpose.** Every run now sits under the version
+of the experiment that recorded it (`<data_root>/v<version>/sub-...`), so
+data from two versions of a protocol never share a folder; a run folder
+gained `session.json` and byte copies of its rig and params files; the trials
+table gained an `experiment_version` column; the manifest and the database
+record the version; the live monitor's two saved files took the name 1.9 gave
+the monitor (`figures/live_monitor.html` and `figures/live_monitor_state.json`,
+were `dashboard.html` and `dashboard_state.json`). The baseline was updated
+in the same changes, with the folder levels pinned beside the file names
+(`run_folder`), and the two saved files pinned with them. What moved, how
+runs recorded before 2.0 are still read, and what a script that globbed
+`data/sub-*` must change: [data on disk](data.md) §6.
 
 ### On-disk schema versions
 
@@ -100,9 +113,10 @@ make new files claim to be an older format and sail past the readers' checks.
 
 | Format | Declared in | Now |
 | --- | --- | --- |
-| Experiment database | `session/database.py` (`SCHEMA_VERSION`) | 2 |
+| Experiment database | `session/database.py` (`SCHEMA_VERSION`) | 3 |
 | Results bundle manifest | `analysis/results.py` (`SCHEMA_VERSION`) | 1 |
-| Run manifest | `data/manifest.py` (`MANIFEST_SCHEMA_VERSION`) | 1 |
+| Run manifest | `data/manifest.py` (`MANIFEST_SCHEMA_VERSION`) | 2 |
+| Run identity card (`session.json`) | `session/identity.py` (`SESSION_JSON_SCHEMA_VERSION`) | 1 |
 | Recording pointer | `devices/recording.py` (`POINTER_SCHEMA_VERSION`) | 1 |
 | Training state | `training/state.py` (`SCHEMA_VERSION`) | 1 |
 | Scene format | `scenes/model.py` (`SUPPORTED_VERSION`) | 1 |
@@ -120,7 +134,7 @@ is removed in the next MAJOR:
 from alhazen._deprecation import deprecated
 
 
-@deprecated(since="1.1", removed_in="2.0", instead="Task.build_trial")
+@deprecated(since="2.1", removed_in="3.0", instead="Task.build_trial")
 def old_thing(target):
     return target
 ```
@@ -128,13 +142,20 @@ def old_thing(target):
 The warning names the version it goes away in and what to use instead, because
 one that says only "deprecated" leaves the reader exactly where they started.
 For a single argument on a function that still exists, use
-`warn_deprecated_argument` from inside the function.
+`warn_deprecated_argument` from inside the function; for an old spelling that
+something resolves (a module path, a rig-file key, a flag),
+`warn_deprecated_name` from the place that resolves it.
 
-`tests/unit/test_versioning.py` reads every `removed_in` out of the source and
-fails if one is not a MAJOR release, or if `pyproject.toml` has already reached
-it. So bumping to 2.0.0 fails until the names it removes are gone, and no
-warning names a release that has already shipped — `pause_menu` said "removed
-in 1.2" from 1.1 through 1.5.
+`tests/unit/test_versioning.py` reads every `removed_in` out of the source —
+from a call to any of those helpers, or to `deprecation_message` when code
+builds the warning itself — and fails if one is not a MAJOR release, or if
+`pyproject.toml` has already reached it. So bumping to a MAJOR fails until the
+names it removes are gone, and no warning names a release that has already
+shipped — `pause_menu` said "removed in 1.2" from 1.1 through 1.5.
+
+2.0 was the first MAJOR to do this: it removed everything 1.x deprecated. The
+list, each name with its replacement, is under "Removed" in the changelog's
+2.0 section.
 
 ## 5. Cutting a release
 

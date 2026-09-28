@@ -46,7 +46,7 @@ fails on you:
 Imports point only downward:
 
 ```
-cli → modes → session | testing | analysis → training → task → dashboard → live_monitor
+cli → modes → session | testing | analysis → training → task → live_monitor
     → paradigms | devices → core | neural → stimuli | scenes → display
     → config | data | _scaffold → _deprecation
 ```

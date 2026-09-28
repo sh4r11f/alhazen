@@ -33,9 +33,11 @@ from alhazen.paradigms.config import SchedulerConfig
 
 # What a rehearsal root is called, appended to the real one's directory name.
 # A sibling rather than a subdirectory of ``data_root``: an analysis that
-# globs ``data_root/sub-*`` finds nothing of a rehearsal either way, but a
+# walks ``data_root`` for runs (``data.paths.find_runs``, a glob of
+# ``data_root/v*/sub-*``) finds nothing of a rehearsal either way, but a
 # sibling is also obvious in a file listing, and a directory nobody can see is
-# a directory somebody eventually analyses by accident.
+# a directory somebody eventually analyses by accident. Inside it the layout is
+# the real root's, version folders and all.
 REHEARSAL_SUFFIX = "-rehearsal"
 
 # Generic over the params model, so a reduced AmodalAveragingParams is still

@@ -1,13 +1,21 @@
 """Filename and directory naming conventions.
 
-BIDS-inspired, not BIDS-compliant: ``sub-<ID>/ses-<NNN>/run-<NN>_task-<name>/``
-with per-file basenames ``sub-<ID>_ses-<NNN>_run-<NN>_task-<name>_<YYYYMMDD>``.
+BIDS-inspired, not BIDS-compliant:
+``v<version>/sub-<ID>/ses-<NNN>/run-<NN>_task-<name>/`` with per-file
+basenames ``sub-<ID>_ses-<NNN>_run-<NN>_task-<name>_<YYYYMMDD>``. The first
+level is the experiment's version (alhazen 2.0): data recorded by two
+versions of an experiment's protocol never share a folder. Before 2.0 the
+layout started at ``sub-<ID>/``; `parse_version_dirname` is what lets a reader
+tell the two apart.
+
 Zero-padding widths are fixed so directories sort correctly as plain strings.
-Validation of the segments themselves lives in `SessionInfo` (config/models);
-these helpers only format already-validated values — and read one back
-(`parse_run_dirname`, for numbering the next run). Code that builds or reads
-these names goes through here rather than spelling ``f"ses-{n:03d}"`` out
-again, so the layout has one definition.
+Validation of the segments themselves lives upstream — the subject and task
+in `SessionInfo` (config/models), the version in `find_experiment`
+(config/experiment) — and these helpers only format already-validated values,
+and read some back (`parse_run_dirname` for numbering the next run,
+`parse_version_dirname` for finding runs in both layouts). Code that builds or
+reads these names goes through here rather than spelling ``f"ses-{n:03d}"``
+out again, so the layout has one definition.
 """
 
 from __future__ import annotations
@@ -20,7 +28,31 @@ import re
 # `run_dirname` never writes. No "_task-" is required after the number: a
 # folder named just "run-07" is still somebody's run 7, and not counting it
 # would hand the number 7 out again.
-_RUN_DIRNAME = re.compile(r"run-([0-9]+)(?:_.*)?")
+_RUN_DIRNAME = re.compile(r"run-([0-9]+)(?:_task-(.+)|_.*)?")
+
+# A version folder's name as `version_dirname` writes it: "v", then the
+# characters config/experiment.py's VERSION_PATTERN lets a version have. The
+# pattern is repeated rather than imported because config and data are
+# independent layers; a version this cannot read back is one find_experiment
+# already refused, so the two cannot disagree about a folder alhazen wrote.
+_VERSION_DIRNAME = re.compile(r"v([0-9A-Za-z][0-9A-Za-z.+_-]*)")
+
+
+def version_dirname(version: str) -> str:
+    """The folder a version's data lives in: ``v0.4.0`` for version 0.4.0.
+
+    The ``v`` keeps the folder from looking like a number to a person or a
+    sorting tool, and is what tells a version folder from a pre-2.0 subject
+    folder (``sub-...``) at the top of a data root.
+    """
+    return f"v{version}"
+
+
+def parse_version_dirname(name: str) -> str | None:
+    """The version a folder name holds (``v0.4.0`` -> ``0.4.0``); None when
+    the name is not a version folder (``sub-01``, ``participants.tsv``)."""
+    match = _VERSION_DIRNAME.fullmatch(name)
+    return match.group(1) if match else None
 
 
 def subject_dirname(subject: str) -> str:
@@ -44,6 +76,14 @@ def parse_run_dirname(name: str) -> int | None:
     """
     match = _RUN_DIRNAME.fullmatch(name)
     return int(match.group(1)) if match else None
+
+
+def parse_run_task(name: str) -> str | None:
+    """The task a run directory's name holds (``run-02_task-mib-quest`` ->
+    ``mib-quest``); None for a name with no task segment (``run-07``) or one
+    that is not a run directory at all."""
+    match = _RUN_DIRNAME.fullmatch(name)
+    return match.group(2) if match else None
 
 
 def base_name(subject: str, session: int, run: int, task_name: str, date_yyyymmdd: str) -> str:

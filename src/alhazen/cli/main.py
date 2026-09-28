@@ -4,6 +4,7 @@
     alhazen run --task ...    run one session of an installed task
     alhazen validate --rig    is this config file well-formed?
     alhazen check-rig --rig   is this rig actually wired? (before the subject)
+    alhazen rigs              which rigs --rig can name here, and whose each is
     alhazen sim-sorter        stand in for the real-time spike sorter (no rig)
     alhazen calibrate ...     verify the monitor's geometry and gamma
     alhazen monitor ...       tell PsychoPy about this rig's monitor
@@ -27,14 +28,23 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from alhazen._deprecation import warn_deprecated_name
 from alhazen.cli.console_break import interrupt_on_console_break
 from alhazen.config.loader import load_rig
-from alhazen.errors import AlhazenError, ConfigError
+from alhazen.config.models import normalize_initials
+from alhazen.config.rigs import list_rigs, local_rig_file, resolve_rig, rig_extends
+from alhazen.errors import AlhazenError, ConfigError, DataError
 from alhazen.modes import Mode, flag_refusal
 from alhazen.session.checks import check_rig, format_result
 from alhazen.testing.sorter import FAULTS
 from alhazen.version import get_version
+
+# What --rig takes, worded once for every subcommand that has one, so that no
+# --help says "path" while the flag also takes a name.
+RIG_HELP = (
+    "the rig: a name, such as lab (the experiment's configs/rig-lab.yaml, else "
+    "alhazen's shared one; alhazen/lab is always the shared one), or the path to a "
+    "rig YAML file. `alhazen rigs` lists the names"
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -43,7 +53,15 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command")
 
     validate = sub.add_parser("validate", help="validate a config file")
-    validate.add_argument("--rig", required=True, help="path to a rig YAML file")
+    validate.add_argument("--rig", required=True, help=RIG_HELP)
+
+    rigs = sub.add_parser("rigs", help="list the rigs --rig can name, and whose each one is")
+    rigs.add_argument(
+        "--project",
+        default=None,
+        metavar="PATH",
+        help="the experiment's folder, holding configs/ (default: the current folder)",
+    )
 
     new = sub.add_parser("new", help="scaffold a new experiment package")
     new.add_argument("name", help="package name, e.g. saccade_bias")
@@ -68,13 +86,13 @@ def main(argv: list[str] | None = None) -> int:
     ruler = calibrate_sub.add_parser(
         "ruler", help="what a known angular size should measure on the panel"
     )
-    ruler.add_argument("--rig", required=True)
+    ruler.add_argument("--rig", required=True, help=RIG_HELP)
     ruler.add_argument("--dva", type=float, default=10.0, help="the bar's size in degrees")
     ruler.add_argument(
         "--windowed", action="store_true", help="bordered window rather than fullscreen"
     )
     gamma = calibrate_sub.add_parser("gamma", help="fit a gamma curve from photometer measurements")
-    gamma.add_argument("--rig", required=True)
+    gamma.add_argument("--rig", required=True, help=RIG_HELP)
     gamma.add_argument(
         "--measurements", required=True, help="CSV with 'level' and 'luminance' columns"
     )
@@ -84,11 +102,11 @@ def main(argv: list[str] | None = None) -> int:
     monitor_register = monitor_sub.add_parser(
         "register", help="write the rig's monitor into PsychoPy's monitor database"
     )
-    monitor_register.add_argument("--rig", required=True, help="path to a rig YAML file")
+    monitor_register.add_argument("--rig", required=True, help=RIG_HELP)
     monitor_show = monitor_sub.add_parser(
         "show", help="compare a rig's monitor with what PsychoPy has stored"
     )
-    monitor_show.add_argument("--rig", required=True, help="path to a rig YAML file")
+    monitor_show.add_argument("--rig", required=True, help=RIG_HELP)
     monitor_sub.add_parser("list", help="every monitor PsychoPy knows on this machine")
 
     report = sub.add_parser("report", help="summarise a finished run, and align it to a recording")
@@ -106,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     check = sub.add_parser("check-rig", help="smoke-test a rig's devices before a session")
-    check.add_argument("--rig", required=True, help="path to a rig YAML file")
+    check.add_argument("--rig", required=True, help=RIG_HELP)
     check.add_argument(
         "--pulse",
         action="store_true",
@@ -193,19 +211,120 @@ def _dashboard(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
         return 1
 
 
+def _experiment_root(task_class: Any = None) -> Callable[[], Path]:
+    """Where a rig name is looked for among the experiment's own rigs — found
+    only when a name needs it (``alhazen.config.rigs.ExperimentRoot``).
+
+    With a task (``alhazen run --task``, an experiment's ``run.py``) it is the
+    experiment the task's code belongs to, the folder holding its
+    pyproject.toml (``alhazen.config.experiment``), wherever the command is
+    typed: ``--rig lab`` from a terminal in another folder still finds that
+    experiment's lab. With no task — validate, check-rig, calibrate, monitor,
+    rigs, and measure mode from ``alhazen run`` — it is the current folder,
+    which is where a relative ``--rig`` path is read from too. A task installed
+    from a wheel has no folder of its own, and the current folder stands in.
+
+    Lazy because finding the experiment reads its pyproject.toml, and a
+    ``--rig`` given as a path must keep working for a task that has none.
+    """
+
+    def root() -> Path:
+        if task_class is not None:
+            from alhazen.config.experiment import find_experiment
+
+            found = find_experiment(task_class).root
+            if found is not None:
+                return found
+        return Path.cwd()
+
+    return root
+
+
 def _validate(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     """Is this rig file well-formed? Loads it exactly as a session would."""
     try:
-        rig = load_rig(args.rig)
+        ref = resolve_rig(args.rig, _experiment_root())
+        rig = load_rig(ref.path)
+        # Loaded already, so this second read cannot fail on the file itself;
+        # it is what lets the line say the file is not the whole rig.
+        base = rig_extends(ref.path)
     except ConfigError as e:
         print(f"INVALID: {e}", file=sys.stderr)
         return 1
+    extends = f", extends alhazen/{base}" if base else ""
     print(
-        f"OK: {args.rig} — {rig.display.backend} display, "
+        f"OK: {ref.describe()}{extends} — {rig.display.backend} display, "
         f"{rig.monitor.width_px}x{rig.monitor.height_px}@{rig.monitor.refresh_rate_hz:g}Hz, "
         f"data_root={rig.data_root}"
     )
     return 0
+
+
+def _rigs(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    """Every rig ``--rig`` can name from an experiment's folder, and whose each is.
+
+    One table: the experiment's own rigs first, then alhazen's shared ones,
+    with the file each is read from and what a reader would otherwise have
+    to open it to learn — that it extends a shared rig, or that a shared rig
+    is hidden from ``--rig <name>`` by the experiment's own of that name.
+
+    Exits 1 when a rig here would be refused by name — a file that cannot be
+    read, or two of the experiment's files sharing a name — so a script that
+    checks a checkout can stop on it; the table is printed either way.
+    """
+    root = Path(args.project).expanduser() if args.project else Path.cwd()
+    if not root.is_dir():
+        print(f"CANNOT LIST RIGS: {root} is not a folder", file=sys.stderr)
+        return 1
+    try:
+        rigs = list_rigs(root)
+    except ConfigError as e:
+        print(f"CANNOT LIST RIGS: {e}", file=sys.stderr)
+        return 1
+    counts: dict[str, int] = {}
+    for ref in rigs:
+        if ref.source == "experiment":
+            counts[ref.name] = counts.get(ref.name, 0) + 1
+
+    rows: list[tuple[str, str, str, str]] = []
+    problems = 0
+    for ref in rigs:
+        notes = []
+        if ref.source == "experiment":
+            # Relative to the experiment, as it would be typed from there.
+            shown = ref.path.relative_to(root).as_posix()
+            try:
+                base = rig_extends(ref.path)
+            except ConfigError as e:
+                problems += 1
+                notes.append(f"UNREADABLE: {str(e).splitlines()[0]}")
+            else:
+                if base:
+                    notes.append(f"extends alhazen/{base}")
+            if counts[ref.name] > 1:
+                problems += 1
+                notes.append(f"DUPLICATE NAME: --rig {ref.name} is refused until one is renamed")
+        else:
+            shown = ref.path.name
+            if ref.shadowed:
+                notes.append(
+                    f"shadowed by the experiment's {ref.name} (reach this one with "
+                    f"--rig alhazen/{ref.name})"
+                )
+        rows.append((ref.name, ref.source, shown, "; ".join(notes)))
+
+    print(f"rigs for {root.resolve()} — give --rig a NAME, or the path to a rig file\n")
+    header = ("NAME", "SOURCE", "FILE", "NOTE")
+    widths = [max(len(row[i]) for row in [header, *rows]) for i in range(3)]
+    for row in [header, *rows]:
+        cells = [cell.ljust(width) for cell, width in zip(row[:3], widths, strict=True)]
+        print(("  " + "  ".join([*cells, row[3]])).rstrip())
+    if not any(ref.source == "experiment" for ref in rigs):
+        print(f"\n  (no rig-<name>.yaml under {root / 'configs'}: only alhazen's shared rigs)")
+    shared = next((ref.path.parent for ref in rigs if ref.source == "alhazen"), None)
+    if shared is not None:
+        print(f"\nalhazen's shared rigs (alhazen {get_version()}) are in {shared}")
+    return 1 if problems else 0
 
 
 def _new(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
@@ -250,7 +369,8 @@ def _report(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
 def _check_rig(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     """Smoke-test a rig's devices, through the backends a session builds."""
     try:
-        rig = load_rig(args.rig)
+        ref = resolve_rig(args.rig, _experiment_root())
+        rig = load_rig(ref.path)
         results = check_rig(rig, pulse=args.pulse)
     except ConfigError as e:
         # A config no session could run (a bad file, a test-only backend)
@@ -266,7 +386,9 @@ def _check_rig(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
     if args.record:
         from alhazen.session.checkout import build_record
 
-        record, summary = build_record(args.rig, results, pulse=args.pulse).write(args.record)
+        # The file the rig was read from, not the name typed: a record is held
+        # up against next month's, and "lab" may by then be another file.
+        record, summary = build_record(ref.path, results, pulse=args.pulse).write(args.record)
         # After the lines, not instead of them, and unconditionally: the
         # failing checkout is the one whose evidence is worth keeping, so
         # the record is never skipped on a FAIL.
@@ -274,32 +396,6 @@ def _check_rig(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
         print(f"summary: {summary}")
     # Unchanged by the record: a checkout passes on the checks alone.
     return 0 if all(r.ok for r in results) else 1
-
-
-class _DeprecatedFlag(argparse.Action):
-    """A flag under its pre-1.9 spelling: stores what the new spelling would,
-    and warns naming it. Hidden from --help, so nobody learns the old name
-    from the tool that is retiring it; removed in 2.0 with the warning.
-    """
-
-    def __init__(
-        self, option_strings: list[str], dest: str, instead: str, value: bool, **kwargs: Any
-    ):
-        super().__init__(option_strings, dest, nargs=0, help=argparse.SUPPRESS, **kwargs)
-        self._instead = instead
-        self._value = value
-
-    def __call__(
-        self,
-        parser: argparse.ArgumentParser,
-        namespace: argparse.Namespace,
-        values: Any,
-        option_string: str | None = None,
-    ) -> None:
-        warn_deprecated_name(
-            f"the {option_string} flag", since="1.9", removed_in="2.0", instead=self._instead
-        )
-        setattr(namespace, self.dest, self._value)
 
 
 def add_mode_arguments(parser: argparse.ArgumentParser) -> None:
@@ -316,12 +412,18 @@ def add_mode_arguments(parser: argparse.ArgumentParser) -> None:
         choices=[m.value for m in Mode],
         help="; ".join(f"{m.value}: {m.summary}" for m in Mode) + " (default: run)",
     )
-    parser.add_argument("--rig", default=None, help="path to a rig YAML file")
+    parser.add_argument("--rig", default=None, help=RIG_HELP)
     parser.add_argument("--params", default=None, help="path to the task's params YAML")
     parser.add_argument("--sub", default=None, help="subject id (prompted if omitted)")
     parser.add_argument("--ses", type=int, default=None, help="session number (prompted)")
     parser.add_argument(
         "--run", type=int, default=None, help="run number (default: the next free one)"
+    )
+    parser.add_argument(
+        "--initials",
+        default=None,
+        help="the subject's initials, 1-5 letters: recorded, never put in a file name "
+        "(run and test: prompted if omitted)",
     )
     parser.add_argument("--seed", type=int, default=None, help="session seed")
     parser.add_argument("--windowed", action="store_true", help="bordered window, for dev")
@@ -352,32 +454,6 @@ def add_mode_arguments(parser: argparse.ArgumentParser) -> None:
         "--no-live-monitor-browser",
         action="store_true",
         help="serve the live monitor without opening a browser window",
-    )
-    # The same three flags as they were spelled before 1.9 (the live monitor
-    # was "the dashboard"). Each stores into the new flag's destination and
-    # warns; `alhazen dashboard` launching a project on an older alhazen
-    # still emits the old spelling, which is why the workspace's reserved
-    # set names both (cli/workspace.py, MODE_FLAGS).
-    live_monitor_group.add_argument(
-        "--dashboard",
-        action=_DeprecatedFlag,
-        dest="live_monitor",
-        instead="--live-monitor",
-        value=True,
-    )
-    live_monitor_group.add_argument(
-        "--no-dashboard",
-        action=_DeprecatedFlag,
-        dest="live_monitor",
-        instead="--no-live-monitor",
-        value=False,
-    )
-    parser.add_argument(
-        "--no-dashboard-browser",
-        action=_DeprecatedFlag,
-        dest="no_live_monitor_browser",
-        instead="--no-live-monitor-browser",
-        value=True,
     )
     parser.add_argument("--curriculum", default=None, help="path to a curriculum YAML")
     # test / simulate
@@ -481,6 +557,13 @@ def _run_session(
     if refusal is not None:
         print(f"CANNOT RUN: {refusal}", file=sys.stderr)
         return 2
+    # Initials typed on the command line are held to their rule in every
+    # mode, before anything loads: a typo is a usage error however little
+    # the mode does with them.
+    refused = _normalize_initials_flag(args)
+    if refused is not None:
+        print(refused, file=sys.stderr)
+        return 2
 
     if getattr(args, "list", False):
         tasks = installed_tasks()
@@ -503,20 +586,28 @@ def _run_session(
         )
         return 2
 
-    from alhazen.config.loader import load_rig
-
+    # The task is loaded before the rig because a rig NAME is looked up in the
+    # experiment the task belongs to (_experiment_root). Measure mode runs
+    # without a task, and looks in the current folder.
     try:
-        rig = load_rig(args.rig)
+        if task_class is None and mode is not Mode.MEASURE:
+            task_class = load_task_class(args.task)
+        root = _experiment_root(task_class)
+        args.rig_ref = resolve_rig(args.rig, root)
+        rig = load_rig(args.rig_ref.path)
     except ConfigError as e:
         print(f"INVALID: {e}", file=sys.stderr)
         return 1
+    # From here on args.rig names the file the rig was read from, as
+    # args.params does below for the params: the snapshot's `sources["rig"]`
+    # has always been a path, so a name typed on the command line is recorded
+    # beside it (`rig_name`, `rig_source`; _trial_session) and not in its place.
+    args.rig = str(args.rig_ref.path)
 
     if mode is Mode.MEASURE:
-        return _measure_rig(args, rig)
+        return _measure_rig(args, rig, root)
 
     try:
-        if task_class is None:
-            task_class = load_task_class(args.task)
         # From here on args.params names the file the params actually came
         # from — the task's own when nobody named one — so the snapshot's
         # `sources`, the line printed before trial one and the params hook
@@ -582,27 +673,56 @@ def _load_params(task_class: Any, named: str | None) -> tuple[Any, str | None]:
     return load_model(path, task_class.params_model), path
 
 
-def _settle_subject_and_session(args: argparse.Namespace, mode: Mode) -> str | None:
-    """Fill in ``args.sub`` and ``args.ses`` for a session that runs trials,
-    or return why they cannot be — a usage error for the caller to print.
+def _normalize_initials_flag(args: argparse.Namespace) -> str | None:
+    """``args.initials`` as they are recorded (uppercase), or why they cannot
+    be — the rule's own words, for the caller to print.
 
-    Simulate mode names its own subject: nobody is there to ask. Otherwise a
-    missing flag is prompted for — an experimenter at a rig types this with
-    an animal already waiting and should not have to remember the flag
-    names — but only where a person can answer. With stdin not a terminal
-    (nohup, CI, a batch script) input() blocks forever or dies in a raw
-    EOFError, so the missing flags are refused instead.
+    None (not given) stays None. Read with a default because a namespace
+    built by code other than `add_mode_arguments` may not carry the flag.
+    """
+    given = getattr(args, "initials", None)
+    if given is None:
+        args.initials = None
+        return None
+    try:
+        args.initials = normalize_initials(given)
+    except ValueError as e:
+        return f"INVALID: {e}"
+    return None
+
+
+def _settle_subject_and_session(args: argparse.Namespace, mode: Mode) -> str | None:
+    """Fill in ``args.sub``, ``args.ses`` and ``args.initials`` for a session
+    that runs trials, or return why they cannot be — a usage error for the
+    caller to print.
+
+    Simulate mode names its own subject: nobody is there to ask, and it
+    needs no initials. ``run`` and ``test`` name a real subject, so they need
+    all three — the initials are what catch a mistyped subject number against
+    the registry (data/participants.py). A missing flag is prompted for — an
+    experimenter at a rig types this with an animal already waiting and
+    should not have to remember the flag names — but only where a person can
+    answer. With stdin not a terminal (nohup, CI, a batch script) input()
+    blocks forever or dies in a raw EOFError, so the missing flags are
+    refused instead.
 
     Idempotent: flags already settled are left as they are, and nothing is
     asked twice.
     """
+    refused = _normalize_initials_flag(args)
+    if refused is not None:
+        return refused
     if mode is Mode.SIMULATE:
         if args.sub is None:
             args.sub = "sim"
         if args.ses is None:
             args.ses = 1
         return None
-    missing = [flag for flag, value in (("--sub", args.sub), ("--ses", args.ses)) if value is None]
+    missing = [
+        flag
+        for flag, value in (("--sub", args.sub), ("--ses", args.ses), ("--initials", args.initials))
+        if value is None
+    ]
     if missing and not (sys.stdin and sys.stdin.isatty()):
         return (
             f"{' and '.join(missing)} required: stdin is not a terminal, so "
@@ -612,7 +732,25 @@ def _settle_subject_and_session(args: argparse.Namespace, mode: Mode) -> str | N
         args.sub = input("subject id: ").strip()
     if args.ses is None:
         args.ses = _ask_session_number()
+    if args.initials is None:
+        args.initials = _ask_initials()
     return None
+
+
+def _ask_initials() -> str:
+    """Prompt until the answer is initials by the rule (config.models
+    INITIALS_RULE): 1 to 5 letters, recorded uppercase.
+
+    Asked again on a bad answer, with the same ``INVALID:`` line the flag
+    gets, for the same reason as the session number: the person who mistyped
+    is right there, with a subject waiting.
+    """
+    while True:
+        answer = input("subject initials: ")
+        try:
+            return normalize_initials(answer)
+        except ValueError as e:
+            print(f"INVALID: {e}", file=sys.stderr)
 
 
 def _ask_session_number() -> int:
@@ -691,10 +829,19 @@ def _params_line(args: argparse.Namespace, task: Any, params: Any) -> str:
     )
 
 
-def _measure_rig(args: argparse.Namespace, rig: Any) -> int:
-    """Measure the rig and write the report beside its data."""
+def _measure_rig(args: argparse.Namespace, rig: Any, root: Callable[[], Path]) -> int:
+    """Measure the rig and write the report beside its config."""
     from alhazen.modes.measure import run_measurements
 
+    # Where the report will go, settled BEFORE anything is measured: for a
+    # shared rig that is the experiment's configs/ folder (local_rig_file),
+    # and finding there is none after the experimenter has sat through every
+    # measurement would waste all of them.
+    try:
+        beside = local_rig_file(args.rig_ref, root)
+    except ConfigError as e:
+        print(f"CANNOT MEASURE: {e}", file=sys.stderr)
+        return 1
     extra = {} if args.presses is None else {"n_presses": args.presses}
     try:
         report = run_measurements(
@@ -707,20 +854,22 @@ def _measure_rig(args: argparse.Namespace, rig: Any) -> int:
         print(f"CANNOT MEASURE: {e}", file=sys.stderr)
         return 2
     print(report.render())
-    written = report.save(_measurement_path(args.rig))
+    written = report.save(_measurement_path(beside))
     print(f"written: {written}")
     # Non-zero when something disagrees with the config, so this is usable in
     # a pre-session script that must not carry on past a bad rig.
     return 0 if report.ok else 1
 
 
-def _measurement_path(rig_path: str) -> Path:
+def _measurement_path(rig_path: str | Path) -> Path:
     """Where one measurement run is written: beside the rig config it measured.
 
     Beside the CONFIG rather than beside the data, because these describe the
     machine and not any subject — they stay relevant across the reinstall that
     eventually clears the data, and they belong with the file whose claims
-    they are checking.
+    they are checking. For one of alhazen's shared rigs, whose file is inside
+    alhazen's installation, ``rig_path`` is where the experiment's own file of
+    that name would be (``alhazen.config.rigs.local_rig_file``).
 
     Stamped with the time, and never overwritten: a rig that has drifted is
     only visible by comparing two of these, so the second one must not replace
@@ -841,9 +990,22 @@ def _trial_session(args: argparse.Namespace, rig: Any, task: Any, params: Any, m
             # None — `alhazen run` never sets it — in which case the session
             # builder shows what the task declares (Task.instructions).
             instructions=getattr(args, "instructions", None),
-            sources={"rig": str(args.rig), "task": str(args.params or "<defaults>")},
+            # `rig` is the file, as it has always been; which rig that file is
+            # — its name, and whether it was the experiment's own or one of
+            # alhazen's shared rigs — goes beside it (alhazen.config.rigs).
+            sources={
+                "rig": str(args.rig),
+                "rig_name": args.rig_ref.name,
+                "rig_source": args.rig_ref.source,
+                "task": str(args.params or "<defaults>"),
+            },
+            # Recorded and checked against the registry, never in a path.
+            initials=args.initials,
         )
-    except ConfigError as e:
+    except (ConfigError, DataError) as e:
+        # DataError: what is already on disk refuses the session — a used run
+        # folder, an experiment database from before 2.0's schema. Each names
+        # the file and what to do; a traceback would bury that.
         print(f"CANNOT RUN: {e}", file=sys.stderr)
         return 1
 
@@ -878,16 +1040,23 @@ def _calibrate(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
         parser.parse_args(["calibrate", "--help"])
         return 2
     try:
-        rig = load_rig(args.rig)
+        root = _experiment_root()
+        ref = resolve_rig(args.rig, root)
+        rig = load_rig(ref.path)
         if args.calibration == "ruler":
             # Draws the bar on a real display and blocks until a key is
             # pressed; on a simulated one there is nothing to hold a tape
             # against, so the report is the whole answer.
             print(calibration.draw_ruler(rig, args.dva, windowed=args.windowed))
             return 0
+        # Beside the rig's own file — or, for a shared rig, beside where the
+        # experiment's file of that name would be: never inside alhazen's
+        # installation, which a reinstall would take the fit away with.
+        # Settled before the CSV is read, so a refusal costs nothing.
+        beside = local_rig_file(ref, root)
         levels, luminances = calibration.read_measurements(args.measurements)
         fit = calibration.fit_gamma(levels, luminances)
-        written = calibration.write_gamma(args.rig, fit)
+        written = calibration.write_gamma(beside, fit)
     except ConfigError as e:
         print(f"CANNOT CALIBRATE: {e}", file=sys.stderr)
         return 1
@@ -928,22 +1097,38 @@ def _monitor(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
                 print(f"  {registry.lookup(name).summary()}")
             return 0
 
-        rig = load_rig(args.rig)
+        root = _experiment_root()
+        ref = resolve_rig(args.rig, root)
+        rig = load_rig(ref.path)
         if args.monitor_command == "register":
             # The gamma alhazen measured belongs on the monitor too: once it
             # is there, PsychoPy applies it to every window opened against
             # this monitor — including ones opened by other scripts on this
             # machine, which know nothing about alhazen's own gamma file.
-            fit = load_gamma(args.rig)
+            # It is kept where `calibrate gamma` wrote it (local_rig_file).
+            try:
+                beside: Path | None = local_rig_file(ref, root)
+            except ConfigError:
+                # A shared rig with no experiment configs/ folder here: no
+                # gamma can have been kept for it, which is the same answer
+                # as a rig never measured, and is said below with the reason.
+                beside = None
+            fit = load_gamma(beside) if beside is not None else None
             gamma = fit["gamma"] if fit else None
-            notes = f"{registry.NOTES_PREFIX} {get_version()} from {Path(args.rig).name}"
+            notes = f"{registry.NOTES_PREFIX} {get_version()} from {ref.path.name}"
             written = registry.register(rig.monitor, gamma=gamma, notes=notes)
             print(f"registered {rig.monitor.name!r} with psychopy")
             print(f"  {registry.lookup(rig.monitor.name).summary()}")
-            if gamma is None:
+            if gamma is None and beside is not None:
                 print(
-                    f"  no measured gamma yet — {gamma_path(args.rig).name} does not exist "
+                    f"  no measured gamma yet — {gamma_path(beside)} does not exist "
                     f"(alhazen calibrate gamma --rig {args.rig} --measurements <csv>)"
+                )
+            elif gamma is None:
+                print(
+                    "  no measured gamma — for a shared rig one is kept in an experiment's "
+                    "configs/ folder, and there is none here; run this from the "
+                    "experiment's folder to register the gamma measured there"
                 )
             print(f"  written: {written}")
             if rig.display.backend != "psychopy":
@@ -1056,6 +1241,7 @@ def _sim_sorter(args: argparse.Namespace) -> int:
 _COMMANDS: dict[str, Handler] = {
     "dashboard": _dashboard,
     "validate": _validate,
+    "rigs": _rigs,
     "new": _new,
     "run": lambda args, parser: _run_session(args),
     "calibrate": _calibrate,

@@ -7,14 +7,17 @@ going: a name is deprecated in a MINOR release, keeps working and warning,
 and is removed in the next MAJOR one — removal breaks callers, which is what
 a MAJOR bump announces (docs/versioning.md §4).
 
-    @deprecated(since="1.1", removed_in="2.0", instead="Task.build_trial")
+    @deprecated(since="2.1", removed_in="3.0", instead="Task.build_trial")
     def old_thing(...): ...
 
 The warning names the version it goes away in and what to use instead,
 because a DeprecationWarning that says only "deprecated" leaves the reader
 exactly where they started. tests/unit/test_versioning.py reads every
-``removed_in`` out of the source and fails once pyproject.toml's version
-reaches it, so the version named is never one that has already shipped.
+``removed_in`` out of the source — from a call to any helper here, including
+``deprecation_message`` passed to ``warnings.warn`` by hand — and fails once
+pyproject.toml's version reaches it, so the version named is never one that
+has already shipped. (It reads calls, not prose: the example above is not a
+promise, and this module's own calls pass their caller's version on.)
 """
 
 from __future__ import annotations

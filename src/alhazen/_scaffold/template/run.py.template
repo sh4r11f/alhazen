@@ -4,8 +4,8 @@
     python run.py --mode movie     --rig configs/rig-lab.yaml --out movies
     python run.py --mode measure   --rig configs/rig-lab.yaml
     python run.py --mode simulate  --rig configs/rig-lab.yaml --seed 1 --headless
-    python run.py --mode test      --rig configs/rig-mac.yaml --sub dev --ses 1
-    python run.py                  --rig configs/rig-lab.yaml --sub s01 --ses 1
+    python run.py --mode test      --rig configs/rig-mac.yaml --sub dev --ses 1 --initials DEV
+    python run.py                  --rig configs/rig-lab.yaml --sub s01 --ses 1 --initials AB
 
 A rig file describes a machine; the mode decides what to do with it. So the
 laptop config and the rig config each take all six modes — simulate stands

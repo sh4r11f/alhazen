@@ -64,7 +64,7 @@ class InProcessLiveMonitor(LiveMonitorController):
     and nothing these tests assert depends on it. Everything they do assert
     on stays real: the runner builds each state with the real
     ``live_monitor_state`` and writes the final one with the inherited, real
-    ``save`` — the only producer of figures/dashboard_state.json.
+    ``save`` — the only producer of figures/live_monitor_state.json.
 
     ``publish`` and ``publish_camera`` are overridden, not inherited, because
     the inherited ones put onto multiprocessing queues that nothing would
@@ -279,7 +279,9 @@ def test_live_analysis_seam_end_to_end(tmp_path):
     assert live.trials_seen == 2
     assert live.n_events == 2
 
-    run_dir = next((built.data_root / "sub-sim" / "ses-001").glob("run-01_*"))
+    run_dir = next(
+        (built.data_root / f"v{built.experiment.version}" / "sub-sim" / "ses-001").glob("run-01_*")
+    )
 
     # finish() ran before the manifest was written: the artifact exists AND
     # the manifest verifies with it present.
@@ -295,7 +297,7 @@ def test_live_analysis_seam_end_to_end(tmp_path):
 
     # The live panel travelled through the real live monitor publish into the
     # saved state, after the spec's own panels, under its own section.
-    state = json.loads((run_dir / "figures" / "dashboard_state.json").read_text())
+    state = json.loads((run_dir / "figures" / "live_monitor_state.json").read_text())
     live_panels = [p for p in state["panels"] if p.get("section") == "Live"]
     assert len(live_panels) == 1
     assert live_panels[0]["title"] == "Spikes heard"
@@ -373,7 +375,9 @@ def test_a_task_supplied_spike_source_reaches_the_live_analysis(tmp_path):
     assert ran.live is not None
     assert ran.live.spikes is built.simulation.spikes
 
-    run_dir = next((built.data_root / "sub-sim" / "ses-001").glob("run-01_*"))
+    run_dir = next(
+        (built.data_root / f"v{built.experiment.version}" / "sub-sim" / "ses-001").glob("run-01_*")
+    )
     saved = json.loads((run_dir / "live_counts.json").read_text())
     # Channel 1 is the one whose field sits on the ping in the task's own
     # source. Spikes there and none on channel 0 proves the task's source

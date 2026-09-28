@@ -287,7 +287,7 @@ class StoppableLiveMonitor:
     def save(self, figures_dir, state: dict) -> None:
         # A file on disk, so "nothing was written into the run directory"
         # covers the saved live monitor too.
-        (figures_dir / "dashboard_state.json").write_text(state["status"])
+        (figures_dir / "live_monitor_state.json").write_text(state["status"])
 
     def stop(self) -> None:
         self.stopped = True
@@ -436,9 +436,13 @@ class StatusDatabase:
 
     def __init__(self) -> None:
         self.statuses: list[str] = []
+        self.versions: list[str] = []
 
-    def write_run(self, cfg, paths, *, trials, events, frames, frame_inputs, status) -> None:
+    def write_run(
+        self, cfg, paths, *, trials, events, frames, frame_inputs, status, experiment_version
+    ) -> None:
         self.statuses.append(status)
+        self.versions.append(experiment_version)
 
 
 class FailingShutdownTracker(ScriptedTracker):
@@ -607,7 +611,7 @@ class TestTheSessionEndAgreesWithTheRecord:
         with pytest.raises(TrackerError):
             harness.runner.run()
 
-        saved = harness.paths.figures_dir / "dashboard_state.json"
+        saved = harness.paths.figures_dir / "live_monitor_state.json"
         assert saved.read_text() == "failed"
         # The browser is told too, before the live monitor's child stops.
         assert live_monitor.states[-1]["status"] == "failed"

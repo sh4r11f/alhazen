@@ -101,9 +101,10 @@ class HealthFault:
     cable from a Host PC abort. Free text, never a value to select on: the
     wording is the backend's and may change.
 
-    A health check may still return a bare reason string instead — the 1.5.0
-    shape — and the engine reads that as a HealthFault with nothing more
-    said, with a DeprecationWarning: it goes in 2.0 (core/engine.py).
+    A health check returns None or one of these. The 1.5.0 shape, a bare
+    reason string, was read as a HealthFault with nothing more said until
+    2.0; since 2.0 the engine refuses it with a TypeError naming the check
+    (core/engine.py).
     """
 
     reason: str
@@ -165,7 +166,9 @@ def lost_to_fault(outcome_name: str, record: Mapping[str, Any]) -> str | None:
 # `n_mid_trial_*` counts only for a task that declares mid-trial reward, the
 # two frame-QA columns only on a recycled trial, `fault_detail` only where a
 # health check said what failed, `success` only where the
-# outcome defines one. `fault` IS on every row. Every emitted event also
+# outcome defines one. `fault` IS on every row, and so is `experiment_version`
+# on every row a session writes (a bare engine, driven by a test, has no
+# experiment to stamp). Every emitted event also
 # mirrors its time as `t_<event name lowercased>`, which is a pattern rather
 # than a fixed name and so is not listed.
 #
@@ -210,6 +213,12 @@ TRIAL_RECORD_COLUMNS: tuple[str, ...] = (
     # check reported with a detail — a dropped-frames row carries its account
     # in `frame_qa_reason` instead. Read by a person, never selected on.
     "fault_detail",
+    # The version of the experiment whose protocol ran this trial — the
+    # `v<version>` folder its run sits in (alhazen 2.0). On every row the
+    # session writes, so trials tables concatenated across runs, or read
+    # out of the database, still say which protocol each row came from once
+    # the folder is out of sight. Stamped by the runner, not the engine.
+    "experiment_version",
 )
 
 

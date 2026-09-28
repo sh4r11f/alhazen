@@ -19,14 +19,24 @@ first on the child's `PYTHONPATH`; nothing of the launcher's own installation
 is, so the interpreter you choose must have `alhazen-vision` installed (an
 experiment's `pyproject.toml` requires it). Registering a folder checks this by
 importing alhazen with that interpreter, refuses with the reason when it
-cannot, and records the alhazen and Python versions it found.
+cannot, and records the alhazen and Python versions it found, and the
+[shared rigs](rigs.md) that alhazen ships.
 
 ## Configure and run
 
 1. Select an experiment in the sidebar.
-2. Choose a mode, rig and parameter preset. Rig files are discovered under
-   `configs/rig*.yaml` (including subdirectories and `.yml`); parameter presets
-   start with `task` or `params`.
+2. Choose a mode, rig and parameter preset. The **Rig** menu lists rigs by
+   name — `lab` for `rig-lab.yaml` — in two groups: **This experiment**, its
+   `configs/rig-<name>.yaml` files (subdirectories and `.yml` included), and
+   **Shared (alhazen)**, the rigs the project's alhazen ships
+   ([Rigs](rigs.md)). An experiment rig that extends a shared one says so
+   (`lab · extends alhazen/lab`); a shared rig hidden from `--rig lab` by the
+   experiment's own is spelled `alhazen/lab (hidden by this experiment's lab)`,
+   so the two cannot be confused. The summary under the menu describes the rig
+   as it would run — merged, for one that extends — and says whose it is. A
+   project registered before shared rigs were listed shows none, and says so:
+   save its **Project settings** to register it again. Parameter presets start
+   with `task` or `params`.
 3. Choose text parameters from dropdowns; text lists use dropdowns with
    checkboxes. Choices come from the task model's enums and defaults, keeping
    the current value available. Keyboard bindings offer common keys. Unbounded
@@ -39,8 +49,19 @@ cannot, and records the alhazen and Python versions it found.
    scripts without a parameter-file option. Hidden task parameters are not sent
    to those jobs.
 4. Set the mode's options, add any extra `run.py` arguments (below), and start
-   the run. Run and test require a subject ID; simulate can use its own default
-   subject. Only simulate accepts headless, and only test accepts mouse gaze.
+   the run. Run and test require a subject ID and the subject's **Initials**
+   (1 to 5 letters, sent uppercase as `--initials`); simulate can use its own
+   default subject and needs no initials. Initials that break the rule are
+   refused on the page in the command line's words ("initials must be 1 to 5
+   letters, such as HD"), and again by the launcher, before a run is made.
+   They are recorded with the session — never in a file name — and checked
+   against the subject's recorded initials: a subject id already recorded with
+   other initials is refused ([data on disk](data.md) §2). The history and the
+   run summary show who each session was for, `sub-01 · HD`. A project whose
+   interpreter runs an alhazen older than 2.0 does not know `--initials`: its
+   run and test launches stop at once with that usage error in the console,
+   and the fix is to move the project to alhazen 2.0. Only simulate accepts
+   headless, and only test accepts mouse gaze.
 5. Follow the console or view generated media. Images can be enlarged or saved.
    Movies appear once recording finishes, with native playback and seeking.
 
@@ -86,7 +107,7 @@ is named. An extra argument naming a flag the launcher sets from the form is
 refused, naming the flag, before anything is written, so a run's recorded
 settings cannot be contradicted from the text field. Those flags are `--mode`,
 `--rig`, `--params`, `--seed`, `--no-live-monitor-browser`, `--sub`, `--ses`,
-`--trials-per-condition`, `--headless`, `--mouse`, `--windowed`, `--out`,
+`--initials`, `--trials-per-condition`, `--headless`, `--mouse`, `--windowed`, `--out`,
 `--scale`, `--sheet`, `--columns`, `--clip` and `--screenshots`, in either the
 `--seed 5` or the `--seed=5` spelling, and `--task` for a project with a Task
 menu; every other flag passes through.
@@ -111,9 +132,16 @@ Each launch writes an immutable parameter file when parameters were supplied,
 a copy of the rig, the actual argument list and working directory, console
 output, and its own media folder. Source configuration files are never edited.
 The experiment's parameter model still validates values before a session
-starts, so unsupported values produce the same errors as the CLI. The rig
-passed to the process stays at its original path to preserve relative-path
-semantics. Session data retains the experiment's normal real/rehearsal paths.
+starts, so unsupported values produce the same errors as the CLI. An
+experiment's rig is passed to the process at its original path, to preserve
+relative-path semantics; a shared rig is passed by name, `--rig alhazen/lab`,
+as it would be typed. The copy, `rig.yaml`, is the file itself for a whole
+rig; for a rig that extends a shared one it is the merged rig — the one file
+alone would not say what ran — with the experiment's file as written kept
+beside it as `rig-source.yaml`. `run.json` records the rig launched (`rig`),
+its name (`rig_name`) and whose it is (`rig_source`: `experiment` or
+`alhazen`), and the history shows the name. Session data retains the
+experiment's normal real/rehearsal paths.
 
 Only one job runs at a time in a workspace. **Stop run** interrupts the run:
 SIGINT to its process group on POSIX, a console break (`CTRL_BREAK_EVENT`) on
@@ -153,13 +181,17 @@ tab is open. Before the URL appears, the tab says that it is waiting for the
 session to open its monitor — or, when the selected rig has
 `live_monitor.enabled: false` (the default for a rig without the block), that the
 setting must be turned on in the rig YAML. The rig summary under the rig menu
-shows the same fact as **live monitor: on/off**.
+shows the same fact as **live monitor: on/off** — for a rig that extends a
+shared one, the setting of the merged rig.
 
 The monitor's server closes with the session. Once the run has finished, the
 frame is emptied and replaced by a note: the monitor's final state was saved in
-the run's data directory as `figures/dashboard.html` (and
-`figures/dashboard_state.json`), which opens on its own with no server. A
-browser error page for a server that no longer exists is never left in the tab.
+the run's data directory as `figures/live_monitor.html` (and
+`figures/live_monitor_state.json`), which opens on its own with no server. A
+run recorded by a project on an alhazen before 2.0 has them under their old
+names, `figures/dashboard.html` and `figures/dashboard_state.json`, and the
+note names both. A browser error page for a server that no longer exists is
+never left in the tab.
 
 Embedding needs the monitor to allow being framed, so its responses carry
 `frame-ancestors 'self' http://127.0.0.1:* http://localhost:*` in their
@@ -177,9 +209,10 @@ By default, state is under `~/.alhazen/live_monitor/`:
 ```text
 projects.json
 runs/<unique-id>/
-  run.json
+  run.json          # the command, status — and subject, session, initials for a session
   params.yaml       # when supplied
-  rig.yaml
+  rig.yaml          # the rig as it ran (merged, when it extends a shared one)
+  rig-source.yaml   # the experiment's file as written, when it extends one
   console.log
   media/
 ```

@@ -214,7 +214,12 @@ def test_mouse_sim_drives_the_same_task_on_a_real_window(tmp_path):
     assert isinstance(runner._tracker, MouseSimTracker)
     runner.run()
 
-    run_dir = tmp_path / "sub-demo" / "ses-001" / "run-01_task-gaze-fixation"
+    # Under the experiment's version (alhazen 2.0): an example shipped with
+    # alhazen is filed under alhazen's own, read here rather than typed.
+    from alhazen.config.experiment import find_experiment
+
+    version = find_experiment(task.GazeFixationTask).version
+    run_dir = tmp_path / f"v{version}" / "sub-demo" / "ses-001" / "run-01_task-gaze-fixation"
     rows = read_rows(next(run_dir.glob("*_trials.csv")))
     assert len(rows) >= 1
     assert rows[-1]["outcome"] in {"FIXATED", "NO_FIXATION", "FIX_BREAK"}

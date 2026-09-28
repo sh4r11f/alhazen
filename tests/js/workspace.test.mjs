@@ -10,28 +10,46 @@ import { describe, it } from 'node:test';
 
 import { loadWorkspace, plain, response, settle } from './load_workspace.mjs';
 
+/* One of a project's `rigs` as the launcher describes it (Workspace.describe):
+ * an experiment rig by default, with its project-relative path. */
+function rigEntry(name, overrides = {}) {
+  return {
+    name: name, source: 'experiment', path: `configs/rig-${name}.yaml`,
+    shadowed: false, extends: null, ...overrides,
+  };
+}
+
+/* A shared rig as the launcher lists it: the absolute file the project's
+ * alhazen ships. */
+function sharedEntry(name, overrides = {}) {
+  return rigEntry(name, {
+    source: 'alhazen', path: `C:/env/alhazen/rigs/rig-${name}.yaml`, ...overrides,
+  });
+}
+
 /* One registered project with one rig, one preset and no scripts. */
 const PROJECT = Object.freeze({
   id: 'p', name: 'Demo task', path: 'C:/projects/demo', python: 'python', available: true,
-  rigs: ['configs/rig-mac.yaml'], configs: ['configs/task.yaml'], scripts: [],
+  rigs: [rigEntry('mac')], rigs_note: null, configs: ['configs/task.yaml'], scripts: [],
 });
 
-/* A rig YAML as /api/config returns it: parsed values and the source text.
- * `null` leaves the dashboard block out, as a rig written before the
- * dashboard existed would; the model's default is then off. (Not
- * `undefined`: pageWith's destructuring default would turn that into true.) */
-function rig(dashboardEnabled, oldKey = false) {
+/* A rig as /api/rig returns it: its name, whose it is, the shared rig it
+ * extends and its settings, merged. `null` leaves the dashboard block out, as
+ * a rig written before the dashboard existed would; the model's default is
+ * then off. (Not `undefined`: pageWith's destructuring default would turn
+ * that into true.) */
+function rig(dashboardEnabled, oldKey = false, about = {}) {
   const values = {
     monitor: {
       width_px: 1920, height_px: 1080, refresh_rate_hz: 60, width_cm: 52, distance_cm: 57,
     },
   };
-  /* `oldKey`: the section under its pre-1.9 name `dashboard:`, as a rig file
-   * not yet updated (or a project on an older alhazen) still spells it. */
+  /* `oldKey`: the section under its pre-1.9 name `dashboard:`, as a project
+   * whose own alhazen is older than 2.0 may still spell it. */
   if (dashboardEnabled !== null) {
     values[oldKey ? 'dashboard' : 'live_monitor'] = { enabled: dashboardEnabled };
   }
-  return { text: '# rig', values: values };
+  return { name: 'mac', source: 'experiment', extends: null, values: values, ...about };
 }
 
 /* A run as /api/runs/<id> returns it, running by default. */
@@ -58,12 +76,13 @@ const ACTIVE = ['running', 'stopping'];
  * run), after one refresh: the project chosen, its rig and preset loaded,
  * the run drawn. `hash` is the opening URL's fragment, which carries the
  * token; `dashboardEnabled` is the rig's setting (null: no dashboard block).
- * `configs` adds presets beyond task.yaml (by path, as /api/config answers)
+ * `configs` adds presets beyond task.yaml (by path, as /api/config answers),
+ * `rigs` rigs beyond the project's mac (by menu value, as /api/rig answers)
  * and `schemas` the per-task schemas of a project with a task table.
  */
 async function pageWith({
   run = null, dashboardEnabled = true, oldKey = false, hash, project = PROJECT,
-  configs = {}, schemas = {},
+  configs = {}, rigs = {}, schemas = {},
 } = {}) {
   const app = loadWorkspace({ hash: hash });
   app.server.state = {
@@ -76,10 +95,10 @@ async function pageWith({
    * page's refresh after a launch finds it as a real launcher's would. */
   app.server.details.launched = runDetail({ id: 'launched', log: '' });
   app.server.configs = {
-    'configs/rig-mac.yaml': rig(dashboardEnabled, oldKey),
     'configs/task.yaml': { text: 'trials: 4\n', values: { trials: 4 } },
     ...configs,
   };
+  app.server.rigs = { 'configs/rig-mac.yaml': rig(dashboardEnabled, oldKey), ...rigs };
   app.server.schemas = schemas;
   await app.run('refresh()');
   await settle();
@@ -183,7 +202,9 @@ describe('the Live monitor tab', () => {
     const note = app.byId('monitor-note');
     assert.equal(note.hidden, false);
     assert.match(note.textContent, /closes with the session/i);
-    assert.match(note.textContent, /figures\/dashboard\.html/);
+    /* The saved page under the name alhazen 2.0 writes, and the name a run
+     * recorded by an older alhazen has: the history holds both kinds. */
+    assert.match(note.textContent, /figures\/live_monitor\.html \(figures\/dashboard\.html by an alhazen before 2\.0\)/);
     /* Nor is a link to a dead server offered. */
     assert.equal(app.byId('monitor').hidden, true);
   });
@@ -217,9 +238,11 @@ describe('the Live monitor tab', () => {
   });
 
   it('reads the pre-1.9 `dashboard:` rig section as the monitor setting', async () => {
-    /* A project on alhazen 1.8, or a rig file nobody has renamed yet: the
-     * session will bring a monitor, so the page must wait for it rather than
-     * declare the rig has it off. Goes with the section's removal in 2.0. */
+    /* A project still on alhazen 1.x (1.8 knows only this spelling; 1.9 and
+     * 1.10 read either): its session will bring a monitor, so the page must
+     * wait for it rather than declare the rig has it off. alhazen 2.0 refuses
+     * the section, but the rig is read by the project's alhazen, not the
+     * workspace's, so this stays for as long as such projects are launched. */
     const on = await pageWith({ run: runDetail({ monitor: null }), dashboardEnabled: true, oldKey: true });
     assert.match(on.byId('monitor-note').textContent, /waiting for the session/i);
     assert.match(on.byId('rig-summary').textContent, /live monitor: on/);
@@ -301,9 +324,9 @@ describe('the run history', () => {
     };
     app.server.details = { r1: older, r2: newer };
     app.server.configs = {
-      'configs/rig-mac.yaml': rig(true),
       'configs/task.yaml': { text: 'trials: 4\n', values: { trials: 4 } },
     };
+    app.server.rigs = { 'configs/rig-mac.yaml': rig(true) };
     await app.run('refresh()');
     await settle();
     return app;
@@ -324,7 +347,10 @@ describe('the run history', () => {
     assert.equal(badge(rows[1]).className, 'status completed');
     assert.equal(rows[0].querySelector('strong').textContent, 'Simulate');
     assert.equal(rows[1].querySelector('strong').textContent, 'Record movies');
-    assert.match(rows[1].textContent, /rig-mac\.yaml/);
+    /* The rig by its name, not its file: this record predates runs keeping
+     * the name, so the page takes it from rig-mac.yaml. */
+    assert.match(rows[1].textContent, / · mac/);
+    assert.doesNotMatch(rows[1].textContent, /rig-mac|\.yaml/);
     assert.equal(app.byId('run-status').textContent, 'FAILED');
     assert.equal(app.byId('run-status').className, 'status failed');
     assert.match(app.byId('run-info').textContent, /exit 1/);
@@ -361,6 +387,8 @@ describe('launching a run', () => {
       assert.deepEqual(launched(app), {
         /* task is null: this project's run.py declares one task the old way. */
         project: 'p', mode: 'simulate', task: null, rig: 'configs/rig-mac.yaml', subject: 's01',
+        /* Initials are optional in simulate; left blank, they are sent blank. */
+        initials: '',
         session: 2, seed: 7, trials: 3,
         /* headless and windowed start checked in the markup. */
         headless: true, mouse: false, windowed: true,
@@ -647,6 +675,86 @@ describe('the parameter text editor', () => {
     });
 });
 
+describe('the subject’s initials', () => {
+  it('are required where the subject is: run and test, not simulate', async () => {
+    const app = await pageWith();
+    for (const [mode, required] of [['run', true], ['test', true], ['simulate', false]]) {
+      chooseMode(app, mode);
+      assert.equal(app.byId('initials').required, required, mode);
+      assert.equal(app.byId('identity').hidden, false, mode);
+    }
+    /* A mode that names no subject hides the whole row. */
+    chooseMode(app, 'movie');
+    assert.equal(app.byId('identity').hidden, true);
+    assert.equal(app.byId('initials').required, false);
+  });
+
+  it('are sent trimmed and uppercase, as run.py records them', async () => {
+    const app = await pageWith();
+    chooseMode(app, 'run');
+    app.byId('subject').value = 's01';
+    app.byId('initials').value = ' hd ';
+    await launch(app);
+    assert.equal(launched(app).mode, 'run');
+    assert.equal(launched(app).initials, 'HD');
+  });
+
+  it('that break the rule are refused in the command line’s words, and nothing is sent',
+    async () => {
+      const app = await pageWith();
+      chooseMode(app, 'test');
+      app.byId('subject').value = 's01';
+      app.byId('initials').value = 'H1';
+      await launch(app);
+      assert.equal(app.server.posted.filter((p) => p.path === '/api/runs').length, 0);
+      assert.equal(app.byId('error').hidden, false);
+      assert.equal(
+        app.byId('error').textContent, "initials must be 1 to 5 letters, such as HD; got 'H1'",
+      );
+      /* The reader can fix the field and try again. */
+      assert.equal(app.run('launching'), false);
+      assert.equal(app.byId('launch').disabled, false);
+    });
+
+  it('left out of a run are asked for, and nothing is sent', async () => {
+    const app = await pageWith();
+    chooseMode(app, 'run');
+    app.byId('subject').value = 's01';
+    await launch(app);
+    assert.equal(app.server.posted.filter((p) => p.path === '/api/runs').length, 0);
+    assert.equal(
+      app.byId('error').textContent, 'Subject initials are required for run and test modes',
+    );
+  });
+
+  it('are not checked or sent for a mode that names no subject', async () => {
+    const app = await pageWith();
+    chooseMode(app, 'run');
+    app.byId('initials').value = '12345';  /* left over from another mode */
+    chooseMode(app, 'movie');
+    await launch(app);
+    assert.equal(launched(app).mode, 'movie');
+    assert.equal(launched(app).initials, '');
+  });
+
+  it('show who a run was for in the history and the run summary', async () => {
+    const run = runDetail({
+      mode: 'run', subject: 's01', session: 1, initials: 'HD', status: 'completed',
+      returncode: 0,
+    });
+    const app = await pageWith({ run: run });
+    const row = app.byId('history').children[0];
+    assert.match(row.querySelector('small').textContent, / · mac · sub-s01 · HD$/);
+    assert.match(app.byId('run-info').textContent, /^Run experiment · sub-s01 · HD · /);
+  });
+
+  it('are left out of a run that names no subject', async () => {
+    const app = await pageWith({ run: runDetail({ status: 'completed', returncode: 0 }) });
+    assert.doesNotMatch(app.byId('history').children[0].textContent, /sub-/);
+    assert.doesNotMatch(app.byId('run-info').textContent, /sub-/);
+  });
+});
+
 describe('a request the launcher refuses', () => {
   it('shows the server’s message in the banner and gives the launch button back', async () => {
     const app = await pageWith();
@@ -687,4 +795,163 @@ describe('a request the launcher refuses', () => {
       assert.equal(app.byId('error').hidden, true);
       assert.equal(app.byId('connection').textContent, 'Connected to localhost');
     });
+});
+
+describe('the Rig menu', () => {
+  /* An experiment like amodal-averaging after it moved to shared rigs: its
+   * own lab extends alhazen's lab (and so hides it from `--rig lab`), its own
+   * laptop is a whole file, and its alhazen ships lab, mac and vpixx. */
+  const RIGGED = Object.freeze({
+    ...PROJECT,
+    rigs: [
+      rigEntry('lab', { extends: 'lab' }),
+      rigEntry('laptop'),
+      sharedEntry('lab', { shadowed: true }),
+      sharedEntry('mac'),
+      sharedEntry('vpixx'),
+    ],
+  });
+  /* What /api/rig answers for each of them: the merged rig. */
+  const RIGS = {
+    'configs/rig-lab.yaml': rig(true, false, { name: 'lab', extends: 'lab' }),
+    'configs/rig-laptop.yaml': rig(false, false, { name: 'laptop' }),
+    'alhazen/lab': rig(true, false, { name: 'lab', source: 'alhazen' }),
+    'alhazen/mac': rig(false, false, { name: 'mac', source: 'alhazen' }),
+    'alhazen/vpixx': rig(true, false, { name: 'vpixx', source: 'alhazen' }),
+  };
+
+  /** The menu as groups: [label, [[value, text], ...]], in order. */
+  function menu(app) {
+    return app.byId('rig').children.map((group) => [
+      group.label, group.children.map((option) => [option.value, option.textContent]),
+    ]);
+  }
+
+  /** Choose rig `value` as the reader would, and let the summary load. */
+  async function chooseRig(app, value) {
+    app.byId('rig').value = value;
+    app.byId('rig').fire('change');
+    await settle();
+  }
+
+  it('names each rig, never its file, in a group for the experiment and one for alhazen',
+    async () => {
+      const app = await pageWith({ project: RIGGED, rigs: RIGS });
+      assert.deepEqual(plain(menu(app)), [
+        ['This experiment', [
+          ['configs/rig-lab.yaml', 'lab · extends alhazen/lab'],
+          ['configs/rig-laptop.yaml', 'laptop'],
+        ]],
+        ['Shared (alhazen)', [
+          /* Hidden from `--rig lab` by the experiment's own lab, so spelled
+           * the way the command line reaches it, and saying why: the closed
+           * menu shows the option, not its group. */
+          ['alhazen/lab', 'alhazen/lab (hidden by this experiment’s lab)'],
+          ['alhazen/mac', 'mac'],
+          ['alhazen/vpixx', 'vpixx'],
+        ]],
+      ]);
+      for (const [, options] of menu(app)) {
+        for (const [, text] of options) assert.doesNotMatch(text, /rig-|\.ya?ml/);
+      }
+    });
+
+  it('opens on the experiment’s own mac, else the shared mac, else the first rig', async () => {
+    /* No mac of the experiment's own: the shared one, a window and no devices. */
+    const shared = await pageWith({ project: RIGGED, rigs: RIGS });
+    assert.equal(shared.byId('rig').value, 'alhazen/mac');
+    const own = await pageWith({
+      project: { ...RIGGED, rigs: [...RIGGED.rigs, rigEntry('mac')] }, rigs: RIGS,
+    });
+    assert.equal(own.byId('rig').value, 'configs/rig-mac.yaml');
+    const neither = await pageWith({
+      project: { ...RIGGED, rigs: RIGGED.rigs.filter((r) => r.name !== 'mac') }, rigs: RIGS,
+    });
+    assert.equal(neither.byId('rig').value, 'configs/rig-lab.yaml');
+  });
+
+  it('leaves out a group with no rigs in it', async () => {
+    const app = await pageWith();
+    assert.deepEqual(plain(menu(app).map(([label]) => label)), ['This experiment']);
+  });
+
+  it('shows the file beside a name two of the experiment’s rigs share', async () => {
+    const app = await pageWith({
+      project: {
+        ...PROJECT,
+        rigs: [rigEntry('lab'), rigEntry('lab', { path: 'configs/old/rig-lab.yaml' })],
+      },
+      rigs: { 'configs/rig-lab.yaml': rig(true, false, { name: 'lab' }) },
+    });
+    assert.deepEqual(plain(menu(app)[0][1].map(([, text]) => text)), [
+      'lab (configs/rig-lab.yaml)', 'lab (configs/old/rig-lab.yaml)',
+    ]);
+  });
+
+  it('summarises a shared rig from the merged answer, and says whose it is', async () => {
+    const app = await pageWith({ project: RIGGED, rigs: RIGS });
+    /* Opened on the shared mac, which has the live monitor off. */
+    assert.ok(app.fetches.some((f) => f.url === '/api/rig?project=p&rig=alhazen%2Fmac'));
+    assert.match(app.byId('rig-summary').textContent, /live monitor: off/);
+    assert.match(app.byId('rig-summary').textContent, /alhazen’s shared rig mac$/);
+    await chooseRig(app, 'alhazen/lab');
+    const summary = app.byId('rig-summary').textContent;
+    assert.match(summary, /live monitor: on/);
+    /* The shadowed one says which --rig reaches which lab. */
+    assert.match(summary, /this experiment has its own lab, which --rig lab runs/);
+    assert.match(summary, /this one is --rig alhazen\/lab/);
+  });
+
+  it('summarises a rig that extends a shared one as merged, naming the shared rig', async () => {
+    const app = await pageWith({ project: RIGGED, rigs: RIGS });
+    await chooseRig(app, 'configs/rig-lab.yaml');
+    const summary = app.byId('rig-summary').textContent;
+    /* The experiment's file says nothing about the live monitor; the merged
+     * answer does, and the Live monitor tab reads the same fact. */
+    assert.match(summary, /live monitor: on/);
+    assert.match(summary, /this experiment’s configs\/rig-lab\.yaml, extending alhazen’s shared lab/);
+    assert.equal(app.run("rigMonitor['p:configs/rig-lab.yaml']"), true);
+  });
+
+  it('launches a shared rig by its alhazen/ name, and an experiment rig by its path',
+    async () => {
+      const app = await pageWith({ project: RIGGED, rigs: RIGS });
+      chooseMode(app, 'movie');
+      await chooseRig(app, 'alhazen/lab');
+      await launch(app);
+      assert.equal(launched(app).rig, 'alhazen/lab');
+
+      const own = await pageWith({ project: RIGGED, rigs: RIGS });
+      chooseMode(own, 'movie');
+      await chooseRig(own, 'configs/rig-lab.yaml');
+      await launch(own);
+      assert.equal(launched(own).rig, 'configs/rig-lab.yaml');
+    });
+
+  it('says why a project registered before shared rigs offers none', async () => {
+    const note = 'This project was registered before the workspace listed alhazen’s shared rigs';
+    const app = await pageWith({ project: { ...PROJECT, rigs_note: note } });
+    assert.equal(app.byId('rig-note').hidden, false);
+    assert.equal(app.byId('rig-note').textContent, note);
+    const current = await pageWith();
+    assert.equal(current.byId('rig-note').hidden, true);
+  });
+
+  it('shows a shared-rig run in the history by its alhazen/ name', async () => {
+    const run = runDetail({
+      status: 'completed', returncode: 0, rig: 'alhazen/lab', rig_name: 'lab',
+      rig_source: 'alhazen',
+    });
+    const app = await pageWith({ project: RIGGED, rigs: RIGS, run: run });
+    const row = app.byId('history').children[0];
+    assert.match(row.querySelector('small').textContent, / · alhazen\/lab$/);
+    const mine = await pageWith({
+      project: RIGGED, rigs: RIGS,
+      run: runDetail({
+        status: 'completed', returncode: 0, rig: 'configs/rig-lab.yaml', rig_name: 'lab',
+        rig_source: 'experiment',
+      }),
+    });
+    assert.match(mine.byId('history').children[0].querySelector('small').textContent, / · lab$/);
+  });
 });

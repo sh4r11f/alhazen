@@ -13,6 +13,11 @@ Two ways to write one, for two different moments:
   alignment) and leaves every other entry as the session recorded it. That
   is what keeps a damaged file detectable: re-hashing the whole directory
   after a file changed would record the damage as the truth.
+
+Schema 2 (alhazen 2.0) adds ``experiment_version``: the version of the
+experiment the run's data is filed under, so the manifest names the protocol
+as well as the bytes. A schema 1 manifest, written before 2.0, has no such
+key and is read exactly as before.
 """
 
 from __future__ import annotations
@@ -26,7 +31,7 @@ import yaml
 
 log = logging.getLogger(__name__)
 
-MANIFEST_SCHEMA_VERSION = 1
+MANIFEST_SCHEMA_VERSION = 2
 
 
 def sha256_file(path: Path) -> str:
@@ -56,30 +61,34 @@ def _entry(run_dir: Path, path: Path) -> dict[str, object]:
     }
 
 
-def _write(manifest_path: Path, artifacts: list[dict[str, object]]) -> None:
-    manifest_path.write_text(
-        yaml.safe_dump(
-            {"schema_version": MANIFEST_SCHEMA_VERSION, "artifacts": artifacts},
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
+def _write(manifest_path: Path, manifest: dict[str, object]) -> None:
+    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
 
 
-def write_manifest(run_dir: Path, manifest_path: Path) -> None:
+def write_manifest(
+    run_dir: Path, manifest_path: Path, *, experiment_version: str | None = None
+) -> None:
     """Hash every file in ``run_dir`` into a new manifest.
 
     For the session's own teardown. Anything written into a finished run
     afterwards goes through `add_to_manifest` instead: this function would
     also re-hash a file that has changed since, and record the change as
     what the session wrote.
+
+    ``experiment_version`` is recorded beside the hashes when given; the
+    session always gives it. It is optional here only for a caller hashing a
+    folder that is not a session's run.
     """
     artifacts = [
         _entry(run_dir, path)
         for path in sorted(run_dir.rglob("*"))
         if path.is_file() and path != manifest_path
     ]
-    _write(manifest_path, artifacts)
+    manifest: dict[str, object] = {"schema_version": MANIFEST_SCHEMA_VERSION}
+    if experiment_version is not None:
+        manifest["experiment_version"] = experiment_version
+    manifest["artifacts"] = artifacts
+    _write(manifest_path, manifest)
 
 
 def add_to_manifest(run_dir: Path, manifest_path: Path, written: Iterable[Path]) -> None:
@@ -90,6 +99,11 @@ def add_to_manifest(run_dir: Path, manifest_path: Path, written: Iterable[Path])
     entry keeps the hash the session recorded, so a file damaged since the
     session still fails `verify_manifest` after a report or an alignment has
     been saved beside it; and a file nobody recorded stays unlisted.
+
+    Everything else in the manifest — its ``schema_version``, the
+    ``experiment_version`` — is kept exactly as the session wrote it. A
+    schema 1 manifest from before 2.0 stays schema 1: stamping the current
+    number on it would claim keys it does not have.
 
     A run with no manifest is left without one. Its session never finished
     teardown, which is what ``load_run`` reports ("manifest.yaml is
@@ -119,7 +133,9 @@ def add_to_manifest(run_dir: Path, manifest_path: Path, written: Iterable[Path])
             artifacts.append(entry)
         else:
             artifacts[index] = entry
-    _write(manifest_path, artifacts)
+    # The same mapping, its artifacts list updated in place: every other key
+    # keeps its value and its place in the file.
+    _write(manifest_path, manifest)
 
 
 def verify_manifest(run_dir: Path, manifest_path: Path) -> list[str]:

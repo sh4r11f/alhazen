@@ -145,7 +145,7 @@ def session_log(data_root: Path) -> str:
     The simulated display logs every message exactly as it would have drawn
     it, so this is the record of what the subject would have read.
     """
-    runs = sorted(data_root.glob("sub-*/ses-*/run-*"))
+    runs = sorted(data_root.glob("v*/sub-*/ses-*/run-*"))
     assert len(runs) == 1, runs
     return (runs[0] / "session.log").read_text(encoding="utf-8")
 
@@ -167,7 +167,10 @@ def build(tmp_path: Path, task: Task, **kwargs):
 
 
 def no_run_was_written(tmp_path: Path) -> bool:
-    return not list((tmp_path / "data").glob("sub-*"))
+    # Since 2.0 a run sits under its version folder (data/v<version>/sub-*);
+    # the old layout's place is checked too, so neither can hide one.
+    data = tmp_path / "data"
+    return not list(data.glob("v*/sub-*")) and not list(data.glob("sub-*"))
 
 
 class TestWhatATaskCanSay:
@@ -341,7 +344,7 @@ class TestEveryEntryPointShowsThem:
 
         code = main(
             ["run", "--task", "talking-task", "--rig", str(rig_file(tmp_path))]
-            + ["--sub", "s01", "--ses", "1"]
+            + ["--sub", "s01", "--ses", "1", "--initials", "SO"]
         )
 
         assert code == 0, capsys.readouterr().err
@@ -352,7 +355,7 @@ class TestEveryEntryPointShowsThem:
 
         code = main(
             ["run", "--task", "talking-task", "--mode", "test", "--rig", str(rig_file(tmp_path))]
-            + ["--sub", "s01", "--ses", "1"]
+            + ["--sub", "s01", "--ses", "1", "--initials", "SO"]
         )
 
         assert code == 0, capsys.readouterr().err
@@ -366,7 +369,7 @@ class TestEveryEntryPointShowsThem:
         code = run_experiment(
             task_class=TalkingTask,
             default_rig=rig_file(tmp_path),
-            argv=["--sub", "s01", "--ses", "1"],
+            argv=["--sub", "s01", "--ses", "1", "--initials", "SO"],
         )
 
         assert code == 0, capsys.readouterr().err
@@ -379,7 +382,7 @@ class TestEveryEntryPointShowsThem:
             task_class=TalkingTask,
             default_rig=rig_file(tmp_path),
             instructions=lambda: "run.py's own words.",
-            argv=["--sub", "s01", "--ses", "1"],
+            argv=["--sub", "s01", "--ses", "1", "--initials", "SO"],
         )
 
         assert code == 0, capsys.readouterr().err
@@ -492,7 +495,7 @@ class TestRunModeNamesATaskThatNeverSaid:
         with caplog.at_level(logging.WARNING, logger="alhazen.modes.session"):
             code = main(
                 ["run", "--task", "silent-task", "--rig", str(rig_file(tmp_path))]
-                + ["--sub", "s01", "--ses", "1"]
+                + ["--sub", "s01", "--ses", "1", "--initials", "SO"]
             )
 
         assert code == 0
@@ -535,7 +538,7 @@ class TestATaskWrittenBeforeTheHooksIsUnchanged:
 
         code = main(
             ["run", "--task", "silent-task", "--mode", mode, "--rig", str(rig_file(tmp_path))]
-            + ["--sub", "s01", "--ses", "1"]
+            + ["--sub", "s01", "--ses", "1", "--initials", "SO"]
         )
 
         assert code == 0, capsys.readouterr().err
@@ -589,7 +592,7 @@ def trials(data_root: Path) -> list[dict]:
     """The rows of the one run under ``data_root``."""
     import csv
 
-    runs = sorted(data_root.glob("sub-*/ses-*/run-*"))
+    runs = sorted(data_root.glob("v*/sub-*/ses-*/run-*"))
     assert len(runs) == 1, runs
     with next(runs[0].glob("*_trials.csv")).open() as handle:
         return list(csv.DictReader(handle))
@@ -597,7 +600,7 @@ def trials(data_root: Path) -> list[dict]:
 
 def snapshot_source(data_root: Path) -> str:
     """Where the run's snapshot says its task params came from."""
-    runs = sorted(data_root.glob("sub-*/ses-*/run-*"))
+    runs = sorted(data_root.glob("v*/sub-*/ses-*/run-*"))
     assert len(runs) == 1, runs
     snapshot = yaml.safe_load((runs[0] / "config_snapshot.yaml").read_text(encoding="utf-8"))
     return snapshot["config"]["sources"]["task"]
@@ -733,7 +736,7 @@ class TestEveryEntryPointUsesTheTasksParamsFile:
 
         code = main(
             ["run", "--task", "file-task", "--rig", str(rig_file(tmp_path))]
-            + ["--sub", "s01", "--ses", "1"]
+            + ["--sub", "s01", "--ses", "1", "--initials", "SO"]
         )
 
         assert code == 0, capsys.readouterr().err
@@ -752,7 +755,7 @@ class TestEveryEntryPointUsesTheTasksParamsFile:
 
         code = main(
             ["run", "--task", "file-task", "--rig", str(rig_file(tmp_path))]
-            + ["--params", str(given), "--sub", "s01", "--ses", "1"]
+            + ["--params", str(given), "--sub", "s01", "--ses", "1", "--initials", "SO"]
         )
 
         assert code == 0, capsys.readouterr().err
@@ -766,7 +769,7 @@ class TestEveryEntryPointUsesTheTasksParamsFile:
         code = run_experiment(
             task_class=task_with_file(declared),
             default_rig=rig_file(tmp_path),
-            argv=["--sub", "s01", "--ses", "1"],
+            argv=["--sub", "s01", "--ses", "1", "--initials", "SO"],
         )
 
         assert code == 0, capsys.readouterr().err
@@ -781,7 +784,7 @@ class TestEveryEntryPointUsesTheTasksParamsFile:
             task_class=task_with_file(declared),
             default_rig=rig_file(tmp_path),
             default_params=run_py_default,
-            argv=["--sub", "s01", "--ses", "1"],
+            argv=["--sub", "s01", "--ses", "1", "--initials", "SO"],
         )
 
         assert code == 0, capsys.readouterr().err
@@ -822,7 +825,7 @@ class TestEveryEntryPointUsesTheTasksParamsFile:
 
         code = main(
             ["run", "--task", "file-task", "--rig", str(rig_file(tmp_path))]
-            + ["--sub", "s01", "--ses", "1"]
+            + ["--sub", "s01", "--ses", "1", "--initials", "SO"]
         )
 
         assert code == 1
@@ -841,7 +844,7 @@ class TestEveryEntryPointUsesTheTasksParamsFile:
 
         code = main(
             ["run", "--task", "file-task", "--rig", str(rig_file(tmp_path))]
-            + ["--params", str(given), "--sub", "s01", "--ses", "1"]
+            + ["--params", str(given), "--sub", "s01", "--ses", "1", "--initials", "SO"]
         )
 
         assert code == 0, capsys.readouterr().err
@@ -853,7 +856,7 @@ class TestEveryEntryPointUsesTheTasksParamsFile:
 
         code = main(
             ["run", "--task", "silent-task", "--mode", "test", "--rig", str(rig_file(tmp_path))]
-            + ["--sub", "s01", "--ses", "1"]
+            + ["--sub", "s01", "--ses", "1", "--initials", "SO"]
         )
 
         assert code == 0, capsys.readouterr().err
@@ -935,7 +938,7 @@ class TestTheTasksParamsHook:
         seen = self.spy_on_the_session(monkeypatch)
         code = main(
             ["run", "--task", "stateful-task", "--mode", "test", "--rig", str(rig_file(tmp_path))]
-            + ["--sub", "m01", "--ses", "4"]
+            + ["--sub", "m01", "--ses", "4", "--initials", "MO"]
         )
 
         assert code == 0
@@ -966,7 +969,9 @@ class TestTheTasksParamsHook:
         `sub-None`, silently."""
         from alhazen.cli.main import main
 
-        answers = iter(["m02", "7"])
+        # Subject, session, and — since 2.0, for the modes that name a real
+        # subject — initials.
+        answers = iter(["m02", "7", "mt"])
         monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
         monkeypatch.setattr("sys.stdin", type("Tty", (), {"isatty": lambda self: True})())
         seen = self.spy_on_the_session(monkeypatch)
@@ -1024,7 +1029,7 @@ class TestTheTasksParamsHook:
             task_class=StatefulTask,
             default_rig=rig_file(tmp_path),
             params_hook=run_py_hook,
-            argv=["--mode", "test", "--sub", "m01", "--ses", "4"],
+            argv=["--mode", "test", "--sub", "m01", "--ses", "4", "--initials", "MO"],
         )
 
         assert code == 0
@@ -1039,7 +1044,7 @@ class TestTheTasksParamsHook:
         code = run_experiment(
             task_class=StatefulTask,
             default_rig=rig_file(tmp_path),
-            argv=["--mode", "test", "--sub", "m01", "--ses", "4"],
+            argv=["--mode", "test", "--sub", "m01", "--ses", "4", "--initials", "MO"],
         )
 
         assert code == 0
@@ -1061,7 +1066,7 @@ class TestTheTasksParamsHook:
 
         code = main(
             ["run", "--task", "careless-task", "--mode", "test", "--rig", str(rig_file(tmp_path))]
-            + ["--sub", "m01", "--ses", "4"]
+            + ["--sub", "m01", "--ses", "4", "--initials", "MO"]
         )
 
         assert code == 1
@@ -1084,7 +1089,16 @@ class TestTheTasksParamsHook:
         with pytest.raises(RuntimeError, match="data_root"):
             main(
                 ["run", "--task", "failing-task", "--mode", "test"]
-                + ["--rig", str(rig_file(tmp_path)), "--sub", "m01", "--ses", "4"]
+                + [
+                    "--rig",
+                    str(rig_file(tmp_path)),
+                    "--sub",
+                    "m01",
+                    "--ses",
+                    "4",
+                    "--initials",
+                    "MO",
+                ]
             )
 
     def test_a_task_that_declares_no_hook_is_built_from_its_params_unchanged(
@@ -1095,7 +1109,7 @@ class TestTheTasksParamsHook:
         seen = self.spy_on_the_session(monkeypatch)
         code = main(
             ["run", "--task", "silent-task", "--mode", "test", "--rig", str(rig_file(tmp_path))]
-            + ["--sub", "s01", "--ses", "1"]
+            + ["--sub", "s01", "--ses", "1", "--initials", "SO"]
         )
 
         assert code == 0
@@ -1150,7 +1164,7 @@ class TestTheLiveMonitorAddressIsPrinted:
 
         code = main(
             ["run", "--task", "file-task", "--rig", str(rig)]
-            + ["--sub", "s01", "--ses", "1", "--no-live-monitor-browser"]
+            + ["--sub", "s01", "--ses", "1", "--initials", "SO", "--no-live-monitor-browser"]
         )
         assert code == 0
         return code

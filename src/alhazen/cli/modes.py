@@ -43,7 +43,13 @@ def run_experiment(
 ) -> int:
     """Parse ``argv`` and run this experiment in the mode it names.
 
-    ``task_class`` and ``default_rig`` are all a ``run.py`` needs. The three
+    ``task_class`` and ``default_rig`` are all a ``run.py`` needs.
+    ``default_rig`` is what ``--rig`` means when the command line gives none,
+    and takes what ``--rig`` takes: a rig's name (``"mac"`` — the
+    experiment's own ``configs/rig-mac.yaml``, else alhazen's shared mac;
+    ``"alhazen/mac"`` for the shared one always) or a path to a rig file. A
+    name is looked up in the experiment this task belongs to, wherever the
+    command is typed (``alhazen.config.rigs``). The three
     optional arguments below are each something the task can declare for
     itself, and a task that does has it applied by ``alhazen run --task`` as
     well as here. **Each one, when given, takes precedence over the task's
@@ -130,6 +136,8 @@ def run_experiment(
             default=default_task,
             help=f"which of this experiment's tasks to run (default: {default_task})",
         )
+    # The default rig goes in as typed — a name or a path — and is resolved by
+    # the dispatch exactly as a --rig typed on the command line would be.
     # run.py's params file becomes --params's default, which is exactly what
     # gives it precedence over the task's own (the dispatch asks the task only
     # when --params is still None) and keeps an explicit --params above both.

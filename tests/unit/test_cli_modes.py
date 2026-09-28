@@ -143,7 +143,9 @@ class TestTheSessionNumberPrompt:
 
         monkeypatch.setattr(sys, "stdin", _Terminal())
         monkeypatch.setattr(builtins, "input", fake_input)
-        args = argparse.Namespace(sub="s01", ses=None)
+        # Initials given: test mode asks for them too since 2.0, and these
+        # tests are about the session number's prompt.
+        args = argparse.Namespace(sub="s01", ses=None, initials="HD")
         refused = _settle_subject_and_session(args, Mode.TEST)
         return refused, args, asked
 
@@ -203,6 +205,49 @@ class TestABadCurriculumIsInvalid:
         err = capsys.readouterr().err
         assert "INVALID: " in err
         assert str(missing) in err
+
+
+class TestARefusalFromWhatIsOnDiskIsReported:
+    def test_a_database_from_before_2_0_stops_the_session_with_its_path(self, tmp_path, capsys):
+        """The builder refuses an experiment database it cannot write before
+        the session starts (alhazen 2.0 moved it to schema 3). That refusal is
+        a DataError, which the CLI used to let through as a traceback; it is
+        reported like a bad config, with the file and the fix."""
+        import sqlite3
+
+        from alhazen.cli.modes import run_experiment
+        from alhazen.config.models import Model
+        from alhazen.core.events import EventSchema
+        from alhazen.core.trial import outcomes as make_outcomes
+        from alhazen.task.task import Task
+
+        class DiskParams(Model):
+            pass
+
+        class DiskTask(Task):
+            name = "disk-check"
+            events = EventSchema(())
+            outcomes = make_outcomes(DONE=dict(completed=True, success=True))
+            params_model = DiskParams
+
+        (tmp_path / "data").mkdir()
+        database = tmp_path / "data" / "experiment.sqlite3"
+        with sqlite3.connect(database) as db:
+            db.execute("CREATE TABLE schema_info (version INTEGER NOT NULL)")
+            db.execute("INSERT INTO schema_info(version) VALUES (2)")
+
+        code = run_experiment(
+            task_class=DiskTask,
+            default_rig=rig_file(tmp_path),
+            argv=["--mode", "run", "--sub", "01", "--ses", "1", "--initials", "HD"],
+        )
+
+        assert code == 1
+        err = capsys.readouterr().err
+        assert err.startswith("CANNOT RUN: ")
+        assert str(database) in err and "schema version 2" in err
+        # Refused before a run folder was made.
+        assert not list((tmp_path / "data").glob("v*"))
 
 
 class TestMeasureRejectsAnUnknownSkip:
@@ -275,7 +320,7 @@ class TestParamsHook:
         code = run_experiment(
             task_class=HookTask,
             default_rig=rig_file(tmp_path),
-            argv=["--mode", "test", "--sub", "t01", "--ses", "4", *argv_extra],
+            argv=["--mode", "test", "--sub", "t01", "--ses", "4", "--initials", "TT", *argv_extra],
             params_hook=hook,
         )
         return code, seen
@@ -340,3 +385,107 @@ class TestParamsHook:
 
         assert code == 2
         assert "--task" in capsys.readouterr().err
+
+
+class TestInitials:
+    """`--initials` (alhazen 2.0): the subject's initials, 1 to 5 letters,
+    recorded uppercase. Required by `run` and `test` — prompted for like
+    `--sub` and `--ses`, refused without a terminal — and optional elsewhere,
+    but held to their rule wherever they are given."""
+
+    @staticmethod
+    def task_class():
+        from alhazen.config.models import Model
+        from alhazen.core.events import EventSchema
+        from alhazen.core.trial import outcomes as make_outcomes
+        from alhazen.task.task import Task
+
+        class InitialsParams(Model):
+            pass
+
+        class InitialsTask(Task):
+            name = "initials-check"
+            events = EventSchema(())
+            outcomes = make_outcomes(DONE=dict(completed=True, success=True))
+            params_model = InitialsParams
+
+        return InitialsTask
+
+    def start(self, tmp_path, argv, monkeypatch=None):
+        """run.py's entry point up to the builder, which is stopped there:
+        what matters is what the dispatch hands it."""
+        from alhazen.cli.modes import run_experiment
+
+        seen: dict = {}
+        if monkeypatch is not None:
+            import alhazen.modes.session as session_module
+            from alhazen.errors import ConfigError
+
+            def stop(mode, **kwargs):
+                seen.update(kwargs, mode=mode)
+                raise ConfigError("stopped by the test")
+
+            monkeypatch.setattr(session_module, "build_mode_session", stop)
+        code = run_experiment(
+            task_class=self.task_class(), default_rig=rig_file(tmp_path), argv=argv
+        )
+        return code, seen
+
+    @pytest.mark.parametrize("mode", ["run", "test"])
+    def test_they_reach_the_session_uppercase(self, tmp_path, monkeypatch, mode):
+        argv = ["--mode", mode, "--sub", "01", "--ses", "1", "--initials", "hd"]
+        code, seen = self.start(tmp_path, argv, monkeypatch)
+
+        assert code == 1  # the stop above
+        assert seen["initials"] == "HD"
+
+    @pytest.mark.parametrize("mode", ["run", "test", "simulate", "demo", "measure"])
+    def test_ones_that_break_the_rule_are_refused_in_every_mode(self, tmp_path, capsys, mode):
+        argv = ["--mode", mode, "--sub", "01", "--ses", "1", "--initials", "H1"]
+        code, _ = self.start(tmp_path, argv)
+
+        assert code == 2
+        err = capsys.readouterr().err
+        assert "INVALID: initials must be 1 to 5 letters, such as HD; got 'H1'" in err
+        assert not (tmp_path / "data").exists() and not (tmp_path / "data-rehearsal").exists()
+
+    @pytest.mark.parametrize("mode", ["run", "test"])
+    def test_missing_ones_are_refused_without_a_terminal(self, tmp_path, capsys, mode):
+        code, _ = self.start(tmp_path, ["--mode", mode, "--sub", "01", "--ses", "1"])
+
+        assert code == 2
+        err = capsys.readouterr().err
+        assert "--initials required: stdin is not a terminal" in err
+
+    def test_simulate_needs_none(self, tmp_path, monkeypatch):
+        code, seen = self.start(tmp_path, ["--mode", "simulate", "--headless"], monkeypatch)
+
+        assert code == 1  # reached the builder
+        assert seen["initials"] is None and seen["subject"] == "sim"
+
+    def test_they_are_prompted_for_and_asked_again_until_they_are_letters(
+        self, monkeypatch, capsys
+    ):
+        import argparse
+        import builtins
+        import sys
+
+        from alhazen.cli.main import _settle_subject_and_session
+        from alhazen.modes import Mode
+
+        asked = []
+        replies = iter(["01", "2", "H.D.", "", "hd"])
+
+        def fake_input(prompt):
+            asked.append(prompt)
+            return next(replies)
+
+        monkeypatch.setattr(sys, "stdin", _Terminal())
+        monkeypatch.setattr(builtins, "input", fake_input)
+        args = argparse.Namespace(sub=None, ses=None, initials=None)
+
+        assert _settle_subject_and_session(args, Mode.RUN) is None
+
+        assert (args.sub, args.ses, args.initials) == ("01", 2, "HD")
+        assert asked[2:] == ["subject initials: "] * 3
+        assert capsys.readouterr().err.count("INVALID: initials must be 1 to 5 letters") == 2

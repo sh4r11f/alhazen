@@ -8,11 +8,8 @@ question. These tests capture the argument the seam passes.
 
 from __future__ import annotations
 
-import pytest
-
 from alhazen.config.models import RewardPulses
 from alhazen.core.commands import DEFAULT_KEYMAP, Command, KeyboardCommands, NullCommands
-from alhazen.session.runner import pause_menu
 from alhazen.task.plan import TrialPlan
 from alhazen.task.reward_policy import RewardPolicy
 from alhazen.testing import ScriptedCommands
@@ -97,75 +94,6 @@ class TestKeyFilter:
         null = NullCommands()
 
         assert null.poll() == [] and null.poll_raw_keys() == []
-
-
-class TestPauseMenuThroughTheRealSource:
-    """The deprecated ``pause_menu`` seam, wired to a KeyboardCommands the way
-    the builder used to. Kept because the function is public API until 2.0:
-    an experiment package still calling it must keep getting its keys back.
-
-    The live path is tested in test_pause_menu.py and test_pause_flow.py.
-    """
-
-    @pytest.mark.filterwarnings("ignore::DeprecationWarning")
-    @pytest.mark.parametrize(
-        ("key", "choice"),
-        [("space", "resume"), ("c", "calibrate"), ("q", "quit"), ("escape", "quit")],
-    )
-    def test_menu_resolves_a_key(self, key, choice):
-        commands = KeyboardCommands(key_getter=RecordingGetter([[], [(key, {})]]))
-        messages: list[str] = []
-
-        assert pause_menu(messages.append, commands.poll_raw_keys, lambda _s: None) == choice
-        assert messages and "PAUSED" in messages[0]
-
-    @pytest.mark.filterwarnings("ignore::DeprecationWarning")
-    def test_a_display_keeps_the_menu_rows_on_their_own_lines(self):
-        """The menu's rows are unindented, one key per line — exactly what a
-        display's prose reflow would join into a paragraph. A show_message
-        that takes ``reflow`` is asked to keep the breaks."""
-        from alhazen.testing import FakeClock, FakeDisplay
-
-        display = FakeDisplay(FakeClock())
-        commands = KeyboardCommands(key_getter=RecordingGetter([[("space", {})]]))
-
-        assert pause_menu(display.show_message, commands.poll_raw_keys, lambda _s: None) == (
-            "resume"
-        )
-        [(text, reflow)] = display.message_calls
-        assert reflow is False
-        assert text.startswith("PAUSED")
-
-    @pytest.mark.filterwarnings("ignore::DeprecationWarning")
-    def test_a_callable_without_reflow_is_called_with_the_text_alone(self):
-        """A plain one-argument callable, the seam's original contract, must
-        not be handed a keyword it cannot take."""
-        shown: list[str] = []
-
-        def show(text):
-            shown.append(text)
-
-        commands = KeyboardCommands(key_getter=RecordingGetter([[("q", {})]]))
-        assert pause_menu(show, commands.poll_raw_keys, lambda _s: None) == "quit"
-        assert shown and "PAUSED" in shown[0]
-
-    def test_it_warns_that_2_0_removes_it_and_names_the_replacements(self):
-        """Removal waits for the next MAJOR (docs/versioning.md §4). It used
-        to say 1.2, which every release from 1.2 to 1.5 made false."""
-        import alhazen.session
-
-        commands = KeyboardCommands(key_getter=RecordingGetter([[("space", {})]]))
-        with pytest.warns(DeprecationWarning) as caught:
-            assert pause_menu(lambda _text: None, commands.poll_raw_keys, lambda _s: None) == (
-                "resume"
-            )
-        [message] = [str(warning.message) for warning in caught]
-        assert "will be removed in 2.0" in message
-        # Named by the path an experiment imports them from, and that path
-        # has to resolve — a replacement the reader cannot import is no help.
-        for replacement in ("build_pause_menu", "run_pause_menu"):
-            assert f"alhazen.session.{replacement}" in message
-            assert callable(getattr(alhazen.session, replacement))
 
 
 class TestSessionResumesFromTheKeyboard:

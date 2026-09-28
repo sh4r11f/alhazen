@@ -16,23 +16,29 @@ written twice, including the same off-by-one in the run-number counter.
 | `run` | the experiment | yes | to the rig's data root |
 
 ```
-alhazen run --mode demo --task kde-vergence --rig configs/rig-mac.yaml
-alhazen run --mode movie --task kde-vergence --rig configs/rig-lab.yaml --out movies
-alhazen run --mode measure --rig configs/rig-lab.yaml
-alhazen run --mode simulate --task kde-vergence --rig configs/rig-lab.yaml --headless
-alhazen run --mode test --task kde-vergence --rig configs/rig-lab.yaml --sub s01 --ses 1
+alhazen run --mode demo --task kde-vergence --rig mac
+alhazen run --mode movie --task kde-vergence --rig lab --out movies
+alhazen run --mode measure --rig lab
+alhazen run --mode simulate --task kde-vergence --rig lab --headless
+alhazen run --mode test --task kde-vergence --rig lab --sub s01 --ses 1 --initials AB
 ```
 
-An experiment's own `run.py` takes the same flags, through the same code —
-see [Starting an experiment](#starting-an-experiment).
+`--rig` takes a rig's name — `lab` is the experiment's own
+`configs/rig-lab.yaml`, else the lab rig alhazen ships for every experiment
+to share — or the path to a rig file, as it always has
+(`--rig configs/rig-lab.yaml`). [Rigs](rigs.md) has the lookup order and how
+an experiment's rig builds on a shared one. An experiment's own `run.py` takes
+the same flags, through the same code — see
+[Starting an experiment](#starting-an-experiment).
 
 ## Every mode on every rig
 
 A rig file describes a **machine**: its panel, its devices, where its data
 goes. It says nothing about what you are about to do on it, because that is
 the mode's business. So there is one rig file per machine — `alhazen new`
-scaffolds a laptop (`rig-mac.yaml`) and the rig (`rig-lab.yaml`) — and every
-mode takes either of them as it stands.
+scaffolds a laptop (`rig-mac.yaml`) and the rig (`rig-lab.yaml`), and alhazen
+ships the machines several experiments share ([Rigs](rigs.md)) — and every
+mode takes any of them as it stands.
 
 The framework used to ship a file per *purpose* as well: `rig-sim` for a
 headless run, `rig-auto` for a dry run with the live monitor, `rig-mouse` for
@@ -174,13 +180,16 @@ count to be a multiple of its motion levels and would refuse a reduced one.
 ```
 mode: test — the whole session with fewer trials, for a person to sit through once
 data: data-rehearsal  (NOT the rig's data root)
+experiment: saccade-bias 0.5.0 — filed under v0.5.0/ (version from pyproject.toml)
 reduced: saccade_paradigm.n_per_condition: 10 -> 1
 reduced: pursuit_paradigm.n_per_condition: 7 -> 1
 ```
 
 A mode that quietly redesigned the experiment would put numbers in the config
 snapshot that are not the numbers that ran, and the snapshot is the record of
-what happened.
+what happened. The `experiment:` line says which version folder the run is
+filed under and where that number came from — the last moment to notice a
+protocol change nobody bumped the version for ([data on disk](data.md) §4).
 
 The reduced params are re-validated through the task's own model, so a
 reduction that breaks the experiment's rules fails here, with the model's own
@@ -197,10 +206,12 @@ data/            <- run
 data-rehearsal/  <- test, simulate
 ```
 
-A sibling of the rig's `data_root`, not a subdirectory. An analysis globbing
-`data_root/sub-*` finds nothing of a rehearsal either way, but a sibling is
-also obvious in a file listing, and a directory nobody can see is a directory
-somebody eventually analyses by accident.
+A sibling of the rig's `data_root`, not a subdirectory. An analysis walking
+`data_root` (`find_runs`, or a glob of `data_root/v*/sub-*`) finds nothing of
+a rehearsal either way, but a sibling is also obvious in a file listing, and a
+directory nobody can see is a directory somebody eventually analyses by
+accident. Inside it the layout is the real root's — `v<version>/sub-...`, its
+own `participants.tsv` and database ([data on disk](data.md)).
 
 ## `simulate` — nobody in the chair
 
@@ -241,6 +252,7 @@ printed before trial one:
 ```
 mode: simulate — the whole session, driven by a simulated subject
 data: data-rehearsal  (NOT the rig's data root)
+experiment: saccade-bias 0.5.0 — filed under v0.5.0/ (version from pyproject.toml)
 reduced: paradigm.n_per_condition: 10 -> 1
 autopilot: seed=1
 eyetracker: eyelink stands down — the task's autopilot supplies gaze
@@ -456,11 +468,18 @@ from alhazen.cli.modes import run_experiment
 raise SystemExit(
     run_experiment(
         task_class=MyTask,
-        default_rig=HERE / "configs" / "rig-mac.yaml",
+        default_rig="mac",
         argv=sys.argv[1:],
     )
 )
 ```
+
+`default_rig` takes what `--rig` takes. A name is looked up in the experiment
+the task belongs to — `"mac"` is its own `configs/rig-mac.yaml`, else
+alhazen's shared mac — wherever the command is typed, so `python ~/exp/run.py`
+from another folder starts on the same rig. A path works too, written as
+`HERE / "configs" / "rig-mac.yaml"` (with `HERE = Path(__file__).parent`) for
+the same reason.
 
 An experiment that ships several tasks declares them once, as a table, and
 alhazen owns the `--task` flag — its choices are the table's keys, the chosen
@@ -477,14 +496,14 @@ raise SystemExit(
     run_experiment(
         tasks=TASKS,
         default_task="rf-map-v4",
-        default_rig=HERE / "configs" / "rig-mac.yaml",
+        default_rig="mac",
         argv=sys.argv[1:],
     )
 )
 ```
 
 Name each params file as `HERE / "configs" / "task.yaml"` (with
-`HERE = Path(__file__).parent`), like `default_rig`: a bare string is resolved
+`HERE = Path(__file__).parent`), like a `default_rig` path: a bare string is resolved
 against the directory the command is typed in, so `python ~/exp/run.py` from
 elsewhere would not find it. Write the table as a module-level dict literal:
 the experiment workspace

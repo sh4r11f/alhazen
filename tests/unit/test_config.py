@@ -11,6 +11,7 @@ import yaml
 
 from alhazen.config.loader import load_model, load_rig
 from alhazen.config.models import (
+    INITIALS_RULE,
     DevicesConfig,
     Duration,
     EyeTrackerConfig,
@@ -21,6 +22,7 @@ from alhazen.config.models import (
     RigConfig,
     SessionInfo,
     SyncHwConfig,
+    normalize_initials,
     resolve_refresh,
 )
 from alhazen.config.snapshot import environment_digest, write_snapshot
@@ -82,6 +84,34 @@ class TestModels:
         info = SessionInfo(subject="s1", session=1, run=1, task_name="t", seed=1)
         with pytest.raises(ValueError):
             info.subject = "other"  # type: ignore[misc]
+
+
+class TestInitials:
+    """A subject's initials (alhazen 2.0): 1 to 5 letters, recorded
+    uppercase, in the same words wherever they are refused."""
+
+    @pytest.mark.parametrize(
+        "given, recorded",
+        [("HD", "HD"), ("hd", "HD"), (" Hd ", "HD"), ("A", "A"), ("abcde", "ABCDE"), ("øy", "ØY")],
+    )
+    def test_letters_are_recorded_uppercase(self, given, recorded):
+        assert normalize_initials(given) == recorded
+
+    @pytest.mark.parametrize("given", ["", "   ", "H1", "H.D.", "H D", "ABCDEF", "h-d"])
+    def test_anything_else_is_refused_in_the_rules_words(self, given):
+        with pytest.raises(ValueError) as refused:
+            normalize_initials(given)
+        assert str(refused.value) == f"{INITIALS_RULE}; got {given!r}"
+
+    def test_session_info_records_them_as_normalised(self):
+        info = SessionInfo(subject="s1", session=1, run=1, task_name="t", seed=1, initials="hd")
+        assert info.initials == "HD"
+        # Optional: a session started from code need not say them.
+        assert SessionInfo(subject="s1", session=1, run=1, task_name="t", seed=1).initials is None
+
+    def test_session_info_refuses_what_the_rule_refuses(self):
+        with pytest.raises(ValueError, match=INITIALS_RULE):
+            SessionInfo(subject="s1", session=1, run=1, task_name="t", seed=1, initials="H1")
 
 
 class TestFrameQAPolicyConfig:
@@ -489,6 +519,41 @@ class TestSnapshot:
             "experiment_git_sha",
             "environment_digest",
         }
+
+    def test_the_experiment_and_its_version_lead_the_provenance(self, tmp_path):
+        # alhazen 2.0: the version the run is filed under, recorded in the
+        # file as well as by the folder, with where it was read.
+        from alhazen.config.experiment import Experiment
+
+        experiment = Experiment("amodal-averaging", "0.4.0", "pyproject.toml", None)
+        path = tmp_path / "config_snapshot.yaml"
+        write_snapshot(make_session_config(tmp_path), path, experiment=experiment)
+
+        prov = yaml.safe_load(path.read_text())["provenance"]
+        assert list(prov)[:4] == [
+            "created",
+            "experiment_name",
+            "experiment_version",
+            "experiment_version_source",
+        ]
+        assert (
+            prov["experiment_name"],
+            prov["experiment_version"],
+            prov["experiment_version_source"],
+        ) == ("amodal-averaging", "0.4.0", "pyproject.toml")
+
+    def test_a_provenance_already_read_is_written_as_it_is(self, tmp_path):
+        # session.json and the snapshot quote one reading (session/identity.py).
+        path = tmp_path / "config_snapshot.yaml"
+        given = {"created": "then", "experiment_version": "0.4.0"}
+        returned = write_snapshot(make_session_config(tmp_path), path, provenance=given)
+
+        assert returned == given
+        assert yaml.safe_load(path.read_text())["provenance"] == given
+        with pytest.raises(ValueError, match="not both"):
+            write_snapshot(
+                make_session_config(tmp_path), path, experiment_dir=tmp_path, provenance=given
+            )
 
     def test_the_version_recorded_is_alhazens_own(self, tmp_path):
         """It was `unknown` in every snapshot alhazen had ever written. The

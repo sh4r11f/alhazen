@@ -18,9 +18,8 @@ import re
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
-from alhazen._deprecation import warn_deprecated_name
 from alhazen.errors import ConfigError
 
 
@@ -863,38 +862,75 @@ class RigConfig(Model):
 
     @model_validator(mode="before")
     @classmethod
-    def _accept_the_old_live_monitor_key(cls, data: Any) -> Any:
-        """A rig file written before 1.9 says ``dashboard:`` where
-        ``live_monitor:`` now goes. Read it as that section, with a
-        DeprecationWarning, until 2.0 (docs/versioning.md §4). A file naming
-        both is refused: there is no right answer to which one the session
-        should run with, and ``extra="forbid"`` would otherwise refuse only
-        the old one, with a message about an unknown key.
+    def _refuse_the_pre_1_9_live_monitor_key(cls, data: Any) -> Any:
+        """Refuse a rig file's ``dashboard:`` section, naming what replaced it.
+
+        A rig file written before 1.9 says ``dashboard:`` where
+        ``live_monitor:`` now goes. 1.9 and 1.10 read it as that section, with
+        a DeprecationWarning; 2.0 removed it (docs/versioning.md §4).
+        ``extra="forbid"`` would refuse the key anyway, but as "Extra inputs
+        are not permitted", which tells the experimenter holding an old rig
+        file that something is wrong and not what to type instead. So the key
+        is refused here, before that check, with the new name in the message.
         """
         if isinstance(data, dict) and "dashboard" in data:
-            if "live_monitor" in data:
-                raise ValueError(
-                    "rig names both `dashboard` and `live_monitor`; keep `live_monitor` only"
-                )
-            warn_deprecated_name(
-                "the rig file's `dashboard:` section",
-                since="1.9",
-                removed_in="2.0",
-                instead="`live_monitor:`",
+            # A file that already has the new section needs the old one
+            # deleted, not renamed: renaming would give it two.
+            fix = (
+                "delete it: this rig already has a `live_monitor:` section"
+                if "live_monitor" in data
+                else "rename it to `live_monitor:`; its settings are unchanged"
             )
-            rest = {key: value for key, value in data.items() if key != "dashboard"}
-            return {**rest, "live_monitor": data["dashboard"]}
+            raise ValueError(
+                "the rig's `dashboard:` section was renamed to `live_monitor:` in alhazen 1.9, "
+                f"and alhazen 2.0 no longer reads the old name; {fix}"
+            )
         return data
 
 
+# The rule a subject's initials are held to, in the words every entry point
+# shows: the CLI's refusal and its prompt, SessionInfo, the experiment
+# workspace. The workspace page carries the same sentence in its JavaScript,
+# and tests/unit/test_workspace.py holds the two together.
+INITIALS_RULE = "initials must be 1 to 5 letters, such as HD"
+
+
+def normalize_initials(text: str) -> str:
+    """A subject's initials as they are recorded: 1 to 5 letters, uppercase.
+
+    Surrounding spaces are dropped and the letters uppercased first, so
+    ``" hd "`` and ``"HD"`` are the same person. Letters in any script count
+    (``"ØY"``), because initials are recorded, never put in a path: a subject
+    is filed by its id alone (docs/data.md). Anything else — a digit, a dot,
+    a space inside, more than five letters — is a ValueError in
+    `INITIALS_RULE`'s words, naming what was given.
+    """
+    initials = text.strip().upper()
+    if not (1 <= len(initials) <= 5 and initials.isalpha()):
+        raise ValueError(f"{INITIALS_RULE}; got {text!r}")
+    return initials
+
+
 class SessionInfo(Model):
-    """Identity of one recorded run, stamped into the snapshot and filenames."""
+    """Identity of one recorded run, stamped into the snapshot and filenames.
+
+    ``initials`` are the subject's, recorded in the snapshot, session.json and
+    participants.tsv (normalised by `normalize_initials`) and never in a file
+    or folder name. None when the session was not told them: ``simulate``,
+    and any session started from code that does not pass them.
+    """
 
     subject: str
     session: int
     run: int
     task_name: str
     seed: int  # always the resolved concrete seed, never None
+    initials: str | None = None
+
+    @field_validator("initials")
+    @classmethod
+    def _recorded_initials(cls, value: str | None) -> str | None:
+        return None if value is None else normalize_initials(value)
 
     @model_validator(mode="after")
     def _valid(self) -> SessionInfo:

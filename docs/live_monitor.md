@@ -8,12 +8,16 @@ workspace embeds this page in its **Live monitor** tab (see
 [Live monitor](workspace.md#live-monitor)); from a terminal, `python run.py`
 opens it in its own browser tab as before.
 
-## Renamed in 1.9
+## The old names, and 2.0
 
 Until 1.8 this page and its code were "the dashboard". That word now means the
-experiment workspace only, and the live monitor's names changed with it. The
-old spellings keep working through 1.x with a `DeprecationWarning` naming the
-replacement, and go in 2.0 ([versioning](versioning.md) §4):
+experiment workspace only, and in 1.9 the live monitor's names changed with
+it. The old spellings kept working through 1.9 and 1.10, with a
+`DeprecationWarning` naming the replacement, and **2.0 removed them**
+([versioning](versioning.md) §4). Code or a rig file still using one now
+fails: a rig file's `dashboard:` section and a task's `dashboard = ...` are
+refused with a message naming the new name; the rest fail as any unknown
+import, attribute, keyword or flag does. Use the right-hand column:
 
 | Before 1.9 | Since 1.9 |
 | --- | --- |
@@ -25,10 +29,19 @@ replacement, and go in 2.0 ([versioning](versioning.md) §4):
 | `build_session(dashboard=, open_dashboard=)`, the same on `build_mode_session` | `build_session(live_monitor=, open_live_monitor=)` |
 | console line `dashboard: http://…` | `live monitor: http://…` |
 
-Two names do not change yet: the saved page `figures/dashboard.html` and its
-state `figures/dashboard_state.json`. Run-directory file names are an on-disk
-contract that changes only in a MAJOR version (§3 of the same page), so they
-are renamed in 2.0.
+The two saved files kept their old names through 1.x, because run-directory
+file names are an on-disk contract that changes only in a MAJOR version
+(§3 of the same page). 2.0 renamed them:
+
+| Up to 1.10 | Since 2.0 |
+| --- | --- |
+| `figures/dashboard.html` | `figures/live_monitor.html` |
+| `figures/dashboard_state.json` | `figures/live_monitor_state.json` |
+
+A run recorded before 2.0 keeps the old names; nothing is renamed on disk. A
+script that opens the saved state of runs from both sides of the upgrade
+looks for `live_monitor_state.json` first and `dashboard_state.json` second
+([data on disk](data.md) §6).
 
 Alhazen can open a local live monitor in the browser before PsychoPy takes focus. The
 live monitor receives a new immutable snapshot after every recorded trial; no
@@ -114,7 +127,7 @@ flowchart LR
   Q --> H["child process<br/>HTTP + long poll"]
   H --> B["browser: live_monitor.js<br/>scales · axes · marks · hover"]
   B -->|"Export figure"| X["SVG 89 / 183 mm<br/>PNG 600 dpi"]
-  W --> F["figures/dashboard.html<br/>figures/live_monitor_state.json"]
+  W --> F["figures/live_monitor.html<br/>figures/live_monitor_state.json"]
 ```
 
 The split matters: **the browser draws, it does not analyse.** Every count,
@@ -544,7 +557,8 @@ saving nothing. File names carry the letter, the title and the width, such as
 ## Saved output
 
 At shutdown, the final state is saved as `figures/live_monitor_state.json` and a
-self-contained `figures/dashboard.html`. Both are covered by the run manifest.
+self-contained `figures/live_monitor.html` (before 2.0: `dashboard_state.json`
+and `dashboard.html`). Both are covered by the run manifest.
 The saved page is the same page, with its snapshot baked in and nothing to
 poll: it loads no fonts, scripts or styles from the network, so it still opens
 years later on a machine with no internet.

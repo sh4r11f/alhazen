@@ -3,7 +3,7 @@ checks."""
 
 from alhazen.session.builder import build_session
 from alhazen.session.checks import check_rig
-from alhazen.session.pause import PauseMenu, build_pause_menu, pause_menu, run_pause_menu
+from alhazen.session.pause import PauseMenu, build_pause_menu, run_pause_menu
 from alhazen.session.recorder import DataRecorder
 from alhazen.session.runner import SessionRunner
 
@@ -24,6 +24,5 @@ __all__ = [
     "build_session",
     "check_rig",
     "build_pause_menu",
-    "pause_menu",
     "run_pause_menu",
 ]

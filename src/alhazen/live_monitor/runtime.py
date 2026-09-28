@@ -33,6 +33,15 @@ from alhazen.live_monitor.spec import LiveMonitorSpec
 
 log = logging.getLogger(__name__)
 
+# The two files the live monitor leaves in a run's `figures/` at teardown:
+# its final state, and the page with that state baked in. Run-directory file
+# names are an on-disk contract that changes only in a MAJOR version
+# (docs/versioning.md §3), pinned in tests/fixtures/contracts.json. They were
+# `dashboard_state.json` and `dashboard.html` until 2.0; a run recorded
+# before then keeps those names, and nothing in alhazen reads either back.
+SAVED_STATE = "live_monitor_state.json"
+SAVED_PAGE = "live_monitor.html"
+
 # The button names the server forwards to the session. Anything else in a
 # POST is rejected before it reaches the queue, so a stray request cannot
 # trigger a session action the pause menu does not offer. "calibrate",
@@ -257,14 +266,11 @@ class LiveMonitorController:
         # record.
         figures_dir.mkdir(parents=True, exist_ok=True)
         payload = json.dumps(state, indent=2, sort_keys=True, default=str)
-        # Still `dashboard_state.json` and `dashboard.html` after the rename
-        # to "live monitor": run-directory file names are an on-disk contract
-        # that changes only in a MAJOR version (docs/versioning.md §3), so
-        # these two follow in 2.0 with a migration note.
-        state_path = figures_dir / "dashboard_state.json"
+        # SAVED_STATE and SAVED_PAGE: the names 2.0 gave these two files.
+        state_path = figures_dir / SAVED_STATE
         state_path.write_text(payload + "\n", encoding="utf-8")
         page = page_html(payload)
-        (figures_dir / "dashboard.html").write_text(page, encoding="utf-8")
+        (figures_dir / SAVED_PAGE).write_text(page, encoding="utf-8")
 
     def alive(self) -> bool:
         return bool(self._process is not None and self._process.is_alive())

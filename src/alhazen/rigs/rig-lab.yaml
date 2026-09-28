@@ -1,0 +1,171 @@
+# MACHINE: the lab rig — an EyeLink 1000 on its own Host PC, a solenoid on a
+# National Instruments DAQ, and TTL sync lines out of the same DAQ.
+#
+# One of alhazen's SHARED rigs: every experiment reaches it as `--rig lab`
+# (or `--rig alhazen/lab` when it has a rig of its own named lab), so it
+# describes the machine and nothing about any one experiment. `alhazen rigs`
+# lists it beside an experiment's own rigs. Taken from amodal-averaging's
+# configs/rig-lab.yaml, the reference experiment's, with the parts that were
+# that experiment's design moved out (see "What an experiment adds" below).
+#
+# This is NOT rig-vpixx.yaml. Both are lab machines and both collect real data;
+# they are different rooms with different hardware:
+#
+#   rig-vpixx.yaml   the VPixx booth — VIEWPixx panel, TRACKPixx3 inside the
+#                    chassis, no reward line, no sync lines. Human volunteers.
+#   rig-lab.yaml     this file — EyeLink 1000 + NI DAQ, a reward line and four
+#                    TTLs. The machine a monkey can be run on, and the one
+#                    whose events a neural recording can be aligned to.
+#
+# Which of alhazen's six modes you run here is not this file's business:
+#
+#   alhazen check-rig             --rig lab --pulse
+#   python run.py --mode measure  --rig lab
+#   python run.py --mode simulate --rig lab --seed 1
+#   python run.py --mode test     --rig lab --sub dev --ses 1
+#   python run.py                 --rig lab --sub s01 --ses 1
+#
+# rig-lab-rehearsal.yaml is this file with every device stood down, for
+# rehearsing the checkout and a whole session away from the rig.
+#
+# ---------------------------------------------------------------------------
+# What an experiment adds
+# ---------------------------------------------------------------------------
+#
+# Three things here are not the machine's but each experiment's, so this file
+# leaves them out, and an experiment that needs them writes its own
+# configs/rig-lab.yaml that EXTENDS this one and says only those:
+#
+#   extends: lab
+#   display:
+#     photodiode:
+#       events: [STIM_ON]          # the events the diode marks
+#   devices:
+#     eyetracker:
+#       edf_host_filename: amodal.EDF
+#       accuracy_max_deg: 0.5      # the design's calibration limit
+#     sync:
+#       event_lines:               # which of ITS events go out on which TTL
+#         STIM_ON: Dev1/port0/line0
+#         GO_CUE: Dev1/port0/line1
+#         SACCADE_ONSET: Dev1/port0/line2
+#         LANDED: Dev1/port0/line3
+#
+# Everything else — this monitor, the DAQ's device and channels, the frame QA
+# policy — comes from here. Sections merge key by key; a list replaces the
+# shared one whole; a null removes an entry (docs/rigs.md).
+#
+#   - Event names. The sync lines and the photodiode mark events the TASK
+#     declares, and a session refuses a rig naming an event its task never
+#     declares (a pulse for an event that never fires is a TTL silently
+#     missing from the recording). No list of names suits every experiment,
+#     so this file names none: as it stands the lines pulse nothing and the
+#     patch never flashes.
+#   - The EDF file name the Host PC saves (8.3 format), which is what tells
+#     one experiment's recordings from another's on the Host PC's disk.
+#   - A calibration limit tighter than alhazen's 1.0 deg default, for a
+#     design whose dependent measure is a gaze position.
+#
+# MEASURE the monitor numbers below on THIS panel. They decide what a degree of
+# visual angle is, and every stimulus size in every experiment run here
+# depends on them — rig-vpixx.yaml's numbers describe a different screen at a
+# different distance and must not be copied across. A correction made here is
+# made once, for every experiment that uses this rig without overriding the
+# monitor in its own rig-lab.yaml.
+monitor:
+  width_px: 1920
+  height_px: 1080
+  width_cm: 52.0       # the visible width of the panel, not the bezel
+  distance_cm: 57.0    # eye to screen. MEASURE IT.
+  refresh_rate_hz: 120.0
+  fullscreen: true
+
+display:
+  backend: psychopy
+  frame_qa:
+    # The same policy and the same budget as rig-vpixx.yaml, and for the same
+    # reason: these are the two machines where subjects are run, so a trial
+    # whose stimulus was not the one the design specifies is RE-SERVED here
+    # rather than thrown away in analysis, and a cell keeps its planned n. The
+    # fraction is argued at length in rig-vpixx.yaml — for a trial of about
+    # 350 frames (amodal-averaging's), 10% is ~35 frames or ~290 ms at 120 Hz.
+    # An experiment whose trials want a different budget sets its own in its
+    # rig-lab.yaml, and should say why.
+    #
+    # Re-served for its data, not held against the subject: the feedback on a
+    # recycled trial shows the response the subject made, and a reward, if
+    # the task pays one, follows that response rather than DROPPED_FRAMES (see
+    # the reward block below).
+    policy: recycle_trial
+    max_dropped_fraction: 0.10
+  # Wired here, unlike the VPixx booth: this rig's whole reason to exist is
+  # that its events can be aligned to something outside the session clock, and
+  # a diode edge on a stimulus onset is the cheapest audit of the sync lines
+  # below. The diode is taped over the bottom-right corner; WHICH events flash
+  # the patch is each experiment's (`events:` in its own rig-lab.yaml, see the
+  # top of this file). With none named the patch stays dark.
+  photodiode:
+    corner: br
+    size_px: 60
+    events: []
+
+live_monitor:
+  # Opens before PsychoPy takes focus. Read-only until the experimenter pauses
+  # with P, so browser clicks cannot affect an active trial.
+  enabled: true
+  auto_open: true
+  port: 0
+
+devices:
+  eyetracker:
+    backend: eyelink
+    host_ip: 100.1.1.1
+    # No `eye:` here, unlike rig-vpixx.yaml, and alhazen rejects the file if it
+    # is added: which eye an EyeLink reports is set in camera setup on the Host
+    # PC, not by this config.
+    #
+    # No `edf_host_filename` either: alhazen's default, alhazen.EDF, is used
+    # until an experiment names its own (top of this file), and every
+    # experiment should — the Host PC keeps one file per name.
+    calibration_type: HV9
+    calibration_area: 0.6
+    # No `accuracy_max_deg`: alhazen's 1.0 deg default, judged on the WORST
+    # validation target rather than the mean. A design whose dependent
+    # measure is a gaze position needs tighter (amodal-averaging uses 0.5)
+    # and says so in its own rig-lab.yaml.
+
+  # Reward. A human volunteer is thanked; a monkey on this rig is paid in
+  # juice for the same saccade. Nothing in this block decides that. Whether an
+  # outcome earns a payout is the task's RewardPolicy, keyed on the outcome's
+  # name; a task that declares none pays no outcome through this line, and
+  # only the experimenter's manual reward key opens it. The line is simply
+  # available, and costs nothing unused.
+  #
+  # Once a policy exists, a trial that frame QA recycles is paid for the
+  # subject's response, not for DROPPED_FRAMES. alhazen keys the payout on
+  # the outcome the response earned — kept on the row as
+  # `outcome_before_frame_qa` — so a good saccade on a display that dropped
+  # frames is still paid, and a completed response that earns nothing gets a
+  # NO_REWARD event naming that response's outcome. The trial is re-served for
+  # its data all the same.
+  reward:
+    backend: nidaq
+    device: Dev1
+    channel: ao0
+    voltage: 5.0
+
+  # Sync. Four TTLs are wired, Dev1/port0/line0 to line3. Which event goes out
+  # on which line is each experiment's (`event_lines:` in its own rig-lab.yaml,
+  # see the top of this file), because the names are its task's events. With
+  # none named here, `check-rig --pulse` reports "pulsed 0 line(s)" and a
+  # session pulses nothing.
+  #
+  # Aligning a recording to a session is alhazen's `align_run`, which fits the
+  # two clocks on ONE event's pulse train: by default, whichever wired event
+  # the session emitted most often. A stimulus onset that fires on every trial
+  # is the one to put on a line.
+  sync:
+    backend: nidaq
+    pulse_ms: 2.0
+
+data_root: data

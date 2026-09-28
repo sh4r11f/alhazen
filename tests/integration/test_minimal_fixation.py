@@ -13,11 +13,19 @@ from pathlib import Path
 import numpy as np
 import yaml
 
+from alhazen.config.experiment import find_experiment
 from alhazen.data.manifest import verify_manifest
 from alhazen.session.database import DeviceSample, ExperimentDatabase
 from support import load_example_task
 
 EXAMPLE_DIR = Path(__file__).parents[2] / "examples" / "minimal_fixation"
+
+
+def example_version() -> str:
+    """The version the example's data is filed under: an example shipped
+    with alhazen belongs to alhazen's own project (config/experiment.py), so
+    it is read, not typed — it moves with every release."""
+    return find_experiment(load_example_task(EXAMPLE_DIR).MinimalFixationTask).version
 
 
 def test_builder_session_end_to_end(tmp_path):
@@ -55,7 +63,10 @@ def test_builder_session_end_to_end(tmp_path):
     )
     runner.run()
 
-    run_dir = tmp_path / "sub-demo" / "ses-001" / "run-01_task-minimal-fixation"
+    version = example_version()
+    # Under the experiment's version (alhazen 2.0); the registry and the
+    # database stay at the unversioned root, below.
+    run_dir = tmp_path / f"v{version}" / "sub-demo" / "ses-001" / "run-01_task-minimal-fixation"
     assert run_dir.is_dir()
 
     trials_path = next(run_dir.glob("*_trials.csv"))
@@ -81,6 +92,9 @@ def test_builder_session_end_to_end(tmp_path):
     from alhazen.version import get_version
 
     assert snap["provenance"]["alhazen_version"] == get_version()
+    assert snap["provenance"]["experiment_version"] == version
+    assert snap["provenance"]["experiment_version_source"] == "pyproject.toml"
+    assert all(r["experiment_version"] == version for r in rows)
 
     assert next(run_dir.glob("*_frames.csv")).exists()
     assert verify_manifest(run_dir, run_dir / "manifest.yaml") == []
@@ -103,7 +117,7 @@ def test_builder_session_end_to_end(tmp_path):
     # which is what lets the same subject/session/run run again tomorrow.
     with experiment_db.connect() as db:
         (run_id,) = db.execute("SELECT run_id FROM runs").fetchone()
-    assert run_id.startswith("sub-demo/ses-001/run-01/task-minimal-fixation/")
+    assert run_id.startswith(f"v{version}/sub-demo/ses-001/run-01/task-minimal-fixation/")
     first_frame = experiment_db.frame_snapshot(
         subject="demo", session=1, run=1, trial_index=1, frame_index=0
     )
@@ -155,7 +169,8 @@ def test_example_script_runs_as_documented(tmp_path):
     )
     assert proc.returncode == 0, proc.stderr
     assert "session complete" in proc.stdout
-    run_dir = tmp_path / "sub-demo" / "ses-001" / "run-01_task-minimal-fixation"
+    session_dir = tmp_path / f"v{example_version()}" / "sub-demo" / "ses-001"
+    run_dir = session_dir / "run-01_task-minimal-fixation"
     assert next(run_dir.glob("*_trials.csv")).exists()
     # A second invocation picks the next run number instead of refusing.
     proc2 = subprocess.run(
@@ -166,4 +181,4 @@ def test_example_script_runs_as_documented(tmp_path):
         cwd=tmp_path,
     )
     assert proc2.returncode == 0, proc2.stderr
-    assert (tmp_path / "sub-demo" / "ses-001" / "run-02_task-minimal-fixation").is_dir()
+    assert (session_dir / "run-02_task-minimal-fixation").is_dir()

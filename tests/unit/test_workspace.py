@@ -32,6 +32,7 @@ from alhazen.cli.workspace import (
     path_inside,
     script_actions,
 )
+from alhazen.config.models import INITIALS_RULE
 from alhazen.modes import Mode
 
 RIG = Path(__file__).parents[2] / "examples/minimal_fixation/rig-sim.yaml"
@@ -48,8 +49,13 @@ def workspace(tmp_path, monkeypatch):
         workspace_module,
         "probe_interpreter",
         # A version the launcher can read (it picks a flag's spelling by it,
-        # no_browser_flag); the interpreter is never really probed here.
-        lambda python, path: {"alhazen_version": "1.9.0", "python_version": "stub"},
+        # no_browser_flag); the interpreter is never really probed here. No
+        # shared rigs: tests/unit/test_workspace_rigs.py covers those.
+        lambda python, path: {
+            "alhazen_version": "1.9.0",
+            "python_version": "stub",
+            "shared_rigs": [],
+        },
     )
     root = tmp_path / "experiment with spaces"
     (root / "configs/rigs").mkdir(parents=True)
@@ -91,13 +97,31 @@ def finish(workspace, run):
 class TestProjects:
     def test_registry_discovery_and_roundtrip(self, workspace):
         p = workspace.describe(workspace.projects[0]["id"])
-        # Posix form on every OS, so a registry or run record written on a
-        # Windows rig reads the same on a Mac — and CI is green on both.
-        assert p["rigs"] == ["configs/rig-sim.yaml", "configs/rigs/rig-lab.yaml"]
+        # By name, in name order; each path posix on every OS, so a registry
+        # or run record written on a Windows rig reads the same on a Mac — and
+        # CI is green on both.
+        assert p["rigs"] == [
+            {
+                "name": "lab",
+                "source": "experiment",
+                "shadowed": False,
+                "extends": None,
+                "path": "configs/rigs/rig-lab.yaml",
+            },
+            {
+                "name": "sim",
+                "source": "experiment",
+                "shadowed": False,
+                "extends": None,
+                "path": "configs/rig-sim.yaml",
+            },
+        ]
+        assert p["rigs_note"] is None
         assert p["configs"] == ["configs/task.yaml"]
-        assert not any("\\" in path for path in p["rigs"] + p["configs"])
+        paths = [rig["path"] for rig in p["rigs"]] + p["configs"]
+        assert not any("\\" in path for path in paths)
         assert workspace.config(p["id"], p["configs"][0])["values"]["speed"] == 3
-        assert "monitor" in workspace.config(p["id"], p["rigs"][1])["values"]
+        assert "monitor" in workspace.rig(p["id"], p["rigs"][0]["path"])["values"]
         workspace.add(p["path"], sys.executable)
         assert len(workspace.projects) == 1
         restored = Workspace(workspace.directory)
@@ -180,6 +204,7 @@ class TestLaunches:
         assert run["artifacts"][0]["path"] == "clip.mp4"
         # Relative paths in the record and the gallery are posix on every OS.
         assert run["rig"] == "configs/rig-sim.yaml"
+        assert (run["rig_name"], run["rig_source"]) == ("sim", "experiment")
         frames = Path(run["directory"]) / "media/frames"
         frames.mkdir()
         (frames / "first.png").write_bytes(b"png")
@@ -188,6 +213,8 @@ class TestLaunches:
         assert '--mode", "movie"' in run["log"]
         assert yaml.safe_load((Path(run["directory"]) / "params.yaml").read_text())["speed"] == 7
         assert (Path(run["directory"]) / "rig.yaml").read_bytes() == RIG.read_bytes()
+        # A whole rig file is copied as it is, and alone.
+        assert not (Path(run["directory"]) / "rig-source.yaml").exists()
         assert original.read_bytes() == content
         restored = Workspace(workspace.directory)
         assert restored.detail(run["id"])["status"] == "completed"
@@ -201,6 +228,7 @@ class TestLaunches:
             workspace,
             mode=mode,
             subject="s01",
+            initials="hd",
             seed=42,
             parameters=None if mode == "measure" else {"speed": 2},
             headless=mode == "simulate",
@@ -222,6 +250,12 @@ class TestLaunches:
             assert "--headless" in cmd
         if mode == "test":
             assert "--mouse" in cmd
+        # The subject's initials, uppercase as run.py records them, for the
+        # modes that run trials — and only for those.
+        if Mode(mode).runs_trials:
+            assert cmd[cmd.index("--initials") + 1] == "HD"
+        else:
+            assert "--initials" not in cmd
 
     @pytest.mark.parametrize(
         "args, message",
@@ -380,6 +414,7 @@ class TestCommandContract:
             workspace,
             mode=mode,
             subject="s01",
+            initials="HD",
             session=2,
             seed=3,
             trials=4,
@@ -407,7 +442,7 @@ class TestCommandContract:
         assert args.rig.endswith("rig-sim.yaml") and args.no_live_monitor_browser
         assert (args.params is not None) == (mode != "measure")
         if Mode(mode).runs_trials:
-            assert args.sub == "s01" and args.ses == 2
+            assert args.sub == "s01" and args.ses == 2 and args.initials == "HD"
         if mode in {"test", "simulate"}:
             assert args.trials_per_condition == 4
         assert args.headless == (mode == "simulate") and args.mouse == (mode == "test")
@@ -436,6 +471,7 @@ class TestCommandContract:
                     workspace,
                     mode=mode.value,
                     subject="s01",
+                    initials="HD",
                     parameters=None if mode is Mode.MEASURE else {"speed": 2},
                     headless=mode is Mode.SIMULATE,
                     mouse=mode is Mode.TEST,
@@ -472,6 +508,74 @@ class TestTheNoBrowserFlag:
             no_browser_flag(version)
 
 
+class TestInitials:
+    """The subject's initials (alhazen 2.0), beside the subject ID: required
+    for run and test, held to the command line's rule in its words, passed
+    as --initials, and recorded on the run for the history."""
+
+    @pytest.mark.parametrize("mode", ["run", "test"])
+    def test_run_and_test_need_them_before_a_run_is_made(self, workspace, mode):
+        request = request_for(workspace, mode=mode, subject="s01", parameters={"speed": 2})
+        with pytest.raises(ValueError, match="Subject initials are required for run and test"):
+            workspace.start(request)
+        assert workspace.runs == {}
+
+    def test_ones_that_break_the_rule_are_refused_in_the_command_lines_words(self, workspace):
+        request = request_for(
+            workspace, mode="run", subject="s01", initials="H.D.", parameters={"speed": 2}
+        )
+        with pytest.raises(ValueError) as refused:
+            workspace.start(request)
+        assert str(refused.value) == f"{INITIALS_RULE}; got 'H.D.'"
+        assert workspace.runs == {}
+
+    def test_simulate_needs_none_and_passes_none(self, workspace):
+        request = request_for(workspace, mode="simulate", subject="s01", parameters={"speed": 2})
+        command = workspace._command(request, workspace.directory / "job")
+        assert "--initials" not in command
+
+    @pytest.mark.parametrize("mode", ["demo", "movie", "measure"])
+    def test_a_mode_without_a_subject_ignores_what_the_form_holds(self, workspace, mode):
+        # The page hides the field there; a stale value must neither refuse
+        # the launch nor reach run.py.
+        request = request_for(workspace, mode=mode, initials="1234567")
+        command = workspace._command(request, workspace.directory / "job")
+        assert "--initials" not in command
+
+    def test_the_run_record_says_who_the_run_was_for(self, workspace):
+        run = finish(
+            workspace,
+            workspace.start(
+                request_for(
+                    workspace,
+                    mode="run",
+                    subject="s01",
+                    initials=" hd ",
+                    session=3,
+                    parameters={"speed": 2},
+                )
+            ),
+        )
+        assert (run["subject"], run["session"], run["initials"]) == ("s01", 3, "HD")
+        assert run["command"][run["command"].index("--initials") + 1] == "HD"
+        # And the record on disk, which the history is read from after a restart.
+        restored = Workspace(workspace.directory).detail(run["id"])
+        assert (restored["subject"], restored["initials"]) == ("s01", "HD")
+
+    def test_a_launch_that_names_no_subject_records_none(self, workspace):
+        run = finish(workspace, workspace.start(request_for(workspace)))  # a movie
+        assert "subject" not in run and "initials" not in run
+
+    def test_the_page_refuses_in_the_same_words(self):
+        # workspace.js checks the field before sending; its sentence must be
+        # the one the command line and this server use.
+        script = (Path(workspace_module.__file__).parent / "assets" / "workspace.js").read_text(
+            encoding="utf-8"
+        )
+        assert f"const INITIALS_RULE = '{INITIALS_RULE}';" in script
+        assert "'Subject initials are required for run and test modes'" in script
+
+
 class TestExtraArguments:
     """Free-form run.py arguments ride at the end of a mode's command, exactly
     as they do for a standalone script. Without them an experiment that ships
@@ -496,6 +600,7 @@ class TestExtraArguments:
             workspace,
             mode="run",
             subject="s01",
+            initials="HD",
             extra_args="--curriculum configs/shaping.yaml --run 3",
         )
         command = workspace._command(request, workspace.directory / "job")
@@ -508,6 +613,7 @@ class TestExtraArguments:
             ("--sub=x", "--sub"),
             ("--task mib-detect --headless", "--headless"),
             ("--mode run", "--mode"),
+            ("--initials XY", "--initials"),
         ],
     )
     def test_a_flag_the_form_sets_is_refused_by_name(self, workspace, extra, flag):
@@ -753,6 +859,13 @@ class TestInterpreters:
         project = workspace.add(workspace.projects[0]["path"], sys.executable)
         assert project["alhazen_version"] == alhazen.__version__
         assert project["python_version"] == sys.version
+        # The shared rigs THIS interpreter's alhazen ships, by absolute file:
+        # the ones the Rig menu offers and a launch merges `extends` over.
+        from alhazen.config.rigs import shared_rig_files
+
+        assert project["shared_rigs"] == [
+            {"name": name, "path": str(path.resolve())} for name, path in shared_rig_files().items()
+        ]
         restored = Workspace(workspace.directory)
         assert restored.projects[0]["alhazen_version"] == alhazen.__version__
 

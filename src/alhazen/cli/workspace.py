@@ -27,8 +27,19 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
-from alhazen.config.loader import load_rig
+from alhazen.config.loader import validate_rig
+from alhazen.config.models import normalize_initials
+from alhazen.config.rigs import (
+    SHARED_PREFIX,
+    MergedRig,
+    RigRef,
+    file_rig_name,
+    list_rigs,
+    rig_extends,
+    rig_mapping,
+)
 from alhazen.data.atomic import replace_atomically
+from alhazen.errors import ConfigError
 from alhazen.modes import Mode, flag_refusal
 
 log = logging.getLogger(__name__)
@@ -57,11 +68,32 @@ STOP_GRACE_S = 30
 # a few seconds; one that hangs this long is not going to answer.
 CHILD_TIMEOUT_S = 20
 # What `add()` asks the project's interpreter, as a single -c program: which
-# alhazen it can import, and which Python it is. JSON on the last line so the
-# answer survives anything the import itself prints.
-INTERPRETER_PROBE = (
-    "import json, sys, alhazen; "
-    "print(json.dumps({'alhazen': alhazen.__version__, 'python': sys.version}))"
+# alhazen it can import, which Python it is, and which shared rigs that
+# alhazen ships (name and absolute file). JSON on the last line so the answer
+# survives anything the import itself prints.
+#
+# The shared rigs are asked of the PROJECT's alhazen, not read from the
+# workspace's own: the two may be different versions, and `--rig alhazen/lab`
+# in a launched run means the lab the project's alhazen ships. An alhazen from
+# before shared rigs has no module to list them, which is "none", not a
+# failure; a module that is there but fails to import is a broken
+# installation, and raises like any other import here.
+INTERPRETER_PROBE = """\
+import importlib.util, json, sys
+import alhazen
+if importlib.util.find_spec("alhazen.config.rigs") is None:
+    shared = []
+else:
+    from alhazen.config.rigs import shared_rig_files
+    shared = [{"name": n, "path": str(p.resolve())} for n, p in shared_rig_files().items()]
+print(json.dumps({"alhazen": alhazen.__version__, "python": sys.version, "shared_rigs": shared}))
+"""
+# Said wherever a project registered before the probe asked for shared rigs
+# is missing them: its record has no list, which is not the same as an empty
+# one, and re-registering is what fills it in.
+REGISTER_AGAIN = (
+    "This project was registered before the workspace listed alhazen's shared rigs, so "
+    "none are offered for it: open Project settings and save, to register it again"
 )
 
 
@@ -110,8 +142,9 @@ def _child_env(project: dict[str, Any]) -> dict[str, str]:
     return env
 
 
-def probe_interpreter(python: str, project_path: str) -> dict[str, str]:
-    """Which alhazen and which Python does this interpreter have? Refuse if none.
+def probe_interpreter(python: str, project_path: str) -> dict[str, Any]:
+    """Which alhazen and which Python does this interpreter have, and which
+    shared rigs does that alhazen ship? Refuse if it has no alhazen.
 
     Run in the same environment a launch gets, so what is checked is what a
     run would import. Every failure is a ValueError that names the
@@ -145,13 +178,31 @@ def probe_interpreter(python: str, project_path: str) -> dict[str, str]:
             "or choose the interpreter that has it in Project settings."
         )
     lines = result.stdout.strip().splitlines()
+    unexpected = f"Unexpected reply from {python} while checking alhazen: {result.stdout[-500:]!r}"
     try:
         report = json.loads(lines[-1])
-    except (IndexError, ValueError) as exc:
-        raise ValueError(
-            f"Unexpected reply from {python} while checking alhazen: {result.stdout[-500:]!r}"
-        ) from exc
-    return {"alhazen_version": report["alhazen"], "python_version": report["python"]}
+        shared = [{"name": str(r["name"]), "path": str(r["path"])} for r in report["shared_rigs"]]
+        return {
+            "alhazen_version": report["alhazen"],
+            "python_version": report["python"],
+            # Name and absolute file of each shared rig the project's alhazen
+            # ships. Kept in the project record: the page lists them, a launch
+            # checks against them, and the workspace merges a rig that
+            # `extends` one over exactly that file (_shared_rigs).
+            "shared_rigs": shared,
+        }
+    except (IndexError, ValueError, KeyError, TypeError) as exc:
+        raise ValueError(unexpected) from exc
+
+
+def _shared_rigs(project: dict[str, Any]) -> dict[str, Path] | None:
+    """The shared rigs the project's alhazen ships, name to file, as its
+    registration recorded them; None for a project registered before the
+    record had them (REGISTER_AGAIN), which is not the same as having none."""
+    recorded = project.get("shared_rigs")
+    if recorded is None:
+        return None
+    return {entry["name"]: Path(entry["path"]) for entry in recorded}
 
 
 def _read_schema(project: dict[str, Any], task: str | None = None) -> dict[str, Any]:
@@ -411,6 +462,10 @@ class Launch(BaseModel):
     parameters_yaml: str | None = None
     parameters: dict[str, Any] | None = None
     subject: str = ""
+    # The subject's initials, beside the subject ID: required, like it, for
+    # run and test (`_launch_initials`), and sent to run.py as --initials,
+    # which records them and never puts them in a file name.
+    initials: str = ""
     session: int = Field(default=1, ge=1)
     seed: int = Field(default=0, ge=0)
     trials: int = Field(default=1, ge=1)
@@ -453,11 +508,14 @@ MODE_FLAGS = frozenset(
         "--params",
         "--seed",
         "--no-live-monitor-browser",
-        # The same flag as alhazen spelled it before 1.9: emitted for a
-        # project whose interpreter runs an older alhazen (no_browser_flag).
+        # The same flag as alhazen spelled it before 1.9: emitted only for a
+        # project whose interpreter runs an alhazen that old (no_browser_flag).
+        # alhazen 2.0 itself no longer accepts it, but the child is not this
+        # alhazen, so the workspace keeps speaking its language.
         "--no-dashboard-browser",
         "--ses",
         "--sub",
+        "--initials",
         "--trials-per-condition",
         "--headless",
         "--mouse",
@@ -498,30 +556,102 @@ def _extra_arguments(text: str, reserved: frozenset[str]) -> list[str]:
     return extra
 
 
-def no_browser_flag(alhazen_version: str | None) -> str:
-    """The flag that keeps a launched session from opening its own browser
-    tab (the page embeds the monitor instead), spelled the way the project's
-    alhazen understands it. It is `--no-live-monitor-browser` since 1.9; an
-    older alhazen knows only `--no-dashboard-browser`, which 1.9 still
-    accepts with a warning until 2.0. Registration records the version, so a
-    launch never dies on argparse in the child's console. A version this
-    cannot read means the record is not one registration wrote: re-register.
-    """
+def _alhazen_release(alhazen_version: str | None) -> tuple[int, int]:
+    """The (MAJOR, MINOR) of the alhazen a project's interpreter runs, as
+    registration recorded it. A version this cannot read means the record is
+    not one registration wrote, so it is refused rather than guessed: either
+    guess would speak to the child in a language it may not know."""
     match = re.match(r"(\d+)\.(\d+)", alhazen_version or "")
     if match is None:
         raise ValueError(
             f"Cannot tell which alhazen this project runs ({alhazen_version!r}); "
             "remove the project and register it again"
         )
-    recent = (int(match.group(1)), int(match.group(2))) >= (1, 9)
+    return int(match.group(1)), int(match.group(2))
+
+
+def no_browser_flag(alhazen_version: str | None) -> str:
+    """The flag that keeps a launched session from opening its own browser
+    tab (the page embeds the monitor instead), spelled the way the project's
+    alhazen understands it. It is `--no-live-monitor-browser` since 1.9; an
+    alhazen before 1.9 knows only `--no-dashboard-browser`. 1.9 and 1.10
+    accept both, and a 2.0 child refuses the old spelling, so only a child
+    older than 1.9 is given it. Registration records the version, so a launch
+    never dies on argparse in the child's console.
+    """
+    recent = _alhazen_release(alhazen_version) >= (1, 9)
     return "--no-live-monitor-browser" if recent else "--no-dashboard-browser"
+
+
+def _as_the_project_reads_it(merged: MergedRig, alhazen_version: str | None) -> MergedRig:
+    """A project's rig settings as the project's own alhazen will read them,
+    for the workspace's check before a launch.
+
+    The check validates with the workspace's loader, which is alhazen 2.0's,
+    and 2.0 refuses a rig's `dashboard:` section: 1.9 renamed it to
+    `live_monitor:`. But the child reads the rig with the project's alhazen.
+    Before 1.9 that alhazen knows only `dashboard:`, and 1.9 and 1.10 still
+    read it, so for a project on any of them the section is moved to its
+    new name before checking — otherwise this workspace would refuse to launch
+    rigs their own sessions run correctly. Only the check sees the moved
+    section; the child is handed the file as written, and validates it itself.
+    A project on 2.0 or later gets the settings unchanged, and 2.0's refusal,
+    which names the new key. So does a rig that has both sections: every
+    alhazen refuses that one, each in its own words.
+    """
+    values = merged.values
+    if "dashboard" not in values or "live_monitor" in values:
+        return merged
+    if _alhazen_release(alhazen_version) >= (2, 0):
+        return merged
+    moved = {key: value for key, value in values.items() if key != "dashboard"}
+    moved["live_monitor"] = values["dashboard"]
+    return merged._replace(values=moved)
+
+
+def _launch_initials(request: Launch, mode: Mode) -> str | None:
+    """The subject's initials a launch passes on, as run.py records them, or
+    None when it passes none.
+
+    Only for the modes that run trials, which are the ones the page shows the
+    field for; any other mode ignores what the form holds. Required for run
+    and test, the modes that name a real subject — the same rule the command
+    line applies, refused here first so the refusal comes before anything is
+    written — and held to the same rule, in the same words
+    (config.models.normalize_initials), whenever given.
+    """
+    if not mode.runs_trials:
+        return None
+    text = request.initials.strip()
+    if not text:
+        if mode in {Mode.RUN, Mode.TEST}:
+            raise ValueError("Subject initials are required for run and test modes")
+        return None
+    return normalize_initials(text)
+
+
+def _run_identity(request: Launch) -> dict[str, Any]:
+    """Who a launch is for, for its run record and the history ("sub-01 ·
+    HD"): the subject, session and initials of a mode that runs trials, and
+    nothing for any other launch. Called once the command has been built, so
+    the initials have already passed their check."""
+    if request.mode not in {m.value for m in Mode}:
+        return {}
+    mode = Mode(request.mode)
+    if not mode.runs_trials:
+        return {}
+    return {
+        "subject": request.subject.strip() or None,
+        "session": request.session,
+        "initials": _launch_initials(request, mode),
+    }
 
 
 def _mode_command(
     mode: Mode,
     request: Launch,
     root: Path,
-    rig_path: Path,
+    rig: str,
     run_dir: Path,
     no_browser: str = "--no-live-monitor-browser",
     task: str | None = None,
@@ -544,19 +674,22 @@ def _mode_command(
     extra = _extra_arguments(request.extra_args, reserved)
     if mode in {Mode.RUN, Mode.TEST} and not request.subject.strip():
         raise ValueError("A subject ID is required for run and test modes")
+    initials = _launch_initials(request, mode)
     output = run_dir / "media"
     command = [str(root / "run.py"), "--mode", mode.value]
     # The task right after the mode, where run_experiment's own --task reads
     # it; none for an experiment that declares one task.
     if task is not None:
         command += ["--task", task]
-    command += ["--rig", str(rig_path), "--seed", str(request.seed), no_browser]
+    command += ["--rig", rig, "--seed", str(request.seed), no_browser]
     if has_parameters:
         command += ["--params", str(run_dir / "params.yaml")]
     if mode.runs_trials:
         command += ["--ses", str(request.session)]
         if request.subject.strip():
             command += ["--sub", request.subject.strip()]
+        if initials is not None:
+            command += ["--initials", initials]
     if mode in {Mode.TEST, Mode.SIMULATE}:
         command += ["--trials-per-condition", str(request.trials)]
     for flag in ("headless", "mouse", "windowed"):
@@ -595,6 +728,55 @@ def _script_command(request: Launch, root: Path, rig_path: Path, run_dir: Path) 
             raise ValueError("This script has no parameter-file option; use its own arguments")
         command += [action["params_flag"], str(run_dir / "params.yaml")]
     return command + _extra_arguments(request.extra_args, SCRIPT_FLAGS)
+
+
+def _describe_rigs(root: Path, shared: dict[str, Path] | None) -> list[dict[str, Any]]:
+    """The Rig menu's entries: the experiment's own rigs, then the shared rigs
+    its alhazen ships, each ``{name, source, path, shadowed, extends}``.
+
+    Found by the same ``list_rigs`` the command line uses, so the menu offers
+    exactly the names ``--rig`` takes, in the same order. An experiment rig's
+    ``path`` is relative to the project, in posix form (see ``describe``); a
+    file that resolves outside the project — a symlink out of it — is not
+    offered, since a launch refuses it (``path_inside``). A shared rig's
+    ``path`` is the absolute file the probe recorded. ``extends`` is the
+    shared rig an experiment rig builds on; a file that cannot be read for it
+    carries ``error`` instead, which the page shows, and a launch of it fails
+    with the same words.
+    """
+    entries: list[dict[str, Any]] = []
+    for ref in list_rigs(root, shared=shared or {}):
+        entry: dict[str, Any] = {
+            "name": ref.name,
+            "source": ref.source,
+            "shadowed": ref.shadowed,
+            "extends": None,
+        }
+        if ref.source == "alhazen":
+            entry["path"] = str(ref.path)
+        else:
+            if not ref.path.resolve().is_relative_to(root.resolve()):
+                continue
+            entry["path"] = ref.path.relative_to(root).as_posix()
+            try:
+                entry["extends"] = rig_extends(ref.path)
+            except ConfigError as exc:
+                entry["error"] = str(exc)
+        entries.append(entry)
+    return entries
+
+
+def _merged_rig_text(launched: str, merged: MergedRig) -> str:
+    """A run folder's rig.yaml for a rig that extends a shared one: the merged
+    settings as YAML, headed by where each half came from. What ran is then
+    readable from the run folder alone, without the shared file of whichever
+    alhazen was installed that day."""
+    header = (
+        f"# The rig this run was launched with ({launched}): the experiment's file,\n"
+        f"# merged over alhazen's shared rig '{merged.extends}' ({merged.base}).\n"
+        "# The experiment's file as written is rig-source.yaml, beside this one.\n"
+    )
+    return header + yaml.safe_dump(merged.values, sort_keys=False, allow_unicode=True)
 
 
 class Workspace:
@@ -682,22 +864,23 @@ class Workspace:
     def describe(self, key: str) -> dict[str, Any]:
         project = self.project(key)
         root = Path(project["path"])
-        rigs, params = [], []
+        params = []
         for path in sorted((root / "configs").rglob("*")):
             if path.suffix not in {".yaml", ".yml"} or not path.resolve().is_relative_to(root):
                 continue
             # Posix form on every OS: these strings go into the registry, the
             # browser and run.json, and a record written on a Windows rig must
             # read the same elsewhere. Path accepts '/' back on Windows.
-            relative = path.relative_to(root).as_posix()
-            if path.stem.startswith("rig"):
-                rigs.append(relative)
-            elif path.stem.startswith(("task", "params")):
-                params.append(relative)
+            if path.stem.startswith(("task", "params")):
+                params.append(path.relative_to(root).as_posix())
         declared = project_tasks(root)
+        shared = _shared_rigs(project)
         return {
             **project,
-            "rigs": rigs,
+            "rigs": _describe_rigs(root, shared),
+            # Why the Rig menu offers no shared rigs, when that is because the
+            # registration predates them; None otherwise.
+            "rigs_note": REGISTER_AGAIN if shared is None else None,
             "configs": params,
             "scripts": script_actions(root),
             "tasks": declared["tasks"],
@@ -759,27 +942,91 @@ class Workspace:
         """
         project = self.project(request.project)
         root = Path(project["path"])
-        rig_path = path_inside(root, request.rig)
-        if not request.rig or not rig_path.is_file():
-            raise ValueError("Choose an existing rig YAML file")
-        load_rig(rig_path)
+        ref, shared = self._launch_rig(project, request.rig)
+        # Validated here, with the workspace's own loader, so a rig that
+        # cannot run is refused before a run directory exists — merged over
+        # the PROJECT's shared rig when it extends one, not the workspace's,
+        # and read as the project's alhazen reads it (_as_the_project_reads_it).
+        merged = rig_mapping(ref.path, shared=shared)
+        validate_rig(_as_the_project_reads_it(merged, project.get("alhazen_version")), ref.path)
         task = self._task_for(project, request)
         base = [project["python"], "-u"]
         if request.mode in {m.value for m in Mode}:
             # With a task chosen from the menu, `--task` is the form's too and
             # may not be contradicted from the extra arguments.
             reserved = MODE_FLAGS | {"--task"} if task is not None else MODE_FLAGS
+            # The child resolves a shared rig by name, the way `--rig
+            # alhazen/lab` typed at its terminal would, which also records in
+            # its snapshot that the rig was alhazen's (sources["rig_source"]).
+            # An experiment rig goes as its file, as it always has.
+            rig = ref.spec if ref.source == "alhazen" else str(ref.path)
             return base + _mode_command(
                 Mode(request.mode),
                 request,
                 root,
-                rig_path,
+                rig,
                 run_dir,
                 no_browser_flag(project.get("alhazen_version")),
                 task=task,
                 reserved=reserved,
             )
-        return base + _script_command(request, root, rig_path, run_dir)
+        # A standalone script reads --rig with its own argparse and hands it
+        # to load_rig, which takes a file: a shared rig goes as the file the
+        # probe recorded.
+        return base + _script_command(request, root, ref.path, run_dir)
+
+    def _launch_rig(
+        self, project: dict[str, Any], spec: str
+    ) -> tuple[RigRef, dict[str, Path] | None]:
+        """The rig a launch (or the rig summary) names, and the project's
+        shared rigs to merge an ``extends`` over.
+
+        ``spec`` is what the Rig menu sends: ``alhazen/<name>`` for a shared
+        rig, the project-relative path for one of the experiment's own —
+        which must stay inside the project (``path_inside``), as every path a
+        request carries must. Each refusal says what to do.
+        """
+        shared = _shared_rigs(project)
+        if spec.startswith(SHARED_PREFIX):
+            if shared is None:
+                raise ValueError(REGISTER_AGAIN)
+            name = spec.removeprefix(SHARED_PREFIX)
+            if name not in shared:
+                raise ValueError(
+                    f"{project['name']}'s alhazen ({project.get('alhazen_version')}) ships no "
+                    f"shared rig {name!r}; its shared rigs are {', '.join(shared) or 'none'}"
+                )
+            if not shared[name].is_file():
+                raise ValueError(
+                    f"The shared rig {name!r} was recorded at {shared[name]}, which no longer "
+                    "exists — the project's alhazen has been reinstalled or moved. Open Project "
+                    "settings and save, to register it again"
+                )
+            return RigRef(name, shared[name], "alhazen"), shared
+        path = path_inside(Path(project["path"]), spec)
+        if not spec or not path.is_file():
+            raise ValueError("Choose an existing rig YAML file")
+        if shared is None and rig_extends(path) is not None:
+            # Without the recorded list there is no shared file to merge it
+            # over, and "extends a rig that is not shared" would blame the file.
+            raise ValueError(REGISTER_AGAIN)
+        return RigRef(file_rig_name(path), path, "experiment"), shared
+
+    def rig(self, key: str, spec: str) -> dict[str, Any]:
+        """The rig ``spec`` names, as the page summarises it under the menu:
+        its name, whose it is, the shared rig it extends, and its settings —
+        merged when it extends one, so the summary (live monitor on or off,
+        the monitor's size) describes the rig that would run, not the half of
+        it one file holds. Merged by the workspace's own loader, over the file
+        the project's probe recorded; not validated (a launch does that)."""
+        ref, shared = self._launch_rig(self.project(key), spec)
+        merged = rig_mapping(ref.path, shared=shared)
+        return {
+            "name": ref.name,
+            "source": ref.source,
+            "extends": merged.extends,
+            "values": merged.values,
+        }
 
     def _task_for(self, project: dict[str, Any], request: Launch) -> str | None:
         """The task this launch runs: the one asked for, else run.py's default,
@@ -832,14 +1079,24 @@ class Workspace:
                 parse_parameters(text)
             project = self.project(request.project)
             task = self._task_for(project, request)
+            ref, shared = self._launch_rig(project, request.rig)
+            merged = rig_mapping(ref.path, shared=shared)
             (run_dir / "media").mkdir(parents=True)
             if text is not None:
                 (run_dir / "params.yaml").write_text(text, encoding="utf-8")
-            # Preserve the rig exactly as launched, without relocating it: relative
-            # paths in a rig keep their usual experiment-working-directory meaning.
-            (run_dir / "rig.yaml").write_bytes(
-                path_inside(Path(project["path"]), request.rig).read_bytes()
-            )
+            # A copy of the rig, for the record; the run itself reads the rig
+            # where it is, so relative paths in it keep their usual
+            # experiment-working-directory meaning. A whole file is copied as
+            # it is, comments and all. A file that extends a shared rig is
+            # only half of what ran, so rig.yaml is the merged rig instead,
+            # and the file as written is kept beside it as rig-source.yaml.
+            if merged.base is None:
+                (run_dir / "rig.yaml").write_bytes(ref.path.read_bytes())
+            else:
+                (run_dir / "rig.yaml").write_text(
+                    _merged_rig_text(request.rig, merged), encoding="utf-8"
+                )
+                (run_dir / "rig-source.yaml").write_bytes(ref.path.read_bytes())
             run = {
                 "id": key,
                 "project": project["id"],
@@ -848,9 +1105,15 @@ class Workspace:
                 # The task run, for the history and anyone reading run.json;
                 # None for a project with one task and for a script.
                 "task": task,
-                # Stored as posix whatever the client typed, so run.json reads
-                # the same on every OS; the rig itself was resolved above.
+                # What was launched: a project-relative path, stored as posix
+                # whatever the client typed so run.json reads the same on
+                # every OS, or `alhazen/<name>` for a shared rig. The rig
+                # itself was resolved above.
                 "rig": Path(request.rig).as_posix(),
+                # Which rig that is, for the history (which shows the name,
+                # not the file) and for anyone reading run.json.
+                "rig_name": ref.name,
+                "rig_source": ref.source,
                 "started": now(),
                 "finished": None,
                 "status": "running",
@@ -858,6 +1121,8 @@ class Workspace:
                 "command": command,
                 "cwd": project["path"],
                 "directory": str(run_dir),
+                # subject, session and initials, for a mode that runs trials.
+                **_run_identity(request),
             }
             self.runs[key] = run
             self._save_run(run)

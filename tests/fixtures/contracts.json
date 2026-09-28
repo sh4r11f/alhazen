@@ -40,8 +40,14 @@
     "snapshot": "config_snapshot.yaml",
     "manifest": "manifest.yaml",
     "log": "session.log",
-    "figures": "figures"
+    "figures": "figures",
+    "session_json": "session.json",
+    "rig_copy": "rig.yaml",
+    "params_copy": "params.yaml",
+    "live_monitor_state": "figures/live_monitor_state.json",
+    "live_monitor_page": "figures/live_monitor.html"
   },
+  "run_folder": "v0.4.0/sub-M1/ses-003/run-02_task-mib-quest",
   "trial_record_columns": [
     "trial_index",
     "attempt",
@@ -58,14 +64,16 @@
     "n_mid_trial_rewards_cancelled",
     "feedback",
     "fault",
-    "fault_detail"
+    "fault_detail",
+    "experiment_version"
   ],
   "schema_versions": {
-    "database": 2,
+    "database": 3,
     "results_bundle": 1,
-    "run_manifest": 1,
+    "run_manifest": 2,
     "recording_pointer": 1,
     "training_state": 1,
-    "scene_format": 1
+    "scene_format": 1,
+    "session_json": 1
   }
 }

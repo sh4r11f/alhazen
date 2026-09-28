@@ -25,6 +25,201 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## 2.0.0 - 2026-09-28
+
+### Changed
+
+- **Breaking: every run is filed under its experiment's version.** A run
+  folder is now `<data_root>/v<version>/sub-<ID>/ses-<NNN>/run-<NN>_task-<name>/`
+  (and the same under the rehearsal root for `test` and `simulate`), so data
+  recorded by two versions of a protocol never share a folder. The version is
+  the `[project] version` of the `pyproject.toml` above the task's class
+  (`alhazen.config.experiment.find_experiment`); `build_session` and
+  `build_mode_session` take `experiment_version=` (and `experiment_name=`) to
+  give one explicitly, and a session wired from parts with no task and no
+  version is refused with a `ConfigError` before anything is opened or
+  written. Run numbers count within a version (`next_run` takes
+  `experiment_version=`). `participants.tsv`, the experiment database and
+  training state stay at the unversioned root: a subject spans versions. Runs
+  recorded before 2.0 are not moved and are still read. `docs/data.md` is the
+  new page on the layout, what each file is for, when to bump the version, and
+  the migration: a script that globs `data/sub-*` finds none of the new runs.
+- **Breaking: the version is recorded wherever the data goes.** The snapshot's
+  provenance gains `experiment_name`, `experiment_version` and
+  `experiment_version_source`; every trial row gains an `experiment_version`
+  column (in `TRIAL_RECORD_COLUMNS`); the run manifest records it (schema 2 —
+  a schema 1 manifest still verifies and keeps its number when a report is
+  saved beside it); `session.log` names it; a trained subject's transition
+  history names runs as `v<version>/ses-..._run-..`.
+- **Breaking: experiment database schema 3.** A run's version is part of its
+  identity — a `runs.experiment_version` column, the front of every `run_id`
+  (`v0.5.0/sub-01/...`), and the unique key — because the same subject,
+  session, run, task and day can be recorded under two versions, and schema 2
+  mirrored only the first. `ExperimentDatabase.write_run` takes
+  `experiment_version=`; `find_run` and `frame_snapshot` take it too, and
+  refuse to guess between versions when numbers match runs of more than one.
+  A schema 2 database is refused **before** the session starts
+  (`ExperimentDatabase.check_schema`, asked by `build_session`) rather than at
+  teardown after it: move it aside, and a new one is built from the next
+  session.
+- **Breaking: the live monitor's saved files are renamed** to the monitor's
+  1.9 name: `figures/dashboard.html` is now `figures/live_monitor.html`, and
+  `figures/dashboard_state.json` is `figures/live_monitor_state.json`. They
+  kept the old names through 1.x because run-directory file names change only
+  in a major version. Runs recorded before 2.0 keep theirs; a script reading
+  the saved state looks for the new name and falls back to the old one
+  (`docs/data.md` §6). The workspace's Live monitor note names both. The two
+  names join the run-layout baseline in `tests/fixtures/contracts.json`.
+- **Breaking, for code that builds these by hand:** `SessionPaths.create`
+  takes `experiment_version=`, and `SessionRunner` requires
+  `identity=RunIdentity(...)` (build_session supplies both).
+- `alhazen run` reports a refusal from what is already on disk — a used run
+  folder, an old database — as `CANNOT RUN:` with the file named, not a
+  traceback.
+- **The workspace lists `rig-<name>.yaml` files as rigs**, where it used to
+  list any file under `configs/` whose name began with `rig` — measured gamma
+  fits (`rig-lab_gamma.yaml`) included. A project's `rigs` in `/api/state`
+  are now objects, `{name, source, path, shadowed, extends}`, not paths. A
+  project registered before this has no shared rigs in its menu, and the
+  page says so: save its Project settings to register it again.
+- **A gamma fit or measure-mode report for a shared rig is kept in the
+  experiment's `configs/`** (`configs/rig-lab_gamma.yaml`,
+  `configs/measurements/`), where the experiment's own file of that name
+  would be — never inside alhazen's installation, which a reinstall replaces.
+  Both refuse, before measuring, where there is no `configs/` folder.
+- **`alhazen run --task` loads the task before the rig**, because a rig name
+  is looked up in the task's experiment: a misspelt task is now reported
+  before a broken rig.
+
+### Added
+
+- **Shared rigs.** alhazen ships the machines several experiments share —
+  `lab`, `lab-rehearsal`, `vpixx`, `laptop` and `mac`, taken from
+  amodal-averaging's rig files with their comments — so an experiment no
+  longer needs its own copy of each. They name no events: a session refuses
+  a rig naming an event its task does not declare, so each experiment adds
+  its own sync lines and photodiode events (below). See
+  [docs/rigs.md](docs/rigs.md).
+- **Rigs by name.** Every `--rig` — `alhazen run`, an experiment's `run.py`
+  (and `run_experiment(default_rig=...)`), `validate`, `check-rig`,
+  `calibrate`, `monitor` — takes a name: `lab`, `rig-lab` and `rig-lab.yaml`
+  all mean the experiment's own `configs/**/rig-lab.yaml`, else alhazen's
+  shared lab, and `alhazen/lab` is always the shared one. A path to a file
+  still means that file. The experiment is the task's (the folder holding its
+  `pyproject.toml`), wherever the command is typed; with no task, the current
+  folder. An unknown name lists every rig and whose it is; two of the
+  experiment's files with one name are refused, naming both.
+- **`extends: <shared rig>`.** An experiment rig may build on a shared one and
+  say only what differs: its settings are merged over the shared file's
+  (sections key by key; values and lists replace; `null` removes) and the
+  result is validated as one rig. Only shared rigs can be extended, and they
+  extend nothing. An empty section (`devices: {}`) in such a file is refused,
+  because merged it would keep everything the shared rig has.
+- **`alhazen rigs [--project PATH]`** lists every rig `--rig` can name: its
+  source (the experiment's or alhazen's), its file, what it extends and which
+  shared rigs the experiment's own shadow.
+- **A session records which rig ran**: the config snapshot's `sources` gains
+  `rig_name` and `rig_source` beside `rig`, which is still the file.
+- **`alhazen.config.rigs`** (public): `RigRef`, `resolve_rig`, `list_rigs`,
+  `shared_rig_files`. `load_rig` merges `extends`, and takes
+  `shared_rigs=` for a caller that must merge over another installation's
+  shared rigs.
+- **The workspace's Rig menu names rigs** — `lab`, not `rig-lab.yaml` — in two
+  groups, *This experiment* and *Shared (alhazen)*, with a rig that extends
+  one saying so and a shadowed shared rig spelled `alhazen/lab`. The shared
+  rigs are the ones the project's own alhazen ships, recorded when the
+  project is registered. The summary under the menu describes the merged rig.
+  A shared rig launches as `--rig alhazen/<name>`; `run.json` records `rig`,
+  `rig_name` and `rig_source`, and the history shows the name. A run folder's
+  `rig.yaml` is the merged rig for one that extends, with the experiment's
+  file kept as `rig-source.yaml`.
+- **`session.json` in every run folder**: a compact identity card — the
+  experiment, its version and where the version came from, the experiment's
+  git tree, task, mode, subject, session, run, seed, date, creation time, the
+  rig (name and source for a rig chosen by name, and its file) and params
+  file, alhazen's version and tree, and the relative paths of the snapshot,
+  manifest, copies and data files. `schema_version: 1`, pinned with the other
+  on-disk schema versions.
+- **Byte copies of the files a session started from**: `rig.yaml` and, when a
+  params file was given, `params.yaml`, read when the session is built. They
+  are written with `session.json` and the snapshot, before trial 1, all or
+  none; the snapshot stays the authority on what ran (reduced trial counts, a
+  params hook, a curriculum stage, a rig that extends another).
+- **`alhazen.data.find_runs(data_root)`**: every run folder under a data
+  root, in both layouts, each saying its version (None before 2.0), subject,
+  session, run and task — what replaces a `data/sub-*` glob.
+- **The subject's initials.** `--initials` on `alhazen run` and every
+  `run.py` (`add_mode_arguments`): 1 to 5 letters, recorded uppercase.
+  Required by `run` and `test`, the modes that name a real subject — prompted
+  for like `--sub` and `--ses` when omitted at a terminal, refused with the
+  same "not a terminal" message without one — and optional in `simulate`,
+  `demo`, `movie` and `measure`; initials that break the rule are refused in
+  every mode. `SessionInfo.initials` records them in the snapshot, and
+  `session.json` too; `build_session` and `build_mode_session` take
+  `initials=`. `participants.tsv` gains an `initials` column: the first
+  session of a subject records them, a later one giving the same subject id
+  with other initials is refused before any run folder, database row or file
+  is written ("sub-01 is recorded as HD; this session says XY — check the
+  subject number"), and a subject registered before 2.0 has them filled in.
+  Initials never appear in a file or folder name.
+- **The experiment workspace takes the initials too.** An **Initials** field
+  beside Subject ID, required when the subject is (run and test), checked on
+  the page and again by the launcher in the command line's words, and sent as
+  `--initials` (which joins the flags the extra arguments may not repeat). A
+  session's `run.json` records its subject, session and initials, and the
+  history and run summary show who it was for, `sub-01 · HD`. A project on an
+  alhazen older than 2.0 does not know the flag; its run and test launches
+  stop with that usage error.
+- The mode summary printed before trial 1 names the experiment, its version
+  folder and where the version came from.
+- Public in the API reference: `alhazen.config.experiment` (`Experiment`,
+  `find_experiment`, `session_experiment`), `alhazen.session.identity`
+  (`RunIdentity`, `SourceFile`, `SESSION_JSON_SCHEMA_VERSION`),
+  `alhazen.modes.session.next_run`, `alhazen.data.paths` (`RunFolder`,
+  `find_runs`).
+
+### Removed
+
+Everything deprecated through 1.x for removal in 2.0 (docs/versioning.md §4).
+Each line is the removed name, then what to write instead.
+
+- **The live monitor's pre-1.9 spellings**
+  ([live monitor](docs/live_monitor.md) has the whole table):
+  - `alhazen.dashboard` and `alhazen.dashboard.spec` → `alhazen.live_monitor`
+    (and `alhazen.live_monitor.spec`).
+  - `alhazen.DashboardConfig`, `alhazen.DashboardPanel`, `alhazen.DashboardSpec`
+    → `alhazen.LiveMonitorConfig`, `alhazen.LiveMonitorPanel`,
+    `alhazen.LiveMonitorSpec`.
+  - A rig file's `dashboard:` section → `live_monitor:`, same settings. The
+    old section is refused, naming the new one ("the rig's `dashboard:`
+    section was renamed to `live_monitor:` in alhazen 1.9, and alhazen 2.0
+    no longer reads the old name; rename it to `live_monitor:`").
+  - `Task.dashboard = ...` → `Task.live_monitor = LiveMonitorSpec(...)`. A
+    task class that still declares `dashboard` is refused when it is defined
+    ("task X declares `dashboard`, which was renamed to `live_monitor` in
+    alhazen 1.9 ..."), since nothing would read it any more.
+  - `--dashboard`, `--no-dashboard`, `--no-dashboard-browser` →
+    `--live-monitor`, `--no-live-monitor`, `--no-live-monitor-browser`.
+  - `dashboard=` and `open_dashboard=` on `build_session` and
+    `build_mode_session` → `live_monitor=` and `open_live_monitor=`.
+
+  The experiment workspace still speaks the old spellings to a project whose
+  own alhazen is older than 2.0: it passes `--no-dashboard-browser` to one
+  before 1.9, reads a rig's `dashboard:` section as the monitor setting in
+  the Rig summary, and, before launching, checks such a rig the way that
+  project's alhazen reads it. A project on 2.0 with a `dashboard:` section is
+  refused at launch with 2.0's message.
+- **`pause_menu(show_message, raw_keys, wait)`** (`alhazen.session`, and
+  `alhazen.session.runner` / `alhazen.session.pause`), deprecated since 1.1 →
+  `alhazen.session.build_pause_menu` with `alhazen.session.run_pause_menu`,
+  drawn by the display's `show_menu`.
+- **A health check returning a bare reason string**, deprecated since 1.6 →
+  return `HealthFault(reason)` (or `HealthFault(reason, detail)`,
+  `alhazen.core`). `TrialEngine` no longer reads a string as a fault: any
+  answer but None or a `HealthFault` is a `TypeError` naming the check, what
+  it returned and the `HealthFault` to return instead. `health_checks` is
+  typed `Callable[[], HealthFault | None]`.
+
 ## 1.10.1 - 2026-09-26
 
 ### Fixed

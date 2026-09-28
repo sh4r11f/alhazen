@@ -1,0 +1,114 @@
+# MACHINE: the VPixx booth — a VPixx VIEWPixx display driven by a DATAPixx3,
+# with a TRACKPixx3 eye camera inside the same chassis.
+#
+# One of alhazen's SHARED rigs (`--rig vpixx`), taken from amodal-averaging's
+# configs/rig-vpixx.yaml. An experiment that does something differently here
+# — a photodiode, another calibration layout, a tighter calibration limit —
+# writes its own configs/rig-vpixx.yaml beginning `extends: vpixx` and says
+# only that (docs/rigs.md).
+#
+# A rig file describes a machine: its panel, its devices, where its data
+# goes. Which of alhazen's six modes you run on it is not the file's business,
+# so every mode takes this file as it stands:
+#
+#   alhazen check-rig             --rig vpixx
+#   python run.py --mode measure  --rig vpixx
+#   python run.py --mode demo     --rig vpixx
+#   python run.py --mode movie    --rig vpixx --out movies
+#   python run.py --mode simulate --rig vpixx --seed 1
+#   python run.py --mode test     --rig vpixx --sub dev --ses 1
+#   python run.py                 --rig vpixx --sub s01 --ses 1
+#
+# Simulate mode stands the tracker down (its scripted participant supplies
+# the gaze) and says so before trial one; add --headless to run it with no
+# window, over ssh. Test mode drives the TRACKPixx3 as the real thing would,
+# or takes the mouse cursor as gaze with --mouse. Rehearsal data (test,
+# simulate) lands beside data_root under data-rehearsal/, never in it.
+#
+# MEASURE the monitor numbers below. They decide what a degree of visual angle
+# is, and every stimulus size in every experiment run here depends on them.
+monitor:
+  width_px: 1920
+  height_px: 1080
+  width_cm: 52.1       # the visible width of the panel, not the bezel
+  distance_cm: 57.0    # eye to screen, with the chin rest in position
+  refresh_rate_hz: 120.0
+  fullscreen: true
+
+display:
+  backend: psychopy
+  # The window opens mid-grey (psychopy rgb 0,0,0). An experiment whose
+  # figures sit on that same grey needs nothing calibrated between the two.
+  frame_qa:
+    # Count dropped frames on every trial record, and RE-SERVE a trial whose
+    # timing was genuinely bad rather than leaving it for the analysis to
+    # throw away. A trial recycled here comes back later in the block exactly
+    # as a fixation break does, so a cell keeps its planned n instead of
+    # quietly losing trials to a bad minute on the rig.
+    #
+    # Only its DATA is treated like a fixation break's; the subject is not.
+    # Frame QA judges the display after the trial's feedback has been shown,
+    # so the subject sees what they actually did — the feedback for the
+    # response they made, whatever the panel dropped — and on a rig that pays
+    # a reward, the payout follows that response too. The row keeps it as
+    # `outcome_before_frame_qa`, with `frame_qa_reason` saying why the trial
+    # became DROPPED_FRAMES.
+    policy: recycle_trial
+    # A FRACTION, not a count, because trials differ in length: a trial of
+    # about 350 frames (amodal-averaging's) would make a flat "3 dropped" a 1%
+    # tolerance, and a short trial's a 10% one. 10% of a 350-frame trial is
+    # ~35 frames, or ~290 ms at 120 Hz — enough that the stimulus the subject
+    # saw was not the stimulus the design specifies. An experiment whose
+    # trials want another budget sets its own in its rig-vpixx.yaml.
+    max_dropped_fraction: 0.10
+  # A photodiode is OPTIONAL in this booth. If one is taped over a corner, an
+  # experiment names the events it should mark in its own rig-vpixx.yaml —
+  # it costs nothing and makes the onset timestamps auditable:
+  #
+  #   extends: vpixx
+  #   display:
+  #     photodiode:
+  #       corner: br
+  #       size_px: 60
+  #       events: [STIM_ON]
+
+live_monitor:
+  # Opens before PsychoPy takes focus. Read-only until the experimenter pauses
+  # with P, so browser clicks cannot affect an active trial.
+  enabled: true
+  auto_open: true
+  port: 0
+
+devices:
+  eyetracker:
+    backend: viewpixx
+    # Needs pypixxlib in the session's Python environment. It is not on PyPI:
+    # VPixx's Software Tools installer (1.9.2 on this rig) leaves the archive at
+    # C:\Program Files\VPixx Technologies\Software Tools\pypixxlib\pypixxlib-1.9.2.tar.gz
+    # and that file is what to pip install (alhazen check-rig says so if it is missing).
+    # Monocular is sufficient for most designs, but the TRACKPixx3 always
+    # reports both eyes, so which one a sample carries has to be stated rather
+    # than guessed. An experiment that wants the other eye, or the average of
+    # both, says so in its own rig-vpixx.yaml.
+    eye: left
+    # Drawn in the session's own window: the TRACKPixx3 has no Host PC, so
+    # alhazen lays out the target grid itself. HV5, HV9 and HV13 are the
+    # layouts it can construct.
+    calibration_type: HV9
+    calibration_area: 0.6
+    # No `accuracy_max_deg`: alhazen's 1.0 deg default. The session validates
+    # every calibration that takes (and on V while paused) and holds it to
+    # that limit, judged on the WORST target, not the mean. A design whose
+    # dependent measure is a gaze position needs tighter — amodal-averaging
+    # uses 0.5 — and says so in its own rig-vpixx.yaml. Drift correction (D
+    # while paused) keeps alhazen's 3 deg limit: past that it is a
+    # calibration that no longer holds, not a drift.
+    # led_intensity: 5     # 1-8; omit to keep whatever VPixx's own tools set
+    #
+    # NOTE: `host_ip` and `edf_host_filename` are EyeLink-only and are a
+    # load-time error on this backend. There is no EDF: a run directory gets
+    # <base>_gaze.csv (VPixx's own sample format) and <base>_gaze-messages.csv
+    # (every event stamped on both the device and session clocks), and the
+    # analysis fits the two clocks together from those pairs.
+
+data_root: data

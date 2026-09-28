@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "alhazen-vision"
-version = "1.10.1"
+version = "2.0.0"
 description = "A framework for building and running vision science experiments"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -31,6 +31,10 @@ dependencies = [
   "pandas>=2.0",
   "pyyaml>=6.0",
   "pydantic>=2.5",
+  # alhazen.config.experiment reads each experiment's pyproject.toml for its
+  # version, which names the data folder. tomllib is stdlib from 3.11; this
+  # is the backport for 3.10.
+  "tomli>=2.0; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]
@@ -91,11 +95,19 @@ dev = [
 [project.scripts]
 alhazen = "alhazen.cli.main:main"
 
-# The scaffold's templates and the live monitor's frontend ship inside the wheel
-# — both are read at runtime, so a package that omitted them would install
-# fine and fail on first use (`alhazen new`, and a blank live monitor page).
+# The scaffold's templates, the live monitor's and the workspace's frontends
+# and the shared rigs ship inside the wheel — all are read at runtime, so a
+# package that omitted them would install fine and fail on first use
+# (`alhazen new`, a blank page, `--rig lab`). tests/unit/test_rigs.py checks
+# every file under src/alhazen/rigs/ matches the pattern here.
 [tool.setuptools.package-data]
-alhazen = ["py.typed", "_scaffold/template/**/*", "live_monitor/assets/*", "cli/assets/*"]
+alhazen = [
+  "py.typed",
+  "_scaffold/template/**/*",
+  "live_monitor/assets/*",
+  "cli/assets/*",
+  "rigs/*",
+]
 
 [project.urls]
 Repository = "https://github.com/sh4r11f/alhazen"
@@ -263,9 +275,6 @@ layers = [
   "alhazen.session | alhazen.testing | alhazen.analysis",
   "alhazen.training",
   "alhazen.task",
-  # The live monitor's pre-1.9 import path: a warning re-export, removed in
-  # 2.0. Its own line above live_monitor because it imports it.
-  "alhazen.dashboard",
   "alhazen.live_monitor",
   "alhazen.paradigms | alhazen.devices",
   "alhazen.core | alhazen.neural",
