@@ -39,7 +39,9 @@ src/alhazen/
 │                   #   eyetracker.py (the session's calibration/validation/drift
 │                   #   results and live monitor panels), check_rig; the runner's
 │                   #   internal parts: streaks.py, reward_payer.py, pause_control.py
-├── config/         # pydantic models (extra=forbid, frozen), YAML loader, snapshot writer
+├── config/         # pydantic models (extra=forbid, frozen), YAML loader, snapshot writer,
+│                   #   rigs.py (rig names, the shared rigs, `extends`; §12)
+├── rigs/           # the shared rig files: package data, not a Python package
 ├── data/           # naming, SessionPaths, manifest, participants registry, percents
 │                   #   (a measured fraction written beside its threshold, §10.2),
 │                   #   atomic (replace a file whole)
@@ -1993,6 +1995,7 @@ parallel implementation is a tool whose OK means nothing.
 | `alhazen new <name>` | scaffold an experiment package: a Task, two rig configs, a task config, tests and a runner. Its tests pass and its session runs before anything is edited |
 | `alhazen run --task ...` | run one session of an installed task, found through the `alhazen.tasks` entry-point group; picks the next free run number, prompts for subject and session if omitted, runs the task's own params file when `--params` is not given, applies its params hook, and shows the subject its instructions (§5.1). An experiment's `run.py` starts the same session through the same dispatch |
 | `alhazen validate --rig` | is this config file well-formed? |
+| `alhazen rigs` | which rigs can `--rig` name from here, whose is each, and what does each extend? |
 | `alhazen check-rig --rig` | is this rig actually wired? Constructs the real backends; `--pulse` fires the pump and the sync lines |
 | `alhazen sim-sorter` | publish the sorted-spike wire contract, so `check-rig` can be rehearsed with no sorter and no probe; `--fault` publishes a named non-conformance instead |
 | `alhazen calibrate ruler\|gamma` | draw a bar of a known angular size on the rig's own display and say what it should measure; fit and store a gamma curve from photometer readings |
@@ -2038,7 +2041,32 @@ numbers from the ones just written, so a stale file under the same name is
 found at registration rather than by the next window. `monitor.name` is the
 rig file's stem unless the file says otherwise (`load_rig`): a rig file is
 one machine, and two files sharing PsychoPy's one default name would
-overwrite each other's geometry.
+overwrite each other's geometry. For a file that extends a shared rig the stem
+is the experiment file's: it names the machine.
+
+**A rig is named, not pathed.** alhazen ships the machines several
+experiments share (`alhazen/rigs/`), and `--rig lab` — like `run_experiment`'s
+`default_rig="lab"` — finds the experiment's own `configs/**/rig-lab.yaml`
+first and alhazen's shared one otherwise; `alhazen/lab` is always the shared
+one, and a path is still that file ([Rigs](rigs.md)). The lookup is one
+function in the config layer, `config/rigs.resolve_rig`, which every command
+calls, because a second implementation in the workspace or a mode would be a
+second answer to "which file is lab". "The experiment" is the task's: the
+folder holding its `pyproject.toml` (`config/experiment.find_experiment`),
+found only when a name needs it, so a `--rig` path keeps working for a task
+with none; without a task it is the current folder.
+
+An experiment rig may say `extends: <shared name>` and only what differs;
+`load_rig` merges it over the shared file (sections key by key, anything else
+replaced) and validates the result as one rig, so everything below the loader
+sees a whole `RigConfig` and nothing else needs to know. Only shared rigs can
+be extended and they extend nothing: what a rig builds on is one file, the
+same wherever alhazen is installed. A shared rig names no events, because a
+session refuses a rig naming an event its task does not declare; each
+experiment adds its own. And what is measured on a shared rig's machine — a
+gamma fit, measure mode's reports — is kept where the experiment's own file of
+that name would be, not inside alhazen's installation, which a reinstall
+replaces.
 
 The two then have one rule each. **The config owns the geometry**: every
 degree goes through `Screen`, which reads the config, so a registration that

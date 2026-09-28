@@ -1,0 +1,85 @@
+# MACHINE: the development laptop — the Linux machine the lab's experiments
+# are written on.
+#
+# One of alhazen's SHARED rigs (`--rig laptop`), taken from
+# amodal-averaging's configs/rig-laptop.yaml. An experiment that needs
+# something different on this machine writes its own configs/rig-laptop.yaml
+# beginning `extends: laptop` and says only that (docs/rigs.md).
+#
+# A rig file describes a machine: its panel, its devices, where its data
+# goes. Which of alhazen's six modes you run on it is not the file's business,
+# so every mode takes this file as it stands:
+#
+#   python run.py --mode demo     --rig laptop
+#   python run.py --mode simulate --rig laptop --seed 1
+#   python run.py --mode test     --rig laptop --sub dev --ses 1
+#   python run.py --mode movie    --rig laptop
+#
+# There is no eye tracker on this laptop, and none is configured below. Test
+# mode notices and lets the mouse cursor stand in for gaze; simulate mode
+# brings the experiment's scripted participant and needs none. Rehearsal data
+# (test, simulate) lands beside data_root under data-rehearsal/, never in it,
+# so a simulated subject can never end up in the same table as a real one.
+
+# YOUR HARDWARE, read off this machine on 2026-08-27:
+#
+#   screen 0  eDP-1  4096x2304 @ 120 Hz  380 x 210 mm   (the laptop panel; 60 Hz when first
+#                                                        read, 120 Hz since, confirmed 2026-09-10)
+#   screen 1  DP-3   7680x2160 @ 120 Hz  1200 x 340 mm  (the Samsung ultrawide)
+#
+# DO NOT USE SCREEN 1. The Samsung is off limits for experiments; this file
+# targets the laptop panel, screen 0, and a test pins it
+# (tests/unit/test_rigs.py). If a session ever opens on the ultrawide,
+# `screen_index` below is what to check.
+#
+# The laptop panel runs at 120 Hz, the same as the lab rig, so a duration in
+# milliseconds is the same number of frames on both: a 200 ms gap is 24 frames.
+# It was 60 Hz when first read off on 2026-08-27 and was set to 120 later.
+# Frame-level timing measured here is still not the rig's: this laptop draws
+# through a desktop compositor, where the rig takes a fullscreen exclusive
+# surface.
+monitor:
+  width_px: 4096
+  height_px: 2304
+  width_cm: 38.0        # the driver's own EDID figure, not a guess
+  distance_cm: 57.0     # MEASURE THIS — it is what sets a degree of visual angle
+  refresh_rate_hz: 120.0
+  screen_index: 0
+  fullscreen: true
+
+display:
+  backend: psychopy
+  # PsychoPy measures the refresh rate by looking for 10 consecutive IDENTICAL
+  # frame intervals, and alhazen gives it `warmup_flips` frames to find them
+  # in. The default 30 leaves only 20 after warm-up, which a compositor-backed
+  # desktop (this machine runs Wayland, so PsychoPy goes through XWayland)
+  # will not reliably produce — the session then refuses to start, correctly,
+  # because it cannot verify the timing. More frames to search gives it room.
+  # The rig takes a fullscreen exclusive surface and does not need this.
+  warmup_flips: 240
+  frame_qa:
+    # Count drops on every trial record, so the analysis's frame-timing report
+    # has numbers to show on a machine that is also running a browser.
+    #
+    # Deliberately NOT recycle_trial, which is what the rig uses. A laptop
+    # sharing its GPU with everything else drops frames as a matter of course,
+    # and recycling on that would re-serve trials faster than it retired them
+    # — a rehearsal that never ends. Here a drop is information, not a fault.
+    policy: mark_trial
+    # No threshold: mark_trial reads none (it counts every trial's
+    # drops on the record), and alhazen refuses one it would ignore.
+
+live_monitor:
+  # alhazen's live monitoring UI. It opens in a browser BEFORE PsychoPy takes
+  # focus, and stays read-only until you pause the session with P, so nothing
+  # you click can reach a running trial. Demo mode runs no trials and leaves
+  # it closed.
+  enabled: true
+  auto_open: true
+  port: 0
+
+# No devices: a laptop has none. Test mode substitutes the mouse for the
+# missing tracker and says so before trial one.
+devices: {}
+
+data_root: data

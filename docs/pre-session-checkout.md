@@ -8,7 +8,7 @@ laptop that only has the config file.
 holding `configs/`), before every session:**
 
 ```bash
-alhazen check-rig --rig configs/rig-lab.yaml --pulse --record "checkouts/$(date +%F-%H%M).json"
+alhazen check-rig --rig lab --pulse --record "checkouts/$(date +%F-%H%M).json"
 ```
 
 Nothing else to decide. `--pulse` fires the hardware, `--record` writes down

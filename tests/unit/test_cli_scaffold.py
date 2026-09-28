@@ -346,6 +346,28 @@ class TestScaffoldedPackageWorks:
         root = scaffold("acceptance_demo", tmp_path)
         environment = self.install(root, tmp_path)
 
+        # The shared rigs are package data: a wheel built without them
+        # installs fine and then cannot find `--rig lab`. They are installed
+        # with the package, and a name finds the installed copy.
+        installed_rigs = tmp_path / "site" / "alhazen" / "rigs"
+        assert sorted(p.name for p in installed_rigs.glob("rig-*.yaml")) == [
+            "rig-lab-rehearsal.yaml",
+            "rig-lab.yaml",
+            "rig-laptop.yaml",
+            "rig-mac.yaml",
+            "rig-vpixx.yaml",
+        ]
+        rigs = subprocess.run(
+            [sys.executable, "-m", "alhazen.cli.main", "validate", "--rig", "alhazen/lab"],
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+            env=environment,
+            timeout=300,
+        )
+        assert rigs.returncode == 0, rigs.stdout + rigs.stderr
+        assert str(installed_rigs / "rig-lab.yaml") in rigs.stdout
+
         # The entry point is registered by the INSTALL, which is the claim
         # `alhazen run --task` rests on.
         listed = subprocess.run(

@@ -17,8 +17,13 @@ pip install alhazen-vision
 alhazen new my_experiment && cd my_experiment
 pip install -e ".[dev]"
 pytest                                                    # no display needed
-python run.py --mode simulate --rig configs/rig-lab.yaml --headless
+python run.py --mode simulate --rig lab --headless
 ```
+
+`--rig lab` is the scaffold's `configs/rig-lab.yaml`: a rig is named by its
+file (`rig-<name>.yaml`), found in the experiment's `configs/` first and then
+among the rigs alhazen ships for every experiment to share, and a path works
+as well. `alhazen rigs` lists them ([Rigs](docs/rigs.md)).
 
 That last command runs a complete session on the rig's own config, with
 nobody in the chair and no window open, and writes a real run directory —

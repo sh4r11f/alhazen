@@ -230,6 +230,10 @@ explains each.
     options:
       members: [load_model, load_rig, load_params, build_session_config]
 
+::: alhazen.config.rigs
+    options:
+      members: [RigRef, resolve_rig, list_rigs, shared_rig_files]
+
 ::: alhazen.config.snapshot
     options:
       members: [build_provenance]

@@ -74,7 +74,7 @@ loads, and that the task tells its subject what to do.
 ## Run a session
 
 ```bash
-python run.py --mode simulate --rig configs/rig-lab.yaml --headless --sub s01 --ses 1
+python run.py --mode simulate --rig lab --headless --sub s01 --ses 1
 ```
 
 That is a complete session, on the rig's own config, with nobody in the
@@ -129,11 +129,16 @@ Open `src/saccade_bias/task.py`. Four things to try:
 ## When you get to the rig
 
 ```bash
-alhazen monitor register --rig configs/rig-lab.yaml  # tell PsychoPy about the panel
-alhazen calibrate ruler --rig configs/rig-lab.yaml   # is the geometry right?
-alhazen check-rig --rig configs/rig-lab.yaml --pulse # is everything wired?
-alhazen run --task saccade-bias --rig configs/rig-lab.yaml --sub s01 --ses 1
+alhazen monitor register --rig lab      # tell PsychoPy about the panel
+alhazen calibrate ruler --rig lab       # is the geometry right?
+alhazen check-rig --rig lab --pulse     # is everything wired?
+alhazen run --task saccade-bias --rig lab --sub s01 --ses 1
 ```
+
+Type these from the experiment's folder: `lab` is its `configs/rig-lab.yaml`,
+because a rig name is looked up in the experiment's `configs/` before among
+the rigs alhazen ships for every experiment to share, and a path to the file
+works as well ([Rigs](rigs.md)).
 
 `alhazen run --task` starts the same session `run.py` does. With no
 `--params` it loads `configs/task.yaml`, because the task names that file

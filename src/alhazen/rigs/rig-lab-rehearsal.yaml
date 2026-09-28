@@ -1,0 +1,104 @@
+# MACHINE: none. rig-lab.yaml with every device stood down.
+#
+# One of alhazen's SHARED rigs (`--rig lab-rehearsal`), taken from
+# amodal-averaging's configs/rig-lab-rehearsal.yaml.
+#
+# The lab rig cannot be practised on: the EyeLink needs SR Research's kit and
+# the reward and sync lines need nidaqmx, so `alhazen check-rig` against
+# rig-lab.yaml on any other computer fails three lines out of four, and the
+# first time anyone sees the checkout pass is on the rig.
+#
+# This file is that checkout, rehearsable:
+#
+#   alhazen check-rig --rig lab-rehearsal --pulse
+#
+# and it is also what a whole session is rehearsed against:
+#
+#   python run.py --mode simulate --headless \
+#       --rig lab-rehearsal --sub rehearsal --ses 1
+#
+# Everything that is not a device is IDENTICAL to rig-lab.yaml — the same
+# monitor geometry, the same photodiode corner. What this rehearses is THAT
+# rig's configuration, not a generic one. When rig-lab.yaml changes, change
+# this with it (tests/unit/test_rigs.py holds the two to it).
+#
+# An experiment whose own rig-lab.yaml extends the shared lab to name its
+# events writes a rig-lab-rehearsal.yaml of its own the same way —
+# `extends: lab-rehearsal`, with the same `event_lines` and photodiode
+# `events` — so that the rehearsal pulses exactly the names the lab rig will.
+# Named here, no event would suit every experiment: a session refuses a rig
+# naming an event its task never declares, which is the validation working.
+#
+# The ONE deliberate exception is frame QA, for the same reason the laptop rigs
+# make it: rig-lab.yaml recycles a trial that missed more than 10% of its
+# frames, a budget argued for a real panel. A simulated display still paces
+# against the wall clock, so on a loaded machine it misses flips for reasons
+# that have nothing to do with the rig, and recycling on those would re-serve
+# trials faster than it retired them — a rehearsal that never ends. Here a
+# drop is information, not a fault: nothing collected here is a result.
+#
+# What a clean run here proves: the config is valid, the data root is
+# writable, the pulse code paths run, and a whole session builds and
+# completes. What it proves about the rig: NOTHING. No valve opened, no TTL
+# reached a recorder, no eye was tracked, and every landing point in the data
+# is the scripted participant's arithmetic.
+monitor:
+  width_px: 1920
+  height_px: 1080
+  width_cm: 52.0
+  distance_cm: 57.0
+  refresh_rate_hz: 120.0
+  # No fullscreen: there is no display here, and a simulated one opens no
+  # window to put on a screen.
+
+display:
+  # The one line that cannot be rehearsed: verifying a display means opening a
+  # window, which is a session. check-rig says so on its own last line.
+  backend: simulated
+  frame_qa:
+    # Not rig-lab.yaml's recycle_trial: see the block at the top of this file.
+    policy: mark_trial
+  photodiode:
+    corner: br
+    size_px: 60
+    events: []
+
+live_monitor:
+  # On, like the other rig files: whether the live monitor runs is the run's
+  # decision (--no-live-monitor), not the file's. auto_open is off because a
+  # rehearsal is usually run over ssh, and --headless turns the whole thing off
+  # anyway.
+  enabled: true
+  auto_open: false
+  port: 0
+
+devices:
+  eyetracker:
+    # mouse_sim is the only tracker with no hardware behind it. check-rig never
+    # constructs it — it needs a window — so that line reads OK with "no
+    # hardware to check", and the EyeLink, including the calibration limit an
+    # experiment may depend on, remains the one thing this rehearsal says
+    # nothing at all about.
+    backend: mouse_sim
+  reward:
+    # --pulse fires one 50 ms pulse through this, and a rewarded session's
+    # payouts go through it too. Logged, not delivered: the code path runs, the
+    # solenoid does not exist.
+    backend: simulated
+    device: Dev1
+    channel: ao0
+    voltage: 5.0
+  sync:
+    # The same lines as the lab rig, and like it, no events on them until an
+    # experiment names its own: --pulse reports "pulsed 0 line(s)" here, and
+    # the count an experiment's own rehearsal reports is the one to hold
+    # against the wiring diagram when the real one is run.
+    backend: simulated
+    pulse_ms: 2.0
+
+# `data`, like every other rig file, and NOT data-rehearsal. The invariant is
+# that every rig names the real root and the MODE decides where a rehearsal
+# lands (test and simulate write to a sibling, data-rehearsal/), so that there
+# is no dev root to get wrong. Naming data-rehearsal here would put a simulate
+# run in data-rehearsal-rehearsal/ — a second rehearsal tree that nothing globs.
+data_root: data

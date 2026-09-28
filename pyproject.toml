@@ -95,11 +95,19 @@ dev = [
 [project.scripts]
 alhazen = "alhazen.cli.main:main"
 
-# The scaffold's templates and the live monitor's frontend ship inside the wheel
-# — both are read at runtime, so a package that omitted them would install
-# fine and fail on first use (`alhazen new`, and a blank live monitor page).
+# The scaffold's templates, the live monitor's and the workspace's frontends
+# and the shared rigs ship inside the wheel — all are read at runtime, so a
+# package that omitted them would install fine and fail on first use
+# (`alhazen new`, a blank page, `--rig lab`). tests/unit/test_rigs.py checks
+# every file under src/alhazen/rigs/ matches the pattern here.
 [tool.setuptools.package-data]
-alhazen = ["py.typed", "_scaffold/template/**/*", "live_monitor/assets/*", "cli/assets/*"]
+alhazen = [
+  "py.typed",
+  "_scaffold/template/**/*",
+  "live_monitor/assets/*",
+  "cli/assets/*",
+  "rigs/*",
+]
 
 [project.urls]
 Repository = "https://github.com/sh4r11f/alhazen"

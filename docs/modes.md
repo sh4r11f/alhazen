@@ -16,23 +16,29 @@ written twice, including the same off-by-one in the run-number counter.
 | `run` | the experiment | yes | to the rig's data root |
 
 ```
-alhazen run --mode demo --task kde-vergence --rig configs/rig-mac.yaml
-alhazen run --mode movie --task kde-vergence --rig configs/rig-lab.yaml --out movies
-alhazen run --mode measure --rig configs/rig-lab.yaml
-alhazen run --mode simulate --task kde-vergence --rig configs/rig-lab.yaml --headless
-alhazen run --mode test --task kde-vergence --rig configs/rig-lab.yaml --sub s01 --ses 1
+alhazen run --mode demo --task kde-vergence --rig mac
+alhazen run --mode movie --task kde-vergence --rig lab --out movies
+alhazen run --mode measure --rig lab
+alhazen run --mode simulate --task kde-vergence --rig lab --headless
+alhazen run --mode test --task kde-vergence --rig lab --sub s01 --ses 1
 ```
 
-An experiment's own `run.py` takes the same flags, through the same code —
-see [Starting an experiment](#starting-an-experiment).
+`--rig` takes a rig's name — `lab` is the experiment's own
+`configs/rig-lab.yaml`, else the lab rig alhazen ships for every experiment
+to share — or the path to a rig file, as it always has
+(`--rig configs/rig-lab.yaml`). [Rigs](rigs.md) has the lookup order and how
+an experiment's rig builds on a shared one. An experiment's own `run.py` takes
+the same flags, through the same code — see
+[Starting an experiment](#starting-an-experiment).
 
 ## Every mode on every rig
 
 A rig file describes a **machine**: its panel, its devices, where its data
 goes. It says nothing about what you are about to do on it, because that is
 the mode's business. So there is one rig file per machine — `alhazen new`
-scaffolds a laptop (`rig-mac.yaml`) and the rig (`rig-lab.yaml`) — and every
-mode takes either of them as it stands.
+scaffolds a laptop (`rig-mac.yaml`) and the rig (`rig-lab.yaml`), and alhazen
+ships the machines several experiments share ([Rigs](rigs.md)) — and every
+mode takes any of them as it stands.
 
 The framework used to ship a file per *purpose* as well: `rig-sim` for a
 headless run, `rig-auto` for a dry run with the live monitor, `rig-mouse` for
@@ -456,11 +462,18 @@ from alhazen.cli.modes import run_experiment
 raise SystemExit(
     run_experiment(
         task_class=MyTask,
-        default_rig=HERE / "configs" / "rig-mac.yaml",
+        default_rig="mac",
         argv=sys.argv[1:],
     )
 )
 ```
+
+`default_rig` takes what `--rig` takes. A name is looked up in the experiment
+the task belongs to — `"mac"` is its own `configs/rig-mac.yaml`, else
+alhazen's shared mac — wherever the command is typed, so `python ~/exp/run.py`
+from another folder starts on the same rig. A path works too, written as
+`HERE / "configs" / "rig-mac.yaml"` (with `HERE = Path(__file__).parent`) for
+the same reason.
 
 An experiment that ships several tasks declares them once, as a table, and
 alhazen owns the `--task` flag — its choices are the table's keys, the chosen
@@ -477,14 +490,14 @@ raise SystemExit(
     run_experiment(
         tasks=TASKS,
         default_task="rf-map-v4",
-        default_rig=HERE / "configs" / "rig-mac.yaml",
+        default_rig="mac",
         argv=sys.argv[1:],
     )
 )
 ```
 
 Name each params file as `HERE / "configs" / "task.yaml"` (with
-`HERE = Path(__file__).parent`), like `default_rig`: a bare string is resolved
+`HERE = Path(__file__).parent`), like a `default_rig` path: a bare string is resolved
 against the directory the command is typed in, so `python ~/exp/run.py` from
 elsewhere would not find it. Write the table as a module-level dict literal:
 the experiment workspace

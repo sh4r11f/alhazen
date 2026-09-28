@@ -1,0 +1,102 @@
+# MACHINE: a Mac — Apple Silicon, Retina display.
+#
+# One of alhazen's SHARED rigs (`--rig mac`), taken from amodal-averaging's
+# configs/rig-mac.yaml. Your Mac is probably not the one below: write your
+# own configs/rig-mac.yaml beginning `extends: mac` and give it your
+# `monitor:` numbers — only those need to differ (docs/rigs.md).
+#
+# A rig file describes a machine: its panel, its devices, where its data
+# goes. Which of alhazen's six modes you run on it is not the file's business,
+# so every mode takes this file as it stands:
+#
+#   python run.py --mode demo     --rig mac
+#   python run.py --mode simulate --rig mac --seed 1
+#   python run.py --mode test     --rig mac --sub dev --ses 1
+#   python run.py --mode movie    --rig mac
+#
+# There is no eye tracker on a laptop, and none is configured below. Test
+# mode notices and lets the mouse cursor stand in for gaze; simulate mode
+# brings the experiment's scripted participant and needs none. Rehearsal data
+# (test, simulate) lands beside data_root under data-rehearsal/, never in it.
+#
+# ---------------------------------------------------------------------------
+# TWO NUMBERS TO GET RIGHT, AND NEITHER IS THE ONE MACOS SHOWS YOU
+# ---------------------------------------------------------------------------
+#
+# 1. width_px must be DEVICE pixels, not the logical resolution.
+#
+#    A Retina screen draws two device pixels per point in each direction.
+#    PsychoPy's `units="pix"` — which is what alhazen places every stimulus in
+#    — means the small device pixels, and alhazen turns them into degrees with
+#    `width_px / width_cm`. A 14" MacBook Pro reports 1512x982 in System
+#    Settings and draws into 3024x1964; putting 1512 here makes every bar,
+#    every disc and every separation exactly half the size it should be.
+#
+#    Some experiments ship a probe that opens a window on each screen and
+#    prints its real drawing surface (amodal-averaging's
+#    `python -m amodal_averaging.preview --probe`). You do not have to trust
+#    it either: alhazen compares the real framebuffer against these numbers
+#    when a fullscreen window opens and refuses to run if they disagree,
+#    naming both.
+#
+# 2. distance_cm decides whether the stimulus fits at all.
+#
+#    On a laptop, a wide stimulus is most of the screen, so the usual 57 cm is
+#    too far for everything but the largest panels. The panel spans +/-A deg
+#    from its centre when you sit at d = (width_cm / 2) / tan(A) or closer.
+#    For a stimulus reaching 16 deg either side of centre (amodal-averaging's
+#    widest layout is about that):
+#
+#      MacBook Air 13"   2560x1664   29.0 cm   sit at 50 cm or closer
+#      MacBook Air 15"   2880x1864   32.4 cm   sit at 56 cm or closer
+#      MacBook Pro 14"   3024x1964   30.4 cm   sit at 53 cm or closer
+#      MacBook Pro 16"   3456x2234   34.7 cm   sit at 60 cm or closer
+#      iMac 24"          4480x2520   52.2 cm   sit at 91 cm or closer
+#
+#    Sitting closer is fine — it is the ratio that matters, and every stimulus
+#    size is in degrees, so nothing about a design changes. What is NOT fine
+#    is leaving 57 cm in the config while sitting at 45: then every degree is
+#    wrong by a quarter. Measure it.
+#
+# The block below is a MacBook Pro 14" at 45 cm. Replace it with yours, in
+# your experiment's own rig-mac.yaml.
+# ---------------------------------------------------------------------------
+monitor:
+  width_px: 3024        # device pixels
+  height_px: 1964
+  width_cm: 30.4        # MEASURE the visible glass, edge to edge
+  distance_cm: 45.0     # MEASURE eye to screen; see the table above
+  refresh_rate_hz: 60.0
+  screen_index: 0
+  fullscreen: true
+
+display:
+  backend: psychopy
+  # macOS composites every frame, and PsychoPy measures the refresh rate by
+  # looking for 10 consecutive IDENTICAL frame intervals. The default 30
+  # warm-up flips leave only 20 to find them in, which a compositor will not
+  # reliably give; the session then refuses to start, correctly, because it
+  # cannot verify the timing. More frames to search gives it room.
+  warmup_flips: 240
+  frame_qa:
+    # Flag drops; do not recycle on them. Same reasoning as rig-laptop.yaml:
+    # this is a development machine, and its dropped frames are a fact about
+    # the machine rather than a trial worth running again.
+    policy: mark_trial
+    # No threshold: mark_trial reads none (it counts every trial's
+    # drops on the record), and alhazen refuses one it would ignore.
+
+live_monitor:
+  # Opens in a browser BEFORE PsychoPy takes focus. On macOS a fullscreen
+  # PsychoPy window gets its own Space, so switch back with Mission Control —
+  # or add --windowed to keep both in view while you watch it run. Demo mode
+  # runs no trials and leaves it closed.
+  enabled: true
+  auto_open: true
+  port: 0
+
+# No devices: a laptop has none. Test mode substitutes the mouse for the
+# missing tracker and says so before trial one.
+devices: {}
+
+data_root: data

@@ -25,6 +25,53 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+### Added
+
+- **Shared rigs.** alhazen ships the machines several experiments share —
+  `lab`, `lab-rehearsal`, `vpixx`, `laptop` and `mac`, taken from
+  amodal-averaging's rig files with their comments — so an experiment no
+  longer needs its own copy of each. They name no events: a session refuses
+  a rig naming an event its task does not declare, so each experiment adds
+  its own sync lines and photodiode events (below). See
+  [docs/rigs.md](docs/rigs.md).
+- **Rigs by name.** Every `--rig` — `alhazen run`, an experiment's `run.py`
+  (and `run_experiment(default_rig=...)`), `validate`, `check-rig`,
+  `calibrate`, `monitor` — takes a name: `lab`, `rig-lab` and `rig-lab.yaml`
+  all mean the experiment's own `configs/**/rig-lab.yaml`, else alhazen's
+  shared lab, and `alhazen/lab` is always the shared one. A path to a file
+  still means that file. The experiment is the task's (the folder holding its
+  `pyproject.toml`), wherever the command is typed; with no task, the current
+  folder. An unknown name lists every rig and whose it is; two of the
+  experiment's files with one name are refused, naming both.
+- **`extends: <shared rig>`.** An experiment rig may build on a shared one and
+  say only what differs: its settings are merged over the shared file's
+  (sections key by key; values and lists replace; `null` removes) and the
+  result is validated as one rig. Only shared rigs can be extended, and they
+  extend nothing. An empty section (`devices: {}`) in such a file is refused,
+  because merged it would keep everything the shared rig has.
+- **`alhazen rigs [--project PATH]`** lists every rig `--rig` can name: its
+  source (the experiment's or alhazen's), its file, what it extends and which
+  shared rigs the experiment's own shadow.
+- **A session records which rig ran**: the config snapshot's `sources` gains
+  `rig_name` and `rig_source` beside `rig`, which is still the file.
+- **`alhazen.config.rigs`** (public): `RigRef`, `resolve_rig`, `list_rigs`,
+  `shared_rig_files`. `load_rig` merges `extends`, and takes
+  `shared_rigs=` for a caller that must merge over another installation's
+  shared rigs.
+
+### Changed
+
+- **A gamma fit or measure-mode report for a shared rig is kept in the
+  experiment's `configs/`** (`configs/rig-lab_gamma.yaml`,
+  `configs/measurements/`), where the experiment's own file of that name
+  would be — never inside alhazen's installation, which a reinstall replaces.
+  Both refuse, before measuring, where there is no `configs/` folder.
+- **`alhazen run --task` loads the task before the rig**, because a rig name
+  is looked up in the task's experiment: a misspelt task is now reported
+  before a broken rig.
+
 ## 1.10.1 - 2026-09-26
 
 ### Fixed

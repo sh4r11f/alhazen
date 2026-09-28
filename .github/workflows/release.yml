@@ -72,9 +72,9 @@ jobs:
   smoke:
     # twine checks the metadata, not whether the wheel works. A wheel can pass
     # it and still be broken where only an install shows it: a runtime file
-    # left out of package-data (the scaffold templates, the live monitor page), a
-    # dependency the code imports but pyproject does not declare, a console
-    # script pointing at a moved function. So the wheel just built is
+    # left out of package-data (the scaffold templates, the live monitor page,
+    # the shared rigs), a dependency the code imports but pyproject does not
+    # declare, a console script pointing at a moved function. So the wheel just built is
     # installed into a fresh venv — no checkout, so nothing can be imported
     # from the source tree by accident — and run the way a new user runs it:
     # the version, then the README's quick start (`alhazen new`, then a whole
@@ -114,6 +114,16 @@ jobs:
             echo "alhazen --version printed '$reported', expected 'alhazen $expected'" >&2
             exit 1
           fi
+      - name: The shared rigs shipped, and each one loads by name
+        # Package data a wheel can lose without failing to install: then
+        # `--rig lab` finds nothing. Each is validated by name from the
+        # installed wheel, in a folder with no configs/ of its own.
+        working-directory: ${{ runner.temp }}
+        run: |
+          "$RUNNER_TEMP/smoke/bin/alhazen" rigs
+          for rig in lab lab-rehearsal laptop mac vpixx; do
+            "$RUNNER_TEMP/smoke/bin/alhazen" validate --rig "alhazen/$rig"
+          done
       - name: Scaffold an experiment and run a headless simulated session
         # Runs in the temp directory, away from dist/ and any source tree.
         # PYTHONPATH=src lets run.py import the scaffolded experiment without
