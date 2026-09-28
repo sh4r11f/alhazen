@@ -996,6 +996,20 @@ class TestTheExperimentVersionFilesTheRun:
         assert provenance["experiment_version"] == "0.3.0"
         assert provenance["experiment_version_source"] == "pyproject.toml"
 
+    def test_what_spans_versions_stays_at_the_unversioned_root(self, tmp_path):
+        # A subject spans versions of an experiment: the registry and the
+        # database sit above the v<version>/ folders, not in one of them.
+        _repo, task = self.experiment_project(tmp_path, version="0.3.0")
+
+        self.session(tmp_path, task).run()
+
+        data = tmp_path / "data"
+        assert sorted(p.name for p in data.iterdir() if p.is_dir()) == ["v0.3.0"]
+        assert (data / "participants.tsv").is_file()
+        assert (data / "experiment.sqlite3").is_file()
+        assert not list((data / "v0.3.0").rglob("participants.tsv"))
+        assert not list((data / "v0.3.0").rglob("experiment.sqlite3"))
+
     def test_an_explicit_version_wins_over_the_pyproject(self, tmp_path):
         _repo, task = self.experiment_project(tmp_path, version="0.3.0")
 

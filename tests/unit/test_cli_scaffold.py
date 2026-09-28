@@ -409,6 +409,10 @@ class TestScaffoldedPackageWorks:
             rows = list(csv.DictReader(handle))
         assert len(rows) == 10  # the template's paradigm block
         assert all(row["outcome"] in {"FIXATED", "NO_FIXATION", "FIX_BREAK"} for row in rows)
+        # The rehearsal root has the real root's layout: the run under the
+        # project's version, the registry and the database above it.
+        assert (root / "data-rehearsal" / "participants.tsv").is_file()
+        assert (root / "data-rehearsal" / "experiment.sqlite3").is_file()
         # And nothing landed where the analysis looks for subjects.
         assert not (root / "data").exists()
 
