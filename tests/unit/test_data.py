@@ -11,8 +11,12 @@ import yaml
 from alhazen.core.events import Event
 from alhazen.data import naming
 from alhazen.data.manifest import add_to_manifest, verify_manifest, write_manifest
-from alhazen.data.participants import ensure_participant, participants_path
-from alhazen.data.paths import SessionPaths
+from alhazen.data.participants import (
+    check_participant,
+    ensure_participant,
+    participants_path,
+)
+from alhazen.data.paths import RunFolder, SessionPaths, find_runs
 from alhazen.errors import DataError
 from alhazen.session.recorder import DataRecorder, ordered_trial_columns
 
@@ -42,30 +46,40 @@ class TestParseRunDirname:
 
 class TestSessionPaths:
     def test_layout_and_padding(self, tmp_path):
-        paths = SessionPaths.create(tmp_path, "M1", 3, 2, "mib-quest", "20260826")
-        assert paths.run_dir == tmp_path / "sub-M1" / "ses-003" / "run-02_task-mib-quest"
+        paths = SessionPaths.create(
+            tmp_path, "M1", 3, 2, "mib-quest", "20260826", experiment_version="0.1.0"
+        )
+        assert paths.run_dir == tmp_path / "v0.1.0" / "sub-M1" / "ses-003" / "run-02_task-mib-quest"
         assert paths.trials_path.name == "sub-M1_ses-003_run-02_task-mib-quest_20260826_trials.csv"
         assert paths.figures_dir.is_dir()
         assert paths.snapshot_path.parent == paths.run_dir
 
     def test_refuses_overwriting_recorded_run(self, tmp_path):
-        paths = SessionPaths.create(tmp_path, "M1", 1, 1, "task", "20260826")
+        paths = SessionPaths.create(
+            tmp_path, "M1", 1, 1, "task", "20260826", experiment_version="0.1.0"
+        )
         paths.trials_path.write_text("trial_index\n1\n")
         with pytest.raises(DataError, match="refusing to overwrite"):
-            SessionPaths.create(tmp_path, "M1", 1, 1, "task", "20260826")
+            SessionPaths.create(
+                tmp_path, "M1", 1, 1, "task", "20260826", experiment_version="0.1.0"
+            )
         # The next run number is fine.
-        SessionPaths.create(tmp_path, "M1", 1, 2, "task", "20260826")
+        SessionPaths.create(tmp_path, "M1", 1, 2, "task", "20260826", experiment_version="0.1.0")
 
     def test_the_same_run_number_on_a_later_day_is_refused(self, tmp_path):
         # The bug this pins: the trials file's name carries the date and the
         # folder's does not, so tomorrow's run passed the check and wrote
         # into today's folder, over its snapshot and manifest.
-        today = SessionPaths.create(tmp_path, "M1", 1, 1, "task", "20260826")
+        today = SessionPaths.create(
+            tmp_path, "M1", 1, 1, "task", "20260826", experiment_version="0.1.0"
+        )
         today.trials_path.write_text("trial_index\n1\n")
         today.snapshot_path.write_text("today's snapshot\n")
 
         with pytest.raises(DataError, match="refusing to overwrite") as refused:
-            SessionPaths.create(tmp_path, "M1", 1, 1, "task", "20260827")
+            SessionPaths.create(
+                tmp_path, "M1", 1, 1, "task", "20260827", experiment_version="0.1.0"
+            )
 
         # The message names what is there, and nothing was touched.
         assert "config_snapshot.yaml" in str(refused.value)
@@ -74,32 +88,158 @@ class TestSessionPaths:
     def test_a_run_that_crashed_before_its_trials_file_is_refused_too(self, tmp_path):
         # A session killed mid-run leaves its snapshot and log, never a
         # trials file: its subject still did the work.
-        paths = SessionPaths.create(tmp_path, "M1", 1, 1, "task", "20260826")
+        paths = SessionPaths.create(
+            tmp_path, "M1", 1, 1, "task", "20260826", experiment_version="0.1.0"
+        )
         paths.snapshot_path.write_text("snapshot\n")
         paths.log_path.write_text("session start\n")
         with pytest.raises(DataError, match="config_snapshot.yaml, session.log"):
-            SessionPaths.create(tmp_path, "M1", 1, 1, "task", "20260826")
+            SessionPaths.create(
+                tmp_path, "M1", 1, 1, "task", "20260826", experiment_version="0.1.0"
+            )
 
     def test_a_file_in_a_subfolder_counts(self, tmp_path):
-        paths = SessionPaths.create(tmp_path, "M1", 1, 1, "task", "20260826")
+        paths = SessionPaths.create(
+            tmp_path, "M1", 1, 1, "task", "20260826", experiment_version="0.1.0"
+        )
         (paths.figures_dir / "dashboard.html").write_text("<html>")
         with pytest.raises(DataError, match="figures/dashboard.html"):
-            SessionPaths.create(tmp_path, "M1", 1, 1, "task", "20260827")
+            SessionPaths.create(
+                tmp_path, "M1", 1, 1, "task", "20260827", experiment_version="0.1.0"
+            )
 
     def test_a_long_list_is_cut_short(self, tmp_path):
-        paths = SessionPaths.create(tmp_path, "M1", 1, 1, "task", "20260826")
+        paths = SessionPaths.create(
+            tmp_path, "M1", 1, 1, "task", "20260826", experiment_version="0.1.0"
+        )
         for name in "abcde":
             (paths.run_dir / f"{name}.txt").write_text(name)
         with pytest.raises(DataError, match=r"\(a.txt, b.txt, c.txt and 2 more\)"):
-            SessionPaths.create(tmp_path, "M1", 1, 1, "task", "20260826")
+            SessionPaths.create(
+                tmp_path, "M1", 1, 1, "task", "20260826", experiment_version="0.1.0"
+            )
 
     def test_a_folder_left_empty_by_a_failed_build_can_be_used(self, tmp_path):
         # A build that failed before the session began (a tracker that would
         # not connect) leaves only the empty figures folder behind; trying
         # again with the same number is not an overwrite of anything.
-        SessionPaths.create(tmp_path, "M1", 1, 1, "task", "20260826")
-        again = SessionPaths.create(tmp_path, "M1", 1, 1, "task", "20260826")
+        SessionPaths.create(tmp_path, "M1", 1, 1, "task", "20260826", experiment_version="0.1.0")
+        again = SessionPaths.create(
+            tmp_path, "M1", 1, 1, "task", "20260826", experiment_version="0.1.0"
+        )
         assert again.figures_dir.is_dir()
+
+
+class TestTheVersionLevel:
+    """alhazen 2.0 files every run under its experiment's version, so data
+    from two versions of a protocol never share a folder."""
+
+    def test_the_run_sits_under_its_version(self, tmp_path):
+        paths = SessionPaths.create(
+            tmp_path, "01", 1, 1, "task", "20260826", experiment_version="0.4.0"
+        )
+        assert paths.run_dir.relative_to(tmp_path).parts == (
+            "v0.4.0",
+            "sub-01",
+            "ses-001",
+            "run-01_task-task",
+        )
+
+    def test_the_same_numbers_under_another_version_are_another_run(self, tmp_path):
+        # A protocol bumped between a morning and an afternoon session starts
+        # its own run numbering; neither run is an overwrite of the other.
+        morning = SessionPaths.create(
+            tmp_path, "01", 1, 1, "task", "20260826", experiment_version="0.4.0"
+        )
+        morning.trials_path.write_text("trial_index\n1\n")
+        afternoon = SessionPaths.create(
+            tmp_path, "01", 1, 1, "task", "20260826", experiment_version="0.5.0"
+        )
+        assert afternoon.run_dir != morning.run_dir
+        assert morning.trials_path.read_text() == "trial_index\n1\n"
+
+    def test_the_record_of_the_setup_sits_in_the_run_folder(self, tmp_path):
+        paths = SessionPaths.create(
+            tmp_path, "01", 1, 1, "task", "20260826", experiment_version="0.4.0"
+        )
+        assert paths.session_json_path == paths.run_dir / "session.json"
+        assert paths.rig_copy_path == paths.run_dir / "rig.yaml"
+        assert paths.params_copy_path == paths.run_dir / "params.yaml"
+
+    @pytest.mark.parametrize("version", ["0.4.0", "1.0rc1", "2.0+lab", "3"])
+    def test_a_version_folder_reads_back_as_its_version(self, version):
+        assert naming.parse_version_dirname(naming.version_dirname(version)) == version
+
+    @pytest.mark.parametrize("name", ["sub-01", "participants.tsv", "v", "v/x", "ses-001", ""])
+    def test_a_name_that_is_not_a_version_folder_is_none(self, name):
+        assert naming.parse_version_dirname(name) is None
+
+    def test_a_run_folder_names_its_task(self):
+        assert naming.parse_run_task(naming.run_dirname(2, "mib-quest")) == "mib-quest"
+        # Counted as a run (parse_run_dirname), but it names no task.
+        assert naming.parse_run_task("run-07") is None
+
+
+class TestFindRuns:
+    """`find_runs` is what replaces a ``data/sub-*`` glob: it must find the
+    runs recorded since 2.0, one level down under their version, and still
+    the ones recorded before, directly under the root."""
+
+    @staticmethod
+    def run_folder(root, *parts):
+        folder = root.joinpath(*parts)
+        folder.mkdir(parents=True)
+        return folder
+
+    def test_both_layouts_are_found_and_told_apart(self, tmp_path):
+        new = self.run_folder(tmp_path, "v0.4.0", "sub-01", "ses-002", "run-03_task-mib")
+        old = self.run_folder(tmp_path, "sub-01", "ses-001", "run-01_task-mib")
+
+        found = {run.path: run for run in find_runs(tmp_path)}
+
+        assert set(found) == {new, old}
+        assert found[new] == RunFolder(
+            path=new, experiment_version="0.4.0", subject="01", session=2, run=3, task="mib"
+        )
+        # Pre-2.0: no version folder above it, so no version.
+        assert found[old] == RunFolder(
+            path=old, experiment_version=None, subject="01", session=1, run=1, task="mib"
+        )
+
+    def test_every_version_is_read(self, tmp_path):
+        self.run_folder(tmp_path, "v0.4.0", "sub-01", "ses-001", "run-01_task-t")
+        self.run_folder(tmp_path, "v0.5.0", "sub-01", "ses-001", "run-01_task-t")
+        assert [run.experiment_version for run in find_runs(tmp_path)] == ["0.4.0", "0.5.0"]
+
+    def test_what_is_not_a_run_is_not_returned(self, tmp_path):
+        run = self.run_folder(tmp_path, "v0.4.0", "sub-01", "ses-001", "run-01_task-t")
+        # What else lives under a data root, none of it a run.
+        (tmp_path / "participants.tsv").write_text("participant_id\n")
+        (tmp_path / "experiment.sqlite3").write_bytes(b"")
+        (tmp_path / "sub-01").mkdir()
+        (tmp_path / "sub-01" / "training_state.yaml").write_text("stage: one\n")
+        self.run_folder(tmp_path, "notes", "sub-01", "ses-001", "run-01_task-t")
+        self.run_folder(tmp_path, "v0.4.0", "sub-01", "ses-abc", "run-01_task-t")
+        self.run_folder(tmp_path, "v0.4.0", "sub-01", "ses-001", "run-notes")
+        (tmp_path / "v0.4.0" / "sub-01" / "ses-001" / "run-02_task-t").write_text("a file")
+
+        assert [found.path for found in find_runs(tmp_path)] == [run]
+
+    def test_a_root_that_does_not_exist_holds_no_runs(self, tmp_path):
+        assert find_runs(tmp_path / "nowhere") == []
+
+    def test_a_run_the_session_made_is_found(self, tmp_path):
+        paths = SessionPaths.create(
+            tmp_path, "M1", 3, 2, "mib-quest", "20260826", experiment_version="0.4.0"
+        )
+        (run,) = find_runs(tmp_path)
+        assert (run.path, run.experiment_version, run.subject, run.session, run.run) == (
+            paths.run_dir,
+            "0.4.0",
+            "M1",
+            3,
+            2,
+        )
 
 
 class TestRecorder:
@@ -174,6 +314,16 @@ class TestManifest:
 
         (tmp_path / "trials.csv").unlink()
         assert "missing: trials.csv" in verify_manifest(tmp_path, manifest_path)
+
+    def test_the_experiment_version_is_recorded_beside_the_hashes(self, tmp_path):
+        (tmp_path / "trials.csv").write_text("a\n1\n")
+        manifest_path = tmp_path / "manifest.yaml"
+        write_manifest(tmp_path, manifest_path, experiment_version="0.4.0")
+
+        manifest = yaml.safe_load(manifest_path.read_text())
+        assert manifest["schema_version"] == 2
+        assert manifest["experiment_version"] == "0.4.0"
+        assert verify_manifest(tmp_path, manifest_path) == []
 
 
 class TestAddToManifest:
@@ -257,6 +407,35 @@ class TestAddToManifest:
         assert "has no manifest" in caplog.text
         assert "report.yaml" in caplog.text
 
+    def test_the_experiment_version_survives_a_later_save(self, tmp_path):
+        (tmp_path / "trials.csv").write_text("a\n1\n")
+        manifest_path = tmp_path / "manifest.yaml"
+        write_manifest(tmp_path, manifest_path, experiment_version="0.4.0")
+        (tmp_path / "report.yaml").write_text("ok: true\n")
+
+        add_to_manifest(tmp_path, manifest_path, [tmp_path / "report.yaml"])
+
+        manifest = yaml.safe_load(manifest_path.read_text())
+        assert manifest["experiment_version"] == "0.4.0"
+        assert manifest["schema_version"] == 2
+
+    def test_a_manifest_from_before_2_0_keeps_its_own_schema(self, tmp_path):
+        # Stamping 2 on it would claim an experiment_version it does not have.
+        (tmp_path / "trials.csv").write_text("a\n1\n")
+        manifest_path = tmp_path / "manifest.yaml"
+        write_manifest(tmp_path, manifest_path)
+        old = yaml.safe_load(manifest_path.read_text())
+        old["schema_version"] = 1
+        manifest_path.write_text(yaml.safe_dump(old, sort_keys=False))
+        (tmp_path / "report.yaml").write_text("ok: true\n")
+
+        add_to_manifest(tmp_path, manifest_path, [tmp_path / "report.yaml"])
+
+        manifest = yaml.safe_load(manifest_path.read_text())
+        assert manifest["schema_version"] == 1
+        assert "experiment_version" not in manifest
+        assert verify_manifest(tmp_path, manifest_path) == []
+
 
 class TestParticipants:
     def test_create_and_idempotent(self, tmp_path):
@@ -320,3 +499,92 @@ class TestParticipants:
         assert "'extra'" in message
         # Refused before anything was written: the file is as the human left it.
         assert path.read_bytes() == before
+
+
+class TestInitialsInTheRegistry:
+    """alhazen 2.0: a subject's initials are recorded beside its id, and are
+    a check on the subject number — a later session with the same id and
+    other initials is refused, before anything is written."""
+
+    def rows(self, tmp_path):
+        with participants_path(tmp_path).open(newline="", encoding="utf-8") as f:
+            return list(csv.DictReader(f, delimiter="\t"))
+
+    def test_the_first_session_records_them(self, tmp_path):
+        ensure_participant(tmp_path, "01", initials="HD")
+        assert self.rows(tmp_path) == [{"participant_id": "sub-01", "initials": "HD"}]
+
+    def test_the_same_initials_again_change_nothing(self, tmp_path):
+        ensure_participant(tmp_path, "01", initials="HD")
+        before = participants_path(tmp_path).read_bytes()
+
+        ensure_participant(tmp_path, "01", initials="HD")
+        check_participant(tmp_path, "01", "HD")
+
+        assert participants_path(tmp_path).read_bytes() == before
+
+    def test_other_initials_for_the_same_subject_are_refused_naming_both(self, tmp_path):
+        ensure_participant(tmp_path, "01", initials="HD")
+        before = participants_path(tmp_path).read_bytes()
+
+        for attempt in (
+            lambda: check_participant(tmp_path, "01", "XY"),
+            lambda: ensure_participant(tmp_path, "01", initials="XY"),
+        ):
+            with pytest.raises(DataError) as refused:
+                attempt()
+            assert str(refused.value).startswith(
+                "sub-01 is recorded as HD; this session says XY — check the subject number"
+            )
+            assert str(participants_path(tmp_path)) in str(refused.value)
+
+        assert participants_path(tmp_path).read_bytes() == before
+
+    def test_a_hand_edited_cell_is_read_as_recorded(self, tmp_path):
+        # Lowercase or padded by a person editing the file is the same person.
+        participants_path(tmp_path).write_text(
+            "participant_id\tinitials\nsub-01\t hd \n", encoding="utf-8"
+        )
+        check_participant(tmp_path, "01", "HD")
+        ensure_participant(tmp_path, "01", initials="HD")
+        with pytest.raises(DataError, match="recorded as HD"):
+            check_participant(tmp_path, "01", "XY")
+
+    def test_a_subject_from_before_2_0_has_them_filled_in(self, tmp_path):
+        # A registry written before initials existed: no column at all.
+        participants_path(tmp_path).write_text(
+            "participant_id\tspecies\nsub-01\tmacaque\nsub-02\tmacaque\n", encoding="utf-8"
+        )
+
+        check_participant(tmp_path, "01", "HD")  # not refused
+        ensure_participant(tmp_path, "01", initials="HD")
+
+        assert self.rows(tmp_path) == [
+            {"participant_id": "sub-01", "species": "macaque", "initials": "HD"},
+            {"participant_id": "sub-02", "species": "macaque", "initials": ""},
+        ]
+
+    def test_a_blank_cell_is_filled_in_too(self, tmp_path):
+        ensure_participant(tmp_path, "01")  # a session that gave none
+        ensure_participant(tmp_path, "02", initials="AB")
+        ensure_participant(tmp_path, "01", initials="HD")
+
+        assert self.rows(tmp_path) == [
+            {"participant_id": "sub-01", "initials": "HD"},
+            {"participant_id": "sub-02", "initials": "AB"},
+        ]
+
+    def test_a_session_that_gives_none_checks_and_changes_nothing(self, tmp_path):
+        ensure_participant(tmp_path, "01", initials="HD")
+        before = participants_path(tmp_path).read_bytes()
+
+        check_participant(tmp_path, "01", None)
+        ensure_participant(tmp_path, "01")
+
+        assert participants_path(tmp_path).read_bytes() == before
+
+    def test_nothing_to_check_against_is_not_a_refusal(self, tmp_path):
+        check_participant(tmp_path, "01", "HD")  # no registry yet
+        ensure_participant(tmp_path, "02", initials="AB")
+        check_participant(tmp_path, "01", "HD")  # a subject not registered yet
+        assert not [row for row in self.rows(tmp_path) if row["participant_id"] == "sub-01"]

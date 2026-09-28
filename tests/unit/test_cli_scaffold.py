@@ -426,11 +426,15 @@ class TestScaffoldedPackageWorks:
         )
         assert session.returncode == 0, session.stdout + session.stderr
         assert "display: none (--headless)" in session.stdout
-        run_dir = next((root / "data-rehearsal").glob("sub-s01/ses-001/run-*"))
+        run_dir = next((root / "data-rehearsal").glob("v0.1.0/sub-s01/ses-001/run-*"))
         with next(run_dir.glob("*_trials.csv")).open() as handle:
             rows = list(csv.DictReader(handle))
         assert len(rows) == 10  # the template's paradigm block
         assert all(row["outcome"] in {"FIXATED", "NO_FIXATION", "FIX_BREAK"} for row in rows)
+        # The rehearsal root has the real root's layout: the run under the
+        # project's version, the registry and the database above it.
+        assert (root / "data-rehearsal" / "participants.tsv").is_file()
+        assert (root / "data-rehearsal" / "experiment.sqlite3").is_file()
         # And nothing landed where the analysis looks for subjects.
         assert not (root / "data").exists()
 
@@ -461,7 +465,7 @@ class TestScaffoldedPackageWorks:
             timeout=600,
         )
         assert simulate.returncode == 0, simulate.stdout + simulate.stderr
-        assert next((root / "data-rehearsal").glob("sub-sim/**/run-*"), None) is not None
+        assert next((root / "data-rehearsal").glob("v0.1.0/sub-sim/**/run-*"), None) is not None
         # run.py names no params file of its own: the one that ran is the
         # file the task declares, found from the task's own location.
         assert f"params: {(root / 'configs' / 'task.yaml').resolve()}" in simulate.stdout
@@ -492,40 +496,42 @@ class TestNextRunNumber:
     """`next_run` decides where a session's data goes. Nothing tested it.
 
     These pinned a private copy of it in cli/main.py that nothing called;
-    they now pin the one `build_mode_session` actually uses."""
+    they now pin the one `build_mode_session` actually uses — which, since
+    2.0, counts inside the experiment's version folder (the scaffolded
+    project's pyproject says 0.1.0)."""
 
     def session_dir(self, tmp_path, *runs: str) -> Path:
-        directory = tmp_path / "sub-s01" / "ses-001"
+        directory = tmp_path / "v0.1.0" / "sub-s01" / "ses-001"
         directory.mkdir(parents=True)
         for name in runs:
             (directory / name).mkdir()
         return tmp_path
 
     def test_an_empty_data_root_starts_at_one(self, tmp_path):
-        assert next_run(tmp_path, "s01", 1) == 1
+        assert next_run(tmp_path, "s01", 1, experiment_version="0.1.0") == 1
 
     def test_a_session_with_no_runs_yet_starts_at_one(self, tmp_path):
         root = self.session_dir(tmp_path)
-        assert next_run(root, "s01", 1) == 1
+        assert next_run(root, "s01", 1, experiment_version="0.1.0") == 1
 
     def test_it_counts_the_directories_that_exist(self, tmp_path):
         root = self.session_dir(tmp_path, "run-01_task-demo", "run-02_task-demo")
-        assert next_run(root, "s01", 1) == 3
+        assert next_run(root, "s01", 1, experiment_version="0.1.0") == 3
 
     def test_a_gap_does_not_reuse_a_number(self, tmp_path):
         """One past the HIGHEST, not the first hole. Filling a gap would
         write into a numbering an experimenter's notes already refer to."""
         root = self.session_dir(tmp_path, "run-01_task-demo", "run-04_task-demo")
-        assert next_run(root, "s01", 1) == 5
+        assert next_run(root, "s01", 1, experiment_version="0.1.0") == 5
 
     def test_a_directory_that_is_not_a_run_is_ignored(self, tmp_path):
         root = self.session_dir(tmp_path, "run-01_task-demo", "run-notes", "run-")
-        assert next_run(root, "s01", 1) == 2
+        assert next_run(root, "s01", 1, experiment_version="0.1.0") == 2
 
     def test_each_session_numbers_independently(self, tmp_path):
         root = self.session_dir(tmp_path, "run-01_task-demo", "run-02_task-demo")
-        assert next_run(root, "s01", 2) == 1
-        assert next_run(root, "s02", 1) == 1
+        assert next_run(root, "s01", 2, experiment_version="0.1.0") == 1
+        assert next_run(root, "s02", 1, experiment_version="0.1.0") == 1
 
 
 class TestRunCommand:
@@ -580,19 +586,21 @@ class TestRunCommand:
     def test_a_simulated_session_runs_through_the_entry_point(self, monkeypatch, tmp_path, capsys):
         rig = self.registered(monkeypatch, tmp_path)
 
-        code = main(self.run_args(rig, "--sub", "s01", "--ses", "1"))
+        code = main(self.run_args(rig, "--sub", "s01", "--ses", "1", "--initials", "SO"))
 
         assert code == 0
         out = capsys.readouterr().out
         assert "sub-s01 ses-001 run-01" in out
         assert "session complete" in out
-        run_dir = next((tmp_path / "data").glob("sub-s01/ses-001/run-*"))
+        run_dir = next((tmp_path / "data").glob("v0.1.0/sub-s01/ses-001/run-*"))
         with next(run_dir.glob("*_trials.csv")).open() as handle:
             assert list(csv.DictReader(handle))
 
     def test_the_subject_and_session_are_prompted_when_omitted(self, monkeypatch, tmp_path, capsys):
         rig = self.registered(monkeypatch, tmp_path)
-        answers = iter(["s02", "3"])
+        # Subject, session and — for run mode, which names a real subject —
+        # initials, each prompted in turn.
+        answers = iter(["s02", "3", "st"])
         monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
         # The prompt only fires at a terminal; this test stands in for one.
         monkeypatch.setattr("sys.stdin", type("Tty", (), {"isatty": lambda self: True})())
@@ -603,10 +611,10 @@ class TestRunCommand:
 
     def test_the_run_number_defaults_to_the_next_free_one(self, monkeypatch, tmp_path, capsys):
         rig = self.registered(monkeypatch, tmp_path)
-        main(self.run_args(rig, "--sub", "s01", "--ses", "1"))
+        main(self.run_args(rig, "--sub", "s01", "--ses", "1", "--initials", "SO"))
         capsys.readouterr()
 
-        main(self.run_args(rig, "--sub", "s01", "--ses", "1"))
+        main(self.run_args(rig, "--sub", "s01", "--ses", "1", "--initials", "SO"))
 
         assert "run-02" in capsys.readouterr().out
 
@@ -622,12 +630,12 @@ class TestRunCommand:
 
         code = main(
             ["run", "--task", "run-demo", "--rig", str(rig), "--mode", "test"]
-            + ["--sub", "s01", "--ses", "1"]
+            + ["--sub", "s01", "--ses", "1", "--initials", "SO"]
         )
 
         assert code == 0
         assert f"params: {package_file}" in capsys.readouterr().out
-        run_dir = next((tmp_path / "data-rehearsal").glob("sub-s01/ses-001/run-*"))
+        run_dir = next((tmp_path / "data-rehearsal").glob("v0.1.0/sub-s01/ses-001/run-*"))
         snapshot = yaml.safe_load((run_dir / "config_snapshot.yaml").read_text(encoding="utf-8"))
         assert snapshot["config"]["sources"]["task"] == str(package_file)
         log = (run_dir / "session.log").read_text(encoding="utf-8")
@@ -711,7 +719,7 @@ class TestRunCommand:
         out = capsys.readouterr().out
         assert "display: none (--headless)" in out
         assert "eyetracker: eyelink stands down" in out
-        assert next((tmp_path / "data-rehearsal").glob("sub-sim/ses-001/run-*")).is_dir()
+        assert next((tmp_path / "data-rehearsal").glob("v0.1.0/sub-sim/ses-001/run-*")).is_dir()
         assert not (tmp_path / "data").exists()
 
 
@@ -752,6 +760,8 @@ class TestGammaReachesTheDisplay:
             make_source=lambda params, rng: SimpleSequence([Condition({})], n_repeats=1, rng=rng),
             simulated_frame_period_s=0.0,
             date_yyyymmdd="20260826",
+            # Wired from parts, so no task class to read a version from.
+            experiment_version="0.1.0",
         )
 
     def test_a_stored_fit_is_applied_when_the_display_opens(self, tmp_path):

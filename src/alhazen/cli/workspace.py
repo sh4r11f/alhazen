@@ -28,6 +28,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
 from alhazen.config.loader import load_rig
+from alhazen.config.models import normalize_initials
 from alhazen.config.rigs import (
     SHARED_PREFIX,
     MergedRig,
@@ -461,6 +462,10 @@ class Launch(BaseModel):
     parameters_yaml: str | None = None
     parameters: dict[str, Any] | None = None
     subject: str = ""
+    # The subject's initials, beside the subject ID: required, like it, for
+    # run and test (`_launch_initials`), and sent to run.py as --initials,
+    # which records them and never puts them in a file name.
+    initials: str = ""
     session: int = Field(default=1, ge=1)
     seed: int = Field(default=0, ge=0)
     trials: int = Field(default=1, ge=1)
@@ -508,6 +513,7 @@ MODE_FLAGS = frozenset(
         "--no-dashboard-browser",
         "--ses",
         "--sub",
+        "--initials",
         "--trials-per-condition",
         "--headless",
         "--mouse",
@@ -567,6 +573,44 @@ def no_browser_flag(alhazen_version: str | None) -> str:
     return "--no-live-monitor-browser" if recent else "--no-dashboard-browser"
 
 
+def _launch_initials(request: Launch, mode: Mode) -> str | None:
+    """The subject's initials a launch passes on, as run.py records them, or
+    None when it passes none.
+
+    Only for the modes that run trials, which are the ones the page shows the
+    field for; any other mode ignores what the form holds. Required for run
+    and test, the modes that name a real subject — the same rule the command
+    line applies, refused here first so the refusal comes before anything is
+    written — and held to the same rule, in the same words
+    (config.models.normalize_initials), whenever given.
+    """
+    if not mode.runs_trials:
+        return None
+    text = request.initials.strip()
+    if not text:
+        if mode in {Mode.RUN, Mode.TEST}:
+            raise ValueError("Subject initials are required for run and test modes")
+        return None
+    return normalize_initials(text)
+
+
+def _run_identity(request: Launch) -> dict[str, Any]:
+    """Who a launch is for, for its run record and the history ("sub-01 ·
+    HD"): the subject, session and initials of a mode that runs trials, and
+    nothing for any other launch. Called once the command has been built, so
+    the initials have already passed their check."""
+    if request.mode not in {m.value for m in Mode}:
+        return {}
+    mode = Mode(request.mode)
+    if not mode.runs_trials:
+        return {}
+    return {
+        "subject": request.subject.strip() or None,
+        "session": request.session,
+        "initials": _launch_initials(request, mode),
+    }
+
+
 def _mode_command(
     mode: Mode,
     request: Launch,
@@ -594,6 +638,7 @@ def _mode_command(
     extra = _extra_arguments(request.extra_args, reserved)
     if mode in {Mode.RUN, Mode.TEST} and not request.subject.strip():
         raise ValueError("A subject ID is required for run and test modes")
+    initials = _launch_initials(request, mode)
     output = run_dir / "media"
     command = [str(root / "run.py"), "--mode", mode.value]
     # The task right after the mode, where run_experiment's own --task reads
@@ -607,6 +652,8 @@ def _mode_command(
         command += ["--ses", str(request.session)]
         if request.subject.strip():
             command += ["--sub", request.subject.strip()]
+        if initials is not None:
+            command += ["--initials", initials]
     if mode in {Mode.TEST, Mode.SIMULATE}:
         command += ["--trials-per-condition", str(request.trials)]
     for flag in ("headless", "mouse", "windowed"):
@@ -1036,6 +1083,8 @@ class Workspace:
                 "command": command,
                 "cwd": project["path"],
                 "directory": str(run_dir),
+                # subject, session and initials, for a mode that runs trials.
+                **_run_identity(request),
             }
             self.runs[key] = run
             self._save_run(run)

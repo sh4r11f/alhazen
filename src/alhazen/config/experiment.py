@@ -24,6 +24,7 @@ an invented version is worse than a session that does not start.
 
 from __future__ import annotations
 
+import dataclasses
 import inspect
 import re
 import sys
@@ -130,3 +131,65 @@ def _checked(version: str, where: str) -> str:
             "and . + _ - only, as PEP 440 versions do"
         )
     return version
+
+
+# What `version_source` records for a version the caller handed to
+# `build_session` (or `build_mode_session`) instead of one read from a file,
+# so a reader of the data can tell "the project said so" from "the code that
+# started the session said so".
+GIVEN_BY_CALLER = "given to build_session"
+
+
+def session_experiment(
+    task_class: type | None,
+    task_name: str,
+    *,
+    experiment: Experiment | None = None,
+    version: str | None = None,
+    name: str | None = None,
+) -> Experiment:
+    """The experiment a session's data is filed under, from what its caller said.
+
+    The first of these that applies:
+
+    1. ``experiment`` — one already found. The modes find the experiment
+       once, from the task class they were handed, before they number the
+       run (the run number counts within the version's folder), and pass it
+       down, so the builder never looks again from a different class — a
+       simulation's stand-in task, say, defined somewhere else.
+    2. ``version`` — given explicitly, for a session with no task class to
+       read one from (a hand-wired ``build_session``, a test). Checked like a
+       pyproject's, recorded with ``version_source`` `GIVEN_BY_CALLER`, and
+       named ``name`` — else the task's own name, the best label there is.
+    3. ``task_class`` — `find_experiment`, the normal case; ``name`` renames
+       what it found.
+
+    With none of them there is no version to file the data under, and a
+    default would invent one, so it is a ConfigError saying what to pass.
+    ``experiment`` together with ``version`` or ``name`` is refused: the call
+    would carry two answers and one would be ignored.
+    """
+    if experiment is not None:
+        if version is not None or name is not None:
+            raise ValueError(
+                "pass experiment=, or experiment_version= / experiment_name=, not both: "
+                "one of the two answers would be ignored"
+            )
+        return experiment
+    if version is not None:
+        return Experiment(
+            name=name if name is not None else task_name,
+            version=_checked(version, "experiment_version="),
+            version_source=GIVEN_BY_CALLER,
+            root=None,
+        )
+    if task_class is None:
+        raise ConfigError(
+            "cannot tell which experiment version to file this session under: there is no "
+            "task= to read it from and no experiment_version= was given. Each session's data "
+            "is filed under its experiment's version (data/v<version>/sub-...), so pass "
+            'experiment_version="0.1.0" (and experiment_name=...), or task=<Task instance> '
+            "from a project whose pyproject.toml declares [project] version."
+        )
+    found = find_experiment(task_class)
+    return found if name is None else dataclasses.replace(found, name=name)

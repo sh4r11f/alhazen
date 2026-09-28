@@ -44,7 +44,12 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 DATABASE_FILENAME = "experiment.sqlite3"
-SCHEMA_VERSION = 2
+# 3 (alhazen 2.0): a run carries the experiment version its data is filed
+# under — in its own column, in its run_id and in what makes it unique —
+# because the database sits at the UNversioned data root and holds every
+# version's runs: the same subject, session, run number, task and day
+# recorded under two versions are two runs, and schema 2 called them one.
+SCHEMA_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -98,7 +103,41 @@ class ExperimentDatabase:
     def for_data_root(
         cls, data_root: Path | str, config: DatabaseConfig | None = None
     ) -> ExperimentDatabase:
+        """The database of the experiment whose data lives under ``data_root``.
+
+        The UNversioned root: one database holds every version's runs, since
+        a subject spans versions of an experiment, and each run records the
+        version it was filed under (``runs.experiment_version``).
+        """
         return cls(Path(data_root) / DATABASE_FILENAME, config)
+
+    def check_schema(self) -> None:
+        """Refuse a database this alhazen cannot write, before a session starts.
+
+        The mirror is written at teardown, so an old database used to be
+        found only after the subject had done the session: the run then
+        ended "FAILED in teardown" over a file whose fix is to move it. The
+        builder asks this first, so the refusal (the same words `connect`
+        uses) comes with nobody in the chair yet.
+
+        Reads only: a database that does not exist yet is fine — the first
+        session creates it — and nothing is created or written here. Only the
+        version is judged; `connect` still checks the whole shape at write.
+        """
+        if not self.path.exists():
+            return
+        try:
+            with closing(sqlite3.connect(self.path, timeout=30.0)) as db:
+                has_info = db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_info'"
+                ).fetchone()
+                row = db.execute("SELECT version FROM schema_info").fetchone() if has_info else None
+        except sqlite3.Error as error:
+            raise DataError(
+                f"could not read the experiment database {self.path}: {error}"
+            ) from error
+        if row is not None and row[0] != SCHEMA_VERSION:
+            raise DataError(_incompatible_message(self.path, f"schema version {row[0]}"))
 
     def connect(self) -> sqlite3.Connection:
         """An open connection, schema checked; the caller closes it.
@@ -133,9 +172,15 @@ class ExperimentDatabase:
         frames: Sequence[FrameRecord],
         frame_inputs: Sequence[FrameInputRecord],
         status: str,
+        experiment_version: str,
     ) -> str:
-        """Atomically mirror one completed or failed run and all its files."""
-        run_id = _run_id(cfg, paths)
+        """Atomically mirror one completed or failed run and all its files.
+
+        ``experiment_version`` is the version the run's data is filed under
+        (its ``v<version>`` folder): part of the run's identity here as on
+        disk, so it is required.
+        """
+        run_id = _run_id(cfg, paths, experiment_version)
         try:
             return self._write_run(
                 run_id,
@@ -146,6 +191,7 @@ class ExperimentDatabase:
                 frames=frames,
                 frame_inputs=frame_inputs,
                 status=status,
+                experiment_version=experiment_version,
             )
         except sqlite3.IntegrityError as error:
             # Almost always the same run twice. Raw, this reached an
@@ -169,6 +215,7 @@ class ExperimentDatabase:
         frames: Sequence[FrameRecord],
         frame_inputs: Sequence[FrameInputRecord],
         status: str,
+        experiment_version: str,
     ) -> str:
         snapshot = yaml.safe_load(paths.snapshot_path.read_text(encoding="utf-8")) or {}
         run_dir = str(paths.run_dir.resolve())
@@ -176,11 +223,12 @@ class ExperimentDatabase:
             db.execute("INSERT OR IGNORE INTO subjects(subject) VALUES (?)", (cfg.info.subject,))
             db.execute(
                 """INSERT INTO runs
-                   (run_id, subject, session, run, task, date, run_dir, status,
-                    config_json, provenance_json)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (run_id, experiment_version, subject, session, run, task, date, run_dir,
+                    status, config_json, provenance_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     run_id,
+                    experiment_version,
                     cfg.info.subject,
                     cfg.info.session,
                     cfg.info.run,
@@ -422,8 +470,22 @@ class ExperimentDatabase:
         return int(array.shape[0])
 
     def find_run(
-        self, subject: str, session: int, *, run: int | None = None, task: str | None = None
+        self,
+        subject: str,
+        session: int,
+        *,
+        run: int | None = None,
+        task: str | None = None,
+        experiment_version: str | None = None,
     ) -> dict[str, Any]:
+        """The run these numbers name.
+
+        Run numbers count within an experiment version (the ``v<version>``
+        folder), so sub-01 ses-001 run-01 can exist once per version. When
+        the matching runs span more than one version and none was named, the
+        answer is refused rather than guessed: taking one would read another
+        protocol's data under the numbers the caller meant.
+        """
         clauses = ["subject = ?", "session = ?"]
         params: list[Any] = [subject, session]
         if run is not None:
@@ -432,11 +494,21 @@ class ExperimentDatabase:
         if task is not None:
             clauses.append("task = ?")
             params.append(task)
+        if experiment_version is not None:
+            clauses.append("experiment_version = ?")
+            params.append(experiment_version)
         sql = f"SELECT * FROM runs WHERE {' AND '.join(clauses)} ORDER BY run DESC"  # noqa: S608
         with closing(self.connect()) as db, db:
             rows = db.execute(sql, params).fetchall()
         if not rows:
             raise DataError(f"no database run for subject={subject!r}, session={session}")
+        versions = sorted({row["experiment_version"] for row in rows})
+        if len(versions) > 1:
+            raise DataError(
+                f"runs of subject {subject!r}, session {session} were recorded under more than "
+                f"one experiment version ({', '.join(versions)}); pass experiment_version= to "
+                f"say which"
+            )
         if len(rows) > 1 and run is None and task is None:
             raise DataError("more than one run matches; specify run= or task=")
         return dict(rows[0])
@@ -450,9 +522,15 @@ class ExperimentDatabase:
         frame_index: int,
         run: int | None = None,
         task: str | None = None,
+        experiment_version: str | None = None,
     ) -> dict[str, Any]:
-        """Frame timing, behavioral input, and nearest aligned device channels."""
-        run_row = self.find_run(subject, session, run=run, task=task)
+        """Frame timing, behavioral input, and nearest aligned device channels.
+
+        The run is found as `find_run` finds it, ``experiment_version``
+        included."""
+        run_row = self.find_run(
+            subject, session, run=run, task=task, experiment_version=experiment_version
+        )
         run_id = run_row["run_id"]
         with closing(self.connect()) as db, db:
             frame = db.execute(
@@ -531,8 +609,14 @@ class ExperimentDatabase:
         ]
 
 
-def _run_id(cfg: SessionConfig, paths: SessionPaths) -> str:
+def _run_id(cfg: SessionConfig, paths: SessionPaths, experiment_version: str) -> str:
     """This run's identity in the database.
+
+    The EXPERIMENT VERSION leads it (schema 3): run numbers count within a
+    version's folder, so the same subject, session, run and task can be
+    recorded under two versions — on the same day, when a protocol changes
+    between a morning and an afternoon session — and without the version
+    those two runs collided here, the second never mirrored.
 
     The DATE is part of it. `SessionPaths.create` used to refuse only the
     date-stamped trials file, so the same subject/session/run on a later day
@@ -543,7 +627,7 @@ def _run_id(cfg: SessionConfig, paths: SessionPaths) -> str:
     """
     info = cfg.info
     return (
-        f"sub-{info.subject}/ses-{info.session:03d}/run-{info.run:02d}/"
+        f"v{experiment_version}/sub-{info.subject}/ses-{info.session:03d}/run-{info.run:02d}/"
         f"task-{info.task_name}/{_date_stamp(paths)}"
     )
 
@@ -655,6 +739,9 @@ _SCHEMA_SQL = (
     + """
         CREATE TABLE IF NOT EXISTS runs (
           run_id TEXT PRIMARY KEY,
+          -- The experiment version the run's data is filed under: its
+          -- v<version> folder. Part of a run's identity, as on disk.
+          experiment_version TEXT NOT NULL,
           subject TEXT NOT NULL,
           session INTEGER NOT NULL,
           run INTEGER NOT NULL,
@@ -669,7 +756,7 @@ _SCHEMA_SQL = (
           status TEXT NOT NULL,
           config_json TEXT NOT NULL,
           provenance_json TEXT NOT NULL,
-          UNIQUE(subject, session, run, task, date)
+          UNIQUE(experiment_version, subject, session, run, task, date)
         );
         CREATE INDEX IF NOT EXISTS runs_subject_session ON runs(subject, session);
         CREATE TABLE IF NOT EXISTS subjects (

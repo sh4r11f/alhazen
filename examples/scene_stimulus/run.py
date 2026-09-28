@@ -8,8 +8,10 @@ from pathlib import Path
 from task import SceneParams, SceneTask
 
 from alhazen import build_session
+from alhazen.config.experiment import find_experiment
 from alhazen.config.loader import load_model, load_rig
 from alhazen.devices.automated import AutomatedGazeTracker
+from alhazen.modes.session import next_run
 
 HERE = Path(__file__).parent
 
@@ -48,11 +50,13 @@ def main() -> None:
 
 
 def _next_run(data_root: Path) -> int:
-    session_dir = data_root / "sub-demo" / "ses-001"
-    if not session_dir.exists():
-        return 1
-    taken = [int(p.name.split("_")[0].split("-")[1]) for p in session_dir.glob("run-*")]
-    return max(taken, default=0) + 1
+    """First unused run number, so repeated invocations never trip the
+    overwrite refusal. Counted inside the experiment's version folder
+    (``data/v<version>/sub-demo/ses-001/``), which is where build_session
+    files the run: the version is the one the pyproject.toml above the task
+    declares — for an example shipped with alhazen, alhazen's own."""
+    version = find_experiment(SceneTask).version
+    return next_run(data_root, "demo", 1, experiment_version=version)
 
 
 if __name__ == "__main__":

@@ -49,8 +49,19 @@ cannot, and records the alhazen and Python versions it found, and the
    scripts without a parameter-file option. Hidden task parameters are not sent
    to those jobs.
 4. Set the mode's options, add any extra `run.py` arguments (below), and start
-   the run. Run and test require a subject ID; simulate can use its own default
-   subject. Only simulate accepts headless, and only test accepts mouse gaze.
+   the run. Run and test require a subject ID and the subject's **Initials**
+   (1 to 5 letters, sent uppercase as `--initials`); simulate can use its own
+   default subject and needs no initials. Initials that break the rule are
+   refused on the page in the command line's words ("initials must be 1 to 5
+   letters, such as HD"), and again by the launcher, before a run is made.
+   They are recorded with the session — never in a file name — and checked
+   against the subject's recorded initials: a subject id already recorded with
+   other initials is refused ([data on disk](data.md) §2). The history and the
+   run summary show who each session was for, `sub-01 · HD`. A project whose
+   interpreter runs an alhazen older than 2.0 does not know `--initials`: its
+   run and test launches stop at once with that usage error in the console,
+   and the fix is to move the project to alhazen 2.0. Only simulate accepts
+   headless, and only test accepts mouse gaze.
 5. Follow the console or view generated media. Images can be enlarged or saved.
    Movies appear once recording finishes, with native playback and seeking.
 
@@ -96,7 +107,7 @@ is named. An extra argument naming a flag the launcher sets from the form is
 refused, naming the flag, before anything is written, so a run's recorded
 settings cannot be contradicted from the text field. Those flags are `--mode`,
 `--rig`, `--params`, `--seed`, `--no-live-monitor-browser`, `--sub`, `--ses`,
-`--trials-per-condition`, `--headless`, `--mouse`, `--windowed`, `--out`,
+`--initials`, `--trials-per-condition`, `--headless`, `--mouse`, `--windowed`, `--out`,
 `--scale`, `--sheet`, `--columns`, `--clip` and `--screenshots`, in either the
 `--seed 5` or the `--seed=5` spelling, and `--task` for a project with a Task
 menu; every other flag passes through.
@@ -195,7 +206,7 @@ By default, state is under `~/.alhazen/live_monitor/`:
 ```text
 projects.json
 runs/<unique-id>/
-  run.json
+  run.json          # the command, status — and subject, session, initials for a session
   params.yaml       # when supplied
   rig.yaml          # the rig as it ran (merged, when it extends a shared one)
   rig-source.yaml   # the experiment's file as written, when it extends one

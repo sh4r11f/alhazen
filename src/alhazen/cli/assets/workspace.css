@@ -369,6 +369,12 @@ input:focus, select:focus, textarea:focus {
   margin-bottom: 15px;
 }
 
+/* Subject ID, initials, session: the ID gets the room, the initials (five
+   letters at most) and the session number sit beside it. */
+#identity {
+  grid-template-columns: minmax(0,2fr) minmax(0,1fr) minmax(0,1fr);
+}
+
 /* The rig's monitor facts, read from its YAML, in monospace. */
 .rig-summary {
   background: #f7f9fc;

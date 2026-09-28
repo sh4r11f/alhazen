@@ -165,7 +165,9 @@ def lost_to_fault(outcome_name: str, record: Mapping[str, Any]) -> str | None:
 # `n_mid_trial_*` counts only for a task that declares mid-trial reward, the
 # two frame-QA columns only on a recycled trial, `fault_detail` only where a
 # health check said what failed, `success` only where the
-# outcome defines one. `fault` IS on every row. Every emitted event also
+# outcome defines one. `fault` IS on every row, and so is `experiment_version`
+# on every row a session writes (a bare engine, driven by a test, has no
+# experiment to stamp). Every emitted event also
 # mirrors its time as `t_<event name lowercased>`, which is a pattern rather
 # than a fixed name and so is not listed.
 #
@@ -210,6 +212,12 @@ TRIAL_RECORD_COLUMNS: tuple[str, ...] = (
     # check reported with a detail — a dropped-frames row carries its account
     # in `frame_qa_reason` instead. Read by a person, never selected on.
     "fault_detail",
+    # The version of the experiment whose protocol ran this trial — the
+    # `v<version>` folder its run sits in (alhazen 2.0). On every row the
+    # session writes, so trials tables concatenated across runs, or read
+    # out of the database, still say which protocol each row came from once
+    # the folder is out of sight. Stamped by the runner, not the engine.
+    "experiment_version",
 )
 
 

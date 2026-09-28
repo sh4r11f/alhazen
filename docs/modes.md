@@ -20,7 +20,7 @@ alhazen run --mode demo --task kde-vergence --rig mac
 alhazen run --mode movie --task kde-vergence --rig lab --out movies
 alhazen run --mode measure --rig lab
 alhazen run --mode simulate --task kde-vergence --rig lab --headless
-alhazen run --mode test --task kde-vergence --rig lab --sub s01 --ses 1
+alhazen run --mode test --task kde-vergence --rig lab --sub s01 --ses 1 --initials AB
 ```
 
 `--rig` takes a rig's name — `lab` is the experiment's own
@@ -180,13 +180,16 @@ count to be a multiple of its motion levels and would refuse a reduced one.
 ```
 mode: test — the whole session with fewer trials, for a person to sit through once
 data: data-rehearsal  (NOT the rig's data root)
+experiment: saccade-bias 0.5.0 — filed under v0.5.0/ (version from pyproject.toml)
 reduced: saccade_paradigm.n_per_condition: 10 -> 1
 reduced: pursuit_paradigm.n_per_condition: 7 -> 1
 ```
 
 A mode that quietly redesigned the experiment would put numbers in the config
 snapshot that are not the numbers that ran, and the snapshot is the record of
-what happened.
+what happened. The `experiment:` line says which version folder the run is
+filed under and where that number came from — the last moment to notice a
+protocol change nobody bumped the version for ([data on disk](data.md) §4).
 
 The reduced params are re-validated through the task's own model, so a
 reduction that breaks the experiment's rules fails here, with the model's own
@@ -203,10 +206,12 @@ data/            <- run
 data-rehearsal/  <- test, simulate
 ```
 
-A sibling of the rig's `data_root`, not a subdirectory. An analysis globbing
-`data_root/sub-*` finds nothing of a rehearsal either way, but a sibling is
-also obvious in a file listing, and a directory nobody can see is a directory
-somebody eventually analyses by accident.
+A sibling of the rig's `data_root`, not a subdirectory. An analysis walking
+`data_root` (`find_runs`, or a glob of `data_root/v*/sub-*`) finds nothing of
+a rehearsal either way, but a sibling is also obvious in a file listing, and a
+directory nobody can see is a directory somebody eventually analyses by
+accident. Inside it the layout is the real root's — `v<version>/sub-...`, its
+own `participants.tsv` and database ([data on disk](data.md)).
 
 ## `simulate` — nobody in the chair
 
@@ -247,6 +252,7 @@ printed before trial one:
 ```
 mode: simulate — the whole session, driven by a simulated subject
 data: data-rehearsal  (NOT the rig's data root)
+experiment: saccade-bias 0.5.0 — filed under v0.5.0/ (version from pyproject.toml)
 reduced: paradigm.n_per_condition: 10 -> 1
 autopilot: seed=1
 eyetracker: eyelink stands down — the task's autopilot supplies gaze

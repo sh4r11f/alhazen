@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import csv
 import importlib.util
+import json
 import re
 import shutil
 import subprocess
@@ -14,6 +15,7 @@ import pytest
 import yaml
 
 from alhazen import CircleRegion, Model
+from alhazen.config.loader import load_rig
 from alhazen.config.models import (
     DEFAULT_MAX_CONSECUTIVE_DROPOUTS,
     DevicesConfig,
@@ -30,7 +32,7 @@ from alhazen.core.trial import InputFrame
 from alhazen.devices.eyetracker import GazeSample, ScriptedTracker
 from alhazen.devices.eyetracker.procedures import GazeCorrection
 from alhazen.devices.reward import SimulatedReward
-from alhazen.errors import ConfigError
+from alhazen.errors import ConfigError, DataError
 from alhazen.paradigms.base import Condition, SimpleSequence
 from alhazen.paradigms.config import SchedulerConfig
 from alhazen.session.builder import (
@@ -42,7 +44,14 @@ from alhazen.session.builder import (
 from alhazen.session.runner import host_overlay_shapes
 from alhazen.task.plan import TrialPlan
 from alhazen.testing import FakeClock
-from support import COMPLETED, MONITOR, SCREEN, RunForFrames, load_example_task
+from support import (
+    COMPLETED,
+    MONITOR,
+    SCREEN,
+    TEST_EXPERIMENT,
+    RunForFrames,
+    load_example_task,
+)
 
 EXAMPLES = Path(__file__).parents[2] / "examples"
 
@@ -73,6 +82,9 @@ def build(tmp_path, schema, **kwargs):
         "make_source",
         lambda params, rng: SimpleSequence([Condition({"c": "a"})], n_repeats=1, rng=rng),
     )
+    # A session wired from parts has no task class to read a version from,
+    # so it is given one (alhazen 2.0: every run is filed under a version).
+    kwargs.setdefault("experiment_version", TEST_EXPERIMENT.version)
     return build_session(
         rig=rig,
         subject="t01",
@@ -191,7 +203,7 @@ class TestDeviceSelection:
         # and a session still runs end to end with no device objects.
         runner = build(tmp_path, EventSchema(()))
         runner.run()
-        trials = next((tmp_path / "sub-t01").rglob("*_trials.csv"))
+        trials = next((tmp_path / "v0.1.0" / "sub-t01").rglob("*_trials.csv"))
         assert trials.read_text().count("COMPLETED") == 1
 
     def test_a_configured_sync_line_pulses_during_the_session(self, tmp_path):
@@ -234,7 +246,7 @@ class TestSyncDisabledButStillMapped:
 
         runner.run()
 
-        trials = next((tmp_path / "sub-t01").rglob("*_trials.csv"))
+        trials = next((tmp_path / "v0.1.0" / "sub-t01").rglob("*_trials.csv"))
         assert trials.read_text().count("COMPLETED") == 1
 
     def test_the_line_map_is_still_validated_against_the_schema(self, tmp_path):
@@ -865,6 +877,12 @@ class TestTheExperimentRevisionIsTheExperiments:
         shutil.copytree(
             EXAMPLES / "minimal_fixation", repo, ignore=shutil.ignore_patterns("__pycache__")
         )
+        # An experiment's repository declares its version, which files the
+        # session's data (config/experiment.py); the example copied out of
+        # alhazen's tree needs one of its own.
+        (repo / "pyproject.toml").write_text(
+            '[project]\nname = "fixation-experiment"\nversion = "0.3.0"\n', encoding="utf-8"
+        )
         head = self._commit_all(repo)
         task_module = load_example_task(repo)
         elsewhere = tmp_path / "started-from-here"
@@ -916,3 +934,248 @@ class TestTheExperimentRevisionIsTheExperiments:
         build(tmp_path / "d", EventSchema(()), build_trial=trials.build_trial).run()
 
         assert self._recorded(tmp_path / "d") == head
+
+
+class TestTheExperimentVersionFilesTheRun:
+    """alhazen 2.0: build_session files the run under its experiment's
+    version — found from the task's own project, given explicitly, or
+    refused — and the run folder records how it was set up."""
+
+    @staticmethod
+    def experiment_project(tmp_path, version="0.3.0"):
+        """The minimal-fixation example as an experiment repository of its
+        own, with the pyproject.toml every experiment has."""
+        repo = tmp_path / "experiment"
+        shutil.copytree(
+            EXAMPLES / "minimal_fixation", repo, ignore=shutil.ignore_patterns("__pycache__")
+        )
+        (repo / "pyproject.toml").write_text(
+            f'[project]\nname = "fixation-experiment"\nversion = "{version}"\n',
+            encoding="utf-8",
+        )
+        module = load_example_task(repo)
+        params = module.FixationParams(
+            fixation_duration=Duration(ms=0),
+            iti=Duration(ms=0),
+            paradigm=SchedulerConfig(n_per_condition=1),
+        )
+        return repo, module.MinimalFixationTask(params)
+
+    @staticmethod
+    def session(tmp_path, task, **kwargs):
+        kwargs.setdefault(
+            "rig",
+            RigConfig(
+                monitor=MONITOR,
+                display=DisplayConfig(backend="simulated"),
+                data_root=tmp_path / "data",
+            ),
+        )
+        return build_session(
+            subject="01",
+            session=1,
+            run=1,
+            task=task,
+            seed=1,
+            simulated_frame_period_s=0.0,
+            date_yyyymmdd="20260826",
+            **kwargs,
+        )
+
+    def test_the_version_comes_from_the_tasks_own_pyproject(self, tmp_path):
+        _repo, task = self.experiment_project(tmp_path, version="0.3.0")
+
+        self.session(tmp_path, task).run()
+
+        run_dir = (
+            tmp_path / "data" / "v0.3.0" / "sub-01" / "ses-001" / "run-01_task-minimal-fixation"
+        )
+        snapshot = yaml.safe_load((run_dir / "config_snapshot.yaml").read_text(encoding="utf-8"))
+        provenance = snapshot["provenance"]
+        assert provenance["experiment_name"] == "fixation-experiment"
+        assert provenance["experiment_version"] == "0.3.0"
+        assert provenance["experiment_version_source"] == "pyproject.toml"
+
+    def test_what_spans_versions_stays_at_the_unversioned_root(self, tmp_path):
+        # A subject spans versions of an experiment: the registry and the
+        # database sit above the v<version>/ folders, not in one of them.
+        _repo, task = self.experiment_project(tmp_path, version="0.3.0")
+
+        self.session(tmp_path, task).run()
+
+        data = tmp_path / "data"
+        assert sorted(p.name for p in data.iterdir() if p.is_dir()) == ["v0.3.0"]
+        assert (data / "participants.tsv").is_file()
+        assert (data / "experiment.sqlite3").is_file()
+        assert not list((data / "v0.3.0").rglob("participants.tsv"))
+        assert not list((data / "v0.3.0").rglob("experiment.sqlite3"))
+
+    def test_an_explicit_version_wins_over_the_pyproject(self, tmp_path):
+        _repo, task = self.experiment_project(tmp_path, version="0.3.0")
+
+        runner = self.session(tmp_path, task, experiment_version="9.9", experiment_name="other")
+        runner.run()
+
+        (snapshot,) = (tmp_path / "data").rglob("config_snapshot.yaml")
+        assert snapshot.relative_to(tmp_path / "data").parts[0] == "v9.9"
+        provenance = yaml.safe_load(snapshot.read_text(encoding="utf-8"))["provenance"]
+        assert provenance["experiment_name"] == "other"
+        assert provenance["experiment_version_source"] == "given to build_session"
+
+    def test_a_session_wired_from_parts_without_a_version_is_refused(self, tmp_path):
+        with pytest.raises(ConfigError, match="experiment_version="):
+            build(tmp_path, EventSchema(()), experiment_version=None)
+        # Refused before anything was made.
+        assert list(tmp_path.iterdir()) == []
+
+    def test_a_version_that_cannot_name_a_folder_is_refused(self, tmp_path):
+        with pytest.raises(ConfigError, match="cannot name a data folder"):
+            build(tmp_path, EventSchema(()), experiment_version="1.0/../../x")
+        assert list(tmp_path.iterdir()) == []
+
+    def test_two_answers_to_which_experiment_are_refused(self, tmp_path):
+        from alhazen.config.experiment import Experiment
+
+        found = Experiment("e", "1.0", "pyproject.toml", None)
+        with pytest.raises(ValueError, match="not both"):
+            build(tmp_path, EventSchema(()), experiment=found, experiment_version="2.0")
+
+    def test_the_files_it_was_started_with_are_copied_byte_for_byte(self, tmp_path):
+        repo, task = self.experiment_project(tmp_path)
+        rig_file = repo / "rig-sim.yaml"
+        params_file = repo / "task.yaml"
+        # Comments and line endings a re-dump would lose.
+        rig_file.write_bytes(
+            rig_file.read_bytes().replace(b"data_root: data", b"data_root: data  # here")
+        )
+        rig = load_rig(rig_file).model_copy(update={"data_root": tmp_path / "data"})
+
+        self.session(
+            tmp_path,
+            task,
+            rig=rig,
+            sources={"rig": str(rig_file), "task": str(params_file)},
+            mode="run",
+        ).run()
+
+        (run_dir,) = (p.parent for p in (tmp_path / "data").rglob("session.json"))
+        assert (run_dir / "rig.yaml").read_bytes() == rig_file.read_bytes()
+        assert (run_dir / "params.yaml").read_bytes() == params_file.read_bytes()
+        card = json.loads((run_dir / "session.json").read_text(encoding="utf-8"))
+        assert card["mode"] == "run"
+        assert card["rig"]["file"] == str(rig_file.resolve())
+        assert card["params_file"] == str(params_file.resolve())
+        assert card["experiment"]["version"] == "0.3.0"
+
+    def test_a_rig_given_as_a_path_is_the_file_copied(self, tmp_path, monkeypatch):
+        repo, task = self.experiment_project(tmp_path)
+        monkeypatch.chdir(tmp_path)  # the rig's `data_root: data` is relative
+
+        self.session(tmp_path, task, rig=repo / "rig-sim.yaml").run()
+
+        (run_dir,) = (p.parent for p in (tmp_path / "data").rglob("session.json"))
+        assert (run_dir / "rig.yaml").read_bytes() == (repo / "rig-sim.yaml").read_bytes()
+        # No params file was named, so none is copied, and the card says so.
+        assert not (run_dir / "params.yaml").exists()
+        card = json.loads((run_dir / "session.json").read_text(encoding="utf-8"))
+        assert card["params_file"] is None and card["files"]["params"] is None
+        assert card["mode"] is None  # built directly, not through a mode
+
+    def test_the_rig_file_that_was_loaded_wins_over_what_sources_say(self, tmp_path, monkeypatch):
+        # The path handed in is what the builder loaded; a sources entry is
+        # the caller's say-so, and copying it would record another file.
+        repo, task = self.experiment_project(tmp_path)
+        other = tmp_path / "rig-other.yaml"
+        other.write_text("# not the rig that ran\n", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+
+        self.session(tmp_path, task, rig=repo / "rig-sim.yaml", sources={"rig": str(other)}).run()
+
+        (run_dir,) = (p.parent for p in (tmp_path / "data").rglob("session.json"))
+        assert (run_dir / "rig.yaml").read_bytes() == (repo / "rig-sim.yaml").read_bytes()
+
+    def test_a_database_from_before_2_0_is_refused_before_the_run_folder(self, tmp_path):
+        import sqlite3
+
+        with sqlite3.connect(tmp_path / "experiment.sqlite3") as db:
+            db.execute("CREATE TABLE schema_info (version INTEGER NOT NULL)")
+            db.execute("INSERT INTO schema_info(version) VALUES (2)")
+
+        with pytest.raises(DataError, match="schema version 2"):
+            build(tmp_path, EventSchema(()))
+        assert not list(tmp_path.rglob("run-*"))
+
+
+class TestTheSubjectsInitials:
+    """alhazen 2.0: build_session records the subject's initials, checks
+    them against the registry before anything is written, and never puts
+    them in a path."""
+
+    def test_they_are_recorded_in_the_snapshot_the_card_and_the_registry(self, tmp_path):
+        build(tmp_path, EventSchema(()), initials="hd").run()
+
+        (run_dir,) = (p.parent for p in tmp_path.rglob("session.json"))
+        snapshot = yaml.safe_load((run_dir / "config_snapshot.yaml").read_text(encoding="utf-8"))
+        assert snapshot["config"]["info"]["initials"] == "HD"
+        card = json.loads((run_dir / "session.json").read_text(encoding="utf-8"))
+        assert card["subject"] == {"id": "t01", "initials": "HD"}
+        registry = (tmp_path / "participants.tsv").read_text(encoding="utf-8").splitlines()
+        assert registry == ["participant_id\tinitials", "sub-t01\tHD"]
+
+    def test_they_are_in_no_file_or_folder_name(self, tmp_path):
+        # Unusual letters, so a match anywhere could only be the initials.
+        build(tmp_path, EventSchema(()), initials="QZX").run()
+
+        names = [p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*")]
+        assert names  # the session did write its files
+        assert not [name for name in names if "qzx" in name.lower()]
+
+    def test_other_initials_for_a_recorded_subject_are_refused_before_anything(self, tmp_path):
+        registry = tmp_path / "participants.tsv"
+        registry.write_text("participant_id\tinitials\nsub-t01\tHD\n", encoding="utf-8")
+        before = registry.read_bytes()
+
+        with pytest.raises(DataError) as refused:
+            build(tmp_path, EventSchema(()), initials="XY")
+
+        assert str(refused.value).startswith(
+            "sub-t01 is recorded as HD; this session says XY — check the subject number"
+        )
+        # No run folder, no database, and the registry as it was.
+        assert [p.name for p in tmp_path.iterdir()] == ["participants.tsv"]
+        assert registry.read_bytes() == before
+
+    def test_a_subject_from_before_2_0_gets_them_filled_in(self, tmp_path):
+        registry = tmp_path / "participants.tsv"
+        registry.write_text("participant_id\nsub-t01\n", encoding="utf-8")
+
+        build(tmp_path, EventSchema(()), initials="HD").run()
+
+        assert registry.read_text(encoding="utf-8").splitlines() == [
+            "participant_id\tinitials",
+            "sub-t01\tHD",
+        ]
+
+    def test_a_session_given_none_records_none(self, tmp_path):
+        build(tmp_path, EventSchema(())).run()
+
+        (card_path,) = tmp_path.rglob("session.json")
+        assert json.loads(card_path.read_text(encoding="utf-8"))["subject"]["initials"] is None
+        assert (tmp_path / "participants.tsv").read_text(encoding="utf-8").splitlines() == [
+            "participant_id",
+            "sub-t01",
+        ]
+
+    def test_a_registry_changed_after_the_build_is_checked_again_at_the_start(self, tmp_path):
+        # A built session can wait while another one registers the subject:
+        # the runner checks once more, before it writes anything.
+        runner = build(tmp_path, EventSchema(()), initials="HD")
+        (tmp_path / "participants.tsv").write_text(
+            "participant_id\tinitials\nsub-t01\tXY\n", encoding="utf-8"
+        )
+
+        with pytest.raises(DataError, match="recorded as XY; this session says HD"):
+            runner.run()
+
+        (run_dir,) = tmp_path.glob("v0.1.0/sub-t01/ses-001/run-*")
+        assert [p for p in run_dir.rglob("*") if p.is_file()] == []

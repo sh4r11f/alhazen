@@ -436,9 +436,13 @@ class StatusDatabase:
 
     def __init__(self) -> None:
         self.statuses: list[str] = []
+        self.versions: list[str] = []
 
-    def write_run(self, cfg, paths, *, trials, events, frames, frame_inputs, status) -> None:
+    def write_run(
+        self, cfg, paths, *, trials, events, frames, frame_inputs, status, experiment_version
+    ) -> None:
         self.statuses.append(status)
+        self.versions.append(experiment_version)
 
 
 class FailingShutdownTracker(ScriptedTracker):

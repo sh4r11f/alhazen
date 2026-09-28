@@ -85,11 +85,21 @@ in `tests/fixtures/contracts.json`.
 | --- | --- | --- |
 | **`core.rng.STREAMS`** | Append-only. Never remove, never reorder. | `spawn_streams` splits the session seed by a name's *position*, so a reorder changes what every past seed produces. Re-running a study's own seed would give different trials, with nothing to say why. |
 | **`RESERVED_EVENTS`** | May gain names, never lose them. | An analysis reads these names out of data recorded years earlier. |
-| **The run-directory layout** | File names, column meanings, manifest and snapshot formats change only in a MAJOR version, with a documented migration. | Every script anyone wrote to find a run's trials file. |
+| **The run-directory layout** | The folder levels (`v<version>/sub-<ID>/ses-<NNN>/run-<NN>_task-<name>/`), file names, column meanings, and the manifest, snapshot and `session.json` formats change only in a MAJOR version, with a documented migration. | Every script anyone wrote to find a run's trials file. |
 
 Adding to any of them is normal: append the stream, add the event, and update
 `tests/fixtures/contracts.json` in the same commit. A test failing on a
 *removal* is the contract doing its job.
+
+**2.0 changed the layout, on purpose.** Every run now sits under the version
+of the experiment that recorded it (`<data_root>/v<version>/sub-...`), so
+data from two versions of a protocol never share a folder; a run folder
+gained `session.json` and byte copies of its rig and params files; the trials
+table gained an `experiment_version` column; the manifest and the database
+record the version. The baseline was updated in the same change, with the
+folder levels pinned beside the file names (`run_folder`). What moved, how
+runs recorded before 2.0 are still read, and what a script that globbed
+`data/sub-*` must change: [data on disk](data.md) §6.
 
 ### On-disk schema versions
 
@@ -100,9 +110,10 @@ make new files claim to be an older format and sail past the readers' checks.
 
 | Format | Declared in | Now |
 | --- | --- | --- |
-| Experiment database | `session/database.py` (`SCHEMA_VERSION`) | 2 |
+| Experiment database | `session/database.py` (`SCHEMA_VERSION`) | 3 |
 | Results bundle manifest | `analysis/results.py` (`SCHEMA_VERSION`) | 1 |
-| Run manifest | `data/manifest.py` (`MANIFEST_SCHEMA_VERSION`) | 1 |
+| Run manifest | `data/manifest.py` (`MANIFEST_SCHEMA_VERSION`) | 2 |
+| Run identity card (`session.json`) | `session/identity.py` (`SESSION_JSON_SCHEMA_VERSION`) | 1 |
 | Recording pointer | `devices/recording.py` (`POINTER_SCHEMA_VERSION`) | 1 |
 | Training state | `training/state.py` (`SCHEMA_VERSION`) | 1 |
 | Scene format | `scenes/model.py` (`SUPPORTED_VERSION`) | 1 |

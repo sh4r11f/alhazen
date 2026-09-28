@@ -28,6 +28,7 @@ import numpy as np
 from pydantic import BaseModel
 
 from alhazen._deprecation import warn_deprecated_argument, warn_deprecated_name
+from alhazen.config.experiment import Experiment, session_experiment
 from alhazen.config.gamma import gamma_path, load_gamma
 from alhazen.config.loader import build_session_config, load_rig
 from alhazen.config.models import (
@@ -45,6 +46,8 @@ from alhazen.core.engine import TrialEngine
 from alhazen.core.events import EventBus, EventSchema
 from alhazen.core.rng import resolve_seed, spawn_streams
 from alhazen.core.trial import FAULT_TRACKER_STOPPED, HealthFault, InputFrame, TrialContext
+from alhazen.data import naming
+from alhazen.data.participants import check_participant
 from alhazen.data.paths import SessionPaths
 from alhazen.devices.eyetracker import EyeTracker, TrackerMessageSubscriber, make_tracker
 from alhazen.devices.eyetracker.messages import MessageMap
@@ -66,6 +69,7 @@ from alhazen.paradigms.base import TrialSource
 from alhazen.session.database import ExperimentDatabase, FrameInputBuffer
 from alhazen.session.eyetracker import EyeTrackerMonitor
 from alhazen.session.feedback import FeedbackSounder
+from alhazen.session.identity import RunIdentity, source_file
 from alhazen.session.pause import PauseMenu, run_pause_menu
 from alhazen.session.recorder import DataRecorder
 from alhazen.session.runner import SessionRunner
@@ -300,8 +304,42 @@ def build_session(
     open_live_monitor: bool | None = None,
     dashboard: bool | None = None,
     open_dashboard: bool | None = None,
+    experiment: Experiment | None = None,
+    experiment_version: str | None = None,
+    experiment_name: str | None = None,
+    mode: str | None = None,
+    initials: str | None = None,
 ) -> SessionRunner:
     """Wire one runnable session.
+
+    The run's data is filed under its experiment's version,
+    ``<data_root>/v<version>/sub-<ID>/ses-<NNN>/run-<NN>_task-<name>/``, and
+    the version is found from the first of these that is given
+    (`config.experiment.session_experiment`):
+
+    - ``experiment`` — already found (the modes pass the one they numbered
+      the run with);
+    - ``experiment_version`` (and optionally ``experiment_name``) — given
+      explicitly, for a session with no task class to read one from, or a
+      test; recorded as "given to build_session";
+    - ``task=`` — the version in the ``pyproject.toml`` of the project that
+      defines the task's class (`config.experiment.find_experiment`); this
+      is the normal case, and ``experiment_name`` renames what it finds.
+
+    A session hand-wired from parts, with no ``task=`` and no version, is
+    refused with a ConfigError before anything is opened or written: a
+    default would file its data under a version nobody declared.
+
+    ``mode`` is the mode that started the session (``"run"``, ``"test"``,
+    ``"simulate"``), recorded in the run's session.json; None for a session
+    built here directly.
+
+    ``initials`` are the subject's (1 to 5 letters, recorded uppercase —
+    config.models.normalize_initials), recorded in the snapshot, session.json
+    and participants.tsv, never in a path. When the registry already holds
+    other initials for this subject id the session is refused, before
+    anything is written (data.participants.check_participant). None records
+    nothing and checks nothing.
 
     Pass ``task=`` (a Task instance) and everything the experiment declares —
     name, params, events, trial builder, scheduler, score, reward policy, the
@@ -402,9 +440,27 @@ def build_session(
     assert task_name is not None and task_params is not None and event_schema is not None
     assert build_trial is not None and make_source is not None
 
+    # The experiment and version this run's data is filed under, settled
+    # first: it names the run folder, and a session with no version to file
+    # under is refused before a window opens or a file is written.
+    experiment = session_experiment(
+        type(task) if task is not None else None,
+        task_name,
+        experiment=experiment,
+        version=experiment_version,
+        name=experiment_name,
+    )
+
     resolved_seed = resolve_seed(seed)
     info = SessionInfo(
-        subject=subject, session=session, run=run, task_name=task_name, seed=resolved_seed
+        subject=subject,
+        session=session,
+        run=run,
+        task_name=task_name,
+        seed=resolved_seed,
+        # Normalised by SessionInfo (uppercase, 1 to 5 letters); what is
+        # checked against the registry below is what is recorded.
+        initials=initials,
     )
 
     if curriculum is not None:
@@ -423,7 +479,13 @@ def build_session(
             task=task,
             data_root=rig_cfg.data_root,
             subject=subject,
-            session_id=f"ses-{session:03d}_run-{run:02d}",
+            # Where the run is, for the transitions the subject's history
+            # records. The version leads it: the training state sits at the
+            # unversioned root and spans versions, where ses-001_run-01 can
+            # name one run per version.
+            session_id=(
+                f"{naming.version_dirname(experiment.version)}/ses-{session:03d}_run-{run:02d}"
+            ),
         )
         # The supervisor may have rebuilt the task's params and reward policy
         # for the current stage, so what the session runs is read back from
@@ -480,9 +542,52 @@ def build_session(
             f"use display.backend: simulated, or leave clock unset for a real one."
         )
 
+    # The files the session was started with, read now for the run folder's
+    # byte copies (session/identity.py): an unreadable one stops the session
+    # before the run folder exists. The rig is the file this was handed, when
+    # it was handed one — that is what was loaded, just above — and otherwise
+    # the file the caller's sources name (the CLI loads the rig itself and
+    # passes the config, with the file in sources). A layer that came from no
+    # file ("<inline>", "<defaults>") has no copy.
+    given_sources = sources or {}
+    rig_file = source_file(rig, "rig") if not isinstance(rig, RigConfig) else None
+    if rig_file is None:
+        rig_file = source_file(given_sources.get("rig"), "rig")
+    identity = RunIdentity(
+        experiment=experiment,
+        mode=mode,
+        rig_file=rig_file,
+        params_file=source_file(given_sources.get("task"), "params"),
+    )
+
+    # A database this alhazen cannot write (one from before 2.0's schema) is
+    # refused now, with nobody in the chair, rather than at teardown after
+    # the session — where it failed the run over a file that only needs
+    # moving. Reads only; the mirror itself is written at teardown.
+    if rig_cfg.database.enabled:
+        ExperimentDatabase.for_data_root(rig_cfg.data_root, rig_cfg.database).check_schema()
+
+    # The subject's initials against the registry at the (unversioned) data
+    # root: a subject id already recorded with other initials is refused here,
+    # before a run folder, a database row or any file exists — the likeliest
+    # cause is a mistyped subject number, and a session filed under someone
+    # else's id is not undone by deleting a folder. The runner registers the
+    # subject (and fills in initials a pre-2.0 row lacks) once it starts.
+    check_participant(rig_cfg.data_root, subject, info.initials)
+
     # Paths first: refusing to overwrite an existing run must fail before a
-    # window ever opens or a device is touched.
-    paths = SessionPaths.create(rig_cfg.data_root, subject, session, run, task_name, date_yyyymmdd)
+    # window ever opens or a device is touched. The run folder sits under
+    # the experiment's version; data_root itself stays the unversioned root
+    # the registry, the database and training state live in.
+    paths = SessionPaths.create(
+        rig_cfg.data_root,
+        subject,
+        session,
+        run,
+        task_name,
+        date_yyyymmdd,
+        experiment_version=experiment.version,
+    )
 
     # Everything from here to the end of the build runs inside this guard, and
     # each thing the build acquires registers its release on `on_failure` as
@@ -896,6 +1001,7 @@ def build_session(
             spikes=spikes,
             live=live,
             experiment_dir=_experiment_dir(task, build_trial),
+            identity=identity,
         )
         # Built. Every release registered above now belongs to the runner's
         # teardown, so they are dropped here without running.
