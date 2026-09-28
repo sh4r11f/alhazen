@@ -40,6 +40,13 @@ const MODES = {
   measure: ['Measure rig', 'Check the physical display, response keys and eye tracker.'],
 };
 
+/* The rule a subject's initials are held to, word for word as the command
+ * line says it (alhazen.config.models.INITIALS_RULE; a Python test holds the
+ * two together), so the page and a terminal refuse the same answer the same
+ * way. The server checks again, with the same words, before a run starts. */
+const INITIALS_RULE = 'initials must be 1 to 5 letters, such as HD';
+const INITIALS_REQUIRED = 'Subject initials are required for run and test modes';
+
 /* The API token. The opening URL carries it in the fragment (#token=…), which
  * a browser never sends to a server, so it stays out of request logs; the
  * page keeps it for reloads and then takes it out of the address bar.
@@ -205,6 +212,27 @@ function defaultPreset(p) {
   return p.configs.find((path) => path.endsWith('/task.yaml')) || '';
 }
 
+/** Who a run was for, "sub-01 · HD", from its record; '' for a run that
+ *  names no subject (a script, a movie, a simulation left to name its own,
+ *  or a run recorded before the workspace kept it). */
+function who(run) {
+  if (!run.subject) return '';
+  return run.initials ? `sub-${run.subject} · ${run.initials}` : `sub-${run.subject}`;
+}
+
+/**
+ * The initials as they are sent — trimmed and uppercase, as run.py records
+ * them — or, as `problem`, why they cannot be: missing where the mode names a
+ * real subject (`required`), or not 1 to 5 letters. Letters in any script
+ * count, as they do on the command line (Python's str.isalpha).
+ */
+function checkInitials(text, required) {
+  const value = text.trim().toUpperCase();
+  if (!value) return {value: '', problem: required ? INITIALS_REQUIRED : ''};
+  if (!/^\p{L}{1,5}$/u.test(value)) return {value, problem: `${INITIALS_RULE}; got '${text}'`};
+  return {value, problem: ''};
+}
+
 /** A short local timestamp for history rows and the run summary. */
 function date(value) {
   return new Date(value).toLocaleString([], {
@@ -293,6 +321,9 @@ function modeChanged() {
   // must name its subject; a simulation may fall back to its own default.
   $('identity').hidden = !['run', 'test', 'simulate'].includes(mode);
   $('subject').required = ['run', 'test'].includes(mode);
+  // The initials go with the subject: required where it is (checked again
+  // on submit, with the command line's words, by checkInitials).
+  $('initials').required = ['run', 'test'].includes(mode);
   $('trials-field').hidden = !['test', 'simulate'].includes(mode);
   // Each option is shown for exactly the modes whose CLI accepts the flag.
   $('headless-field').hidden = mode !== 'simulate';
@@ -715,9 +746,11 @@ function renderHistory() {
   const rows = runs.map((run) => {
     const button = node('button', 'history-row' + (run.id === runId ? ' selected' : ''));
     const text = node('span', 'history-text');
+    // Who the run was for, when it names a subject: "sub-01 · HD".
+    const subject = who(run) ? ` · ${who(run)}` : '';
     text.append(
       node('strong', '', title(run)),
-      node('small', '', `${date(run.started)} · ${run.rig.split('/').pop()}`),
+      node('small', '', `${date(run.started)} · ${run.rig.split('/').pop()}${subject}`),
     );
     // A movie run gets a play glyph; every other mode opens a display.
     const icon = node('span', 'history-icon', run.mode === 'movie' ? '▷' : '↗');
@@ -834,7 +867,9 @@ async function refreshRun() {
   $('run-status').className = 'status ' + (run?.status || '');
   let info = '';
   if (run) {
-    info = `${title(run)} · ${date(run.started)}`;
+    info = who(run)
+      ? `${title(run)} · ${who(run)} · ${date(run.started)}`
+      : `${title(run)} · ${date(run.started)}`;
     if (run.returncode !== null) info += ' · exit ' + run.returncode;
     if (run.error) info += ' · ' + run.error;
   }
@@ -1060,10 +1095,20 @@ $('launch-form').addEventListener('submit', guard(async (event) => {
   // The button is disabled in these states, but Enter in a field submits too.
   if (launching || (usesParameters() && (loadingConfig || loadingSchema)) || state.active) return;
   if (project().tasks_error) return;
+  const mode = $('mode').value;
+  // The initials, for the modes that show them: refused here in the command
+  // line's own words before anything is sent (the server checks again).
+  const identity = ['run', 'test', 'simulate'].includes(mode);
+  const initials = identity
+    ? checkInitials($('initials').value, ['run', 'test'].includes(mode))
+    : {value: '', problem: ''};
+  if (initials.problem) {
+    error(initials.problem);
+    return;
+  }
   launching = true;
   updateLaunch();
   error('');
-  const mode = $('mode').value;
   try {
     const isScript = project().scripts.some((s) => s.id === mode);
     const request = {
@@ -1075,6 +1120,7 @@ $('launch-form').addEventListener('submit', guard(async (event) => {
       task: isScript ? null : selectedTask(),
       rig: $('rig').value,
       subject: $('subject').value,
+      initials: initials.value,
       session: Number($('session').value),
       seed: Number($('seed').value),
       trials: Number($('trials').value),

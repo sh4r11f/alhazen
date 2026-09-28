@@ -100,6 +100,14 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   is written ("sub-01 is recorded as HD; this session says XY — check the
   subject number"), and a subject registered before 2.0 has them filled in.
   Initials never appear in a file or folder name.
+- **The experiment workspace takes the initials too.** An **Initials** field
+  beside Subject ID, required when the subject is (run and test), checked on
+  the page and again by the launcher in the command line's words, and sent as
+  `--initials` (which joins the flags the extra arguments may not repeat). A
+  session's `run.json` records its subject, session and initials, and the
+  history and run summary show who it was for, `sub-01 · HD`. A project on an
+  alhazen older than 2.0 does not know the flag; its run and test launches
+  stop with that usage error.
 - The mode summary printed before trial 1 names the experiment, its version
   folder and where the version came from.
 - Public in the API reference: `alhazen.config.experiment` (`Experiment`,

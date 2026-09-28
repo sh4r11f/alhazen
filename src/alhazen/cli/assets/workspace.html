@@ -105,10 +105,16 @@
             </div>
             <div id="rig-summary" class="rig-summary"></div>
 
+            <!-- Subject ID and initials side by side: the initials are the
+                 check on the number, recorded and never put in a file name. -->
             <div id="identity" class="field-pair">
               <div>
                 <label for="subject">Subject ID</label>
                 <input id="subject" placeholder="e.g. s01">
+              </div>
+              <div>
+                <label for="initials">Initials</label>
+                <input id="initials" placeholder="e.g. HD" maxlength="5" autocomplete="off">
               </div>
               <div>
                 <label for="session">Session</label>

@@ -84,6 +84,11 @@ package remains the session monitor, with its own pause-only controls. See
 Parameter dropdowns read the task's Pydantic schema through an isolated
 `cli/workspace_schema.py` subprocess in the project's interpreter. The server
 does not import task modules itself. Rig measurement omits task parameters.
+The subject's initials are checked on the page and again by the launcher
+with the command line's own rule (`config.models.normalize_initials`, whose
+sentence `workspace.js` repeats and a test holds equal), then passed as
+`--initials`; the run record keeps subject, session and initials for the
+history.
 `cli/console_break.py` makes a Windows console break — how the workspace stops
 a child — raise the same `KeyboardInterrupt` as Ctrl+C, so a stopped session
 still tears down; `_run_session` and the workspace server both arm it.

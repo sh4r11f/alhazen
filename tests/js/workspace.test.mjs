@@ -361,6 +361,8 @@ describe('launching a run', () => {
       assert.deepEqual(launched(app), {
         /* task is null: this project's run.py declares one task the old way. */
         project: 'p', mode: 'simulate', task: null, rig: 'configs/rig-mac.yaml', subject: 's01',
+        /* Initials are optional in simulate; left blank, they are sent blank. */
+        initials: '',
         session: 2, seed: 7, trials: 3,
         /* headless and windowed start checked in the markup. */
         headless: true, mouse: false, windowed: true,
@@ -645,6 +647,86 @@ describe('the parameter text editor', () => {
       assert.deepEqual(plain(app.run('values')), { trials: 12 });
       assert.equal(app.run('editor'), 'fields');
     });
+});
+
+describe('the subject’s initials', () => {
+  it('are required where the subject is: run and test, not simulate', async () => {
+    const app = await pageWith();
+    for (const [mode, required] of [['run', true], ['test', true], ['simulate', false]]) {
+      chooseMode(app, mode);
+      assert.equal(app.byId('initials').required, required, mode);
+      assert.equal(app.byId('identity').hidden, false, mode);
+    }
+    /* A mode that names no subject hides the whole row. */
+    chooseMode(app, 'movie');
+    assert.equal(app.byId('identity').hidden, true);
+    assert.equal(app.byId('initials').required, false);
+  });
+
+  it('are sent trimmed and uppercase, as run.py records them', async () => {
+    const app = await pageWith();
+    chooseMode(app, 'run');
+    app.byId('subject').value = 's01';
+    app.byId('initials').value = ' hd ';
+    await launch(app);
+    assert.equal(launched(app).mode, 'run');
+    assert.equal(launched(app).initials, 'HD');
+  });
+
+  it('that break the rule are refused in the command line’s words, and nothing is sent',
+    async () => {
+      const app = await pageWith();
+      chooseMode(app, 'test');
+      app.byId('subject').value = 's01';
+      app.byId('initials').value = 'H1';
+      await launch(app);
+      assert.equal(app.server.posted.filter((p) => p.path === '/api/runs').length, 0);
+      assert.equal(app.byId('error').hidden, false);
+      assert.equal(
+        app.byId('error').textContent, "initials must be 1 to 5 letters, such as HD; got 'H1'",
+      );
+      /* The reader can fix the field and try again. */
+      assert.equal(app.run('launching'), false);
+      assert.equal(app.byId('launch').disabled, false);
+    });
+
+  it('left out of a run are asked for, and nothing is sent', async () => {
+    const app = await pageWith();
+    chooseMode(app, 'run');
+    app.byId('subject').value = 's01';
+    await launch(app);
+    assert.equal(app.server.posted.filter((p) => p.path === '/api/runs').length, 0);
+    assert.equal(
+      app.byId('error').textContent, 'Subject initials are required for run and test modes',
+    );
+  });
+
+  it('are not checked or sent for a mode that names no subject', async () => {
+    const app = await pageWith();
+    chooseMode(app, 'run');
+    app.byId('initials').value = '12345';  /* left over from another mode */
+    chooseMode(app, 'movie');
+    await launch(app);
+    assert.equal(launched(app).mode, 'movie');
+    assert.equal(launched(app).initials, '');
+  });
+
+  it('show who a run was for in the history and the run summary', async () => {
+    const run = runDetail({
+      mode: 'run', subject: 's01', session: 1, initials: 'HD', status: 'completed',
+      returncode: 0,
+    });
+    const app = await pageWith({ run: run });
+    const row = app.byId('history').children[0];
+    assert.match(row.querySelector('small').textContent, / · rig-mac\.yaml · sub-s01 · HD$/);
+    assert.match(app.byId('run-info').textContent, /^Run experiment · sub-s01 · HD · /);
+  });
+
+  it('are left out of a run that names no subject', async () => {
+    const app = await pageWith({ run: runDetail({ status: 'completed', returncode: 0 }) });
+    assert.doesNotMatch(app.byId('history').children[0].textContent, /sub-/);
+    assert.doesNotMatch(app.byId('run-info').textContent, /sub-/);
+  });
 });
 
 describe('a request the launcher refuses', () => {
