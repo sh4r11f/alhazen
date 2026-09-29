@@ -14,6 +14,7 @@ import sys
 import threading
 from http.client import HTTPConnection
 from pathlib import Path
+from xml.etree import ElementTree
 
 import pytest
 import yaml
@@ -786,6 +787,13 @@ class TestHTTP:
         status, headers, icon = call("/favicon.svg")
         assert status == 200 and headers["Content-Type"] == "image/svg+xml"
         assert icon.startswith(b"<svg") and b"logo-bricks-turned" in icon
+        # An image must be well-formed XML, or the browser shows no icon at
+        # all and says nothing (a "--" inside an XML comment is enough). The
+        # letter A is a path clipping the upright bricks, not text.
+        root = ElementTree.fromstring(icon)
+        svg = "{http://www.w3.org/2000/svg}"
+        assert root.find(f".//{svg}clipPath[@id='logo-letter']/{svg}path") is not None
+        assert root.find(f".//{svg}text") is None
         # Only the named files: nothing else under assets/ by URL.
         assert call("/fonts/OFL.txt")[0] == 404
         assert call("/fonts/../workspace.css")[0] in {400, 404}

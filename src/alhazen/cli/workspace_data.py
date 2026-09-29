@@ -59,7 +59,7 @@ from alhazen.modes.rehearsal import rehearsal_root
 # together. A frames CSV has one row per display frame (61 564 for one
 # 20-minute rehearsal); past this the JSON would take seconds to build and
 # the page seconds to parse. The answer says when the cap cut it (`capped`),
-# with the file's full row count, so a plot is never silently partial.
+# with the file's full row count, so a table is never silently partial.
 MAX_TABLE_ROWS = 50_000
 # How much of a text record is sent: all of a small file, the END of the log
 # (the last lines are the ones that say how a session ended).
@@ -493,7 +493,7 @@ class DataView:
         At most MAX_TABLE_ROWS rows are sent; ``total`` counts them all.
         A run with no such table, or a file that cannot be parsed, fails
         the whole request with the run and the line named: a pooled table
-        silently missing one run would plot as if it were complete.
+        silently missing one run would read as if it were complete.
         """
         if kind not in TABLE_KINDS:
             raise ValueError(f"Unknown table {kind!r}; choose one of {', '.join(TABLE_KINDS)}")
@@ -549,7 +549,7 @@ class DataView:
             "files": [
                 # `loaded` < `rows` for a file the cap cut, down to 0 for a
                 # run that came after the cap in a pool: said per file, so a
-                # pooled plot is never read as covering every run.
+                # pooled table is never read as covering every run.
                 {"run": run_id, "name": path.name, "rows": count, "loaded": len(rows)}
                 for run_id, _, rows, count, path in sources
             ],

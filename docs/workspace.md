@@ -74,6 +74,17 @@ colours: Auto follows the operating system's light or dark setting, and the
 choice is remembered in the browser. The framed live monitor is its own page
 and keeps its own colours.
 
+Dark is black: its colours are those of the owner's VS Code theme, *Deepdark
+Material Theme | Full Black Version* — a #080808 page, a #0c0c0c sidebar and
+cards edged in #3d3d3c, blue (#00a4f3) buttons and links, and the selected
+experiment in yellow on grey (#f3c900 on #212121), as the theme shows a
+selected item. Three colours depart from the theme so that text keeps a
+contrast of 4.5:1 and a field's border 3:1 (WCAG AA): the text on the blue
+button is near-black, not white (white on #00a4f3 is 2.8:1); the error red
+is lightened from #f3002b to #f64262; and a field's border is #6d6d6d, not
+the theme's #50504f. `workspace.css` lists every colour with the theme key
+it comes from, and a test checks the contrast of every pair it draws.
+
 ## Configure and run
 
 1. Select an experiment in the sidebar.
@@ -442,7 +453,12 @@ wheel, the font among them: text is set in Nunito (SIL Open Font License,
 `cli/assets/fonts/OFL.txt`), a Latin subset of the variable font from the
 google/fonts repository, served by the dashboard itself (`/fonts/…`, CSP
 `font-src 'self'`), with the system's sans-serif as the fallback. The logo is
-an inline SVG in the page and, standalone, the tab's icon (`/favicon.svg`).
+an inline SVG in the page and, standalone, the tab's icon (`/favicon.svg`): an
+A painted in the Ouchi illusion — a checkerboard of 4:1 bricks laid
+horizontally, and inside the letter the same bricks upright and shifted by
+half a brick, so the A shows only through the change of orientation. The
+letter is an SVG path, not text, so it looks the same in every browser and in
+the favicon (which cannot load the page's font).
 
 The server binds to `127.0.0.1` only and authenticates API/media requests with
 a random per-server token. The opening URL carries it in a fragment, which

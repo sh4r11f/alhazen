@@ -1392,6 +1392,76 @@ describe('the colour theme', () => {
     assert.match(system, /--paper:/);
     assert.equal(system, chosen);
   });
+
+  it('keeps every text and control colour readable in both palettes', () => {
+    /* WCAG AA: text needs a contrast ratio of 4.5:1 against what it is drawn
+     * on; a control's edge (a field's border, the focus ring) and the logo's
+     * bricks 3:1. The dark palette is the owner's VS Code theme, and where
+     * the theme itself falls short (white on its blue button is 2.8:1) the
+     * stylesheet departs from it; this pins that it did. Each pair below is
+     * one the stylesheet really draws (text token on background token). */
+    const css = readFileSync(
+      new URL('../../src/alhazen/cli/assets/workspace.css', import.meta.url), 'utf8',
+    );
+    /** The tokens of the block that starts at `marker`, as {name: '#rrggbb'}. */
+    const palette = (marker) => {
+      const start = css.indexOf(marker);
+      assert.notEqual(start, -1, marker);
+      // The block's own brace: the search starts at the marker, which may end in it.
+      const open = css.indexOf('{', start);
+      const text = css.slice(open + 1, css.indexOf('}', open));
+      return Object.fromEntries(
+        [...text.matchAll(/--([\w-]+):\s*(#[0-9a-fA-F]{6})\b/g)].map((m) => [m[1], m[2]]),
+      );
+    };
+    /** Relative luminance of an sRGB colour (WCAG 2 definition). */
+    const luminance = (hex) => {
+      const [r, g, b] = [1, 3, 5].map((i) => {
+        const c = parseInt(hex.slice(i, i + 2), 16) / 255;
+        return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const ratio = (a, b) => {
+      const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+      return (hi + 0.05) / (lo + 0.05);
+    };
+    const TEXT = [
+      ['ink', ['paper', 'surface', 'surface-2', 'surface-3', 'field', 'hover-bg']],
+      ['muted', ['paper', 'surface', 'surface-2', 'surface-3', 'field']],
+      ['accent', ['paper', 'surface', 'accent-soft']],
+      ['on-accent', ['accent', 'accent-hover']],
+      ['selected-ink', ['selected-bg']],
+      ['run-ink', ['run-bg']],
+      ['ok-ink', ['ok-bg', 'surface']],
+      ['bad-ink', ['bad-bg', 'surface', 'paper']],
+      ['console-ink', ['console-bg']],
+    ];
+    const EDGES = [
+      ['field-border', ['field', 'surface']],
+      ['focus', ['paper', 'surface']],
+      ['logo-brick', ['logo-ground']],
+    ];
+    const light = palette(':root {');
+    const dark = palette(':root[data-theme=dark]');
+    // Light mode keeps its own colours; the dark one is the VS Code theme's.
+    assert.equal(dark.paper.toLowerCase(), '#080808');
+    assert.equal(dark['selected-ink'].toLowerCase(), '#f3c900');
+    const low = [];
+    for (const [name, colours] of [['light', light], ['dark', dark]]) {
+      for (const [pairs, need] of [[TEXT, 4.5], [EDGES, 3]]) {
+        for (const [fg, backgrounds] of pairs) {
+          for (const bg of backgrounds) {
+            // A token missing from a palette is a failure, not a skip.
+            assert.ok(colours[fg] && colours[bg], `${name}: --${fg} or --${bg} is not a #rrggbb token`);
+            const r = ratio(colours[fg], colours[bg]);
+            if (r < need) low.push(`${name} --${fg} on --${bg}: ${r.toFixed(2)} < ${need}`);
+          }
+        }
+      }
+    }
+    assert.deepEqual(low, []);
+  });
 });
 
 describe('the logo', () => {
@@ -1412,6 +1482,22 @@ describe('the logo', () => {
     assert.equal(drawing(read('favicon.svg')), inline);
     assert.match(inline, /id="logo-bricks-turned"/);
     assert.match(read('workspace.html'), /<link rel="icon" href="\/favicon.svg" type="image\/svg\+xml">/);
+  });
+
+  it('paints the upright bricks inside a drawn A, with nothing on top of it', () => {
+    /* The owner: the vertical bricks are painted IN the A, not an A on top
+     * of the figure. So the letter is a path (the favicon cannot load the
+     * page's font, and a path looks the same everywhere) that clips the
+     * turned bricks, and there is no disc, <text> or solid letter left. */
+    const html = readFileSync(
+      new URL('../../src/alhazen/cli/assets/workspace.html', import.meta.url), 'utf8',
+    );
+    const logo = html.slice(html.indexOf('<!-- LOGO-START'), html.indexOf('<!-- LOGO-END -->'));
+    const markup = logo.replace(/<!--[\s\S]*?-->/g, '');
+    assert.match(markup, /<clipPath id="logo-letter">\s*<path clip-rule="evenodd"\s+d="M[^"]+Z"/);
+    // The turned bricks are drawn only inside the letter's clip.
+    assert.match(markup, /<g clip-path="url\(#logo-letter\)">[^]*?fill="url\(#logo-bricks-turned\)"[^]*?<\/g>/);
+    assert.doesNotMatch(markup, /<text|<circle|stroke/);
   });
 });
 

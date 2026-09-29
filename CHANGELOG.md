@@ -27,6 +27,23 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ## Unreleased
 
+### Changed
+
+- **Dark mode is black**, in the colours of the owner's VS Code theme
+  (*Deepdark Material Theme | Full Black Version*): a #080808 page, #0c0c0c
+  sidebar and cards edged in #3d3d3c, #00a4f3 buttons and links, and the
+  selected experiment in yellow on grey (#f3c900 on #212121). Where the theme
+  falls under WCAG AA the page departs from it as little as it can: near-black
+  text on the blue button (white is 2.8:1), an error red lightened to
+  #f64262, and #6d6d6d field borders. Auto (with a dark system) and Dark are
+  the same palette; light mode is unchanged. `workspace.css` names the theme
+  key behind every colour, and a test checks every text and border pair in
+  both palettes.
+- **The logo's A is the Ouchi figure.** The upright bricks are now painted
+  inside the letter A itself, on the horizontal-brick ground; the disc and
+  the solid letter over it are gone. The A is an SVG path, so the sidebar and
+  the favicon (`/favicon.svg`) draw it identically, in light and dark.
+
 ### Removed
 
 - **The Data view's quick plots are gone for now.** The Plot card under the
