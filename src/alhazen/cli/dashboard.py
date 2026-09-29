@@ -29,6 +29,7 @@ from alhazen.cli.workspace import (
     parse_parameters,
     path_inside,
 )
+from alhazen.cli.workspace_data import DataView
 from alhazen.errors import AlhazenError
 
 ASSETS = Path(__file__).with_name("assets")
@@ -37,6 +38,41 @@ ASSETS = Path(__file__).with_name("assets")
 # says only that *someone* has the workspace; this says who, so the refusal
 # can tell the person which window to go back to or which process to stop.
 HOLDER_RECORD = "server.json"
+# The page's own assets: URL path to (file in ASSETS, content type).
+STATIC_ASSETS = {
+    "/": ("workspace.html", "text/html; charset=utf-8"),
+    "/workspace.js": ("workspace.js", "text/javascript; charset=utf-8"),
+    "/workspace_parameters.js": ("workspace_parameters.js", "text/javascript; charset=utf-8"),
+    "/workspace.css": ("workspace.css", "text/css; charset=utf-8"),
+    # The Data view (workspace_data.py serves its reads).
+    "/workspace_data.js": ("workspace_data.js", "text/javascript; charset=utf-8"),
+    "/workspace_plot.js": ("workspace_plot.js", "text/javascript; charset=utf-8"),
+    "/workspace_data.css": ("workspace_data.css", "text/css; charset=utf-8"),
+}
+# Every response's policy: the page and its assets, nothing from elsewhere.
+PAGE_CSP = (
+    "default-src 'self'; img-src 'self'; "
+    "media-src 'self'; style-src 'self'; script-src 'self'; "
+    # The page embeds the live session monitor, which the run serves
+    # on another loopback port; nothing else may be framed.
+    "connect-src 'self'; frame-src http://127.0.0.1:*; "
+    "frame-ancestors 'none'; base-uri 'none'"
+)
+# A figure from a data folder (/data/file). Shown in an <img>, where no
+# policy matters; opened on its own, an SVG is a document that could carry
+# script, and `sandbox` gives it an opaque origin with scripts off, so it can
+# never act as the workspace.
+DATA_FILE_CSP = "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'"
+# A run's saved live monitor page (/data-page/<ticket>, see
+# workspace_data.DataView.page_ticket). Its script and style are inline, so
+# they are allowed — and nothing else: no requests (connect-src), no frames,
+# no forms, no framing of it, images only from itself. The page renders the
+# snapshot embedded in it and needs nothing more.
+SAVED_PAGE_CSP = (
+    "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+    "img-src data: blob:; font-src data:; connect-src 'none'; frame-src 'none'; "
+    "frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+)
 
 
 def record_holder(directory: Path, *, url: str | None = None) -> None:
@@ -116,6 +152,8 @@ class DashboardServer(ThreadingHTTPServer):
     def __init__(self, workspace: Workspace, port: int = 0):
         self.workspace = workspace
         self.token = secrets.token_urlsafe(32)
+        # The Data view's reads of saved sessions (workspace_data.py).
+        self.data = DataView(workspace)
         super().__init__(("127.0.0.1", port), Handler)
 
     @property
@@ -143,22 +181,14 @@ class Handler(BaseHTTPRequestHandler):
         # Request paths may carry a media token; never put it in console logs.
         pass
 
-    def _headers(self, status: int, kind: str, size: int) -> None:
+    def _headers(self, status: int, kind: str, size: int, csp: str = PAGE_CSP) -> None:
         self.send_response(status)
         self.send_header("Content-Type", kind)
         self.send_header("Content-Length", str(size))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header(
-            "Content-Security-Policy",
-            "default-src 'self'; img-src 'self'; "
-            "media-src 'self'; style-src 'self'; script-src 'self'; "
-            # The page embeds the live session monitor, which the run serves
-            # on another loopback port; nothing else may be framed.
-            "connect-src 'self'; frame-src http://127.0.0.1:*; "
-            "frame-ancestors 'none'; base-uri 'none'",
-        )
+        self.send_header("Content-Security-Policy", csp)
 
     def _json(self, payload: Any, status: int = 200) -> None:
         data = json.dumps(payload, allow_nan=False).encode()
@@ -183,7 +213,10 @@ class Handler(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query, keep_blank_values=True)
         if any(len(v) != 1 for v in query.values()):
             raise ValueError("Query parameters may only appear once")
-        if path.startswith(("/api/", "/media/")):
+        # /data/ is the Data view's figures, fetched with the token in the
+        # URL like /media/. /data-page/<ticket> is not here on purpose: its
+        # ticket is the secret (DataView.page_ticket).
+        if path.startswith(("/api/", "/media/", "/data/")):
             token = self.headers.get("X-Alhazen-Token", query.get("token", [""])[0])
             if not hmac.compare_digest(token.encode(), self.server.token.encode()):
                 raise PermissionError(
@@ -223,16 +256,18 @@ class Handler(BaseHTTPRequestHandler):
                 if target.suffix.lower() not in MEDIA_TYPES:
                     raise ValueError("Only images and movies are served as media")
                 self._file(target, MEDIA_TYPES[target.suffix.lower()], ranges=True)
-            elif path in {"/", "/workspace.js", "/workspace_parameters.js", "/workspace.css"}:
-                name, kind = {
-                    "/workspace_parameters.js": (
-                        "workspace_parameters.js",
-                        "text/javascript; charset=utf-8",
-                    ),
-                    "/": ("workspace.html", "text/html; charset=utf-8"),
-                    "/workspace.js": ("workspace.js", "text/javascript; charset=utf-8"),
-                    "/workspace.css": ("workspace.css", "text/css; charset=utf-8"),
-                }[path]
+            elif path.startswith("/api/data/"):
+                self._json(self.server.data.get(path.removeprefix("/api/data/"), query))
+            elif path == "/data/file":
+                target, kind = self.server.data.file(
+                    *(query.get(name, [""])[0] for name in ("project", "root", "run", "name"))
+                )
+                self._file(target, kind, csp=DATA_FILE_CSP)
+            elif path.startswith("/data-page/"):
+                target = self.server.data.page(path.removeprefix("/data-page/"))
+                self._file(target, "text/html; charset=utf-8", csp=SAVED_PAGE_CSP)
+            elif path in STATIC_ASSETS:
+                name, kind = STATIC_ASSETS[path]
                 self._file(ASSETS / name, kind)
             else:
                 self._json({"error": "Not found"}, 404)
@@ -309,7 +344,7 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, OSError, AlhazenError, ValidationError) as exc:
             self._json({"error": str(exc)}, 400)
 
-    def _file(self, path: Path, kind: str, ranges: bool = False) -> None:
+    def _file(self, path: Path, kind: str, ranges: bool = False, csp: str = PAGE_CSP) -> None:
         # An open descriptor pins the file whose size and range we send.
         with path.open("rb") as stream:
             stream.seek(0, 2)
@@ -325,13 +360,13 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     start = size
                 if start >= size or end < start:
-                    self._headers(416, kind, 0)
+                    self._headers(416, kind, 0, csp)
                     self.send_header("Content-Range", f"bytes */{size}")
                     self.end_headers()
                     return
                 status = 206
             remaining = end - start + 1
-            self._headers(status, kind, remaining)
+            self._headers(status, kind, remaining, csp)
             if ranges:
                 self.send_header("Accept-Ranges", "bytes")
             if status == 206:

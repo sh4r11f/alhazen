@@ -202,6 +202,164 @@ and show a dialog, and cannot navigate the workspace or open windows from it.
 Running `python run.py` from a terminal is unchanged: the monitor then opens in
 its own browser tab as before.
 
+## Data
+
+Each experiment's **Data** view reads the sessions it has saved: pick a data
+folder, browse its runs, open one, load its trials and plot them. It only
+reads — nothing in a data folder is changed — and it imports none of the
+experiment's code.
+
+### How it fits together
+
+```mermaid
+flowchart LR
+  subgraph Browser
+    NAV["workspace.js<br/>(sidebar: Run experiment | Data)"]
+    VIEW["workspace_data.js<br/>WorkspaceData.show / hide"]
+    PLOT["workspace_plot.js<br/>build → render (SVG)"]
+    NAV -- "show(project, {api, token, node, error})" --> VIEW
+    VIEW --> PLOT
+  end
+  subgraph Server["dashboard.py (loopback, token)"]
+    API["GET /api/data/roots · runs · run · text · table · page"]
+    FILE["GET /data/file (figures, token in URL)"]
+    PAGE["GET /data-page/&lt;ticket&gt;"]
+    DV["workspace_data.DataView"]
+    API --> DV
+    FILE --> DV
+    PAGE --> DV
+  end
+  subgraph Disk
+    RIGS["project rigs<br/>configs/rig-*.yaml + shared rigs"]
+    ROOTS["data_root/ and data_root-rehearsal/<br/>v&lt;version&gt;/sub-*/ses-*/run-*"]
+  end
+  VIEW -- "JSON (ids, never paths)" --> API
+  VIEW -- "&lt;img src&gt;" --> FILE
+  VIEW -- "new tab, noopener" --> PAGE
+  DV -- "rig_mapping: data_root" --> RIGS
+  DV -- "find_runs, csv, session.json" --> ROOTS
+```
+
+The page's navigation opens the view with
+`window.WorkspaceData.show(projectRecord, {api, token, node, error})` and
+leaves it with `WorkspaceData.hide()`; the view fills `<div id="data-view">`
+by creating elements, never by writing markup, since everything it shows
+comes from files.
+
+### Data folders
+
+A project does not say where its data goes; its rigs do. The folders offered
+are, for every rig in the Rig menu (the experiment's own and the shared ones
+its alhazen ships), the rig's `data_root` — merged, for a rig that
+`extends` a shared one, exactly as a launch merges it — resolved against the
+project folder when relative, plus its rehearsal sibling
+`<data_root>-rehearsal`, where test and simulate write ([Modes](modes.md)).
+Each folder is labelled with the rigs that write there and whether it holds
+real or rehearsal data. Only folders that exist are offered; the others are
+listed as "not created yet". A rig that cannot be read, or names no
+`data_root`, is named at the top rather than skipped.
+
+### Runs
+
+The run table lists every run folder `alhazen.data.find_runs` finds in the
+folder, in both layouts: version (`pre-2.0` for a run recorded before
+alhazen 2.0, which has no version folder), subject and initials, session,
+run, task, mode, date, number of trials, rig. The fields come from the run's
+`session.json`, or for a pre-2.0 run from its `config_snapshot.yaml` (which
+has no mode). The trial count is `report.yaml`'s when the run wrote one, and
+otherwise the trials file's lines, shown as `~N`: listing counts lines rather
+than parsing a CSV, so a folder of hundreds of runs lists quickly. Menus
+filter by version, subject and task. A run whose records cannot be read is
+still listed, flagged ⚠, and its problem is said under the table.
+
+Clicking a run opens it: a summary of `session.json` (experiment and version,
+task, mode, subject, session and run, seed, when, rig, params file, alhazen),
+the files in the folder, buttons that show its text records
+(`session.json`, `config_snapshot.yaml`, `rig.yaml`, `rig-source.yaml`,
+`params.yaml`, `report.yaml`, `manifest.yaml`, and the last 64 KiB of
+`session.log`; other files are listed, not shown), the images under
+`figures/`, and **Open saved live monitor ↗** for
+`figures/live_monitor.html` (`figures/dashboard.html` before 2.0).
+
+### Tables
+
+**Load trials table** loads the run's `*_trials.csv`; the menu beside it
+picks the events, frames or paradigm table instead. Check several runs and
+**Load and pool** to read one table from all of them: the rows are stacked,
+the columns are the union of the files' (a run without one gets empty
+cells), and three columns are added in front — `run` (the folder's id),
+`subject`, `session` — so pooled rows stay distinguishable. A CSV column
+with one of those names keeps it, and the added one is called
+`subject (folder)`. Headers sort (numerically for a numeric column; empty
+cells last), the text box keeps the rows in which any cell contains the text,
+and the count says how many rows match. The first 500 matching rows are
+drawn; sorting and filtering bring the others up, and plots use them all.
+
+At most 50 000 rows are sent per load, pooled runs together; a table cut
+there says so, with the file's full count, and so does every plot drawn from
+it. A file that cannot be parsed (a cell over the csv module's size limit, a
+file that is not UTF-8, an empty file) fails the load with the run, the file
+and the line named. A row with more or fewer cells than the header is kept,
+padded or cut to the header, and named.
+
+**Numbers are parsed in the browser.** The server sends each cell as the
+CSV's own text: a CSV has no types, and the plot must decide per column
+anyway what it holds. A cell is a number when it looks like one, `True` and
+`False` (how the trials file writes a boolean) are 1 and 0, an empty cell is
+missing, and anything else is text. A column is numeric when every non-empty
+cell is.
+
+### Plots
+
+Choose **x**, **y**, an optional **group by**, and a kind:
+
+| Kind | What is drawn |
+|---|---|
+| Mean ± SEM of y per x | the mean of y at each value of x, with the standard error (sample SD / √n; none for a single value), one series per group; a 0/1 or True/False y is a proportion, on a 0–1 axis |
+| Scatter | one point per row (at most 20 000 drawn, said when more) |
+| Histogram of y / of x | counts in Sturges' number of bins, rounded to a round width; one group is bars, several are outlines on shared bins |
+
+A text column can be x (one category per value, at most 30) or the group-by
+(at most 5 groups, each with its own colour and marker shape), never y; the
+y menu lists text columns disabled and says why. A plot that cannot be drawn
+says why in words. Series colours are a fixed Okabe-Ito order that reads on
+light and dark pages; axes and text take the page's theme colours.
+**Save figure (SVG)** downloads the drawing, with the colours in force
+written into the file.
+
+### Safety
+
+Every route is read-only, on loopback, and needs the workspace token (an
+`<img>` carries it in its URL, like the gallery's media). The browser sends
+only ids: a data folder's id (computed by the server from the rigs and
+looked up again on every request), a run's path relative to that folder, a
+file's name relative to the run. A run id must have a run folder's shape
+(`[v<version>/]sub-<ID>/ses-<NNN>/run-<NN>…`), and every path is resolved,
+symlinks included, and refused when it leaves its folder. Text is served
+only for the records listed above; files only for images under `figures/`,
+under a `sandbox` Content-Security-Policy so an SVG's script can never run
+as the workspace.
+
+The saved live monitor page is a self-contained file with inline script,
+which the workspace's own policy forbids, and it reads `sessionStorage`,
+which a sandboxed page cannot. So it is served under its own policy — inline
+script and style, and nothing else: no requests, frames or forms — and
+reached through a random link valid for two minutes, not the token: an
+address opened in a tab is readable by the page and kept in the browser's
+history, and the token must be in neither. The tab is opened with
+`noopener`, so it gets nothing of the workspace's tab.
+
+### Experiment figures (planned)
+
+The quick plots are generic. An experiment will later be able to declare its
+own analysis figures — functions of one or several run folders that return a
+figure — and the Data view will show them in a card of their own beside the
+quick plots. Because the workspace never imports experiment code, those
+functions will run in the project's own interpreter, the way the parameter
+schema is read today (`workspace._read_schema`), through a new route in
+`workspace_data.py`; the view only lists and shows the images they produce.
+The places to extend are marked in both files' header comments.
+
 ## Storage and local access
 
 By default, state is under `~/.alhazen/live_monitor/`:
