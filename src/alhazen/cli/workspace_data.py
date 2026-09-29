@@ -146,8 +146,23 @@ def data_roots(described: dict[str, Any]) -> tuple[list[DataRoot], list[DataRoot
     problems: list[str] = []
     if described.get("rigs_note"):
         problems.append(described["rigs_note"])
+    # The experiment's own rigs are named `<experiment>/<rig>`, the way the
+    # Rig menu and `--rig` name them, so a folder's list of writers reads the
+    # same as the menu. The slug is the pyproject's [project] name (describe()
+    # reads it); a record without one falls back to the registry's name.
+    owner = described.get("slug") or described.get("name")
     for entry in described.get("rigs", []):
-        label = f"{SHARED_PREFIX}{entry['name']}" if entry["source"] == "alhazen" else entry["name"]
+        if entry.get("shadowed"):
+            # A shared rig hidden by the experiment's own rig of the same name
+            # is not in the Rig menu, so it is not listed as a writer either:
+            # the dashboard cannot launch it, and naming it here would offer a
+            # rig the page nowhere else shows.
+            continue
+        label = (
+            f"{SHARED_PREFIX}{entry['name']}"
+            if entry["source"] == "alhazen"
+            else f"{owner}/{entry['name']}"
+        )
         if entry.get("error"):
             problems.append(f"Rig {label} cannot be read: {entry['error']}")
             continue

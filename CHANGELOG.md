@@ -25,6 +25,22 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## 2.1.1 - 2026-09-29
+
+### Fixed
+
+- **The Data view's plot was black in the light theme.** It filled its
+  background with `--white`, a colour 2.1.0's theme work renamed to
+  `--surface`; an undefined colour leaves an SVG fill black. A test now
+  checks that every colour the Data view uses is one `workspace.css`
+  defines.
+- **The Data view repeated the page's heading** (the experiment's name and
+  "Data" twice); it now has one line saying what it shows.
+- **The data-folder picker names rigs the way the Rig menu does**
+  (`<experiment>/<rig>`, `alhazen/<rig>`), leaves out a shared rig the
+  experiment's own rig hides, and moves the list of rigs from the option,
+  where it was cut off, to the line under the picker.
+
 ## 2.1.0 - 2026-09-29
 
 ### Added
