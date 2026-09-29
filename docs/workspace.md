@@ -83,14 +83,15 @@ and keeps its own colours.
    **This experiment**, its `configs/rig-<name>.yaml` files (subdirectories
    and `.yml` included), and **Shared (alhazen)**, the rigs the project's
    alhazen ships ([Rigs](rigs.md)). The same spelling works on the command
-   line (`--rig amodal-averaging/lab`). An experiment rig that extends a shared
-   one says so (`amodal-averaging/lab · extends alhazen/lab`). A shared rig the
-   experiment's own rig of the same name hides is left out of the menu, and
-   the note under it names it and how the command line still reaches it
-   (`--rig alhazen/lab`). The summary under the menu describes the rig as it
-   would run — merged, for one that extends — and says whose it is. A project
-   registered before shared rigs were listed shows none, and says so: save its
-   **Project settings** to register it again.
+   line (`--rig amodal-averaging/lab`). A shared rig the experiment's own rig
+   of the same name hides is left out of the menu; the command line still
+   reaches it as `--rig alhazen/lab`. Under the menu, the rig's facts as it
+   would run — merged, for one that extends — as a short list: **Screen**,
+   **Size**, **Display**, **Live monitor**, and **Rig**, whose it is and the
+   shared rig it extends (`amodal-averaging/lab · this experiment's
+   configs/rig-lab.yaml · extends alhazen/lab`). A project registered before
+   shared rigs were listed shows none, and says so: save its **Project
+   settings** to register it again.
 3. **Task parameters**, below the rig, starts with the menu of the
    experiment's parameter files: the files in `configs/` whose names start
    with `task` or `params`, each shown without its `task-`/`params-` prefix
@@ -287,9 +288,12 @@ workspace at a time: a second `alhazen dashboard` on the same workspace is refus
 and the refusal names the process that has it and the address of its page, so you
 can open that page, stop that process, or start another workspace with
 `--state-dir`. The UI requires
-no Node server, build step, external fonts or internet resources: text is set
-in the system's own friendly sans-serif (a rounded face where there is one),
-and the logo is an inline SVG. Its assets ship in the Python wheel.
+no Node server, build step or internet resources. Its assets ship in the Python
+wheel, the font among them: text is set in Nunito (SIL Open Font License,
+`cli/assets/fonts/OFL.txt`), a Latin subset of the variable font from the
+google/fonts repository, served by the dashboard itself (`/fonts/…`, CSP
+`font-src 'self'`), with the system's sans-serif as the fallback. The logo is
+an inline SVG in the page and, standalone, the tab's icon (`/favicon.svg`).
 
 The server binds to `127.0.0.1` only and authenticates API/media requests with
 a random per-server token. The opening URL carries it in a fragment, which

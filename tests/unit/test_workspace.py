@@ -774,6 +774,43 @@ class TestHTTP:
         assert call(f"/api/config?project={key}&path=configs/task.yaml")[0] == 200
         assert call(f"/api/config?project={key}&path=../../secret.yaml")[0] == 400
 
+    def test_the_page_font_and_favicon_are_served_from_the_package(self, http):
+        """The workspace ships its own font (the page may load nothing from
+        outside, and a rig may have no internet) and its logo as the icon."""
+        call, _ = http
+        status, headers, font = call("/fonts/Nunito-latin.woff2")
+        assert status == 200 and headers["Content-Type"] == "font/woff2"
+        assert font[:4] == b"wOF2"
+        # The CSP names fonts explicitly: from this server only.
+        assert "font-src 'self'" in headers["Content-Security-Policy"]
+        status, headers, icon = call("/favicon.svg")
+        assert status == 200 and headers["Content-Type"] == "image/svg+xml"
+        assert icon.startswith(b"<svg") and b"logo-bricks-turned" in icon
+        # Only the named files: nothing else under assets/ by URL.
+        assert call("/fonts/OFL.txt")[0] == 404
+        assert call("/fonts/../workspace.css")[0] in {400, 404}
+
+    def test_the_font_and_its_licence_are_package_data(self):
+        """A file left out of package-data installs fine and then 404s, and
+        the OFL requires the licence to travel with the font."""
+        try:
+            import tomllib
+        except ModuleNotFoundError:  # 3.10
+            import tomli as tomllib
+        root = Path(__file__).parents[2]
+        config = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+        patterns = config["tool"]["setuptools"]["package-data"]["alhazen"]
+        # setuptools globs like pathlib: `*` does not cross a `/`, so the fonts
+        # folder needs a pattern of its own (fnmatch would wrongly say
+        # cli/assets/* covers it).
+        package = root / "src" / "alhazen"
+        fonts = package / "cli" / "assets" / "fonts"
+        assert sorted(p.name for p in fonts.iterdir()) == ["Nunito-latin.woff2", "OFL.txt"]
+        for path in fonts.iterdir():
+            relative = path.relative_to(package)
+            assert any(relative.match(pattern) for pattern in patterns), relative
+        assert "SIL Open Font License" in (fonts / "OFL.txt").read_text(encoding="utf-8")
+
     @pytest.mark.parametrize(
         "headers",
         [

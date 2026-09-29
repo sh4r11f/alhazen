@@ -32,6 +32,19 @@ from alhazen.cli.workspace import (
 from alhazen.errors import AlhazenError
 
 ASSETS = Path(__file__).with_name("assets")
+# The page's own files, by URL: (file under ASSETS, content type). Served to
+# anyone who can reach the loopback port, without the token: none of them
+# holds anything but the page itself. The font is the workspace's own
+# (Nunito, SIL OFL, assets/fonts/OFL.txt), since the page may load nothing
+# from outside (the CSP below) and a rig may have no internet.
+PAGE_ASSETS = {
+    "/": ("workspace.html", "text/html; charset=utf-8"),
+    "/workspace.js": ("workspace.js", "text/javascript; charset=utf-8"),
+    "/workspace_parameters.js": ("workspace_parameters.js", "text/javascript; charset=utf-8"),
+    "/workspace.css": ("workspace.css", "text/css; charset=utf-8"),
+    "/favicon.svg": ("favicon.svg", "image/svg+xml"),
+    "/fonts/Nunito-latin.woff2": ("fonts/Nunito-latin.woff2", "font/woff2"),
+}
 # Written beside the lock by the server that holds it: its process id, when it
 # took the workspace and, once bound, the address of its page. The lock alone
 # says only that *someone* has the workspace; this says who, so the refusal
@@ -153,7 +166,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header(
             "Content-Security-Policy",
             "default-src 'self'; img-src 'self'; "
-            "media-src 'self'; style-src 'self'; script-src 'self'; "
+            "media-src 'self'; style-src 'self'; script-src 'self'; font-src 'self'; "
             # The page embeds the live session monitor, which the run serves
             # on another loopback port; nothing else may be framed.
             "connect-src 'self'; frame-src http://127.0.0.1:*; "
@@ -223,16 +236,8 @@ class Handler(BaseHTTPRequestHandler):
                 if target.suffix.lower() not in MEDIA_TYPES:
                     raise ValueError("Only images and movies are served as media")
                 self._file(target, MEDIA_TYPES[target.suffix.lower()], ranges=True)
-            elif path in {"/", "/workspace.js", "/workspace_parameters.js", "/workspace.css"}:
-                name, kind = {
-                    "/workspace_parameters.js": (
-                        "workspace_parameters.js",
-                        "text/javascript; charset=utf-8",
-                    ),
-                    "/": ("workspace.html", "text/html; charset=utf-8"),
-                    "/workspace.js": ("workspace.js", "text/javascript; charset=utf-8"),
-                    "/workspace.css": ("workspace.css", "text/css; charset=utf-8"),
-                }[path]
+            elif path in PAGE_ASSETS:
+                name, kind = PAGE_ASSETS[path]
                 self._file(ASSETS / name, kind)
             else:
                 self._json({"error": "Not found"}, 404)

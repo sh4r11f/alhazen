@@ -24,6 +24,24 @@
  * dialogs and banners, then the responsive and motion rules.
  */
 
+/* ---- The page's font ----
+ * Nunito, a rounded sans-serif, shipped with the page (fonts/, beside this
+ * file; served by dashboard.py) because no operating system has it and the
+ * rigs have no internet. Licence: SIL Open Font License 1.1, fonts/OFL.txt.
+ * Source: https://github.com/google/fonts/tree/main/ofl/nunito,
+ * Nunito[wght].ttf version 3.602 (google/fonts commit 604936664fd6), cut
+ * to Latin and Latin-1 with fontTools' pyftsubset and saved as WOFF2. One
+ * variable file carries every weight from 200 to 1000. font-display: swap
+ * shows the system font until it has loaded, never blank text.
+ */
+@font-face {
+  font-family: "Nunito";
+  src: url("/fonts/Nunito-latin.woff2") format("woff2");
+  font-weight: 200 1000;
+  font-style: normal;
+  font-display: swap;
+}
+
 /* ---- Design tokens ---- */
 
 /* The light palette, and everything that is the same in both themes. Text
@@ -65,10 +83,9 @@
   --logo-ground: #ffffff;
   --logo-brick: #27313d;
   --logo-letter: #3563d6;
-  /* Friendly, rounded where the system has a rounded face (macOS's SF Pro
-   * Rounded, Nunito where installed), Segoe UI Variable on Windows 11, then
-   * the platform's own sans-serif. No font is downloaded. */
-  --sans: ui-rounded,"SF Pro Rounded","Nunito","Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
+  /* Nunito, the page's own font (@font-face above); the system's own
+   * friendly sans-serifs stand in until it loads, or if it cannot. */
+  --sans: "Nunito",ui-rounded,"SF Pro Rounded","Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
   --mono: ui-monospace,SFMono-Regular,Consolas,monospace;
 }
 
@@ -287,15 +304,16 @@ h3 {
   fill: var(--logo-brick);
 }
 
-/* The letter: solid, with a wide halo in the ground colour painted under
- * its fill (paint-order), so the bricks stop short of its edges. */
+/* The letter: solid, with a halo in the ground colour painted under its
+ * fill (paint-order), so the bricks stop short of its edges. Small enough
+ * to leave the disc's upright bricks showing all round it. */
 .logo-letter {
   fill: var(--logo-letter);
   stroke: var(--logo-ground);
-  stroke-width: 5px;
+  stroke-width: 3px;
   stroke-linejoin: round;
   paint-order: stroke;
-  font: 800 27px/1 var(--sans);
+  font: 1000 23px/1 var(--sans);
 }
 
 .brand small {
@@ -634,18 +652,45 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   margin: 0 0 10px;
 }
 
-/* The rig's facts, read from its YAML, in monospace; one fact group per
- * line, as loadRig() writes them. */
+/* The rig's facts, read from its YAML: labels in one column, values in
+ * the other (rigFacts() in workspace.js). A value's parts are kept whole
+ * ("30.4 cm wide"): a line breaks between parts, and inside one only when
+ * that part alone is wider than the column (a long file path). */
 .rig-summary {
   background: var(--surface-2);
   border: 1px solid var(--line);
   border-radius: 7px;
   padding: 10px 12px;
-  font: 13px/1.7 var(--mono);
+  font-size: 14px;
   color: var(--muted);
   margin-top: 12px;
-  white-space: pre-line;
+}
+
+.rig-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0,1fr);
+  gap: 3px 14px;
+  margin: 0;
+}
+
+.rig-facts dt {
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.rig-facts dd {
+  margin: 0;
+  color: var(--ink);
+}
+
+.rig-facts .fact {
+  display: inline-block;
+  max-width: 100%;
   overflow-wrap: anywhere;
+}
+
+.rig-facts .fact-separator {
+  color: var(--muted);
 }
 
 #rig-note {

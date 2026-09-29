@@ -106,6 +106,8 @@ alhazen = [
   "_scaffold/template/**/*",
   "live_monitor/assets/*",
   "cli/assets/*",
+  # The workspace's own font (Nunito, SIL OFL) and its licence.
+  "cli/assets/fonts/*",
   "rigs/*",
 ]
 

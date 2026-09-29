@@ -47,23 +47,29 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   remembered per experiment; the Data view's content is `workspace_data.js`'s.
 - **Dark mode** for the workspace: Auto (follows the system), Light or Dark,
   remembered in the browser.
-- **A new logo**: an A over the Ouchi illusion, as an inline SVG.
+- **A new logo**: an A over the Ouchi illusion (bold 4:1 bricks, and a
+  disc of the same bricks turned 90° and shifted by half a brick), inline in
+  the sidebar and served as the tab's icon, `/favicon.svg`.
+- **The workspace's own font**, Nunito (SIL Open Font License; a Latin
+  subset of the variable font, 40 KB, with its OFL.txt), shipped as package
+  data and served at `/fonts/Nunito-latin.woff2`; the CSP names
+  `font-src 'self'`.
 
 ### Changed
 
 - **The workspace's Rig menu** names every rig with its owner
   (`amodal-averaging/lab`, `alhazen/mac`), in the menu, its summary and the
   run history, and leaves out a shared rig the experiment's own rig of the
-  same name hides (the note under the menu names it). Rig has its own section
-  above the task parameters.
+  same name hides. The rig's facts under the menu are a short list of labels
+  and values (Screen, Size, Display, Live monitor, Rig — with the shared rig
+  it extends). Rig has its own section above the task parameters.
 - **The parameter file menu** is now the **Task parameters** heading's menu,
   shows short names (`pilot` for `configs/task-pilot.yaml`), and has no
   "Task defaults" entry: it opens on the task's own file, else `task.yaml`,
   else the first file, and every launch with a file sends its parameters. An
   experiment with no parameter file says its task runs on the defaults in its
   code.
-- **Larger, friendlier type** in the workspace (16 px body, a rounded system
-  font where there is one, no text under 13 px but badges), colours on theme
+- **Larger, friendlier type** in the workspace (16 px body in Nunito, no text under 13 px but badges), colours on theme
   tokens with WCAG AA contrast, the "01 — SETUP" label gone, and a sidebar
   whose background runs the page's full height.
 
