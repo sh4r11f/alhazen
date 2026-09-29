@@ -457,8 +457,11 @@ an inline SVG in the page and, standalone, the tab's icon (`/favicon.svg`): an
 A painted in the Ouchi illusion — a checkerboard of 4:1 bricks laid
 horizontally, and inside the letter the same bricks upright and shifted by
 half a brick, so the A shows only through the change of orientation. The
-letter is an SVG path, not text, so it looks the same in every browser and in
-the favicon (which cannot load the page's font).
+letter is the outline of Nunito's capital A at weight 800, kept as an SVG path
+rather than text, so it looks the same in every browser and in the favicon
+(which cannot load the page's font). The sidebar draws it at 56 px with bricks
+one pixel wide; the favicon uses bricks nearly twice as wide, because a
+browser tab draws it at 16-32 px.
 
 The server binds to `127.0.0.1` only and authenticates API/media requests with
 a random per-server token. The opening URL carries it in a fragment, which

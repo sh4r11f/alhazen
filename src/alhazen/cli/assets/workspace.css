@@ -338,25 +338,30 @@ h3 {
   flex-direction: column;
 }
 
+/* The logo and the name beside it. The name is set a little larger than
+ * the old 26 px to balance the 56 px logo; the margins keep the block's
+ * total height as it was, so the experiments list does not move down. */
 .brand {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 14px;
   color: var(--ink);
-  font-size: 26px;
+  font-size: 28px;
   font-weight: 700;
   letter-spacing: -.6px;
   line-height: 1.1;
-  margin: 0 8px 44px;
+  margin: -6px 4px 38px;
 }
 
 /* The logo (an inline SVG in workspace.html): an A painted in the Ouchi
  * illusion, horizontal bricks around it and upright ones inside it. Its two
- * colours are set here so it follows the theme. */
+ * colours are set here so it follows the theme. 56 px, the size of its
+ * viewBox: a letter seen only through brick orientation needs the room (at
+ * 44 px it is texture), and at 1:1 every brick edge falls on a pixel. */
 .brandmark {
   flex: none;
-  width: 44px;
-  height: 44px;
+  width: 56px;
+  height: 56px;
 }
 
 .logo-ground {

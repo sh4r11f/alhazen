@@ -40,9 +40,11 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   key behind every colour, and a test checks every text and border pair in
   both palettes.
 - **The logo's A is the Ouchi figure.** The upright bricks are now painted
-  inside the letter A itself, on the horizontal-brick ground; the disc and
-  the solid letter over it are gone. The A is an SVG path, so the sidebar and
-  the favicon (`/favicon.svg`) draw it identically, in light and dark.
+  inside the letter A itself (Nunito's A at weight 800, as an SVG path), on
+  the horizontal-brick ground; the disc and the solid letter over it are
+  gone. The sidebar logo is 56 px (was 44). The favicon (`/favicon.svg`) is
+  the same drawing with bricks 7/4 as wide, so the A survives a browser
+  tab's 16-32 px.
 
 ### Removed
 

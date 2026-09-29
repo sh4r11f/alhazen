@@ -1478,10 +1478,40 @@ describe('the logo', () => {
       assert.ok(start !== -1 && end > start);
       return text.slice(start, end).replace(/\s+/g, ' ');
     };
+    // The frame, the letter and the layering are one drawing. The bricks
+    // (the <pattern>s before LOGO-START) are sized per file: see the next test.
     const inline = drawing(read('workspace.html'));
     assert.equal(drawing(read('favicon.svg')), inline);
-    assert.match(inline, /id="logo-bricks-turned"/);
+    assert.match(inline, /url\(#logo-bricks-turned\)/);
     assert.match(read('workspace.html'), /<link rel="icon" href="\/favicon.svg" type="image\/svg\+xml">/);
+  });
+
+  it('uses 4:1 bricks, finer in the sidebar than in the favicon', () => {
+    /* The sidebar draws the logo at 56 px with bricks 4 units wide (one
+     * pixel each); a browser tab draws the favicon at 16-32 px, where those
+     * would blur into grey, so it uses bricks 7 wide. In both the ground is
+     * horizontal L×w bricks, the figure the same turned upright and shifted
+     * by half a brick width both ways. */
+    const read = (name) => readFileSync(
+      new URL(`../../src/alhazen/cli/assets/${name}`, import.meta.url), 'utf8',
+    );
+    const bricks = (text) => {
+      const ground = text.match(/<pattern id="logo-bricks" width="([\d.]+)" height="([\d.]+)"/);
+      const turned = text.match(
+        /<pattern id="logo-bricks-turned" width="([\d.]+)" height="([\d.]+)"\s+patternUnits="userSpaceOnUse" patternTransform="translate\(([\d.]+) ([\d.]+)\)"/,
+      );
+      assert.ok(ground && turned, 'both brick patterns are present');
+      const [gw, gh] = ground.slice(1, 3).map(Number);
+      const [tw, th, dx, dy] = turned.slice(1, 5).map(Number);
+      // A tile is two bricks: ground 2L × 2w, figure 2w × 2L.
+      const w = gh / 2;
+      assert.equal(gw / 2, 4 * w, 'ground bricks are 4:1');
+      assert.deepEqual([tw, th], [gh, gw], 'the figure is the ground turned 90 degrees');
+      assert.deepEqual([dx, dy], [w / 2, w / 2], 'shifted by half a brick width');
+      return w;
+    };
+    assert.equal(bricks(read('workspace.html')), 4);
+    assert.equal(bricks(read('favicon.svg')), 7);
   });
 
   it('paints the upright bricks inside a drawn A, with nothing on top of it', () => {
@@ -1494,7 +1524,7 @@ describe('the logo', () => {
     );
     const logo = html.slice(html.indexOf('<!-- LOGO-START'), html.indexOf('<!-- LOGO-END -->'));
     const markup = logo.replace(/<!--[\s\S]*?-->/g, '');
-    assert.match(markup, /<clipPath id="logo-letter">\s*<path clip-rule="evenodd"\s+d="M[^"]+Z"/);
+    assert.match(markup, /<clipPath id="logo-letter">\s*<path d="M[^"]+Z"\/>/);
     // The turned bricks are drawn only inside the letter's clip.
     assert.match(markup, /<g clip-path="url\(#logo-letter\)">[^]*?fill="url\(#logo-bricks-turned\)"[^]*?<\/g>/);
     assert.doesNotMatch(markup, /<text|<circle|stroke/);
