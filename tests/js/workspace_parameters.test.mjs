@@ -57,14 +57,17 @@ test('measure hides and disables parameter controls without losing edits or bloc
   app.byId('mode').value = 'measure'; app.run('modeChanged()');
   assert.equal(app.byId('task-parameters').hidden,true);
   assert.equal(app.byId('task-parameters').disabled,true);
-  // The parameter-file menu now sits in the Task parameters heading, inside
-  // this fieldset, so hiding and disabling the fieldset takes it too (the
-  // markup's nesting is pinned in workspace.test.mjs, "the launch form").
+  // The parameter-file menu, which used to sit in its own field
+  // (params-preset-field, hidden here), is now in the Task parameters
+  // heading inside this fieldset (nesting pinned in workspace.test.mjs, "the
+  // launch form"), and is disabled with it.
+  assert.equal(app.byId('params-config').disabled,true);
   assert.equal(app.byId('launch').disabled,false);
   assert.equal(app.run('usesParameters()'),false);
   app.byId('mode').value = 'movie'; app.run('modeChanged()');
   assert.equal(app.byId('task-parameters').hidden,false);
   assert.equal(app.byId('task-parameters').disabled,false);
+  assert.equal(app.byId('params-config').disabled,false);
   assert.equal(app.run('values.motion'),'moving');
 });
 

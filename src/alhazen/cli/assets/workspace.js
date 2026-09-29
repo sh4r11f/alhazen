@@ -474,7 +474,9 @@ function modeChanged() {
   // Task parameters: not for measuring the rig, nor for a script without a
   // parameter-file flag. Disabling the fieldset takes its inputs — the file
   // menu in its heading among them — out of form validation as well as out
-  // of view.
+  // of view; the menu is also disabled by name, so no change of markup can
+  // leave it choosable for a launch that sends no parameters.
+  $('params-config').disabled = !usesParameters();
   $('task-parameters').hidden = !usesParameters();
   $('task-parameters').disabled = !usesParameters();
   // Measuring the rig draws nothing random, so it takes no seed.
