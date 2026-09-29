@@ -129,6 +129,44 @@ class TestProjects:
         workspace.remove(p["id"])
         assert workspace.state()["projects"] == []
 
+    def test_describe_names_the_experiment_by_its_title_and_slug(self, workspace):
+        key = workspace.projects[0]["id"]
+        root = Path(workspace.projects[0]["path"])
+        # No pyproject.toml: the folder names it, and nothing is wrong.
+        described = workspace.describe(key)
+        assert (described["title"], described["slug"], described["title_error"]) == (
+            "experiment with spaces",
+            "experiment with spaces",
+            None,
+        )
+        # A declared title is shown; the [project] name is the slug. Read on
+        # every describe, so an edit shows on the next poll.
+        (root / "pyproject.toml").write_text(
+            '[project]\nname = "amodal-averaging"\n[tool.alhazen]\ntitle = "Amodal averaging"\n',
+            encoding="utf-8",
+        )
+        described = workspace.describe(key)
+        assert (described["title"], described["slug"], described["title_error"]) == (
+            "Amodal averaging",
+            "amodal-averaging",
+            None,
+        )
+        # The registry's own name is untouched: run records made before
+        # titles existed carry it.
+        assert described["name"] == "experiment with spaces"
+
+    def test_a_title_that_cannot_be_used_is_reported_and_the_workspace_still_works(self, workspace):
+        key = workspace.projects[0]["id"]
+        root = Path(workspace.projects[0]["path"])
+        (root / "pyproject.toml").write_text(
+            '[project]\nname = "demo"\n[tool.alhazen]\ntitle = 42\n', encoding="utf-8"
+        )
+        described = workspace.describe(key)
+        assert (described["title"], described["slug"]) == ("demo", "demo")
+        assert "title must be a non-empty string" in described["title_error"]
+        # The state the page polls still lists it, with the reason.
+        assert workspace.state()["projects"][0]["title_error"] == described["title_error"]
+
     def test_invalid_paths_and_interpreter(self, workspace, tmp_path):
         with pytest.raises(ValueError, match="No run.py"):
             workspace.add(str(tmp_path))
@@ -735,6 +773,43 @@ class TestHTTP:
         key = workspace.projects[0]["id"]
         assert call(f"/api/config?project={key}&path=configs/task.yaml")[0] == 200
         assert call(f"/api/config?project={key}&path=../../secret.yaml")[0] == 400
+
+    def test_the_page_font_and_favicon_are_served_from_the_package(self, http):
+        """The workspace ships its own font (the page may load nothing from
+        outside, and a rig may have no internet) and its logo as the icon."""
+        call, _ = http
+        status, headers, font = call("/fonts/Nunito-latin.woff2")
+        assert status == 200 and headers["Content-Type"] == "font/woff2"
+        assert font[:4] == b"wOF2"
+        # The CSP names fonts explicitly: from this server only.
+        assert "font-src 'self'" in headers["Content-Security-Policy"]
+        status, headers, icon = call("/favicon.svg")
+        assert status == 200 and headers["Content-Type"] == "image/svg+xml"
+        assert icon.startswith(b"<svg") and b"logo-bricks-turned" in icon
+        # Only the named files: nothing else under assets/ by URL.
+        assert call("/fonts/OFL.txt")[0] == 404
+        assert call("/fonts/../workspace.css")[0] in {400, 404}
+
+    def test_the_font_and_its_licence_are_package_data(self):
+        """A file left out of package-data installs fine and then 404s, and
+        the OFL requires the licence to travel with the font."""
+        try:
+            import tomllib
+        except ModuleNotFoundError:  # 3.10
+            import tomli as tomllib
+        root = Path(__file__).parents[2]
+        config = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+        patterns = config["tool"]["setuptools"]["package-data"]["alhazen"]
+        # setuptools globs like pathlib: `*` does not cross a `/`, so the fonts
+        # folder needs a pattern of its own (fnmatch would wrongly say
+        # cli/assets/* covers it).
+        package = root / "src" / "alhazen"
+        fonts = package / "cli" / "assets" / "fonts"
+        assert sorted(p.name for p in fonts.iterdir()) == ["Nunito-latin.woff2", "OFL.txt"]
+        for path in fonts.iterdir():
+            relative = path.relative_to(package)
+            assert any(relative.match(pattern) for pattern in patterns), relative
+        assert "SIL Open Font License" in (fonts / "OFL.txt").read_text(encoding="utf-8")
 
     @pytest.mark.parametrize(
         "headers",

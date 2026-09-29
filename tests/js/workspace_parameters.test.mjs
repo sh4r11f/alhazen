@@ -12,7 +12,8 @@ function load() {
     const el = document.createElement(tag); el.setAttribute('id',id); el.value = '';
     document.body.appendChild(el);
   }
-  const sandbox = {document, URLSearchParams, location:{hash:''}, sessionStorage:{getItem:()=>null}, window:{addEventListener(){}}, console};
+  // localStorage: the page reads the remembered colour theme when it loads.
+  const sandbox = {document, URLSearchParams, location:{hash:''}, sessionStorage:{getItem:()=>null}, localStorage:{getItem:()=>null, setItem(){}}, window:{addEventListener(){}}, console};
   const context = vm.createContext(sandbox);
   vm.runInContext(readFileSync(new URL('workspace_parameters.js', assets),'utf8'),context);
   vm.runInContext(readFileSync(new URL('workspace.js', assets),'utf8').replace(/\npoll\(\);\s*$/, ''),context);
@@ -56,12 +57,17 @@ test('measure hides and disables parameter controls without losing edits or bloc
   app.byId('mode').value = 'measure'; app.run('modeChanged()');
   assert.equal(app.byId('task-parameters').hidden,true);
   assert.equal(app.byId('task-parameters').disabled,true);
-  assert.equal(app.byId('params-preset-field').hidden,true);
+  // The parameter-file menu, which used to sit in its own field
+  // (params-preset-field, hidden here), is now in the Task parameters
+  // heading inside this fieldset (nesting pinned in workspace.test.mjs, "the
+  // launch form"), and is disabled with it.
+  assert.equal(app.byId('params-config').disabled,true);
   assert.equal(app.byId('launch').disabled,false);
   assert.equal(app.run('usesParameters()'),false);
   app.byId('mode').value = 'movie'; app.run('modeChanged()');
   assert.equal(app.byId('task-parameters').hidden,false);
   assert.equal(app.byId('task-parameters').disabled,false);
+  assert.equal(app.byId('params-config').disabled,false);
   assert.equal(app.run('values.motion'),'moving');
 });
 

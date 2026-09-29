@@ -7,7 +7,8 @@ the fully-merged SessionConfig plus environment provenance — the experiment
 and the version its data is filed under, package versions, BOTH git trees
 (the experiment's and alhazen's own), platform, and a digest of every
 installed distribution so "same config, different environment" is detectable
-later.
+later — and, for a session started from a command line, that command
+(`command`, beside the config and the provenance).
 
 alhazen's own tree is recorded because its version number does not identify
 its code between releases: `main` carries the last release's number until the
@@ -22,6 +23,7 @@ import os
 import platform
 import subprocess
 import sys
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from importlib import metadata
 from pathlib import Path
@@ -222,8 +224,17 @@ def write_snapshot(
     *,
     experiment: Experiment | None = None,
     provenance: dict[str, str] | None = None,
+    command: Sequence[str] | None = None,
 ) -> dict[str, str]:
     """Write the snapshot and return the provenance it recorded.
+
+    ``command`` is the command line the session was started with, the
+    program then its arguments (session/identity.py, `recorded_command`),
+    written as the snapshot's third key, ``command``: a list, or null for a
+    session built in code. It sits beside ``provenance`` rather than in it
+    because provenance is a flat mapping of strings (the experiment
+    database stores it as one), and a command is a list. Snapshots written
+    before it was added have no ``command`` key at all.
 
     ``provenance``, when given, is written as it is instead of being read
     again: the session writes its session.json from the same reading
@@ -237,6 +248,10 @@ def write_snapshot(
         raise ValueError(
             "pass provenance=, or experiment_dir= / experiment= to build one, not both"
         )
-    payload = {"config": cfg.model_dump(mode="json"), "provenance": provenance}
+    payload = {
+        "config": cfg.model_dump(mode="json"),
+        "provenance": provenance,
+        "command": list(command) if command is not None else None,
+    }
     path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
     return provenance

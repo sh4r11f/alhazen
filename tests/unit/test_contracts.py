@@ -138,6 +138,7 @@ class TestRunLayout:
             "figures": paths.figures_dir.name,
             "session_json": paths.session_json_path.name,
             "rig_copy": paths.rig_copy_path.name,
+            "rig_merged": paths.rig_merged_path.name,
             "params_copy": paths.params_copy_path.name,
             # The live monitor's two files in figures/, written by its
             # controller at teardown rather than named by SessionPaths.

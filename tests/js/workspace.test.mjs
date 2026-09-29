@@ -6,6 +6,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 
 import { loadWorkspace, plain, response, settle } from './load_workspace.mjs';
@@ -27,9 +28,12 @@ function sharedEntry(name, overrides = {}) {
   });
 }
 
-/* One registered project with one rig, one preset and no scripts. */
+/* One registered project with one rig, one parameter file and no scripts.
+ * `name` is the folder the registry recorded; `title` and `slug` are what
+ * its pyproject.toml says ([tool.alhazen] title, [project] name). */
 const PROJECT = Object.freeze({
-  id: 'p', name: 'Demo task', path: 'C:/projects/demo', python: 'python', available: true,
+  id: 'p', name: 'demo-folder', title: 'Demo task', slug: 'demo', title_error: null,
+  path: 'C:/projects/demo', python: 'python', available: true,
   rigs: [rigEntry('mac')], rigs_note: null, configs: ['configs/task.yaml'], scripts: [],
 });
 
@@ -79,12 +83,13 @@ const ACTIVE = ['running', 'stopping'];
  * `configs` adds presets beyond task.yaml (by path, as /api/config answers),
  * `rigs` rigs beyond the project's mac (by menu value, as /api/rig answers)
  * and `schemas` the per-task schemas of a project with a task table.
+ * `storage` is localStorage as the page finds it when it loads.
  */
 async function pageWith({
   run = null, dashboardEnabled = true, oldKey = false, hash, project = PROJECT,
-  configs = {}, rigs = {}, schemas = {},
+  configs = {}, rigs = {}, schemas = {}, storage,
 } = {}) {
-  const app = loadWorkspace({ hash: hash });
+  const app = loadWorkspace({ hash: hash, storage: storage });
   app.server.state = {
     projects: [project],
     runs: run ? [summary(run)] : [],
@@ -103,6 +108,18 @@ async function pageWith({
   await app.run('refresh()');
   await settle();
   return app;
+}
+
+/** The rig summary under the Rig menu as {label: value}: a list of labels
+ *  and values since the owner asked for one (it was lines of monospace
+ *  text), read the way a person reads it. */
+function facts(app) {
+  const list = app.byId('rig-summary').children[0];
+  const found = {};
+  for (let i = 0; i < list.children.length; i += 2) {
+    found[list.children[i].textContent] = list.children[i + 1].textContent;
+  }
+  return found;
 }
 
 /** Update the selected run on the fake server and redraw it. */
@@ -209,6 +226,16 @@ describe('the Live monitor tab', () => {
     assert.equal(app.byId('monitor').hidden, true);
   });
 
+  it('opens when its tab is clicked, like the Media and Console tabs', async () => {
+    const app = await pageWith();
+    app.byId('monitor-tab').fire('click');
+    assert.equal(app.byId('monitor-panel').hidden, false);
+    assert.equal(app.byId('media-panel').hidden, true);
+    assert.equal(app.byId('monitor-tab').classList.contains('selected'), true);
+    app.byId('media-tab').fire('click');
+    assert.equal(app.byId('monitor-panel').hidden, true);
+  });
+
   it('does not open the tab by itself for a run picked from the history', async () => {
     const app = await pageWith({ run: runDetail({ monitor: MONITOR_URL }) });
     assert.equal(app.byId('monitor-frame').src, MONITOR_URL);
@@ -222,19 +249,19 @@ describe('the Live monitor tab', () => {
     assert.equal(app.byId('monitor-frame').hidden, true);
     assert.match(note.textContent, /live_monitor\.enabled: false/);
     assert.match(note.textContent, /rig YAML/);
-    assert.match(app.byId('rig-summary').textContent, /live monitor: off/);
+    assert.equal(facts(app)['Live monitor'], 'off');
   });
 
   it('treats a rig without a dashboard block as off, the model default', async () => {
     const app = await pageWith({ run: runDetail({ monitor: null }), dashboardEnabled: null });
     assert.match(app.byId('monitor-note').textContent, /live_monitor\.enabled: false/);
-    assert.match(app.byId('rig-summary').textContent, /live monitor: off/);
+    assert.equal(facts(app)['Live monitor'], 'off');
   });
 
   it('waits for the monitor while the rig has the dashboard on', async () => {
     const app = await pageWith({ run: runDetail({ monitor: null }), dashboardEnabled: true });
     assert.match(app.byId('monitor-note').textContent, /waiting for the session/i);
-    assert.match(app.byId('rig-summary').textContent, /live monitor: on/);
+    assert.equal(facts(app)['Live monitor'], 'on');
   });
 
   it('reads the pre-1.9 `dashboard:` rig section as the monitor setting', async () => {
@@ -245,9 +272,9 @@ describe('the Live monitor tab', () => {
      * workspace's, so this stays for as long as such projects are launched. */
     const on = await pageWith({ run: runDetail({ monitor: null }), dashboardEnabled: true, oldKey: true });
     assert.match(on.byId('monitor-note').textContent, /waiting for the session/i);
-    assert.match(on.byId('rig-summary').textContent, /live monitor: on/);
+    assert.equal(facts(on)['Live monitor'], 'on');
     const off = await pageWith({ run: runDetail({ monitor: null }), dashboardEnabled: false, oldKey: true });
-    assert.match(off.byId('rig-summary').textContent, /live monitor: off/);
+    assert.equal(facts(off)['Live monitor'], 'off');
   });
 });
 
@@ -347,9 +374,11 @@ describe('the run history', () => {
     assert.equal(badge(rows[1]).className, 'status completed');
     assert.equal(rows[0].querySelector('strong').textContent, 'Simulate');
     assert.equal(rows[1].querySelector('strong').textContent, 'Record movies');
-    /* The rig by its name, not its file: this record predates runs keeping
-     * the name, so the page takes it from rig-mac.yaml. */
-    assert.match(rows[1].textContent, / · mac/);
+    /* The rig by its qualified name, not its file: this record predates
+     * runs keeping the name, so the page takes it from rig-mac.yaml, and
+     * the experiment's slug is its owner (was the bare "mac" before the
+     * owner asked for qualified names). */
+    assert.match(rows[1].textContent, / · demo\/mac/);
     assert.doesNotMatch(rows[1].textContent, /rig-mac|\.yaml/);
     assert.equal(app.byId('run-status').textContent, 'FAILED');
     assert.equal(app.byId('run-status').className, 'status failed');
@@ -558,22 +587,34 @@ describe('choosing a task', () => {
     assert.equal(app.byId('launch').disabled, false);
   });
 
-  it('falls back to task.yaml for a task without a parameter file the project has', async () => {
-    /* One task names no file; the other names one the project does not have
-     * (run.py may be ahead of configs/). Neither can open the preset menu. */
-    const project = {
-      ...TASKED,
-      tasks: [
-        { name: 'mt-tuning', params: null },
-        { name: 'mib-search', params: 'configs/gone.yaml' },
-      ],
-    };
-    const app = await taskedPage({ project: project });
-    assert.equal(app.byId('params-config').value, 'configs/task.yaml');
-    await chooseTask(app, 'mt-tuning');
-    assert.equal(app.byId('params-config').value, 'configs/task.yaml');
-    assert.deepEqual(plain(app.run('values')), { trials: 4 });
-  });
+  it('opens on no file for a task whose table entry names none, or one the project lacks',
+    async () => {
+      /* Changed at the owner's request: this used to fall back to task.yaml,
+       * which sent one task's parameters to another (kde-vergence's check
+       * task opened on the pursuit pilot's file). With a task table, only
+       * the task's own file is ever pre-selected. */
+      const project = {
+        ...TASKED,
+        tasks: [
+          { name: 'mt-tuning', params: null },
+          { name: 'mib-search', params: 'configs/gone.yaml' },
+        ],
+      };
+      const app = await taskedPage({ project: project });
+      /* mib-search, the default, names a file the project does not have. */
+      assert.equal(app.byId('params-config').value, '');
+      assert.equal(app.run('values'), null);
+      assert.match(app.byId('parameter-fields').textContent, /configs\/gone\.yaml/);
+      await chooseTask(app, 'mt-tuning');
+      assert.equal(app.byId('params-config').value, '');
+      assert.equal(app.run('values'), null);
+      assert.equal(
+        app.byId('parameter-fields').textContent,
+        'mt-tuning has no parameter file; it runs on the defaults in its code, and launches '
+        + 'without --params. Choose a file above only if you mean to.',
+      );
+      assert.equal(app.fetches.filter((f) => f.url.startsWith('/api/config')).length, 0);
+    });
 
   it('sends the selected task with a built-in mode, and never with a script', async () => {
     const script = {
@@ -744,7 +785,7 @@ describe('the subject’s initials', () => {
     });
     const app = await pageWith({ run: run });
     const row = app.byId('history').children[0];
-    assert.match(row.querySelector('small').textContent, / · mac · sub-s01 · HD$/);
+    assert.match(row.querySelector('small').textContent, / · demo\/mac · sub-s01 · HD$/);
     assert.match(app.byId('run-info').textContent, /^Run experiment · sub-s01 · HD · /);
   });
 
@@ -834,26 +875,45 @@ describe('the Rig menu', () => {
     await settle();
   }
 
-  it('names each rig, never its file, in a group for the experiment and one for alhazen',
+  it('names each rig with its owner, never its file, in a group for the experiment and one '
+    + 'for alhazen, leaving out the shared rig the experiment hides', async () => {
+    const app = await pageWith({ project: RIGGED, rigs: RIGS });
+    /* Changed at the owner's request: every rig is <owner>/<name> (the
+     * experiment's slug for its own, alhazen for a shared one), and the
+     * shared lab — hidden from `--rig lab` by the experiment's own lab — is
+     * no longer offered at all (it used to be "alhazen/lab (hidden by this
+     * experiment’s lab)"). The shared rig an experiment rig extends is said
+     * in the summary, not the menu, whose options it made too long. */
+    assert.deepEqual(plain(menu(app)), [
+      ['This experiment', [
+        ['configs/rig-lab.yaml', 'demo/lab'],
+        ['configs/rig-laptop.yaml', 'demo/laptop'],
+      ]],
+      ['Shared (alhazen)', [
+        ['alhazen/mac', 'alhazen/mac'],
+        ['alhazen/vpixx', 'alhazen/vpixx'],
+      ]],
+    ]);
+    for (const [, options] of menu(app)) {
+      for (const [, text] of options) assert.doesNotMatch(text, /rig-|\.ya?ml/);
+    }
+    /* Left out without a note (the owner's call): only a registration that
+     * predates shared rigs is explained under the menu. */
+    assert.equal(app.byId('rig-note').hidden, true);
+  });
+
+  it('leaves out every shared rig the experiment hides, and the group they were in',
     async () => {
-      const app = await pageWith({ project: RIGGED, rigs: RIGS });
-      assert.deepEqual(plain(menu(app)), [
-        ['This experiment', [
-          ['configs/rig-lab.yaml', 'lab · extends alhazen/lab'],
-          ['configs/rig-laptop.yaml', 'laptop'],
-        ]],
-        ['Shared (alhazen)', [
-          /* Hidden from `--rig lab` by the experiment's own lab, so spelled
-           * the way the command line reaches it, and saying why: the closed
-           * menu shows the option, not its group. */
-          ['alhazen/lab', 'alhazen/lab (hidden by this experiment’s lab)'],
-          ['alhazen/mac', 'mac'],
-          ['alhazen/vpixx', 'vpixx'],
-        ]],
-      ]);
-      for (const [, options] of menu(app)) {
-        for (const [, text] of options) assert.doesNotMatch(text, /rig-|\.ya?ml/);
-      }
+      const app = await pageWith({
+        project: {
+          ...RIGGED,
+          rigs: [...RIGGED.rigs, rigEntry('vpixx'), rigEntry('mac')].map((r) => (
+            r.source === 'alhazen' ? { ...r, shadowed: true } : r)),
+        },
+        rigs: RIGS,
+      });
+      assert.deepEqual(plain(menu(app).map(([label]) => label)), ['This experiment']);
+      assert.equal(app.byId('rig-note').hidden, true);
     });
 
   it('opens on the experiment’s own mac, else the shared mac, else the first rig', async () => {
@@ -884,32 +944,52 @@ describe('the Rig menu', () => {
       rigs: { 'configs/rig-lab.yaml': rig(true, false, { name: 'lab' }) },
     });
     assert.deepEqual(plain(menu(app)[0][1].map(([, text]) => text)), [
-      'lab (configs/rig-lab.yaml)', 'lab (configs/old/rig-lab.yaml)',
+      'demo/lab (configs/rig-lab.yaml)', 'demo/lab (configs/old/rig-lab.yaml)',
     ]);
   });
 
   it('summarises a shared rig from the merged answer, and says whose it is', async () => {
     const app = await pageWith({ project: RIGGED, rigs: RIGS });
-    /* Opened on the shared mac, which has the live monitor off. */
+    /* Opened on the shared mac, which has the live monitor off. The summary
+     * names it as the menu does (changed at the owner's request from
+     * "alhazen’s shared rig mac"). */
     assert.ok(app.fetches.some((f) => f.url === '/api/rig?project=p&rig=alhazen%2Fmac'));
-    assert.match(app.byId('rig-summary').textContent, /live monitor: off/);
-    assert.match(app.byId('rig-summary').textContent, /alhazen’s shared rig mac$/);
-    await chooseRig(app, 'alhazen/lab');
-    const summary = app.byId('rig-summary').textContent;
-    assert.match(summary, /live monitor: on/);
-    /* The shadowed one says which --rig reaches which lab. */
-    assert.match(summary, /this experiment has its own lab, which --rig lab runs/);
-    assert.match(summary, /this one is --rig alhazen\/lab/);
+    /* Every fact under its label (changed at the owner's request from three
+     * lines of monospace text that wrapped mid-phrase). */
+    assert.deepEqual(plain(facts(app)), {
+      Screen: '1920 × 1080 px · 60 Hz',
+      Size: '52 cm wide · 57 cm away',
+      Display: 'default display',
+      'Live monitor': 'off',
+      Rig: 'alhazen/mac · alhazen’s shared rig',
+    });
+    /* A value is made of parts that never break inside; a line may break only
+     * at the separators between them. */
+    const screen = app.byId('rig-summary').children[0].children[1];
+    assert.deepEqual(
+      plain(screen.children.map((part) => [part.className, part.textContent])),
+      [['fact', '1920 × 1080 px'], ['fact-separator', ' · '], ['fact', '60 Hz']],
+    );
+    /* Another shared rig: the summary follows. (The shadowed lab this test
+     * used to pick is no longer in the menu to pick.) */
+    await chooseRig(app, 'alhazen/vpixx');
+    assert.equal(facts(app)['Live monitor'], 'on');
+    assert.equal(facts(app).Rig, 'alhazen/vpixx · alhazen’s shared rig');
   });
 
   it('summarises a rig that extends a shared one as merged, naming the shared rig', async () => {
     const app = await pageWith({ project: RIGGED, rigs: RIGS });
     await chooseRig(app, 'configs/rig-lab.yaml');
-    const summary = app.byId('rig-summary').textContent;
     /* The experiment's file says nothing about the live monitor; the merged
      * answer does, and the Live monitor tab reads the same fact. */
-    assert.match(summary, /live monitor: on/);
-    assert.match(summary, /this experiment’s configs\/rig-lab\.yaml, extending alhazen’s shared lab/);
+    assert.equal(facts(app)['Live monitor'], 'on');
+    /* Named as in the menu, then its file and the shared rig it builds on
+     * (changed at the owner's request from "this experiment’s
+     * configs/rig-lab.yaml, extending alhazen’s shared lab"; the "extends"
+     * moved here from the menu's option text). */
+    assert.equal(
+      facts(app).Rig, 'demo/lab · this experiment’s configs/rig-lab.yaml · extends alhazen/lab',
+    );
     assert.equal(app.run("rigMonitor['p:configs/rig-lab.yaml']"), true);
   });
 
@@ -917,9 +997,11 @@ describe('the Rig menu', () => {
     async () => {
       const app = await pageWith({ project: RIGGED, rigs: RIGS });
       chooseMode(app, 'movie');
-      await chooseRig(app, 'alhazen/lab');
+      /* vpixx, not the shadowed lab this used to pick: that one is no longer
+       * in the menu. The value sent is unchanged by the new labels. */
+      await chooseRig(app, 'alhazen/vpixx');
       await launch(app);
-      assert.equal(launched(app).rig, 'alhazen/lab');
+      assert.equal(launched(app).rig, 'alhazen/vpixx');
 
       const own = await pageWith({ project: RIGGED, rigs: RIGS });
       chooseMode(own, 'movie');
@@ -952,6 +1034,549 @@ describe('the Rig menu', () => {
         rig_source: 'experiment',
       }),
     });
-    assert.match(mine.byId('history').children[0].querySelector('small').textContent, / · lab$/);
+    /* The experiment's own lab, owner first (was the bare "lab"). */
+    assert.match(
+      mine.byId('history').children[0].querySelector('small').textContent, / · demo\/lab$/,
+    );
+  });
+});
+
+describe('the experiment’s name', () => {
+  it('shows the title in the sidebar, the heading, the breadcrumb and the browser tab',
+    async () => {
+      const app = await pageWith();
+      const entry = app.byId('projects').children[0];
+      assert.match(entry.querySelector('button').textContent, /Demo task$/);
+      assert.equal(app.byId('project-name').textContent, 'Demo task');
+      assert.equal(app.byId('breadcrumb').textContent, 'Demo task');
+      assert.equal(app.document.title, 'Demo task · Alhazen');
+      /* The slug stays visible in small print, beside the folder. */
+      assert.equal(app.byId('project-slug').textContent, 'demo');
+      assert.equal(app.byId('project-path').textContent, 'C:/projects/demo');
+      assert.equal(app.byId('title-error').hidden, true);
+      assert.equal(app.byId('project-heading').hidden, false);
+    });
+
+  it('says loudly why a declared title is not shown, and carries on under the slug',
+    async () => {
+      const message = 'pyproject.toml: [tool.alhazen] title must be a non-empty string';
+      const app = await pageWith({
+        project: { ...PROJECT, title: 'demo', title_error: message },
+      });
+      assert.equal(app.byId('project-name').textContent, 'demo');
+      assert.equal(app.byId('title-error').hidden, false);
+      assert.equal(app.byId('title-error').textContent, message);
+      assert.equal(app.byId('launch').disabled, false);
+    });
+
+  it('falls back to the registered folder name from a server that sends no title', async () => {
+    const { title, slug, title_error: error, ...old } = PROJECT;
+    assert.ok(title && slug && error === null);
+    const app = await pageWith({ project: old });
+    assert.equal(app.byId('project-name').textContent, 'demo-folder');
+    assert.equal(app.document.title, 'demo-folder · Alhazen');
+    assert.equal(app.byId('rig').children[0].children[0].textContent, 'demo-folder/mac');
+  });
+
+  it('follows a title changed while the page is open', async () => {
+    const app = await pageWith();
+    app.server.state.projects = [{ ...PROJECT, title: 'Renamed' }];
+    await app.run('refresh()');
+    await settle();
+    assert.equal(app.byId('breadcrumb').textContent, 'Renamed');
+    assert.equal(app.document.title, 'Renamed · Alhazen');
+    assert.match(app.byId('projects').textContent, /Renamed/);
+  });
+});
+
+describe('the launch form', () => {
+  it('reads Configure a run → Rig → Task parameters → launch, with no step label', () => {
+    /* The markup itself: the ids workspace.js finds are flat in the fake
+     * page, so their nesting and order are read from the file. */
+    const html = readFileSync(
+      new URL('../../src/alhazen/cli/assets/workspace.html', import.meta.url), 'utf8',
+    );
+    const at = (text) => {
+      const index = html.indexOf(text);
+      assert.notEqual(index, -1, text);
+      return index;
+    };
+    assert.doesNotMatch(html, /01 — SETUP/);
+    const order = [
+      'id="mode"', 'id="task-field"', 'id="identity"', 'id="seed-fields"', 'id="movie-options"',
+      'id="extra-args"', 'id="rig-section"', 'id="rig"', 'id="rig-summary"', 'id="rig-note"',
+      'id="task-parameters"', 'id="params-config"', 'id="fields-tab"', 'id="parameter-search"',
+      'id="parameter-fields"', 'class="launch-footer"',
+    ].map(at);
+    assert.deepEqual(order, [...order].sort((a, b) => a - b));
+    /* The file menu is inside the Task parameters fieldset, so hiding or
+     * disabling the fieldset takes it along; its heading is its label. */
+    const fieldset = html.slice(at('id="task-parameters"'), html.indexOf('</fieldset>'));
+    assert.match(fieldset, /<label for="params-config">Task parameters<\/label>/);
+    assert.match(fieldset, /id="params-config"/);
+    assert.doesNotMatch(html, /Parameter preset/);
+    /* The Data view's slot, right after the workspace view. */
+    assert.match(html, /<div id="data-view" hidden><\/div>/);
+    assert.ok(at('id="data-view"') > at('id="workspace"'));
+  });
+});
+
+describe('the Task parameters menu', () => {
+  /** The menu's entries as [value, text]. */
+  function files(app) {
+    return app.byId('params-config').children.map((o) => [o.value, o.textContent]);
+  }
+
+  it('names each file without its folder, task-/params- prefix or ending, and has no '
+    + '"Task defaults"', async () => {
+    const app = await pageWith({
+      project: {
+        ...PROJECT,
+        configs: [
+          'configs/presets/task-x.yaml', 'configs/params-fast.yml', 'configs/task-pilot.yaml',
+          'configs/task.yaml',
+        ],
+      },
+    });
+    /* Changed at the owner's request: the menu used to start with "Task
+     * defaults" (no file) and show file names with their endings. */
+    assert.deepEqual(plain(files(app)), [
+      ['configs/presets/task-x.yaml', 'presets/x'],
+      ['configs/params-fast.yml', 'fast'],
+      ['configs/task-pilot.yaml', 'pilot'],
+      ['configs/task.yaml', 'task'],
+    ]);
+    assert.equal(app.byId('params-config').hidden, false);
+    assert.equal(app.byId('parameter-search').hidden, false);
+    assert.equal(app.byId('parameters-help').hidden, false);
+    assert.equal(app.byId('editor-switch').hidden, false);
+  });
+
+  it('shows the path of two files that would read the same', async () => {
+    const app = await pageWith({
+      project: {
+        ...PROJECT,
+        configs: ['configs/params-pilot.yaml', 'configs/task-pilot.yaml', 'configs/task.yaml'],
+      },
+    });
+    assert.deepEqual(plain(files(app)), [
+      ['configs/params-pilot.yaml', 'configs/params-pilot.yaml'],
+      ['configs/task-pilot.yaml', 'configs/task-pilot.yaml'],
+      ['configs/task.yaml', 'task'],
+    ]);
+  });
+
+  it('opens on task.yaml, else on the first file, and sends its parameters', async () => {
+    const pilot = { text: 'trials: 2\n', values: { trials: 2 } };
+    const withTask = await pageWith({
+      project: { ...PROJECT, configs: ['configs/task-pilot.yaml', 'configs/task.yaml'] },
+      configs: { 'configs/task-pilot.yaml': pilot },
+    });
+    assert.equal(withTask.byId('params-config').value, 'configs/task.yaml');
+    /* No task.yaml: the first file, never "no file" as long as there is one. */
+    const without = await pageWith({
+      project: { ...PROJECT, configs: ['configs/task-pilot.yaml'] },
+      configs: { 'configs/task-pilot.yaml': pilot },
+    });
+    assert.equal(without.byId('params-config').value, 'configs/task-pilot.yaml');
+    assert.deepEqual(plain(without.run('values')), { trials: 2 });
+    chooseMode(without, 'movie');
+    await launch(without);
+    assert.deepEqual(launched(without).parameters, { trials: 2 });
+  });
+
+  it('says so when the text editor is emptied, since a launch then sends no parameters',
+    async () => {
+      const app = await pageWith();
+      app.run("$('launch-form').reportValidity = () => true");
+      app.byId('yaml-tab').fire('click');
+      await settle();
+      app.byId('parameter-yaml').value = '  ';
+      app.byId('fields-tab').fire('click');
+      await settle();
+      assert.equal(app.run('values'), null);
+      assert.match(app.byId('parameter-fields').textContent, /text editor was left empty/);
+      chooseMode(app, 'movie');
+      await launch(app);
+      assert.equal('parameters' in launched(app), false);
+    });
+
+  it('says a project without parameter files runs on its code’s defaults, and sends none',
+    async () => {
+      const app = await pageWith({ project: { ...PROJECT, configs: [] } });
+      /* No menu to choose from, and no request for a file. */
+      assert.equal(app.byId('params-config').hidden, true);
+      assert.equal(app.byId('params-config').children.length, 0);
+      assert.equal(app.fetches.some((f) => f.url.startsWith('/api/config')), false);
+      const fields = app.byId('parameter-fields').textContent;
+      assert.match(fields, /No task parameter files in configs\//);
+      assert.match(fields, /defaults written in its code/);
+      assert.match(fields, /without --params/);
+      /* Nothing to search or switch, and no snapshot is promised: only the
+       * message remains. */
+      assert.equal(app.byId('parameter-search').hidden, true);
+      assert.equal(app.byId('parameters-help').hidden, true);
+      assert.equal(app.byId('editor-switch').hidden, true);
+      assert.equal(app.byId('launch').disabled, false);
+      chooseMode(app, 'movie');
+      await launch(app);
+      const body = launched(app);
+      assert.equal('parameters' in body, false);
+      assert.equal('parameters_yaml' in body, false);
+    });
+});
+
+describe('the sidebar’s Run experiment and Data views', () => {
+  const OTHER = Object.freeze({ ...PROJECT, id: 'q', title: 'Other task', slug: 'other' });
+
+  /** A fake workspace_data.js: records every call it gets. */
+  function fakeData(app) {
+    app.run(`window.WorkspaceData = {
+      calls: [],
+      show(project, helpers) {
+        this.calls.push(['show', project.id, Object.keys(helpers).sort().join(',')]);
+      },
+      hide() { this.calls.push(['hide']); },
+    }`);
+    return () => plain(app.run('window.WorkspaceData.calls'));
+  }
+
+  /** The selected entry's submenu buttons as [view, text, current]. */
+  function submenu(app) {
+    const views = app.byId('projects').children
+      .find((entry) => entry.querySelector('.project-views'))
+      .querySelector('.project-views');
+    return views.children.map((b) => [
+      b.dataset.view, b.textContent, b.getAttribute('aria-current'),
+    ]);
+  }
+
+  /** Click the submenu button for `name`. */
+  function clickView(app, name) {
+    app.byId('projects').querySelector(`button[data-view="${name}"]`).fire('click');
+  }
+
+  it('gives the selected experiment a submenu, opening on Run experiment', async () => {
+    const app = await pageWith();
+    app.server.state.projects = [PROJECT, OTHER];
+    await app.run('refresh()');
+    await settle();
+    assert.deepEqual(plain(submenu(app)), [
+      ['run', 'Run experiment', 'page'], ['data', 'Data', 'false'],
+    ]);
+    /* Only the selected one has it. */
+    const entries = app.byId('projects').children;
+    assert.equal(entries.length, 2);
+    assert.equal(entries[1].querySelector('.project-views'), null);
+    assert.equal(app.byId('workspace').hidden, false);
+    assert.equal(app.byId('data-view').hidden, true);
+    assert.equal(app.byId('breadcrumb-view').textContent, '/ Run experiment');
+  });
+
+  it('switches to Data and back, telling workspace_data.js each time', async () => {
+    const app = await pageWith();
+    const calls = fakeData(app);
+    clickView(app, 'data');
+    assert.equal(app.byId('workspace').hidden, true);
+    assert.equal(app.byId('data-view').hidden, false);
+    assert.equal(app.byId('project-heading').hidden, false);
+    assert.equal(app.byId('breadcrumb').textContent, 'Demo task');
+    assert.equal(app.byId('breadcrumb-view').textContent, '/ Data');
+    assert.equal(app.byId('view-eyebrow').textContent, 'DATA');
+    assert.deepEqual(plain(submenu(app)).map(([, , current]) => current), ['false', 'page']);
+    /* The experiment's record and the page's helpers, as the contract says. */
+    assert.deepEqual(calls(), [['show', 'p', 'api,error,node,token']]);
+    /* A poll keeps the view as it is and does not show it again. */
+    await app.run('refresh()');
+    await settle();
+    assert.equal(app.byId('data-view').hidden, false);
+    assert.equal(calls().length, 1);
+    clickView(app, 'run');
+    assert.equal(app.byId('workspace').hidden, false);
+    assert.equal(app.byId('data-view').hidden, true);
+    assert.equal(app.byId('view-eyebrow').textContent, 'RUN EXPERIMENT');
+    assert.deepEqual(calls(), [['show', 'p', 'api,error,node,token'], ['hide']]);
+  });
+
+  it('says plainly when the data view’s script is not loaded', async () => {
+    const app = await pageWith();
+    clickView(app, 'data');
+    assert.equal(app.byId('data-view').hidden, false);
+    assert.equal(app.byId('data-view').textContent, 'Data inspection is not available');
+  });
+
+  it('remembers the view per experiment, across experiments and reloads', async () => {
+    const app = await pageWith();
+    app.server.state.projects = [PROJECT, OTHER];
+    await app.run('refresh()');
+    await settle();
+    const calls = fakeData(app);
+    clickView(app, 'data');
+    assert.equal(app.run("localStorage.getItem('alhazen-workspace-view:p')"), 'data');
+    /* The other experiment was never switched: it opens on Run experiment,
+     * and the data view is left (and told so). */
+    await app.run("chooseProject('q')");
+    await settle();
+    assert.equal(app.byId('workspace').hidden, false);
+    assert.deepEqual(calls(), [['show', 'p', 'api,error,node,token'], ['hide']]);
+    /* Back to the first: its Data view again, for its own record. */
+    await app.run("chooseProject('p')");
+    await settle();
+    assert.equal(app.byId('data-view').hidden, false);
+    assert.deepEqual(calls().at(-1), ['show', 'p', 'api,error,node,token']);
+    /* A reload lands on the remembered experiment and its remembered view. */
+    const reloaded = await pageWith({
+      storage: { 'alhazen-workspace-project': 'p', 'alhazen-workspace-view:p': 'data' },
+    });
+    assert.equal(reloaded.byId('data-view').hidden, false);
+    assert.equal(reloaded.byId('workspace').hidden, true);
+  });
+
+  it('ignores a remembered view it does not know, and opens on Run experiment', async () => {
+    const app = await pageWith({ storage: { 'alhazen-workspace-view:p': 'charts' } });
+    assert.equal(app.byId('workspace').hidden, false);
+    assert.equal(app.byId('data-view').hidden, true);
+  });
+});
+
+describe('the colour theme', () => {
+  /** The page's data-theme attribute: null means "follow the system". */
+  const theme = (app) => app.document.documentElement.getAttribute('data-theme');
+  const pressed = (app) => ['system', 'light', 'dark'].map(
+    (name) => app.byId(`theme-${name}`).getAttribute('aria-pressed'),
+  );
+
+  it('follows the system until the reader chooses, and remembers the choice', async () => {
+    const app = await pageWith();
+    assert.equal(theme(app), null);
+    assert.deepEqual(pressed(app), ['true', 'false', 'false']);
+    app.byId('theme-dark').fire('click');
+    assert.equal(theme(app), 'dark');
+    assert.deepEqual(pressed(app), ['false', 'false', 'true']);
+    assert.equal(app.run("localStorage.getItem('alhazen-workspace-theme')"), 'dark');
+    app.byId('theme-light').fire('click');
+    assert.equal(theme(app), 'light');
+    app.byId('theme-system').fire('click');
+    assert.equal(theme(app), null);
+    assert.equal(app.run("localStorage.getItem('alhazen-workspace-theme')"), 'system');
+  });
+
+  it('applies the remembered theme when the page loads', async () => {
+    const app = await pageWith({ storage: { 'alhazen-workspace-theme': 'dark' } });
+    assert.equal(theme(app), 'dark');
+    assert.deepEqual(pressed(app), ['false', 'false', 'true']);
+  });
+
+  it('ignores a remembered theme it does not know', async () => {
+    const app = await pageWith({ storage: { 'alhazen-workspace-theme': 'sepia' } });
+    assert.equal(theme(app), null);
+    assert.deepEqual(pressed(app), ['true', 'false', 'false']);
+  });
+
+  it('keeps the two copies of the dark palette in the stylesheet identical', () => {
+    /* The dark colours are written twice — for "Auto" when the system is
+     * dark, and for an explicit Dark — because CSS cannot share one block
+     * between a media query and a plain selector. A colour changed in one
+     * copy only would make Auto and Dark differ; this catches it. */
+    const css = readFileSync(
+      new URL('../../src/alhazen/cli/assets/workspace.css', import.meta.url), 'utf8',
+    );
+    const block = (marker) => {
+      const start = css.indexOf(marker);
+      assert.notEqual(start, -1, marker);
+      const open = css.indexOf('{', start + marker.length);
+      return css.slice(open + 1, css.indexOf('}', open)).trim();
+    };
+    const system = block(':root:not([data-theme=light])');
+    const chosen = block(':root[data-theme=dark]');
+    assert.match(system, /--paper:/);
+    assert.equal(system, chosen);
+  });
+});
+
+describe('the logo', () => {
+  it('is the same drawing in the sidebar and in the favicon', () => {
+    /* The sidebar draws it inline (so it follows the page's theme) and the
+     * browser tab loads favicon.svg (an image, which cannot read the page's
+     * CSS): two copies of one drawing, which must not drift apart. */
+    const read = (name) => readFileSync(
+      new URL(`../../src/alhazen/cli/assets/${name}`, import.meta.url), 'utf8',
+    );
+    const drawing = (text) => {
+      const start = text.indexOf('<!-- LOGO-START');
+      const end = text.indexOf('<!-- LOGO-END -->');
+      assert.ok(start !== -1 && end > start);
+      return text.slice(start, end).replace(/\s+/g, ' ');
+    };
+    const inline = drawing(read('workspace.html'));
+    assert.equal(drawing(read('favicon.svg')), inline);
+    assert.match(inline, /id="logo-bricks-turned"/);
+    assert.match(read('workspace.html'), /<link rel="icon" href="\/favicon.svg" type="image\/svg\+xml">/);
+  });
+});
+
+describe('a task table with a task that has no parameter file', () => {
+  /* kde-vergence's table: the check task names None, the other two their own
+   * files, and each has a pilot file beside it. */
+  const KDE = Object.freeze({
+    ...PROJECT,
+    tasks: [
+      { name: 'kde-vergence-check', params: null },
+      { name: 'kde-vergence-pursuit', params: 'configs/task-pursuit.yaml' },
+      { name: 'kde-vergence-report', params: 'configs/task-report.yaml' },
+    ],
+    default_task: 'kde-vergence-check',
+    configs: [
+      'configs/task-pursuit-pilot.yaml', 'configs/task-pursuit.yaml',
+      'configs/task-report-pilot.yaml', 'configs/task-report.yaml',
+    ],
+  });
+  const CONFIGS = {
+    'configs/task-pursuit-pilot.yaml': { text: 'speed: 1\n', values: { speed: 1 } },
+    'configs/task-pursuit.yaml': { text: 'speed: 2\n', values: { speed: 2 } },
+    'configs/task-report-pilot.yaml': { text: 'gap: 3\n', values: { gap: 3 } },
+    'configs/task-report.yaml': { text: 'gap: 4\n', values: { gap: 4 } },
+  };
+  const SCHEMAS = {
+    'kde-vergence-check': {}, 'kde-vergence-pursuit': {}, 'kde-vergence-report': {},
+  };
+
+  async function kdePage() {
+    const app = await pageWith({ project: KDE, configs: CONFIGS, schemas: SCHEMAS });
+    chooseMode(app, 'movie');
+    return app;
+  }
+
+  async function chooseTask(app, name) {
+    app.byId('task').value = name;
+    app.byId('task').fire('change');
+    await settle();
+  }
+
+  /** Launch, and return what was posted; clears earlier posts first. */
+  async function launchBody(app) {
+    app.server.posted.length = 0;
+    await launch(app);
+    return launched(app);
+  }
+
+  it('selects no file for it, says so, and launches without parameters', async () => {
+    const app = await kdePage();
+    const menu = app.byId('params-config');
+    assert.equal(app.byId('task').value, 'kde-vergence-check');
+    assert.equal(menu.value, '');
+    /* The other files stay on offer, after a "No file" entry. */
+    assert.deepEqual(plain(menu.children.map((o) => [o.value, o.textContent])), [
+      ['', 'No file (the task’s own defaults)'],
+      ['configs/task-pursuit-pilot.yaml', 'pursuit-pilot'],
+      ['configs/task-pursuit.yaml', 'pursuit'],
+      ['configs/task-report-pilot.yaml', 'report-pilot'],
+      ['configs/task-report.yaml', 'report'],
+    ]);
+    assert.match(app.byId('parameter-fields').textContent,
+      /^kde-vergence-check has no parameter file; it runs on the defaults in its code/);
+    assert.equal(app.byId('parameters-help').hidden, true);
+    const body = await launchBody(app);
+    assert.equal(body.task, 'kde-vergence-check');
+    assert.equal('parameters' in body, false);
+    assert.equal('parameters_yaml' in body, false);
+  });
+
+  it('follows the task back and forth, never carrying one task’s file to another',
+    async () => {
+      const app = await kdePage();
+      await chooseTask(app, 'kde-vergence-pursuit');
+      assert.equal(app.byId('params-config').value, 'configs/task-pursuit.yaml');
+      /* Its own file: no "No file" entry to fall back on. */
+      assert.equal(app.byId('params-config').children[0].value, 'configs/task-pursuit-pilot.yaml');
+      assert.deepEqual(plain(app.run('values')), { speed: 2 });
+      assert.equal(app.byId('parameters-help').hidden, false);
+      assert.deepEqual((await launchBody(app)).parameters, { speed: 2 });
+
+      await chooseTask(app, 'kde-vergence-check');
+      assert.equal(app.byId('params-config').value, '');
+      assert.equal(app.run('values'), null);
+      assert.equal('parameters' in (await launchBody(app)), false);
+
+      await chooseTask(app, 'kde-vergence-report');
+      assert.equal(app.byId('params-config').value, 'configs/task-report.yaml');
+      assert.deepEqual((await launchBody(app)).parameters, { gap: 4 });
+
+      await chooseTask(app, 'kde-vergence-check');
+      assert.equal(app.byId('params-config').value, '');
+      assert.equal('parameters' in (await launchBody(app)), false);
+    });
+
+  it('sends a file chosen on purpose for it', async () => {
+    const app = await kdePage();
+    app.byId('params-config').value = 'configs/task-pursuit-pilot.yaml';
+    app.byId('params-config').fire('change');
+    await settle();
+    assert.deepEqual(plain(app.run('values')), { speed: 1 });
+    assert.deepEqual((await launchBody(app)).parameters, { speed: 1 });
+  });
+
+  it('keeps the task.yaml fallback for a project without a task table', async () => {
+    const app = await pageWith({
+      project: { ...PROJECT, configs: ['configs/task-pilot.yaml', 'configs/task.yaml'] },
+    });
+    assert.equal(app.byId('params-config').value, 'configs/task.yaml');
+    assert.equal(app.byId('params-config').children.some((o) => o.value === ''), false);
+  });
+});
+
+describe('a task whose parameter choices cannot be read', () => {
+  const TRACEBACK = 'Cannot read task parameter choices: Traceback (most recent call last):\n'
+    + '  File "workspace_schema.py", line 86, in task_schema\n'
+    + '    cls = _value(keywords["task_class"], namespace, "task_class")\n'
+    + "ValueError: run.py's task_class=task_class is not a module-level name\n";
+
+  it('says so in one sentence and folds the traceback away', async () => {
+    const app = loadWorkspace();
+    app.server.state = { projects: [PROJECT], runs: [], active: null };
+    app.server.configs = { 'configs/task.yaml': { text: 'trials: 4\n', values: { trials: 4 } } };
+    app.server.rigs = { 'configs/rig-mac.yaml': rig(true) };
+    app.server.reject = (url) => (
+      url.startsWith('/api/schema') ? response({ error: TRACEBACK }, 400) : undefined);
+    await app.run('refresh()');
+    await settle();
+    const notice = app.byId('choices-notice');
+    assert.equal(notice.hidden, false);
+    const [sentence, details] = notice.children;
+    assert.equal(
+      sentence.textContent,
+      "ValueError: run.py's task_class=task_class is not a module-level name — the dashboard "
+      + 'cannot read this task’s parameter choices. The fields show the file’s values as they '
+      + 'are; use the text editor for others.',
+    );
+    assert.doesNotMatch(sentence.textContent, /Traceback/);
+    assert.equal(details.localName, 'details');
+    assert.equal(details.open, false);
+    assert.equal(details.querySelector('pre').textContent, TRACEBACK);
+    /* Not a reason to block a launch: the file's values are still there. */
+    assert.deepEqual(plain(app.run('values')), { trials: 4 });
+    assert.equal(app.byId('launch').disabled, false);
+    /* A later read that works clears it. */
+    app.server.reject = () => undefined;
+    await app.run("loadSchema('p')");
+    await settle();
+    assert.equal(notice.hidden, true);
+  });
+
+  it('shows a one-line error as it is, with nothing to fold', async () => {
+    const app = await pageWith();
+    app.run("showChoicesError('Reading the task’s parameter choices timed out')");
+    const notice = app.byId('choices-notice');
+    assert.equal(notice.children.length, 1);
+    assert.match(notice.textContent, /^Reading the task’s parameter choices timed out — /);
+  });
+
+  it('does not speak of a file’s values when the project has no file', async () => {
+    const app = await pageWith({ project: { ...PROJECT, configs: [] } });
+    app.run("showChoicesError('ValueError: bad')");
+    assert.equal(
+      app.byId('choices-notice').textContent,
+      'ValueError: bad — the dashboard cannot read this task’s parameter choices.',
+    );
   });
 });

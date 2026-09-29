@@ -493,3 +493,59 @@ class TestInitials:
         assert (args.sub, args.ses, args.initials) == ("01", 2, "HD")
         assert asked[2:] == ["subject initials: "] * 3
         assert capsys.readouterr().err.count("INVALID: initials must be 1 to 5 letters") == 2
+
+
+class TestTheCommandIsHandedDown:
+    """run.py and `alhazen run` hand the command line they parsed to the
+    session, which records it in session.json and the snapshot
+    (session/identity.py, `recorded_command`)."""
+
+    def start(self, tmp_path, monkeypatch, argv):
+        seen: dict = {}
+        import alhazen.modes.session as session_module
+        from alhazen.cli.modes import run_experiment
+        from alhazen.errors import ConfigError
+
+        def stop(mode, **kwargs):
+            seen.update(kwargs)
+            raise ConfigError("stopped by the test")
+
+        monkeypatch.setattr(session_module, "build_mode_session", stop)
+        code = run_experiment(
+            task_class=TestInitials.task_class(), default_rig=rig_file(tmp_path), argv=argv
+        )
+        assert code == 1  # the stop above
+        return seen
+
+    def test_run_py_hands_down_its_program_and_the_arguments_it_parsed(self, tmp_path, monkeypatch):
+        import sys
+
+        argv = ["--mode", "simulate", "--headless", "--seed", "3"]
+        seen = self.start(tmp_path, monkeypatch, argv)
+        assert seen["command"] == [sys.argv[0], *argv]
+
+    def test_with_no_argv_given_it_is_the_processs_own(self, tmp_path, monkeypatch):
+        import sys
+
+        started = [str(tmp_path / "run.py"), "--mode", "simulate", "--headless"]
+        monkeypatch.setattr(sys, "argv", started)
+        seen = self.start(tmp_path, monkeypatch, None)
+        assert seen["command"] == started
+
+    def test_alhazen_run_hands_down_its_own_name_and_arguments(self, monkeypatch):
+        import importlib
+
+        # The module, not the `main` function alhazen.cli re-exports under
+        # the same name.
+        cli_main = importlib.import_module("alhazen.cli.main")
+        seen: dict = {}
+
+        def handler(args, parser):
+            seen["invocation"] = args.invocation
+            return 0
+
+        monkeypatch.setitem(cli_main._COMMANDS, "run", handler)
+        argv = ["run", "--mode", "simulate", "--task", "some-task", "--rig", "laptop"]
+
+        assert main(argv) == 0
+        assert seen["invocation"] == ["alhazen", *argv]

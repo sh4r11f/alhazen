@@ -244,7 +244,7 @@ explains each.
 
 ::: alhazen.config.experiment
     options:
-      members: [Experiment, find_experiment, session_experiment]
+      members: [Experiment, find_experiment, session_experiment, ExperimentTitle, experiment_title]
 
 ## Display and stimuli
 

@@ -20,6 +20,8 @@ from alhazen.config import experiment as experiment_module
 from alhazen.config.experiment import (
     GIVEN_BY_CALLER,
     Experiment,
+    ExperimentTitle,
+    experiment_title,
     find_experiment,
     session_experiment,
 )
@@ -177,3 +179,84 @@ class TestSessionExperiment:
         found = Experiment("exp", "0.5.0", "pyproject.toml", None)
         with pytest.raises(ValueError, match="not both"):
             session_experiment(None, "t", experiment=found, **extra)
+
+
+def write_pyproject(root: Path, *lines: str) -> Path:
+    """``root/pyproject.toml`` holding ``lines``, one per line; returns ``root``."""
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "pyproject.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return root
+
+
+class TestExperimentTitle:
+    """`experiment_title`: what the workspace calls an experiment, and the
+    slug rig names are qualified with — read from the file, never imported."""
+
+    def test_a_declared_title_is_shown_and_the_project_name_is_the_slug(self, tmp_path):
+        root = write_pyproject(
+            tmp_path / "checkout",
+            "[project]",
+            'name = "amodal-averaging"',
+            'version = "0.1.0"',
+            "[tool.alhazen]",
+            'title = "Amodal averaging"',
+        )
+        assert experiment_title(root) == ExperimentTitle(
+            slug="amodal-averaging", title="Amodal averaging", error=None
+        )
+
+    def test_without_a_title_the_slug_is_the_title_and_nothing_is_wrong(self, tmp_path):
+        root = write_pyproject(tmp_path / "checkout", "[project]", 'name = "kde-vergence"')
+        assert experiment_title(root) == ExperimentTitle("kde-vergence", "kde-vergence")
+        # A [tool.alhazen] table that says other things, but no title: the same.
+        write_pyproject(root, "[project]", 'name = "kde-vergence"', "[tool.alhazen]", "other = 1")
+        assert experiment_title(root) == ExperimentTitle("kde-vergence", "kde-vergence")
+
+    def test_without_a_project_name_or_a_pyproject_the_folder_names_it(self, tmp_path):
+        assert experiment_title(tmp_path / "plain") == ExperimentTitle("plain", "plain")
+        root = write_pyproject(tmp_path / "unnamed", "[tool.alhazen]", 'title = "Unnamed"')
+        assert experiment_title(root) == ExperimentTitle("unnamed", "Unnamed")
+
+    def test_a_relative_folder_is_named_by_its_real_folder(self, tmp_path, monkeypatch):
+        """`Path(".")` has no name; the folder it stands for does."""
+        (tmp_path / "here").mkdir()
+        monkeypatch.chdir(tmp_path / "here")
+        assert experiment_title(Path(".")).slug == "here"
+
+    def test_the_title_is_trimmed(self, tmp_path):
+        root = write_pyproject(tmp_path / "x", "[tool.alhazen]", 'title = "  Spaced  "')
+        assert experiment_title(root).title == "Spaced"
+
+    @pytest.mark.parametrize("value", ["3", '""', '"   "', "[1, 2]", "true"])
+    def test_a_title_that_is_not_a_non_empty_string_is_reported_not_raised(self, tmp_path, value):
+        root = write_pyproject(
+            tmp_path / "x", "[project]", 'name = "demo"', "[tool.alhazen]", f"title = {value}"
+        )
+        found = experiment_title(root)
+        # The workspace still lists the experiment, under its slug...
+        assert (found.slug, found.title) == ("demo", "demo")
+        # ...and says why, naming the file and what a title looks like.
+        assert found.error is not None
+        assert str(root / "pyproject.toml") in found.error
+        assert "must be a non-empty string" in found.error
+
+    def test_a_tool_alhazen_that_is_not_a_table_is_reported(self, tmp_path):
+        root = write_pyproject(
+            tmp_path / "x", "[project]", 'name = "demo"', "[tool]", "alhazen = 5"
+        )
+        found = experiment_title(root)
+        assert (found.slug, found.title) == ("demo", "demo")
+        assert found.error is not None and "[tool.alhazen] must be a table" in found.error
+
+    def test_an_unreadable_pyproject_falls_back_to_the_folder_and_says_why(self, tmp_path):
+        root = write_pyproject(tmp_path / "broken", "[project")
+        found = experiment_title(root)
+        assert (found.slug, found.title) == ("broken", "broken")
+        assert found.error is not None and "cannot read" in found.error
+
+    def test_the_slug_is_the_name_find_experiment_records(self, tmp_path):
+        """One rule for both: the rig names the workspace shows are qualified
+        with the same name a session's data records as its experiment."""
+        root = tmp_path / "checkout"
+        task = make_project(root, '[project]\nname = "amodal-averaging"\nversion = "0.1.0"\n')
+        assert find_experiment(task).name == experiment_title(root).slug == "amodal-averaging"

@@ -25,6 +25,112 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## 2.1.0 - 2026-09-29
+
+### Added
+
+- **Experiment titles.** An experiment may declare its display name in its
+  `pyproject.toml` as `[tool.alhazen] title = "Amodal averaging"`;
+  `alhazen.config.experiment.experiment_title(root)` reads it (and the slug,
+  the `[project] name`) from the file without importing the experiment. The
+  workspace shows the title in the sidebar, the heading, the breadcrumb and
+  the browser tab, with the slug in small print; a title that is not a
+  non-empty string is reported under the heading instead of stopping the
+  page. `Workspace.describe` gains `title`, `slug` and `title_error`.
+- **Qualified rig names.** `--rig <experiment>/<name>` (e.g.
+  `amodal-averaging/lab`) names the experiment's own rig and never a shared
+  one; another experiment's name, or one that cannot be checked because no
+  experiment folder is found, is refused with the right name. Bare names and
+  paths keep their meaning. `RigRef.qualified(experiment)` spells a rig this
+  way, and `alhazen rigs` lists every rig by it.
+- **Run experiment / Data views** in the workspace sidebar, per experiment,
+  remembered per experiment; the Data view's content is `workspace_data.js`'s.
+- **Dark mode** for the workspace: Auto (follows the system), Light or Dark,
+  remembered in the browser.
+- **A new logo**: an A over the Ouchi illusion (bold 4:1 bricks, and a
+  disc of the same bricks turned 90° and shifted by half a brick), inline in
+  the sidebar and served as the tab's icon, `/favicon.svg`.
+- **The workspace's own font**, Nunito (SIL Open Font License; a Latin
+  subset of the variable font, 40 KB, with its OFL.txt), shipped as package
+  data and served at `/fonts/Nunito-latin.woff2`; the CSP names
+  `font-src 'self'`.
+- **The experiment workspace has a Data view** for saved sessions
+  (`alhazen/cli/workspace_data.py`, `assets/workspace_data.{js,css}`,
+  `assets/workspace_plot.js`; docs/workspace.md §Data). For one experiment it
+  lists the data folders its rigs write to — each rig's merged `data_root`
+  and its `-rehearsal` sibling, labelled with the rigs and real or rehearsal —
+  and the runs in the chosen one, in the 2.0 layout and the one before it,
+  with filters by version, subject and task. A run opens as a readable
+  summary of its `session.json`, its files, viewers for its text records
+  (`session.json`, `config_snapshot.yaml`, `rig.yaml`, `params.yaml`,
+  `report.yaml`, the tail of `session.log`), its `figures/` images and a link
+  to its saved live monitor page. Its trials (or events, frames, paradigm)
+  table loads sortable and filterable, pooled across checked runs with
+  `run`, `subject` and `session` columns added, at most 50 000 rows (said
+  when cut). Quick plots — mean ± SEM per x (a proportion for a True/False
+  y), scatter, histograms — are drawn as SVG, grouped by any column, and
+  saved as `.svg`. Everything is read-only, confined to the folders the
+  server computed, and every failure is said in the view. The view is shown
+  by the page's navigation through `window.WorkspaceData.show/hide`.
+- New GET routes, token-checked like the others: `/api/data/{roots,runs,run,
+  text,table,page}` and `/data/file` (figures, served under a sandboxing
+  CSP). `/data-page/<ticket>` opens a saved monitor page through a
+  two-minute ticket rather than the API token, under its own CSP (inline
+  script and style only; no requests, frames or forms).
+- **A run folder records the command its session was started with.**
+  `session.json` gains `command`: the program, then the arguments exactly as
+  the command line parser received them, as a list — `run.py` written
+  relative to the experiment's folder, `alhazen run` as `alhazen`, `run`, …;
+  null for a session built in code. The snapshot carries the same list as a
+  top-level `command` key beside `config` and `provenance`. `build_session`
+  takes it as `command=`, and run.py (`run_experiment`) and `alhazen run`
+  pass it. `session.json` stays schema 1: the field is added, and readers of
+  schema 1 ignore keys they do not know.
+- **A rig that `extends` a shared rig is also recorded whole.** Beside
+  `rig.yaml`, still the named file byte for byte, a run folder now holds
+  `rig-merged.yaml`: that file merged over the shared rig as the session
+  loaded it, with the monitor's registration name written in, so the folder
+  says what the machine was without the alhazen that shipped the shared
+  half. Written with the rest of the record (all or none), listed in the
+  manifest, and named in `session.json` as `files.rig_merged` (null for a
+  rig that extends nothing, whose `rig.yaml` is already whole). The
+  run-directory layout gains the name; `tests/fixtures/contracts.json`
+  records it. `docs/data.md` §2 and §3 describe both.
+
+### Changed
+
+- **The workspace's Rig menu** names every rig with its owner
+  (`amodal-averaging/lab`, `alhazen/mac`), in the menu, its summary and the
+  run history, and leaves out a shared rig the experiment's own rig of the
+  same name hides. The rig's facts under the menu are a short list of labels
+  and values (Screen, Size, Display, Live monitor, Rig — with the shared rig
+  it extends). Rig has its own section above the task parameters.
+- **The parameter file menu** is now the **Task parameters** heading's menu,
+  shows short names (`pilot` for `configs/task-pilot.yaml`), and has no
+  "Task defaults" entry: it opens on the task's own file, else `task.yaml`,
+  else the first file (with a task table: only the task's own file, and
+  "No file" for a task whose entry names none), and every launch with a
+  file sends its parameters. An
+  experiment with no parameter file says its task runs on the defaults in its
+  code.
+- **Larger, friendlier type** in the workspace (16 px body in Nunito, no text under 13 px but badges), colours on theme
+  tokens with WCAG AA contrast, the "01 — SETUP" label gone, and a sidebar
+  whose background runs the page's full height.
+- `dashboard.py`'s static assets are one table (`PAGE_ASSETS`), and a
+  response's Content-Security-Policy can be chosen per route (`PAGE_CSP`
+  stays the default for everything else).
+- **The shared `laptop` rig is now the development laptop's own panel on
+  Windows.** `rig-laptop.yaml` describes the Windows 11 laptop the
+  experiments are written on: its built-in 2560×1440 panel at 165 Hz,
+  38.0 cm wide (the EDID figure, rounded to the cm — measure it), still
+  `screen_index: 0`, with the ultrawide beside it (Windows' screen 2) off
+  limits. Its comments now explain why the file carries native pixels under
+  Windows' 150 % display scaling, what 165 Hz does to durations (a
+  millisecond duration is a different number of frames than on the 120 Hz
+  lab rig), and why `warmup_flips: 240` and `mark_trial` still hold. The
+  previous numbers (4096×2304 at 120 Hz) described the Linux machine it
+  replaced; an experiment extending `laptop` inherits the new panel.
+
 ## 2.0.1 - 2026-09-28
 
 ### Fixed

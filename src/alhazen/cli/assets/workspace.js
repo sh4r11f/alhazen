@@ -64,16 +64,28 @@ let state = {projects: [], runs: [], active: null};
 /* Which project and which run the page is looking at. */
 let selected = null;
 let runId = null;
-/* The parameter values being edited (null means "Task defaults": nothing to
- * edit) and which editor shows them, 'fields' or 'yaml'. */
+/* The parameter values being edited — null while a file is loading, and for
+ * a project with no parameter file at all, whose task then runs on the
+ * defaults in its code — and which editor shows them, 'fields' or 'yaml'. */
 let values = null;
 let editor = 'fields';
+/* Which of the selected experiment's two views is shown: 'run' (the launch
+ * form, run output and history: #workspace) or 'data' (#data-view, whose
+ * content workspace_data.js draws). Remembered per experiment in
+ * localStorage (VIEW_KEY). */
+let view = 'run';
+const VIEWS = {run: 'Run experiment', data: 'Data'};
+const VIEW_KEY = 'alhazen-workspace-view:';
+/* The colour theme the reader chose: 'system' (follow the operating
+ * system's light or dark setting; the default), 'light' or 'dark'. */
+const THEMES = ['system', 'light', 'dark'];
+const THEME_KEY = 'alhazen-workspace-theme';
 /* The project open in the settings dialog, or null for "Add experiment". */
 let editProject = null;
 /* Epochs for the three loads a reader can re-trigger faster than they finish:
  * each load takes the next number and, after awaiting, writes its answer
  * only if no newer load has started. Without this a slow answer for the
- * previous rig, preset or task would land on top of the current one. */
+ * previous rig, parameter file or task would land on top of the current one. */
 let configEpoch = 0;
 let rigEpoch = 0;
 let schemaEpoch = 0;
@@ -201,15 +213,80 @@ function selectedTask() {
 }
 
 /**
- * The preset the Parameter preset menu opens on. The selected task's own
- * parameter file when run.py names one that the project has; otherwise a
- * plain task.yaml, the usual starting point; otherwise "Task defaults" (''),
- * no file at all.
+ * The parameter file the Task parameters menu opens on ('' for none).
+ *
+ * With a task table (run.py's TASKS) it is the selected task's own file, and
+ * only that: a task whose entry names no file (None) — or names one the
+ * project does not have — opens on no file, because run.py runs such a task
+ * on the defaults in its code, and pre-selecting another task's file would
+ * send that task's parameters to this one. Other files stay in the menu for
+ * a deliberate choice. Without a task table: a plain task.yaml, the usual
+ * starting point, else the first file; '' only when there is none.
  */
 function defaultPreset(p) {
-  const task = tasks(p).find((t) => t.name === selectedTask());
-  if (task?.params && p.configs.includes(task.params)) return task.params;
-  return p.configs.find((path) => path.endsWith('/task.yaml')) || '';
+  if (tasks(p).length) {
+    const task = selectedTaskEntry(p);
+    return task?.params && p.configs.includes(task.params) ? task.params : '';
+  }
+  return p.configs.find((path) => path.endsWith('/task.yaml')) || p.configs[0] || '';
+}
+
+/** The task table's entry for the selected task, or undefined. */
+function selectedTaskEntry(p) {
+  return tasks(p).find((t) => t.name === selectedTask());
+}
+
+/**
+ * Fill the Task parameters menu for project `p` and the selected task, and
+ * open it on defaultPreset(p). The files come by their short names
+ * (presetLabels). A "No file" entry heads the list only for a task of a
+ * table that has no file of its own — the one case where running without a
+ * file is what run.py itself would do — so it is never pre-selected
+ * anywhere else. A project with no file at all has no menu, and the editor
+ * says what runs instead (renderEditor).
+ */
+function presetMenu(p) {
+  const items = presetLabels(p.configs);
+  const start = defaultPreset(p);
+  if (tasks(p).length && !start) items.unshift(['', 'No file (the task’s own defaults)']);
+  options($('params-config'), items, start);
+  $('params-config').value = start;
+  $('params-config').hidden = !p.configs.length;
+}
+
+/**
+ * The Task parameters menu's text for each parameter file, as [path, text]
+ * pairs in the order given: the file's name without its folder under
+ * configs/, the task- or params- prefix and the .yaml/.yml ending, so
+ * configs/task-pilot.yaml reads "pilot" and configs/task.yaml "task". A file
+ * in a subfolder keeps the subfolder (configs/presets/task-x.yaml is
+ * "presets/x"). When two files would read the same, both show their path
+ * instead, so no two entries look alike. The option value stays the path.
+ */
+function presetLabels(paths) {
+  const short = (path) => {
+    const inside = path.replace(/^configs\//, '');
+    const cut = inside.lastIndexOf('/') + 1;
+    const folder = inside.slice(0, cut);
+    const file = inside.slice(cut).replace(/\.ya?ml$/, '').replace(/^(task|params)-/, '');
+    return folder + file;
+  };
+  const counts = new Map();
+  for (const path of paths) counts.set(short(path), (counts.get(short(path)) || 0) + 1);
+  return paths.map((path) => [path, counts.get(short(path)) > 1 ? path : short(path)]);
+}
+
+/** What the selected experiment is called on the page: the title its
+ *  pyproject declares, else its slug; a server from before titles sends
+ *  neither, and the registered folder name stands in. */
+function titleOf(p) {
+  return p?.title || p?.name || '';
+}
+
+/** The experiment's short name, the owner part of its rigs' names
+ *  (amodal-averaging/lab); the folder name from a server before slugs. */
+function slugOf(p) {
+  return p?.slug || p?.name || '';
 }
 
 /** Who a run was for, "sub-01 · HD", from its record; '' for a run that
@@ -282,8 +359,9 @@ function groupedOptions(select, groups, previous) {
 /* A project's `rigs` are {name, source, path, shadowed, extends}: its own
  * rigs (source 'experiment', path relative to the project) and then the
  * shared rigs its alhazen ships (source 'alhazen'). A rig's name is its file
- * name without rig- and .yaml — `lab` for configs/rig-lab.yaml — and that is
- * what --rig takes on the command line (docs/rigs.md). */
+ * name without rig- and .yaml — `lab` for configs/rig-lab.yaml. The page
+ * shows every rig with its owner in front, <experiment slug>/<name> or
+ * alhazen/<name>, which --rig takes as well as the bare name (docs/rigs.md). */
 
 /** What the Rig menu sends for rig `r`: an experiment rig's project-relative
  *  path, or alhazen/<name> for a shared rig — the spelling that names the
@@ -292,30 +370,36 @@ function rigValue(r) {
   return r.source === 'alhazen' ? `alhazen/${r.name}` : r.path;
 }
 
-/** A rig's text in the menu: its name, never its file. A shared rig hidden
- *  from `--rig lab` by the experiment's own lab is spelled alhazen/lab, as
- *  the command line spells it, and says why, so the two `lab`s cannot be
- *  confused in the closed menu, which shows the option but not its group. An
- *  experiment rig that extends a shared one says which; one whose name two of
- *  the experiment's files share (`duplicates`) carries its file, since its
- *  name alone would not say which it is. */
-function rigLabel(r, duplicates) {
-  if (r.source === 'alhazen') {
-    return r.shadowed ? `alhazen/${r.name} (hidden by this experiment’s ${r.name})` : r.name;
-  }
-  let text = duplicates.has(r.name) ? `${r.name} (${r.path})` : r.name;
-  if (r.extends) text += ` · extends alhazen/${r.extends}`;
-  return text;
+/** Rig `name`'s qualified name: `alhazen/<name>` for a shared rig
+ *  (`source` 'alhazen'), `<slug>/<name>` for one of experiment `slug`'s own
+ *  — the one spelling of a rig the menu, its summary and the history share,
+ *  and that the command line takes (alhazen.config.rigs.resolve_rig). */
+function rigName(name, source, slug) {
+  return `${source === 'alhazen' ? 'alhazen' : slug}/${name}`;
+}
+
+/** A rig's text in the menu: its qualified name, never its file, and
+ *  nothing more, so it fits the closed menu (the shared rig it extends is in
+ *  the summary under it, loadRig). One whose name two of the experiment's
+ *  files share (`duplicates`) carries its file, since its name alone would
+ *  not say which it is. */
+function rigLabel(r, duplicates, slug) {
+  const text = rigName(r.name, r.source, slug);
+  return r.source === 'experiment' && duplicates.has(r.name) ? `${text} (${r.path})` : text;
 }
 
 /** Fill the Rig menu for project `p`: the experiment's own rigs, then the
- *  shared ones, as two groups. The safe first choice is a machine with a
- *  window and no devices — the experiment's own mac, else the shared mac —
- *  and otherwise the first rig listed. */
+ *  shared ones, as two groups. A shared rig the experiment's own rig of the
+ *  same name hides (`shadowed`) is left out: the experiment's is the one that
+ *  name means, and the command line still reaches the shared one as
+ *  alhazen/<name>. The safe first choice is a machine with a window and no
+ *  devices — the experiment's own mac, else the shared mac — and otherwise
+ *  the first rig listed. */
 function rigMenu(p) {
+  const slug = slugOf(p);
   const rigs = p.rigs || [];
   const own = rigs.filter((r) => r.source === 'experiment');
-  const shared = rigs.filter((r) => r.source === 'alhazen');
+  const shared = rigs.filter((r) => r.source === 'alhazen' && !r.shadowed);
   const seen = new Set();
   const duplicates = new Set();
   for (const r of own) {
@@ -323,10 +407,10 @@ function rigMenu(p) {
     seen.add(r.name);
   }
   const mac = own.find((r) => r.name === 'mac') || shared.find((r) => r.name === 'mac');
-  const first = mac || rigs[0];
+  const first = mac || own[0] || shared[0];
   groupedOptions($('rig'), [
-    ['This experiment', own.map((r) => [rigValue(r), rigLabel(r, duplicates)])],
-    ['Shared (alhazen)', shared.map((r) => [rigValue(r), rigLabel(r, duplicates)])],
+    ['This experiment', own.map((r) => [rigValue(r), rigLabel(r, duplicates, slug)])],
+    ['Shared (alhazen)', shared.map((r) => [rigValue(r), rigLabel(r, duplicates, slug)])],
   ], first ? rigValue(first) : '');
   // Said under the menu when the registration predates shared rigs, so a
   // menu without them is explained rather than mistaken for "there are none".
@@ -334,19 +418,34 @@ function rigMenu(p) {
   $('rig-note').hidden = !p.rigs_note;
 }
 
-/** The selected project's rig entry for a menu value, or undefined. */
-function rigFor(p, value) {
-  return (p?.rigs || []).find((r) => rigValue(r) === value);
+/**
+ * Show a rig's facts under the Rig menu as a small list of labels and
+ * values: [[label, [part, part, …]], …]. Each part is kept whole (it never
+ * breaks inside, "30.4 cm wide"), and a line may break only between parts,
+ * at their " · " separators.
+ */
+function rigFacts(facts) {
+  const list = node('dl', 'rig-facts');
+  for (const [label, parts] of facts) {
+    const value = node('dd');
+    parts.forEach((part, index) => {
+      if (index) value.append(node('span', 'fact-separator', ' · '));
+      value.append(node('span', 'fact', part));
+    });
+    list.append(node('dt', '', label), value);
+  }
+  $('rig-summary').replaceChildren(list);
 }
 
-/** A run's rig as the history shows it: its name, not its file, and
- *  alhazen/<name> for a shared rig. A run recorded before runs kept the name
- *  gets it back from its file name (rig-lab.yaml is lab). */
-function runRig(run) {
-  if (run.rig_name) {
-    return run.rig_source === 'alhazen' ? `alhazen/${run.rig_name}` : run.rig_name;
-  }
-  return run.rig.split('/').pop().replace(/\.ya?ml$/, '').replace(/^rig-/, '');
+/** A run's rig as the history shows it: its qualified name, not its file —
+ *  alhazen/<name> for a shared rig, <slug>/<name> for one of experiment
+ *  `slug`'s own. A run recorded before runs kept the name gets it back from
+ *  its file name (rig-lab.yaml is lab), and is the experiment's unless it
+ *  was launched as alhazen/<name>. */
+function runRig(run, slug) {
+  if (run.rig_name) return rigName(run.rig_name, run.rig_source, slug);
+  const name = run.rig.split('/').pop().replace(/\.ya?ml$/, '').replace(/^rig-/, '');
+  return rigName(name, run.rig.startsWith('alhazen/') ? 'alhazen' : 'experiment', slug);
 }
 
 /** Whether the selected mode takes task parameters (see ParameterChoices). */
@@ -405,9 +504,10 @@ function modeChanged() {
   $('mode-help').textContent = MODES[mode]?.[1]
     || 'Run the experiment’s own script and collect its images and movies.';
   // Task parameters: not for measuring the rig, nor for a script without a
-  // parameter-file flag. Disabling the fieldset takes its inputs out of
-  // form validation as well as out of view.
-  $('params-preset-field').hidden = !usesParameters();
+  // parameter-file flag. Disabling the fieldset takes its inputs — the file
+  // menu in its heading among them — out of form validation as well as out
+  // of view; the menu is also disabled by name, so no change of markup can
+  // leave it choosable for a launch that sends no parameters.
   $('params-config').disabled = !usesParameters();
   $('task-parameters').hidden = !usesParameters();
   $('task-parameters').disabled = !usesParameters();
@@ -458,8 +558,9 @@ function modeChanged() {
 }
 
 /**
- * Switch the workspace to project `id`: fill the mode, task, rig and preset
- * menus, show its most recent run, then load its schema, preset and rig in
+ * Switch the workspace to project `id`, on the view last used for it: name
+ * it in the heading, fill the mode, task, rig and parameter-file menus, show
+ * its most recent run, then load its schema, parameter file and rig in
  * parallel. Remembered in localStorage so a reload lands on the same one.
  */
 async function chooseProject(id) {
@@ -471,9 +572,14 @@ async function chooseProject(id) {
   gallerySignature = '';
   const p = project();
   if (!p) return;
-  $('project-name').textContent = p.name;
+  // The heading: the experiment's title, then in small print its slug and
+  // folder, and — loudly, under them — why a declared title is not shown.
+  $('project-name').textContent = titleOf(p);
+  $('project-slug').textContent = slugOf(p);
   $('project-path').textContent = p.path;
-  $('breadcrumb').textContent = p.name;
+  $('title-error').textContent = p.title_error || '';
+  $('title-error').hidden = !p.title_error;
+  showView(rememberedView(id));
   // Menu order: a project's "Preview images" script first (the quickest look
   // at the stimulus), the built-in modes, then its other scripts.
   const previews = p.scripts.filter((s) => s.label === 'Preview images');
@@ -486,8 +592,8 @@ async function chooseProject(id) {
   // Tasks, in run.py's order, opening on the one that runs when none is
   // named. The field shows only for an experiment that declares a table —
   // or whose table could not be read, so the reader learns why from the
-  // help rather than from a refused launch. Filled before the preset menu:
-  // the preset default follows the selected task.
+  // help rather than from a refused launch. Filled before the parameter
+  // file menu: which file it opens on follows the selected task.
   const declared = tasks(p);
   options($('task'), declared.map((t) => [t.name, t.name]), p.default_task);
   $('task-field').hidden = !declared.length && !p.tasks_error;
@@ -496,12 +602,16 @@ async function chooseProject(id) {
     || (declared.length ? `Declared in run.py; ${p.default_task} runs when no task is named.` : '');
   // Rigs by name, the experiment's own and then the shared ones (rigMenu).
   rigMenu(p);
-  // Presets: "Task defaults" (no file) first, then the configs found, opening
-  // on the selected task's own file when it has one (defaultPreset).
-  options($('params-config'), [
-    ['', 'Task defaults'],
-    ...p.configs.map((path) => [path, path.split('/').pop()]),
-  ], defaultPreset(p));
+  // Parameter files by short name (presetLabels), opening on the selected
+  // task's own file when it has one (defaultPreset). There is no "no file"
+  // entry: a launch with a file always sends its parameters, so every run
+  // folder gets a params.yaml. A project with no file at all has no menu,
+  // and the editor says what runs instead (renderEditor).
+  presetMenu(p);
+  // "Each launch saves a parameter snapshot" is untrue without a file, and
+  // with nothing to edit the Fields / Text switch goes too: only the
+  // message saying what runs instead remains (renderEditor).
+  $('editor-switch').hidden = !p.configs.length;
   // The server lists runs newest first, so the first match is the latest.
   runId = state.runs.find((r) => r.project === id)?.id || null;
   $('extra-args').value = '';
@@ -541,9 +651,7 @@ async function loadSchema(id) {
     parameterSchema = schema;
   } catch (e) {
     if (!current()) return;
-    $('choices-notice').textContent = 'Could not load model choices. '
-      + `Showing current values; use the text editor for other values. ${e.message}`;
-    $('choices-notice').hidden = false;
+    showChoicesError(e.message);
   } finally {
     if (current()) {
       loadingSchema = false;
@@ -554,14 +662,41 @@ async function loadSchema(id) {
 }
 
 /**
- * The reader picked another task: open the Parameter preset menu on that
- * task's own file, then load its schema and that preset together, so the
+ * Say why the parameter choices could not be read, readably. The server's
+ * message ends with the error the task's code raised, after a whole Python
+ * traceback; the notice shows that last line and what it means here, and
+ * keeps the full text folded in a <details> for whoever has to fix it.
+ */
+function showChoicesError(message) {
+  const lines = message.split('\n').map((line) => line.trim()).filter(Boolean);
+  const last = lines.at(-1) || 'Unknown error';
+  // What still works: with a file, its values are shown without the
+  // choice lists; without one there is nothing more to say.
+  const rest = project()?.configs?.length
+    ? ' The fields show the file’s values as they are; use the text editor for others.'
+    : '';
+  const sentence = node('p', '', `${last} — the dashboard cannot read this task’s parameter `
+    + `choices.${rest}`);
+  const notice = $('choices-notice');
+  if (lines.length > 1) {
+    const details = node('details');
+    details.append(node('summary', '', 'Full error'), node('pre', '', message));
+    notice.replaceChildren(sentence, details);
+  } else {
+    notice.replaceChildren(sentence);
+  }
+  notice.hidden = false;
+}
+
+/**
+ * The reader picked another task: open the Task parameters menu on that
+ * task's own file, then load its schema and that file together, so the
  * editor shows the new task's parameters with the new task's choices. Each
  * load drops its answer if the reader has moved on again meanwhile.
  */
 async function taskChanged() {
   const p = project();
-  $('params-config').value = defaultPreset(p);
+  presetMenu(p);
   await Promise.all([loadSchema(p.id), loadConfig()]);
 }
 
@@ -585,19 +720,15 @@ async function loadRig() {
   const data = await api(`/api/rig?${query}`);
   if (epoch !== rigEpoch) return;
   const rig = data.values;
-  const entry = rigFor(p, value);
-  // Whose rig this is, in the words the command line would need.
-  let origin;
-  if (data.source === 'alhazen') {
-    origin = `alhazen’s shared rig ${data.name}`;
-    if (entry?.shadowed) {
-      origin += ` — this experiment has its own ${data.name}, which --rig ${data.name} runs;`
-        + ` this one is --rig alhazen/${data.name}`;
-    }
-  } else {
-    origin = `this experiment’s ${value}`;
-    if (data.extends) origin += `, extending alhazen’s shared ${data.extends}`;
-  }
+  // Whose rig this is, by the qualified name the menu shows and the command
+  // line takes, then where it comes from and the shared rig it extends.
+  // (A shared rig the experiment's own hides is not in the menu, so it is
+  // never summarised here: rigMenu.)
+  const name = rigName(data.name, data.source, slugOf(p));
+  const origin = data.source === 'alhazen'
+    ? [name, 'alhazen’s shared rig']
+    : [name, `this experiment’s ${value}`];
+  if (data.extends) origin.push(`extends alhazen/${data.extends}`);
   const m = rig.monitor || {};
   // The live monitor is opt-in (LiveMonitorConfig.enabled defaults to false),
   // so a rig without the block, or without the key, has it off. Remembered
@@ -613,19 +744,20 @@ async function loadRig() {
   const monitorOn = rig.live_monitor?.enabled === true || rig.dashboard?.enabled === true;
   rigMonitor[`${p.id}:${value}`] = monitorOn;
   // '?' rather than 'undefined' for a field the YAML leaves to its default.
-  $('rig-summary').textContent =
-    `${m.width_px ?? '?'} × ${m.height_px ?? '?'} px · ${m.refresh_rate_hz ?? '?'} Hz`
-    + ` · ${rig.display?.backend || 'default display'}\n`
-    + `${m.width_cm ?? '?'} cm wide · ${m.distance_cm ?? '?'} cm viewing distance`
-    + ` · live monitor: ${monitorOn ? 'on' : 'off'}\n`
-    + origin;
+  rigFacts([
+    ['Screen', [`${m.width_px ?? '?'} × ${m.height_px ?? '?'} px`, `${m.refresh_rate_hz ?? '?'} Hz`]],
+    ['Size', [`${m.width_cm ?? '?'} cm wide`, `${m.distance_cm ?? '?'} cm away`]],
+    ['Display', [rig.display?.backend || 'default display']],
+    ['Live monitor', [monitorOn ? 'on' : 'off']],
+    ['Rig', origin],
+  ]);
 }
 
 /**
- * Load the selected parameter preset into the editor. The launch button is
+ * Load the selected parameter file into the editor. The launch button is
  * disabled until it lands: a run started meanwhile would use the task's
- * defaults for everything not yet loaded, silently. "Task defaults" (an
- * empty path) loads nothing and leaves `values` null.
+ * defaults for everything not yet loaded, silently. A project with no
+ * parameter file (an empty path) loads nothing and leaves `values` null.
  */
 async function loadConfig() {
   const epoch = ++configEpoch;
@@ -644,7 +776,7 @@ async function loadConfig() {
       values = data.values;
       $('parameter-yaml').value = data.text;
     }
-    // A newly loaded preset always opens in the fields editor.
+    // A newly loaded file always opens in the fields editor.
     editor = 'fields';
     renderEditor();
     loadingConfig = false;
@@ -657,6 +789,32 @@ async function loadConfig() {
 /* ------------------------------------------------------------------ */
 /* The parameter editor                                                */
 /* ------------------------------------------------------------------ */
+
+/**
+ * What the editor says when there are no values to edit, so a launch sends
+ * no parameters: for a task of a table whose entry names no file (or one the
+ * project lacks), that it runs on its code's defaults; for a project with
+ * no file at all, the same; and when a file is chosen but its text was
+ * emptied in the text editor, that the launch now sends nothing.
+ */
+function noValuesHint(p) {
+  const task = tasks(p).length ? selectedTaskEntry(p) : undefined;
+  if (task && !$('params-config').value) {
+    if (task.params && !p.configs.includes(task.params)) {
+      return `run.py names ${task.params} as ${task.name}’s parameter file, but the project `
+        + 'has no such file. A launch sends no parameters, and run.py will look for that '
+        + 'file itself; choose a file above, or fix run.py.';
+    }
+    return `${task.name} has no parameter file; it runs on the defaults in its code, and `
+      + 'launches without --params. Choose a file above only if you mean to.';
+  }
+  if (!p?.configs?.length) {
+    return 'No task parameter files in configs/ (task*.yaml or params*.yaml). The task runs on '
+      + 'the defaults written in its code, and launches without --params.';
+  }
+  return 'The text editor was left empty, so a launch sends no parameters and the task runs '
+    + 'on the defaults written in its code. Choose a file above to start from its values.';
+}
 
 /** Write one edited value into `values` at `path` (an array of keys). */
 function setValue(path, value) {
@@ -676,14 +834,21 @@ function renderEditor() {
   $('fields-tab').setAttribute('aria-pressed', String(editor === 'fields'));
   $('yaml-tab').setAttribute('aria-pressed', String(editor === 'yaml'));
   $('parameter-fields').hidden = editor !== 'fields';
-  $('parameter-search').hidden = editor !== 'fields';
+  // Nothing to search while there are no values (a project without files).
+  $('parameter-search').hidden = editor !== 'fields' || values === null;
   $('parameter-yaml').hidden = editor !== 'yaml';
+  // "Each launch saves a parameter snapshot" holds only with a file chosen.
+  $('parameters-help').hidden = !$('params-config').value;
   if (editor !== 'fields') return;
   const host = $('parameter-fields');
   host.replaceChildren();
   if (values === null) {
-    const hint = 'Using the task’s own defaults. Choose a parameter preset to edit its values.';
-    host.append(node('p', 'help', hint));
+    // No values to edit: a task that runs without a file, a project with
+    // no parameter file at all, or a text editor emptied and switched back
+    // (while a file loads, loadConfig shows "Loading parameters…" instead).
+    // Either way a launch now sends no parameters, and the reader is told
+    // what runs instead (noValuesHint).
+    host.append(node('p', 'help', noValuesHint(project())));
     return;
   }
   // Controls are numbered param-0, param-1, … in document order, and each
@@ -825,28 +990,112 @@ async function switchEditor(next) {
 /* ------------------------------------------------------------------ */
 
 /**
- * Draw what depends on the server state as a whole: welcome screen or
- * workspace, the project list (only when it changed), the launch button
- * and the history list.
+ * Draw what depends on the server state as a whole: welcome screen or the
+ * selected experiment's heading and view, the project list (only when it
+ * changed), the launch button and the history list.
  */
 function renderState() {
-  $('empty').hidden = !!project();
-  $('workspace').hidden = !project();
+  const p = project();
+  $('empty').hidden = !!p;
+  $('project-heading').hidden = !p;
+  $('workspace').hidden = !p || view !== 'run';
+  $('data-view').hidden = !p || view !== 'data';
   $('project-count').textContent = state.projects.length;
-  const signature = JSON.stringify([state.projects, selected]);
+  // The title can change under a registered experiment (its pyproject is
+  // re-read on every poll), so the heading and tab follow it here too.
+  if (p) nameView(p);
+  const signature = JSON.stringify([state.projects, selected, view]);
   if (signature !== projectSignature) {
     projectSignature = signature;
-    const buttons = state.projects.map((p) => {
-      const button = node('button', 'project-button' + (p.id === selected ? ' selected' : ''));
-      button.append(node('span', 'project-icon', '◈'), node('span', '', p.name));
-      button.setAttribute('aria-current', p.id === selected ? 'page' : 'false');
-      button.addEventListener('click', guard(() => chooseProject(p.id)));
-      return button;
-    });
-    $('projects').replaceChildren(...buttons);
+    $('projects').replaceChildren(...state.projects.map(projectEntry));
   }
   updateLaunch();
   renderHistory();
+}
+
+/**
+ * One experiment in the sidebar: a button with its title, which opens it on
+ * the view last used for it; and, for the selected experiment, its submenu —
+ * "Run experiment" and "Data" — with the view shown marked as current.
+ */
+function projectEntry(p) {
+  const chosen = p.id === selected;
+  const entry = node('div', 'project-entry');
+  const button = node('button', 'project-button' + (chosen ? ' selected' : ''));
+  button.type = 'button';
+  button.append(node('span', 'project-icon', '◈'), node('span', '', titleOf(p)));
+  button.setAttribute('aria-current', chosen ? 'true' : 'false');
+  button.addEventListener('click', guard(() => chooseProject(p.id)));
+  entry.append(button);
+  if (chosen) {
+    const views = node('div', 'project-views');
+    views.setAttribute('role', 'group');
+    views.setAttribute('aria-label', `${titleOf(p)} views`);
+    for (const [name, text] of Object.entries(VIEWS)) {
+      const item = node('button', 'view-button' + (name === view ? ' selected' : ''), text);
+      item.type = 'button';
+      item.dataset.view = name;
+      item.setAttribute('aria-current', name === view ? 'page' : 'false');
+      item.addEventListener('click', () => showView(name));
+      views.append(item);
+    }
+    entry.append(views);
+  }
+  return entry;
+}
+
+/** The view last shown for experiment `id`, 'run' when none was; a stored
+ *  value this page does not know (from a later version, or edited by hand)
+ *  is reported in the console and ignored rather than shown as a blank. */
+function rememberedView(id) {
+  const stored = localStorage.getItem(VIEW_KEY + id);
+  if (stored === null) return 'run';
+  if (Object.hasOwn(VIEWS, stored)) return stored;
+  console.warn(`Ignoring the unknown workspace view ${JSON.stringify(stored)} for ${id}`);
+  return 'run';
+}
+
+/** Name the selected experiment and its view in the breadcrumb, the
+ *  heading's eyebrow and the browser tab ("<title> · Alhazen"). */
+function nameView(p) {
+  $('breadcrumb').textContent = titleOf(p);
+  $('breadcrumb-view').textContent = `/ ${VIEWS[view]}`;
+  $('view-eyebrow').textContent = VIEWS[view].toUpperCase();
+  document.title = `${titleOf(p)} · Alhazen`;
+}
+
+/**
+ * Show view `next` ('run' or 'data') of the selected experiment and
+ * remember it for that experiment. Leaving the Data view tells
+ * workspace_data.js (WorkspaceData.hide) so it can stop what it is doing;
+ * entering it hands that script the experiment and the page's helpers
+ * (WorkspaceData.show) — every time, so switching experiments while on the
+ * Data view shows the new one's data. Without workspace_data.js the view
+ * says so plainly instead of staying blank.
+ */
+function showView(next) {
+  const p = project();
+  if (!p) return;
+  if (!Object.hasOwn(VIEWS, next)) throw new Error(`Unknown workspace view: ${next}`);
+  const data = window.WorkspaceData;
+  if (view === 'data') data?.hide?.();
+  view = next;
+  localStorage.setItem(VIEW_KEY + p.id, next);
+  nameView(p);
+  $('workspace').hidden = next !== 'run';
+  $('data-view').hidden = next !== 'data';
+  if (next === 'data') {
+    if (typeof data?.show === 'function') {
+      data.show(p, {api, token, node, error});
+    } else {
+      $('data-view').replaceChildren(
+        node('p', 'data-unavailable', 'Data inspection is not available'),
+      );
+    }
+  }
+  // The sidebar marks the view shown: redraw it.
+  projectSignature = '';
+  renderState();
 }
 
 /**
@@ -867,7 +1116,7 @@ function renderHistory() {
     const subject = who(run) ? ` · ${who(run)}` : '';
     text.append(
       node('strong', '', title(run)),
-      node('small', '', `${date(run.started)} · ${runRig(run)}${subject}`),
+      node('small', '', `${date(run.started)} · ${runRig(run, slugOf(project()))}${subject}`),
     );
     // A movie run gets a play glyph; every other mode opens a display.
     const icon = node('span', 'history-icon', run.mode === 'movie' ? '▷' : '↗');
@@ -1162,8 +1411,48 @@ function openProject(edit = false) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Colour theme                                                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Apply colour theme `choice` — 'system', 'light' or 'dark' — and mark its
+ * button in the sidebar. 'system' removes the page's data-theme attribute,
+ * so the stylesheet's prefers-color-scheme rule decides (and follows the
+ * operating system when it switches); 'light' and 'dark' set it, which the
+ * stylesheet obeys over the system's setting (workspace.css, tokens).
+ * `remember` stores the choice in localStorage for the next visit.
+ */
+function setTheme(choice, remember = true) {
+  if (!THEMES.includes(choice)) throw new Error(`Unknown colour theme: ${choice}`);
+  const root = document.documentElement;
+  if (choice === 'system') delete root.dataset.theme;
+  else root.dataset.theme = choice;
+  for (const name of THEMES) {
+    $(`theme-${name}`).setAttribute('aria-pressed', String(name === choice));
+  }
+  if (remember) localStorage.setItem(THEME_KEY, choice);
+}
+
+/** The theme remembered from the last visit, 'system' when none was; a
+ *  stored value this page does not know is reported in the console and
+ *  replaced by the default rather than applied half-way. */
+function rememberedTheme() {
+  const stored = localStorage.getItem(THEME_KEY);
+  if (stored === null) return 'system';
+  if (THEMES.includes(stored)) return stored;
+  console.warn(`Ignoring the unknown colour theme ${JSON.stringify(stored)}`);
+  return 'system';
+}
+
+/* ------------------------------------------------------------------ */
 /* Wiring                                                              */
 /* ------------------------------------------------------------------ */
+
+// The remembered theme, before the first poll draws anything else.
+setTheme(rememberedTheme(), false);
+for (const name of THEMES) {
+  $(`theme-${name}`).addEventListener('click', () => setTheme(name));
+}
 
 $('add-project').addEventListener('click', () => openProject());
 $('empty-add').addEventListener('click', () => openProject());
@@ -1179,6 +1468,7 @@ $('fields-tab').addEventListener('click', guard(() => switchEditor('fields')));
 $('yaml-tab').addEventListener('click', guard(() => switchEditor('yaml')));
 $('media-tab').addEventListener('click', () => outputTab('media'));
 $('console-tab').addEventListener('click', () => outputTab('console'));
+$('monitor-tab').addEventListener('click', () => outputTab('monitor'));
 $('stop').addEventListener('click', guard(async () => {
   await api('/api/stop', {id: runId});
   await refresh();
@@ -1208,6 +1498,9 @@ $('project-form').addEventListener('submit', async (event) => {
 $('remove-project').addEventListener('click', guard(async () => {
   await api('/api/projects/remove', {id: selected});
   $('project-dialog').close();
+  // The removed experiment's Data view is left: say so to its script.
+  if (view === 'data') window.WorkspaceData?.hide?.();
+  view = 'run';
   selected = null;
   runId = null;
   await refresh();

@@ -25,6 +25,14 @@ anyway. Two of the experiment's own files with one name are an error rather
 than a choice, since whichever were picked, the other would be silently
 ignored.
 
+**Qualified names.** Every rig also has a name that says whose it is:
+``alhazen/<name>`` for a shared rig and ``<experiment>/<name>`` for one of the
+experiment's own, where ``<experiment>`` is its slug (its pyproject's
+``[project] name``, e.g. ``amodal-averaging/lab``). The experiment workspace
+and ``alhazen rigs`` show rigs this way, and ``--rig`` takes it:
+``amodal-averaging/lab`` is that experiment's own lab and never a shared one.
+A bare name works exactly as before.
+
 **Extending.** An experiment rig may begin with ``extends: <name>``, naming a
 shared rig, and then says only what it does differently. Its settings are
 merged over the shared file's (``rig_mapping``) and the result is validated
@@ -46,6 +54,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, NamedTuple, TypeAlias
 
+from alhazen.config.experiment import experiment_title
 from alhazen.config.gamma import GAMMA_FILENAME_SUFFIX
 from alhazen.config.loader import read_mapping
 from alhazen.errors import ConfigError
@@ -94,6 +103,15 @@ class RigRef:
         shared rig, which reaches it even when an experiment rig shadows it,
         and the bare name for an experiment rig."""
         return f"{SHARED_PREFIX}{self.name}" if self.source == "alhazen" else self.name
+
+    def qualified(self, experiment: str) -> str:
+        """The rig's name with its owner in front, the one spelling that says
+        whose it is: ``alhazen/<name>`` for a shared rig and
+        ``<experiment>/<name>`` for one of the experiment's own, where
+        ``experiment`` is that experiment's slug
+        (`alhazen.config.experiment.experiment_title`). ``--rig`` takes both
+        (:func:`resolve_rig`); ``alhazen rigs`` and the workspace show them."""
+        return self.spec if self.source == "alhazen" else f"{experiment}/{self.name}"
 
     def describe(self) -> str:
         """One phrase for a console line: the name, whose it is, and the file."""
@@ -211,12 +229,15 @@ def resolve_rig(
     1. A path to an existing file is that file, exactly as ``--rig`` has
        always taken it — named ``alhazen`` when it is one of the shared rigs.
     2. ``alhazen/<name>`` is the shared rig of that name.
-    3. Any other name is the experiment's own rig of that name (looked for
+    3. ``<experiment>/<name>`` is the experiment's own rig of that name, and
+       only that (:func:`_resolve_qualified`).
+    4. Any other name is the experiment's own rig of that name (looked for
        under ``experiment_root``), else the shared one.
 
     Raises ConfigError for a name nothing has — listing every rig there is,
-    and whose each is — for a name two of the experiment's files share, and
-    for a path that does not exist. ``shared`` is as for :func:`list_rigs`.
+    and whose each is — for a name two of the experiment's files share, for
+    a qualified name whose experiment is not the one searched, and for a
+    path that does not exist. ``shared`` is as for :func:`list_rigs`.
     """
     path = Path(spec)
     if path.is_file():
@@ -224,6 +245,9 @@ def resolve_rig(
             file_rig_name(path), path, "alhazen" if _is_shared_file(path, shared) else "experiment"
         )
     text = str(spec).strip()
+    qualified = _qualified_parts(text)
+    if qualified is not None:
+        return _resolve_qualified(str(spec), *qualified, experiment_root, shared)
     name = rig_name(text)
     if name is None:
         # Not a name, so meant as a path — and there is no file there. The
@@ -243,20 +267,94 @@ def resolve_rig(
         return RigRef(name, Path(files[name]), "alhazen")
     root = experiment_root() if callable(experiment_root) else experiment_root
     own = experiment_rig_files(root) if root is not None else []
-    matches = [found for found_name, found in own if found_name == name]
-    if len(matches) > 1:
-        raise ConfigError(
-            f"the experiment has {len(matches)} rigs named {name!r}: "
-            f"{', '.join(str(p) for p in matches)}. `--rig {name}` cannot choose between "
-            "them: rename one (a rig's name is its file name without rig- and .yaml), or "
-            "give the path of the one you mean"
-        )
-    if matches:
-        return RigRef(name, matches[0], "experiment")
+    found = _own_rig(name, own, typed=name)
+    if found is not None:
+        return found
     files = shared_rig_files() if shared is None else shared
     if name in files:
         return RigRef(name, Path(files[name]), "alhazen")
     raise ConfigError(_no_such_rig(name, root, own, files))
+
+
+def _own_rig(name: str, own: list[tuple[str, Path]], *, typed: str) -> RigRef | None:
+    """The experiment's own rig called ``name``, None when it has none, and a
+    ConfigError naming every file when two of its files share the name —
+    whichever were picked, the other would be silently ignored. ``typed`` is
+    the spelling to quote back (``lab``, or ``amodal-averaging/lab``)."""
+    matches = [found for found_name, found in own if found_name == name]
+    if len(matches) > 1:
+        raise ConfigError(
+            f"the experiment has {len(matches)} rigs named {name!r}: "
+            f"{', '.join(str(p) for p in matches)}. `--rig {typed}` cannot choose between "
+            "them: rename one (a rig's name is its file name without rig- and .yaml), or "
+            "give the path of the one you mean"
+        )
+    return RigRef(name, matches[0], "experiment") if matches else None
+
+
+def _qualified_parts(text: str) -> tuple[str, str] | None:
+    """``(experiment, rig name)`` when ``text`` is spelled ``<experiment>/<rig>``
+    — one ``/``, an experiment part that cannot be a folder step (not ``.``
+    or ``..``, no backslash) and a rig part that is a name — else None.
+
+    ``alhazen/<name>`` is not one: it has its own meaning, checked first.
+    Called only after ``text`` turned out not to be an existing file, so an
+    existing ``configs/rig-lab.yaml`` is still that file; a missing one reads
+    as a qualified name, whose refusal still begins "config file not found"
+    (:func:`_resolve_qualified`), as it did before this spelling existed.
+    """
+    if text.startswith(SHARED_PREFIX) or text.count("/") != 1:
+        return None
+    experiment, rig = text.split("/")
+    if not experiment or experiment in {".", ".."} or "\\" in experiment:
+        return None
+    name = rig_name(rig)
+    return (experiment, name) if name is not None else None
+
+
+def _resolve_qualified(
+    spec: str,
+    experiment: str,
+    name: str,
+    experiment_root: ExperimentRoot,
+    shared: Mapping[str, Path] | None,
+) -> RigRef:
+    """``<experiment>/<name>``: the experiment's own rig ``name``, never a shared one.
+
+    ``experiment`` must be the slug of the experiment whose ``configs/`` is
+    searched (`alhazen.config.experiment.experiment_title`); another name is
+    refused, naming the right one, because the rig would otherwise be looked
+    up in a different experiment than the one asked for. With no experiment
+    folder found there is nothing to check the name against, and that is
+    refused too. The first two refusals start as a missing path's always has
+    — the text may have been meant as one.
+    """
+    root = experiment_root() if callable(experiment_root) else experiment_root
+    if root is None:
+        raise ConfigError(
+            f"config file not found: {spec}. Read as a rig name, it asks for the rig {name!r} "
+            f"of the experiment {experiment!r}, but no experiment folder was found to look in: "
+            f"run this from the experiment's folder, or give the bare name {name}"
+        )
+    slug = experiment_title(root).slug
+    if experiment != slug:
+        raise ConfigError(
+            f"config file not found: {spec}. Read as a rig name, it asks for the rig {name!r} "
+            f"of the experiment {experiment!r}, but the experiment here ({root}) is {slug!r}: "
+            f"its rigs are named {slug}/<rig>, e.g. {slug}/{name}"
+        )
+    own = experiment_rig_files(root)
+    found = _own_rig(name, own, typed=spec)
+    if found is not None:
+        return found
+    names = ", ".join(f"{slug}/{own_name}" for own_name, _ in own) or "none"
+    files = shared_rig_files() if shared is None else shared
+    # The likely mix-up: a shared rig of that name exists, under its own owner.
+    hint = f" alhazen's shared {name} is alhazen/{name}." if name in files else ""
+    raise ConfigError(
+        f"the experiment {slug!r} has no rig named {name!r} in {root / 'configs'} "
+        f"({slug}/<rig> names only the experiment's own rigs). Its rigs: {names}.{hint}"
+    )
 
 
 def _no_such_rig(

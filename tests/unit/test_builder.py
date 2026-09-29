@@ -1094,6 +1094,66 @@ class TestTheExperimentVersionFilesTheRun:
         (run_dir,) = (p.parent for p in (tmp_path / "data").rglob("session.json"))
         assert (run_dir / "rig.yaml").read_bytes() == (repo / "rig-sim.yaml").read_bytes()
 
+    def test_the_command_is_recorded_with_run_py_relative_to_the_experiment(
+        self, tmp_path, monkeypatch
+    ):
+        # What run.py hands down: its own path as the process started it
+        # (absolute, as the experiment workspace launches it), then the
+        # arguments as parsed. The record names run.py as a person would type
+        # it from the experiment's folder, and leaves the arguments alone.
+        repo, task = self.experiment_project(tmp_path)
+        monkeypatch.chdir(tmp_path)
+        argv = ["--mode", "run", "--sub", "01", "--params", str(repo / "task.yaml")]
+
+        self.session(
+            tmp_path, task, rig=repo / "rig-sim.yaml", command=[str(repo / "run.py"), *argv]
+        ).run()
+
+        (run_dir,) = (p.parent for p in (tmp_path / "data").rglob("session.json"))
+        card = json.loads((run_dir / "session.json").read_text(encoding="utf-8"))
+        snapshot = yaml.safe_load((run_dir / "config_snapshot.yaml").read_text(encoding="utf-8"))
+        assert card["command"] == snapshot["command"] == ["run.py", *argv]
+
+    def test_a_session_built_in_code_records_no_command(self, tmp_path, monkeypatch):
+        repo, task = self.experiment_project(tmp_path)
+        monkeypatch.chdir(tmp_path)
+
+        self.session(tmp_path, task, rig=repo / "rig-sim.yaml").run()
+
+        (run_dir,) = (p.parent for p in (tmp_path / "data").rglob("session.json"))
+        card = json.loads((run_dir / "session.json").read_text(encoding="utf-8"))
+        snapshot = yaml.safe_load((run_dir / "config_snapshot.yaml").read_text(encoding="utf-8"))
+        assert card["command"] is None and snapshot["command"] is None
+        # A whole rig file needs no merged copy: rig.yaml is the whole rig.
+        assert not (run_dir / "rig-merged.yaml").exists()
+        assert card["files"]["rig_merged"] is None
+
+    def test_a_rig_that_extends_a_shared_one_is_also_recorded_whole(self, tmp_path):
+        # rig.yaml is the experiment's half, byte for byte; rig-merged.yaml
+        # is the rig the session loaded, readable without the alhazen that
+        # shipped the other half.
+        repo, task = self.experiment_project(tmp_path)
+        rig_file = repo / "rig-laptop.yaml"
+        rig_file.write_text(
+            "# only what this experiment does differently on the laptop\n"
+            "extends: laptop\n"
+            "display:\n  backend: simulated\n"
+            "live_monitor:\n  enabled: false\n"
+            f"data_root: {(tmp_path / 'data').as_posix()}\n",
+            encoding="utf-8",
+        )
+
+        self.session(tmp_path, task, rig=rig_file).run()
+
+        (run_dir,) = (p.parent for p in (tmp_path / "data").rglob("session.json"))
+        assert (run_dir / "rig.yaml").read_bytes() == rig_file.read_bytes()
+        assert load_rig(run_dir / "rig-merged.yaml").model_dump() == load_rig(rig_file).model_dump()
+        card = json.loads((run_dir / "session.json").read_text(encoding="utf-8"))
+        assert card["files"]["rig_merged"] == "rig-merged.yaml"
+        # And the manifest vouches for it like every other file.
+        manifest = yaml.safe_load((run_dir / "manifest.yaml").read_text(encoding="utf-8"))
+        assert "rig-merged.yaml" in {entry["path"] for entry in manifest["artifacts"]}
+
     def test_a_database_from_a_newer_alhazen_is_refused_before_the_run_folder(self, tmp_path):
         # 2.0.1: one from an OLDER schema is moved aside instead (below); a
         # newer one is still refused, and still before anything is made.

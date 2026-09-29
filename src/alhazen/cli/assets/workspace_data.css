@@ -1,0 +1,310 @@
+/* Alhazen experiment workspace — the Data view (workspace_data.js).
+ *
+ * Every colour is one of workspace.css' :root variables (--paper, --white,
+ * --ink, --muted, --line, --accent, --accent-soft), never a literal, so the
+ * view follows the page's light/dark theme with no rule of its own. The one
+ * exception is the plot's series colours, a fixed palette set by
+ * workspace_plot.js that reads on both surfaces.
+ *
+ * The cards reuse workspace.css' .card, .card-heading, .step, .eyebrow and
+ * .path; what is here is the view's own layout: toolbars, the two tables,
+ * the run summary, the record viewer, figures and the plot.
+ */
+
+#data-view {
+  display: grid;
+  gap: 18px;
+}
+
+.data-heading {
+  margin-bottom: 0;
+}
+
+.data-body {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  /* The workspace's cards pad their contents, not themselves. */
+  padding: 16px 23px 20px;
+}
+
+/* The heading's own padding is the workspace's; its h1 sits at the top. */
+#data-view .page-heading {
+  padding-bottom: 6px;
+}
+
+.data-more summary {
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.data-more[open] summary {
+  margin-bottom: 4px;
+}
+
+.data-missing {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* A failure, said where it happened: an accent rule and bold ink, so it
+ * stands out in either theme without a colour of its own. */
+.data-error {
+  margin: 0;
+  padding: 8px 12px;
+  border-left: 4px solid var(--accent);
+  background: var(--accent-soft);
+  color: var(--ink);
+  font-weight: 600;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.data-cut {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.data-note {
+  margin: 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.data-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.data-select, .data-search {
+  width: auto;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.data-search {
+  flex: 1 1 220px;
+}
+
+.data-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--muted);
+}
+
+/* Tables scroll inside their card, headers stay in view. */
+.data-scroll {
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+
+.data-runs-scroll {
+  max-height: 340px;
+}
+
+.data-rows-scroll {
+  max-height: 460px;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.data-table th, .data-table td {
+  padding: 5px 9px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.data-table th {
+  position: sticky;
+  top: 0;
+  background: var(--paper);
+  color: var(--muted);
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+}
+
+.data-table th.data-added {
+  color: var(--accent);
+}
+
+.data-rows td {
+  font-family: var(--mono);
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.data-table tr[data-run] {
+  cursor: pointer;
+}
+
+.data-table tr[data-run]:hover td {
+  background: var(--paper);
+}
+
+.data-table tr.selected td {
+  background: var(--accent-soft);
+}
+
+.data-check {
+  width: 28px;
+}
+
+.data-flag {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+/* One run: its card beside its files. */
+.data-run-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(260px, 1fr);
+  gap: 16px;
+}
+
+.data-card-summary {
+  display: grid;
+  align-content: start;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 14px;
+  margin: 0;
+}
+
+.data-card-summary dt {
+  color: var(--muted);
+}
+
+.data-card-summary dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.data-file-list {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  max-height: 240px;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.data-file-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.data-file-name {
+  overflow-wrap: anywhere;
+}
+
+.data-file-size {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.data-records button[aria-pressed=true] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.data-viewer {
+  margin: 0;
+  max-height: 420px;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--paper);
+  color: var(--ink);
+  font: 12px/1.45 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.data-figures {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.data-figures figure {
+  margin: 0;
+}
+
+.data-figures img {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--white);
+}
+
+.data-figures figcaption {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+/* The plot. Its marks carry their own series colours; everything else is
+ * the page's ink, so it reads in either theme. */
+.data-figure {
+  max-width: 900px;
+}
+
+.plot {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.plot-bg, .plot-legend-bg {
+  fill: var(--white);
+}
+
+.plot-legend-bg {
+  stroke: var(--line);
+}
+
+.plot-grid {
+  stroke: var(--line);
+}
+
+.plot-axis {
+  stroke: var(--muted);
+}
+
+.plot-tick {
+  fill: var(--muted);
+  font-size: 12px;
+}
+
+.plot-label, .plot-legend-text {
+  fill: var(--ink);
+  font-size: 13px;
+}
+
+.plot-bar {
+  opacity: .85;
+}
+
+@media (max-width: 900px) {
+  .data-run-grid {
+    grid-template-columns: 1fr;
+  }
+}

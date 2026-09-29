@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import fnmatch
 import importlib.util
+import re
 import sys
 from pathlib import Path
 
@@ -124,6 +125,17 @@ class TestTheSharedRigs:
     def test_the_laptop_rig_targets_the_laptop_panel_not_the_ultrawide(self):
         """Screen 1 on that machine is off limits; its file says a test pins it."""
         assert load_rig(shared_rig_files()["laptop"]).monitor.screen_index == 0
+
+    def test_the_laptop_rig_describes_the_panel_in_native_pixels(self):
+        """The laptop is a Windows machine at 150 % display scaling: the
+        desktop calls its 2560x1440 panel 1707x960. Stimuli are placed in
+        framebuffer pixels, so the file must carry the native count (a
+        logical one makes every stimulus 1.5x too big), and the panel's
+        165 Hz, which is not the lab's 120 Hz."""
+        monitor = load_rig(shared_rig_files()["laptop"]).monitor
+        assert (monitor.width_px, monitor.height_px) == (2560, 1440)
+        assert monitor.refresh_rate_hz == 165.0
+        assert monitor.width_cm == 38.0
 
     def test_the_lab_rehearsal_is_the_lab_with_its_devices_stood_down(self):
         """What the rehearsal rehearses is the lab's configuration, so the two
@@ -252,6 +264,87 @@ class TestNames:
         assert resolve_rig("lab", None).source == "alhazen"
         with pytest.raises(ConfigError, match="no experiment folder was searched"):
             resolve_rig("booth", None)
+
+
+def write_pyproject(root: Path, name: str = "amodal-averaging") -> None:
+    """Give the experiment folder a pyproject.toml naming it ``name``."""
+    (root / "pyproject.toml").write_text(
+        f'[project]\nname = "{name}"\nversion = "0.1.0"\n', encoding="utf-8"
+    )
+
+
+class TestQualifiedNames:
+    """`<experiment>/<rig>`: the experiment's own rig, spelled with its owner,
+    the way the workspace and `alhazen rigs` show it. Additive: every bare
+    name and path keeps its meaning (TestNames)."""
+
+    @pytest.mark.parametrize(
+        "spelling",
+        ["amodal-averaging/lab", "amodal-averaging/rig-lab", "amodal-averaging/rig-lab.yaml"],
+    )
+    def test_the_project_name_and_a_rig_name_is_the_experiments_rig(self, experiment, spelling):
+        write_pyproject(experiment)
+        assert resolve_rig(spelling, experiment) == RigRef(
+            "lab", experiment / "configs" / "rig-lab.yaml", "experiment"
+        )
+
+    def test_the_folder_name_is_the_experiments_name_without_a_pyproject(self, experiment):
+        assert resolve_rig("experiment/booth", experiment).path.name == "rig-booth.yml"
+
+    def test_it_never_falls_back_to_a_shared_rig(self, experiment):
+        """`amodal-averaging/mac` asks for the experiment's own mac; the shared
+        one exists, and is named in the refusal, but is not silently given."""
+        write_pyproject(experiment)
+        with pytest.raises(ConfigError) as refused:
+            resolve_rig("amodal-averaging/mac", experiment)
+        message = str(refused.value)
+        assert "the experiment 'amodal-averaging' has no rig named 'mac'" in message
+        assert "amodal-averaging/booth, amodal-averaging/lab" in message
+        assert "alhazen's shared mac is alhazen/mac" in message
+
+    def test_another_experiments_name_is_refused_naming_the_right_one(self, experiment):
+        write_pyproject(experiment)
+        with pytest.raises(ConfigError) as refused:
+            resolve_rig("kde-vergence/lab", experiment)
+        message = str(refused.value)
+        # Begins as a missing path always has: the text may have been one.
+        assert message.startswith("config file not found: kde-vergence/lab.")
+        assert "the experiment 'kde-vergence'" in message
+        assert "is 'amodal-averaging'" in message
+        assert "amodal-averaging/lab" in message
+
+    def test_with_no_experiment_folder_the_name_cannot_be_checked(self):
+        with pytest.raises(ConfigError, match="no experiment folder was found to look in"):
+            resolve_rig("amodal-averaging/lab", None)
+        with pytest.raises(ConfigError, match="no experiment folder was found"):
+            resolve_rig("amodal-averaging/lab", lambda: None)
+
+    def test_two_files_with_the_name_are_refused_as_for_the_bare_name(self, experiment):
+        write_yaml(experiment / "configs" / "old" / "rig-lab.yaml", whole_rig())
+        with pytest.raises(ConfigError, match=r"2 rigs named 'lab'.*`--rig experiment/lab`"):
+            resolve_rig("experiment/lab", experiment)
+
+    def test_an_existing_path_of_that_shape_is_still_the_file(self, tmp_path, monkeypatch):
+        """`configs/rig-lab.yaml` has the qualified shape too; a file there
+        keeps winning, exactly as before names existed."""
+        write_yaml(tmp_path / "configs" / "rig-lab.yaml", whole_rig())
+        monkeypatch.chdir(tmp_path)
+        ref = resolve_rig("configs/rig-lab.yaml", None)
+        assert ref.path == Path("configs/rig-lab.yaml")
+
+    @pytest.mark.parametrize("spelling", ["./lab", "../lab", "a/b/lab", "x/rig-"])
+    def test_a_folder_step_or_a_deeper_path_is_a_path_not_a_name(self, spelling):
+        refusal = f"^config file not found: {re.escape(spelling)}. A rig"
+        with pytest.raises(ConfigError, match=refusal):
+            resolve_rig(spelling, None)
+
+    def test_the_qualified_spelling_of_every_listed_rig_resolves_to_it(self, experiment):
+        write_pyproject(experiment)
+        for ref in list_rigs(experiment):
+            if not ref.shadowed:
+                assert resolve_rig(ref.qualified("amodal-averaging"), experiment) == ref
+        shadowed = next(ref for ref in list_rigs(experiment) if ref.shadowed)
+        assert shadowed.qualified("amodal-averaging") == "alhazen/lab"
 
 
 class TestListing:
@@ -438,14 +531,16 @@ class TestTheCommandLine:
         lines = out.splitlines()
         assert lines[2].split() == ["NAME", "SOURCE", "FILE", "NOTE"]
         rows = [line.split(None, 3) for line in lines[3:10]]
+        # Each by its qualified name, owner first: the fixture's folder has no
+        # pyproject.toml, so the experiment's slug is the folder's name.
         assert [row[:3] for row in rows] == [
-            ["booth", "experiment", "configs/rooms/rig-booth.yml"],
-            ["lab", "experiment", "configs/rig-lab.yaml"],
-            ["vpixx", "experiment", "configs/rig-vpixx.yaml"],
-            ["lab", "alhazen", "rig-lab.yaml"],
-            ["lab-rehearsal", "alhazen", "rig-lab-rehearsal.yaml"],
-            ["laptop", "alhazen", "rig-laptop.yaml"],
-            ["mac", "alhazen", "rig-mac.yaml"],
+            ["experiment/booth", "experiment", "configs/rooms/rig-booth.yml"],
+            ["experiment/lab", "experiment", "configs/rig-lab.yaml"],
+            ["experiment/vpixx", "experiment", "configs/rig-vpixx.yaml"],
+            ["alhazen/lab", "alhazen", "rig-lab.yaml"],
+            ["alhazen/lab-rehearsal", "alhazen", "rig-lab-rehearsal.yaml"],
+            ["alhazen/laptop", "alhazen", "rig-laptop.yaml"],
+            ["alhazen/mac", "alhazen", "rig-mac.yaml"],
         ]
         assert rows[2][3] == "extends alhazen/vpixx"
         assert rows[3][3] == (
@@ -456,6 +551,22 @@ class TestTheCommandLine:
     def test_rigs_takes_the_project_folder(self, experiment, capsys):
         assert main(["rigs", "--project", str(experiment)]) == 0
         assert "configs/rooms/rig-booth.yml" in capsys.readouterr().out
+
+    def test_rigs_qualifies_the_experiments_rigs_with_its_project_name(self, experiment, capsys):
+        write_pyproject(experiment)
+        assert main(["rigs", "--project", str(experiment)]) == 0
+        out = capsys.readouterr().out
+        assert "(experiment amodal-averaging)" in out.splitlines()[0]
+        assert "amodal-averaging/lab " in out and "amodal-averaging/booth " in out
+        # Every name printed is one --rig takes back.
+        assert resolve_rig("amodal-averaging/booth", experiment).name == "booth"
+
+    def test_rigs_says_why_a_broken_pyproject_leaves_the_folder_name(self, experiment, capsys):
+        (experiment / "pyproject.toml").write_text("[project\n", encoding="utf-8")
+        assert main(["rigs", "--project", str(experiment)]) == 0
+        captured = capsys.readouterr()
+        assert "experiment/lab " in captured.out
+        assert "note: cannot read" in captured.err
 
     def test_rigs_exits_nonzero_on_a_rig_a_name_would_refuse(self, experiment, capsys):
         write_yaml(experiment / "configs" / "old" / "rig-lab.yaml", whole_rig())

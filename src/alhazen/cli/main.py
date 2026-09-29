@@ -29,6 +29,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from alhazen.cli.console_break import interrupt_on_console_break
+from alhazen.config.experiment import experiment_title
 from alhazen.config.loader import load_rig
 from alhazen.config.models import normalize_initials
 from alhazen.config.rigs import list_rigs, local_rig_file, resolve_rig, rig_extends
@@ -190,6 +191,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command is None:
         parser.print_help()
         return 0
+    # The command line as this parser received it, for a session's run
+    # folder to record (session.json's `command`). The program is written as
+    # `alhazen`, the command a person types, whether this was started through
+    # the console script or `python -m alhazen.cli.main`.
+    args.invocation = ["alhazen", *(sys.argv[1:] if argv is None else argv)]
     # argparse has already refused any name not in the table (its `choices`
     # are the subparsers above), so the lookup cannot miss.
     return _COMMANDS[args.command](args, parser)
@@ -286,6 +292,15 @@ def _rigs(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
         if ref.source == "experiment":
             counts[ref.name] = counts.get(ref.name, 0) + 1
 
+    # Each rig by its qualified name, the spelling that says whose it is —
+    # <experiment>/<name> or alhazen/<name> — and which --rig takes as well
+    # as the bare name (alhazen.config.rigs.resolve_rig). The experiment's
+    # part is its slug, read from its pyproject.toml without importing it.
+    title = experiment_title(root)
+    if title.error:
+        # The slug fell back to the folder's name; say why, or a reader who
+        # typed the [project] name would not know why it is refused.
+        print(f"note: {title.error}", file=sys.stderr)
     rows: list[tuple[str, str, str, str]] = []
     problems = 0
     for ref in rigs:
@@ -311,9 +326,12 @@ def _rigs(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
                     f"shadowed by the experiment's {ref.name} (reach this one with "
                     f"--rig alhazen/{ref.name})"
                 )
-        rows.append((ref.name, ref.source, shown, "; ".join(notes)))
+        rows.append((ref.qualified(title.slug), ref.source, shown, "; ".join(notes)))
 
-    print(f"rigs for {root.resolve()} — give --rig a NAME, or the path to a rig file\n")
+    print(
+        f"rigs for {root.resolve()} (experiment {title.slug}) — give --rig a NAME, with or "
+        "without its owner, or the path to a rig file\n"
+    )
     header = ("NAME", "SOURCE", "FILE", "NOTE")
     widths = [max(len(row[i]) for row in [header, *rows]) for i in range(3)]
     for row in [header, *rows]:
@@ -1001,6 +1019,11 @@ def _trial_session(args: argparse.Namespace, rig: Any, task: Any, params: Any, m
             },
             # Recorded and checked against the registry, never in a path.
             initials=args.initials,
+            # How this session was started, for session.json and the
+            # snapshot: set by `main` and `run_experiment` from the argv they
+            # parsed. A namespace built some other way has none, and the run
+            # records null rather than a guess.
+            command=getattr(args, "invocation", None),
         )
     except (ConfigError, DataError) as e:
         # DataError: what is already on disk refuses the session — a used run
