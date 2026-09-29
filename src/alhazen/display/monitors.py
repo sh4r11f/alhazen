@@ -97,7 +97,8 @@ def format_gamma(gamma: float | tuple[float, ...] | None) -> str:
 
 
 def _psychopy_monitors() -> Any:
-    """PsychoPy's monitor module, or a DisplayError naming the extra.
+    """PsychoPy's monitor module, or the DisplayError that names the
+    interpreter and what to install into it.
 
     Imported here rather than at module scope so that a headless analysis
     machine — and the default test suite — can import everything above this
@@ -106,9 +107,13 @@ def _psychopy_monitors() -> Any:
     try:
         from psychopy import monitors
     except ImportError as e:
-        raise DisplayError(
-            "registering a monitor needs psychopy installed — pip install 'alhazen[psychopy]'"
-        ) from e
+        # The display backend's message, not a second one of this module's
+        # own (psychopy_backend.psychopy_missing). Imported here, not at the
+        # top: psychopy_backend imports this module, so a module-level import
+        # would be circular.
+        from alhazen.display.psychopy_backend import psychopy_missing
+
+        raise psychopy_missing(e, "reading or writing PsychoPy's monitor records") from e
     return monitors
 
 

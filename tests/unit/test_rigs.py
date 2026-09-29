@@ -414,6 +414,31 @@ class TestExtends:
         sync = load_rig(path, shared_rigs=shared).devices.sync
         assert sync.event_lines == lines and sync.pulse_ms == 2.0
 
+    def test_a_null_takes_a_frame_qa_threshold_away(self, tmp_path, shared):
+        """A rig switching the shared lab's frame QA to `warn` must be able to
+        remove the lab's recycle budget: kept as None it would still count as
+        given, and frame QA refuses a threshold its policy never reads."""
+        path = self.extending(
+            tmp_path,
+            {
+                "display": {
+                    "frame_qa": {
+                        "policy": "warn",
+                        "max_dropped_fraction": None,
+                        "max_consecutive_recycles": None,
+                    }
+                }
+            },
+        )
+        merged = rig_mapping(path, shared=shared).values
+        assert "max_dropped_fraction" not in merged["display"]["frame_qa"]
+        rig = load_rig(path, shared_rigs=shared)
+        assert rig.display.frame_qa.policy == "warn"
+
+    def test_a_null_for_a_key_the_shared_rig_lacks_is_simply_absent(self, tmp_path, shared):
+        path = self.extending(tmp_path, {"display": {"not_in_the_base": None}})
+        assert "not_in_the_base" not in rig_mapping(path, shared=shared).values["display"]
+
     def test_a_null_removes_what_the_shared_rig_has(self, tmp_path, shared):
         path = self.extending(tmp_path, {"devices": {"reward": None, "sync": None}})
         rig = load_rig(path, shared_rigs=shared)

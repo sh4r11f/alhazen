@@ -33,7 +33,7 @@ from alhazen.config.experiment import experiment_title
 from alhazen.config.loader import load_rig
 from alhazen.config.models import normalize_initials
 from alhazen.config.rigs import list_rigs, local_rig_file, resolve_rig, rig_extends
-from alhazen.errors import AlhazenError, ConfigError, DataError
+from alhazen.errors import AlhazenError, ConfigError, DataError, DisplayError
 from alhazen.modes import Mode, flag_refusal
 from alhazen.session.checks import check_rig, format_result
 from alhazen.testing.sorter import FAULTS
@@ -871,6 +871,12 @@ def _measure_rig(args: argparse.Namespace, rig: Any, root: Callable[[], Path]) -
         # and did not will sit through it wondering why.
         print(f"CANNOT MEASURE: {e}", file=sys.stderr)
         return 2
+    except DisplayError as e:
+        # The rig's window could not open (PsychoPy missing from this
+        # interpreter, a framebuffer the wrong size...): nothing was
+        # measured, and the message says why and what to do.
+        print(f"CANNOT MEASURE: {e}", file=sys.stderr)
+        return 1
     print(report.render())
     written = report.save(_measurement_path(beside))
     print(f"written: {written}")
@@ -917,6 +923,13 @@ def _demo_task(args: argparse.Namespace, rig: Any, task: Any, params: Any) -> in
         # implement, which is more useful than anything this layer could say.
         print(f"CANNOT DEMO: {e}", file=sys.stderr)
         return 2
+    except DisplayError as e:
+        # The window could not open: PsychoPy missing from this interpreter,
+        # a framebuffer that is not the size the rig says, a monitor
+        # registration that disagrees with it. Each message names the cause
+        # and the fix; a traceback in front of it only buried it.
+        print(f"CANNOT DEMO: {e}", file=sys.stderr)
+        return 1
 
 
 def _movie_task(args: argparse.Namespace, rig: Any, task: Any, params: Any) -> int:
@@ -1025,10 +1038,13 @@ def _trial_session(args: argparse.Namespace, rig: Any, task: Any, params: Any, m
             # records null rather than a guess.
             command=getattr(args, "invocation", None),
         )
-    except (ConfigError, DataError) as e:
+    except (ConfigError, DataError, DisplayError) as e:
         # DataError: what is already on disk refuses the session — a used run
         # folder, an experiment database from before 2.0's schema. Each names
-        # the file and what to do; a traceback would bury that.
+        # the file and what to do; a traceback would bury that. DisplayError:
+        # the session's window could not open — PsychoPy missing from this
+        # interpreter, a framebuffer that is not the size the rig says — and
+        # its message, too, names the cause and the fix.
         print(f"CANNOT RUN: {e}", file=sys.stderr)
         return 1
 
@@ -1080,7 +1096,9 @@ def _calibrate(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
         levels, luminances = calibration.read_measurements(args.measurements)
         fit = calibration.fit_gamma(levels, luminances)
         written = calibration.write_gamma(beside, fit)
-    except ConfigError as e:
+    except (ConfigError, DisplayError) as e:
+        # DisplayError: the ruler's window could not open (PsychoPy missing
+        # from this interpreter, ...), said with its cause and fix.
         print(f"CANNOT CALIBRATE: {e}", file=sys.stderr)
         return 1
     print(
@@ -1104,7 +1122,6 @@ def _monitor(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     from alhazen.config.gamma import gamma_path, load_gamma
     from alhazen.config.loader import load_rig
     from alhazen.display import monitors as registry
-    from alhazen.errors import DisplayError
 
     if args.monitor_command is None:
         parser.parse_args(["monitor", "--help"])

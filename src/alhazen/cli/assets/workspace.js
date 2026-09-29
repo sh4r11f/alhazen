@@ -47,6 +47,12 @@ const MODES = {
 const INITIALS_RULE = 'initials must be 1 to 5 letters, such as HD';
 const INITIALS_REQUIRED = 'Subject initials are required for run and test modes';
 
+/* What installs PsychoPy for alhazen, word for word as the error a launch
+ * without it prints (alhazen.display.psychopy_backend.PSYCHOPY_INSTALL; a
+ * Python test holds the two together). The distribution is alhazen-vision:
+ * a bare `alhazen` on PyPI is an unrelated project. */
+const PSYCHOPY_INSTALL = 'pip install "alhazen-vision[psychopy]"';
+
 /* The API token. The opening URL carries it in the fragment (#token=…), which
  * a browser never sends to a server, so it stays out of request logs; the
  * page keeps it for reloads and then takes it out of the address bar.
@@ -107,6 +113,10 @@ let parameterSchema = {};
  * "<project id>:<rig path>" (two projects may both have a configs/rig.yaml).
  * The Live monitor tab reads it to say why an active run shows no monitor. */
 const rigMonitor = {};
+/* Each rig's display backend, as its merged YAML says it (keyed like
+ * rigMonitor): 'psychopy' or 'simulated'. A rig not read yet has no entry,
+ * which psychopyNeeded treats as "cannot tell yet", not as either answer. */
+const rigBackend = {};
 /* The run most recently started from this page, and the run whose monitor
  * tab has already been brought up on its own: the tab is switched once, for
  * the reader who is waiting on the run they launched, and never again. */
@@ -458,6 +468,54 @@ function usesParameters() {
 /* ------------------------------------------------------------------ */
 
 /**
+ * Will this launch open a PsychoPy window? true, false, or null when that
+ * cannot be told yet (the rig has not been read).
+ *
+ * The rule, read from alhazen's modes (it is inferred there, so the page
+ * only warns on it and never blocks a launch):
+ *   demo, measure       always: both open alhazen's PsychoPy display
+ *                       whatever the rig's display backend says
+ *                       (modes/demo.py run_demo, modes/measure.py).
+ *   test, run           when the rig's display backend is psychopy (the
+ *                       model's default when the YAML does not say).
+ *   simulate            the same, unless headless, which swaps the display
+ *                       for the simulated one (modes/session.py rig_for_mode).
+ *   movie, scripts      never known to: movie renders off screen, and a
+ *                       script's needs are its own.
+ */
+function psychopyNeeded(mode, backend, headless) {
+  if (mode === 'demo' || mode === 'measure') return true;
+  if (!['test', 'run', 'simulate'].includes(mode)) return false;
+  if (mode === 'simulate' && headless) return false;
+  if (backend === undefined) return null;
+  return backend === 'psychopy';
+}
+
+/**
+ * The launch footer's warning when the selected launch needs PsychoPy and
+ * the project's interpreter may not have it, else null.
+ *
+ * `psychopy_version` is what the interpreter probe found when the project
+ * was registered (workspace.py INTERPRETER_PROBE): a version string, null
+ * for "not importable there", and absent for a registration made before the
+ * probe asked, which says nothing either way — so that case asks for a
+ * re-registration rather than claiming PsychoPy is missing.
+ */
+function psychopyWarning(p, mode, backend, headless) {
+  if (!p || psychopyNeeded(mode, backend, headless) !== true) return null;
+  const opens = `${label(mode)} opens a PsychoPy window`;
+  if (!('psychopy_version' in p)) {
+    return `${opens}. Whether this project’s interpreter (${p.python}) has PsychoPy is `
+      + 'unknown: it was registered before the dashboard checked. Re-register to check: '
+      + 'Project settings → Save.';
+  }
+  if (p.psychopy_version !== null) return null;
+  return `${opens}, and this project’s interpreter (${p.python}) has no PsychoPy, so the `
+    + `run will stop with an error. Install it there with ${PSYCHOPY_INSTALL}, or choose an `
+    + 'interpreter that has it in Project settings.';
+}
+
+/**
  * The launch button's state and the note under it. Disabled while a run is
  * active (one job at a time), while a launch is in flight, while parameters
  * are still loading (a launch then would silently use defaults for the
@@ -477,6 +535,10 @@ function updateLaunch() {
   if (launching) $('launch').textContent = 'Starting…';
   else if (state.active) $('launch').textContent = 'A run is in progress';
   else $('launch').textContent = `▶ ${label($('mode').value) || 'Start run'}`;
+  const mode = $('mode').value;
+  const backend = p ? rigBackend[`${p.id}:${$('rig').value}`] : undefined;
+  const headless = mode === 'simulate' && $('headless').checked;
+  const psychopy = psychopyWarning(p, mode, backend, headless);
   let note;
   if (p?.tasks_error) {
     // Before the active-run note: this one asks the reader to fix run.py,
@@ -485,12 +547,19 @@ function updateLaunch() {
       + p.tasks_error;
   } else if (state.active) {
     note = 'One run at a time keeps the rig available to its active experiment.';
-  } else if ($('mode').value === 'run') {
+  } else if (psychopy) {
+    // Before the real-data reminder: a run that cannot open its window
+    // records nothing, so the missing PsychoPy is the thing to fix first.
+    note = psychopy;
+  } else if (mode === 'run') {
     note = 'This mode records real subject data. Check the rig and subject ID before starting.';
   } else {
     note = 'Runs locally in your experiment’s Python environment.';
   }
   $('launch-note').textContent = note;
+  // Styled as a warning (workspace.css .launch-warning) only while the note
+  // is the PsychoPy one; every other note is plain help text.
+  $('launch-note').classList.toggle('launch-warning', note === psychopy);
 }
 
 /**
@@ -743,6 +812,9 @@ async function loadRig() {
   // 2.0 that still says it is refused at launch, naming `live_monitor:`.
   const monitorOn = rig.live_monitor?.enabled === true || rig.dashboard?.enabled === true;
   rigMonitor[`${p.id}:${value}`] = monitorOn;
+  // The display backend, for the launch footer's PsychoPy warning. A rig
+  // that does not say gets the model's default (DisplayConfig.backend).
+  rigBackend[`${p.id}:${value}`] = rig.display?.backend || 'psychopy';
   // '?' rather than 'undefined' for a field the YAML leaves to its default.
   rigFacts([
     ['Screen', [`${m.width_px ?? '?'} × ${m.height_px ?? '?'} px`, `${m.refresh_rate_hz ?? '?'} Hz`]],
@@ -751,6 +823,8 @@ async function loadRig() {
     ['Live monitor', [monitorOn ? 'on' : 'off']],
     ['Rig', origin],
   ]);
+  // The footer's warning depends on the backend just learned.
+  updateLaunch();
 }
 
 /**
@@ -1462,6 +1536,8 @@ $('close-image').addEventListener('click', () => $('image-dialog').close());
 $('mode').addEventListener('change', modeChanged);
 $('task').addEventListener('change', guard(taskChanged));
 $('rig').addEventListener('change', guard(loadRig));
+// Headless simulate opens no window, so the PsychoPy warning follows it.
+$('headless').addEventListener('change', updateLaunch);
 $('params-config').addEventListener('change', guard(loadConfig));
 $('parameter-search').addEventListener('input', filterParameters);
 $('fields-tab').addEventListener('click', guard(() => switchEditor('fields')));

@@ -1,11 +1,11 @@
 /* The Data view (workspace_data.js) rendered in the fake DOM.
  *
- * The view is loaded with workspace_plot.js, as workspace.html loads them,
- * and driven through its two-call contract, WorkspaceData.show(project, ctx)
- * and hide(). `ctx.api` is a fake of workspace_data.py's routes answering
- * from plain objects (`server.*` below), so a test reads like its scenario:
- * "a folder with two runs, one of them damaged". A route a test did not set
- * up throws, naming the URL — never an empty answer.
+ * The view is loaded on its own, as workspace.html loads it, and driven
+ * through its two-call contract, WorkspaceData.show(project, ctx) and
+ * hide(). `ctx.api` is a fake of workspace_data.py's routes answering from
+ * plain objects (`server.*` below), so a test reads like its scenario: "a
+ * folder with two runs, one of them damaged". A route a test did not set up
+ * throws, naming the URL — never an empty answer.
  */
 
 import assert from 'node:assert/strict';
@@ -13,10 +13,9 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import vm from 'node:vm';
 
-import { FakeDocument, serialize } from './fake_dom.mjs';
+import { FakeDocument } from './fake_dom.mjs';
 
 const ASSETS = new URL('../../src/alhazen/cli/assets/', import.meta.url);
-const PLOT = readFileSync(new URL('workspace_plot.js', ASSETS), 'utf8');
 const VIEW = readFileSync(new URL('workspace_data.js', ASSETS), 'utf8');
 
 const settle = () => new Promise((resolve) => setImmediate(resolve));
@@ -84,20 +83,13 @@ function load() {
   view.hidden = true;
   document.body.appendChild(view);
   const opened = [];
-  const downloads = [];
+  // Only what the view uses: a global it needs and does not find here
+  // fails the test with a ReferenceError instead of passing unnoticed.
   const sandbox = {
-    document, console, encodeURIComponent, URLSearchParams, Blob,
-    setTimeout: () => 0,
+    document, console, encodeURIComponent, URLSearchParams,
     window: { open: (...args) => opened.push(args) },
-    getComputedStyle: () => ({ getPropertyValue: (name) => ({ '--ink': '#111111' })[name] || '' }),
-    XMLSerializer: class { serializeToString(element) { return serialize(element); } },
-    URL: {
-      createObjectURL: (blob) => { downloads.push(blob); return 'blob:figure'; },
-      revokeObjectURL: () => {},
-    },
   };
   const context = vm.createContext(sandbox);
-  vm.runInContext(PLOT, context);
   vm.runInContext(VIEW, context);
   const server = fakeServer();
   const errors = [];
@@ -114,7 +106,7 @@ function load() {
   };
   const show = (project = { id: 'p1', name: 'demo', title: 'Demo experiment' }) =>
     sandbox.window.WorkspaceData.show(project, ctx);
-  return { document, view, server, show, ctx, errors, opened, downloads, sandbox };
+  return { document, view, server, show, ctx, errors, opened, sandbox };
 }
 
 const cardOf = (view, name) => view.querySelector(`[data-card="${name}"]`);
@@ -338,7 +330,7 @@ test('checked runs pool into one table, sortable and filterable', async () => {
   assert.equal(card.querySelector('.data-shown').textContent, 'No row matches the filter.');
 });
 
-test('a capped table says so, and so does its plot', async () => {
+test('a capped table says so', async () => {
   const page = load();
   const card = await pooled(page, {
     ...TABLE, total: 61564, capped: true, limit: 3,
@@ -349,8 +341,66 @@ test('a capped table says so, and so does its plot', async () => {
     `${RUN_A}: a_frames.csv (61,563 rows, 3 loaded)`,
     `${RUN_B}: b_frames.csv (1 row, none loaded)`,
   ]);
-  assert.match(texts(card, '.data-error').join(), /Only the first 3 of 61,564 rows were loaded \(the limit is 3\)/);
-  assert.match(texts(cardOf(page.view, 'plot'), '.data-note').join(), /capped/);
+  assert.match(texts(card, '.data-error').join(),
+    /Only the first 3 of 61,564 rows were loaded \(the limit is 3\)\. Filters and sorting see those rows only\./);
+});
+
+/** A pooled table with one column of `cells` (named `value`) beside the
+ *  three pooling columns, loaded, and a function reading that column. */
+async function tableWithColumn(page, cells) {
+  const card = await pooled(page, {
+    ...TABLE,
+    columns: ['run', 'subject', 'session', 'value'],
+    rows: cells.map((cell, i) => [i % 2 ? RUN_B : RUN_A, i % 2 ? '02' : '01', '1', cell]),
+    total: cells.length,
+  });
+  const column = () => card.querySelectorAll('tr').slice(1).map((r) => r.children[3].textContent);
+  const sort = () => card.querySelector('th[data-column="3"]').onclick();
+  return { column, sort };
+}
+
+test('a numeric column sorts by value, however the CSV writes its numbers', async () => {
+  /* The cells are the CSV's own text. A number may carry spaces, a sign or
+   * an exponent; True/False (how the trials file writes a boolean) count as
+   * 1 and 0; an empty cell has no value and goes last either way. Sorted as
+   * text, 0.5 would come before 0.25; by value it comes after. */
+  const page = load();
+  const { column, sort } = await tableWithColumn(page, ['0.5', '0.25', ' -2e3 ', 'True', 'false', '', '10', '+.75']);
+  sort();
+  assert.deepEqual(column(), [' -2e3 ', 'false', '0.25', '0.5', '+.75', 'True', '10', '']);
+  sort();
+  assert.deepEqual(column(), ['10', 'True', '+.75', '0.5', '0.25', 'false', ' -2e3 ', '']);
+});
+
+test('one text cell makes a column sort as text', async () => {
+  /* HIT is text; so are 0x10 and Infinity, which JavaScript's Number()
+   * would take but which are not measurements. With any of them the column
+   * sorts as text (digit runs compared as numbers), so 0.5 comes before 0.25
+   * and 0x10 before 1 — neither of which a numeric sort would do. */
+  for (const [cells, sorted] of [
+    [['0.5', '0.25', 'HIT', '10'], ['0.5', '0.25', '10', 'HIT']],
+    [['2', '0x10', '1'], ['0x10', '1', '2']],
+    [['0.5', 'Infinity', '0.25'], ['0.5', '0.25', 'Infinity']],
+  ]) {
+    const page = load();
+    const { column, sort } = await tableWithColumn(page, cells);
+    sort();
+    assert.deepEqual(column(), sorted, cells.join(' '));
+  }
+});
+
+test('the view has no plot: four cards, and a loaded table is only a table', async () => {
+  /* The owner took the quick plots out after 2.1.1 ("leave the plotting out
+   * for now"); this keeps a merge from bringing them back unnoticed. */
+  const page = load();
+  await pooled(page);
+  assert.deepEqual(page.view.querySelectorAll('[data-card]').map((c) => c.getAttribute('data-card')),
+    ['roots', 'runs', 'run', 'table']);
+  assert.equal(page.view.querySelector('svg'), null);
+  assert.ok(!texts(page.view, 'button').some((t) => /figure|plot/i.test(t)));
+  assert.doesNotMatch(texts(page.view, '.data-shown').join(), /plot/i);
+  // Every failure is said in its card; nothing went to the page's banner.
+  assert.deepEqual(page.errors, []);
 });
 
 test('a table that cannot be read is an error in the table card', async () => {
@@ -364,60 +414,6 @@ test('a table that cannot be read is an error in the table card', async () => {
   await cardOf(page.view, 'run').querySelector('button[data-load="trials"]').onclick();
   await settled();
   assert.match(texts(cardOf(page.view, 'table'), '.data-error').join(), /cannot be parsed after line 3/);
-});
-
-test('the plot starts from sensible columns, refuses text y and saves as SVG', async () => {
-  const page = load();
-  await pooled(page);
-  const plot = cardOf(page.view, 'plot');
-  assert.equal(plot.hidden, false);
-  const [kind, x, y, group] = plot.querySelectorAll('select');
-  assert.equal(kind.value, 'mean');
-  assert.equal(x.value, 'cond'); // the first text column the file has
-  // The file's first numeric column; the added subject/session are not
-  // offered first, though "01" reads as a number.
-  assert.equal(y.value, 'success');
-  // Text columns are offered for y, disabled, with the reason.
-  const cond = y.querySelectorAll('option').find((o) => o.value === 'cond');
-  assert.equal(cond.disabled, true);
-  assert.equal(cond.textContent, 'cond (text) — not for y');
-  y.value = 'success';
-  y.onchange();
-  assert.ok(plot.querySelector('svg'));
-  assert.deepEqual(texts(plot, 'text.plot-label'), ['cond', 'success (proportion)']);
-  group.value = 'subject';
-  group.onchange();
-  assert.deepEqual(texts(plot, 'text.plot-legend-text'), ['01', '02']);
-  // Every kind draws from this table.
-  for (const value of ['scatter', 'hist-y', 'hist-x']) {
-    kind.value = value;
-    kind.onchange();
-    if (value === 'hist-x') {
-      assert.match(texts(plot, '.data-error').join(), /cond is not numeric/);
-    } else {
-      assert.ok(plot.querySelector('svg'), value);
-    }
-  }
-  kind.value = 'mean';
-  kind.onchange();
-  y.value = 'cond';
-  y.onchange();
-  assert.match(texts(plot, '.data-error').join(), /cond holds text, so it cannot be y/);
-  assert.equal(plot.querySelector('svg'), null);
-  // Saving with nothing drawn is said on the page.
-  plot.querySelector('button[data-role="save"]').onclick();
-  assert.match(page.errors[0], /no figure to save/);
-  y.value = 'rt_ms';
-  y.onchange();
-  const clicked = [];
-  page.document.onElementClick = (element) => clicked.push(element);
-  plot.querySelector('button[data-role="save"]').onclick();
-  const link = clicked.find((element) => element.localName === 'a');
-  assert.equal(link.download, 'demo-trials-mean-rt_ms-by-cond.svg');
-  const text = await page.downloads[0].text();
-  assert.match(text, /^<svg/);
-  // The theme's colour, written into the file, which has no page CSS.
-  assert.match(text, /<style>.*plot-label\{fill:#111111/);
 });
 
 test('hide() empties the view, and a late answer is dropped', async () => {
@@ -448,22 +444,22 @@ test('the view never writes markup: file text lands as text', async () => {
   assert.equal(cell.textContent, '<img src=x onerror=alert(1)>');
   assert.equal(cell.children.length, 0);
   // And no code path assigns markup (the file comments may name it).
-  assert.ok(!/\.(innerHTML|outerHTML)\s*=|insertAdjacentHTML/.test(VIEW + PLOT));
+  assert.ok(!/\.(innerHTML|outerHTML)\s*=|insertAdjacentHTML/.test(VIEW));
 });
 
 test('every colour variable the Data view uses is one workspace.css defines', () => {
   // The view is coloured only through workspace.css' theme variables. One
   // that is not defined there resolves to nothing, and the browser's
-  // fallback for an SVG fill is black: the plot's background went black in
-  // the light theme when --white was renamed --surface. So every var(--x)
+  // fallback for an SVG fill is black: 2.1.0's plot background went black
+  // in the light theme when --white was renamed --surface. So every var(--x)
   // in the view's stylesheet and script must be declared in the page's.
   const page = readFileSync(new URL('workspace.css', ASSETS), 'utf8');
   const defined = new Set([...page.matchAll(/^\s*(--[\w-]+)\s*:/gm)].map((m) => m[1]));
   const sheet = readFileSync(new URL('workspace_data.css', ASSETS), 'utf8');
   const used = new Set([
     ...[...sheet.matchAll(/var\((--[\w-]+)/g)].map((m) => m[1]),
-    // saveFigure() reads the theme's colours by name.
-    ...[...VIEW.matchAll(/read\('(--[\w-]+)'/g)].map((m) => m[1]),
+    // Any the script writes into an inline style (none today).
+    ...[...VIEW.matchAll(/var\((--[\w-]+)/g)].map((m) => m[1]),
   ]);
   assert.ok(used.size > 3, 'found the variables the view uses');
   const undefinedOnes = [...used].filter((name) => !defined.has(name));

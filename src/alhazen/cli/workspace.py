@@ -69,9 +69,9 @@ STOP_GRACE_S = 30
 # a few seconds; one that hangs this long is not going to answer.
 CHILD_TIMEOUT_S = 20
 # What `add()` asks the project's interpreter, as a single -c program: which
-# alhazen it can import, which Python it is, and which shared rigs that
-# alhazen ships (name and absolute file). JSON on the last line so the answer
-# survives anything the import itself prints.
+# alhazen it can import, which Python it is, which shared rigs that alhazen
+# ships (name and absolute file), and which PsychoPy it has. JSON on the last
+# line so the answer survives anything the import itself prints.
 #
 # The shared rigs are asked of the PROJECT's alhazen, not read from the
 # workspace's own: the two may be different versions, and `--rig alhazen/lab`
@@ -79,15 +79,34 @@ CHILD_TIMEOUT_S = 20
 # before shared rigs has no module to list them, which is "none", not a
 # failure; a module that is there but fails to import is a broken
 # installation, and raises like any other import here.
+#
+# PsychoPy is looked for, never imported: importing it takes seconds and
+# starts things (its preferences, audio and window libraries), and all the
+# page needs is whether a launch that opens a window can find it. find_spec
+# locates the package without running it; its version comes from the
+# installed distribution's metadata (the distribution and the import are both
+# named psychopy, so no look-alike can answer). null: not importable here.
+# "unknown": a psychopy package with no installed metadata (a bare source
+# tree on the path) — present, but of no known version. The probe uses
+# importlib itself rather than alhazen.version because it runs under the
+# project's alhazen, which may be older than any helper this one has.
 INTERPRETER_PROBE = """\
 import importlib.util, json, sys
+from importlib.metadata import PackageNotFoundError, version
 import alhazen
 if importlib.util.find_spec("alhazen.config.rigs") is None:
     shared = []
 else:
     from alhazen.config.rigs import shared_rig_files
     shared = [{"name": n, "path": str(p.resolve())} for n, p in shared_rig_files().items()]
-print(json.dumps({"alhazen": alhazen.__version__, "python": sys.version, "shared_rigs": shared}))
+psychopy = None
+if importlib.util.find_spec("psychopy") is not None:
+    try:
+        psychopy = version("psychopy")
+    except PackageNotFoundError:
+        psychopy = "unknown"
+print(json.dumps({"alhazen": alhazen.__version__, "python": sys.version, "shared_rigs": shared,
+                  "psychopy": psychopy}))
 """
 # Said wherever a project registered before the probe asked for shared rigs
 # is missing them: its record has no list, which is not the same as an empty
@@ -144,8 +163,10 @@ def _child_env(project: dict[str, Any]) -> dict[str, str]:
 
 
 def probe_interpreter(python: str, project_path: str) -> dict[str, Any]:
-    """Which alhazen and which Python does this interpreter have, and which
-    shared rigs does that alhazen ship? Refuse if it has no alhazen.
+    """Which alhazen and which Python does this interpreter have, which
+    shared rigs does that alhazen ship, and which PsychoPy is installed
+    beside it? Refuse if it has no alhazen; a missing PsychoPy is recorded,
+    not refused (a project may only ever simulate or record movies).
 
     Run in the same environment a launch gets, so what is checked is what a
     run would import. Every failure is a ValueError that names the
@@ -191,6 +212,12 @@ def probe_interpreter(python: str, project_path: str) -> dict[str, Any]:
             # checks against them, and the workspace merges a rig that
             # `extends` one over exactly that file (_shared_rigs).
             "shared_rigs": shared,
+            # The interpreter's PsychoPy version, or None when it has none.
+            # The page warns before a launch that would open a PsychoPy
+            # window without it (workspace.js). A record without the key was
+            # registered before the probe asked, which is "unknown" there, not
+            # "not installed".
+            "psychopy_version": None if report["psychopy"] is None else str(report["psychopy"]),
         }
     except (IndexError, ValueError, KeyError, TypeError) as exc:
         raise ValueError(unexpected) from exc

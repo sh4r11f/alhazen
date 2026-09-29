@@ -285,18 +285,26 @@ def run_demo(
     directly, so a demo inherits every check a session gets — most usefully
     the framebuffer check, since the Retina Mac it catches is exactly the
     machine a stimulus is most often judged on.
+
+    Raises DisplayError when the window cannot open, including when PsychoPy
+    is not installed in this interpreter (the message names the interpreter
+    and what to install into it).
     """
     from pathlib import Path
-
-    from psychopy import core, event
 
     from alhazen.display.psychopy_backend import PsychoPyDisplay
 
     screen = Screen.from_monitor(rig.monitor)
     display = PsychoPyDisplay(rig.monitor, windowed=windowed)
+    # Opened BEFORE anything is imported from psychopy here: open() is where
+    # a missing PsychoPy becomes the DisplayError that says which interpreter
+    # lacks it and what to install. Importing psychopy.core first, as this
+    # used to, met the same absence as a raw ModuleNotFoundError traceback —
+    # which is what the dashboard's console showed for a project registered
+    # with an environment that had alhazen but no PsychoPy.
     display.open()
     try:
-        from psychopy import visual
+        from psychopy import core, event, visual
 
         setup = DemoSetup(
             display=display, screen=screen, params=params, rng=np.random.default_rng(seed)

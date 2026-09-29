@@ -2,13 +2,11 @@
  *
  * Every colour is one of workspace.css' :root variables (--paper, --surface,
  * --ink, --muted, --line, --accent, --accent-soft), never a literal, so the
- * view follows the page's light/dark theme with no rule of its own. The one
- * exception is the plot's series colours, a fixed palette set by
- * workspace_plot.js that reads on both surfaces.
+ * view follows the page's light/dark theme with no rule of its own.
  *
  * The cards reuse workspace.css' .card, .card-heading, .step, .eyebrow and
  * .path; what is here is the view's own layout: toolbars, the two tables,
- * the run summary, the record viewer, figures and the plot.
+ * the run summary, the record viewer and the figures.
  */
 
 #data-view {
@@ -84,14 +82,6 @@
 
 .data-search {
   flex: 1 1 220px;
-}
-
-.data-control {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin: 0;
-  color: var(--muted);
 }
 
 /* Tables scroll inside their card, headers stay in view. */
@@ -255,48 +245,6 @@
   color: var(--muted);
   font-size: 12px;
   overflow-wrap: anywhere;
-}
-
-/* The plot. Its marks carry their own series colours; everything else is
- * the page's ink, so it reads in either theme. */
-.data-figure {
-  max-width: 900px;
-}
-
-.plot {
-  display: block;
-  width: 100%;
-  height: auto;
-}
-
-.plot-bg, .plot-legend-bg {
-  fill: var(--surface);
-}
-
-.plot-legend-bg {
-  stroke: var(--line);
-}
-
-.plot-grid {
-  stroke: var(--line);
-}
-
-.plot-axis {
-  stroke: var(--muted);
-}
-
-.plot-tick {
-  fill: var(--muted);
-  font-size: 12px;
-}
-
-.plot-label, .plot-legend-text {
-  fill: var(--ink);
-  font-size: 13px;
-}
-
-.plot-bar {
-  opacity: .85;
 }
 
 @media (max-width: 900px) {

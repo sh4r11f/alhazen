@@ -1392,6 +1392,76 @@ describe('the colour theme', () => {
     assert.match(system, /--paper:/);
     assert.equal(system, chosen);
   });
+
+  it('keeps every text and control colour readable in both palettes', () => {
+    /* WCAG AA: text needs a contrast ratio of 4.5:1 against what it is drawn
+     * on; a control's edge (a field's border, the focus ring) and the logo's
+     * bricks 3:1. The dark palette is the owner's VS Code theme, and where
+     * the theme itself falls short (white on its blue button is 2.8:1) the
+     * stylesheet departs from it; this pins that it did. Each pair below is
+     * one the stylesheet really draws (text token on background token). */
+    const css = readFileSync(
+      new URL('../../src/alhazen/cli/assets/workspace.css', import.meta.url), 'utf8',
+    );
+    /** The tokens of the block that starts at `marker`, as {name: '#rrggbb'}. */
+    const palette = (marker) => {
+      const start = css.indexOf(marker);
+      assert.notEqual(start, -1, marker);
+      // The block's own brace: the search starts at the marker, which may end in it.
+      const open = css.indexOf('{', start);
+      const text = css.slice(open + 1, css.indexOf('}', open));
+      return Object.fromEntries(
+        [...text.matchAll(/--([\w-]+):\s*(#[0-9a-fA-F]{6})\b/g)].map((m) => [m[1], m[2]]),
+      );
+    };
+    /** Relative luminance of an sRGB colour (WCAG 2 definition). */
+    const luminance = (hex) => {
+      const [r, g, b] = [1, 3, 5].map((i) => {
+        const c = parseInt(hex.slice(i, i + 2), 16) / 255;
+        return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const ratio = (a, b) => {
+      const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+      return (hi + 0.05) / (lo + 0.05);
+    };
+    const TEXT = [
+      ['ink', ['paper', 'surface', 'surface-2', 'surface-3', 'field', 'hover-bg']],
+      ['muted', ['paper', 'surface', 'surface-2', 'surface-3', 'field']],
+      ['accent', ['paper', 'surface', 'accent-soft']],
+      ['on-accent', ['accent', 'accent-hover']],
+      ['selected-ink', ['selected-bg']],
+      ['run-ink', ['run-bg']],
+      ['ok-ink', ['ok-bg', 'surface']],
+      ['bad-ink', ['bad-bg', 'surface', 'paper']],
+      ['console-ink', ['console-bg']],
+    ];
+    const EDGES = [
+      ['field-border', ['field', 'surface']],
+      ['focus', ['paper', 'surface']],
+      ['logo-brick', ['logo-ground']],
+    ];
+    const light = palette(':root {');
+    const dark = palette(':root[data-theme=dark]');
+    // Light mode keeps its own colours; the dark one is the VS Code theme's.
+    assert.equal(dark.paper.toLowerCase(), '#080808');
+    assert.equal(dark['selected-ink'].toLowerCase(), '#f3c900');
+    const low = [];
+    for (const [name, colours] of [['light', light], ['dark', dark]]) {
+      for (const [pairs, need] of [[TEXT, 4.5], [EDGES, 3]]) {
+        for (const [fg, backgrounds] of pairs) {
+          for (const bg of backgrounds) {
+            // A token missing from a palette is a failure, not a skip.
+            assert.ok(colours[fg] && colours[bg], `${name}: --${fg} or --${bg} is not a #rrggbb token`);
+            const r = ratio(colours[fg], colours[bg]);
+            if (r < need) low.push(`${name} --${fg} on --${bg}: ${r.toFixed(2)} < ${need}`);
+          }
+        }
+      }
+    }
+    assert.deepEqual(low, []);
+  });
 });
 
 describe('the logo', () => {
@@ -1408,10 +1478,56 @@ describe('the logo', () => {
       assert.ok(start !== -1 && end > start);
       return text.slice(start, end).replace(/\s+/g, ' ');
     };
+    // The frame, the letter and the layering are one drawing. The bricks
+    // (the <pattern>s before LOGO-START) are sized per file: see the next test.
     const inline = drawing(read('workspace.html'));
     assert.equal(drawing(read('favicon.svg')), inline);
-    assert.match(inline, /id="logo-bricks-turned"/);
+    assert.match(inline, /url\(#logo-bricks-turned\)/);
     assert.match(read('workspace.html'), /<link rel="icon" href="\/favicon.svg" type="image\/svg\+xml">/);
+  });
+
+  it('uses 4:1 bricks, finer in the sidebar than in the favicon', () => {
+    /* The sidebar draws the logo at 56 px with bricks 4 units wide (one
+     * pixel each); a browser tab draws the favicon at 16-32 px, where those
+     * would blur into grey, so it uses bricks 7 wide. In both the ground is
+     * horizontal L×w bricks, the figure the same turned upright and shifted
+     * by half a brick width both ways. */
+    const read = (name) => readFileSync(
+      new URL(`../../src/alhazen/cli/assets/${name}`, import.meta.url), 'utf8',
+    );
+    const bricks = (text) => {
+      const ground = text.match(/<pattern id="logo-bricks" width="([\d.]+)" height="([\d.]+)"/);
+      const turned = text.match(
+        /<pattern id="logo-bricks-turned" width="([\d.]+)" height="([\d.]+)"\s+patternUnits="userSpaceOnUse" patternTransform="translate\(([\d.]+) ([\d.]+)\)"/,
+      );
+      assert.ok(ground && turned, 'both brick patterns are present');
+      const [gw, gh] = ground.slice(1, 3).map(Number);
+      const [tw, th, dx, dy] = turned.slice(1, 5).map(Number);
+      // A tile is two bricks: ground 2L × 2w, figure 2w × 2L.
+      const w = gh / 2;
+      assert.equal(gw / 2, 4 * w, 'ground bricks are 4:1');
+      assert.deepEqual([tw, th], [gh, gw], 'the figure is the ground turned 90 degrees');
+      assert.deepEqual([dx, dy], [w / 2, w / 2], 'shifted by half a brick width');
+      return w;
+    };
+    assert.equal(bricks(read('workspace.html')), 4);
+    assert.equal(bricks(read('favicon.svg')), 7);
+  });
+
+  it('paints the upright bricks inside a drawn A, with nothing on top of it', () => {
+    /* The owner: the vertical bricks are painted IN the A, not an A on top
+     * of the figure. So the letter is a path (the favicon cannot load the
+     * page's font, and a path looks the same everywhere) that clips the
+     * turned bricks, and there is no disc, <text> or solid letter left. */
+    const html = readFileSync(
+      new URL('../../src/alhazen/cli/assets/workspace.html', import.meta.url), 'utf8',
+    );
+    const logo = html.slice(html.indexOf('<!-- LOGO-START'), html.indexOf('<!-- LOGO-END -->'));
+    const markup = logo.replace(/<!--[\s\S]*?-->/g, '');
+    assert.match(markup, /<clipPath id="logo-letter">\s*<path d="M[^"]+Z"\/>/);
+    // The turned bricks are drawn only inside the letter's clip.
+    assert.match(markup, /<g clip-path="url\(#logo-letter\)">[^]*?fill="url\(#logo-bricks-turned\)"[^]*?<\/g>/);
+    assert.doesNotMatch(markup, /<text|<circle|stroke/);
   });
 });
 
@@ -1578,5 +1694,101 @@ describe('a task whose parameter choices cannot be read', () => {
       app.byId('choices-notice').textContent,
       'ValueError: bad — the dashboard cannot read this task’s parameter choices.',
     );
+  });
+});
+
+describe('the PsychoPy warning in the launch footer', () => {
+  /* The owner's first Demo from the dashboard ran with an interpreter that
+   * had alhazen but no PsychoPy and ended in a traceback. The page now says
+   * so before the launch, from what the interpreter probe recorded. It warns
+   * and never blocks: which launches need PsychoPy is inferred. */
+  const WITHOUT = { ...PROJECT, python: 'C:/envs/plain/python.exe', psychopy_version: null };
+  const WITH = { ...PROJECT, psychopy_version: '2026.2.4' };
+  const SIMULATED_RIG = rig(true, false);
+  SIMULATED_RIG.values.display = { backend: 'simulated' };
+
+  function note(app) {
+    return app.byId('launch-note');
+  }
+
+  it('names the interpreter and the fix for a demo it cannot open', async () => {
+    const app = await pageWith({ project: WITHOUT });
+    chooseMode(app, 'demo');
+    const text = note(app).textContent;
+    assert.match(text, /^Demo opens a PsychoPy window/);
+    assert.match(text, /C:\/envs\/plain\/python\.exe/);
+    assert.match(text, /pip install "alhazen-vision\[psychopy\]"/);
+    assert.match(text, /Project settings/);
+    assert.equal(note(app).classList.contains('launch-warning'), true);
+    /* A warning, not a refusal. */
+    assert.equal(app.byId('launch').disabled, false);
+  });
+
+  it('says nothing when the interpreter has PsychoPy', async () => {
+    const app = await pageWith({ project: WITH });
+    for (const mode of ['demo', 'measure', 'test', 'run', 'simulate']) {
+      chooseMode(app, mode);
+      assert.doesNotMatch(note(app).textContent, /PsychoPy/, mode);
+      assert.equal(note(app).classList.contains('launch-warning'), false, mode);
+    }
+  });
+
+  it('asks for a re-registration when the record predates the check', async () => {
+    /* PROJECT has no psychopy_version: registered before the probe asked,
+     * which is unknown, not "not installed". */
+    const app = await pageWith();
+    chooseMode(app, 'measure');
+    const text = note(app).textContent;
+    assert.match(text, /^Measure rig opens a PsychoPy window/);
+    assert.match(text, /unknown/);
+    assert.match(text, /Re-register to check/);
+    assert.doesNotMatch(text, /has no PsychoPy/);
+  });
+
+  it('follows the rig’s display backend for sessions', async () => {
+    const app = await pageWith({ project: WITHOUT });
+    /* A simulation with a window; headless is the next test's. */
+    app.byId('headless').checked = false;
+    /* The mac rig says no backend: the model's default, psychopy. */
+    for (const mode of ['test', 'run', 'simulate']) {
+      chooseMode(app, mode);
+      assert.match(note(app).textContent, /opens a PsychoPy window/, mode);
+    }
+    const simulated = await pageWith({
+      project: WITHOUT, rigs: { 'configs/rig-mac.yaml': SIMULATED_RIG },
+    });
+    simulated.byId('headless').checked = false;
+    for (const mode of ['test', 'run', 'simulate']) {
+      chooseMode(simulated, mode);
+      assert.doesNotMatch(note(simulated).textContent, /PsychoPy/, mode);
+    }
+    /* Demo draws through PsychoPy whatever the rig's backend says. */
+    chooseMode(simulated, 'demo');
+    assert.match(note(simulated).textContent, /opens a PsychoPy window/);
+  });
+
+  it('drops the warning for a headless simulation, and for movies', async () => {
+    const app = await pageWith({ project: WITHOUT });
+    chooseMode(app, 'simulate');
+    /* Headless is the form's default for simulate: no window, no warning. */
+    assert.equal(app.byId('headless').checked, true);
+    assert.doesNotMatch(note(app).textContent, /PsychoPy/);
+    app.byId('headless').checked = false;
+    app.byId('headless').fire('change');
+    assert.match(note(app).textContent, /PsychoPy/);
+    app.byId('headless').checked = true;
+    app.byId('headless').fire('change');
+    assert.doesNotMatch(note(app).textContent, /PsychoPy/);
+    assert.equal(note(app).classList.contains('launch-warning'), false);
+    chooseMode(app, 'movie');
+    assert.doesNotMatch(note(app).textContent, /PsychoPy/);
+  });
+
+  it('gives way to an active run’s note, which is about what can launch at all', async () => {
+    const run = runDetail({ status: 'running' });
+    const app = await pageWith({ project: WITHOUT, run: run });
+    chooseMode(app, 'demo');
+    assert.match(note(app).textContent, /One run at a time/);
+    assert.equal(note(app).classList.contains('launch-warning'), false);
   });
 });

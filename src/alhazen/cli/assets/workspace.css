@@ -65,6 +65,11 @@
   --accent-hover: #2a52b8;
   --accent-soft: #e9efff;
   --on-accent: #ffffff;
+  /* The selected experiment in the sidebar (the same as --accent on
+   * --accent-soft here; its own tokens so the dark theme can give it the
+   * VS Code theme's yellow-on-grey). */
+  --selected-bg: #e9efff;
+  --selected-ink: #3563d6;
   --focus: #3563d6;
   --run-ink: #2d5cbc;
   --run-bg: #ebf1ff;
@@ -82,90 +87,147 @@
   --backdrop: #182a4566;
   --logo-ground: #ffffff;
   --logo-brick: #27313d;
-  --logo-letter: #3563d6;
   /* Nunito, the page's own font (@font-face above); the system's own
    * friendly sans-serifs stand in until it loads, or if it cannot. */
   --sans: "Nunito",ui-rounded,"SF Pro Rounded","Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
   --mono: ui-monospace,SFMono-Regular,Consolas,monospace;
 }
 
+/* The dark palette: the owner's VS Code theme, "Deepdark Material Theme |
+ * Full Black Version" (extension nimda.deepdark-material 3.3.1). Each token
+ * takes the colour of the theme's part that plays the same role:
+ *
+ *   --paper          editor.background                    #080808
+ *   --surface        sideBar.background (sidebar, cards,  #0c0c0c
+ *                    buttons, dialogs; a card reads as one
+ *                    by its --line border, as VS Code's
+ *                    panels do)
+ *   --surface-2      editorMarkerNavigation.background    #1f1f1e
+ *                    (insets: rig facts, selected rows)
+ *   --surface-3      list.hoverBackground (badges, the    #212121
+ *                    switch's track, inline code)
+ *   --ink            editorSuggestWidget.foreground,      #d0d0d0
+ *                    peekViewResult.lineForeground
+ *   --muted          sideBar.foreground                   #8c8c8a
+ *   --line           panel.border, editorWidget.border    #3d3d3c
+ *   --field          editor.background                    #080808
+ *   --field-border   breadcrumb.foreground                #6d6d6d
+ *                    (NOT input.border #50504f: that is
+ *                    2.4:1 on the field, under the 3:1 a
+ *                    control's edge needs)
+ *   --hover-border   input.border, dropdown.border        #50504f
+ *   --hover-bg       list.hoverBackground                 #212121
+ *   --accent         button.background,                   #00a4f3
+ *                    notificationLink.foreground
+ *   --accent-hover   button.hoverBackground               #0093da
+ *   --accent-soft    merge.incomingContentBackground      #082a3b
+ *                    (#0070a7 at 30%, over --surface)
+ *   --on-accent      editor.background                    #080808
+ *                    (NOT button.foreground #ffffff: white
+ *                    on #00a4f3 is 2.8:1; #080808 is 7.3:1)
+ *   --selected-bg    list.activeSelectionBackground       #212121
+ *   --selected-ink   list.activeSelectionForeground       #f3c900
+ *   --focus          panelTitle.activeBorder              #00a4f3
+ *                    (the theme's focusBorder is #080808,
+ *                    which would not show on this page)
+ *   --run-*          as --accent / --accent-soft, line    #0070a7
+ *                    merge.incomingHeaderBackground
+ *   --ok-ink         editorInfo.foreground                #00f3c9
+ *   --ok-bg/-line    merge.currentContentBackground       #082b25
+ *                    (#007460 at 30%) / its header         #007460
+ *   --bad-ink        errorForeground #f3002b, lightened   #f64262
+ *                    26% toward white: #f3002b is 3.7:1 on
+ *                    --surface-3 and 4.1:1 on --bad-bg
+ *   --bad-bg/-line   diffEditor.removedTextBackground     #330910
+ *                    (#a7001d at 25%) / its solid colour   #a7001d
+ *   --console-bg/ink terminal.background / --ink          #080808
+ *   --media-bg       tab.activeBackground                 #000000
+ *   --logo-ground    editor.background                    #080808
+ *   --logo-brick     tab.inactiveForeground               #b2b2b1
+ *
+ * Every text token keeps 4.5:1 on every background it is used on, and
+ * --field-border and --focus 3:1 (tests/js/workspace.test.mjs checks the
+ * pairs). */
+
 /* The dark palette, for "Auto" while the system is dark. Keep identical to
  * the block after it (see the file comment). */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme=light]) {
     color-scheme: dark;
-    --paper: #0f1419;
-    --surface: #171e27;
-    --surface-2: #1c2530;
-    --surface-3: #263241;
-    --ink: #e5eaf0;
-    --muted: #a6b0bc;
-    --line: #2b3643;
-    --field: #121820;
-    --field-border: #718094;
-    --hover-border: #5a6a7e;
-    --hover-bg: #1e2835;
-    --accent: #8aabf8;
-    --accent-hover: #a8c1fb;
-    --accent-soft: #1f2c47;
-    --on-accent: #0c1322;
-    --focus: #9dbaff;
-    --run-ink: #9cbaff;
-    --run-bg: #1a2640;
-    --run-line: #2f4468;
-    --ok-ink: #82d4aa;
-    --ok-bg: #142a20;
-    --ok-line: #25493a;
-    --bad-ink: #ffa298;
-    --bad-bg: #331a1a;
-    --bad-line: #5c2e2c;
-    --console-bg: #0a0f14;
-    --console-ink: #d3dfeb;
-    --media-bg: #0d1218;
-    --shadow: #00000040;
-    --backdrop: #000000a6;
-    --logo-ground: #171e27;
-    --logo-brick: #c9d3df;
-    --logo-letter: #8aabf8;
+    --paper: #080808;
+    --surface: #0c0c0c;
+    --surface-2: #1f1f1e;
+    --surface-3: #212121;
+    --ink: #d0d0d0;
+    --muted: #8c8c8a;
+    --line: #3d3d3c;
+    --field: #080808;
+    --field-border: #6d6d6d;
+    --hover-border: #50504f;
+    --hover-bg: #212121;
+    --accent: #00a4f3;
+    --accent-hover: #0093da;
+    --accent-soft: #082a3b;
+    --on-accent: #080808;
+    --selected-bg: #212121;
+    --selected-ink: #f3c900;
+    --focus: #00a4f3;
+    --run-ink: #00a4f3;
+    --run-bg: #082a3b;
+    --run-line: #0070a7;
+    --ok-ink: #00f3c9;
+    --ok-bg: #082b25;
+    --ok-line: #007460;
+    --bad-ink: #f64262;
+    --bad-bg: #330910;
+    --bad-line: #a7001d;
+    --console-bg: #080808;
+    --console-ink: #d0d0d0;
+    --media-bg: #000000;
+    --shadow: #00000080;
+    --backdrop: #000000b3;
+    --logo-ground: #080808;
+    --logo-brick: #b2b2b1;
   }
 }
 
 /* The dark palette, for the reader's explicit Dark choice. */
 :root[data-theme=dark] {
     color-scheme: dark;
-    --paper: #0f1419;
-    --surface: #171e27;
-    --surface-2: #1c2530;
-    --surface-3: #263241;
-    --ink: #e5eaf0;
-    --muted: #a6b0bc;
-    --line: #2b3643;
-    --field: #121820;
-    --field-border: #718094;
-    --hover-border: #5a6a7e;
-    --hover-bg: #1e2835;
-    --accent: #8aabf8;
-    --accent-hover: #a8c1fb;
-    --accent-soft: #1f2c47;
-    --on-accent: #0c1322;
-    --focus: #9dbaff;
-    --run-ink: #9cbaff;
-    --run-bg: #1a2640;
-    --run-line: #2f4468;
-    --ok-ink: #82d4aa;
-    --ok-bg: #142a20;
-    --ok-line: #25493a;
-    --bad-ink: #ffa298;
-    --bad-bg: #331a1a;
-    --bad-line: #5c2e2c;
-    --console-bg: #0a0f14;
-    --console-ink: #d3dfeb;
-    --media-bg: #0d1218;
-    --shadow: #00000040;
-    --backdrop: #000000a6;
-    --logo-ground: #171e27;
-    --logo-brick: #c9d3df;
-    --logo-letter: #8aabf8;
+    --paper: #080808;
+    --surface: #0c0c0c;
+    --surface-2: #1f1f1e;
+    --surface-3: #212121;
+    --ink: #d0d0d0;
+    --muted: #8c8c8a;
+    --line: #3d3d3c;
+    --field: #080808;
+    --field-border: #6d6d6d;
+    --hover-border: #50504f;
+    --hover-bg: #212121;
+    --accent: #00a4f3;
+    --accent-hover: #0093da;
+    --accent-soft: #082a3b;
+    --on-accent: #080808;
+    --selected-bg: #212121;
+    --selected-ink: #f3c900;
+    --focus: #00a4f3;
+    --run-ink: #00a4f3;
+    --run-bg: #082a3b;
+    --run-line: #0070a7;
+    --ok-ink: #00f3c9;
+    --ok-bg: #082b25;
+    --ok-line: #007460;
+    --bad-ink: #f64262;
+    --bad-bg: #330910;
+    --bad-line: #a7001d;
+    --console-bg: #080808;
+    --console-ink: #d0d0d0;
+    --media-bg: #000000;
+    --shadow: #00000080;
+    --backdrop: #000000b3;
+    --logo-ground: #080808;
+    --logo-brick: #b2b2b1;
 }
 
 /* ---- Element defaults ---- */
@@ -276,24 +338,30 @@ h3 {
   flex-direction: column;
 }
 
+/* The logo and the name beside it. The name is set a little larger than
+ * the old 26 px to balance the 56 px logo; the margins keep the block's
+ * total height as it was, so the experiments list does not move down. */
 .brand {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 14px;
   color: var(--ink);
-  font-size: 26px;
+  font-size: 28px;
   font-weight: 700;
   letter-spacing: -.6px;
   line-height: 1.1;
-  margin: 0 8px 44px;
+  margin: -6px 4px 38px;
 }
 
-/* The logo (an inline SVG in workspace.html): an A over the Ouchi illusion.
- * Its parts are coloured here so it follows the theme. */
+/* The logo (an inline SVG in workspace.html): an A painted in the Ouchi
+ * illusion, horizontal bricks around it and upright ones inside it. Its two
+ * colours are set here so it follows the theme. 56 px, the size of its
+ * viewBox: a letter seen only through brick orientation needs the room (at
+ * 44 px it is texture), and at 1:1 every brick edge falls on a pixel. */
 .brandmark {
   flex: none;
-  width: 44px;
-  height: 44px;
+  width: 56px;
+  height: 56px;
 }
 
 .logo-ground {
@@ -304,17 +372,6 @@ h3 {
   fill: var(--logo-brick);
 }
 
-/* The letter: solid, with a halo in the ground colour painted under its
- * fill (paint-order), so the bricks stop short of its edges. Small enough
- * to leave the disc's upright bricks showing all round it. */
-.logo-letter {
-  fill: var(--logo-letter);
-  stroke: var(--logo-ground);
-  stroke-width: 3px;
-  stroke-linejoin: round;
-  paint-order: stroke;
-  font: 1000 23px/1 var(--sans);
-}
 
 .brand small {
   display: block;
@@ -362,8 +419,8 @@ h3 {
 }
 
 .project-button.selected {
-  color: var(--accent);
-  background: var(--accent-soft);
+  color: var(--selected-ink);
+  background: var(--selected-bg);
   font-weight: 600;
 }
 
@@ -1549,4 +1606,15 @@ dialog code {
   button, a {
     transition: background .15s,border-color .15s;
   }
+}
+
+/* ---- The launch footer's PsychoPy warning (workspace.js updateLaunch):
+ * the note, set apart as a problem to fix before starting. Existing
+ * colour variables only, so light and dark both follow the theme. ---- */
+.launch-footer .help.launch-warning {
+  color: var(--bad-ink);
+  background: var(--bad-bg);
+  border: 1px solid var(--bad-line);
+  border-radius: 8px;
+  padding: 8px 12px;
 }

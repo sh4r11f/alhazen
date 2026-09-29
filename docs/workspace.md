@@ -74,6 +74,17 @@ colours: Auto follows the operating system's light or dark setting, and the
 choice is remembered in the browser. The framed live monitor is its own page
 and keeps its own colours.
 
+Dark is black: its colours are those of the owner's VS Code theme, *Deepdark
+Material Theme | Full Black Version* — a #080808 page, a #0c0c0c sidebar and
+cards edged in #3d3d3c, blue (#00a4f3) buttons and links, and the selected
+experiment in yellow on grey (#f3c900 on #212121), as the theme shows a
+selected item. Three colours depart from the theme so that text keeps a
+contrast of 4.5:1 and a field's border 3:1 (WCAG AA): the text on the blue
+button is near-black, not white (white on #00a4f3 is 2.8:1); the error red
+is lightened from #f3002b to #f64262; and a field's border is #6d6d6d, not
+the theme's #50504f. `workspace.css` lists every colour with the theme key
+it comes from, and a test checks the contrast of every pair it draws.
+
 ## Configure and run
 
 1. Select an experiment in the sidebar.
@@ -136,6 +147,47 @@ and keeps its own colours.
    headless, and only test accepts mouse gaze.
 6. Follow the console or view generated media. Images can be enlarged or saved.
    Movies appear once recording finishes, with native playback and seeking.
+
+### PsychoPy: said before the launch, not after it
+
+Registering a project (Add, or **Project settings → Save**) asks its
+interpreter which alhazen, which Python and which PsychoPy it has. PsychoPy is
+looked up, never imported (importing it takes seconds and starts its window
+and audio libraries): `importlib.util.find_spec("psychopy")`, then the
+installed version from its metadata. The project record keeps it as
+`psychopy_version`: a version, `null` when the interpreter cannot import
+PsychoPy, or absent for a project registered before the dashboard asked —
+which means *unknown*, not *missing*.
+
+When the chosen launch will open a PsychoPy window and the record says the
+interpreter has none, the launch footer shows a warning naming the
+interpreter and the fix: `pip install "alhazen-vision[psychopy]"` in that
+environment, or another interpreter in Project settings. For an old record it
+says the answer is unknown and asks for a re-registration. It warns and never
+blocks, because which launches need PsychoPy is inferred from the modes:
+
+| Launch | Opens a PsychoPy window |
+|---|---|
+| demo, measure | always, whatever the rig's display backend |
+| test, run | when the rig's `display.backend` is `psychopy` (the default) |
+| simulate | the same, unless **Headless** is ticked |
+| movie, the experiment's own scripts | not known to; no warning |
+
+```mermaid
+flowchart LR
+  save["Project settings → Save"] --> probe["INTERPRETER_PROBE<br/>(project's Python)"]
+  probe -->|"psychopy_version"| record["project record<br/>(projects.json)"]
+  record --> page["workspace.js<br/>psychopyWarning()"]
+  rig["/api/rig<br/>display.backend"] --> page
+  form["mode, Headless"] --> page
+  page -->|"warning"| footer["launch footer"]
+  launch["the launch itself"] -->|"no PsychoPy"| error["CANNOT DEMO/RUN/MEASURE:<br/>interpreter + pip command"]
+```
+
+A launch that goes ahead anyway without PsychoPy stops at once with one
+message, whichever mode it is (`CANNOT DEMO:`, `CANNOT RUN:`,
+`CANNOT MEASURE:`, `CANNOT CALIBRATE:`), naming the interpreter and the
+command that installs PsychoPy into it — the same words the footer uses.
 
 The six modes are **simulate**, **demo**, **movie**, **test**, **run** and
 **measure**. Demo, test, run and measure still use a physical display and its
@@ -278,8 +330,8 @@ its own browser tab as before.
 ## Data
 
 Each experiment's **Data** view reads the sessions it has saved: pick a data
-folder, browse its runs, open one, load its trials and plot them. It only
-reads — nothing in a data folder is changed — and it imports none of the
+folder, browse its runs, open one and load its trials. It only reads —
+nothing in a data folder is changed — and it imports none of the
 experiment's code.
 
 ### How it fits together
@@ -289,9 +341,7 @@ flowchart LR
   subgraph Browser
     NAV["workspace.js<br/>(sidebar: Run experiment | Data)"]
     VIEW["workspace_data.js<br/>WorkspaceData.show / hide"]
-    PLOT["workspace_plot.js<br/>build → render (SVG)"]
     NAV -- "show(project, {api, token, node, error})" --> VIEW
-    VIEW --> PLOT
   end
   subgraph Server["dashboard.py (loopback, token)"]
     API["GET /api/data/roots · runs · run · text · table · page"]
@@ -367,39 +417,22 @@ with one of those names keeps it, and the added one is called
 `subject (folder)`. Headers sort (numerically for a numeric column; empty
 cells last), the text box keeps the rows in which any cell contains the text,
 and the count says how many rows match. The first 500 matching rows are
-drawn; sorting and filtering bring the others up, and plots use them all.
+drawn; sorting and filtering bring the others up.
 
 At most 50 000 rows are sent per load, pooled runs together; a table cut
-there says so, with the file's full count, and so does every plot drawn from
-it. A file that cannot be parsed (a cell over the csv module's size limit, a
-file that is not UTF-8, an empty file) fails the load with the run, the file
-and the line named. A row with more or fewer cells than the header is kept,
-padded or cut to the header, and named.
+there says so, with the file's full count. A file that cannot be parsed (a
+cell over the csv module's size limit, a file that is not UTF-8, an empty
+file) fails the load with the run, the file and the line named. A row with
+more or fewer cells than the header is kept, padded or cut to the header,
+and named.
 
 **Numbers are parsed in the browser.** The server sends each cell as the
-CSV's own text: a CSV has no types, and the plot must decide per column
-anyway what it holds. A cell is a number when it looks like one, `True` and
-`False` (how the trials file writes a boolean) are 1 and 0, an empty cell is
-missing, and anything else is text. A column is numeric when every non-empty
-cell is.
-
-### Plots
-
-Choose **x**, **y**, an optional **group by**, and a kind:
-
-| Kind | What is drawn |
-|---|---|
-| Mean ± SEM of y per x | the mean of y at each value of x, with the standard error (sample SD / √n; none for a single value), one series per group; a 0/1 or True/False y is a proportion, on a 0–1 axis |
-| Scatter | one point per row (at most 20 000 drawn, said when more) |
-| Histogram of y / of x | counts in Sturges' number of bins, rounded to a round width; one group is bars, several are outlines on shared bins |
-
-A text column can be x (one category per value, at most 30) or the group-by
-(at most 5 groups, each with its own colour and marker shape), never y; the
-y menu lists text columns disabled and says why. A plot that cannot be drawn
-says why in words. Series colours are a fixed Okabe-Ito order that reads on
-light and dark pages; axes and text take the page's theme colours.
-**Save figure (SVG)** downloads the drawing, with the colours in force
-written into the file.
+CSV's own text: a CSV has no types, and the page decides per column whether
+it sorts by value. A cell is a number when it looks like one (`0x10` and
+`Infinity` do not), `True` and `False` (how the trials file writes a
+boolean) are 1 and 0, an empty cell is missing, and anything else is text.
+A column sorts by value when every non-empty cell is a number, and as text
+otherwise.
 
 ### Safety
 
@@ -425,14 +458,15 @@ history, and the token must be in neither. The tab is opened with
 
 ### Experiment figures (planned)
 
-The quick plots are generic. An experiment will later be able to declare its
-own analysis figures — functions of one or several run folders that return a
-figure — and the Data view will show them in a card of their own beside the
-quick plots. Because the workspace never imports experiment code, those
-functions will run in the project's own interpreter, the way the parameter
-schema is read today (`workspace._read_schema`), through a new route in
-`workspace_data.py`; the view only lists and shows the images they produce.
-The places to extend are marked in both files' header comments.
+An experiment will later be able to declare its own analysis figures —
+functions of one or several run folders that return a figure — and the Data
+view will show them in a card of their own, under the table. Because the
+workspace never imports experiment code, those functions will run in the
+project's own interpreter, the way the parameter schema is read today
+(`workspace._read_schema`), through a new route in `workspace_data.py`; the
+view only lists and shows the images they produce, as the Run card shows a
+run's `figures/` today. The places to extend are marked in both files'
+header comments.
 
 ## Storage and local access
 
@@ -460,7 +494,15 @@ wheel, the font among them: text is set in Nunito (SIL Open Font License,
 `cli/assets/fonts/OFL.txt`), a Latin subset of the variable font from the
 google/fonts repository, served by the dashboard itself (`/fonts/…`, CSP
 `font-src 'self'`), with the system's sans-serif as the fallback. The logo is
-an inline SVG in the page and, standalone, the tab's icon (`/favicon.svg`).
+an inline SVG in the page and, standalone, the tab's icon (`/favicon.svg`): an
+A painted in the Ouchi illusion — a checkerboard of 4:1 bricks laid
+horizontally, and inside the letter the same bricks upright and shifted by
+half a brick, so the A shows only through the change of orientation. The
+letter is the outline of Nunito's capital A at weight 800, kept as an SVG path
+rather than text, so it looks the same in every browser and in the favicon
+(which cannot load the page's font). The sidebar draws it at 56 px with bricks
+one pixel wide; the favicon uses bricks nearly twice as wide, because a
+browser tab draws it at 16-32 px.
 
 The server binds to `127.0.0.1` only and authenticates API/media requests with
 a random per-server token. The opening URL carries it in a fragment, which

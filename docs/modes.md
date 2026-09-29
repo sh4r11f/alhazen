@@ -308,6 +308,14 @@ the size the rig config claims. Both experiments had the hand-rolled version,
 and on a Retina Mac — the machine a stimulus is most often judged on — that
 meant judging it at half its designed size.
 
+On Windows the backend first declares the process DPI-aware (per-monitor,
+falling back to system-wide; a failure is logged as a warning). Without that,
+Windows display scaling shrinks the "fullscreen" window: at 150 % a 2560x1440
+laptop panel gives an unaware process 1707x960 pixels, which the framebuffer
+check then refuses. It also repairs a declaration in pyglet 1.4.11 (PsychoPy's
+pin on Windows) that otherwise makes the first text drawn fail with
+`ctypes.ArgumentError ... expected LP_c_ubyte instance`.
+
 The viewer keeps `RIGHT`, `SPACE`, `LEFT`, `S`, `ESC` and `Q` for itself and
 refuses a binding that would shadow one, because it checks its own keys first
 and the on-screen table is the only documentation anybody reads.

@@ -3,14 +3,15 @@
 PsychoPy is imported lazily, inside ``open()`` — importing this module (as
 every headless test and analysis machine transitively does) must never
 require the renderer to be installed. A missing PsychoPy raises DisplayError
-naming the extra to install, mirroring how vendor SDKs are handled
-everywhere in this package.
+naming the interpreter and what to install into it (``psychopy_missing``),
+mirroring how vendor SDKs are handled everywhere in this package.
 """
 
 from __future__ import annotations
 
 import importlib
 import logging
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -20,8 +21,198 @@ from alhazen.display.monitors import resolve as resolve_monitor
 from alhazen.display.palette import TERMINAL_FILL, TERMINAL_GREEN, TERMINAL_TEXT
 from alhazen.display.text import reflow as reflow_text
 from alhazen.errors import DisplayError
+from alhazen.version import DISTRIBUTION
 
 log = logging.getLogger(__name__)
+
+# What installs PsychoPy for alhazen, as pip spells it: this package's
+# `psychopy` extra (pyproject.toml), under its distribution name. That name is
+# alhazen-vision, never a bare `alhazen`, which on PyPI is an unrelated
+# project (alhazen.version). The experiment workspace's page says the same
+# command in the same words (workspace.js PSYCHOPY_INSTALL; a test holds the
+# two together).
+PSYCHOPY_INSTALL = f'pip install "{DISTRIBUTION}[psychopy]"'
+
+
+def psychopy_missing(error: ImportError, needed_for: str = "opening a window") -> DisplayError:
+    """The one error for PsychoPy failing to import, whoever tried to import it.
+
+    Every place alhazen needs PsychoPy — this backend's ``open()``, the
+    monitor registry (display.monitors), and so every mode that opens a
+    window — raises this, so the person at the rig reads the same thing
+    wherever they meet it. It names the interpreter, because on a machine
+    with several environments (a conda env per experiment, a dashboard that
+    launches each project with its own Python) "install psychopy" alone does
+    not say WHERE, and the owner's first demo died on exactly that: a raw
+    ModuleNotFoundError from an environment that had alhazen but no PsychoPy.
+
+    Two cases, told apart because their fixes differ: PsychoPy absent from
+    this environment (install it there, or choose another interpreter), and
+    PsychoPy present but failing to import — a dependency it needs is
+    missing or broken, and the import's own error says which. ``needed_for``
+    finishes the sentence "... and <needed_for> needs it".
+    """
+    python = sys.executable
+    # The command runs pip through that exact interpreter, so it installs
+    # into the environment named, whatever `pip` happens to be on PATH.
+    command = f'"{python}" -m {PSYCHOPY_INSTALL}'
+    elsewhere = (
+        "or run the experiment with an interpreter that has PsychoPy "
+        "(in the experiment dashboard: Project settings)"
+    )
+    if isinstance(error, ModuleNotFoundError) and error.name == "psychopy":
+        return DisplayError(
+            f"PsychoPy is not installed in the Python environment this runs in ({python}), "
+            f"and {needed_for} needs it. Install it into that environment with\n"
+            f"  {command}\n"
+            f"{elsewhere}."
+        )
+    return DisplayError(
+        f"PsychoPy is installed in the Python environment this runs in ({python}) but "
+        f"could not be imported ({type(error).__name__}: {error}), and {needed_for} needs "
+        f"it. Repair that installation, for example with\n"
+        f"  {command}\n"
+        f"{elsewhere}."
+    )
+
+
+# Windows' answers from the DPI calls below. PROCESS_PER_MONITOR_DPI_AWARE is
+# the shcore value that asks for real device pixels on every monitor; S_OK is
+# success; E_ACCESSDENIED means the process's DPI mode was already fixed (by
+# its manifest, or an earlier call) and can no longer be changed. HRESULTs
+# come back from ctypes as signed ints, so they are compared as unsigned.
+PROCESS_PER_MONITOR_DPI_AWARE = 2
+_S_OK = 0
+_E_ACCESSDENIED = 0x80070005
+
+
+def declare_dpi_awareness(windll: Any = None, platform: str = sys.platform) -> str:
+    """Tell Windows this process draws in real device pixels, before any window opens.
+
+    Why: a Windows process that has not declared itself DPI-aware is lied to
+    about the screen. With the desktop scaled to 150 %, a 2560x1440 panel is
+    reported as 1707x960 and a "fullscreen" window gets that many pixels,
+    which Windows then stretches up to the panel. Every stimulus drawn in
+    pixels would be 1.5x its intended size and blurred. alhazen's framebuffer
+    check refuses to run in that state (it was the first thing this PC's
+    laptop rig hit), but refusing is not a fix: declaring awareness is, and it
+    is what a psychophysics program wants in any case, since it draws in
+    pixels it has computed itself.
+
+    Per-monitor awareness (shcore.SetProcessDpiAwareness, Windows 8.1 and
+    later) first; the older system-wide user32.SetProcessDPIAware (Vista and
+    later) when shcore is not there. A mode that was already fixed before
+    this call (E_ACCESSDENIED) is left as it is — Windows allows only one
+    declaration per process — and said, since whatever fixed it decides
+    what the window gets. Every failure is logged as a warning naming the
+    consequence; none raises, because at 100 % scaling an unaware process
+    still gets the right pixels, and at any other scaling the framebuffer
+    check then refuses with the numbers.
+
+    ``windll`` is ``ctypes.windll`` unless a test hands in a stand-in;
+    returns what was done, for the log and the tests. Off Windows it does
+    nothing: macOS and Linux report device pixels (a Retina Mac through the
+    framebuffer size, which the framebuffer check reads).
+    """
+    if platform != "win32":
+        return "not Windows: nothing to declare"
+    if windll is None:
+        import ctypes
+
+        # Only exists on Windows; the platform check above guards it.
+        windll = ctypes.windll  # type: ignore[attr-defined,unused-ignore]
+    try:
+        result = windll.shcore.SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE)
+    except (AttributeError, OSError) as e:
+        # No shcore (Windows before 8.1), or no such entry point in it.
+        shcore_error: str = f"{type(e).__name__}: {e}"
+    else:
+        code = int(result) & 0xFFFFFFFF
+        if code == _S_OK:
+            log.info("declared per-monitor DPI awareness: windows get real device pixels")
+            return "per-monitor DPI aware"
+        if code == _E_ACCESSDENIED:
+            log.info(
+                "the process's DPI awareness was already set before alhazen asked "
+                "(by its manifest or an earlier call); left as it is"
+            )
+            return "DPI awareness already set"
+        shcore_error = f"SetProcessDpiAwareness returned 0x{code:08X}"
+    # The fallback: system-wide awareness. Right on a single-monitor rig and
+    # on monitors that share one scaling, which is every rig this is for.
+    try:
+        declared = bool(windll.user32.SetProcessDPIAware())
+    except (AttributeError, OSError) as e:
+        declared = False
+        shcore_error += f"; SetProcessDPIAware failed ({type(e).__name__}: {e})"
+    if declared:
+        log.info(
+            "declared system DPI awareness (per-monitor awareness was refused: %s)", shcore_error
+        )
+        return "system DPI aware"
+    log.warning(
+        "could not declare this process DPI-aware (%s). With Windows display scaling "
+        "above 100 %% the window will get fewer pixels than the panel has, and the "
+        "framebuffer check will refuse to run; set the display's scaling to 100 %% "
+        "in Windows Settings > Display to run anyway",
+        shcore_error,
+    )
+    return "not DPI aware"
+
+
+def repair_pyglet_windows_text(modules: Any = None) -> bool:
+    """Undo a declaration in pyglet 1.4 that stops PsychoPy drawing text on Windows.
+
+    PsychoPy pins pyglet 1.4.11 on Windows. That pyglet declares one GDI+
+    function twice, in two modules that disagree: its image codec
+    (``pyglet.image.codecs.gdiplus``) states that GdipCreateBitmapFromScan0
+    takes a pointer to *unsigned* bytes, and its font renderer
+    (``pyglet.font.win32``) then calls that same function with an array of
+    *signed* bytes. ctypes checks the declaration and refuses the call
+    (``ctypes.ArgumentError: argument 5: ... expected LP_c_ubyte instance
+    instead of c_byte_Array_...``), so the first TextStim drawn — the demo's
+    key table, a session's instructions — kills the run. Every alhazen
+    window on Windows meets it: importing pyglet.font loads that renderer,
+    and the renderer imports the codec. (Seen on a Windows laptop rig with
+    PsychoPy 2026.2.4 on Python 3.12.)
+
+    The repair declares that argument as a plain pointer (``c_void_p``),
+    which both callers' values are: GDI+ reads the bytes as pixels whatever
+    their sign, and the codec never calls this function itself. Applied only
+    where the codec's declaration is exactly the broken one, so a pyglet
+    that fixed it, or declares it otherwise, is left alone; returns whether
+    it changed anything. ``modules`` is ``sys.modules`` unless a test hands
+    in its own.
+    """
+    import ctypes
+
+    codec = (sys.modules if modules is None else modules).get("pyglet.image.codecs.gdiplus")
+    if codec is None:
+        # Not Windows, or a pyglet that does not load this codec: nothing
+        # declared, nothing to undo.
+        return False
+    function = codec.gdiplus.GdipCreateBitmapFromScan0
+    declared = list(function.argtypes or ())
+    # Recognised by what it points to rather than by identity with
+    # POINTER(c_ubyte): pyglet takes it from ctypes.wintypes (PBYTE), which
+    # is its own pointer class on some Pythons.
+    pointer = declared[4] if len(declared) == 6 else None
+    broken = (
+        isinstance(pointer, type)
+        and issubclass(pointer, ctypes._Pointer)
+        and getattr(pointer, "_type_", None) is ctypes.c_ubyte
+    )
+    if not broken:
+        return False
+    declared[4] = ctypes.c_void_p
+    function.argtypes = declared
+    log.info(
+        "repaired pyglet's GDI+ bitmap declaration so PsychoPy can draw text on Windows "
+        "(pyglet %s declares the pixel buffer as unsigned bytes and fills it with signed ones)",
+        getattr(sys.modules.get("pyglet"), "version", "?"),
+    )
+    return True
+
 
 # The pause menu's heading face: a humanist sans.
 HEADING_FONT = "Noto Sans"
@@ -130,13 +321,16 @@ class PsychoPyDisplay:
         self.gamma: float | None = None
 
     def open(self) -> None:
+        # Before anything that could create a window or ask for the screen's
+        # size: Windows fixes a process's DPI mode the first time it matters
+        # (declare_dpi_awareness says why this is needed at all).
+        declare_dpi_awareness()
         try:
             from psychopy import visual
         except ImportError as e:
-            raise DisplayError(
-                "the PsychoPy display backend needs psychopy installed — "
-                "pip install 'alhazen[psychopy]'"
-            ) from e
+            # The one message for a missing PsychoPy: which interpreter this
+            # is, and what to install into it (psychopy_missing).
+            raise psychopy_missing(e) from e
 
         # The rig's monitor as PsychoPy knows it: the registered record when
         # `alhazen monitor register` has written one (so the window inherits
@@ -148,6 +342,11 @@ class PsychoPyDisplay:
         # the same absolute value, never a second correction.
         mon = resolve_monitor(self._monitor)
         self._register_fonts()
+        # After _register_fonts, which imports pyglet.font and so, on
+        # Windows, pyglet's font renderer and the image codec it imports;
+        # before any text is drawn (repair_pyglet_windows_text says what
+        # breaks without it). A no-op where that codec is not loaded.
+        repair_pyglet_windows_text()
         # Units are pixels on purpose: alhazen owns all deg<->px conversion in
         # display.screen.Screen, exactly once per value, so recorded positions
         # invert back to configured ones bit-for-bit. Letting the renderer

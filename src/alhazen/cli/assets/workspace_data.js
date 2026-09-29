@@ -1,4 +1,4 @@
-/* Alhazen experiment workspace — the Data view: saved sessions, read and plotted.
+/* Alhazen experiment workspace — the Data view: saved sessions, read.
  *
  * The page opens this view for one experiment through a two-call contract
  * (the navigation lives in workspace.js):
@@ -10,11 +10,13 @@
  * page's JSON fetcher (it adds the token header and throws the server's
  * message); `token` the API token, used only in <img src> URLs, which cannot
  * carry a header; `node(tag, className, text)` the page's element helper;
- * `error(msg)` its banner. The view fills #data-view by creating elements
- * and setting textContent — never innerHTML — because everything shown
- * (paths, subject ids, CSV cells, log lines) comes from files on disk.
+ * `error(msg)` its banner, which this view does not call: it says every
+ * failure in the card it belongs to instead. The view fills #data-view by
+ * creating elements and setting textContent — never innerHTML — because
+ * everything shown (paths, subject ids, CSV cells, log lines) comes from
+ * files on disk.
  *
- * Top to bottom the view holds five cards, each loaded from one route of
+ * Top to bottom the view holds four cards, each loaded from one route of
  * workspace_data.py (GET /api/data/<route>):
  *
  *   Data folder  roots  the folders the project's rigs write to (a picker)
@@ -22,14 +24,16 @@
  *   Run          run    one run: its session.json card, files, records
  *                text   (a viewer), figures, the saved live monitor (page)
  *   Table        table  the CSV of the chosen run(s), pooled, sortable
- *   Plot                quick plots of the table (workspace_plot.js)
  *
  * Every failure is shown in the card it belongs to, in words: a folder that
  * vanished, a CSV that cannot be parsed. A card is never left empty in a way
  * that could be read as "no data".
  *
+ * Quick plots of the table (a Plot card under it, drawn by workspace_plot.js)
+ * were taken out after alhazen 2.1.1; that release has their code.
+ *
  * Extension point — experiment figures (NOT implemented yet). An experiment
- * will later declare its own analysis figures; the plan is a sixth card,
+ * will later declare its own analysis figures; the plan is a fifth card,
  * "Experiment figures", filled from a new route that runs the experiment's
  * figure functions in its own interpreter and returns images. This file
  * would then only list and show those images, the way the Run card shows
@@ -43,16 +47,12 @@ const WorkspaceData = (() => {
    * sorting and filtering are how the rest is reached. Said under the table. */
   const SHOWN_ROWS = 500;
   const TABLE_KINDS = ['trials', 'events', 'frames', 'paradigm'];
-  const PLOT_KINDS = [
-    ['mean', 'Mean ± SEM of y per x'],
-    ['scatter', 'Scatter'],
-    ['hist-y', 'Histogram of y'],
-    ['hist-x', 'Histogram of x'],
-  ];
 
   /* What show() was given, and the view's state. `epoch` counts show()
    * calls and folder changes: an answer that arrives after the reader has
-   * moved on belongs to a view that no longer exists and is dropped. */
+   * moved on belongs to a view that no longer exists and is dropped.
+   * `numeric` says, per column of the loaded table, whether it sorts as
+   * numbers (numericColumn below). */
   let ctx = null;
   let project = null;
   let epoch = 0;
@@ -61,8 +61,8 @@ const WorkspaceData = (() => {
   function fresh() {
     return {
       roots: [], root: null, runs: [], checked: new Set(), filters: {version: '', subject: '', task: ''},
-      detail: null, table: null, types: {}, kind: 'trials', sort: {column: -1, direction: 1},
-      filter: '', plot: {kind: 'mean', x: '', y: '', group: ''}, figure: null,
+      detail: null, table: null, numeric: {}, kind: 'trials', sort: {column: -1, direction: 1},
+      filter: '',
     };
   }
 
@@ -156,7 +156,7 @@ const WorkspaceData = (() => {
     root.appendChild(node('p', 'help data-intro',
       'Saved sessions from this experiment’s data folders. Read only: nothing here changes a file.'));
     for (const [name, title] of [['roots', 'Data folder'], ['runs', 'Runs'], ['run', 'Run'],
-      ['table', 'Table'], ['plot', 'Plot']]) {
+      ['table', 'Table']]) {
       const section = card(name, title);
       if (name !== 'roots' && name !== 'runs') section.hidden = true;
       root.appendChild(section);
@@ -236,7 +236,7 @@ const WorkspaceData = (() => {
     state = {...fresh(), roots: state.roots, root};
     const path = container().querySelector('.data-root-path');
     if (path) path.textContent = rootDetail(root);
-    for (const name of ['run', 'table', 'plot']) cardOf(name).hidden = true;
+    for (const name of ['run', 'table']) cardOf(name).hidden = true;
     await loadRuns();
   }
 
@@ -562,12 +562,41 @@ const WorkspaceData = (() => {
   /* Table                                                             */
   /* ---------------------------------------------------------------- */
 
+  /* The table's cells arrive as the CSV's own text (workspace_data.py sends
+   * no types), so the view decides what a column holds, for sorting: a
+   * numeric column sorts by value, any other as text. */
+
+  /** A cell as a number, or null when it is empty, or NaN when it is text.
+   *  "True"/"False" (how the trials file writes a boolean) read as 1/0. */
+  function parseCell(text) {
+    const value = String(text ?? '').trim();
+    if (value === '') return null;
+    if (value === 'True' || value === 'true') return 1;
+    if (value === 'False' || value === 'false') return 0;
+    // Number('') is 0 and Number(' ') too, so emptiness is decided above;
+    // '0x10' and 'Infinity' are not measurements, though Number() takes them.
+    if (!/^[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$/.test(value)) return NaN;
+    return Number(value);
+  }
+
+  /** Whether a column sorts as numbers: every non-empty cell is one, and
+   *  there is at least one (an all-empty column has nothing to compare). */
+  function numericColumn(cells) {
+    let seen = false;
+    for (const cell of cells) {
+      const value = parseCell(cell);
+      if (value === null) continue;
+      if (Number.isNaN(value)) return false;
+      seen = true;
+    }
+    return seen;
+  }
+
   function loadTable(runIds) {
     const section = cardOf('table');
     section.hidden = false;
     const body = byName('table');
     body.replaceChildren(loading(body, `Loading the ${state.kind} table of ${runIds.length} run(s)…`));
-    cardOf('plot').hidden = true;
     return step(body, async (current) => {
       const answer = await ctx.api(`/api/data/table?project=${enc(project.id)}` +
         `&root=${enc(state.root.id)}&runs=${enc(runIds.join(','))}&kind=${enc(state.kind)}`);
@@ -575,14 +604,14 @@ const WorkspaceData = (() => {
       state.table = answer;
       state.sort = {column: -1, direction: 1};
       state.filter = '';
-      // Each column's type, once per load: sorting and the plot menus use it.
-      state.types = {};
+      // Which columns sort as numbers, decided once per load rather than
+      // on every click of a header.
+      state.numeric = {};
       answer.columns.forEach((name, i) => {
-        state.types[name] = WorkspacePlot.columnType(answer.rows.map((r) => r[i]));
+        state.numeric[name] = numericColumn(answer.rows.map((r) => r[i]));
       });
       body.replaceChildren();
       drawTable();
-      setupPlot();
     });
   }
 
@@ -595,11 +624,11 @@ const WorkspaceData = (() => {
       : table.rows.slice();
     const {column, direction} = state.sort;
     if (column >= 0) {
-      const numeric = state.types[table.columns[column]].type === 'numeric';
+      const numeric = state.numeric[table.columns[column]];
       rows = rows.sort((a, b) => {
         if (numeric) {
-          const x = WorkspacePlot.parseCell(a[column]);
-          const y = WorkspacePlot.parseCell(b[column]);
+          const x = parseCell(a[column]);
+          const y = parseCell(b[column]);
           // Empty cells last, whichever the direction.
           if (x === null || y === null) return (x === null) - (y === null);
           return (x - y) * direction;
@@ -618,7 +647,7 @@ const WorkspaceData = (() => {
     if (table.capped) {
       problem(body, `Only the first ${table.rows.length.toLocaleString('en')} of ` +
         `${table.total.toLocaleString('en')} rows were loaded (the limit is ` +
-        `${table.limit.toLocaleString('en')}). Filters, sorting and plots see those rows only.`);
+        `${table.limit.toLocaleString('en')}). Filters and sorting see those rows only.`);
     }
     const bar = node('div', 'data-toolbar');
     bar.appendChild(select(TABLE_KINDS.map((k) => [k, `${k} table`]), state.kind, (value) => {
@@ -630,7 +659,7 @@ const WorkspaceData = (() => {
     search.placeholder = 'Filter rows (any cell contains…)';
     search.value = state.filter;
     search.setAttribute('aria-label', 'Filter rows');
-    search.oninput = () => { state.filter = search.value; drawRows(); drawPlot(); };
+    search.oninput = () => { state.filter = search.value; drawRows(); };
     bar.appendChild(search);
     bar.appendChild(node('span', 'step data-count'));
     body.appendChild(bar);
@@ -681,125 +710,8 @@ const WorkspaceData = (() => {
     const shown = body.querySelector('.data-shown');
     shown.textContent = rows.length > SHOWN_ROWS
       ? `The first ${SHOWN_ROWS} of these ${rows.length.toLocaleString('en')} rows are shown; ` +
-        'sort or filter to bring others up. Plots use all of them.'
+        'sort or filter to bring others up.'
       : (rows.length ? '' : 'No row matches the filter.');
-  }
-
-  /* ---------------------------------------------------------------- */
-  /* Plot                                                              */
-  /* ---------------------------------------------------------------- */
-
-  /** Sensible first choices, kept across reloads while the columns exist:
-   *  x the file's first text column (a condition), else its first column;
-   *  y its first numeric column that is not x. */
-  function setupPlot() {
-    const columns = state.table.columns;
-    // The columns added for pooling (run, subject, session) are for
-    // grouping, not a first choice of what to plot.
-    const own = columns.filter((c) => !state.table.added.includes(c));
-    const numeric = own.filter((c) => state.types[c].type === 'numeric');
-    const text = own.filter((c) => state.types[c].type === 'text');
-    const keep = (name, fallback) => (columns.includes(name) ? name : fallback);
-    const x = keep(state.plot.x, text[0] ?? own[0] ?? columns[0]);
-    state.plot = {
-      ...state.plot,
-      x,
-      y: keep(state.plot.y, numeric.find((c) => c !== x) ?? ''),
-      group: keep(state.plot.group, ''),
-    };
-    cardOf('plot').hidden = false;
-    drawPlotControls();
-    drawPlot();
-  }
-
-  function columnLabel(name) {
-    const type = state.types[name];
-    if (type.type === 'text') return `${name} (text)`;
-    if (type.type === 'empty') return `${name} (empty)`;
-    return type.binary ? `${name} (0/1)` : name;
-  }
-
-  function drawPlotControls() {
-    const body = byName('plot');
-    body.replaceChildren();
-    const columns = state.table.columns;
-    const bar = node('div', 'data-toolbar data-plot-controls');
-    const set = (key) => (value) => { state.plot[key] = value; drawPlot(); };
-    const labelled = (text, control) => {
-      const label = node('label', 'data-control', text);
-      label.appendChild(control);
-      bar.appendChild(label);
-    };
-    labelled('Plot', select(PLOT_KINDS, state.plot.kind, set('kind'), 'Plot kind'));
-    labelled('x', select(columns.map((c) => [c, columnLabel(c)]), state.plot.x, set('x'), 'x'));
-    // A text column cannot be y: listed, but disabled, with the reason.
-    labelled('y', select([['', '—'], ...columns.map((c) => [
-      c, state.types[c].type === 'numeric' ? columnLabel(c) : `${columnLabel(c)} — not for y`,
-      state.types[c].type !== 'numeric'])], state.plot.y, set('y'), 'y'));
-    labelled('Group by', select([['', 'No grouping'], ...columns.map((c) => [c, columnLabel(c)])],
-      state.plot.group, set('group'), 'Group by'));
-    const save = button('Save figure (SVG)', () => saveFigure());
-    save.setAttribute('data-role', 'save');
-    bar.appendChild(save);
-    body.appendChild(bar);
-    const message = node('div', 'data-plot-message');
-    body.appendChild(message);
-    const figure = node('div', 'data-figure');
-    body.appendChild(figure);
-  }
-
-  function drawPlot() {
-    if (!state.table || cardOf('plot').hidden) return;
-    const body = byName('plot');
-    const message = body.querySelector('.data-plot-message');
-    const holder = body.querySelector('.data-figure');
-    message.replaceChildren();
-    holder.replaceChildren();
-    state.figure = null;
-    const {kind, x, y, group} = state.plot;
-    const built = WorkspacePlot.build(kind, {columns: state.table.columns, rows: tableRows()}, x, y, group);
-    if (built.error) {
-      problem(message, built.error);
-      return;
-    }
-    for (const text of built.figure.notes) note(message, text);
-    if (state.table.capped) note(message, 'Drawn from the loaded rows only (the table was capped).');
-    const svg = WorkspacePlot.render(built.figure, document);
-    holder.appendChild(svg);
-    state.figure = svg;
-  }
-
-  /** Download the drawn figure as an .svg file. The page's CSS colours the
-   *  axes and text through variables, which a standalone file does not
-   *  have, so the colours in force right now are written into the copy. */
-  function saveFigure() {
-    if (!state.figure) {
-      ctx.error('There is no figure to save: choose columns the plot can draw first.');
-      return;
-    }
-    const copy = state.figure.cloneNode(true);
-    const style = document.createElementNS('http://www.w3.org/2000/svg', 'style');
-    const read = (name, fallback) => {
-      const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-      return value || fallback;
-    };
-    const ink = read('--ink', '#202a35');
-    const muted = read('--muted', '#747e8b');
-    const line = read('--line', '#e3e7ec');
-    const surface = read('--surface', '#ffffff');
-    style.textContent =
-      `.plot-bg,.plot-legend-bg{fill:${surface}}.plot-legend-bg{stroke:${line}}.plot-grid{stroke:${line}}` +
-      `.plot-axis{stroke:${muted}}.plot-tick{fill:${muted};font:12px sans-serif}` +
-      `.plot-label{fill:${ink};font:13px sans-serif}.plot-legend-text{fill:${ink};font:12px sans-serif}`;
-    copy.replaceChildren(style, ...Array.from(copy.children));
-    const text = new XMLSerializer().serializeToString(copy);
-    const url = URL.createObjectURL(new Blob([text], {type: 'image/svg+xml'}));
-    const link = document.createElement('a');
-    const {kind, x, y} = state.plot;
-    link.href = url;
-    link.download = `${project.name}-${state.kind}-${kind}-${y || x}-by-${x}.svg`.replace(/[^\w.-]+/g, '_');
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
   return {show, hide, SHOWN_ROWS};

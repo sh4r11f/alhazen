@@ -413,8 +413,16 @@ def rig_extends(path: Path) -> str | None:
 
 def deep_merge(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
     """``override`` merged over ``base``: where both hold a mapping under the
-    same key, the two are merged the same way, key by key; any other value —
-    a number, a string, a list, a null — replaces what ``base`` had.
+    same key, the two are merged the same way, key by key; a null removes the
+    key from the result (docs/rigs.md: "removes what the shared rig has
+    there"); any other value — a number, a string, a list — replaces what
+    ``base`` had.
+
+    Removing rather than storing None matters for settings that are checked
+    for having been given at all: frame QA refuses a threshold its policy
+    never reads, so a rig that extends the shared lab and switches to
+    ``policy: warn`` must be able to take the lab's ``max_dropped_fraction``
+    away, not set it to None (which is still "given", and not a fraction).
 
     Lists replace rather than append because a list in a rig is one setting
     (the photodiode's ``events``), and an experiment writing ``[STIM_ON]``
@@ -424,7 +432,12 @@ def deep_merge(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[str
     merged = dict(base)
     for key, value in override.items():
         below = merged.get(key)
-        if isinstance(value, Mapping) and isinstance(below, Mapping):
+        if value is None:
+            # Removed, whether or not the base had it: the key is then absent,
+            # exactly as if neither file had written it, so the model's own
+            # default (or its "not given") applies.
+            merged.pop(key, None)
+        elif isinstance(value, Mapping) and isinstance(below, Mapping):
             merged[key] = deep_merge(below, value)
         else:
             merged[key] = value
