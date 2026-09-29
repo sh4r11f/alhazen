@@ -1580,3 +1580,99 @@ describe('a task whose parameter choices cannot be read', () => {
     );
   });
 });
+
+describe('the PsychoPy warning in the launch footer', () => {
+  /* The owner's first Demo from the dashboard ran with an interpreter that
+   * had alhazen but no PsychoPy and ended in a traceback. The page now says
+   * so before the launch, from what the interpreter probe recorded. It warns
+   * and never blocks: which launches need PsychoPy is inferred. */
+  const WITHOUT = { ...PROJECT, python: 'C:/envs/plain/python.exe', psychopy_version: null };
+  const WITH = { ...PROJECT, psychopy_version: '2026.2.4' };
+  const SIMULATED_RIG = rig(true, false);
+  SIMULATED_RIG.values.display = { backend: 'simulated' };
+
+  function note(app) {
+    return app.byId('launch-note');
+  }
+
+  it('names the interpreter and the fix for a demo it cannot open', async () => {
+    const app = await pageWith({ project: WITHOUT });
+    chooseMode(app, 'demo');
+    const text = note(app).textContent;
+    assert.match(text, /^Demo opens a PsychoPy window/);
+    assert.match(text, /C:\/envs\/plain\/python\.exe/);
+    assert.match(text, /pip install "alhazen-vision\[psychopy\]"/);
+    assert.match(text, /Project settings/);
+    assert.equal(note(app).classList.contains('launch-warning'), true);
+    /* A warning, not a refusal. */
+    assert.equal(app.byId('launch').disabled, false);
+  });
+
+  it('says nothing when the interpreter has PsychoPy', async () => {
+    const app = await pageWith({ project: WITH });
+    for (const mode of ['demo', 'measure', 'test', 'run', 'simulate']) {
+      chooseMode(app, mode);
+      assert.doesNotMatch(note(app).textContent, /PsychoPy/, mode);
+      assert.equal(note(app).classList.contains('launch-warning'), false, mode);
+    }
+  });
+
+  it('asks for a re-registration when the record predates the check', async () => {
+    /* PROJECT has no psychopy_version: registered before the probe asked,
+     * which is unknown, not "not installed". */
+    const app = await pageWith();
+    chooseMode(app, 'measure');
+    const text = note(app).textContent;
+    assert.match(text, /^Measure rig opens a PsychoPy window/);
+    assert.match(text, /unknown/);
+    assert.match(text, /Re-register to check/);
+    assert.doesNotMatch(text, /has no PsychoPy/);
+  });
+
+  it('follows the rig’s display backend for sessions', async () => {
+    const app = await pageWith({ project: WITHOUT });
+    /* A simulation with a window; headless is the next test's. */
+    app.byId('headless').checked = false;
+    /* The mac rig says no backend: the model's default, psychopy. */
+    for (const mode of ['test', 'run', 'simulate']) {
+      chooseMode(app, mode);
+      assert.match(note(app).textContent, /opens a PsychoPy window/, mode);
+    }
+    const simulated = await pageWith({
+      project: WITHOUT, rigs: { 'configs/rig-mac.yaml': SIMULATED_RIG },
+    });
+    simulated.byId('headless').checked = false;
+    for (const mode of ['test', 'run', 'simulate']) {
+      chooseMode(simulated, mode);
+      assert.doesNotMatch(note(simulated).textContent, /PsychoPy/, mode);
+    }
+    /* Demo draws through PsychoPy whatever the rig's backend says. */
+    chooseMode(simulated, 'demo');
+    assert.match(note(simulated).textContent, /opens a PsychoPy window/);
+  });
+
+  it('drops the warning for a headless simulation, and for movies', async () => {
+    const app = await pageWith({ project: WITHOUT });
+    chooseMode(app, 'simulate');
+    /* Headless is the form's default for simulate: no window, no warning. */
+    assert.equal(app.byId('headless').checked, true);
+    assert.doesNotMatch(note(app).textContent, /PsychoPy/);
+    app.byId('headless').checked = false;
+    app.byId('headless').fire('change');
+    assert.match(note(app).textContent, /PsychoPy/);
+    app.byId('headless').checked = true;
+    app.byId('headless').fire('change');
+    assert.doesNotMatch(note(app).textContent, /PsychoPy/);
+    assert.equal(note(app).classList.contains('launch-warning'), false);
+    chooseMode(app, 'movie');
+    assert.doesNotMatch(note(app).textContent, /PsychoPy/);
+  });
+
+  it('gives way to an active run’s note, which is about what can launch at all', async () => {
+    const run = runDetail({ status: 'running' });
+    const app = await pageWith({ project: WITHOUT, run: run });
+    chooseMode(app, 'demo');
+    assert.match(note(app).textContent, /One run at a time/);
+    assert.equal(note(app).classList.contains('launch-warning'), false);
+  });
+});

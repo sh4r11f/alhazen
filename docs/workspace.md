@@ -137,6 +137,47 @@ and keeps its own colours.
 6. Follow the console or view generated media. Images can be enlarged or saved.
    Movies appear once recording finishes, with native playback and seeking.
 
+### PsychoPy: said before the launch, not after it
+
+Registering a project (Add, or **Project settings → Save**) asks its
+interpreter which alhazen, which Python and which PsychoPy it has. PsychoPy is
+looked up, never imported (importing it takes seconds and starts its window
+and audio libraries): `importlib.util.find_spec("psychopy")`, then the
+installed version from its metadata. The project record keeps it as
+`psychopy_version`: a version, `null` when the interpreter cannot import
+PsychoPy, or absent for a project registered before the dashboard asked —
+which means *unknown*, not *missing*.
+
+When the chosen launch will open a PsychoPy window and the record says the
+interpreter has none, the launch footer shows a warning naming the
+interpreter and the fix: `pip install "alhazen-vision[psychopy]"` in that
+environment, or another interpreter in Project settings. For an old record it
+says the answer is unknown and asks for a re-registration. It warns and never
+blocks, because which launches need PsychoPy is inferred from the modes:
+
+| Launch | Opens a PsychoPy window |
+|---|---|
+| demo, measure | always, whatever the rig's display backend |
+| test, run | when the rig's `display.backend` is `psychopy` (the default) |
+| simulate | the same, unless **Headless** is ticked |
+| movie, the experiment's own scripts | not known to; no warning |
+
+```mermaid
+flowchart LR
+  save["Project settings → Save"] --> probe["INTERPRETER_PROBE<br/>(project's Python)"]
+  probe -->|"psychopy_version"| record["project record<br/>(projects.json)"]
+  record --> page["workspace.js<br/>psychopyWarning()"]
+  rig["/api/rig<br/>display.backend"] --> page
+  form["mode, Headless"] --> page
+  page -->|"warning"| footer["launch footer"]
+  launch["the launch itself"] -->|"no PsychoPy"| error["CANNOT DEMO/RUN/MEASURE:<br/>interpreter + pip command"]
+```
+
+A launch that goes ahead anyway without PsychoPy stops at once with one
+message, whichever mode it is (`CANNOT DEMO:`, `CANNOT RUN:`,
+`CANNOT MEASURE:`, `CANNOT CALIBRATE:`), naming the interpreter and the
+command that installs PsychoPy into it — the same words the footer uses.
+
 The six modes are **simulate**, **demo**, **movie**, **test**, **run** and
 **measure**. Demo, test, run and measure still use a physical display and its
 usual keyboard controls; the browser is not a replacement renderer. In demo,

@@ -549,3 +549,84 @@ class TestTheCommandIsHandedDown:
 
         assert main(argv) == 0
         assert seen["invocation"] == ["alhazen", *argv]
+
+
+class TestAWindowThatCannotOpenIsReportedNotTracedBack:
+    """The owner launched Demo from the dashboard with an interpreter that had
+    alhazen but no PsychoPy, and read a raw traceback ending in
+    `from psychopy import core, event`. Every mode that opens a PsychoPy
+    window now reports the DisplayError's message (which names the
+    interpreter and the install command) under its own CANNOT prefix."""
+
+    @pytest.fixture
+    def no_psychopy(self, monkeypatch):
+        # None in sys.modules makes `import psychopy` fail as an environment
+        # without it does, whether or not this one has it.
+        import sys
+
+        from alhazen.display import psychopy_backend
+
+        monkeypatch.setitem(sys.modules, "psychopy", None)
+        # The DPI declaration touches the real Windows process; it is tested
+        # with a stand-in in test_display.py.
+        monkeypatch.setattr(psychopy_backend, "declare_dpi_awareness", lambda: "stub")
+
+    @staticmethod
+    def _task_class():
+        from alhazen.config.models import Model
+        from alhazen.core.events import EventSchema
+        from alhazen.core.trial import outcomes as make_outcomes
+        from alhazen.task.task import Task
+
+        class WindowParams(Model):
+            pass
+
+        class WindowTask(Task):
+            name = "window-check"
+            events = EventSchema(())
+            outcomes = make_outcomes(DONE=dict(completed=True, success=True))
+            params_model = WindowParams
+
+            def demo_views(self, setup):
+                raise AssertionError("never reached: the window cannot open")
+
+        return WindowTask
+
+    def _expect_the_message(self, capsys, prefix):
+        import sys
+
+        err = capsys.readouterr().err
+        assert err.startswith(f"{prefix}: PsychoPy is not installed"), err
+        assert sys.executable in err
+        assert 'pip install "alhazen-vision[psychopy]"' in err
+        assert "Traceback" not in err
+
+    def test_demo(self, tmp_path, capsys, no_psychopy):
+        from alhazen.cli.modes import run_experiment
+
+        code = run_experiment(
+            task_class=self._task_class(),
+            default_rig=rig_file(tmp_path, backend="psychopy"),
+            argv=["--mode", "demo"],
+        )
+        assert code == 1
+        self._expect_the_message(capsys, "CANNOT DEMO")
+
+    def test_measure(self, tmp_path, capsys, no_psychopy):
+        code = main(["run", "--mode", "measure", "--rig", str(rig_file(tmp_path))])
+        assert code == 1
+        self._expect_the_message(capsys, "CANNOT MEASURE")
+
+    def test_a_session_on_a_psychopy_rig(self, tmp_path, capsys, no_psychopy):
+        """A test session on a rig whose display backend is psychopy: the
+        session builder opens that window (run, and simulate without
+        --headless, take the same path)."""
+        from alhazen.cli.modes import run_experiment
+
+        code = run_experiment(
+            task_class=self._task_class(),
+            default_rig=rig_file(tmp_path, backend="psychopy"),
+            argv=["--mode", "test", "--sub", "01", "--ses", "1", "--initials", "HD"],
+        )
+        assert code == 1
+        self._expect_the_message(capsys, "CANNOT RUN")
