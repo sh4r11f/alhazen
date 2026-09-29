@@ -118,6 +118,14 @@ class SessionPaths:
         return self.run_dir / "rig.yaml"
 
     @property
+    def rig_merged_path(self) -> Path:
+        """The whole rig, for a rig file that ``extends`` a shared one: the
+        file merged over the shared rig, as the session loaded it
+        (session/identity.py, `merged_rig`). Absent for a rig that extends
+        nothing, whose rig.yaml is already the whole rig."""
+        return self.run_dir / "rig-merged.yaml"
+
+    @property
     def params_copy_path(self) -> Path:
         """The params file the session was started with, copied byte for
         byte; absent when the session ran on the params model's defaults."""

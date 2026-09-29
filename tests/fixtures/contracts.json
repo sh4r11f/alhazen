@@ -43,6 +43,7 @@
     "figures": "figures",
     "session_json": "session.json",
     "rig_copy": "rig.yaml",
+    "rig_merged": "rig-merged.yaml",
     "params_copy": "params.yaml",
     "live_monitor_state": "figures/live_monitor_state.json",
     "live_monitor_page": "figures/live_monitor.html"

@@ -27,6 +27,28 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ## Unreleased
 
+### Added
+
+- **A run folder records the command its session was started with.**
+  `session.json` gains `command`: the program, then the arguments exactly as
+  the command line parser received them, as a list — `run.py` written
+  relative to the experiment's folder, `alhazen run` as `alhazen`, `run`, …;
+  null for a session built in code. The snapshot carries the same list as a
+  top-level `command` key beside `config` and `provenance`. `build_session`
+  takes it as `command=`, and run.py (`run_experiment`) and `alhazen run`
+  pass it. `session.json` stays schema 1: the field is added, and readers of
+  schema 1 ignore keys they do not know.
+- **A rig that `extends` a shared rig is also recorded whole.** Beside
+  `rig.yaml`, still the named file byte for byte, a run folder now holds
+  `rig-merged.yaml`: that file merged over the shared rig as the session
+  loaded it, with the monitor's registration name written in, so the folder
+  says what the machine was without the alhazen that shipped the shared
+  half. Written with the rest of the record (all or none), listed in the
+  manifest, and named in `session.json` as `files.rig_merged` (null for a
+  rig that extends nothing, whose `rig.yaml` is already whole). The
+  run-directory layout gains the name; `tests/fixtures/contracts.json`
+  records it. `docs/data.md` §2 and §3 describe both.
+
 ### Changed
 
 - **The shared `laptop` rig is now the development laptop's own panel on

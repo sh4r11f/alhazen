@@ -190,6 +190,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command is None:
         parser.print_help()
         return 0
+    # The command line as this parser received it, for a session's run
+    # folder to record (session.json's `command`). The program is written as
+    # `alhazen`, the command a person types, whether this was started through
+    # the console script or `python -m alhazen.cli.main`.
+    args.invocation = ["alhazen", *(sys.argv[1:] if argv is None else argv)]
     # argparse has already refused any name not in the table (its `choices`
     # are the subparsers above), so the lookup cannot miss.
     return _COMMANDS[args.command](args, parser)
@@ -1001,6 +1006,11 @@ def _trial_session(args: argparse.Namespace, rig: Any, task: Any, params: Any, m
             },
             # Recorded and checked against the registry, never in a path.
             initials=args.initials,
+            # How this session was started, for session.json and the
+            # snapshot: set by `main` and `run_experiment` from the argv they
+            # parsed. A namespace built some other way has none, and the run
+            # records null rather than a guess.
+            command=getattr(args, "invocation", None),
         )
     except (ConfigError, DataError) as e:
         # DataError: what is already on disk refuses the session — a used run

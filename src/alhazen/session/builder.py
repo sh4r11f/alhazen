@@ -19,7 +19,7 @@ from __future__ import annotations
 import inspect
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
@@ -68,7 +68,7 @@ from alhazen.paradigms.base import TrialSource
 from alhazen.session.database import ExperimentDatabase, FrameInputBuffer
 from alhazen.session.eyetracker import EyeTrackerMonitor
 from alhazen.session.feedback import FeedbackSounder
-from alhazen.session.identity import RunIdentity, source_file
+from alhazen.session.identity import RunIdentity, merged_rig, recorded_command, source_file
 from alhazen.session.pause import PauseMenu, run_pause_menu
 from alhazen.session.recorder import DataRecorder
 from alhazen.session.runner import SessionRunner
@@ -290,6 +290,7 @@ def build_session(
     experiment_name: str | None = None,
     mode: str | None = None,
     initials: str | None = None,
+    command: Sequence[str] | None = None,
 ) -> SessionRunner:
     """Wire one runnable session.
 
@@ -314,6 +315,13 @@ def build_session(
     ``mode`` is the mode that started the session (``"run"``, ``"test"``,
     ``"simulate"``), recorded in the run's session.json; None for a session
     built here directly.
+
+    ``command`` is the command line the session was started with — the
+    program, then the arguments exactly as its parser received them — which
+    run.py and ``alhazen run`` pass down. It is recorded in session.json and
+    the snapshot with the program made relative to the experiment's folder
+    (session.identity.recorded_command); None, for a session built in code,
+    records null.
 
     ``initials`` are the subject's (1 to 5 letters, recorded uppercase —
     config.models.normalize_initials), recorded in the snapshot, session.json
@@ -515,11 +523,17 @@ def build_session(
     rig_file = source_file(rig, "rig") if not isinstance(rig, RigConfig) else None
     if rig_file is None:
         rig_file = source_file(given_sources.get("rig"), "rig")
+    # The whole rig beside the copy, for a rig file that extends a shared
+    # one (rig-merged.yaml), merged now for the same reason the files are
+    # read now; and the command line, its program made relative to the
+    # experiment's folder.
     identity = RunIdentity(
         experiment=experiment,
         mode=mode,
         rig_file=rig_file,
         params_file=source_file(given_sources.get("task"), "params"),
+        rig_merged=merged_rig(rig_file),
+        command=recorded_command(command, experiment.root) if command is not None else None,
     )
 
     # A database from before 2.0's schema is moved aside now (kept, renamed
