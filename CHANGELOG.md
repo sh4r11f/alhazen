@@ -76,6 +76,12 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Fixed
 
+- **A `null` in a rig that extends a shared one now removes that setting**, as
+  docs/rigs.md always said. It used to be stored as None, which still counted
+  as "given": a rig switching the shared lab's frame QA to `policy: warn`
+  could not take away the lab's `max_dropped_fraction`, and frame QA refuses a
+  threshold its policy never reads. `devices: {reward: null}` loads as before.
+
 - **Windows display scaling no longer shrinks the window.** The PsychoPy
   backend declares the process DPI-aware before the window opens; at 150 %
   scaling a 2560x1440 panel used to give a 1707x960 window, which the
