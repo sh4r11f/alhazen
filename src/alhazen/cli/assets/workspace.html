@@ -22,21 +22,15 @@
   <!-- The logo, standalone (dashboard.py serves assets/favicon.svg). -->
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/workspace.css">
-  <!-- The Data view's stylesheet and script go here, before workspace.js,
-       once dashboard.py serves them:
-         <link rel="stylesheet" href="/workspace_data.css">
-         <script src="/workspace_data.js" defer></script>
+  <!-- The schema helpers load first: workspace.js reads ParameterChoices. -->
+  <script src="/workspace_parameters.js" defer></script>
+  <script src="/workspace.js" defer></script>
+  <!-- The Data view: its stylesheet, then the view itself.
        workspace_data.js defines window.WorkspaceData = {show, hide};
        workspace.js calls show(project, {api, token, node, error}) when an
        experiment's Data view is chosen and hide() when it is left, and says
        "Data inspection is not available" when the script is missing. -->
-  <!-- The schema helpers load first: workspace.js reads ParameterChoices. -->
-  <script src="/workspace_parameters.js" defer></script>
-  <script src="/workspace.js" defer></script>
-  <!-- The Data view: its stylesheet, the plotting helpers it draws with,
-       then the view itself (window.WorkspaceData.show/hide). -->
   <link rel="stylesheet" href="/workspace_data.css">
-  <script src="/workspace_plot.js" defer></script>
   <script src="/workspace_data.js" defer></script>
 </head>
 <body>

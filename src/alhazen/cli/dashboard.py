@@ -47,7 +47,6 @@ PAGE_ASSETS = {
     "/fonts/Nunito-latin.woff2": ("fonts/Nunito-latin.woff2", "font/woff2"),
     # The Data view (workspace_data.py serves its reads).
     "/workspace_data.js": ("workspace_data.js", "text/javascript; charset=utf-8"),
-    "/workspace_plot.js": ("workspace_plot.js", "text/javascript; charset=utf-8"),
     "/workspace_data.css": ("workspace_data.css", "text/css; charset=utf-8"),
 }
 # Written beside the lock by the server that holds it: its process id, when it

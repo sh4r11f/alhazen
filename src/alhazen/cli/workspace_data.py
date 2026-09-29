@@ -2,8 +2,8 @@
 
 The Data view (`assets/workspace_data.js`) lets a person pick one of a
 project's data folders, browse the runs in it, read one run's records and
-load its CSV tables to plot. Everything here READS files; nothing imports
-the experiment's code and nothing is ever written into a data folder.
+load its CSV tables. Everything here READS files; nothing imports the
+experiment's code and nothing is ever written into a data folder.
 
 Where the data is. A project does not say where its data goes — its rigs do
 (`data_root`), and a rehearsal (test, simulate) writes to the sibling
@@ -21,15 +21,15 @@ names) and its LOCATION (`path_inside`, which resolves symlinks, so a link
 pointing out of the folder is refused like ``..`` is).
 
 Numbers. CSV cells are sent as the exact text of the file, never parsed
-here: a CSV has no types, the text is the truth, and the plot must decide per
-column anyway whether it is numeric, boolean or a category
-(`assets/workspace_plot.js`, `parseColumn`). Parsing on the server would
-guess once for everyone and lose "1.50" vs "1.5".
+here: a CSV has no types, the text is the truth, and the page decides per
+column whether it sorts as numbers (`assets/workspace_data.js`,
+`numericColumn`). Parsing on the server would guess once for everyone and
+lose "1.50" vs "1.5".
 
 Extension point (not implemented): experiment figures. An experiment will
 later be able to declare its own analysis figures — a function of a run
 folder (or of several) that returns a figure — and the Data view will list
-them beside the quick plots. When that lands, it belongs in a new route here
+them in a card of their own. When that lands, it belongs in a new route here
 that RUNS in the project's interpreter (like `workspace._read_schema`), since
 this module never imports experiment code; see docs/workspace.md §Data.
 """

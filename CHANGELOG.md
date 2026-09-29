@@ -25,6 +25,20 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+### Removed
+
+- **The Data view's quick plots are gone for now.** The Plot card under the
+  table (mean ± SEM per x, scatter, histograms, grouping, Save figure (SVG))
+  and its script, `assets/workspace_plot.js` (and its route,
+  `/workspace_plot.js`), are removed; tables, run records, `figures/` images,
+  the saved live monitor link and pooling stay. The plotting code is in the
+  history at 2.1.1 (commit `fec038c`), should it come back. Numeric columns
+  still sort by value: the two rules the table used from the plot (what a
+  cell's number is, and when a column is numeric) now live in
+  `assets/workspace_data.js`.
+
 ## 2.1.1 - 2026-09-29
 
 ### Fixed

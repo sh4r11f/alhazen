@@ -574,15 +574,18 @@ class TestRoutes:
         call, *_ = routes
         for path, kind in [
             ("/workspace_data.js", "text/javascript"),
-            ("/workspace_plot.js", "text/javascript"),
             ("/workspace_data.css", "text/css"),
         ]:
             status, headers, _ = call(path)
             assert status == 200 and headers["Content-Type"].startswith(kind)
         page = call("/")[2].decode()
-        for asset in ("/workspace_data.js", "/workspace_plot.js", "/workspace_data.css"):
+        for asset in ("/workspace_data.js", "/workspace_data.css"):
             assert asset in page
         assert '<div id="data-view" hidden></div>' in page
+        # The quick plots were taken out after 2.1.1: their script is
+        # neither served nor asked for by the page.
+        assert call("/workspace_plot.js")[0] == 404
+        assert "workspace_plot" not in page
 
     def test_json_routes_answer_and_refuse(self, routes):
         call, _, key, root = routes
