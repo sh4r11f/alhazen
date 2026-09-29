@@ -77,6 +77,25 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   CSP). `/data-page/<ticket>` opens a saved monitor page through a
   two-minute ticket rather than the API token, under its own CSP (inline
   script and style only; no requests, frames or forms).
+- **A run folder records the command its session was started with.**
+  `session.json` gains `command`: the program, then the arguments exactly as
+  the command line parser received them, as a list — `run.py` written
+  relative to the experiment's folder, `alhazen run` as `alhazen`, `run`, …;
+  null for a session built in code. The snapshot carries the same list as a
+  top-level `command` key beside `config` and `provenance`. `build_session`
+  takes it as `command=`, and run.py (`run_experiment`) and `alhazen run`
+  pass it. `session.json` stays schema 1: the field is added, and readers of
+  schema 1 ignore keys they do not know.
+- **A rig that `extends` a shared rig is also recorded whole.** Beside
+  `rig.yaml`, still the named file byte for byte, a run folder now holds
+  `rig-merged.yaml`: that file merged over the shared rig as the session
+  loaded it, with the monitor's registration name written in, so the folder
+  says what the machine was without the alhazen that shipped the shared
+  half. Written with the rest of the record (all or none), listed in the
+  manifest, and named in `session.json` as `files.rig_merged` (null for a
+  rig that extends nothing, whose `rig.yaml` is already whole). The
+  run-directory layout gains the name; `tests/fixtures/contracts.json`
+  records it. `docs/data.md` §2 and §3 describe both.
 
 ### Changed
 
@@ -98,6 +117,17 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 - `dashboard.py`'s static assets are one table (`PAGE_ASSETS`), and a
   response's Content-Security-Policy can be chosen per route (`PAGE_CSP`
   stays the default for everything else).
+- **The shared `laptop` rig is now the development laptop's own panel on
+  Windows.** `rig-laptop.yaml` describes the Windows 11 laptop the
+  experiments are written on: its built-in 2560×1440 panel at 165 Hz,
+  38.0 cm wide (the EDID figure, rounded to the cm — measure it), still
+  `screen_index: 0`, with the ultrawide beside it (Windows' screen 2) off
+  limits. Its comments now explain why the file carries native pixels under
+  Windows' 150 % display scaling, what 165 Hz does to durations (a
+  millisecond duration is a different number of frames than on the 120 Hz
+  lab rig), and why `warmup_flips: 240` and `mark_trial` still hold. The
+  previous numbers (4096×2304 at 120 Hz) described the Linux machine it
+  replaced; an experiment extending `laptop` inherits the new panel.
 
 ## 2.0.1 - 2026-09-28
 

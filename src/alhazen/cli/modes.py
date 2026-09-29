@@ -24,6 +24,7 @@ before that, and when given they take precedence over the task's own.
 from __future__ import annotations
 
 import argparse
+import sys
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -145,6 +146,12 @@ def run_experiment(
         rig=str(default_rig), params=str(default_params) if default_params else None
     )
     args = parser.parse_args(argv)
+    # The command line as it was parsed, for the run folder to record
+    # (session.json's `command`): this process's program — run.py, made
+    # relative to the experiment when the run is recorded — and then the
+    # arguments this parser was given, which are sys.argv's unless the
+    # caller passed its own.
+    args.invocation = [sys.argv[0], *(sys.argv[1:] if argv is None else argv)]
     if tasks is not None:
         # The chosen task's params file stands in for --params exactly as
         # default_params does for one task; an explicit --params still wins.

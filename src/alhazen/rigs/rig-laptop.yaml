@@ -1,7 +1,7 @@
-# MACHINE: the development laptop — the Linux machine the lab's experiments
-# are written on.
+# MACHINE: the development laptop — a Windows 11 laptop, the machine the
+# lab's experiments are written on.
 #
-# One of alhazen's SHARED rigs (`--rig laptop`), taken from
+# One of alhazen's SHARED rigs (`--rig laptop`), first taken from
 # amodal-averaging's configs/rig-laptop.yaml. An experiment that needs
 # something different on this machine writes its own configs/rig-laptop.yaml
 # beginning `extends: laptop` and says only that (docs/rigs.md).
@@ -21,41 +21,68 @@
 # (test, simulate) lands beside data_root under data-rehearsal/, never in it,
 # so a simulated subject can never end up in the same table as a real one.
 
-# YOUR HARDWARE, read off this machine on 2026-08-27:
+# YOUR HARDWARE, read off this machine (Windows 11) on 2026-09-29:
 #
-#   screen 0  eDP-1  4096x2304 @ 120 Hz  380 x 210 mm   (the laptop panel; 60 Hz when first
-#                                                        read, 120 Hz since, confirmed 2026-09-10)
-#   screen 1  DP-3   7680x2160 @ 120 Hz  1200 x 340 mm  (the Samsung ultrawide)
+#   screen 1  \\.\DISPLAY1  2560x1440 @ 165 Hz  38 x 21 cm   (the laptop's built-in panel,
+#             primary       EDID id BOE09D9, NVIDIA GeForce RTX 3060 Laptop GPU)
+#   screen 2  \\.\DISPLAY2  3840x1080 @ 120 Hz  120 x 34 cm  (the Samsung C49HG9x ultrawide)
 #
-# DO NOT USE SCREEN 1. The Samsung is off limits for experiments; this file
-# targets the laptop panel, screen 0, and a test pins it
+# Windows numbers screens from 1, PsychoPy from 0: the laptop panel, Windows'
+# screen 1, is `screen_index: 0` below.
+#
+# DO NOT USE SCREEN 2 (screen_index 1). The Samsung is off limits for
+# experiments; this file targets the laptop panel, and a test pins it
 # (tests/unit/test_rigs.py). If a session ever opens on the ultrawide,
 # `screen_index` below is what to check.
 #
-# The laptop panel runs at 120 Hz, the same as the lab rig, so a duration in
-# milliseconds is the same number of frames on both: a 200 ms gap is 24 frames.
-# It was 60 Hz when first read off on 2026-08-27 and was set to 120 later.
-# Frame-level timing measured here is still not the rig's: this laptop draws
-# through a desktop compositor, where the rig takes a fullscreen exclusive
-# surface.
+# WINDOWS DISPLAY SCALING. The panel runs at 150 % scaling, so the desktop
+# reports it as 1707x960 "logical" pixels. width_px and height_px below are
+# the panel's NATIVE 2560x1440, because alhazen places every stimulus in
+# PsychoPy's `units="pix"`, which are real framebuffer pixels, and turns them
+# into degrees with width_px / width_cm. A process Windows does not consider
+# DPI-aware is handed the logical 1707x960 surface, stretched by 1.5 to fill
+# the panel, and every stimulus would come out 1.5x too big. Whether
+# PsychoPy (through pyglet) declares itself DPI-aware on this machine is NOT
+# yet verified here — check it on the first demo. You do not have to trust
+# either way: when a fullscreen window opens, alhazen compares the real
+# framebuffer with these numbers and refuses to run if they disagree, naming
+# both (display/psychopy_backend.py). If it refuses with 1707x960, the fix is
+# to make the Python process DPI-aware — one way is the environment's
+# python.exe > Properties > Compatibility > Change high DPI settings >
+# "Override high DPI scaling behaviour: Application" — never to put 1707 here.
+#
+# The panel runs at 165 Hz, NOT the lab rig's 120 Hz, so a duration in
+# milliseconds is a different number of frames here: one frame is 6.06 ms
+# instead of 8.33. alhazen rounds each duration to the nearest whole frame
+# at the measured rate, so 200 ms is 33 frames here (exactly 200 ms) and 24
+# on the rig, but 100 ms is 16.5 frames and rounds to 16 here (97.0 ms)
+# while it is exactly 12 on the rig. A timing read off this machine is not
+# the rig's; judge durations on the rig (or `--rig lab-rehearsal`), and cut
+# movies against the rig's config. Frame-level timing measured here is not
+# the rig's either: this laptop draws through the Windows desktop compositor
+# and a GPU that everything else shares, where the rig takes a dedicated
+# fullscreen display.
 monitor:
-  width_px: 4096
-  height_px: 2304
-  width_cm: 38.0        # the driver's own EDID figure, not a guess
+  width_px: 2560        # native panel pixels, not the 1707 Windows shows at 150 % scaling
+  height_px: 1440
+  width_cm: 38.0        # the EDID figure, which EDID rounds to the whole cm — MEASURE the
+                        # visible panel with a ruler and put the real width here
   distance_cm: 57.0     # MEASURE THIS — it is what sets a degree of visual angle
-  refresh_rate_hz: 120.0
-  screen_index: 0
+  refresh_rate_hz: 165.0
+  screen_index: 0       # the laptop panel (Windows' screen 1); index 1 is the Samsung
   fullscreen: true
 
 display:
   backend: psychopy
   # PsychoPy measures the refresh rate by looking for 10 consecutive IDENTICAL
   # frame intervals, and alhazen gives it `warmup_flips` frames to find them
-  # in. The default 30 leaves only 20 after warm-up, which a compositor-backed
-  # desktop (this machine runs Wayland, so PsychoPy goes through XWayland)
-  # will not reliably produce — the session then refuses to start, correctly,
-  # because it cannot verify the timing. More frames to search gives it room.
-  # The rig takes a fullscreen exclusive surface and does not need this.
+  # in. The default 30 leaves only 20 after warm-up, which a desktop drawn
+  # through a compositor (Windows' DWM here, with display scaling on and a
+  # laptop GPU shared with the browser) will not reliably produce — the
+  # session then refuses to start, correctly, because it cannot verify the
+  # timing. More frames to search gives it room: 240 flips is about 1.5 s at
+  # 165 Hz. The rig takes a dedicated fullscreen display and does not need
+  # this.
   warmup_flips: 240
   frame_qa:
     # Count drops on every trial record, so the analysis's frame-timing report

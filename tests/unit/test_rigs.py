@@ -126,6 +126,17 @@ class TestTheSharedRigs:
         """Screen 1 on that machine is off limits; its file says a test pins it."""
         assert load_rig(shared_rig_files()["laptop"]).monitor.screen_index == 0
 
+    def test_the_laptop_rig_describes_the_panel_in_native_pixels(self):
+        """The laptop is a Windows machine at 150 % display scaling: the
+        desktop calls its 2560x1440 panel 1707x960. Stimuli are placed in
+        framebuffer pixels, so the file must carry the native count (a
+        logical one makes every stimulus 1.5x too big), and the panel's
+        165 Hz, which is not the lab's 120 Hz."""
+        monitor = load_rig(shared_rig_files()["laptop"]).monitor
+        assert (monitor.width_px, monitor.height_px) == (2560, 1440)
+        assert monitor.refresh_rate_hz == 165.0
+        assert monitor.width_cm == 38.0
+
     def test_the_lab_rehearsal_is_the_lab_with_its_devices_stood_down(self):
         """What the rehearsal rehearses is the lab's configuration, so the two
         may differ only in what the rehearsal file says it changes: every
