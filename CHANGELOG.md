@@ -108,7 +108,9 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 - **The parameter file menu** is now the **Task parameters** heading's menu,
   shows short names (`pilot` for `configs/task-pilot.yaml`), and has no
   "Task defaults" entry: it opens on the task's own file, else `task.yaml`,
-  else the first file, and every launch with a file sends its parameters. An
+  else the first file (with a task table: only the task's own file, and
+  "No file" for a task whose entry names none), and every launch with a
+  file sends its parameters. An
   experiment with no parameter file says its task runs on the defaults in its
   code.
 - **Larger, friendlier type** in the workspace (16 px body in Nunito, no text under 13 px but badges), colours on theme

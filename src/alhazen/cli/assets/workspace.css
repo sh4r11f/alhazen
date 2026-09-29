@@ -781,6 +781,25 @@ input[type=checkbox] {
   margin-bottom: 14px;
 }
 
+/* Why the parameter choices could not be read: a sentence, and the full
+ * error folded under it, scrolling rather than stretching the form. */
+.choices-notice p {
+  margin: 0 0 6px;
+  color: var(--bad-ink);
+}
+
+.choices-notice pre {
+  max-height: 220px;
+  overflow: auto;
+  font: 13px/1.5 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px;
+}
+
 #parameter-fields {
   max-height: 420px;
   overflow: auto;

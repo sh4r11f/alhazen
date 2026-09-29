@@ -301,7 +301,10 @@
               </p>
               <input id="parameter-search" type="search" aria-label="Filter parameters"
                      placeholder="Search parameters…">
-              <p id="choices-notice" class="help" hidden></p>
+              <!-- Why the parameter choices could not be read: one sentence,
+                   then the full error folded away (loadSchema() in
+                   workspace.js). A div, since it may hold a <details>. -->
+              <div id="choices-notice" class="help choices-notice" hidden></div>
               <div id="parameter-fields"></div>
               <textarea id="parameter-yaml" spellcheck="false"
                         aria-label="Parameter text (YAML or JSON)" hidden></textarea>

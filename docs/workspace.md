@@ -97,12 +97,20 @@ and keeps its own colours.
    with `task` or `params`, each shown without its `task-`/`params-` prefix
    and ending (`configs/task-pilot.yaml` is `pilot`, `configs/task.yaml` is
    `task`, `configs/presets/task-x.yaml` is `presets/x`; two files that would
-   read the same show their paths). It opens on the selected task's own file,
-   else `task.yaml`, else the first file, and every launch sends that file's
-   (edited) values, so every run folder has its `params.yaml`. An experiment
+   read the same show their paths). With a Task menu it opens on the selected
+   task's own file — the one run.py's table names — and only that: a task
+   whose entry names no file (`None`), or one the project lacks, opens on
+   **No file (the task's own defaults)**, runs on the defaults in its code and
+   launches without `--params`; the other files stay in the menu for a
+   deliberate choice, never pre-selected. Without a task table it opens on
+   `task.yaml`, else the first file. A launch with a file sends that file's
+   (edited) values, so its run folder has its `params.yaml`. An experiment
    with no parameter file at all shows no menu: its task runs on the defaults
    written in its code (run.py's `default_params=` or the task's own), and
-   launches without `--params`.
+   launches without `--params`. When the task's parameter choices cannot be
+   read (its code fails to import, or run.py builds `task_class` in a way the
+   workspace cannot follow), a one-line reason is shown — the error's last
+   line — with the full error folded under **Full error**.
 4. Choose text parameters from dropdowns; text lists use dropdowns with
    checkboxes. Choices come from the task model's enums and defaults, keeping
    the current value available. Keyboard bindings offer common keys. Unbounded

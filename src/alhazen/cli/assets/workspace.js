@@ -213,15 +213,45 @@ function selectedTask() {
 }
 
 /**
- * The parameter file the Task parameters menu opens on. The selected task's
- * own file when run.py names one that the project has; otherwise a plain
- * task.yaml, the usual starting point; otherwise the first file listed; ''
- * only for a project with no parameter file at all.
+ * The parameter file the Task parameters menu opens on ('' for none).
+ *
+ * With a task table (run.py's TASKS) it is the selected task's own file, and
+ * only that: a task whose entry names no file (None) — or names one the
+ * project does not have — opens on no file, because run.py runs such a task
+ * on the defaults in its code, and pre-selecting another task's file would
+ * send that task's parameters to this one. Other files stay in the menu for
+ * a deliberate choice. Without a task table: a plain task.yaml, the usual
+ * starting point, else the first file; '' only when there is none.
  */
 function defaultPreset(p) {
-  const task = tasks(p).find((t) => t.name === selectedTask());
-  if (task?.params && p.configs.includes(task.params)) return task.params;
+  if (tasks(p).length) {
+    const task = selectedTaskEntry(p);
+    return task?.params && p.configs.includes(task.params) ? task.params : '';
+  }
   return p.configs.find((path) => path.endsWith('/task.yaml')) || p.configs[0] || '';
+}
+
+/** The task table's entry for the selected task, or undefined. */
+function selectedTaskEntry(p) {
+  return tasks(p).find((t) => t.name === selectedTask());
+}
+
+/**
+ * Fill the Task parameters menu for project `p` and the selected task, and
+ * open it on defaultPreset(p). The files come by their short names
+ * (presetLabels). A "No file" entry heads the list only for a task of a
+ * table that has no file of its own — the one case where running without a
+ * file is what run.py itself would do — so it is never pre-selected
+ * anywhere else. A project with no file at all has no menu, and the editor
+ * says what runs instead (renderEditor).
+ */
+function presetMenu(p) {
+  const items = presetLabels(p.configs);
+  const start = defaultPreset(p);
+  if (tasks(p).length && !start) items.unshift(['', 'No file (the task’s own defaults)']);
+  options($('params-config'), items, start);
+  $('params-config').value = start;
+  $('params-config').hidden = !p.configs.length;
 }
 
 /**
@@ -577,12 +607,10 @@ async function chooseProject(id) {
   // entry: a launch with a file always sends its parameters, so every run
   // folder gets a params.yaml. A project with no file at all has no menu,
   // and the editor says what runs instead (renderEditor).
-  options($('params-config'), presetLabels(p.configs), defaultPreset(p));
-  $('params-config').hidden = !p.configs.length;
+  presetMenu(p);
   // "Each launch saves a parameter snapshot" is untrue without a file, and
   // with nothing to edit the Fields / Text switch goes too: only the
   // message saying what runs instead remains (renderEditor).
-  $('parameters-help').hidden = !p.configs.length;
   $('editor-switch').hidden = !p.configs.length;
   // The server lists runs newest first, so the first match is the latest.
   runId = state.runs.find((r) => r.project === id)?.id || null;
@@ -623,9 +651,7 @@ async function loadSchema(id) {
     parameterSchema = schema;
   } catch (e) {
     if (!current()) return;
-    $('choices-notice').textContent = 'Could not load model choices. '
-      + `Showing current values; use the text editor for other values. ${e.message}`;
-    $('choices-notice').hidden = false;
+    showChoicesError(e.message);
   } finally {
     if (current()) {
       loadingSchema = false;
@@ -636,6 +662,33 @@ async function loadSchema(id) {
 }
 
 /**
+ * Say why the parameter choices could not be read, readably. The server's
+ * message ends with the error the task's code raised, after a whole Python
+ * traceback; the notice shows that last line and what it means here, and
+ * keeps the full text folded in a <details> for whoever has to fix it.
+ */
+function showChoicesError(message) {
+  const lines = message.split('\n').map((line) => line.trim()).filter(Boolean);
+  const last = lines.at(-1) || 'Unknown error';
+  // What still works: with a file, its values are shown without the
+  // choice lists; without one there is nothing more to say.
+  const rest = project()?.configs?.length
+    ? ' The fields show the file’s values as they are; use the text editor for others.'
+    : '';
+  const sentence = node('p', '', `${last} — the dashboard cannot read this task’s parameter `
+    + `choices.${rest}`);
+  const notice = $('choices-notice');
+  if (lines.length > 1) {
+    const details = node('details');
+    details.append(node('summary', '', 'Full error'), node('pre', '', message));
+    notice.replaceChildren(sentence, details);
+  } else {
+    notice.replaceChildren(sentence);
+  }
+  notice.hidden = false;
+}
+
+/**
  * The reader picked another task: open the Task parameters menu on that
  * task's own file, then load its schema and that file together, so the
  * editor shows the new task's parameters with the new task's choices. Each
@@ -643,7 +696,7 @@ async function loadSchema(id) {
  */
 async function taskChanged() {
   const p = project();
-  $('params-config').value = defaultPreset(p);
+  presetMenu(p);
   await Promise.all([loadSchema(p.id), loadConfig()]);
 }
 
@@ -737,6 +790,32 @@ async function loadConfig() {
 /* The parameter editor                                                */
 /* ------------------------------------------------------------------ */
 
+/**
+ * What the editor says when there are no values to edit, so a launch sends
+ * no parameters: for a task of a table whose entry names no file (or one the
+ * project lacks), that it runs on its code's defaults; for a project with
+ * no file at all, the same; and when a file is chosen but its text was
+ * emptied in the text editor, that the launch now sends nothing.
+ */
+function noValuesHint(p) {
+  const task = tasks(p).length ? selectedTaskEntry(p) : undefined;
+  if (task && !$('params-config').value) {
+    if (task.params && !p.configs.includes(task.params)) {
+      return `run.py names ${task.params} as ${task.name}’s parameter file, but the project `
+        + 'has no such file. A launch sends no parameters, and run.py will look for that '
+        + 'file itself; choose a file above, or fix run.py.';
+    }
+    return `${task.name} has no parameter file; it runs on the defaults in its code, and `
+      + 'launches without --params. Choose a file above only if you mean to.';
+  }
+  if (!p?.configs?.length) {
+    return 'No task parameter files in configs/ (task*.yaml or params*.yaml). The task runs on '
+      + 'the defaults written in its code, and launches without --params.';
+  }
+  return 'The text editor was left empty, so a launch sends no parameters and the task runs '
+    + 'on the defaults written in its code. Choose a file above to start from its values.';
+}
+
 /** Write one edited value into `values` at `path` (an array of keys). */
 function setValue(path, value) {
   let parent = values;
@@ -758,20 +837,18 @@ function renderEditor() {
   // Nothing to search while there are no values (a project without files).
   $('parameter-search').hidden = editor !== 'fields' || values === null;
   $('parameter-yaml').hidden = editor !== 'yaml';
+  // "Each launch saves a parameter snapshot" holds only with a file chosen.
+  $('parameters-help').hidden = !$('params-config').value;
   if (editor !== 'fields') return;
   const host = $('parameter-fields');
   host.replaceChildren();
   if (values === null) {
-    // No values to edit: a project with no parameter file at all, or one
-    // whose text editor was emptied and switched back (while a file loads,
-    // loadConfig shows "Loading parameters…" instead). Either way a launch
-    // now sends no parameters, and the reader is told what runs instead.
-    const hint = project()?.configs?.length
-      ? 'The text editor was left empty, so a launch sends no parameters and the task runs '
-        + 'on the defaults written in its code. Choose a file above to start from its values.'
-      : 'No task parameter files in configs/ (task*.yaml or params*.yaml). The task runs on '
-        + 'the defaults written in its code, and launches without --params.';
-    host.append(node('p', 'help', hint));
+    // No values to edit: a task that runs without a file, a project with
+    // no parameter file at all, or a text editor emptied and switched back
+    // (while a file loads, loadConfig shows "Loading parameters…" instead).
+    // Either way a launch now sends no parameters, and the reader is told
+    // what runs instead (noValuesHint).
+    host.append(node('p', 'help', noValuesHint(project())));
     return;
   }
   // Controls are numbered param-0, param-1, … in document order, and each

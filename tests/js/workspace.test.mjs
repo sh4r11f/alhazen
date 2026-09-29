@@ -587,22 +587,34 @@ describe('choosing a task', () => {
     assert.equal(app.byId('launch').disabled, false);
   });
 
-  it('falls back to task.yaml for a task without a parameter file the project has', async () => {
-    /* One task names no file; the other names one the project does not have
-     * (run.py may be ahead of configs/). Neither can open the preset menu. */
-    const project = {
-      ...TASKED,
-      tasks: [
-        { name: 'mt-tuning', params: null },
-        { name: 'mib-search', params: 'configs/gone.yaml' },
-      ],
-    };
-    const app = await taskedPage({ project: project });
-    assert.equal(app.byId('params-config').value, 'configs/task.yaml');
-    await chooseTask(app, 'mt-tuning');
-    assert.equal(app.byId('params-config').value, 'configs/task.yaml');
-    assert.deepEqual(plain(app.run('values')), { trials: 4 });
-  });
+  it('opens on no file for a task whose table entry names none, or one the project lacks',
+    async () => {
+      /* Changed at the owner's request: this used to fall back to task.yaml,
+       * which sent one task's parameters to another (kde-vergence's check
+       * task opened on the pursuit pilot's file). With a task table, only
+       * the task's own file is ever pre-selected. */
+      const project = {
+        ...TASKED,
+        tasks: [
+          { name: 'mt-tuning', params: null },
+          { name: 'mib-search', params: 'configs/gone.yaml' },
+        ],
+      };
+      const app = await taskedPage({ project: project });
+      /* mib-search, the default, names a file the project does not have. */
+      assert.equal(app.byId('params-config').value, '');
+      assert.equal(app.run('values'), null);
+      assert.match(app.byId('parameter-fields').textContent, /configs\/gone\.yaml/);
+      await chooseTask(app, 'mt-tuning');
+      assert.equal(app.byId('params-config').value, '');
+      assert.equal(app.run('values'), null);
+      assert.equal(
+        app.byId('parameter-fields').textContent,
+        'mt-tuning has no parameter file; it runs on the defaults in its code, and launches '
+        + 'without --params. Choose a file above only if you mean to.',
+      );
+      assert.equal(app.fetches.filter((f) => f.url.startsWith('/api/config')).length, 0);
+    });
 
   it('sends the selected task with a built-in mode, and never with a script', async () => {
     const script = {
@@ -1400,5 +1412,171 @@ describe('the logo', () => {
     assert.equal(drawing(read('favicon.svg')), inline);
     assert.match(inline, /id="logo-bricks-turned"/);
     assert.match(read('workspace.html'), /<link rel="icon" href="\/favicon.svg" type="image\/svg\+xml">/);
+  });
+});
+
+describe('a task table with a task that has no parameter file', () => {
+  /* kde-vergence's table: the check task names None, the other two their own
+   * files, and each has a pilot file beside it. */
+  const KDE = Object.freeze({
+    ...PROJECT,
+    tasks: [
+      { name: 'kde-vergence-check', params: null },
+      { name: 'kde-vergence-pursuit', params: 'configs/task-pursuit.yaml' },
+      { name: 'kde-vergence-report', params: 'configs/task-report.yaml' },
+    ],
+    default_task: 'kde-vergence-check',
+    configs: [
+      'configs/task-pursuit-pilot.yaml', 'configs/task-pursuit.yaml',
+      'configs/task-report-pilot.yaml', 'configs/task-report.yaml',
+    ],
+  });
+  const CONFIGS = {
+    'configs/task-pursuit-pilot.yaml': { text: 'speed: 1\n', values: { speed: 1 } },
+    'configs/task-pursuit.yaml': { text: 'speed: 2\n', values: { speed: 2 } },
+    'configs/task-report-pilot.yaml': { text: 'gap: 3\n', values: { gap: 3 } },
+    'configs/task-report.yaml': { text: 'gap: 4\n', values: { gap: 4 } },
+  };
+  const SCHEMAS = {
+    'kde-vergence-check': {}, 'kde-vergence-pursuit': {}, 'kde-vergence-report': {},
+  };
+
+  async function kdePage() {
+    const app = await pageWith({ project: KDE, configs: CONFIGS, schemas: SCHEMAS });
+    chooseMode(app, 'movie');
+    return app;
+  }
+
+  async function chooseTask(app, name) {
+    app.byId('task').value = name;
+    app.byId('task').fire('change');
+    await settle();
+  }
+
+  /** Launch, and return what was posted; clears earlier posts first. */
+  async function launchBody(app) {
+    app.server.posted.length = 0;
+    await launch(app);
+    return launched(app);
+  }
+
+  it('selects no file for it, says so, and launches without parameters', async () => {
+    const app = await kdePage();
+    const menu = app.byId('params-config');
+    assert.equal(app.byId('task').value, 'kde-vergence-check');
+    assert.equal(menu.value, '');
+    /* The other files stay on offer, after a "No file" entry. */
+    assert.deepEqual(plain(menu.children.map((o) => [o.value, o.textContent])), [
+      ['', 'No file (the task’s own defaults)'],
+      ['configs/task-pursuit-pilot.yaml', 'pursuit-pilot'],
+      ['configs/task-pursuit.yaml', 'pursuit'],
+      ['configs/task-report-pilot.yaml', 'report-pilot'],
+      ['configs/task-report.yaml', 'report'],
+    ]);
+    assert.match(app.byId('parameter-fields').textContent,
+      /^kde-vergence-check has no parameter file; it runs on the defaults in its code/);
+    assert.equal(app.byId('parameters-help').hidden, true);
+    const body = await launchBody(app);
+    assert.equal(body.task, 'kde-vergence-check');
+    assert.equal('parameters' in body, false);
+    assert.equal('parameters_yaml' in body, false);
+  });
+
+  it('follows the task back and forth, never carrying one task’s file to another',
+    async () => {
+      const app = await kdePage();
+      await chooseTask(app, 'kde-vergence-pursuit');
+      assert.equal(app.byId('params-config').value, 'configs/task-pursuit.yaml');
+      /* Its own file: no "No file" entry to fall back on. */
+      assert.equal(app.byId('params-config').children[0].value, 'configs/task-pursuit-pilot.yaml');
+      assert.deepEqual(plain(app.run('values')), { speed: 2 });
+      assert.equal(app.byId('parameters-help').hidden, false);
+      assert.deepEqual((await launchBody(app)).parameters, { speed: 2 });
+
+      await chooseTask(app, 'kde-vergence-check');
+      assert.equal(app.byId('params-config').value, '');
+      assert.equal(app.run('values'), null);
+      assert.equal('parameters' in (await launchBody(app)), false);
+
+      await chooseTask(app, 'kde-vergence-report');
+      assert.equal(app.byId('params-config').value, 'configs/task-report.yaml');
+      assert.deepEqual((await launchBody(app)).parameters, { gap: 4 });
+
+      await chooseTask(app, 'kde-vergence-check');
+      assert.equal(app.byId('params-config').value, '');
+      assert.equal('parameters' in (await launchBody(app)), false);
+    });
+
+  it('sends a file chosen on purpose for it', async () => {
+    const app = await kdePage();
+    app.byId('params-config').value = 'configs/task-pursuit-pilot.yaml';
+    app.byId('params-config').fire('change');
+    await settle();
+    assert.deepEqual(plain(app.run('values')), { speed: 1 });
+    assert.deepEqual((await launchBody(app)).parameters, { speed: 1 });
+  });
+
+  it('keeps the task.yaml fallback for a project without a task table', async () => {
+    const app = await pageWith({
+      project: { ...PROJECT, configs: ['configs/task-pilot.yaml', 'configs/task.yaml'] },
+    });
+    assert.equal(app.byId('params-config').value, 'configs/task.yaml');
+    assert.equal(app.byId('params-config').children.some((o) => o.value === ''), false);
+  });
+});
+
+describe('a task whose parameter choices cannot be read', () => {
+  const TRACEBACK = 'Cannot read task parameter choices: Traceback (most recent call last):\n'
+    + '  File "workspace_schema.py", line 86, in task_schema\n'
+    + '    cls = _value(keywords["task_class"], namespace, "task_class")\n'
+    + "ValueError: run.py's task_class=task_class is not a module-level name\n";
+
+  it('says so in one sentence and folds the traceback away', async () => {
+    const app = loadWorkspace();
+    app.server.state = { projects: [PROJECT], runs: [], active: null };
+    app.server.configs = { 'configs/task.yaml': { text: 'trials: 4\n', values: { trials: 4 } } };
+    app.server.rigs = { 'configs/rig-mac.yaml': rig(true) };
+    app.server.reject = (url) => (
+      url.startsWith('/api/schema') ? response({ error: TRACEBACK }, 400) : undefined);
+    await app.run('refresh()');
+    await settle();
+    const notice = app.byId('choices-notice');
+    assert.equal(notice.hidden, false);
+    const [sentence, details] = notice.children;
+    assert.equal(
+      sentence.textContent,
+      "ValueError: run.py's task_class=task_class is not a module-level name — the dashboard "
+      + 'cannot read this task’s parameter choices. The fields show the file’s values as they '
+      + 'are; use the text editor for others.',
+    );
+    assert.doesNotMatch(sentence.textContent, /Traceback/);
+    assert.equal(details.localName, 'details');
+    assert.equal(details.open, false);
+    assert.equal(details.querySelector('pre').textContent, TRACEBACK);
+    /* Not a reason to block a launch: the file's values are still there. */
+    assert.deepEqual(plain(app.run('values')), { trials: 4 });
+    assert.equal(app.byId('launch').disabled, false);
+    /* A later read that works clears it. */
+    app.server.reject = () => undefined;
+    await app.run("loadSchema('p')");
+    await settle();
+    assert.equal(notice.hidden, true);
+  });
+
+  it('shows a one-line error as it is, with nothing to fold', async () => {
+    const app = await pageWith();
+    app.run("showChoicesError('Reading the task’s parameter choices timed out')");
+    const notice = app.byId('choices-notice');
+    assert.equal(notice.children.length, 1);
+    assert.match(notice.textContent, /^Reading the task’s parameter choices timed out — /);
+  });
+
+  it('does not speak of a file’s values when the project has no file', async () => {
+    const app = await pageWith({ project: { ...PROJECT, configs: [] } });
+    app.run("showChoicesError('ValueError: bad')");
+    assert.equal(
+      app.byId('choices-notice').textContent,
+      'ValueError: bad — the dashboard cannot read this task’s parameter choices.',
+    );
   });
 });
