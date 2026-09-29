@@ -897,6 +897,74 @@ class TestHTTP:
         assert call("/api/state")[0] == 200
 
 
+class TestAClientThatWentAway:
+    """A tab closed mid-response makes the next write fail. On Windows that is
+    ConnectionAbortedError (WinError 10053), which the handlers used not to
+    catch: it fell into the OSError branch, which wrote a 400 to the dead
+    socket, raised again, and socketserver printed the traceback into the
+    owner's dashboard console. Now nothing more is written and nothing is
+    printed, for either method, and whether the failed write was the answer
+    or a refusal."""
+
+    @pytest.fixture
+    def dead_socket(self, http, monkeypatch):
+        """Every write of a JSON answer fails as a write to an aborted socket
+        does; the writes attempted and the errors that escaped a handler are
+        recorded."""
+        call, server = http
+        writes, escaped = [], []
+
+        def write(self, payload, status=200):
+            writes.append(status)
+            raise ConnectionAbortedError(10053, "An established connection was aborted")
+
+        monkeypatch.setattr(Handler, "_json", write)
+        # socketserver's hook for an exception out of a handler: what printed
+        # the traceback. Recorded instead, so the test sees it.
+        monkeypatch.setattr(
+            server, "handle_error", lambda request, address: escaped.append(sys.exc_info()[1])
+        )
+
+        def send(raw):
+            with socket.create_connection(("127.0.0.1", server.server_port), timeout=10) as sock:
+                sock.sendall(raw.replace(b"PORT", str(server.server_port).encode()))
+                # The server closes without answering; read to EOF.
+                return b"".join(iter(lambda: sock.recv(65536), b""))
+
+        token = server.token.encode()
+        return send, token, writes, escaped
+
+    @pytest.mark.parametrize(
+        ("request_line", "body", "first_status"),
+        [
+            # The answer's own write fails.
+            (b"GET /api/state", b"", 200),
+            # A refusal's write fails (an unknown run is a ValueError: 400).
+            (b"GET /api/runs/no-such-run", b"", 400),
+            (b"POST /api/parameters", b'{"text": "speed: 2"}', 200),
+            (b"POST /api/parameters", b'{"text": 2}', 400),
+        ],
+    )
+    def test_nothing_more_is_written_and_nothing_escapes(
+        self, dead_socket, request_line, body, first_status
+    ):
+        send, token, writes, escaped = dead_socket
+        raw = (
+            request_line
+            + b" HTTP/1.1\r\nHost: 127.0.0.1:PORT\r\nX-Alhazen-Token: "
+            + token
+            + b"\r\nContent-Type: application/json\r\nContent-Length: "
+            + str(len(body)).encode()
+            + b"\r\n\r\n"
+            + body
+        )
+        assert send(raw) == b""
+        # One attempt: the failed write was not followed by a refusal
+        # written to the same dead socket.
+        assert writes == [first_status]
+        assert escaped == []
+
+
 class TestInterpreters:
     def test_children_see_the_project_first_and_nothing_of_the_launcher(
         self, workspace, monkeypatch
@@ -951,6 +1019,47 @@ class TestInterpreters:
         ]
         restored = Workspace(workspace.directory)
         assert restored.projects[0]["alhazen_version"] == alhazen.__version__
+
+    def test_registration_records_whether_the_interpreter_has_psychopy(
+        self, workspace, monkeypatch
+    ):
+        """The page warns before a launch that would open a PsychoPy window
+        with an interpreter that has none. The probe looks the package up
+        without importing it; this interpreter's truth is the expectation,
+        so the test holds whether or not PsychoPy is installed here."""
+        import importlib.metadata
+        import importlib.util
+
+        monkeypatch.setattr(workspace_module, "probe_interpreter", REAL_PROBE)
+        project = workspace.add(workspace.projects[0]["path"], sys.executable)
+        expected = (
+            None
+            if importlib.util.find_spec("psychopy") is None
+            else importlib.metadata.version("psychopy")
+        )
+        assert project["psychopy_version"] == expected
+        assert Workspace(workspace.directory).projects[0]["psychopy_version"] == expected
+
+    def test_a_psychopy_is_found_by_its_installed_version_without_being_imported(
+        self, workspace, monkeypatch
+    ):
+        """A psychopy package on the child's path, with the metadata pip
+        writes beside it: its version is read from that metadata. The
+        package raises if imported, so a probe that imported it would fail
+        the registration."""
+        monkeypatch.setattr(workspace_module, "probe_interpreter", REAL_PROBE)
+        root = Path(workspace.projects[0]["path"])
+        # The project's src/ is first on the child's path (_child_env).
+        (root / "src/psychopy").mkdir(parents=True)
+        (root / "src/psychopy/__init__.py").write_text(
+            "raise RuntimeError('the probe must not import psychopy')\n"
+        )
+        (root / "src/psychopy-2099.1.0.dist-info").mkdir()
+        (root / "src/psychopy-2099.1.0.dist-info/METADATA").write_text(
+            "Metadata-Version: 2.1\nName: psychopy\nVersion: 2099.1.0\n"
+        )
+        project = workspace.add(str(root), sys.executable)
+        assert project["psychopy_version"] == "2099.1.0"
 
     def test_an_interpreter_without_alhazen_is_refused_at_registration(
         self, workspace, monkeypatch

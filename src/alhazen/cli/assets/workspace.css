@@ -1607,3 +1607,14 @@ dialog code {
     transition: background .15s,border-color .15s;
   }
 }
+
+/* ---- The launch footer's PsychoPy warning (workspace.js updateLaunch):
+ * the note, set apart as a problem to fix before starting. Existing
+ * colour variables only, so light and dark both follow the theme. ---- */
+.launch-footer .help.launch-warning {
+  color: var(--bad-ink);
+  background: var(--bad-bg);
+  border: 1px solid var(--bad-line);
+  border-radius: 8px;
+  padding: 8px 12px;
+}

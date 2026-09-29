@@ -27,6 +27,15 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ## Unreleased
 
+### Added
+
+- **The workspace warns before a launch that needs PsychoPy the project's
+  interpreter does not have.** Registration now records the interpreter's
+  PsychoPy version (`psychopy_version`; looked up, never imported), and the
+  launch footer names the interpreter and the fix for demo and measure, and
+  for test, run and windowed simulate on a PsychoPy rig. An older
+  registration says "re-register to check". It warns; it does not block.
+
 ### Changed
 
 - **Dark mode is black**, in the colours of the owner's VS Code theme
@@ -45,6 +54,13 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   gone. The sidebar logo is 56 px (was 44). The favicon (`/favicon.svg`) is
   the same drawing with bricks 7/4 as wide, so the A survives a browser
   tab's 16-32 px.
+- **A missing PsychoPy is one clear error, not a traceback.** Demo imported
+  `psychopy.core` before opening its window, so an interpreter without
+  PsychoPy died in a raw `ModuleNotFoundError`. Every mode that opens a
+  window now reports `CANNOT DEMO/RUN/MEASURE/CALIBRATE:` with the
+  interpreter's path and `"<python>" -m pip install "alhazen-vision[psychopy]"`
+  (the old message said `alhazen[psychopy]`, which is another project's name
+  on PyPI). A PsychoPy that is installed but fails to import is told apart.
 
 ### Removed
 
@@ -57,6 +73,23 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   still sort by value: the two rules the table used from the plot (what a
   cell's number is, and when a column is numeric) now live in
   `assets/workspace_data.js`.
+
+### Fixed
+
+- **Windows display scaling no longer shrinks the window.** The PsychoPy
+  backend declares the process DPI-aware before the window opens; at 150 %
+  scaling a 2560x1440 panel used to give a 1707x960 window, which the
+  framebuffer check refused.
+- **Text works on Windows with PsychoPy's pyglet 1.4.11.** pyglet declares a
+  GDI+ call's buffer as unsigned bytes and passes signed ones, so the first
+  TextStim failed with `ctypes.ArgumentError`; the backend repairs that one
+  declaration, only when it is the broken one.
+- **The dashboard no longer prints a traceback when a browser tab goes away
+  mid-response on Windows.** `ConnectionAbortedError` (WinError 10053) was
+  not caught and led to a second write to the dead socket; the whole
+  `ConnectionError` family is now caught, and a refusal whose write fails is
+  dropped.
+
 
 ## 2.1.1 - 2026-09-29
 

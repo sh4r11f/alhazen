@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hmac
 import json
 import os
@@ -201,6 +202,23 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _refuse(self, status: int, reason: object) -> None:
+        """Answer a request that failed with its status and reason — unless
+        the client has already gone.
+
+        The refusal goes back on the socket the request came in on. A client
+        that closed it (a tab closed mid-request; on Windows the connection is
+        then aborted, WinError 10053) makes this write raise in its turn, and
+        an exception out of an except clause escapes the handler: socketserver
+        then prints its traceback into the dashboard's console, which is what
+        the owner saw. Nobody is left to read the reason, so there is nothing
+        more to do.
+        """
+        # No one is left to read the reason (see above), so a write that
+        # meets the closed socket ends here.
+        with contextlib.suppress(ConnectionError):
+            self._json({"error": str(reason)}, status)
+
     def _request(self) -> tuple[str, dict[str, list[str]]]:
         host = f"127.0.0.1:{self.server.server_port}"
         if self.headers.get("Host") != host:
@@ -276,17 +294,22 @@ class Handler(BaseHTTPRequestHandler):
                 self._file(ASSETS / name, kind)
             else:
                 self._json({"error": "Not found"}, 404)
-        except (BrokenPipeError, ConnectionResetError, TimeoutError):
+        except (ConnectionError, TimeoutError):
             # The client went away mid-response — a closed tab, a cancelled
             # fetch, a media stream nobody read for longer than `timeout`.
+            # The whole ConnectionError family: BrokenPipeError and
+            # ConnectionResetError, and ConnectionAbortedError, which is how
+            # Windows reports a client that aborted (WinError 10053). That one
+            # used to fall through to the OSError branch below, which wrote a
+            # 400 to the dead socket and raised again.
             # There is nobody left to answer, and nothing to record.
             pass
         except PermissionError as exc:
-            self._json({"error": str(exc)}, 403)
+            self._refuse(403, exc)
         except FileNotFoundError as exc:
-            self._json({"error": str(exc)}, 404)
+            self._refuse(404, exc)
         except (ValueError, OSError, AlhazenError) as exc:
-            self._json({"error": str(exc)}, 400)
+            self._refuse(400, exc)
 
     def _body(self) -> dict[str, Any]:
         lengths = self.headers.get_all("Content-Length", [])
@@ -332,22 +355,25 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True})
             else:
                 self._json({"error": "Not found"}, 404)
-        except (BrokenPipeError, ConnectionResetError):
+        except ConnectionError:
             # The client went away mid-response: a closed tab, a cancelled
-            # fetch. There is nobody left to answer, and nothing to record —
+            # fetch. The whole family, as in do_GET — Windows's
+            # ConnectionAbortedError (WinError 10053) included, which used to
+            # reach the OSError branch below and its write to the dead socket.
+            # There is nobody left to answer, and nothing to record —
             # whatever the request did (a launch, a stop) is in the workspace
             # state the next poll shows.
             pass
         except RequestTooLarge as exc:
-            self._json({"error": str(exc)}, 413)
+            self._refuse(413, exc)
         except TimeoutError:
             # The declared body never fully arrived (see `timeout`); the
             # connection is still good, so the client is told why.
-            self._json({"error": f"The request body did not arrive within {self.timeout} s"}, 408)
+            self._refuse(408, f"The request body did not arrive within {self.timeout} s")
         except PermissionError as exc:
-            self._json({"error": str(exc)}, 403)
+            self._refuse(403, exc)
         except (ValueError, OSError, AlhazenError, ValidationError) as exc:
-            self._json({"error": str(exc)}, 400)
+            self._refuse(400, exc)
 
     def _file(self, path: Path, kind: str, ranges: bool = False, csp: str = PAGE_CSP) -> None:
         # An open descriptor pins the file whose size and range we send.

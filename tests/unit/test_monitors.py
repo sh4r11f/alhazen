@@ -320,8 +320,13 @@ class TestWithoutPsychopy:
             registry.registered_names,
             registry.monitor_folder,
         ):
-            with pytest.raises(DisplayError, match=r"alhazen\[psychopy\]"):
+            # The distribution's real name: a bare `alhazen[psychopy]` would
+            # install an unrelated PyPI project. The interpreter is named too.
+            with pytest.raises(
+                DisplayError, match=r'pip install "alhazen-vision\[psychopy\]"'
+            ) as e:
                 call()
+            assert sys.executable in str(e.value)
 
 
 class TestCheckRig:

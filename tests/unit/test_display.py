@@ -1320,3 +1320,269 @@ class TestFonts:
         # None in sys.modules is how Python says "this import fails".
         monkeypatch.setitem(sys_modules, "matplotlib", None)
         assert list(pb._bundled_font_files()) == [pb.HEADING_FONT]
+
+
+class TestAMissingPsychoPyIsNamedWithItsInterpreter:
+    """The owner's first demo from the dashboard died on a raw
+    ModuleNotFoundError: the project's environment had alhazen but no
+    PsychoPy. Every way in to PsychoPy now ends in one DisplayError that says
+    WHICH interpreter lacks it and what to install into it."""
+
+    def _missing(self, monkeypatch):
+        # None in sys.modules is how Python says "this import fails": it
+        # raises ModuleNotFoundError naming psychopy, exactly as an
+        # environment without it does, whether or not this one has it.
+        monkeypatch.setitem(__import__("sys").modules, "psychopy", None)
+
+    def test_opening_a_window_without_psychopy_names_the_interpreter_and_the_install(
+        self, monkeypatch
+    ):
+        from alhazen.config.models import MonitorConfig
+        from alhazen.display import psychopy_backend as pb
+
+        self._missing(monkeypatch)
+        # The DPI declaration is Windows-only and tested on its own below.
+        monkeypatch.setattr(pb, "declare_dpi_awareness", lambda: "stub")
+        monitor = MonitorConfig(
+            width_px=800, height_px=600, width_cm=40.0, distance_cm=57.0, refresh_rate_hz=60.0
+        )
+        with pytest.raises(DisplayError) as caught:
+            pb.PsychoPyDisplay(monitor).open()
+        message = str(caught.value)
+        executable = __import__("sys").executable
+        assert message.startswith(
+            f"PsychoPy is not installed in the Python environment this runs in ({executable})"
+        )
+        assert "opening a window needs it" in message
+        # The install command runs pip through that same interpreter, under
+        # the distribution's real name (a bare `alhazen` is someone else's).
+        assert f'"{executable}" -m pip install "alhazen-vision[psychopy]"' in message
+        assert "Project settings" in message
+        # The ImportError stays attached for whoever wants the traceback.
+        assert isinstance(caught.value.__cause__, ModuleNotFoundError)
+
+    def test_a_psychopy_that_is_there_but_broken_is_told_apart(self):
+        """A dependency of PsychoPy missing is not PsychoPy missing: the fix is
+        to repair that install, and the import's own error says what broke."""
+        from alhazen.display.psychopy_backend import psychopy_missing
+
+        broken = ModuleNotFoundError("No module named 'pyglet'", name="pyglet")
+        message = str(psychopy_missing(broken, "registering a monitor"))
+        assert "is installed in the Python environment this runs in" in message
+        assert "could not be imported (ModuleNotFoundError: No module named 'pyglet')" in message
+        assert "registering a monitor needs it" in message
+        assert "Repair that installation" in message
+        other = str(psychopy_missing(ImportError("DLL load failed")))
+        assert "could not be imported (ImportError: DLL load failed)" in other
+
+    def test_the_monitor_registry_says_the_same_thing(self, monkeypatch):
+        from alhazen.display import monitors
+
+        self._missing(monkeypatch)
+        with pytest.raises(DisplayError) as caught:
+            monitors.registered_names()
+        message = str(caught.value)
+        assert __import__("sys").executable in message
+        assert "reading or writing PsychoPy's monitor records needs it" in message
+        assert 'pip install "alhazen-vision[psychopy]"' in message
+
+    def test_the_page_offers_the_same_install_command(self):
+        """workspace.js warns before a launch with the same command the error
+        prints after one; the two must not drift apart."""
+        from pathlib import Path
+
+        import alhazen.cli
+        from alhazen.display.psychopy_backend import PSYCHOPY_INSTALL
+
+        script = (Path(alhazen.cli.__file__).parent / "assets" / "workspace.js").read_text(
+            encoding="utf-8"
+        )
+        assert PSYCHOPY_INSTALL == 'pip install "alhazen-vision[psychopy]"'
+        assert f"const PSYCHOPY_INSTALL = '{PSYCHOPY_INSTALL}';" in script
+
+
+class _FakeFunction:
+    """A ctypes entry point: records its calls, then returns or raises."""
+
+    def __init__(self, outcome):
+        self.outcome = outcome
+        self.calls = []
+
+    def __call__(self, *args):
+        self.calls.append(args)
+        if isinstance(self.outcome, BaseException):
+            raise self.outcome
+        return self.outcome
+
+
+def _windll(shcore=0, user32=1):
+    """A stand-in for ctypes.windll. `shcore`/`user32` are what the two
+    calls return (an HRESULT, a BOOL) or raise; None leaves the DLL without
+    the entry point, as Windows before 8.1 has no SetProcessDpiAwareness."""
+
+    def dll(name, outcome):
+        return types.SimpleNamespace(**({} if outcome is None else {name: _FakeFunction(outcome)}))
+
+    return types.SimpleNamespace(
+        shcore=dll("SetProcessDpiAwareness", shcore),
+        user32=dll("SetProcessDPIAware", user32),
+    )
+
+
+# HRESULTs as ctypes hands them back: signed ints.
+E_ACCESSDENIED = 0x80070005 - 2**32
+E_INVALIDARG = 0x80070057 - 2**32
+
+
+class TestDpiAwareness:
+    """At 150 % Windows scaling a process that has not declared itself
+    DPI-aware is handed a 1707x960 "fullscreen" on a 2560x1440 panel (this
+    PC's laptop rig, seen in its console). The backend declares awareness
+    before any window opens."""
+
+    def test_per_monitor_awareness_is_asked_for_first(self, caplog):
+        from alhazen.display import psychopy_backend as pb
+
+        windll = _windll(shcore=0)
+        with caplog.at_level(logging.INFO):
+            assert pb.declare_dpi_awareness(windll, "win32") == "per-monitor DPI aware"
+        assert windll.shcore.SetProcessDpiAwareness.calls == [(2,)]
+        # Declared once: the fallback is not also called.
+        assert windll.user32.SetProcessDPIAware.calls == []
+        assert "per-monitor DPI awareness" in caplog.text
+
+    def test_a_mode_already_fixed_is_left_alone_and_said(self, caplog):
+        from alhazen.display import psychopy_backend as pb
+
+        windll = _windll(shcore=E_ACCESSDENIED)
+        with caplog.at_level(logging.INFO):
+            assert pb.declare_dpi_awareness(windll, "win32") == "DPI awareness already set"
+        assert windll.user32.SetProcessDPIAware.calls == []
+        assert "already set" in caplog.text
+
+    @pytest.mark.parametrize("shcore", [None, OSError("shcore.dll not found"), E_INVALIDARG])
+    def test_without_per_monitor_awareness_it_falls_back_to_system_awareness(self, shcore, caplog):
+        """No shcore entry point (before Windows 8.1), no shcore at all, or
+        an error it answers with: the older call still gets device pixels on
+        a single-monitor rig."""
+        from alhazen.display import psychopy_backend as pb
+
+        windll = _windll(shcore=shcore, user32=1)
+        with caplog.at_level(logging.INFO):
+            assert pb.declare_dpi_awareness(windll, "win32") == "system DPI aware"
+        assert windll.user32.SetProcessDPIAware.calls == [()]
+        assert "per-monitor awareness was refused" in caplog.text
+
+    @pytest.mark.parametrize("user32", [0, OSError("user32 refused")])
+    def test_when_neither_call_works_it_warns_with_the_consequence(self, user32, caplog):
+        """Not an error: at 100 % scaling an unaware process gets the right
+        pixels. At any other the framebuffer check refuses with numbers, and
+        this warning, earlier in the console, says why."""
+        from alhazen.display import psychopy_backend as pb
+
+        windll = _windll(shcore=E_INVALIDARG, user32=user32)
+        with caplog.at_level(logging.WARNING):
+            assert pb.declare_dpi_awareness(windll, "win32") == "not DPI aware"
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "could not declare this process DPI-aware" in warnings[0]
+        assert "0x80070057" in warnings[0]
+        assert "framebuffer check will refuse" in warnings[0]
+
+    @pytest.mark.parametrize("platform", ["darwin", "linux"])
+    def test_elsewhere_nothing_is_called(self, platform):
+        from alhazen.display import psychopy_backend as pb
+
+        windll = _windll()
+        assert pb.declare_dpi_awareness(windll, platform) == "not Windows: nothing to declare"
+        assert windll.shcore.SetProcessDpiAwareness.calls == []
+        assert windll.user32.SetProcessDPIAware.calls == []
+
+    def test_it_is_declared_before_the_window_is_made(self, monkeypatch):
+        """Windows fixes a process's DPI mode the first time it matters; a
+        declaration after the window exists would be too late."""
+        from alhazen.config.models import MonitorConfig
+        from alhazen.display import psychopy_backend as pb
+
+        order = []
+
+        class FakeWindow:
+            frameBufferSize = (800, 600)
+            clientSize = (800, 600)
+            size = (800, 600)
+
+        def window(**kwargs):
+            order.append("window")
+            return FakeWindow()
+
+        fake_visual = types.SimpleNamespace(Window=window)
+        monkeypatch.setattr(pb, "declare_dpi_awareness", lambda: order.append("dpi"))
+        monkeypatch.setattr(pb, "resolve_monitor", lambda monitor: None)
+        monkeypatch.setitem(
+            __import__("sys").modules, "psychopy", types.SimpleNamespace(visual=fake_visual)
+        )
+        monkeypatch.setitem(__import__("sys").modules, "psychopy.visual", fake_visual)
+        _fake_pyglet(monkeypatch)
+        monitor = MonitorConfig(
+            width_px=800, height_px=600, width_cm=40.0, distance_cm=57.0, refresh_rate_hz=60.0
+        )
+        pb.PsychoPyDisplay(monitor).open()
+        assert order == ["dpi", "window"]
+
+
+class TestPygletWindowsTextRepair:
+    """pyglet 1.4.11 (PsychoPy's pin on Windows) declares GdipCreateBitmapFromScan0's
+    pixel buffer as unsigned bytes in its image codec and fills it with signed
+    ones in its font renderer, so ctypes refused the first TextStim: the demo
+    died drawing its key table on this PC's laptop rig."""
+
+    @staticmethod
+    def _codec(argtypes):
+        """A stand-in for sys.modules holding pyglet's GDI+ codec, whose one
+        function carries `argtypes` as ctypes would read them."""
+        function = types.SimpleNamespace(argtypes=argtypes)
+        codec = types.SimpleNamespace(
+            gdiplus=types.SimpleNamespace(GdipCreateBitmapFromScan0=function)
+        )
+        return {"pyglet.image.codecs.gdiplus": codec}, function
+
+    def test_the_broken_declaration_is_made_to_accept_the_renderers_buffer(self):
+        import ctypes
+
+        from alhazen.display import psychopy_backend as pb
+
+        c_long, c_void_p = ctypes.c_long, ctypes.c_void_p
+        broken = [c_long, c_long, c_long, c_long, ctypes.POINTER(ctypes.c_ubyte), c_void_p]
+        modules, function = self._codec(broken)
+        # The failure, as ctypes reports it, before the repair.
+        with pytest.raises(TypeError, match="expected LP_c_ubyte instance"):
+            function.argtypes[4].from_param((ctypes.c_byte * 16)())
+        assert pb.repair_pyglet_windows_text(modules) is True
+        assert function.argtypes[4] is c_void_p
+        # The renderer's signed buffer now passes, and the rest is untouched.
+        c_void_p.from_param((ctypes.c_byte * 16)())
+        assert function.argtypes[:4] == broken[:4] and function.argtypes[5] is c_void_p
+        # Once repaired there is nothing left to repair.
+        assert pb.repair_pyglet_windows_text(modules) is False
+
+    @pytest.mark.parametrize("which", ["fixed", "other", "short"])
+    def test_a_declaration_that_is_not_the_broken_one_is_left_alone(self, which):
+        import ctypes
+
+        from alhazen.display import psychopy_backend as pb
+
+        c_long, c_void_p = ctypes.c_long, ctypes.c_void_p
+        declared = {
+            # A pyglet that declares the buffer as the renderer fills it.
+            "fixed": [c_long] * 4 + [ctypes.POINTER(ctypes.c_byte), c_void_p],
+            "other": [c_long] * 4 + [c_void_p, c_void_p],
+            "short": [c_long, c_void_p],
+        }[which]
+        modules, function = self._codec(list(declared))
+        assert pb.repair_pyglet_windows_text(modules) is False
+        assert function.argtypes == declared
+
+    def test_without_the_codec_nothing_happens(self):
+        from alhazen.display import psychopy_backend as pb
+
+        assert pb.repair_pyglet_windows_text({}) is False
