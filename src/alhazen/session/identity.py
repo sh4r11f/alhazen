@@ -270,7 +270,7 @@ def session_card(
         ),
         # A list, as the process received it: no shell's quoting rules to
         # guess at, and the same on every platform. Null for a session built
-        # in code. Added after 2.0.1 without a schema bump: it is a new key,
+        # in code. Added in 2.1.0 without a schema bump: it is a new key,
         # and a reader of schema 1 ignores keys it does not know.
         "command": list(identity.command) if identity.command is not None else None,
         "alhazen": {
