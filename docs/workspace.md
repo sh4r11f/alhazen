@@ -256,8 +256,9 @@ project folder when relative, plus its rehearsal sibling
 `<data_root>-rehearsal`, where test and simulate write ([Modes](modes.md)).
 Each folder is labelled with the rigs that write there and whether it holds
 real or rehearsal data. Only folders that exist are offered; the others are
-listed as "not created yet". A rig that cannot be read, or names no
-`data_root`, is named at the top rather than skipped.
+listed under a closed "N more data folders not created yet". A rig that
+cannot be read, or names no `data_root`, is named at the top rather than
+skipped.
 
 ### Runs
 
@@ -267,7 +268,7 @@ alhazen 2.0, which has no version folder), subject and initials, session,
 run, task, mode, date, number of trials, rig. The fields come from the run's
 `session.json`, or for a pre-2.0 run from its `config_snapshot.yaml` (which
 has no mode). The trial count is `report.yaml`'s when the run wrote one, and
-otherwise the trials file's lines, shown as `~N`: listing counts lines rather
+otherwise the trials file's lines, shown as `≈N` (its tooltip says so): listing counts lines rather
 than parsing a CSV, so a folder of hundreds of runs lists quickly. Menus
 filter by version, subject and task. A run whose records cannot be read is
 still listed, flagged ⚠, and its problem is said under the table.

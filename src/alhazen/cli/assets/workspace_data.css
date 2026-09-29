@@ -33,6 +33,15 @@
   padding-bottom: 6px;
 }
 
+.data-more summary {
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.data-more[open] summary {
+  margin-bottom: 4px;
+}
+
 .data-missing {
   margin: 0;
   padding-left: 18px;

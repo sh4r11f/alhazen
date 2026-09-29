@@ -206,13 +206,18 @@ const WorkspaceData = (() => {
         body.appendChild(node('p', 'path data-root-path'));
       }
       if (answer.missing.length) {
+        // Folded away: useful to check a rig's data_root, noise otherwise.
         // By path: two missing folders may share a name (data/ of two rigs).
-        note(body, 'Where the other rigs would write — not created yet:');
+        const count = answer.missing.length;
+        const more = node('details', 'data-more');
+        more.appendChild(node('summary', '',
+          `${count} more data folder${count === 1 ? '' : 's'} not created yet`));
         const list = node('ul', 'data-missing');
         for (const r of answer.missing) {
           list.appendChild(node('li', '', `${r.path} (${r.kind}; rigs ${r.rigs.join(', ')})`));
         }
-        body.appendChild(list);
+        more.appendChild(list);
+        body.appendChild(more);
       }
       if (answer.roots.length) await chooseRoot(answer.roots[0].id);
     });
@@ -254,7 +259,9 @@ const WorkspaceData = (() => {
     ['task', 'Task', (r) => r.task ?? '—'],
     ['mode', 'Mode', (r) => r.mode ?? '—'],
     ['date', 'Date', (r) => r.date ?? '—'],
-    ['trials', 'Trials', (r) => (r.trials === null ? '—' : (r.trials_counted === 'lines' ? `~${r.trials}` : String(r.trials)))],
+    // Without report.yaml the count is the trials file's lines, marked ≈
+    // (a quoted cell with a line break would add one); see drawRuns' title.
+    ['trials', 'Trials', (r) => (r.trials === null ? '—' : (r.trials_counted === 'lines' ? `≈${r.trials}` : String(r.trials)))],
     ['rig', 'Rig', (r) => r.rig ?? '—'],
   ];
 
@@ -313,7 +320,12 @@ const WorkspaceData = (() => {
       const box = node('td', 'data-check');
       box.appendChild(tick);
       row.appendChild(box);
-      for (const [, , valueOf] of RUN_COLUMNS) row.appendChild(node('td', '', valueOf(run)));
+      for (const [key, , valueOf] of RUN_COLUMNS) {
+        const cell = row.appendChild(node('td', '', valueOf(run)));
+        if (key === 'trials' && run.trials_counted === 'lines') {
+          cell.setAttribute('title', 'counted lines of the trials file (this run has no report.yaml)');
+        }
+      }
       if (run.problems.length) {
         const flag = node('td', 'data-flag', '⚠');
         flag.setAttribute('title', run.problems.join('\n'));

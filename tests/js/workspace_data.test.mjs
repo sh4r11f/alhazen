@@ -134,15 +134,21 @@ test('show() fills the view: folder picker, problems, missing folders, the runs'
   ]);
   assert.equal(picker.value, 'r1');
   assert.deepEqual(texts(roots, '.data-error'), ['Rig broken cannot be read: bad']);
-  assert.match(texts(roots, '.data-note').join(' '), /not created yet/);
-  assert.deepEqual(texts(roots.querySelector('.data-missing'), 'li'), ['/exp/bench (real; rigs bench)']);
+  // Folded into a closed <details>, its summary counting them.
+  const more = roots.querySelector('details');
+  assert.equal(more.open, false);
+  assert.equal(more.querySelector('summary').textContent, '1 more data folder not created yet');
+  assert.deepEqual(texts(more.querySelector('.data-missing'), 'li'), ['/exp/bench (real; rigs bench)']);
   assert.equal(roots.querySelector('.data-root-path').textContent, '/exp/data');
   // Three runs, each row with its fields; the line-counted one marked "~".
   const rows = page.view.querySelectorAll('tr[data-run]');
   assert.deepEqual(rows.map((r) => r.getAttribute('data-run')), [RUN_A, RUN_B, RUN_C]);
   assert.deepEqual(texts(rows[0], 'td').slice(1),
     ['1.0.0', '01 · HD', '1', '1', 'demo', 'run', '2026-09-29', '3', 'lab']);
-  assert.equal(texts(rows[1], 'td')[8], '~4');
+  const counted = rows[1].querySelectorAll('td')[8];
+  assert.equal(counted.textContent, '≈4');
+  assert.match(counted.getAttribute('title'), /counted lines of the trials file/);
+  assert.equal(rows[0].querySelectorAll('td')[8].getAttribute('title'), null);
   // A run's problem is flagged in its row and said under the table.
   assert.equal(rows[2].querySelector('.data-flag').getAttribute('title'), 'report.yaml cannot be read: bad');
   assert.match(texts(cardOf(page.view, 'runs'), '.data-error').join(), /v2.0.0.*report.yaml cannot be read/);
