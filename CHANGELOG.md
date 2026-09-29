@@ -25,6 +25,48 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+### Added
+
+- **Experiment titles.** An experiment may declare its display name in its
+  `pyproject.toml` as `[tool.alhazen] title = "Amodal averaging"`;
+  `alhazen.config.experiment.experiment_title(root)` reads it (and the slug,
+  the `[project] name`) from the file without importing the experiment. The
+  workspace shows the title in the sidebar, the heading, the breadcrumb and
+  the browser tab, with the slug in small print; a title that is not a
+  non-empty string is reported under the heading instead of stopping the
+  page. `Workspace.describe` gains `title`, `slug` and `title_error`.
+- **Qualified rig names.** `--rig <experiment>/<name>` (e.g.
+  `amodal-averaging/lab`) names the experiment's own rig and never a shared
+  one; another experiment's name, or one that cannot be checked because no
+  experiment folder is found, is refused with the right name. Bare names and
+  paths keep their meaning. `RigRef.qualified(experiment)` spells a rig this
+  way, and `alhazen rigs` lists every rig by it.
+- **Run experiment / Data views** in the workspace sidebar, per experiment,
+  remembered per experiment; the Data view's content is `workspace_data.js`'s.
+- **Dark mode** for the workspace: Auto (follows the system), Light or Dark,
+  remembered in the browser.
+- **A new logo**: an A over the Ouchi illusion, as an inline SVG.
+
+### Changed
+
+- **The workspace's Rig menu** names every rig with its owner
+  (`amodal-averaging/lab`, `alhazen/mac`), in the menu, its summary and the
+  run history, and leaves out a shared rig the experiment's own rig of the
+  same name hides (the note under the menu names it). Rig has its own section
+  above the task parameters.
+- **The parameter file menu** is now the **Task parameters** heading's menu,
+  shows short names (`pilot` for `configs/task-pilot.yaml`), and has no
+  "Task defaults" entry: it opens on the task's own file, else `task.yaml`,
+  else the first file, and every launch with a file sends its parameters. An
+  experiment with no parameter file says its task runs on the defaults in its
+  code.
+- **Larger, friendlier type** in the workspace (16 px body, a rounded system
+  font where there is one, no text under 13 px but badges), colours on theme
+  tokens with WCAG AA contrast, the "01 — SETUP" label gone, and a sidebar
+  whose background runs the page's full height.
+
 ## 2.0.1 - 2026-09-28
 
 ### Fixed

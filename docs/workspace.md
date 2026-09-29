@@ -22,34 +22,97 @@ importing alhazen with that interpreter, refuses with the reason when it
 cannot, and records the alhazen and Python versions it found, and the
 [shared rigs](rigs.md) that alhazen ships.
 
+## The page
+
+```mermaid
+flowchart LR
+    subgraph browser["the page (browser)"]
+        HTML["workspace.html<br/>ids, layout"]
+        JS["workspace.js<br/>form, views, theme"]
+        PJS["workspace_parameters.js<br/>schema choices"]
+        DJS["workspace_data.js<br/>Data view (WorkspaceData)"]
+        CSS["workspace.css<br/>light / dark tokens"]
+    end
+    subgraph server["alhazen dashboard (loopback)"]
+        DASH["dashboard.py<br/>routes, token, CSP"]
+        WS["workspace.py<br/>registry, describe, launch"]
+        EXP["config/experiment.py<br/>experiment_title"]
+        RIGS["config/rigs.py<br/>list_rigs, resolve_rig"]
+    end
+    JS -- "/api/state, /api/rig, /api/config, /api/runs" --> DASH
+    JS -- "show(project, helpers) / hide()" --> DJS
+    PJS --> JS
+    DASH --> WS
+    WS --> EXP
+    WS --> RIGS
+```
+
+The sidebar lists the registered experiments by their **title**. An
+experiment declares it in its `pyproject.toml`, read as a file (the
+workspace never imports experiment code):
+
+```toml
+[tool.alhazen]
+title = "Amodal averaging"
+```
+
+Without one, its short name stands in: the `[project] name` (the *slug*,
+`amodal-averaging`), else the folder's name. The title heads the page, the
+breadcrumb and the browser tab (`Amodal averaging · Alhazen`); the slug and
+the folder follow under the heading in small print. A title that is there but
+is not a non-empty string is reported in red under the heading, and the
+experiment is shown under its slug meanwhile.
+
+The selected experiment opens into two views, remembered per experiment:
+**Run experiment** (the launch form, run output and history, below) and
+**Data** (the experiment's recorded data; its content comes from
+`workspace_data.js`, and the page says "Data inspection is not available"
+when that script is missing).
+
+The **Auto / Light / Dark** switch at the foot of the sidebar picks the
+colours: Auto follows the operating system's light or dark setting, and the
+choice is remembered in the browser. The framed live monitor is its own page
+and keeps its own colours.
+
 ## Configure and run
 
 1. Select an experiment in the sidebar.
-2. Choose a mode, rig and parameter preset. The **Rig** menu lists rigs by
-   name — `lab` for `rig-lab.yaml` — in two groups: **This experiment**, its
-   `configs/rig-<name>.yaml` files (subdirectories and `.yml` included), and
-   **Shared (alhazen)**, the rigs the project's alhazen ships
-   ([Rigs](rigs.md)). An experiment rig that extends a shared one says so
-   (`lab · extends alhazen/lab`); a shared rig hidden from `--rig lab` by the
-   experiment's own is spelled `alhazen/lab (hidden by this experiment's lab)`,
-   so the two cannot be confused. The summary under the menu describes the rig
-   as it would run — merged, for one that extends — and says whose it is. A
-   project registered before shared rigs were listed shows none, and says so:
-   save its **Project settings** to register it again. Parameter presets start
-   with `task` or `params`.
-3. Choose text parameters from dropdowns; text lists use dropdowns with
+2. Choose a mode and its options. **Rig**, a section of its own, lists every
+   rig by its owner and name — `amodal-averaging/lab` for the experiment's
+   `configs/rig-lab.yaml`, `alhazen/mac` for a shared one — in two groups:
+   **This experiment**, its `configs/rig-<name>.yaml` files (subdirectories
+   and `.yml` included), and **Shared (alhazen)**, the rigs the project's
+   alhazen ships ([Rigs](rigs.md)). The same spelling works on the command
+   line (`--rig amodal-averaging/lab`). An experiment rig that extends a shared
+   one says so (`amodal-averaging/lab · extends alhazen/lab`). A shared rig the
+   experiment's own rig of the same name hides is left out of the menu, and
+   the note under it names it and how the command line still reaches it
+   (`--rig alhazen/lab`). The summary under the menu describes the rig as it
+   would run — merged, for one that extends — and says whose it is. A project
+   registered before shared rigs were listed shows none, and says so: save its
+   **Project settings** to register it again.
+3. **Task parameters**, below the rig, starts with the menu of the
+   experiment's parameter files: the files in `configs/` whose names start
+   with `task` or `params`, each shown without its `task-`/`params-` prefix
+   and ending (`configs/task-pilot.yaml` is `pilot`, `configs/task.yaml` is
+   `task`, `configs/presets/task-x.yaml` is `presets/x`; two files that would
+   read the same show their paths). It opens on the selected task's own file,
+   else `task.yaml`, else the first file, and every launch sends that file's
+   (edited) values, so every run folder has its `params.yaml`. An experiment
+   with no parameter file at all shows no menu: its task runs on the defaults
+   written in its code (run.py's `default_params=` or the task's own), and
+   launches without `--params`.
+4. Choose text parameters from dropdowns; text lists use dropdowns with
    checkboxes. Choices come from the task model's enums and defaults, keeping
    the current value available. Keyboard bindings offer common keys. Unbounded
    custom strings can still be entered through the **Text (YAML or JSON)**
    editor; switching to it from Fields shows the current values as JSON,
    which is valid YAML, and either notation may be typed. Numeric arrays use
    JSON notation in the fields editor. Search filters nested fields.
-   **Task defaults** leaves parameter loading to the experiment's entry point.
-   Measure rig hides the parameter preset and editor entirely, as do standalone
-   scripts without a parameter-file option. Hidden task parameters are not sent
-   to those jobs.
-4. Set the mode's options, add any extra `run.py` arguments (below), and start
-   the run. Run and test require a subject ID and the subject's **Initials**
+   Measure rig hides the task parameters entirely, as do standalone scripts
+   without a parameter-file option. Hidden task parameters are not sent to
+   those jobs.
+5. Add any extra `run.py` arguments (below), and start the run. Run and test require a subject ID and the subject's **Initials**
    (1 to 5 letters, sent uppercase as `--initials`); simulate can use its own
    default subject and needs no initials. Initials that break the rule are
    refused on the page in the command line's words ("initials must be 1 to 5
@@ -62,7 +125,7 @@ cannot, and records the alhazen and Python versions it found, and the
    run and test launches stop at once with that usage error in the console,
    and the fix is to move the project to alhazen 2.0. Only simulate accepts
    headless, and only test accepts mouse gaze.
-5. Follow the console or view generated media. Images can be enlarged or saved.
+6. Follow the console or view generated media. Images can be enlarged or saved.
    Movies appear once recording finishes, with native playback and seeking.
 
 The six modes are **simulate**, **demo**, **movie**, **test**, **run** and
@@ -86,7 +149,7 @@ run_experiment(tasks=TASKS, default_task="mib-search", default_rig=..., argv=sys
 
 — gets a **Task** menu. The page lists the table's names with the default
 selected, reads the chosen task's parameter choices, preselects that task's
-parameter file as the preset when the table names one, sends `--task <name>`
+parameter file in the Task parameters menu when the table names one, sends `--task <name>`
 right after the mode, and shows the task beside the mode in the history. The
 launcher reads the table from `run.py` itself (the way it finds rigs and
 scripts), so it must be a module-level dict literal with string keys and, for
@@ -140,7 +203,8 @@ rig; for a rig that extends a shared one it is the merged rig — the one file
 alone would not say what ran — with the experiment's file as written kept
 beside it as `rig-source.yaml`. `run.json` records the rig launched (`rig`),
 its name (`rig_name`) and whose it is (`rig_source`: `experiment` or
-`alhazen`), and the history shows the name. Session data retains the
+`alhazen`), and the history shows the qualified name (`amodal-averaging/lab`,
+`alhazen/lab`). Session data retains the
 experiment's normal real/rehearsal paths.
 
 Only one job runs at a time in a workspace. **Stop run** interrupts the run:
@@ -223,8 +287,9 @@ workspace at a time: a second `alhazen dashboard` on the same workspace is refus
 and the refusal names the process that has it and the address of its page, so you
 can open that page, stop that process, or start another workspace with
 `--state-dir`. The UI requires
-no Node server, build step, external fonts or internet resources. Its assets
-ship in the Python wheel.
+no Node server, build step, external fonts or internet resources: text is set
+in the system's own friendly sans-serif (a rounded face where there is one),
+and the logo is an inline SVG. Its assets ship in the Python wheel.
 
 The server binds to `127.0.0.1` only and authenticates API/media requests with
 a random per-server token. The opening URL carries it in a fragment, which
