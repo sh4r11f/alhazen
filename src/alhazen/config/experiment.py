@@ -20,6 +20,11 @@ so a reader can tell the two apart.
 
 A version that cannot be found is an error, not a default: data filed under
 an invented version is worse than a session that does not start.
+
+The same file also names the experiment for people: its short name, the
+*slug* (``[project] name``), and an optional display title
+(``[tool.alhazen] title``), which the experiment workspace shows and rig names
+are qualified with (``amodal-averaging/lab``); see `experiment_title`.
 """
 
 from __future__ import annotations
@@ -31,6 +36,7 @@ import sys
 from dataclasses import dataclass
 from importlib import metadata
 from pathlib import Path
+from typing import Any
 
 from alhazen.errors import ConfigError
 from alhazen.version import experiment_distribution_version
@@ -93,9 +99,8 @@ def _from_pyproject(path: Path) -> Experiment:
             f"{path} gives no [project] version. Data is filed under the experiment's "
             'version (data/v<version>/...), so declare one: version = "0.1.0".'
         )
-    name = project.get("name") or path.parent.name
     return Experiment(
-        name=str(name),
+        name=_slug(project, path.parent),
         version=_checked(version, str(path)),
         version_source="pyproject.toml",
         root=path.parent,
@@ -122,6 +127,92 @@ def _from_metadata(task_class: type, module_file: Path) -> Experiment:
         version_source="installed metadata",
         root=None,
     )
+
+
+def _slug(project: Any, folder: Path) -> str:
+    """An experiment's short name: its ``[project] name``, else its folder's.
+
+    The one rule for it, shared by `find_experiment` (the name a session's
+    data records) and `experiment_title` (the name the workspace and rig
+    names show), so the two can never spell one experiment two ways.
+    """
+    name = project.get("name") if isinstance(project, dict) else None
+    return str(name) if name else folder.name
+
+
+@dataclass(frozen=True)
+class ExperimentTitle:
+    """What an experiment is called, for people and for the command line.
+
+    ``slug`` is its short name (``[project] name``, else its folder's name):
+    the ``amodal-averaging`` in rig names such as ``amodal-averaging/lab``.
+    ``title`` is its display name, ``[tool.alhazen] title`` — "Amodal
+    averaging" — or the slug when it declares none. ``error`` says why a
+    title (or the whole pyproject.toml) could not be used, and is None when
+    nothing is wrong: a title that is there but unusable is a mistake the
+    author should see, but it must not stop the workspace from listing the
+    experiment, so it is reported rather than raised.
+    """
+
+    slug: str
+    title: str
+    error: str | None = None
+
+
+def experiment_title(root: Path) -> ExperimentTitle:
+    """The slug and display title of the experiment in folder ``root``.
+
+    Read from ``root/pyproject.toml`` with tomllib — never by importing the
+    experiment's code, which the workspace's web server must not run. The
+    experiment declares its title as::
+
+        [tool.alhazen]
+        title = "Amodal averaging"
+
+    A folder with no pyproject.toml is named by its folder, with no error:
+    that is a plain folder, not a mistake. An unreadable pyproject.toml, or a
+    title that is not a non-empty string, falls back the same way and says
+    so in ``error``.
+    """
+    # Resolved first: `Path(".")` has no name of its own, its folder does.
+    root = root.resolve()
+    path = root / "pyproject.toml"
+    if not path.is_file():
+        return ExperimentTitle(slug=root.name, title=root.name)
+    try:
+        document = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        return ExperimentTitle(
+            slug=root.name,
+            title=root.name,
+            error=f"cannot read {path} for the experiment's name and title: {exc}",
+        )
+    slug = _slug(document.get("project", {}), root)
+    tool = document.get("tool", {})
+    table = tool.get("alhazen") if isinstance(tool, dict) else None
+    if table is None:
+        return ExperimentTitle(slug=slug, title=slug)
+    if not isinstance(table, dict):
+        return ExperimentTitle(
+            slug=slug,
+            title=slug,
+            error=f"{path}: [tool.alhazen] must be a table, not {table!r}",
+        )
+    if "title" not in table:
+        return ExperimentTitle(slug=slug, title=slug)
+    title = table["title"]
+    # A title only of spaces would show as an empty heading: as unusable as
+    # a number, and reported the same way.
+    if not isinstance(title, str) or not title.strip():
+        return ExperimentTitle(
+            slug=slug,
+            title=slug,
+            error=(
+                f"{path}: [tool.alhazen] title must be a non-empty string, such as title = "
+                f'"Amodal averaging"; got {title!r}. Showing the name {slug!r} instead'
+            ),
+        )
+    return ExperimentTitle(slug=slug, title=title.strip())
 
 
 def _checked(version: str, where: str) -> str:

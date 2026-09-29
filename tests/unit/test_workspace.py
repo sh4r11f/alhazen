@@ -129,6 +129,44 @@ class TestProjects:
         workspace.remove(p["id"])
         assert workspace.state()["projects"] == []
 
+    def test_describe_names_the_experiment_by_its_title_and_slug(self, workspace):
+        key = workspace.projects[0]["id"]
+        root = Path(workspace.projects[0]["path"])
+        # No pyproject.toml: the folder names it, and nothing is wrong.
+        described = workspace.describe(key)
+        assert (described["title"], described["slug"], described["title_error"]) == (
+            "experiment with spaces",
+            "experiment with spaces",
+            None,
+        )
+        # A declared title is shown; the [project] name is the slug. Read on
+        # every describe, so an edit shows on the next poll.
+        (root / "pyproject.toml").write_text(
+            '[project]\nname = "amodal-averaging"\n[tool.alhazen]\ntitle = "Amodal averaging"\n',
+            encoding="utf-8",
+        )
+        described = workspace.describe(key)
+        assert (described["title"], described["slug"], described["title_error"]) == (
+            "Amodal averaging",
+            "amodal-averaging",
+            None,
+        )
+        # The registry's own name is untouched: run records made before
+        # titles existed carry it.
+        assert described["name"] == "experiment with spaces"
+
+    def test_a_title_that_cannot_be_used_is_reported_and_the_workspace_still_works(self, workspace):
+        key = workspace.projects[0]["id"]
+        root = Path(workspace.projects[0]["path"])
+        (root / "pyproject.toml").write_text(
+            '[project]\nname = "demo"\n[tool.alhazen]\ntitle = 42\n', encoding="utf-8"
+        )
+        described = workspace.describe(key)
+        assert (described["title"], described["slug"]) == ("demo", "demo")
+        assert "title must be a non-empty string" in described["title_error"]
+        # The state the page polls still lists it, with the reason.
+        assert workspace.state()["projects"][0]["title_error"] == described["title_error"]
+
     def test_invalid_paths_and_interpreter(self, workspace, tmp_path):
         with pytest.raises(ValueError, match="No run.py"):
             workspace.add(str(tmp_path))

@@ -27,6 +27,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
+from alhazen.config.experiment import experiment_title
 from alhazen.config.loader import validate_rig
 from alhazen.config.models import normalize_initials
 from alhazen.config.rigs import (
@@ -875,8 +876,21 @@ class Workspace:
                 params.append(path.relative_to(root).as_posix())
         declared = project_tasks(root)
         shared = _shared_rigs(project)
+        # The experiment's names, read from its pyproject.toml on every
+        # describe (like its rigs and tasks) so an edit shows on the next
+        # poll. `name` stays the folder's name the registry recorded: run
+        # records made before titles existed carry it, and keep working.
+        naming = experiment_title(root)
         return {
             **project,
+            # Its display name ([tool.alhazen] title), else its slug.
+            "title": naming.title,
+            # Its short name ([project] name, else the folder's): what rig
+            # names are qualified with, amodal-averaging/lab.
+            "slug": naming.slug,
+            # Why a declared title (or the pyproject) could not be used; the
+            # page shows it under the heading. None when nothing is wrong.
+            "title_error": naming.error,
             "rigs": _describe_rigs(root, shared),
             # Why the Rig menu offers no shared rigs, when that is because the
             # registration predates them; None otherwise.

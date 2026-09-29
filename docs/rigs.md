@@ -77,7 +77,10 @@ flowchart TD
     F -->|yes| FILE["that file"]
     F -->|no| P{"alhazen/NAME ?"}
     P -->|yes| SH1["alhazen's shared rig-NAME.yaml"]
-    P -->|no| N{"a name?<br/>lab · rig-lab · rig-lab.yaml"}
+    P -->|no| Q{"EXPERIMENT/NAME ?"}
+    Q -->|"yes, this experiment's name"| QE["the experiment's own rig-NAME.yaml<br/>(never a shared one)"]
+    Q -->|"yes, another name"| ERR4["error naming this experiment's name"]
+    Q -->|no| N{"a name?<br/>lab · rig-lab · rig-lab.yaml"}
     N -->|"no (a path)"| ERR1["error: config file not found"]
     N -->|yes| E{"the experiment's<br/>configs/**/rig-NAME.yaml"}
     E -->|one| EXP["the experiment's rig"]
@@ -90,6 +93,15 @@ flowchart TD
 - **The experiment's own rig comes first.** An experiment rig *shadows*
   (hides) a shared rig of the same name: `--rig lab` is the experiment's lab.
   `--rig alhazen/lab` always means the shared one.
+- **A name can say whose rig it is.** `alhazen/<name>` is a shared rig, and
+  `<experiment>/<name>` is one of the experiment's own — `<experiment>` being
+  its short name, the `[project] name` in its `pyproject.toml` (the folder's
+  name when it has none): `--rig amodal-averaging/lab`. That spelling is the
+  experiment's own rig and never falls back to a shared one. An experiment
+  name that is not the one searched is refused, naming the right one; so is
+  the spelling when no experiment folder is found to check it against. The
+  experiment workspace and `alhazen rigs` show every rig this way; a bare
+  name keeps working exactly as before.
 - **Subfolders count.** `configs/rooms/rig-booth.yaml` is `booth`, as the
   workspace has always found rigs.
 - **Two of the experiment's files with one name are an error**, naming both —
@@ -169,18 +181,23 @@ than the shared one is `extends: mac` with a `monitor:` section of its own.
 
 ```text
 $ alhazen rigs
-rigs for C:\projects\amodal-averaging — give --rig a NAME, or the path to a rig file
+rigs for C:\projects\amodal-averaging (experiment amodal-averaging) — give --rig a NAME, with or without its owner, or the path to a rig file
 
-  NAME           SOURCE      FILE                    NOTE
-  lab            experiment  configs/rig-lab.yaml    extends alhazen/lab
-  lab            alhazen     rig-lab.yaml            shadowed by the experiment's lab (reach this one with --rig alhazen/lab)
-  lab-rehearsal  alhazen     rig-lab-rehearsal.yaml
-  laptop         alhazen     rig-laptop.yaml
-  mac            alhazen     rig-mac.yaml
-  vpixx          alhazen     rig-vpixx.yaml
+  NAME                   SOURCE      FILE                    NOTE
+  amodal-averaging/lab   experiment  configs/rig-lab.yaml    extends alhazen/lab
+  alhazen/lab            alhazen     rig-lab.yaml            shadowed by the experiment's lab (reach this one with --rig alhazen/lab)
+  alhazen/lab-rehearsal  alhazen     rig-lab-rehearsal.yaml
+  alhazen/laptop         alhazen     rig-laptop.yaml
+  alhazen/mac            alhazen     rig-mac.yaml
+  alhazen/vpixx          alhazen     rig-vpixx.yaml
 
 alhazen's shared rigs (alhazen 2.0.0) are in ...\site-packages\alhazen\rigs
 ```
+
+Each rig is listed by its qualified name, owner first, which `--rig` takes
+as it is (`--rig amodal-averaging/lab`); the bare name (`--rig lab`) means
+the same rig. When the experiment's `pyproject.toml` cannot be read, the
+folder's name stands in and a note on stderr says why.
 
 `--project PATH` lists another experiment's. It exits 1 when a rig there would
 be refused by name — a file that cannot be read, or two files sharing a name —
