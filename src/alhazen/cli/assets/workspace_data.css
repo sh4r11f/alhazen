@@ -1,6 +1,6 @@
 /* Alhazen experiment workspace — the Data view (workspace_data.js).
  *
- * Every colour is one of workspace.css' :root variables (--paper, --white,
+ * Every colour is one of workspace.css' :root variables (--paper, --surface,
  * --ink, --muted, --line, --accent, --accent-soft), never a literal, so the
  * view follows the page's light/dark theme with no rule of its own. The one
  * exception is the plot's series colours, a fixed palette set by
@@ -16,8 +16,9 @@
   gap: 18px;
 }
 
-.data-heading {
-  margin-bottom: 0;
+/* The one line above the cards; the page's own heading names the view. */
+.data-intro {
+  margin: 0;
 }
 
 .data-body {
@@ -26,11 +27,6 @@
   min-width: 0;
   /* The workspace's cards pad their contents, not themselves. */
   padding: 16px 23px 20px;
-}
-
-/* The heading's own padding is the workspace's; its h1 sits at the top. */
-#data-view .page-heading {
-  padding-bottom: 6px;
 }
 
 .data-more summary {
@@ -252,7 +248,7 @@
   width: 100%;
   border: 1px solid var(--line);
   border-radius: 7px;
-  background: var(--white);
+  background: var(--surface);
 }
 
 .data-figures figcaption {
@@ -274,7 +270,7 @@
 }
 
 .plot-bg, .plot-legend-bg {
-  fill: var(--white);
+  fill: var(--surface);
 }
 
 .plot-legend-bg {

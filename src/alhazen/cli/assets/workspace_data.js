@@ -150,13 +150,11 @@ const WorkspaceData = (() => {
     const root = container();
     root.replaceChildren();
     root.hidden = false;
-    const heading = node('section', 'page-heading data-heading');
-    const titles = node('div');
-    titles.appendChild(node('p', 'eyebrow', 'DATA'));
-    titles.appendChild(node('h1', '', project.title || project.name));
-    titles.appendChild(node('p', 'path', 'Saved sessions from this experiment’s data folders. Read only: nothing here changes a file.'));
-    heading.appendChild(titles);
-    root.appendChild(heading);
+    // No heading of its own: the page's heading above both views already
+    // names the experiment and says "Data" (workspace.js), and a second one
+    // here repeated it. One line says what this view is.
+    root.appendChild(node('p', 'help data-intro',
+      'Saved sessions from this experiment’s data folders. Read only: nothing here changes a file.'));
     for (const [name, title] of [['roots', 'Data folder'], ['runs', 'Runs'], ['run', 'Run'],
       ['table', 'Table'], ['plot', 'Plot']]) {
       const section = card(name, title);
@@ -181,9 +179,18 @@ const WorkspaceData = (() => {
   /* Data folders                                                      */
   /* ---------------------------------------------------------------- */
 
+  /** A data folder's text in the picker: its name and what kind of data it
+   *  holds. The rigs that write there can be many and long
+   *  (`amodal-averaging/lab-rehearsal`), so they go on the line under the
+   *  picker (rootDetail), not into an option the menu would cut off. */
   function rootLabel(root) {
     const kind = root.kind === 'rehearsal' ? 'rehearsal (test, simulate)' : 'real (run)';
-    return `${root.name} — ${kind} · rigs ${root.rigs.join(', ')}`;
+    return `${root.name} — ${kind}`;
+  }
+
+  /** The line under the picker: the folder's path and the rigs writing there. */
+  function rootDetail(root) {
+    return `${root.path} · written by ${root.rigs.join(', ')}`;
   }
 
   function loadRoots() {
@@ -228,7 +235,7 @@ const WorkspaceData = (() => {
     const root = state.roots.find((r) => r.id === id);
     state = {...fresh(), roots: state.roots, root};
     const path = container().querySelector('.data-root-path');
-    if (path) path.textContent = root.path;
+    if (path) path.textContent = rootDetail(root);
     for (const name of ['run', 'table', 'plot']) cardOf(name).hidden = true;
     await loadRuns();
   }
@@ -779,7 +786,7 @@ const WorkspaceData = (() => {
     const ink = read('--ink', '#202a35');
     const muted = read('--muted', '#747e8b');
     const line = read('--line', '#e3e7ec');
-    const surface = read('--white', '#ffffff');
+    const surface = read('--surface', '#ffffff');
     style.textContent =
       `.plot-bg,.plot-legend-bg{fill:${surface}}.plot-legend-bg{stroke:${line}}.plot-grid{stroke:${line}}` +
       `.plot-axis{stroke:${muted}}.plot-tick{fill:${muted};font:12px sans-serif}` +

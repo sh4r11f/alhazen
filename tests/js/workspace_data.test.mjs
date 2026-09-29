@@ -125,12 +125,16 @@ test('show() fills the view: folder picker, problems, missing folders, the runs'
   await page.show();
   await settled();
   assert.equal(page.view.hidden, false);
-  assert.equal(page.view.querySelector('h1').textContent, 'Demo experiment');
+  // No heading of its own (the page's heading above names the experiment),
+  // one line saying what the view is.
+  assert.equal(page.view.querySelector('h1'), null);
+  assert.match(page.view.querySelector('.data-intro').textContent, /Read only/);
   const roots = cardOf(page.view, 'roots');
   const picker = roots.querySelector('select');
+  // The options say the folder and its kind; the writers go under the picker.
   assert.deepEqual(texts(picker, 'option'), [
-    'data — real (run) · rigs lab, alhazen/mac',
-    'data-rehearsal — rehearsal (test, simulate) · rigs lab',
+    'data — real (run)',
+    'data-rehearsal — rehearsal (test, simulate)',
   ]);
   assert.equal(picker.value, 'r1');
   assert.deepEqual(texts(roots, '.data-error'), ['Rig broken cannot be read: bad']);
@@ -139,7 +143,8 @@ test('show() fills the view: folder picker, problems, missing folders, the runs'
   assert.equal(more.open, false);
   assert.equal(more.querySelector('summary').textContent, '1 more data folder not created yet');
   assert.deepEqual(texts(more.querySelector('.data-missing'), 'li'), ['/exp/bench (real; rigs bench)']);
-  assert.equal(roots.querySelector('.data-root-path').textContent, '/exp/data');
+  assert.equal(roots.querySelector('.data-root-path').textContent,
+    '/exp/data · written by lab, alhazen/mac');
   // Three runs, each row with its fields; the line-counted one marked "~".
   const rows = page.view.querySelectorAll('tr[data-run]');
   assert.deepEqual(rows.map((r) => r.getAttribute('data-run')), [RUN_A, RUN_B, RUN_C]);
@@ -444,4 +449,23 @@ test('the view never writes markup: file text lands as text', async () => {
   assert.equal(cell.children.length, 0);
   // And no code path assigns markup (the file comments may name it).
   assert.ok(!/\.(innerHTML|outerHTML)\s*=|insertAdjacentHTML/.test(VIEW + PLOT));
+});
+
+test('every colour variable the Data view uses is one workspace.css defines', () => {
+  // The view is coloured only through workspace.css' theme variables. One
+  // that is not defined there resolves to nothing, and the browser's
+  // fallback for an SVG fill is black: the plot's background went black in
+  // the light theme when --white was renamed --surface. So every var(--x)
+  // in the view's stylesheet and script must be declared in the page's.
+  const page = readFileSync(new URL('workspace.css', ASSETS), 'utf8');
+  const defined = new Set([...page.matchAll(/^\s*(--[\w-]+)\s*:/gm)].map((m) => m[1]));
+  const sheet = readFileSync(new URL('workspace_data.css', ASSETS), 'utf8');
+  const used = new Set([
+    ...[...sheet.matchAll(/var\((--[\w-]+)/g)].map((m) => m[1]),
+    // saveFigure() reads the theme's colours by name.
+    ...[...VIEW.matchAll(/read\('(--[\w-]+)'/g)].map((m) => m[1]),
+  ]);
+  assert.ok(used.size > 3, 'found the variables the view uses');
+  const undefinedOnes = [...used].filter((name) => !defined.has(name));
+  assert.deepEqual(undefinedOnes, [], `not defined in workspace.css: ${undefinedOnes.join(', ')}`);
 });

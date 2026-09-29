@@ -179,23 +179,34 @@ class TestDataFolders:
         answer = view.roots(key)
         existing = {(r["name"], r["kind"]): r["rigs"] for r in answer["roots"]}
         # data/ is written by the experiment's sim rig and the shared lab;
-        # its rehearsal sibling by the same rigs, in test and simulate.
+        # its rehearsal sibling by the same rigs, in test and simulate. Each
+        # rig is named as the Rig menu names it: the experiment's own as
+        # <experiment>/<rig> (this project has no pyproject, so its folder
+        # name), a shared one as alhazen/<rig>.
         assert existing == {
-            ("data", "real"): ["sim", "alhazen/lab"],
-            ("data-rehearsal", "rehearsal"): ["sim", "alhazen/lab"],
+            ("data", "real"): ["experiment/sim", "alhazen/lab"],
+            ("data-rehearsal", "rehearsal"): ["experiment/sim", "alhazen/lab"],
         }
         missing = {(r["name"], r["kind"]): r["rigs"] for r in answer["missing"]}
         # The rig that extends the shared mac overrides its data_root; the
         # shared mac itself keeps its own.
         assert missing == {
-            ("bench-data", "real"): ["bench"],
-            ("bench-data-rehearsal", "rehearsal"): ["bench"],
+            ("bench-data", "real"): ["experiment/bench"],
+            ("bench-data-rehearsal", "rehearsal"): ["experiment/bench"],
             ("shared-data", "real"): ["alhazen/mac"],
             ("shared-data-rehearsal", "rehearsal"): ["alhazen/mac"],
         }
         problems = "\n".join(answer["problems"])
-        assert "Rig broken cannot be read" in problems and "nothing-shared" in problems
-        assert "Rig noroot names no data_root" in problems
+        assert "Rig experiment/broken cannot be read" in problems and "nothing-shared" in problems
+        assert "Rig experiment/noroot names no data_root" in problems
+
+    def test_a_shared_rig_the_experiment_hides_is_not_listed(self, view, workspace, project):
+        # The experiment's own lab hides alhazen's lab from the Rig menu, so
+        # the folder lists only the rig the menu offers under that name.
+        (project / "configs/rig-lab.yaml").write_text(rig_text("data"), encoding="utf-8")
+        key = workspace.projects[0]["id"]
+        writers = {r["name"]: r["rigs"] for r in view.roots(key)["roots"]}
+        assert writers["data"] == ["experiment/lab", "experiment/sim"]
 
     def test_a_relative_data_root_is_the_project_folders(self, view, workspace, project):
         key = workspace.projects[0]["id"]
