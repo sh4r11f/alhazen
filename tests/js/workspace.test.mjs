@@ -110,6 +110,18 @@ async function pageWith({
   return app;
 }
 
+/** The rig summary under the Rig menu as {label: value}: a list of labels
+ *  and values since the owner asked for one (it was lines of monospace
+ *  text), read the way a person reads it. */
+function facts(app) {
+  const list = app.byId('rig-summary').children[0];
+  const found = {};
+  for (let i = 0; i < list.children.length; i += 2) {
+    found[list.children[i].textContent] = list.children[i + 1].textContent;
+  }
+  return found;
+}
+
 /** Update the selected run on the fake server and redraw it. */
 async function redraw(app, run) {
   app.server.details[run.id] = run;
@@ -237,19 +249,19 @@ describe('the Live monitor tab', () => {
     assert.equal(app.byId('monitor-frame').hidden, true);
     assert.match(note.textContent, /live_monitor\.enabled: false/);
     assert.match(note.textContent, /rig YAML/);
-    assert.match(app.byId('rig-summary').textContent, /live monitor: off/);
+    assert.equal(facts(app)['Live monitor'], 'off');
   });
 
   it('treats a rig without a dashboard block as off, the model default', async () => {
     const app = await pageWith({ run: runDetail({ monitor: null }), dashboardEnabled: null });
     assert.match(app.byId('monitor-note').textContent, /live_monitor\.enabled: false/);
-    assert.match(app.byId('rig-summary').textContent, /live monitor: off/);
+    assert.equal(facts(app)['Live monitor'], 'off');
   });
 
   it('waits for the monitor while the rig has the dashboard on', async () => {
     const app = await pageWith({ run: runDetail({ monitor: null }), dashboardEnabled: true });
     assert.match(app.byId('monitor-note').textContent, /waiting for the session/i);
-    assert.match(app.byId('rig-summary').textContent, /live monitor: on/);
+    assert.equal(facts(app)['Live monitor'], 'on');
   });
 
   it('reads the pre-1.9 `dashboard:` rig section as the monitor setting', async () => {
@@ -260,9 +272,9 @@ describe('the Live monitor tab', () => {
      * workspace's, so this stays for as long as such projects are launched. */
     const on = await pageWith({ run: runDetail({ monitor: null }), dashboardEnabled: true, oldKey: true });
     assert.match(on.byId('monitor-note').textContent, /waiting for the session/i);
-    assert.match(on.byId('rig-summary').textContent, /live monitor: on/);
+    assert.equal(facts(on)['Live monitor'], 'on');
     const off = await pageWith({ run: runDetail({ monitor: null }), dashboardEnabled: false, oldKey: true });
-    assert.match(off.byId('rig-summary').textContent, /live monitor: off/);
+    assert.equal(facts(off)['Live monitor'], 'off');
   });
 });
 
@@ -858,10 +870,11 @@ describe('the Rig menu', () => {
      * experiment's slug for its own, alhazen for a shared one), and the
      * shared lab — hidden from `--rig lab` by the experiment's own lab — is
      * no longer offered at all (it used to be "alhazen/lab (hidden by this
-     * experiment’s lab)"). */
+     * experiment’s lab)"). The shared rig an experiment rig extends is said
+     * in the summary, not the menu, whose options it made too long. */
     assert.deepEqual(plain(menu(app)), [
       ['This experiment', [
-        ['configs/rig-lab.yaml', 'demo/lab · extends alhazen/lab'],
+        ['configs/rig-lab.yaml', 'demo/lab'],
         ['configs/rig-laptop.yaml', 'demo/laptop'],
       ]],
       ['Shared (alhazen)', [
@@ -872,18 +885,12 @@ describe('the Rig menu', () => {
     for (const [, options] of menu(app)) {
       for (const [, text] of options) assert.doesNotMatch(text, /rig-|\.ya?ml/);
     }
-    /* Left out, but not without a word: the note under the menu names it and
-     * how the command line still reaches it. */
-    const note = app.byId('rig-note');
-    assert.equal(note.hidden, false);
-    assert.equal(
-      note.textContent,
-      'Not listed: the shared alhazen/lab, which this experiment’s own rig of the same name '
-      + 'replaces. The command line still reaches it as --rig alhazen/lab.',
-    );
+    /* Left out without a note (the owner's call): only a registration that
+     * predates shared rigs is explained under the menu. */
+    assert.equal(app.byId('rig-note').hidden, true);
   });
 
-  it('names every shared rig the experiment hides, and how the command line reaches them',
+  it('leaves out every shared rig the experiment hides, and the group they were in',
     async () => {
       const app = await pageWith({
         project: {
@@ -894,12 +901,7 @@ describe('the Rig menu', () => {
         rigs: RIGS,
       });
       assert.deepEqual(plain(menu(app).map(([label]) => label)), ['This experiment']);
-      assert.equal(
-        app.byId('rig-note').textContent,
-        'Not listed: the shared alhazen/lab, alhazen/mac and alhazen/vpixx, which this '
-        + 'experiment’s own rigs of the same names replace. The command line still reaches '
-        + 'each as --rig alhazen/<name>.',
-      );
+      assert.equal(app.byId('rig-note').hidden, true);
     });
 
   it('opens on the experiment’s own mac, else the shared mac, else the first rig', async () => {
@@ -940,29 +942,41 @@ describe('the Rig menu', () => {
      * names it as the menu does (changed at the owner's request from
      * "alhazen’s shared rig mac"). */
     assert.ok(app.fetches.some((f) => f.url === '/api/rig?project=p&rig=alhazen%2Fmac'));
-    assert.match(app.byId('rig-summary').textContent, /live monitor: off/);
-    assert.match(app.byId('rig-summary').textContent, /\nalhazen\/mac — alhazen’s shared rig$/);
+    /* Every fact under its label (changed at the owner's request from three
+     * lines of monospace text that wrapped mid-phrase). */
+    assert.deepEqual(plain(facts(app)), {
+      Screen: '1920 × 1080 px · 60 Hz',
+      Size: '52 cm wide · 57 cm away',
+      Display: 'default display',
+      'Live monitor': 'off',
+      Rig: 'alhazen/mac · alhazen’s shared rig',
+    });
+    /* A value is made of parts that never break inside; a line may break only
+     * at the separators between them. */
+    const screen = app.byId('rig-summary').children[0].children[1];
+    assert.deepEqual(
+      plain(screen.children.map((part) => [part.className, part.textContent])),
+      [['fact', '1920 × 1080 px'], ['fact-separator', ' · '], ['fact', '60 Hz']],
+    );
     /* Another shared rig: the summary follows. (The shadowed lab this test
      * used to pick is no longer in the menu to pick.) */
     await chooseRig(app, 'alhazen/vpixx');
-    const summary = app.byId('rig-summary').textContent;
-    assert.match(summary, /live monitor: on/);
-    assert.match(summary, /\nalhazen\/vpixx — alhazen’s shared rig$/);
+    assert.equal(facts(app)['Live monitor'], 'on');
+    assert.equal(facts(app).Rig, 'alhazen/vpixx · alhazen’s shared rig');
   });
 
   it('summarises a rig that extends a shared one as merged, naming the shared rig', async () => {
     const app = await pageWith({ project: RIGGED, rigs: RIGS });
     await chooseRig(app, 'configs/rig-lab.yaml');
-    const summary = app.byId('rig-summary').textContent;
     /* The experiment's file says nothing about the live monitor; the merged
      * answer does, and the Live monitor tab reads the same fact. */
-    assert.match(summary, /live monitor: on/);
+    assert.equal(facts(app)['Live monitor'], 'on');
     /* Named as in the menu, then its file and the shared rig it builds on
      * (changed at the owner's request from "this experiment’s
-     * configs/rig-lab.yaml, extending alhazen’s shared lab"). */
-    assert.match(
-      summary,
-      /\ndemo\/lab — this experiment’s rig, configs\/rig-lab\.yaml, extending alhazen\/lab$/,
+     * configs/rig-lab.yaml, extending alhazen’s shared lab"; the "extends"
+     * moved here from the menu's option text). */
+    assert.equal(
+      facts(app).Rig, 'demo/lab · this experiment’s configs/rig-lab.yaml · extends alhazen/lab',
     );
     assert.equal(app.run("rigMonitor['p:configs/rig-lab.yaml']"), true);
   });
@@ -1123,6 +1137,7 @@ describe('the Task parameters menu', () => {
     assert.equal(app.byId('params-config').hidden, false);
     assert.equal(app.byId('parameter-search').hidden, false);
     assert.equal(app.byId('parameters-help').hidden, false);
+    assert.equal(app.byId('editor-switch').hidden, false);
   });
 
   it('shows the path of two files that would read the same', async () => {
@@ -1185,9 +1200,11 @@ describe('the Task parameters menu', () => {
       assert.match(fields, /No task parameter files in configs\//);
       assert.match(fields, /defaults written in its code/);
       assert.match(fields, /without --params/);
-      /* Nothing to search, and no snapshot is promised. */
+      /* Nothing to search or switch, and no snapshot is promised: only the
+       * message remains. */
       assert.equal(app.byId('parameter-search').hidden, true);
       assert.equal(app.byId('parameters-help').hidden, true);
+      assert.equal(app.byId('editor-switch').hidden, true);
       assert.equal(app.byId('launch').disabled, false);
       chooseMode(app, 'movie');
       await launch(app);
@@ -1362,5 +1379,26 @@ describe('the colour theme', () => {
     const chosen = block(':root[data-theme=dark]');
     assert.match(system, /--paper:/);
     assert.equal(system, chosen);
+  });
+});
+
+describe('the logo', () => {
+  it('is the same drawing in the sidebar and in the favicon', () => {
+    /* The sidebar draws it inline (so it follows the page's theme) and the
+     * browser tab loads favicon.svg (an image, which cannot read the page's
+     * CSS): two copies of one drawing, which must not drift apart. */
+    const read = (name) => readFileSync(
+      new URL(`../../src/alhazen/cli/assets/${name}`, import.meta.url), 'utf8',
+    );
+    const drawing = (text) => {
+      const start = text.indexOf('<!-- LOGO-START');
+      const end = text.indexOf('<!-- LOGO-END -->');
+      assert.ok(start !== -1 && end > start);
+      return text.slice(start, end).replace(/\s+/g, ' ');
+    };
+    const inline = drawing(read('workspace.html'));
+    assert.equal(drawing(read('favicon.svg')), inline);
+    assert.match(inline, /id="logo-bricks-turned"/);
+    assert.match(read('workspace.html'), /<link rel="icon" href="\/favicon.svg" type="image\/svg\+xml">/);
   });
 });

@@ -348,31 +348,28 @@ function rigName(name, source, slug) {
   return `${source === 'alhazen' ? 'alhazen' : slug}/${name}`;
 }
 
-/** A rig's text in the menu: its qualified name, never its file. An
- *  experiment rig that extends a shared one says which; one whose name two
- *  of the experiment's files share (`duplicates`) carries its file, since
- *  its name alone would not say which it is. */
+/** A rig's text in the menu: its qualified name, never its file, and
+ *  nothing more, so it fits the closed menu (the shared rig it extends is in
+ *  the summary under it, loadRig). One whose name two of the experiment's
+ *  files share (`duplicates`) carries its file, since its name alone would
+ *  not say which it is. */
 function rigLabel(r, duplicates, slug) {
-  let text = rigName(r.name, r.source, slug);
-  if (r.source === 'alhazen') return text;
-  if (duplicates.has(r.name)) text += ` (${r.path})`;
-  if (r.extends) text += ` · extends alhazen/${r.extends}`;
-  return text;
+  const text = rigName(r.name, r.source, slug);
+  return r.source === 'experiment' && duplicates.has(r.name) ? `${text} (${r.path})` : text;
 }
 
 /** Fill the Rig menu for project `p`: the experiment's own rigs, then the
  *  shared ones, as two groups. A shared rig the experiment's own rig of the
- *  same name hides (`shadowed`) is left out — the experiment's is the one
- *  that name means — and the note under the menu says so, with how to reach
- *  it from the command line. The safe first choice is a machine with a
- *  window and no devices — the experiment's own mac, else the shared mac —
- *  and otherwise the first rig listed. */
+ *  same name hides (`shadowed`) is left out: the experiment's is the one that
+ *  name means, and the command line still reaches the shared one as
+ *  alhazen/<name>. The safe first choice is a machine with a window and no
+ *  devices — the experiment's own mac, else the shared mac — and otherwise
+ *  the first rig listed. */
 function rigMenu(p) {
   const slug = slugOf(p);
   const rigs = p.rigs || [];
   const own = rigs.filter((r) => r.source === 'experiment');
   const shared = rigs.filter((r) => r.source === 'alhazen' && !r.shadowed);
-  const hidden = rigs.filter((r) => r.source === 'alhazen' && r.shadowed);
   const seen = new Set();
   const duplicates = new Set();
   for (const r of own) {
@@ -385,24 +382,29 @@ function rigMenu(p) {
     ['This experiment', own.map((r) => [rigValue(r), rigLabel(r, duplicates, slug)])],
     ['Shared (alhazen)', shared.map((r) => [rigValue(r), rigLabel(r, duplicates, slug)])],
   ], first ? rigValue(first) : '');
-  // Under the menu: why it offers no shared rigs, when the registration
-  // predates them, so a menu without them is not mistaken for "there are
-  // none"; and which shared rigs it leaves out because the experiment's own
-  // rigs hide them, so none goes missing without a word.
-  const notes = [];
-  if (p.rigs_note) notes.push(p.rigs_note);
-  if (hidden.length) {
-    const names = hidden.map((r) => `alhazen/${r.name}`);
-    const list = names.length === 1
-      ? names[0]
-      : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
-    const one = names.length === 1;
-    notes.push(`Not listed: the shared ${list}, which this experiment’s own `
-      + `${one ? 'rig' : 'rigs'} of the same ${one ? 'name replaces' : 'names replace'}. `
-      + `The command line still reaches ${one ? `it as --rig ${names[0]}` : 'each as --rig alhazen/<name>'}.`);
+  // Said under the menu when the registration predates shared rigs, so a
+  // menu without them is explained rather than mistaken for "there are none".
+  $('rig-note').textContent = p.rigs_note || '';
+  $('rig-note').hidden = !p.rigs_note;
+}
+
+/**
+ * Show a rig's facts under the Rig menu as a small list of labels and
+ * values: [[label, [part, part, …]], …]. Each part is kept whole (it never
+ * breaks inside, "30.4 cm wide"), and a line may break only between parts,
+ * at their " · " separators.
+ */
+function rigFacts(facts) {
+  const list = node('dl', 'rig-facts');
+  for (const [label, parts] of facts) {
+    const value = node('dd');
+    parts.forEach((part, index) => {
+      if (index) value.append(node('span', 'fact-separator', ' · '));
+      value.append(node('span', 'fact', part));
+    });
+    list.append(node('dt', '', label), value);
   }
-  $('rig-note').textContent = notes.join(' ');
-  $('rig-note').hidden = !notes.length;
+  $('rig-summary').replaceChildren(list);
 }
 
 /** A run's rig as the history shows it: its qualified name, not its file —
@@ -577,8 +579,11 @@ async function chooseProject(id) {
   // and the editor says what runs instead (renderEditor).
   options($('params-config'), presetLabels(p.configs), defaultPreset(p));
   $('params-config').hidden = !p.configs.length;
-  // "Each launch saves a parameter snapshot" is untrue without a file.
+  // "Each launch saves a parameter snapshot" is untrue without a file, and
+  // with nothing to edit the Fields / Text switch goes too: only the
+  // message saying what runs instead remains (renderEditor).
   $('parameters-help').hidden = !p.configs.length;
+  $('editor-switch').hidden = !p.configs.length;
   // The server lists runs newest first, so the first match is the latest.
   runId = state.runs.find((r) => r.project === id)?.id || null;
   $('extra-args').value = '';
@@ -663,15 +668,14 @@ async function loadRig() {
   if (epoch !== rigEpoch) return;
   const rig = data.values;
   // Whose rig this is, by the qualified name the menu shows and the command
-  // line takes, then where it comes from. (A shared rig the experiment's own
-  // hides is not in the menu, so it is never summarised here: rigMenu.)
-  let origin = `${rigName(data.name, data.source, slugOf(p))} — `;
-  if (data.source === 'alhazen') {
-    origin += 'alhazen’s shared rig';
-  } else {
-    origin += `this experiment’s rig, ${value}`;
-    if (data.extends) origin += `, extending alhazen/${data.extends}`;
-  }
+  // line takes, then where it comes from and the shared rig it extends.
+  // (A shared rig the experiment's own hides is not in the menu, so it is
+  // never summarised here: rigMenu.)
+  const name = rigName(data.name, data.source, slugOf(p));
+  const origin = data.source === 'alhazen'
+    ? [name, 'alhazen’s shared rig']
+    : [name, `this experiment’s ${value}`];
+  if (data.extends) origin.push(`extends alhazen/${data.extends}`);
   const m = rig.monitor || {};
   // The live monitor is opt-in (LiveMonitorConfig.enabled defaults to false),
   // so a rig without the block, or without the key, has it off. Remembered
@@ -687,12 +691,13 @@ async function loadRig() {
   const monitorOn = rig.live_monitor?.enabled === true || rig.dashboard?.enabled === true;
   rigMonitor[`${p.id}:${value}`] = monitorOn;
   // '?' rather than 'undefined' for a field the YAML leaves to its default.
-  $('rig-summary').textContent =
-    `${m.width_px ?? '?'} × ${m.height_px ?? '?'} px · ${m.refresh_rate_hz ?? '?'} Hz`
-    + ` · ${rig.display?.backend || 'default display'}\n`
-    + `${m.width_cm ?? '?'} cm wide · ${m.distance_cm ?? '?'} cm viewing distance`
-    + ` · live monitor: ${monitorOn ? 'on' : 'off'}\n`
-    + origin;
+  rigFacts([
+    ['Screen', [`${m.width_px ?? '?'} × ${m.height_px ?? '?'} px`, `${m.refresh_rate_hz ?? '?'} Hz`]],
+    ['Size', [`${m.width_cm ?? '?'} cm wide`, `${m.distance_cm ?? '?'} cm away`]],
+    ['Display', [rig.display?.backend || 'default display']],
+    ['Live monitor', [monitorOn ? 'on' : 'off']],
+    ['Rig', origin],
+  ]);
 }
 
 /**
