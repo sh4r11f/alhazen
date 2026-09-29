@@ -214,6 +214,16 @@ describe('the Live monitor tab', () => {
     assert.equal(app.byId('monitor').hidden, true);
   });
 
+  it('opens when its tab is clicked, like the Media and Console tabs', async () => {
+    const app = await pageWith();
+    app.byId('monitor-tab').fire('click');
+    assert.equal(app.byId('monitor-panel').hidden, false);
+    assert.equal(app.byId('media-panel').hidden, true);
+    assert.equal(app.byId('monitor-tab').classList.contains('selected'), true);
+    app.byId('media-tab').fire('click');
+    assert.equal(app.byId('monitor-panel').hidden, true);
+  });
+
   it('does not open the tab by itself for a run picked from the history', async () => {
     const app = await pageWith({ run: runDetail({ monitor: MONITOR_URL }) });
     assert.equal(app.byId('monitor-frame').src, MONITOR_URL);

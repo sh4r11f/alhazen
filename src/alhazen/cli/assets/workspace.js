@@ -1384,6 +1384,7 @@ $('fields-tab').addEventListener('click', guard(() => switchEditor('fields')));
 $('yaml-tab').addEventListener('click', guard(() => switchEditor('yaml')));
 $('media-tab').addEventListener('click', () => outputTab('media'));
 $('console-tab').addEventListener('click', () => outputTab('console'));
+$('monitor-tab').addEventListener('click', () => outputTab('monitor'));
 $('stop').addEventListener('click', guard(async () => {
   await api('/api/stop', {id: runId});
   await refresh();
