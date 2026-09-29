@@ -1628,7 +1628,11 @@ the panel, which is what the wrong frame looks like. `read_run_binocular`
 reads the same file keeping both eyes, for an experiment whose measurement is
 the relation between them: one eye is not a reduced version of a vergence
 measurement but none of it, and each eye carries its own `tracked` flag so
-that one eye lost while the other tracks stays visible and usable), and `session` (a run directory, manifest-verified, returned as
+that one eye lost while the other tracks stays visible and usable. Both
+readers name eyes the session's way, which is not the file's: the channel the
+session calls `left` is the file's `Right ...` columns, translated in one
+place, `FILE_SIDE` — see [Which eye is which on a
+TRACKPixx3](eye-tracker.md#which-eye-is-which-on-a-trackpixx3)), and `session` (a run directory, manifest-verified, returned as
 typed pandas DataFrames — a `csv.DictReader` row hands back
 `row["success"] == "False"`, and `"False"` is truthy). All are tested against
 synthetic files written by `tests/fixtures_neural.py`, so each test can say

@@ -679,6 +679,16 @@ def select_eye(positions: Sequence[float], eye: str) -> tuple[float, float] | No
     others — with nothing in the data saying which is which. A subject whose
     second eye drops out for a moment is exactly the case the blink rule
     already handles correctly.
+
+    **VPixx's recording names this first pair ``Right``.** Its CSV writer puts
+    the channel returned here as ``left`` under ``Right Screen X/Y`` (measured
+    on a real session: the online gaze matches that column to 0.05 degrees
+    and the ``Left`` one only to 1.46). This function keeps the documented
+    order, because every rig config and every ``EYE_USED`` mark recorded so
+    far means the first pair by ``left``; the offline reader translates, in
+    one place (``alhazen.analysis.io.viewpixx.FILE_SIDE``, whose module
+    docstring has the evidence). Which of the two is the subject's anatomical
+    left eye is not known yet — docs/eye-tracker.md has the rig test.
     """
     if len(positions) < 4:
         raise TrackerError(

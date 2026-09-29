@@ -25,6 +25,41 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## 2.2.1 - 2026-09-29
+
+### Fixed
+
+- **The ViewPixx reader reads the eye the session used, not the other one.**
+  The session's `left` and `right` (`eyetracker.eye`, the `EYE_USED` mark) are
+  the live backend's names: `select_eye` takes the first pair of the device's
+  gaze report as `left`, as pypixxlib documents it. VPixx's own CSV writer
+  files that same channel under `Right ...`. On the amodal-averaging pilot
+  (`eye: left`, 125 trials) the session's online gaze matches the file's
+  `Right Screen X/Y` to a median 0.049° and its `Left Screen X/Y` only to
+  1.46°. `alhazen.analysis.io.viewpixx` mapped the names straight across, so
+  every analysis of a TRACKPixx3 run read the eye the session did not use.
+  It now translates in one place, the new public
+  `FILE_SIDE = {"left": "Right", "right": "Left"}`:
+  - `read_run` (by `eye=` or by the `EYE_USED` mark) reads the file's other
+    side for position, blink flag and pupil. `average` is unchanged.
+  - `read_run_binocular`'s `left_*` and `right_*` columns carry the session's
+    names, so they swap. A vergence computed from them (`left_x_dva -
+    right_x_dva`) changes sign.
+  - `DEFAULT_COLUMNS["left_x_px"]` is now `"Right Screen X"` (and so on),
+    and `columns=` overrides are keyed the same way.
+  - The new `file_columns(eye)` names every per-eye column the device writes
+    (screen position, pupil, blink, fixation, saccade, eye vectors) for code
+    that reads the device's own flags directly.
+  - A warning or refusal that names an eye also names the file's columns it
+    read.
+
+  The live eye selection is unchanged: every rig config and every recorded
+  `EYE_USED` still means the first pair. **Re-run any analysis of a
+  TRACKPixx3 run made with an earlier version.** Which channel is the
+  subject's anatomical left eye is still open, and with it the sign of a
+  TRACKPixx3 vergence: [eye-tracker.md](docs/eye-tracker.md#which-eye-is-which-on-a-trackpixx3)
+  has the rig test (cover one eye) that settles it.
+
 ## 2.2.0 - 2026-09-29
 
 ### Added

@@ -246,6 +246,91 @@ whether it holds one from before the session — whose, it cannot say — so a
 session that ran on a previous subject's calibration is at least a session
 whose log says so. Validate it, or calibrate again, before trusting it.
 
+## Which eye is which on a TRACKPixx3
+
+VPixx gives one physical channel two names. The live gaze call,
+`TPxBestPolyGetEyePosition`, returns four numbers that pypixxlib documents as
+"screen_x_left_eye, screen_y_left_eye, screen_x_right_eye,
+screen_y_right_eye", and the backend's `select_eye` takes the first pair as
+`left`. VPixx's own CSV writer, which produces `<base>_gaze.csv`, files that
+same first pair under **Right**. Its header is `Timestamp, Left Screen X,
+Left Screen Y, Left Pupil Diameter, Right Screen X, ...`.
+
+This was found on the amodal-averaging pilot, a TRACKPixx3 session with
+`eyetracker.eye: left`. The session's own online gaze at the moment each
+saccade landed (the endpoint in its `trials.csv`) sits a median 0.049° from
+the file's `Right Screen X/Y` over 125 trials, and 1.46° from its `Left
+Screen X/Y`.
+
+```mermaid
+flowchart LR
+  C1["the device's first channel<br/>(first pair of the live report)"]
+  C1 -->|"pypixxlib's docs: left eye"| L["live: select_eye<br/>eyetracker.eye: left<br/>EYE_USED left"]
+  C1 -->|"VPixx's CSV writer"| F["the run's _gaze.csv<br/>Right Screen X/Y · Right Blink<br/>Right Pupil Diameter · Right Eye Saccade …"]
+  F -->|"FILE_SIDE: left → Right"| R["offline: read_run(eye='left')<br/>read_run_binocular left_*<br/>file_columns('left')"]
+  L -.->|"same name, same channel"| R
+```
+
+The second channel is the mirror image: the session's `right`, the file's
+`Left ...` columns.
+
+What alhazen does about it, from 2.2.1:
+
+- **The live side is unchanged.** `eyetracker.eye: left` still reads the
+  first pair, and `EYE_USED left` in every run recorded so far means that.
+- **The offline reader translates, in one place:**
+  `alhazen.analysis.io.viewpixx.FILE_SIDE = {"left": "Right", "right": "Left"}`.
+  `read_run(eye="left")` reads the file's `Right` columns (position, blink
+  flag, pupil), and `read_run_binocular`'s `left_*` columns come from them
+  too. Code that reads one of the device's columns itself, such as its
+  saccade or fixation flag, gets the name from `file_columns(eye)`, so it
+  reads the same channel: `file_columns("left")["saccade"]` is
+  `"Right Eye Saccade"`.
+- **Analyses made with an earlier alhazen read the other eye.** Before 2.2.1
+  the reader mapped the names straight across. Re-run them.
+
+**Still not known: which channel is the subject's left eye.** The data
+cannot tell, because one name comes from VPixx's API documentation and the
+other from VPixx's file writer. Until the test below is done, `left` means
+"the channel the session calls left". Anything whose sign depends on anatomy
+is not established on a TRACKPixx3, vergence (left minus right) above all.
+
+### The rig test: cover one eye
+
+Do it once per rig, and again after a pypixxlib or firmware update. It needs
+a subject, a card to hold in front of one eye, and the rig config with
+`eyetracker.eye: left`.
+
+- [ ] Start a session in `--mode test` and calibrate with both eyes in the
+      camera image (**C** on the pause screen).
+- [ ] **Camera line.** Press **C** again. The guide's `eyes:` line (VPixx's
+      pupil-size call, redrawn ten times a second) should say
+      `both tracked`. Hold the card in front of the subject's **left** eye
+      and write down what the line says: `left only` or `right only`. Take
+      the card away; ESC leaves the guide and keeps the calibration.
+- [ ] **Live gaze**, the call `select_eye` reads. With the card in front of
+      the subject's **left** eye, press **V**. If the validation ends
+      `validation FAILED: no target measured`, the session's `left` is the
+      covered eye. If it measures the targets, the session's `left` is the
+      subject's right eye. Write down which.
+- [ ] **Recording.** Keep the card in front of the **left** eye and resume
+      for two or three trials; write down their trial numbers. (They may end
+      as fixation breaks, which does not matter here.) Quit, and open
+      `<base>_gaze.csv` in the run directory. Over those trials, write
+      down which side's `Blink` column is 1 and which side's `Screen X/Y` is
+      NaN: `Left` or `Right`. A trial's rows lie between the device times of
+      its `TRIAL <n>` mark and the next one in `<base>_gaze-messages.csv`.
+- [ ] Repeat the three steps with the card in front of the **right** eye.
+      Every answer should flip. If one does not, that channel dropped out
+      for another reason: do the test again.
+- [ ] Report the answers. The pilot predicts that the live `left` and the
+      file's `Right` go dark together; the test says which eye that is. If
+      it is the subject's left eye, the file's side names are VPixx's
+      mislabel and nothing else changes. If it is the subject's right eye,
+      `eyetracker.eye: left` has read the subject's right eye in every
+      session so far: the file's names are then the anatomical ones, and
+      every rig config and every recorded `EYE_USED` names the other eye.
+
 ## When the tracker drops out mid-trial
 
 A recording can die in the middle of a trial: the link cable is pulled, the

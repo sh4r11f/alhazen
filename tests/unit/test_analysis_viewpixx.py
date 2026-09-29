@@ -9,6 +9,17 @@ recording made on the rig — the only TRACKPixx3 data that exists here — so
 the reader is also held to a file the device actually wrote, whitespace,
 typo and all. The reader used to pass every synthetic test and fail on the
 real file, because the fixtures wrote the names the reader wanted.
+
+The same lesson, once more, about the eyes. ``RunBuilder`` takes every eye in
+the SESSION's names (``EYE_USED left``, ``eye_lost_s={"left": ...}``) and
+writes it where the DEVICE writes it: the session's left eye under the
+file's ``Right ...`` columns, its right eye under ``Left ...``. That is what a
+real session showed (the amodal-averaging pilot's online gaze sits 0.049
+degrees from ``Right Screen X/Y`` and 1.46 from ``Left``), and it is written
+out literally below rather than taken from the reader's ``FILE_SIDE``, so the
+reader is held to the observation instead of to itself. Before 2.2.1 the
+builder wrote ``left`` under ``Left ...``, the reader read it from there, and
+the two agreed with each other exactly as the guessed column names once did.
 """
 
 from __future__ import annotations
@@ -24,15 +35,18 @@ import yaml
 from alhazen.analysis.io import viewpixx
 from alhazen.analysis.io.viewpixx import (
     DEFAULT_COLUMNS,
+    FILE_SIDE,
     REAL_HEADER,
     BinocularRecording,
     ClockFit,
     event_times,
+    file_columns,
     fit_clock,
     read_run,
     read_run_binocular,
 )
 from alhazen.config.models import MonitorConfig
+from alhazen.devices.eyetracker.viewpixx import select_eye
 from alhazen.display.screen import Screen
 from alhazen.errors import DataError
 
@@ -106,7 +120,9 @@ class RunBuilder:
         loses them separately — ``{"left": (0.1, 0.2)}`` — which is the case
         a binocular reader has to represent and a monocular one cannot see.
         ``eye_offset_px`` shifts one eye's x, so the two eyes differ by a
-        known amount and vergence is a number a test can predict.
+        known amount and vergence is a number a test can predict. Every eye
+        named here is the session's; the columns it lands in are the device's
+        (see the module docstring).
         """
         self.trial += 1
         self.mark(f"TRIAL {self.trial} attempt 1")
@@ -139,14 +155,17 @@ class RunBuilder:
             self.samples.append(
                 {
                     "Timestamp": self.device_time(t),
-                    "\tLeft Screen X": left_x,
-                    " Left Screen Y": left_y,
-                    " Right Screen X": right_x,
-                    " Right Screen Y": right_y,
+                    # The session's LEFT eye, under the device's Right columns...
+                    " Right Screen X": left_x,
+                    " Right Screen Y": left_y,
+                    " Right Pupil Diameter": 3.0,
+                    # ...and its RIGHT eye under the Left ones, as the device
+                    # writes them (module docstring).
+                    "\tLeft Screen X": right_x,
+                    " Left Screen Y": right_y,
+                    " Left Pupil Diameter": 4.0,
                     " Left Blink": blink,
                     " Right Blink": blink,
-                    " Left Pupil Diameter": 3.0,
-                    " Right Pupil Diameter": 4.0,
                 }
             )
             if index == n // 4:
@@ -192,12 +211,13 @@ class TestTheRealHeader:
 
         assert set(resolved) == set(DEFAULT_COLUMNS)
         # Resolved to the device's own spelling, whitespace included: the
-        # header is ", "-separated, so the names carry it.
+        # header is ", "-separated, so the names carry it. And crossed: the
+        # session's left eye is the file's Right columns (FILE_SIDE).
         assert resolved["device_time_s"] == "Timestamp"
-        assert resolved["left_x_px"] == "\tLeft Screen X"
-        assert resolved["left_y_px"] == " Left Screen Y"
-        assert resolved["right_x_px"] == " Right Screen X"
-        assert resolved["right_y_px"] == " Right Screen Y"
+        assert resolved["left_x_px"] == " Right Screen X"
+        assert resolved["left_y_px"] == " Right Screen Y"
+        assert resolved["right_x_px"] == "\tLeft Screen X"
+        assert resolved["right_y_px"] == " Left Screen Y"
 
     def test_the_constant_matches_the_file_the_device_wrote(self):
         """REAL_HEADER is a claim about the device; the fixture is the evidence."""
@@ -227,6 +247,200 @@ class TestTheRealHeader:
         spans = recording.trial_spans()
         assert spans["trial_index"].tolist() == [1, 2]
         assert spans["t_end"].tolist() == pytest.approx([3.8785860000061803, 5.994467799959239])
+
+
+# ----------------------------------------------------------------------
+# Which eye is which: the session's names against the file's
+# ----------------------------------------------------------------------
+
+# One recording's two channels, in degrees. The FIRST pair of the device's
+# live report — the one the session calls `left` — is written under the
+# file's Right columns, as the device's writer does; the second pair under
+# Left. Each file side also gets its own blink rows and its own pupil, so a
+# reading that took an eye's blink or pupil from a different side than its
+# position cannot pass.
+FIRST_PAIR_DEG = (3.0, -1.0)
+SECOND_PAIR_DEG = (-5.0, 2.0)
+RIGHT_BLINK_ROWS = range(100, 150)
+LEFT_BLINK_ROWS = range(300, 400)
+RIGHT_PUPIL, LEFT_PUPIL = 5.0, 2.0
+
+
+def write_two_channel_run(run_dir: Path, eye_used: str) -> Path:
+    """A 0.25 s run (500 samples) whose per-eye columns are set by the
+    device's own names, one value per file side.
+
+    RunBuilder supplies the messages (``EYE_USED <eye_used>`` among them),
+    the clock and the snapshot; the per-eye columns are then overwritten
+    column by column, so these tests do not depend on how the builder maps
+    the session's eyes to columns.
+    """
+    builder = RunBuilder(run_dir, eye=eye_used)
+    builder.trial_of(duration_s=0.25)
+    run = builder.write()
+    path = next(run.glob("*_gaze.csv"))
+    frame = pd.read_csv(path)
+    frame[" Right Screen X"] = FIRST_PAIR_DEG[0] * PX_PER_DEG
+    frame[" Right Screen Y"] = FIRST_PAIR_DEG[1] * PX_PER_DEG
+    frame["\tLeft Screen X"] = SECOND_PAIR_DEG[0] * PX_PER_DEG
+    frame[" Left Screen Y"] = SECOND_PAIR_DEG[1] * PX_PER_DEG
+    frame[" Right Pupil Diameter"] = RIGHT_PUPIL
+    frame[" Left Pupil Diameter"] = LEFT_PUPIL
+    frame[" Right Blink"] = [1.0 if row in RIGHT_BLINK_ROWS else 0.0 for row in range(len(frame))]
+    frame[" Left Blink"] = [1.0 if row in LEFT_BLINK_ROWS else 0.0 for row in range(len(frame))]
+    frame.to_csv(path, index=False)
+    return run
+
+
+class TestWhichEyeIsWhich:
+    """The session names an eye the way the live backend reads it (the first
+    pair of the device's report is `left`); the device's recording calls that
+    channel Right. FILE_SIDE is the one translation between the two."""
+
+    @pytest.mark.parametrize("eye", ["left", "right", "average"])
+    def test_each_eye_reads_the_channel_the_live_backend_gave_that_name(self, tmp_path, eye):
+        """The finding, reproduced. Online, select_eye() turns the device's
+        report into the gaze the session judged the trial by; offline, the
+        same eye name has to come back as the same numbers. Before 2.2.1 it
+        came back as the other channel's. `average` is the mean of both
+        sides, so it is the one answer the crossing cannot change."""
+        report = [value * PX_PER_DEG for value in (*FIRST_PAIR_DEG, *SECOND_PAIR_DEG)]
+        online = select_eye(report, eye)
+        assert online is not None
+
+        recording = read_run(write_two_channel_run(tmp_path, eye_used=eye))
+
+        assert recording.eye == eye  # the session's name, from EYE_USED
+        tracked = recording.samples[recording.samples["tracked"]]
+        assert len(tracked) > 0
+        assert tracked["x_dva"].to_numpy() == pytest.approx(online[0] / PX_PER_DEG)
+        assert tracked["y_dva"].to_numpy() == pytest.approx(online[1] / PX_PER_DEG)
+
+    @pytest.mark.parametrize(
+        ("eye", "lost_rows", "pupil"),
+        [
+            ("left", [*RIGHT_BLINK_ROWS], RIGHT_PUPIL),
+            ("right", [*LEFT_BLINK_ROWS], LEFT_PUPIL),
+            # Unchanged by the crossing: a gap where either side blinks, and
+            # the mean pupil.
+            ("average", [*RIGHT_BLINK_ROWS, *LEFT_BLINK_ROWS], (RIGHT_PUPIL + LEFT_PUPIL) / 2),
+        ],
+    )
+    def test_blink_and_pupil_come_from_the_same_side_as_the_position(
+        self, tmp_path, eye, lost_rows, pupil
+    ):
+        samples = read_run(write_two_channel_run(tmp_path, eye_used=eye)).samples
+
+        assert np.flatnonzero(~samples["tracked"].to_numpy()).tolist() == sorted(lost_rows)
+        assert samples.loc[samples["tracked"], "pupil"].to_numpy() == pytest.approx(pupil)
+
+    def test_an_explicit_eye_is_read_the_same_way_as_the_mark(self, tmp_path):
+        """`eye=` overrides EYE_USED in the same (session's) names."""
+        run = write_two_channel_run(tmp_path, eye_used="left")
+        samples = read_run(run, eye="right").samples
+        tracked = samples[samples["tracked"]]
+        assert tracked["x_dva"].to_numpy() == pytest.approx(SECOND_PAIR_DEG[0])
+        assert samples.loc[samples["tracked"], "pupil"].to_numpy() == pytest.approx(LEFT_PUPIL)
+
+    def test_the_binocular_columns_carry_the_sessions_names(self, tmp_path):
+        """`left_*` is the session's left eye, which is the file's Right
+        columns, position, blink and pupil alike — and it is exactly what
+        the monocular reader returns for `left`."""
+        run = write_two_channel_run(tmp_path, eye_used="left")
+        samples = read_run_binocular(run).samples
+        left, right = samples["left_tracked"], samples["right_tracked"]
+
+        assert samples.loc[left, "left_x_dva"].to_numpy() == pytest.approx(FIRST_PAIR_DEG[0])
+        assert samples.loc[left, "left_y_dva"].to_numpy() == pytest.approx(FIRST_PAIR_DEG[1])
+        assert samples.loc[left, "left_pupil"].to_numpy() == pytest.approx(RIGHT_PUPIL)
+        assert samples.loc[right, "right_x_dva"].to_numpy() == pytest.approx(SECOND_PAIR_DEG[0])
+        assert samples.loc[right, "right_y_dva"].to_numpy() == pytest.approx(SECOND_PAIR_DEG[1])
+        assert samples.loc[right, "right_pupil"].to_numpy() == pytest.approx(LEFT_PUPIL)
+        assert np.flatnonzero(~left.to_numpy()).tolist() == list(RIGHT_BLINK_ROWS)
+        assert np.flatnonzero(~right.to_numpy()).tolist() == list(LEFT_BLINK_ROWS)
+
+        for eye in ("left", "right"):
+            monocular = read_run(run, eye=eye).samples
+            np.testing.assert_array_equal(monocular["x_dva"], samples[f"{eye}_x_dva"])
+            np.testing.assert_array_equal(monocular["tracked"], samples[f"{eye}_tracked"])
+
+    def test_the_mapping_is_public_and_crossed(self):
+        assert FILE_SIDE == {"left": "Right", "right": "Left"}
+        assert file_columns("left") == {
+            "screen_x": "Right Screen X",
+            "screen_y": "Right Screen Y",
+            "pupil": "Right Pupil Diameter",
+            "blink": "Right Blink",
+            "fixation": "Right Fixaion",  # VPixx's typo, as the device writes it
+            "saccade": "Right Eye Saccade",
+            "x_vector": "Right X Vector",
+            "y_vector": "Right Y Vector",
+        }
+        assert file_columns("right") == {
+            "screen_x": "Left Screen X",
+            "screen_y": "Left Screen Y",
+            "pupil": "Left Pupil Diameter",
+            "blink": "Left Blink",
+            "fixation": "Left Fixation",
+            "saccade": "Left Eye Saccade",
+            "x_vector": "Left X Vector",
+            "y_vector": "Left Y Vector",
+        }
+
+    def test_every_per_eye_column_the_device_writes_is_named_exactly_once(self):
+        """Against the captured header, so a column cannot be left out of
+        the translation — or named in a spelling the device does not use."""
+        per_eye = sorted(
+            name.strip() for name in REAL_HEADER if name.strip().startswith(("Left ", "Right "))
+        )
+        named = sorted([*file_columns("left").values(), *file_columns("right").values()])
+        assert named == per_eye
+
+    def test_the_readers_read_the_columns_file_columns_names(self):
+        """One translation, not three: the readers' own column maps are
+        derived from the public one, for every column they read."""
+        for eye in ("left", "right"):
+            named = file_columns(eye)
+            assert DEFAULT_COLUMNS[f"{eye}_x_px"] == named["screen_x"]
+            assert DEFAULT_COLUMNS[f"{eye}_y_px"] == named["screen_y"]
+            assert viewpixx.OPTIONAL_COLUMNS[f"{eye}_blink"] == named["blink"]
+            assert viewpixx.OPTIONAL_COLUMNS[f"{eye}_pupil"] == named["pupil"]
+
+    def test_file_columns_hands_out_a_copy(self):
+        columns = file_columns("left")
+        columns["saccade"] = "Left Eye Saccade"
+        assert file_columns("left")["saccade"] == "Right Eye Saccade"
+
+    @pytest.mark.parametrize("eye", ["average", "both", "Left", "Right", ""])
+    def test_file_columns_refuses_anything_but_a_session_eye(self, eye):
+        """`average` has no columns of its own, and a file side word is not
+        an eye name — taking "Left" to mean the file's Left columns is the
+        very confusion this function exists to end."""
+        with pytest.raises(DataError, match="'left' or 'right'"):
+            file_columns(eye)
+
+    def test_messages_name_the_files_columns_beside_the_sessions_eye(self, tmp_path, caplog):
+        """Whoever reads "no left-eye sample" and opens the CSV has to be
+        sent to the Right columns, not the Left ones."""
+        import logging
+
+        for path in FIXTURES.glob("*.csv"):
+            shutil.copy(path, tmp_path / path.name)
+        write_snapshot(tmp_path)
+        with caplog.at_level(logging.WARNING, logger="alhazen.analysis.io.viewpixx"):
+            read_run_binocular(tmp_path)
+            read_run(tmp_path, eye="average")
+        said = [r.getMessage() for r in caplog.records if "is tracked" in r.getMessage()]
+        assert any("no left-eye sample (the file's Right ... columns)" in m for m in said)
+        assert any("no right-eye sample (the file's Left ... columns)" in m for m in said)
+        assert any("the mean of the file's Left ... and Right ... columns" in m for m in said)
+
+        off_panel = RunBuilder(tmp_path / "off-panel")
+        off_panel.run_dir.mkdir()
+        off_panel.trial_of(gaze_px=(1100.0, 700.0))  # screen px, read as centred
+        refusal = r"left-eye samples \(the file's Right \.\.\. columns\)"
+        with pytest.raises(DataError, match=refusal):
+            read_run(off_panel.write())
 
 
 # ----------------------------------------------------------------------
