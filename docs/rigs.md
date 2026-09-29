@@ -44,7 +44,7 @@ comments on why each setting is what it is.
 | `lab` | EyeLink 1000 on its own Host PC, a solenoid and four TTL lines on an NI DAQ, a photodiode corner | real sessions whose events a neural recording is aligned to; a monkey can be run here |
 | `lab-rehearsal` | none: `lab` with every device stood down to a simulated one | rehearsing the lab's checkout (`alhazen check-rig --rig lab-rehearsal --pulse`) and whole sessions away from the rig |
 | `vpixx` | the VPixx booth: VIEWPixx panel, TRACKPixx3 in the chassis, no reward or sync | real sessions with human volunteers |
-| `laptop` | the development laptop (Linux, 4096×2304 at 120 Hz), no devices | writing and trying an experiment |
+| `laptop` | the development laptop (Windows 11, its own 2560×1440 panel at 165 Hz, never the ultrawide beside it), no devices | writing and trying an experiment |
 | `mac` | a MacBook Pro 14", no devices | the same, on a Mac; replace its monitor numbers with yours (§4) |
 
 A shared rig names **no events**. The sync lines and the photodiode mark

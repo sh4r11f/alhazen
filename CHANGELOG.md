@@ -25,6 +25,22 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+### Changed
+
+- **The shared `laptop` rig is now the development laptop's own panel on
+  Windows.** `rig-laptop.yaml` describes the Windows 11 laptop the
+  experiments are written on: its built-in 2560×1440 panel at 165 Hz,
+  38.0 cm wide (the EDID figure, rounded to the cm — measure it), still
+  `screen_index: 0`, with the ultrawide beside it (Windows' screen 2) off
+  limits. Its comments now explain why the file carries native pixels under
+  Windows' 150 % display scaling, what 165 Hz does to durations (a
+  millisecond duration is a different number of frames than on the 120 Hz
+  lab rig), and why `warmup_flips: 240` and `mark_trial` still hold. The
+  previous numbers (4096×2304 at 120 Hz) described the Linux machine it
+  replaced; an experiment extending `laptop` inherits the new panel.
+
 ## 2.0.1 - 2026-09-28
 
 ### Fixed
