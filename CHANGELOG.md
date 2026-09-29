@@ -54,6 +54,29 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   subset of the variable font, 40 KB, with its OFL.txt), shipped as package
   data and served at `/fonts/Nunito-latin.woff2`; the CSP names
   `font-src 'self'`.
+- **The experiment workspace has a Data view** for saved sessions
+  (`alhazen/cli/workspace_data.py`, `assets/workspace_data.{js,css}`,
+  `assets/workspace_plot.js`; docs/workspace.md §Data). For one experiment it
+  lists the data folders its rigs write to — each rig's merged `data_root`
+  and its `-rehearsal` sibling, labelled with the rigs and real or rehearsal —
+  and the runs in the chosen one, in the 2.0 layout and the one before it,
+  with filters by version, subject and task. A run opens as a readable
+  summary of its `session.json`, its files, viewers for its text records
+  (`session.json`, `config_snapshot.yaml`, `rig.yaml`, `params.yaml`,
+  `report.yaml`, the tail of `session.log`), its `figures/` images and a link
+  to its saved live monitor page. Its trials (or events, frames, paradigm)
+  table loads sortable and filterable, pooled across checked runs with
+  `run`, `subject` and `session` columns added, at most 50 000 rows (said
+  when cut). Quick plots — mean ± SEM per x (a proportion for a True/False
+  y), scatter, histograms — are drawn as SVG, grouped by any column, and
+  saved as `.svg`. Everything is read-only, confined to the folders the
+  server computed, and every failure is said in the view. The view is shown
+  by the page's navigation through `window.WorkspaceData.show/hide`.
+- New GET routes, token-checked like the others: `/api/data/{roots,runs,run,
+  text,table,page}` and `/data/file` (figures, served under a sandboxing
+  CSP). `/data-page/<ticket>` opens a saved monitor page through a
+  two-minute ticket rather than the API token, under its own CSP (inline
+  script and style only; no requests, frames or forms).
 
 ### Changed
 
@@ -72,6 +95,9 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 - **Larger, friendlier type** in the workspace (16 px body in Nunito, no text under 13 px but badges), colours on theme
   tokens with WCAG AA contrast, the "01 — SETUP" label gone, and a sidebar
   whose background runs the page's full height.
+- `dashboard.py`'s static assets are one table (`PAGE_ASSETS`), and a
+  response's Content-Security-Policy can be chosen per route (`PAGE_CSP`
+  stays the default for everything else).
 
 ## 2.0.1 - 2026-09-28
 

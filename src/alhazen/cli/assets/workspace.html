@@ -33,6 +33,11 @@
   <!-- The schema helpers load first: workspace.js reads ParameterChoices. -->
   <script src="/workspace_parameters.js" defer></script>
   <script src="/workspace.js" defer></script>
+  <!-- The Data view: its stylesheet, the plotting helpers it draws with,
+       then the view itself (window.WorkspaceData.show/hide). -->
+  <link rel="stylesheet" href="/workspace_data.css">
+  <script src="/workspace_plot.js" defer></script>
+  <script src="/workspace_data.js" defer></script>
 </head>
 <body>
   <!-- Sidebar: logo, the registered experiments (renderState() in
