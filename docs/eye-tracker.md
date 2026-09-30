@@ -336,6 +336,104 @@ whether it holds one from before the session — whose, it cannot say — so a
 session that ran on a previous subject's calibration is at least a session
 whose log says so. Validate it, or calibrate again, before trusting it.
 
+## Which eye is which on a TRACKPixx3
+
+The TRACKPixx3 hands back both eyes in every per-eye array: the gaze report
+and its raw eye vectors, the pupil sizes, the calibration's raw vectors and
+coefficients. VPixx's own order is **right eye first**. Until 2.2.1 the
+backend read the gaze report left eye first instead, because pypixxlib's
+docstring for `TRACKPixx3.getEyePosition` says "screen_x_left_eye,
+screen_y_left_eye, screen_x_right_eye, screen_y_right_eye". Everything else
+puts the right eye first:
+
+- VPixx documents its calibration calls right first: the raw vectors of
+  `TPxGetEyePositionDuringCalib_returnsRaw` and the coefficients of
+  `TPxGetCalibCoeffs`. The backend's calibration plot always read them that
+  way.
+- VPixx's own CSV writer files the gaze report's first pair under
+  `Right Screen X/Y`. On the amodal-averaging pilot (`eyetracker.eye: left`,
+  so the first pair under the old reading), the session's online gaze at
+  each landing matches the file's `Right Screen X/Y` to a median 0.049° over
+  its 128 completed trials, and its `Left Screen X/Y` only to 1.46°.
+- On the same pilot the calibration's first pair is the one that fits (worst
+  target 0.49°, against 2.62° for the second), and the session, reading the
+  gaze report's first pair, validated at 0.21°.
+
+So before 2.2.1 one camera channel had two names inside alhazen: the live
+gaze read called it `left`, and the calibration plot, like the recording,
+called it `right`.
+
+```mermaid
+flowchart LR
+  A["the device's first pair<br/>(one camera channel)"]
+  A -->|"VPixx's order: right eye first"| NOW["alhazen 2.2.1:<br/>eyetracker.eye: right<br/>EYE_USED right file:Right"]
+  A -->|"pypixxlib's getEyePosition docstring"| OLD["alhazen up to 2.2.0:<br/>eyetracker.eye: left<br/>EYE_USED left"]
+  A -->|"VPixx's CSV writer"| F["the run's _gaze.csv<br/>Right Screen X/Y · Right Blink · …"]
+  A -->|"VPixx's calibration calls"| C["calibration plot: right"]
+```
+
+What 2.2.1 changes:
+
+- **The live backend names the eyes as VPixx does**, in one place:
+  `NATIVE_EYE_ORDER = ("right", "left")` in `devices/eyetracker/viewpixx.py`.
+  The gaze read, the raw-vector check, the pupil sizes behind the `eyes:`
+  line and the calibration plot all split their arrays through it.
+- **`eyetracker.eye: left` now tracks the eye VPixx calls left: a different
+  camera channel from the one the same config tracked before 2.2.1.** A rig
+  that wants to keep tracking the channel its sessions have tracked so far
+  (the amodal-averaging pilot's) sets `eyetracker.eye: right`.
+- **Every trial's mark names its columns:** `EYE_USED left file:Left`. A run
+  says which channel it tracked in the file's own words, whatever a later
+  version calls its eyes. The eye stays the mark's second word, so a parser
+  that takes `split()[1]` still reads it.
+- **Runs recorded before 2.2.1 are read correctly through their mark.** An
+  `EYE_USED` without `file:` was written by the old naming, so the reader
+  reads `EYE_USED left` from the file's `Right` columns (the channel that
+  session tracked) and says so in an INFO line. An explicit
+  `read_run(eye=...)` always names the file's own side, and
+  `read_run_binocular` is unchanged: its `left_*` columns are the file's
+  `Left` columns, as before. Code that reads one of the device's own
+  columns, such as its saccade flags, gets the name from
+  `file_columns(recording.eye)`.
+
+**Still not known: whether VPixx's `left` is the subject's left eye.** The
+test below now checks VPixx's own naming against the subject.
+
+### The rig test: cover one eye
+
+Do it once per rig, and again after a pypixxlib or firmware update. It needs
+a subject, a card to hold in front of one eye, and a rig config with
+`eyetracker.eye: left` on alhazen 2.2.1 or later.
+
+- [ ] Start a session in `--mode test` and calibrate with both eyes in the
+      camera image (**C** on the pause screen).
+- [ ] **Camera line.** Press **C** again. The guide's `eyes:` line (VPixx's
+      pupil-size call) should say `both tracked`. Hold the card in front of
+      the subject's **left** eye. Expect `right only`, and write down what it
+      says. Take the card away; ESC leaves the guide and keeps the
+      calibration.
+- [ ] **Live gaze.** With the card in front of the subject's **left** eye,
+      press **V**. Expect the validation to end
+      `validation FAILED: no target measured`, since the session reads the
+      left eye. Write down what it does.
+- [ ] **Recording.** Keep the card in front of the **left** eye and resume
+      for two or three trials; write down their trial numbers. (They may end
+      as fixation breaks, which does not matter here.) Quit, and open
+      `<base>_gaze.csv` in the run directory. Over those trials, expect the
+      `Left Blink` column to be 1 and `Left Screen X/Y` to be NaN. A trial's
+      rows lie between the device times of its `TRIAL <n>` mark and the next
+      one in `<base>_gaze-messages.csv`.
+- [ ] Repeat the three steps with the card in front of the **right** eye.
+      Every answer should flip.
+- [ ] Report the answers. If they are all as expected, VPixx's names are
+      the subject's own, and so is every `left` and `right` in alhazen from
+      2.2.1 on. If the three agree with each other but are the other way
+      round, VPixx names the eyes as the camera sees them, and every name is
+      mirrored; say so before any analysis leans on which eye is which,
+      vergence's sign above all. If they disagree with each other, one of
+      VPixx's calls is ordered differently from the rest (the pupil-size call
+      behind the `eyes:` line is the one taken on trust): report which.
+
 ## When the tracker drops out mid-trial
 
 A recording can die in the middle of a trial: the link cable is pulled, the

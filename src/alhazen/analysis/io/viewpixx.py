@@ -25,6 +25,30 @@ an earlier guess (``Time``, ``LeftEyeX``) passed every test written against
 fixtures that used the guessed names and could not open a real file. The
 fixture in ``tests/fixtures/trackpixx3/`` is the real header, for that reason.
 
+**Which eye is which.** The file's ``Left ...`` and ``Right ...`` columns are
+VPixx's own names for the eyes, and since 2.2.1 they are the live backend's
+names too: ``eyetracker.eye: left`` tracks the eye VPixx calls left, so a
+run's ``EYE_USED`` mark and its columns agree. Before 2.2.1 they did not.
+The live backend read the device's gaze report left eye first, as
+pypixxlib's docstring for ``getEyePosition`` says, while everything else —
+VPixx's calibration calls, its own recording writer and the device's own
+calibration fits — puts the right eye first (devices/eyetracker/viewpixx.py,
+``NATIVE_EYE_ORDER``, has the evidence). So a run recorded before 2.2.1 with
+``EYE_USED left`` tracked the channel its file calls ``Right``: on the
+amodal-averaging pilot the session's online gaze at each landing matches the
+file's ``Right Screen X/Y`` to a median 0.049 degrees over its 128 completed
+trials, and its ``Left Screen X/Y`` only to 1.46 degrees.
+
+This reader handles both kinds of run. From 2.2.1 every mark also names the
+columns (``EYE_USED left file:Left``) and is read exactly as it says. A mark
+without the ``file:`` word was written before 2.2.1, and is read through the
+naming of its time — ``left`` from the ``Right`` columns, ``right`` from the
+``Left`` ones — with an INFO line saying so. An explicit ``eye=`` always names
+the file's own side, and :func:`read_run_binocular` keeps the file's names,
+exactly as in 2.2.0. Whether VPixx's ``left`` is the subject's anatomical
+left eye no recording can say; docs/eye-tracker.md has the cover-one-eye
+test on the rig.
+
 **Which way is up has now been measured.** The backend hands the device its
 calibration targets in centered px with y up (the frame PsychoPy draws in),
 and the device's polynomial maps raw eye vectors onto the frame the targets
@@ -64,7 +88,11 @@ import yaml
 from pydantic import ValidationError
 
 from alhazen.config.models import MonitorConfig
-from alhazen.devices.eyetracker.viewpixx import is_tracking_lost
+from alhazen.devices.eyetracker.viewpixx import (
+    RECORDED_COLUMNS,
+    is_tracking_lost,
+    parse_eye_used,
+)
 from alhazen.display.screen import Screen
 from alhazen.errors import DataError
 
@@ -99,26 +127,91 @@ REAL_HEADER: tuple[str, ...] = (
     " SoftStateStart",
 )
 
+# Every per-eye column a TRACKPixx3 recording holds, by side and by this
+# module's name for the quantity. Spelled as REAL_HEADER spells them, leading
+# whitespace aside, and that includes VPixx's ``Right Fixaion``: the column
+# match forgives case and separators, not letters.
+_FILE_EYE_COLUMNS: dict[str, dict[str, str]] = {
+    "left": {
+        "screen_x": "Left Screen X",
+        "screen_y": "Left Screen Y",
+        "pupil": "Left Pupil Diameter",
+        "blink": "Left Blink",
+        "fixation": "Left Fixation",
+        "saccade": "Left Eye Saccade",
+        "x_vector": "Left X Vector",
+        "y_vector": "Left Y Vector",
+    },
+    "right": {
+        "screen_x": "Right Screen X",
+        "screen_y": "Right Screen Y",
+        "pupil": "Right Pupil Diameter",
+        "blink": "Right Blink",
+        "fixation": "Right Fixaion",
+        "saccade": "Right Eye Saccade",
+        "x_vector": "Right X Vector",
+        "y_vector": "Right Y Vector",
+    },
+}
+
+
+def file_columns(side: str) -> dict[str, str]:
+    """The recording's own column names for one side of it, ``left`` or
+    ``right``.
+
+    Each per-eye quantity (``screen_x``, ``screen_y``, ``pupil``,
+    ``blink``, ``fixation``, ``saccade``, ``x_vector``, ``y_vector``) maps to
+    the column the device wrote it in: ``file_columns("right")["saccade"]``
+    is ``"Right Eye Saccade"``. The side is the file's own word, which since
+    2.2.1 is also what ``eyetracker.eye`` and :func:`read_run`'s ``eye``
+    mean. For code that reads one of the device's own columns directly —
+    its saccade or fixation flags — beside the samples the readers return;
+    ``GazeRecording.eye`` is the side to pass, so the flags come from the
+    channel the samples did.
+
+    ``average`` is refused rather than answered: it is the mean of both
+    sides and has no columns of its own. The dict is a new one on every
+    call, so changing it cannot change what the readers read.
+    """
+    columns = _FILE_EYE_COLUMNS.get(side)
+    if columns is None:
+        raise DataError(
+            f"file_columns() takes a side of the recording, 'left' or 'right'; got {side!r}. "
+            f"'average' is the mean of both sides and has no columns of its own."
+        )
+    return dict(columns)
+
+
 # How this module names the columns it needs, mapped to the device's own
 # names. Overridable per call (``columns=``) for a firmware that renames one;
 # the mapping fails loudly, naming both sides, when a name is not found.
 DEFAULT_COLUMNS: dict[str, str] = {
     "device_time_s": "Timestamp",
-    "left_x_px": "Left Screen X",
-    "left_y_px": "Left Screen Y",
-    "right_x_px": "Right Screen X",
-    "right_y_px": "Right Screen Y",
+    "left_x_px": file_columns("left")["screen_x"],
+    "left_y_px": file_columns("left")["screen_y"],
+    "right_x_px": file_columns("right")["screen_x"],
+    "right_y_px": file_columns("right")["screen_y"],
 }
 
 # Read when the file has them, left out of the samples when it does not: the
 # device writes them, but a recording made by another tool may not, and
 # neither the clock fit nor a position depends on them.
 OPTIONAL_COLUMNS: dict[str, str] = {
-    "left_blink": "Left Blink",
-    "right_blink": "Right Blink",
-    "left_pupil": "Left Pupil Diameter",
-    "right_pupil": "Right Pupil Diameter",
+    "left_blink": file_columns("left")["blink"],
+    "right_blink": file_columns("right")["blink"],
+    "left_pupil": file_columns("left")["pupil"],
+    "right_pupil": file_columns("right")["pupil"],
 }
+
+# Which side of the file an EYE_USED mark WITHOUT a ``file:`` word names. Such
+# a mark was written before 2.2.1, by a live backend that read the device's
+# gaze report left eye first while the device puts the right eye first
+# (devices/eyetracker/viewpixx.py, NATIVE_EYE_ORDER): its ``left`` tracked the
+# channel the file calls Right, and its ``right`` the one it calls Left. On the
+# amodal-averaging pilot (EYE_USED left) the online gaze matches the file's
+# Right Screen X/Y to a median 0.049 degrees over 128 completed trials, and
+# its Left Screen X/Y only to 1.46. ``average`` is both either way.
+_PRE_2_2_1_MARK_SIDE: dict[str, str] = {"left": "right", "right": "left", "average": "average"}
 
 MESSAGE_COLUMNS = ("device_time_s", "session_time_s", "message")
 
@@ -235,6 +328,10 @@ class GazeRecording(RecordingViews):
     dropped: a blink is a *gap at a known time*, and deleting it would let a
     velocity differentiator interpolate straight across it and invent a
     saccade.
+
+    ``eye`` is the side read, in the file's own words (``right`` is the
+    ``Right ...`` columns). For a run recorded before 2.2.1 it is not the
+    word its ``EYE_USED`` mark says; the module docstring says why.
     """
 
     samples: pd.DataFrame
@@ -255,7 +352,8 @@ class BinocularRecording(RecordingViews):
     ``left_y_dva``, ``left_tracked``, ``left_pupil`` and the four ``right_``
     equivalents. Degrees from the screen centre with y up, exactly as
     :class:`GazeRecording` uses them, so a reader who knows one knows the
-    other.
+    other. ``left`` and ``right`` are the file's own names, whatever a run's
+    ``EYE_USED`` mark says, exactly as in 2.2.0.
 
     **Two tracked flags, never one.** A single flag meaning "both eyes" would
     be a different predicate wearing the same name, and it would hide the case
@@ -275,7 +373,10 @@ class BinocularRecording(RecordingViews):
     computing it is one line — but its absolute value carries the subject's
     tonic vergence and both eyes' calibration offsets, so it means nothing
     until it is baseline-subtracted against a window the experiment defines. A
-    column here would invite somebody to plot it raw.
+    column here would invite somebody to plot it raw. "Positive for
+    convergence" also assumes the file's ``Left`` columns are the subject's
+    left eye, which is VPixx's naming and not yet checked on the rig
+    (docs/eye-tracker.md, "Which eye is which on a TRACKPixx3").
     """
 
     samples: pd.DataFrame
@@ -408,13 +509,20 @@ def read_run(
 ) -> GazeRecording:
     """Read a run directory's ViewPixx eye data onto the session clock.
 
-    ``eye`` defaults to whatever the session actually recorded, which the
-    backend wrote into the message stream every trial as ``EYE_USED <eye>``.
-    Reading it from the data rather than from a config is deliberate: the
-    config may have been edited since. ``average`` is the mean of the two
-    eyes where both were tracked, and a gap where either was not — the same
-    rule the live backend applies (devices/eyetracker/viewpixx.py
-    ``select_eye``), so online and offline never disagree about a sample.
+    ``eye`` names a side of the recording in the file's own words — ``left``
+    is the ``Left ...`` columns, always — or ``average``. Left out, it is
+    whatever the session actually tracked, which the backend wrote into the
+    message stream every trial as its ``EYE_USED`` mark. Reading it from the
+    data rather than from a config is deliberate: the config may have been
+    edited since, and before 2.2.1 the config's ``left`` meant the file's
+    ``Right`` columns. A mark written from 2.2.1 on names the columns
+    (``EYE_USED left file:Left``) and is read as it says; one without the
+    ``file:`` word is read through the old naming, with an INFO line saying
+    which columns were read and why (module docstring). ``average`` is the
+    mean of the two eyes where both were tracked, and a gap where either was
+    not — the same rule the live backend applies (devices/eyetracker/
+    viewpixx.py ``select_eye``), so online and offline never disagree about a
+    sample.
 
     **This returns one eye.** The device always records both, and for most
     experiments one of them is the measurement; for a binocular one it is not
@@ -429,7 +537,12 @@ def read_run(
     looks entirely reasonable.
     """
     loaded = _load_run(run_dir, columns, max_residual_s)
-    eye = eye or _eye_used(loaded.messages, loaded.messages_path)
+    if not eye:
+        eye, why = _eye_used(loaded.messages, loaded.messages_path)
+        if why is not None:
+            # Said on every read of such a run, once: the side read is not the
+            # word its mark says, and whoever reads the result should know.
+            log.info(why)
     if eye not in ("left", "right", "average"):
         raise DataError(f"eye must be 'left', 'right' or 'average', got {eye!r}")
 
@@ -725,11 +838,30 @@ def _trial_index(text: str, source: str) -> int:
         ) from error
 
 
-def _eye_used(messages: pd.DataFrame, path: Path) -> str:
-    """Which eye the session recorded, from the data rather than from a config."""
-    marks = {
-        str(text).split()[1] for text in messages["message"] if str(text).startswith("EYE_USED ")
-    }
+def _eye_used(messages: pd.DataFrame, path: Path) -> tuple[str, str | None]:
+    """The side of the file the session tracked, from its EYE_USED marks
+    rather than from a config — and, for a run recorded before 2.2.1, the
+    sentence saying why that side is not the word its mark says.
+
+    Every mark is parsed by the live backend's own parser (parse_eye_used,
+    beside the writer), so the two cannot drift apart; one this backend could
+    not have written is refused here, where the file's name is known.
+    """
+    marks: dict[tuple[str, str | None], str] = {}
+    for message in messages["message"]:
+        text = str(message).strip()
+        # split(), not startswith("EYE_USED "): a bare "EYE_USED" is a mark
+        # with nothing in it, and has to be refused rather than skipped.
+        if text.split()[:1] != ["EYE_USED"]:
+            continue
+        try:
+            marks[parse_eye_used(text)] = text
+        except ValueError as error:
+            raise DataError(
+                f"{path} has an EYE_USED mark alhazen's viewpixx backend could not have "
+                f"written: {error}. Which eye these samples came from is unknown; pass eye= "
+                f"explicitly only if you can establish it another way."
+            ) from error
     if not marks:
         raise DataError(
             f"{path} contains no EYE_USED mark, so which eye these samples came from is "
@@ -737,10 +869,22 @@ def _eye_used(messages: pd.DataFrame, path: Path) -> str:
         )
     if len(marks) > 1:
         raise DataError(
-            f"{path} says the recorded eye changed mid-session ({', '.join(sorted(marks))}). "
-            f"Split the run before analysing it; a single gaze table cannot mix two eyes."
+            f"{path} says the recorded eye changed mid-session "
+            f"({', '.join(sorted(marks.values()))}). Split the run before analysing it; "
+            f"a single gaze table cannot mix two eyes."
         )
-    return marks.pop()
+    (eye, side), text = marks.popitem()
+    if side is not None:
+        return side, None  # written from 2.2.1 on: it names the columns itself
+    side = _PRE_2_2_1_MARK_SIDE[eye]
+    if side == eye:
+        return side, None  # `average`: both sides, whichever way the eyes were named
+    return side, (
+        f"{path.name}: {text!r} has no 'file:' word, so the run was recorded before alhazen "
+        f"2.2.1, whose TRACKPixx3 backend named VPixx's eyes the other way round; that "
+        f"session tracked the file's {RECORDED_COLUMNS[side]} columns, so those are read "
+        f"(eye={side!r})."
+    )
 
 
 def _normalise(name: str) -> str:

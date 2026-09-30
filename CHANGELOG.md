@@ -73,6 +73,46 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   `run.json` keeps it as `seed`. Runs recorded before show the seed their
   command passed.
 
+## 2.2.1 - 2026-09-29
+
+### Fixed
+
+- **The TRACKPixx3 backend named VPixx's eyes backwards.** It read the
+  device's gaze report left eye first, following pypixxlib's docstring for
+  `TRACKPixx3.getEyePosition`. Everything else puts the right eye first:
+  VPixx's calibration calls (the backend's own calibration plot always read
+  them right first), VPixx's recording, which files that first pair under
+  `Right Screen X/Y`, and the device's own calibration fits. On the
+  amodal-averaging pilot (`eye: left`, 128 completed trials) the session's
+  online gaze matches the file's `Right Screen X/Y` to a median 0.049° and
+  its `Left Screen X/Y` only to 1.46°. Every per-eye array the backend reads
+  is now split in one place, `NATIVE_EYE_ORDER = ("right", "left")`: the gaze
+  read, the raw-vector check, the pupil sizes behind the `eyes:` line and the
+  calibration plot.
+- **`eyetracker.eye: left` now tracks the eye VPixx calls left: a different
+  camera channel from the one the same config tracked before 2.2.1.** A rig
+  that wants to keep tracking the channel its sessions have tracked so far
+  (the pilot's) sets `eyetracker.eye: right`. The shared `vpixx` rig still
+  says `left`.
+- **Every trial's mark names its columns**, `EYE_USED left file:Left`, so a
+  run says which channel it tracked in the file's own words. The eye is still
+  the mark's second word.
+- **The ViewPixx reader reads runs recorded before 2.2.1 correctly through
+  their mark.** An `EYE_USED` without `file:` was written by the old naming,
+  so `EYE_USED left` is read from the file's `Right` columns, the channel that
+  session tracked, and an INFO line says so; a mark with `file:` is read as
+  it says. An explicit `read_run(eye=...)` always names the file's own side,
+  and `read_run_binocular` is unchanged, so a vergence computed from it is
+  unchanged too. The new public `file_columns(side)` names every per-eye
+  column the device writes (screen position, pupil, blink, fixation,
+  saccade, eye vectors) for code that reads the device's own flags directly.
+  An `EYE_USED` mark the backend could not have written is now a `DataError`
+  naming the file, where a bare `EYE_USED` used to raise `IndexError`.
+
+  Still open: whether VPixx's `left` is the subject's left eye.
+  [eye-tracker.md](docs/eye-tracker.md#which-eye-is-which-on-a-trackpixx3)
+  has the cover-one-eye rig test, which now checks VPixx's own naming.
+
 ## 2.2.0 - 2026-09-29
 
 ### Added
