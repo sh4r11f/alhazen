@@ -254,6 +254,17 @@ def install_fake_pylink(monkeypatch: Any, clock: FakeClock, rate_hz: float = 100
 USB_GONE = "DPX_ERR_USB_REQ_FAILED"
 
 
+def per_eye(*, right: tuple[float, float], left: tuple[float, float]) -> list[float]:
+    """A four-value per-eye array the way the TRACKPixx3 hands one back: the
+    RIGHT eye's pair first, then the LEFT's — gaze, raw eye vectors, pupil
+    sizes, calibration raw vectors alike (the evidence is at
+    devices/eyetracker/viewpixx.py, NATIVE_EYE_ORDER). Written out here
+    rather than taken from that constant, so the tests hold the backend to
+    the device's order rather than to itself.
+    """
+    return [*right, *left]
+
+
 class FakeLibdpx:
     """Stand-in for pypixxlib's ``_libdpx``: the free functions connect() uses
     to bring the tracker up, and libdpx's sticky error flag.
@@ -270,15 +281,16 @@ class FakeLibdpx:
         self.freerun = False
         self.buffer_base = 0
         self.arms = 0
-        # Pupil ellipse semi-axes (left major/minor, right major/minor); all
-        # zero is the device's "no eye in the image".
-        self.pupils: tuple[float, float, float, float] = (3.0, 2.0, 3.0, 2.0)
+        # Every per-eye array below is in the device's own order, right eye
+        # first (per_eye). Pupil ellipse semi-axes (right major/minor, left
+        # major/minor); all zero is the device's "no eye in the image".
+        self.pupils: list[float] = per_eye(right=(3.0, 2.0), left=(3.0, 2.0))
         # The gaze report TPxBestPolyGetEyePosition writes: calibrated
-        # positions and raw eye vectors, [x_left, y_left, x_right, y_right].
+        # positions and raw eye vectors, [x_right, y_right, x_left, y_left].
         # Raw vectors of a tracked eye are plain numbers; the device's own
         # buffers start at zero, which the backend reads as "not measured".
-        self.positions: list[float] = [0.0, 0.0, 0.0, 0.0]
-        self.raw_positions: list[float] = [1.5, -0.5, 1.4, -0.4]
+        self.positions: list[float] = per_eye(right=(0.0, 0.0), left=(0.0, 0.0))
+        self.raw_positions: list[float] = per_eye(right=(1.5, -0.5), left=(1.4, -0.4))
         self.reads = 0
         # The calibration sampling call that returns raw vectors records into
         # the device's own list (FakeTrackPixx shares it), and answers with
@@ -373,8 +385,8 @@ class FakeLibdpx:
     def TPxGetBuffBaseAddr(self) -> int:  # noqa: N802 - vendor's name
         return self.buffer_base
 
-    def TPxGetPupilSize(self) -> tuple[float, float, float, float]:  # noqa: N802
-        return self.pupils
+    def TPxGetPupilSize(self) -> list[float]:  # noqa: N802 - vendor's name
+        return list(self.pupils)
 
     def TPxBestPolyGetEyePosition(self, packed, raw) -> float:  # noqa: N802 - vendor's name
         """The gaze report, both forms, written into the caller's buffers

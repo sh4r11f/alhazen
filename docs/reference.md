@@ -378,7 +378,7 @@ is for: [data layout](data.md).
 
 ::: alhazen.analysis.io.viewpixx
     options:
-      members: [REAL_HEADER, FILE_SIDE, file_columns, DEFAULT_COLUMNS, GazeFrame, ClockFit,
+      members: [REAL_HEADER, file_columns, DEFAULT_COLUMNS, GazeFrame, ClockFit,
         RecordingViews, GazeRecording, BinocularRecording, read_run, read_run_binocular,
         fit_clock, event_times]
 

@@ -19,7 +19,10 @@ Three facts about the device decide most of what follows:
   -32768, with the same consequence if it is read as a position.
 - **Binocular.** The device always reports both eyes; a ``GazeSample``
   carries one. Which one is configuration (``eyetracker.eye``), not a guess
-  made here.
+  made here — and every per-eye array the device returns is right eye
+  first, which ``NATIVE_EYE_ORDER`` says once for the whole backend (before
+  2.2.1 the gaze report was read left first, and ``eyetracker.eye`` named
+  the other eye; see there).
 
 And a fourth, learned on the rig: **the gaze report is a *calibrated* read.**
 ``TPxBestPolyGetEyePosition`` evaluates the device's calibration polynomial,
@@ -94,6 +97,113 @@ log = logging.getLogger(__name__)
 # the eye. VPixx's demos filter on the literal number rather than exposing a
 # named constant, so it is named here instead.
 TRACKING_LOST_PX = 9000.0
+
+# VPixx's own order for every per-eye array the TRACKPixx3 hands back — the
+# gaze report and its raw eye vectors, the pupil sizes, the calibration's raw
+# vectors and coefficients: the RIGHT eye's values first, then the LEFT eye's.
+# This is the one place the backend knows it; every read that splits such an
+# array by eye goes through split_by_eye() below.
+#
+# Until 2.2.1 the backend read the gaze report LEFT first, following
+# pypixxlib's docstring for TRACKPixx3.getEyePosition ("screen_x_left_eye,
+# screen_y_left_eye, screen_x_right_eye, screen_y_right_eye"). Everything else
+# puts the right eye first — VPixx's other documentation, its own recording,
+# and the device's own calibration:
+#   - its calibration calls are documented right first: the raw vectors from
+#     TPxGetEyePositionDuringCalib_returnsRaw are [x_right, y_right, x_left,
+#     y_left], and TPxGetCalibCoeffs gives nine coefficients for the right
+#     eye's x and nine for its y, then the left eye's — and this backend's
+#     calibration plot has always read them that way;
+#   - its recording writer (TPxSaveToCSV) files the gaze report's first pair
+#     under "Right Screen X/Y": on the amodal-averaging pilot (sub-pilot,
+#     2026-09-24, eyetracker.eye: left, so the first pair under the old
+#     reading), the session's online gaze at each landing matches the file's
+#     Right Screen X/Y to a median 0.049 deg over its 128 completed trials,
+#     and its Left Screen X/Y only to 1.46 deg;
+#   - on that pilot the calibration's first pair is also the one that fits
+#     (worst target 0.49 deg, against 2.62 deg for the second), and the
+#     session, reading the gaze report's first pair, validated at 0.21 deg.
+# Three sources against one docstring, so the docstring is the one taken to be
+# wrong. Since 2.2.1 `eyetracker.eye: left` therefore tracks the eye
+# VPixx calls left: a different camera channel from the one the same config
+# tracked before. Whether VPixx's "left" is the subject's anatomical left eye
+# no recording can say; docs/eye-tracker.md has the cover-one-eye test.
+NATIVE_EYE_ORDER: tuple[str, str] = ("right", "left")
+
+# How each `eyetracker.eye` names the recording's own columns, written into
+# every EYE_USED mark (eye_used_message) so that a run states its channel in
+# the file's words. Since 2.2.1 the backend names eyes as VPixx does, so each
+# is the same eye; a mark with no `file:` word was written before 2.2.1, when
+# `left` meant the file's Right columns (analysis/io/viewpixx.py reads both).
+RECORDED_COLUMNS: dict[str, str] = {"left": "Left", "right": "Right", "average": "Left+Right"}
+EYE_USED_PREFIX = "EYE_USED "
+FILE_TOKEN = "file:"
+
+
+def split_by_eye(values: Sequence[float], width: int, what: str) -> dict[str, list[float]]:
+    """One per-eye array from the device, split into each eye's values.
+
+    ``width`` is how many values each eye has: 2 for a gaze report, its raw
+    eye vectors or the pupil sizes (x and y, or the major and minor
+    semi-axis), 18 for the calibration coefficients (nine for x, nine for y).
+    The array is in NATIVE_EYE_ORDER, right eye first. ``what`` names it in
+    the error a short one raises: an array missing an eye is a device or
+    pypixxlib that does not answer the way this backend was built against,
+    and guessing which eye is missing would be reading the wrong one.
+    """
+    expected = width * len(NATIVE_EYE_ORDER)
+    if len(values) < expected:
+        raise TrackerError(
+            f"TRACKPixx3 reported {len(values)} {what} values; expected {expected} "
+            f"({width} per eye, right eye first). Check the pypixxlib version on this rig."
+        )
+    return {
+        eye: [float(value) for value in values[index * width : (index + 1) * width]]
+        for index, eye in enumerate(NATIVE_EYE_ORDER)
+    }
+
+
+def eye_used_message(eye: str) -> str:
+    """The mark every trial opens with: which eye the session reads, and the
+    recording's columns that eye is in, in the file's own words —
+    ``EYE_USED left file:Left``.
+
+    The eye alone would say what the config said, and the config's meaning
+    changed in 2.2.1 (NATIVE_EYE_ORDER). Naming the file's columns makes a run
+    self-describing whatever a later version calls its eyes; the eye word
+    stays second so that a parser taking ``split()[1]`` still reads it.
+    """
+    if eye not in RECORDED_COLUMNS:
+        raise TrackerError(f"unknown eyetracker.eye {eye!r} — expected left, right or average")
+    return f"{EYE_USED_PREFIX}{eye} {FILE_TOKEN}{RECORDED_COLUMNS[eye]}"
+
+
+def parse_eye_used(text: str) -> tuple[str, str | None]:
+    """(eye, the file side it names) from one EYE_USED mark.
+
+    The side is a reader's eye name — ``left``, ``right`` or ``average`` for
+    the file's Left, Right or both columns — taken from the mark's ``file:``
+    word, and None for a mark without one, which was written before 2.2.1.
+    Raises ValueError, saying what is wrong, for a mark this backend could
+    not have written; the caller knows which file it came from and says so.
+    """
+    parts = text.split()
+    if len(parts) < 2 or parts[0] != EYE_USED_PREFIX.strip():
+        raise ValueError(f"{text!r} is not an 'EYE_USED <eye> [file:<columns>]' mark")
+    eye = parts[1]
+    if eye not in RECORDED_COLUMNS:
+        raise ValueError(f"{text!r} names no eye this backend records ({eye!r})")
+    if len(parts) == 2:
+        return eye, None
+    sides = {columns: name for name, columns in RECORDED_COLUMNS.items()}
+    token = parts[2]
+    if len(parts) > 3 or not token.startswith(FILE_TOKEN) or token[len(FILE_TOKEN) :] not in sides:
+        raise ValueError(
+            f"{text!r} does not end in one of "
+            f"{', '.join(FILE_TOKEN + columns for columns in sides)}"
+        )
+    return eye, sides[token[len(FILE_TOKEN) :]]
+
 
 # The keys the calibration walk reads are the procedures' (procedures.py):
 # the same three roles the EyeLink's own calibration screen uses, and the
@@ -178,12 +288,14 @@ def quietly(call: Callable[[], T]) -> T:
 class DeviceGaze:
     """One gaze report from the device: both eyes, both forms.
 
-    ``screen`` is the *calibrated* position — ``[x_left, y_left, x_right,
-    y_right]`` in centered px, from the device's calibration polynomial;
-    NaN or the lost sentinel when there is no calibration or no eye. ``raw``
-    is the uncalibrated eye vector the camera measured, in the same order:
-    a number whenever the camera has an eye, calibration or not. Reading both
-    is what lets "no calibration" be told from "no eye".
+    ``screen`` is the *calibrated* position — four values in VPixx's own
+    order, right eye first (NATIVE_EYE_ORDER): ``[x_right, y_right, x_left,
+    y_left]`` in centered px, from the device's calibration polynomial; NaN
+    or the lost sentinel when there is no calibration or no eye. ``raw`` is
+    the uncalibrated eye vector the camera measured, in the same order: a
+    number whenever the camera has an eye, calibration or not. Reading both
+    is what lets "no calibration" be told from "no eye". Split by eye only
+    through split_by_eye().
     """
 
     screen: tuple[float, float, float, float]
@@ -299,9 +411,15 @@ def eyes_detected(libdpx: Any) -> tuple[bool, bool]:
     cannot say this before a calibration exists — it is the tracking-lost
     sentinel until then — so this is what the calibration screen shows the
     experimenter, who otherwise accepts every target blind.
+
+    Read in NATIVE_EYE_ORDER, right eye first, like every other per-eye
+    array the device returns. For this call that is inferred from the
+    others, not separately measured; the rig test in docs/eye-tracker.md
+    checks it (the calibration screen's "eyes:" line with one eye covered).
     """
-    left_major, _left_minor, right_major, _right_minor = libdpx.TPxGetPupilSize()
-    return float(left_major) > 0.0, float(right_major) > 0.0
+    sizes = split_by_eye(libdpx.TPxGetPupilSize(), 2, "pupil size")
+    # Each eye's pair is (major, minor) semi-axis; a found pupil has a major axis.
+    return sizes["left"][0] > 0.0, sizes["right"][0] > 0.0
 
 
 def eye_status_text(left: bool, right: bool) -> str:
@@ -668,10 +786,11 @@ def is_tracking_lost(x: float, y: float) -> bool:
 def select_eye(positions: Sequence[float], eye: str) -> tuple[float, float] | None:
     """Reduce the device's binocular report to the one gaze a sample carries.
 
-    ``positions`` is what ``TRACKPixx3.getEyePosition()`` returns, in VPixx's
-    documented order — ``[x_left, y_left, x_right, y_right]``, centered px.
-    Returns None when the requested eye is not being tracked, which the
-    caller passes on as "no verifiable position" (protocol.py).
+    ``positions`` is the device's calibrated gaze report
+    (``DeviceGaze.screen``): four values in VPixx's own order, right eye
+    first (NATIVE_EYE_ORDER) — ``[x_right, y_right, x_left, y_left]``,
+    centered px. Returns None when the requested eye is not being tracked,
+    which the caller passes on as "no verifiable position" (protocol.py).
 
     ``average`` requires *both* eyes on purpose. Falling back to whichever
     eye is still tracked would change what the number means partway through
@@ -680,23 +799,18 @@ def select_eye(positions: Sequence[float], eye: str) -> tuple[float, float] | No
     second eye drops out for a moment is exactly the case the blink rule
     already handles correctly.
 
-    **VPixx's recording names this first pair ``Right``.** Its CSV writer puts
-    the channel returned here as ``left`` under ``Right Screen X/Y`` (measured
-    on a real session: the online gaze matches that column to 0.05 degrees
-    and the ``Left`` one only to 1.46). This function keeps the documented
-    order, because every rig config and every ``EYE_USED`` mark recorded so
-    far means the first pair by ``left``; the offline reader translates, in
-    one place (``alhazen.analysis.io.viewpixx.FILE_SIDE``, whose module
-    docstring has the evidence). Which of the two is the subject's anatomical
-    left eye is not known yet — docs/eye-tracker.md has the rig test.
+    **Before 2.2.1 this read the first pair as the left eye**, as pypixxlib's
+    docstring for ``getEyePosition`` says. VPixx's recording, its calibration
+    calls and the device's own calibration fits all say that pair is the
+    right eye (NATIVE_EYE_ORDER has the evidence), so the same
+    ``eyetracker.eye`` now reads the other camera channel: ``left`` is the
+    eye VPixx calls left, the one its recording files under ``Left ...``.
+    Runs recorded before 2.2.1 say so by their EYE_USED mark having no
+    ``file:`` word, and the offline reader reads them accordingly.
     """
-    if len(positions) < 4:
-        raise TrackerError(
-            f"TRACKPixx3 reported {len(positions)} gaze values; expected 4 "
-            f"(x_left, y_left, x_right, y_right). Check the pypixxlib version on this rig."
-        )
-    left = (float(positions[0]), float(positions[1]))
-    right = (float(positions[2]), float(positions[3]))
+    eyes = split_by_eye(positions, 2, "gaze")
+    left = (eyes["left"][0], eyes["left"][1])
+    right = (eyes["right"][0], eyes["right"][1])
     left_lost = is_tracking_lost(*left)
     right_lost = is_tracking_lost(*right)
 
@@ -715,25 +829,20 @@ def eye_in_raw(raw: Sequence[float], eye: str) -> bool:
     """Did the camera measure the configured eye, calibration or not?
 
     ``raw`` is the uncalibrated vector from :func:`read_device_gaze`, in the
-    device's order ``[x_left, y_left, x_right, y_right]``. An eye counts as
-    measured when its vector is a finite number that is neither the lost
-    sentinel nor the exact zero the ctypes buffer started with — a call that
-    wrote nothing leaves zeros, and reading those as "an eye at the origin"
-    would defeat the point of reading them. ``average`` needs both eyes, as
-    :func:`select_eye` does.
+    device's own order, right eye first (NATIVE_EYE_ORDER): ``[x_right,
+    y_right, x_left, y_left]``. An eye counts as measured when its vector is
+    a finite number that is neither the lost sentinel nor the exact zero the
+    ctypes buffer started with — a call that wrote nothing leaves zeros, and
+    reading those as "an eye at the origin" would defeat the point of reading
+    them. ``average`` needs both eyes, as :func:`select_eye` does.
     """
-    if len(raw) < 4:
-        raise TrackerError(
-            f"TRACKPixx3 reported {len(raw)} raw eye values; expected 4 "
-            f"(x_left, y_left, x_right, y_right). Check the pypixxlib version on this rig."
-        )
+    eyes = split_by_eye(raw, 2, "raw eye vector")
 
-    def measured(x: float, y: float) -> bool:
+    def measured(vector: list[float]) -> bool:
+        x, y = vector
         return not is_tracking_lost(x, y) and not (x == 0.0 and y == 0.0)
 
-    left = measured(float(raw[0]), float(raw[1]))
-    right = measured(float(raw[2]), float(raw[3]))
-    return eye_in_view((left, right), eye)
+    return eye_in_view((measured(eyes["left"]), measured(eyes["right"])), eye)
 
 
 def eye_in_view(eyes: tuple[bool, bool], eye: str) -> bool:
@@ -1085,9 +1194,12 @@ class ViewPixxTracker:
         The device's fitted polynomial (TPxGetCalibCoeffs: nine coefficients
         each for the right eye's x and y, then the left eye's) is evaluated on
         the raw vectors measured at each target (evaluate_calibration), which
-        is how VPixx's own calibration example plots a result. A calibration is
-        a fit to these very fixations, so the errors flatter it; the validation
-        that follows measures the fit on fresh ones.
+        is how VPixx's own calibration example plots a result. Both arrays are
+        in NATIVE_EYE_ORDER, right eye first, and are split by it — the same
+        order the gaze report is read in, so the eye this plot calls ``left``
+        is the eye ``eyetracker.eye: left`` tracks. A calibration is a fit to
+        these very fixations, so the errors flatter it; the validation that
+        follows measures the fit on fresh ones.
 
         A plot that cannot be made never fails the calibration the device just
         kept: the reason is logged as an error and returned for the result's
@@ -1112,18 +1224,19 @@ class ViewPixxTracker:
             )
             log.error("TRACKPixx3 %s", problem)
             return (), problem
+        # Each eye's 18 coefficients: nine for its x, then nine for its y.
+        fits = split_by_eye(coefficients, 18, "calibration coefficient")
         fitted: list[CalibrationTarget] = []
         for (tx, ty), raw in zip(targets, raws, strict=True):
             assert raw is not None  # checked above
+            vectors = split_by_eye(raw, 2, "calibration raw vector")
             eyes: dict[str, tuple[tuple[float, float] | None, float | None]] = {}
-            for eye, (rx, ry), (cx, cy) in (
-                ("right", (raw[0], raw[1]), (coefficients[0:9], coefficients[9:18])),
-                ("left", (raw[2], raw[3]), (coefficients[18:27], coefficients[27:36])),
-            ):
+            for eye in NATIVE_EYE_ORDER:
+                rx, ry = vectors[eye]
                 if not raw_eye_measured(rx, ry):
                     eyes[eye] = (None, None)
                     continue
-                gx, gy = evaluate_calibration(rx, ry, cx, cy)
+                gx, gy = evaluate_calibration(rx, ry, fits[eye][:9], fits[eye][9:])
                 eyes[eye] = ((gx, gy), self._screen.px2deg(math.hypot(gx - tx, gy - ty)))
             fitted.append(
                 CalibrationTarget(
@@ -1519,9 +1632,11 @@ class ViewPixxTracker:
             # The only durable record, inside the run's own files, of which
             # eye each trial's samples came from. Written per trial rather
             # than once, so a trial's segment is self-describing — the same
-            # reason the EyeLink backend re-sends EYE_USED every trial.
+            # reason the EyeLink backend re-sends EYE_USED every trial. It
+            # names the recording's columns too (eye_used_message), because
+            # what `left` meant changed in 2.2.1.
             self.send_message(f"TRIAL {trial_index} {status}")
-            self.send_message(f"EYE_USED {self._cfg.eye}")
+            self.send_message(eye_used_message(self._cfg.eye))
         except Exception as e:  # pypixxlib's exception type cannot be named off the rig
             # The device answered the check a moment ago and not these. The
             # segment is open, and the runner's finally will drain it from
