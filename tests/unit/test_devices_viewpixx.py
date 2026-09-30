@@ -45,8 +45,10 @@ from alhazen.devices.eyetracker.viewpixx import (
     evaluate_calibration,
     eye_in_raw,
     eye_in_view,
+    eye_used_message,
     image_from_pointer,
     is_tracking_lost,
+    parse_eye_used,
     quietly,
     select_eye,
     shrink_image,
@@ -54,7 +56,7 @@ from alhazen.devices.eyetracker.viewpixx import (
 from alhazen.display.palette import TERMINAL_GREEN
 from alhazen.errors import TrackerError
 from alhazen.testing import FakeClock
-from fake_sdk import FakeLibdpx, FakeTrackPixx, install_fake_pypixxlib
+from fake_sdk import FakeLibdpx, FakeTrackPixx, install_fake_pypixxlib, per_eye
 from support import SCREEN
 
 
@@ -106,11 +108,13 @@ class TestTrackingLost:
 
 
 class TestSelectEye:
-    POSITIONS = [10.0, 20.0, 30.0, 40.0]  # xL, yL, xR, yR
+    # In the device's own order, right eye first (per_eye).
+    POSITIONS = per_eye(right=(30.0, 40.0), left=(10.0, 20.0))
 
-    def test_left_and_right_read_the_documented_order(self):
+    def test_left_and_right_read_the_devices_own_order(self):
         # Getting this order wrong is invisible: both eyes return plausible
-        # numbers, and the session records the wrong one all the way through.
+        # numbers, and the session records the wrong one all the way through —
+        # as it did until 2.2.1, reading the first pair as the left eye.
         assert select_eye(self.POSITIONS, "left") == (10.0, 20.0)
         assert select_eye(self.POSITIONS, "right") == (30.0, 40.0)
 
@@ -118,14 +122,14 @@ class TestSelectEye:
         assert select_eye(self.POSITIONS, "average") == (20.0, 30.0)
 
     def test_a_lost_eye_is_none_only_when_it_is_the_chosen_one(self):
-        lost_left = [TRACKING_LOST_PX, TRACKING_LOST_PX, 30.0, 40.0]
+        lost_left = per_eye(right=(30.0, 40.0), left=(TRACKING_LOST_PX, TRACKING_LOST_PX))
         assert select_eye(lost_left, "left") is None
         assert select_eye(lost_left, "right") == (30.0, 40.0)
 
     def test_average_needs_both_eyes(self):
         # Falling back to the tracked eye would change what the number means
         # partway through a trial, with nothing in the data saying where.
-        lost_right = [10.0, 20.0, TRACKING_LOST_PX, TRACKING_LOST_PX]
+        lost_right = per_eye(right=(TRACKING_LOST_PX, TRACKING_LOST_PX), left=(10.0, 20.0))
         assert select_eye(lost_right, "average") is None
 
     def test_a_short_report_is_an_error_not_a_guess(self):
@@ -135,6 +139,91 @@ class TestSelectEye:
     def test_an_unknown_eye_is_an_error(self):
         with pytest.raises(TrackerError, match="unknown eyetracker.eye"):
             select_eye(self.POSITIONS, "cyclopean")
+
+
+class TestTheDevicesEyeOrder:
+    """Every per-eye array the TRACKPixx3 returns is right eye first. Until
+    2.2.1 the gaze report was read left first, after pypixxlib's docstring,
+    while the calibration plot read its arrays right first — one camera
+    channel had two names inside this backend. Now every read goes through
+    one order, and these hold all of them to it at once."""
+
+    def test_the_order_is_right_eye_first(self):
+        assert viewpixx_module.NATIVE_EYE_ORDER == ("right", "left")
+
+    def test_every_per_eye_read_agrees_on_which_eye_is_which(self, fake_pypixxlib, fake_psychopy):
+        # In every array: the right eye measured, the left one not.
+        gaze = per_eye(right=(10.0, 20.0), left=(TRACKING_LOST_PX, TRACKING_LOST_PX))
+        assert select_eye(gaze, "right") == (10.0, 20.0)
+        assert select_eye(gaze, "left") is None
+        raw = per_eye(right=(1.5, -0.5), left=(0.0, 0.0))
+        assert eye_in_raw(raw, "right") and not eye_in_raw(raw, "left")
+
+        tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5", eye="right")
+        fake_pypixxlib.libdpx.pupils = per_eye(right=(3.0, 2.0), left=(0.0, 0.0))
+        assert tracker.eye_status() == "eyes: right only"
+        fake_pypixxlib.libdpx.raw_at_target = lambda x, y: tuple(
+            per_eye(right=(x / 100.0 + 1.0, y / 100.0 + 1.0), left=(0.0, 0.0))
+        )
+        fake_psychopy.keys.extend([START] + ["space"] * 5)
+        result = tracker.calibrate()
+        assert result.ok is True and len(result.targets) == 5
+        assert all(t.right_px is not None and t.left_px is None for t in result.targets)
+
+        fake_pypixxlib.positions = gaze
+        fake_pypixxlib.libdpx.raw_positions = raw
+        sample = tracker.get_gaze()
+        assert sample is not None
+        assert (sample.gx, sample.gy) == (SCREEN.width_px / 2 + 10.0, SCREEN.height_px / 2 - 20.0)
+        assert tracker.gaze_status() == "tracked"
+
+    def test_a_short_array_names_what_is_missing(self):
+        with pytest.raises(TrackerError, match="expected 4 .*right eye first"):
+            select_eye([1.0, 2.0], "right")
+
+
+class TestEyeUsedMark:
+    """Every trial's EYE_USED mark names the recording's columns as well as
+    the eye, so a run says which channel it tracked whatever a later version
+    calls its eyes. The writer and the parser the offline reader uses live
+    side by side, and a round trip through both is the contract."""
+
+    @pytest.mark.parametrize(
+        ("eye", "mark", "side"),
+        [
+            ("left", "EYE_USED left file:Left", "left"),
+            ("right", "EYE_USED right file:Right", "right"),
+            ("average", "EYE_USED average file:Left+Right", "average"),
+        ],
+    )
+    def test_each_eye_writes_the_columns_it_is_read_from(self, eye, mark, side):
+        assert eye_used_message(eye) == mark
+        assert parse_eye_used(mark) == (eye, side)
+        # A parser that takes the second word (kde-vergence's does) still
+        # reads the eye.
+        assert mark.split()[1] == eye
+
+    def test_a_mark_from_before_2_2_1_names_no_columns(self):
+        assert parse_eye_used("EYE_USED left") == ("left", None)
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "EYE_USED",
+            "EYE_USED both",
+            "EYE_USED left file:Middle",
+            "EYE_USED left Left",
+            "EYE_USED left file:Left again",
+            "TRIAL 1 ok",
+        ],
+    )
+    def test_a_mark_this_backend_could_not_have_written_is_refused(self, text):
+        with pytest.raises(ValueError, match="EYE_USED|file:"):
+            parse_eye_used(text)
+
+    def test_an_unknown_eye_is_not_written(self):
+        with pytest.raises(TrackerError, match="unknown eyetracker.eye"):
+            eye_used_message("cyclopean")
 
 
 class TestCalibrationTargets:
@@ -266,7 +355,7 @@ class TestGaze:
         # in the wrong quadrant, and nothing downstream could tell.
         clock = FakeClock(start=2.5)
         tracker = connected(clock)
-        fake_pypixxlib.positions = [100.0, 200.0, 0.0, 0.0]
+        fake_pypixxlib.positions = per_eye(right=(0.0, 0.0), left=(100.0, 200.0))
         sample = tracker.get_gaze()
         assert sample is not None
         assert (sample.gx, sample.gy) == (
@@ -285,12 +374,14 @@ class TestGaze:
 
     def test_a_blink_is_no_sample(self, fake_pypixxlib):
         tracker = connected()
-        fake_pypixxlib.positions = [TRACKING_LOST_PX, TRACKING_LOST_PX, 0.0, 0.0]
+        fake_pypixxlib.positions = per_eye(
+            right=(0.0, 0.0), left=(TRACKING_LOST_PX, TRACKING_LOST_PX)
+        )
         assert tracker.get_gaze() is None
 
     def test_the_configured_eye_is_the_one_read(self, fake_pypixxlib):
         tracker = connected(eye="right")
-        fake_pypixxlib.positions = [100.0, 0.0, -100.0, 0.0]
+        fake_pypixxlib.positions = per_eye(right=(-100.0, 0.0), left=(100.0, 0.0))
         sample = tracker.get_gaze()
         assert sample is not None
         assert sample.gx == SCREEN.width_px / 2 - 100.0
@@ -328,7 +419,8 @@ class TestTrialLifecycle:
         tracker = connected()
         tracker.start_trial(7, "attempt 2")
         texts = [text for _, _, text in tracker._messages]
-        assert texts == ["TRIAL 7 attempt 2", "EYE_USED left"]
+        # The mark names the file's columns too, since 2.2.1 (eye_used_message).
+        assert texts == ["TRIAL 7 attempt 2", "EYE_USED left file:Left"]
 
 
 class TestMessages:
@@ -703,7 +795,7 @@ class TestCalibrationGuide:
 
     def test_the_guide_shows_the_live_eye_line(self, fake_pypixxlib, fake_psychopy):
         tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
-        fake_pypixxlib.libdpx.pupils = (3.0, 2.0, 0.0, 0.0)
+        fake_pypixxlib.libdpx.pupils = per_eye(right=(0.0, 0.0), left=(3.0, 2.0))
         # Two refreshes at the guide, then start.
         fake_psychopy.keys.extend([None, START] + ["space"] * 5)
         tracker.calibrate()
@@ -963,7 +1055,7 @@ class TestAutoAdvance:
             calibration_advance="auto",
             eye="right",
         )
-        fake_pypixxlib.libdpx.pupils = (3.0, 2.0, 0.0, 0.0)
+        fake_pypixxlib.libdpx.pupils = per_eye(right=(0.0, 0.0), left=(3.0, 2.0))
         fake_psychopy.keys.extend([START] + [None] * (5 * self.PER_TARGET))
         result = tracker.calibrate()
         assert fake_pypixxlib.calibration_points == []
@@ -1021,7 +1113,7 @@ class TestGazeReader:
         tracker.connect()
         tracker.configure(SCREEN, tracker._clock)
         try:
-            fake_pypixxlib.positions = [10.0, 20.0, 0.0, 0.0]
+            fake_pypixxlib.positions = per_eye(right=(0.0, 0.0), left=(10.0, 20.0))
             deadline = time.monotonic() + 2.0
             sample = None
             while sample is None and time.monotonic() < deadline:
@@ -1068,7 +1160,7 @@ class TestGazeReader:
         # looks alive but never reads again: the caller must not read for it.
         clock = FakeClock()
         tracker = connected(clock)
-        fake_pypixxlib.positions = [10.0, 20.0, 0.0, 0.0]
+        fake_pypixxlib.positions = per_eye(right=(0.0, 0.0), left=(10.0, 20.0))
         assert tracker.get_gaze() is not None
         reader = tracker._reader
         assert reader is not None
@@ -1274,7 +1366,7 @@ class TestDropoutDetection:
         # on the subject as a broken fixation.
         clock = FakeClock(start=10.0)
         tracker = recording_trial(clock, max_sample_gap_ms=200)
-        fake_pypixxlib.positions = [10.0, 20.0, 0.0, 0.0]
+        fake_pypixxlib.positions = per_eye(right=(0.0, 0.0), left=(10.0, 20.0))
         with StalledReader(tracker) as reader:
             reader.read_now()
             clock.advance(0.201)
@@ -1597,7 +1689,7 @@ class TestCalibrationRecording:
 
     def test_the_status_line_names_the_tracked_eyes(self, fake_pypixxlib, fake_psychopy):
         tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
-        fake_pypixxlib.libdpx.pupils = (3.0, 2.0, 0.0, 0.0)
+        fake_pypixxlib.libdpx.pupils = per_eye(right=(0.0, 0.0), left=(3.0, 2.0))
         fake_psychopy.keys.extend([START] + ["space"] * 5)
         tracker.calibrate()
         assert any("left only" in shown for text in fake_psychopy.texts for shown in text.shown)
@@ -1748,7 +1840,7 @@ class TestEyeStatus:
     def test_names_the_eyes_the_camera_sees(self, fake_pypixxlib):
         tracker = connected()
         assert tracker.eye_status() == "eyes: both tracked"
-        fake_pypixxlib.libdpx.pupils = (0.0, 0.0, 3.0, 2.0)
+        fake_pypixxlib.libdpx.pupils = per_eye(right=(3.0, 2.0), left=(0.0, 0.0))
         assert tracker.eye_status() == "eyes: right only"
         fake_pypixxlib.libdpx.pupils = (0.0, 0.0, 0.0, 0.0)
         assert "NO EYE" in tracker.eye_status()
@@ -1776,15 +1868,16 @@ class TestEyeInRaw:
     def test_the_buffers_initial_zero_is_no_measurement(self):
         # A call that wrote nothing leaves the ctypes buffer at zero, and an
         # "eye at exactly the origin" would defeat the point of reading it.
-        assert not eye_in_raw([0.0, 0.0, 1.4, -0.4], "left")
-        assert eye_in_raw([0.0, 0.0, 1.4, -0.4], "right")
+        only_right = per_eye(right=(1.4, -0.4), left=(0.0, 0.0))
+        assert not eye_in_raw(only_right, "left")
+        assert eye_in_raw(only_right, "right")
 
     def test_nan_and_the_lost_sentinel_are_no_measurement(self):
-        assert not eye_in_raw([math.nan, 0.2, 1.4, -0.4], "left")
-        assert not eye_in_raw([TRACKING_LOST_PX, 0.2, 1.4, -0.4], "left")
+        assert not eye_in_raw(per_eye(right=(1.4, -0.4), left=(math.nan, 0.2)), "left")
+        assert not eye_in_raw(per_eye(right=(1.4, -0.4), left=(TRACKING_LOST_PX, 0.2)), "left")
 
     def test_average_needs_both(self):
-        assert not eye_in_raw([1.5, -0.5, 0.0, 0.0], "average")
+        assert not eye_in_raw(per_eye(right=(0.0, 0.0), left=(1.5, -0.5)), "average")
 
     def test_a_short_report_is_an_error(self):
         with pytest.raises(TrackerError, match="expected 4"):
@@ -1814,7 +1907,8 @@ class TestCalibrationGate:
     ):
         fake_pypixxlib.holds_calibration = False
         tracker = connected()
-        fake_pypixxlib.positions = [100.0, 200.0, 0.0, 0.0]  # would be a fine sample
+        # Would be a fine sample for the configured (left) eye.
+        fake_pypixxlib.positions = per_eye(right=(0.0, 0.0), left=(100.0, 200.0))
         with caplog.at_level(logging.WARNING, logger="alhazen.devices.eyetracker.viewpixx"):
             assert tracker.get_gaze() is None
             assert tracker.get_gaze() is None
@@ -1844,11 +1938,12 @@ class TestCalibrationGate:
 
     def test_gaze_status_on_a_calibrated_device(self, fake_pypixxlib):
         tracker = connected()
-        fake_pypixxlib.positions = [100.0, 200.0, 0.0, 0.0]
+        fake_pypixxlib.positions = per_eye(right=(0.0, 0.0), left=(100.0, 200.0))
         tracker.get_gaze()
         assert tracker.gaze_status() == "tracked"
 
-        fake_pypixxlib.positions = [math.nan, math.nan, 0.0, 0.0]  # eye seen, no fit for it
+        # The left eye seen, but no fit for it.
+        fake_pypixxlib.positions = per_eye(right=(0.0, 0.0), left=(math.nan, math.nan))
         tracker.get_gaze()
         assert tracker.gaze_status().startswith(
             "eye in the camera image but no calibrated position"
@@ -1873,7 +1968,7 @@ class TestCalibrationGate:
     def test_a_calibration_that_takes_opens_the_gate(self, fake_pypixxlib, fake_psychopy):
         fake_pypixxlib.holds_calibration = False
         tracker = calibrating(fake_pypixxlib, fake_psychopy, calibration_type="HV5")
-        fake_pypixxlib.positions = [100.0, 200.0, 0.0, 0.0]
+        fake_pypixxlib.positions = per_eye(right=(0.0, 0.0), left=(100.0, 200.0))
         assert tracker.get_gaze() is None
         fake_psychopy.keys.extend([START] + ["space"] * 5)
         assert tracker.calibrate().ok is True
