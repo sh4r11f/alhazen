@@ -333,6 +333,32 @@ class TestProcedures:
         monkeypatch.setattr(auto.display, "kind", "psychopy")
         assert auto.monitor.validate().advance == "auto"
 
+    def test_a_caller_can_ask_one_walk_to_advance_by_itself(self, session, monkeypatch) -> None:
+        """The validation a block break runs by itself when nobody may be at
+        the keyboard (a simulation's rest, which ends by itself) asks for
+        "auto" on a manual rig: it must finish with no key pressed at all,
+        where the rig's own manual walk would wait for SPACE at every
+        target."""
+        polls = {"n": 0}
+
+        def nobody() -> list[str]:
+            # A walk still asking for keys after ten simulated minutes is
+            # waiting for somebody who is not there.
+            polls["n"] += 1
+            if polls["n"] > 36000:
+                raise AssertionError("the walk is waiting for a key nobody will press")
+            return []
+
+        s = session(poll_keys=nobody, calibration_advance="manual")
+        monkeypatch.setattr(s.display, "kind", "psychopy")
+        got = s.monitor.validate(advance="auto")
+        assert got.advance == "auto"
+        assert got.accepted and got.n_missed == 0 and len(got.targets) == 5
+        assert s.events[-1] == ("VALIDATION", got.payload())
+        # Asked for this walk only: the next one is the rig's again.
+        with pytest.raises(AssertionError, match="waiting for a key nobody will press"):
+            s.monitor.validate()
+
     def test_validation_uses_the_corrections_in_force(self, session) -> None:
         s = session()
         s.tracker.offset_px = (40.0, 0.0)  # one degree to the right, uncorrected

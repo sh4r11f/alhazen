@@ -257,3 +257,29 @@ class TestAWarningHeadsItsOwnPause:
             build_pause_menu(warning="over the limit", fault="PUMP FAILED")
         with pytest.raises(ValueError, match="warning heads its own pause"):
             build_pause_menu(warning="over the limit", rest="BLOCK 1 OF 2 COMPLETE — REST")
+
+
+class TestAResumeThatValidatesFirstSaysSo:
+    """A block break under `validate_after_break`: SPACE starts a walk of
+    targets before the next trial, and the row the experimenter reads must
+    say that rather than "resume"."""
+
+    def test_the_space_row_says_the_calibration_is_validated_first(self):
+        from alhazen.session.pause import RESUME_AFTER_VALIDATION
+
+        menu = build_pause_menu(
+            has_tracker=True, rest="BLOCK 1 OF 2 COMPLETE — REST", resume_validates=True
+        )
+        assert RESUME_AFTER_VALIDATION == "validate the calibration, then resume"
+        assert re.search(r"^SPACE\s+validate the calibration, then resume$", menu.render(), re.M)
+        # The same key and the same action: what happens is the pause
+        # controller's business, the row only has to say it.
+        assert menu.action_for_key("space") == "resume"
+
+    def test_otherwise_it_just_resumes(self):
+        menu = build_pause_menu(has_tracker=True, rest="BLOCK 1 OF 2 COMPLETE — REST")
+        assert re.search(r"^SPACE\s+resume$", menu.render(), re.M)
+
+    def test_only_a_session_with_an_eye_tracker_can_validate(self):
+        with pytest.raises(ValueError, match="only with an eye tracker wired"):
+            build_pause_menu(rest="BLOCK 1 OF 2 COMPLETE — REST", resume_validates=True)

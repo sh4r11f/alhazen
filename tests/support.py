@@ -278,10 +278,16 @@ class SessionHarness:
         rest_resume_after_s: float | None = None,
         frame_qa: FrameQAConfig | None = None,
         identity: RunIdentity | None = None,
+        eyetracker_config: EyeTrackerConfig | None = None,
+        display: FakeDisplay | None = None,
     ) -> None:
         """``on_pause`` is the pause strategy, and wins over ``use_pause_menu``.
         ``eyetracker`` replaces the monitor the harness builds from ``tracker``
-        (a stub standing in for EyeTrackerMonitor). ``pause_menu_reward``
+        (a stub standing in for EyeTrackerMonitor); ``eyetracker_config`` is
+        the rig's eye-tracker config that monitor is built with (by default a
+        scripted tracker that does not validate after calibrating).
+        ``display`` replaces the harness's FakeDisplay, and must be built on
+        the ``clock`` handed in. ``pause_menu_reward``
         hands the pause menu the engine's own manual-reward hook, as
         build_session wires it; ``manual_reward`` hands it a hook of the
         test's own instead. ``frame_qa`` configures the one FrameMonitor the
@@ -303,7 +309,7 @@ class SessionHarness:
         # Accepting a clock lets a test build a device (a scripted tracker)
         # against the same simulated time the session runs on.
         self.clock = clock if clock is not None else FakeClock()
-        self.display = FakeDisplay(self.clock, FRAME_S)
+        self.display = display if display is not None else FakeDisplay(self.clock, FRAME_S)
         self.cfg = make_session_config(tmp_path)
         self.paths = SessionPaths.create(
             tmp_path,
@@ -358,7 +364,11 @@ class SessionHarness:
                 self.display,
                 SCREEN,
                 self.clock,
-                EyeTrackerConfig(backend="scripted", validate_after_calibration=False),
+                (
+                    eyetracker_config
+                    if eyetracker_config is not None
+                    else EyeTrackerConfig(backend="scripted", validate_after_calibration=False)
+                ),
                 poll_keys=self.commands.poll_raw_keys,
             )
         # The same closures build_session derives from a tracker and a

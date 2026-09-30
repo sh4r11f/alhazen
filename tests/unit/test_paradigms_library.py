@@ -328,6 +328,30 @@ class TestBlockPlan:
         plan.next()
         assert plan.take_block_break() is None
 
+    def test_a_plan_says_whether_its_breaks_end_with_a_validation(self):
+        """The runner reads it off the plan; the breaks themselves are the
+        same either way."""
+        plan = BlockPlan([self.inner(1), self.inner(1)], trials_per_block=1)
+        assert plan.validate_after_break is False
+        validating = BlockPlan(
+            [self.inner(1), self.inner(1)], trials_per_block=1, validate_after_break=True
+        )
+        assert validating.validate_after_break is True
+        validating.record(validating.next(), result(HIT))
+        validating.next()
+        assert validating.take_block_break() == (1, 2)
+
+    def test_a_validation_after_breaks_needs_breaks(self):
+        # BlockConfig refuses the same thing at load; this is the refusal for
+        # a plan built in code, which a task ordering its own blocks does.
+        with pytest.raises(ValueError, match="validate_after_break=True needs breaks=True"):
+            BlockPlan(
+                [self.inner(1), self.inner(1)],
+                trials_per_block=1,
+                breaks=False,
+                validate_after_break=True,
+            )
+
     def test_block_boundaries_go_in_the_session_log(self, caplog):
         """No event (the module docstring says why), but the log has to show
         where a block began and ended, or a between-block validation cannot

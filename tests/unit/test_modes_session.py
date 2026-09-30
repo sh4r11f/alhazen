@@ -28,7 +28,7 @@ from alhazen.modes import Mode, flag_refusal
 from alhazen.modes.rehearsal import rehearsal_root
 from alhazen.modes.session import build_mode_session, next_run, rig_for_mode
 from alhazen.modes.simulation import Simulation
-from alhazen.paradigms.config import SchedulerConfig
+from alhazen.paradigms.config import BlockConfig, SchedulerConfig
 from support import MONITOR, RunForFrames
 
 EVENTS = EventSchema(("STIM_ON",))
@@ -632,3 +632,73 @@ class TestInitialsReachTheBuilder:
     def test_none_is_handed_down_as_none(self, tmp_path):
         _, spy = build(tmp_path, Mode.RUN)
         assert spy.kwargs["initials"] is None
+
+
+class ValidatingParams(Model):
+    """Two blocks whose break ends with a validation of the eye tracker."""
+
+    paradigm: SchedulerConfig = SchedulerConfig(
+        n_per_condition=1, blocks=BlockConfig(n_blocks=2, validate_after_break=True)
+    )
+
+
+class ValidatingTask(ModeTask):
+    """A task whose design validates between blocks, with a simulated subject
+    who looks at the screen's centre whatever is shown."""
+
+    name = "validating-task"
+    params_model = ValidatingParams
+
+    def simulation(self, seed: int) -> Simulation:
+        from alhazen.devices.eyetracker import GazeSample
+        from alhazen.devices.eyetracker.scripted import ScriptedTracker
+        from alhazen.testing import FakeClock
+
+        # Built on a clock of its own; the session hands it the session's
+        # clock when it configures the tracker.
+        centre = GazeSample(gx=MONITOR.width_px / 2, gy=MONITOR.height_px / 2, t=0.0)
+        return Simulation(tracker=ScriptedTracker([(0.0, centre)], FakeClock()))
+
+
+class TestTheBreaksValidationInEachMode:
+    """`validate_after_break` in the modes that rehearse a session. Simulate
+    validates the tracker its autopilot supplies, as the rest of the
+    calibration flow runs on that stand-in, and nothing waits for a key; a
+    mode left with no eye tracker at all is refused before it starts."""
+
+    def test_simulate_validates_the_autopilots_tracker_and_runs_to_the_end(self, tmp_path):
+        import csv
+
+        from alhazen.testing import FakeClock
+
+        built = build_mode_session(
+            Mode.SIMULATE,
+            rig=rig(tmp_path),
+            task=ValidatingTask(ValidatingParams()),
+            subject="t01",
+            session=1,
+            headless=True,
+            # Simulated time: every flip moves the session clock one frame.
+            clock=FakeClock(),
+        )
+        built.runner.run()
+
+        (events_path,) = built.data_root.rglob("*_events.csv")
+        with events_path.open(newline="", encoding="utf-8") as f:
+            names = [row["event"] for row in csv.DictReader(f)]
+        assert names.index("PAUSED") < names.index("VALIDATION") < names.index("RESUMED")
+        (trials_path,) = built.data_root.rglob("*_trials.csv")
+        with trials_path.open(newline="", encoding="utf-8") as f:
+            assert [row["block"] for row in csv.DictReader(f)] == ["1", "1", "2", "2"]
+
+    def test_test_mode_with_no_tracker_and_no_window_for_a_mouse_is_refused(self, tmp_path):
+        # A rig with a simulated display and no tracker: no mouse can stand
+        # in, so there is nothing to validate, and the session says so.
+        with pytest.raises(ConfigError, match="no eye tracker to validate"):
+            build_mode_session(
+                Mode.TEST,
+                rig=rig(tmp_path, display=DisplayConfig(backend="simulated")),
+                task=ValidatingTask(ValidatingParams()),
+                subject="t01",
+                session=1,
+            )

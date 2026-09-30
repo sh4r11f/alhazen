@@ -16,7 +16,9 @@ All three run **between trials, from the pause screen**, on the session's
 clock, and each one goes on the record as an event (`CALIBRATION`,
 `VALIDATION`, `DRIFT_CORRECTION`, all reserved names) whose payload carries
 the outcome — so an analysis can tell which trials sit between which
-calibration and how good it was.
+calibration and how good it was. A design can also ask for the validation
+to run **at the end of every break between blocks**
+([below](#validation-at-block-breaks)).
 
 ## Who does what
 
@@ -220,6 +222,93 @@ The **Eye tracker** section of the panels holds:
   per-target errors under the plot.
 - **Drift correction** — the offset applied or refused, the total correction
   now in force, and the limit.
+
+## Validation at block breaks
+
+A design that validates the calibration between blocks says so in its
+params, beside `breaks`:
+
+```yaml
+paradigm:
+  kind: constant
+  blocks:
+    n_blocks: 4
+    breaks: true                 # the rest between blocks (the default)
+    validate_after_break: true   # ...ends with a validation (default: false)
+```
+
+Every break then ends with the same validation the pause menu's **V** runs,
+before the next block's first trial:
+
+```mermaid
+flowchart TD
+  R["BLOCK 1 OF 4 COMPLETE — REST<br/>SPACE: validate the calibration, then resume"] -->|"SPACE or Resume"| O{"validated during<br/>this break?"}
+  O -->|yes| G["RESUMED → block 2"]
+  O -->|no| V["the V key's validation<br/>(targets, VALIDATION event, log, panel)"]
+  V -->|passed| G
+  V -->|"did not pass"| W["amber heading: VALIDATION ABOVE THE 1° LIMIT …<br/>SPACE resumes on it, C recalibrates"]
+  V -->|"ESC"| R
+  W -->|"C or V (passes)"| R
+  W -->|"SPACE"| F["RESUMED, with on_failed_validation → block 2"]
+```
+
+- **SPACE (or the live monitor's Resume) validates first.** The rest
+  screen's SPACE row says *validate the calibration, then resume*, and the
+  live monitor's notice says the same, because what follows is a walk of
+  targets, not a trial. The walk advances as the rig's
+  `calibration_advance` says, exactly as V's does.
+- **A validation that passes** starts the next block at once.
+- **One that does not pass** is the failed-validation pause every
+  validation has: the menu comes back headed in amber with how it fell short,
+  and nothing starts until the experimenter decides. C recalibrates, V
+  validates again, and SPACE resumes on it, which is recorded as for any
+  validation: a WARNING in the log and `on_failed_validation` in the RESUMED
+  event. A second click of a double-clicked Resume is discarded, so it can
+  never resume on a failure nobody has read.
+- **ESC during the walk** abandons it and brings the rest screen back; the
+  next SPACE validates again.
+- **A validation already run during the break counts.** One from V, or the
+  one that follows C (`validate_after_calibration`), whatever its verdict, so
+  SPACE does not walk the targets twice. A calibration that takes replaces the
+  model the earlier validation measured, so after C the break owes a new one.
+
+Everything goes where every validation's result goes: the VALIDATION event
+(inside the break's PAUSED … RESUMED), the live monitor's Validation panel
+and notice, and `session.log`, whose line for the break says the calibration
+is validated before the next block:
+
+```
+block 1 of 4 complete: taking the break; the eye tracker's calibration is validated before the next block
+validating the eye tracker's calibration before resuming (validate_after_break)
+validation FAILED: mean 1.42°, worst 2.10° (limit 1°)
+resumed on a validation that did not pass, as the experimenter chose: validation FAILED: ...
+```
+
+**Rehearsals.** It runs in every mode, against whatever gaze the session has,
+as the rest of the calibration flow does: the rig's tracker in `run`, the
+mouse cursor in `test` on a machine with no tracker, the task's autopilot in
+`simulate`. A break that nobody can answer never waits. With no keyboard
+wired (`--headless`), and in a simulation whose rest resumes by itself after
+10 s, the validation advances by itself whatever the rig says, and a result
+that does not pass is resumed on at once. The log says that nobody was there
+to decide. If somebody at a simulation's rig pressed a key, the break waits
+for them as usual.
+
+**Refusals.** Each fails before anything is written:
+
+- `validate_after_break: true` with `breaks: false` fails when the params
+  load, because there is no break to validate after.
+- A session with no eye tracker at all is refused
+  (`CANNOT RUN: … no eye tracker to validate`). Examples: a rig without one
+  in `run`, or `test` on a rig whose display is simulated, where no mouse can
+  stand in.
+- A task whose own `make_source` builds a `BlockPlan` without passing the
+  setting on is refused, naming the params field. The default `make_source`
+  passes it; a task that orders its blocks itself writes
+  `BlockPlan(..., breaks=blocks.breaks, validate_after_break=blocks.validate_after_break)`.
+
+A session with one block has no break, and so no validation from this
+setting.
 
 ## A TRACKPixx3 with no calibration
 

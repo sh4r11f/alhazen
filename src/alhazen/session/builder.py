@@ -65,6 +65,7 @@ from alhazen.errors import ConfigError
 from alhazen.live_monitor.runtime import LiveMonitorController
 from alhazen.live_monitor.spec import LiveMonitorSpec
 from alhazen.paradigms.base import TrialSource
+from alhazen.paradigms.config import validate_after_break_paths
 from alhazen.session.database import ExperimentDatabase, FrameInputBuffer
 from alhazen.session.eyetracker import EyeTrackerMonitor
 from alhazen.session.feedback import FeedbackSounder
@@ -905,6 +906,11 @@ def build_session(
 
         streams = spawn_streams(resolved_seed)
         source = make_source(task_params, streams["scheduler"])
+        # Params that ask for the eye tracker to be validated after every
+        # break must get a scheduler that does it. Checked here, where both
+        # the params and the scheduler the task built are in hand; the runner
+        # below then refuses a session with no tracker to validate.
+        _refuse_a_dropped_validation_request(task_params, source, task_name)
 
         runner = SessionRunner(
             cfg=cfg,
@@ -983,6 +989,33 @@ def build_session(
         # teardown, so they are dropped here without running.
         on_failure.pop_all()
     return runner
+
+
+def _refuse_a_dropped_validation_request(
+    params: BaseModel, source: TrialSource, task_name: str
+) -> None:
+    """Refuse a scheduler that does not validate the eye tracker after its
+    breaks when the params ask it to.
+
+    The default ``Task.make_source`` hands ``BlockConfig.validate_after_break``
+    to the BlockPlan it builds (``paradigms.config.make_scheduler``). A task
+    that builds its own BlockPlan — to order its blocks itself — has to pass
+    it on, and one that did not would take every break without the validation
+    its params ask for, with nothing anywhere saying so: how the pilot's
+    breaks went unvalidated. The request is found by type in the params
+    (``validate_after_break_paths``), whatever the fields are called.
+    """
+    asked = validate_after_break_paths(params)
+    if not asked or getattr(source, "validate_after_break", False) is True:
+        return
+    where = ", ".join(f"{path}.validate_after_break" for path in asked)
+    raise ConfigError(
+        f"task {task_name!r}'s params ask for the eye tracker's calibration to be validated "
+        f"after every break between blocks ({where}: true), but the scheduler its make_source "
+        f"built, {type(source).__name__}, does not do it. A task that builds its own BlockPlan "
+        f"must pass the setting on — BlockPlan(..., breaks=blocks.breaks, "
+        f"validate_after_break=blocks.validate_after_break) — as the default make_source does."
+    )
 
 
 def _experiment_dir(task: Task | None, build_trial: BuildTrial) -> Path | None:

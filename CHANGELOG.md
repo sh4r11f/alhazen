@@ -25,6 +25,33 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+### Added
+
+- **The eye tracker can be validated again at every block break.**
+  `BlockConfig.validate_after_break: true` (off by default, beside `breaks`)
+  ends each break between blocks with the pause menu's own validation. SPACE
+  on the rest screen, or the live monitor's Resume, runs it before the next
+  block's first trial, and the SPACE row and the notice say so. One that
+  passes starts the block. One that does not leaves the failed-validation
+  heading up (amber, C recalibrates, V validates again) until the
+  experimenter resumes on it, which is recorded as `on_failed_validation` in
+  RESUMED and a WARNING in the log. ESC in the walk brings the rest back, and
+  a validation already run during the break counts. The result goes where
+  every validation's does: the VALIDATION event, the live monitor, and
+  `session.log`, whose break line says the validation follows. A simulation
+  cannot hang on it: with no keyboard, or a rest that ends by itself, the walk
+  advances by itself and a failed result is resumed on at once. Refused
+  loudly: without `breaks` (when the params load), on a session with no eye
+  tracker (`CANNOT RUN`; the test-mode mouse and the simulate-mode autopilot
+  stand in as for the rest of the calibration flow), and for a task whose own
+  `make_source` builds a `BlockPlan` without passing the setting on.
+  `BlockPlan(validate_after_break=)` and its read-only property,
+  `paradigms.config.validate_after_break_paths`, `build_pause_menu(resume_validates=)`
+  and `EyeTrackerMonitor.validate(advance=)` are new. docs/eye-tracker.md,
+  "Validation at block breaks".
+
 ## 2.2.0 - 2026-09-29
 
 ### Added

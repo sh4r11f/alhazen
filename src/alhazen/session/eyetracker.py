@@ -238,8 +238,15 @@ class EyeTrackerMonitor:
             note="this tracker reports no calibration result",
         )
 
-    def validate(self) -> ValidationResult:
-        """Measure the calibration's error on its own targets; see procedures.py."""
+    def validate(self, advance: Advance | None = None) -> ValidationResult:
+        """Measure the calibration's error on its own targets; see procedures.py.
+
+        ``advance`` sets how this one walk moves from target to target. None,
+        the default and what the pause menu's V passes, keeps the usual rule
+        (``_advance``: the rig's setting, or "auto" on a simulated display).
+        The validation a block break runs by itself passes "auto" when nobody
+        may be at the keyboard to accept a target (session/pause_control.py).
+        """
         self._stage("validating", "starting")
         result = validate(
             self._tracker,
@@ -249,7 +256,7 @@ class EyeTrackerMonitor:
             self._cfg,
             poll_keys=self._poll_keys,
             correction=self.correction,
-            advance=self._advance(),
+            advance=advance if advance is not None else self._advance(),
             progress=self._on_progress,
         )
         self.validation = result
