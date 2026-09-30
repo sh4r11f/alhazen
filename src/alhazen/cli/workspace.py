@@ -495,7 +495,12 @@ class Launch(BaseModel):
     # which records them and never puts them in a file name.
     initials: str = ""
     session: int = Field(default=1, ge=1)
-    seed: int = Field(default=0, ge=0)
+    # The session seed to pass as --seed, or None to pass none, so the
+    # session draws a fresh one and records it (session.log, the snapshot):
+    # what the command line does when no seed is typed. It used to default to
+    # 0 and always be sent, so every session started here had the same trial
+    # order and jitters. A typed seed is still sent, to repeat a session.
+    seed: int | None = Field(default=None, ge=0)
     trials: int = Field(default=1, ge=1)
     headless: bool = False
     mouse: bool = False
@@ -675,6 +680,54 @@ def _run_identity(request: Launch) -> dict[str, Any]:
     }
 
 
+# The line a session that runs trials prints before trial one, naming the seed
+# it runs with (cli/main.py _seed_line): "seed: 2718281828 (drawn for this
+# run; ...)". An empty seed field sends no --seed, so the session draws its
+# own, and this line is how the workspace learns which, as it learns the live
+# monitor's address from the same console. A child whose alhazen predates the
+# line prints none, and the history then says "new".
+SEED_LINE = re.compile(r"^seed: ([0-9]+)\b", re.MULTILINE)
+# How much of the start of a console is searched for it. The line comes
+# before trial one, after a few lines of summary, so it is in the first few
+# kilobytes; the cap keeps a long console that never printed it from being
+# read whole on every poll while its run is active.
+SEED_SEARCH_BYTES = 65536
+# The modes whose session draws a seed when it is given none, and prints it.
+# Demo and movie take 0 when given none (the command line's own default) and
+# measure takes none, so none of the three prints the line.
+SEED_DRAWING_MODES = frozenset({Mode.RUN.value, Mode.TEST.value, Mode.SIMULATE.value})
+
+
+def console_seed(console: Path) -> int | None:
+    """The seed a launched session printed on its console (``SEED_LINE``), or
+    None when it has printed none: not yet, or never (an alhazen from before
+    the line, or a console that is not there)."""
+    if not console.is_file():
+        return None
+    with console.open("rb") as stream:
+        head = stream.read(SEED_SEARCH_BYTES).decode("utf-8", errors="replace")
+    match = SEED_LINE.search(head)
+    return int(match.group(1)) if match else None
+
+
+def seed_argument(command: list[str]) -> int | None:
+    """The seed a launch's command line passed with ``--seed N``, or None when
+    it passed none.
+
+    What a run record keeps as its ``seed`` at launch, read off the command
+    rather than the request so the record says what the child was actually
+    told. Also how a record written before the workspace kept the field is
+    read: the form then always sent a seed, 0 unless one was typed, so the
+    history can show every one of those sessions ran with the same seed.
+    """
+    # Each token beside the one after it; the last token has no value, which
+    # is what strict=False lets the shorter list end on.
+    for flag, value in zip(command, command[1:], strict=False):
+        if flag == "--seed" and re.fullmatch(r"[0-9]+", value):
+            return int(value)
+    return None
+
+
 def _mode_command(
     mode: Mode,
     request: Launch,
@@ -709,7 +762,12 @@ def _mode_command(
     # it; none for an experiment that declares one task.
     if task is not None:
         command += ["--task", task]
-    command += ["--rig", rig, "--seed", str(request.seed), no_browser]
+    command += ["--rig", rig]
+    # No seed typed, no --seed: the session draws its own and records it,
+    # and prints it on the console, where the history reads it (console_seed).
+    if request.seed is not None:
+        command += ["--seed", str(request.seed)]
+    command += [no_browser]
     if has_parameters:
         command += ["--params", str(run_dir / "params.yaml")]
     if mode.runs_trials:
@@ -824,8 +882,15 @@ class Workspace:
         for path in sorted((self.directory / "runs").glob("*/run.json")):
             run = _load_record(path, dict)
             try:
+                if "seed" not in run:
+                    # A record from before the workspace kept the seed: its
+                    # command says which one the form sent (seed_argument).
+                    run["seed"] = seed_argument(run["command"])
                 if run["status"] in ACTIVE:
                     run.update(status="interrupted", finished=now())
+                    # Its session may have printed the seed it drew before
+                    # the server went away; _finish never ran to keep it.
+                    self._keep_drawn_seed(run)
                     replace_atomically(path, json.dumps(run, indent=2))
                 self.runs[run["id"]] = run
             except KeyError as exc:
@@ -967,12 +1032,34 @@ class Workspace:
             return {
                 "projects": [self.describe(p["id"]) for p in self.projects],
                 "runs": [
-                    dict(r)
+                    self._listed(r)
                     for r in sorted(self.runs.values(), key=lambda r: r["started"], reverse=True)
                 ],
                 "active": self.active,
                 "directory": str(self.directory),
             }
+
+    def _keep_drawn_seed(self, run: dict[str, Any]) -> None:
+        """Fill in ``run["seed"]`` with the seed its session drew for itself,
+        once its console has said which (``console_seed``).
+
+        Only for a launch that passed no seed to a mode that draws one; a
+        seed the launch passed is already the record's, and a mode that draws
+        none prints none. Left None when the console has not said it yet, or
+        never will (an alhazen from before the console line): the page shows
+        that as "new"."""
+        if run.get("seed") is None and run.get("mode") in SEED_DRAWING_MODES:
+            run["seed"] = console_seed(self.directory / "runs" / run["id"] / "console.log")
+
+    def _listed(self, run: dict[str, Any]) -> dict[str, Any]:
+        """A run as the page is sent it: a copy of its record, and for the
+        active run, the seed its session drew as soon as its console says it.
+        The record itself keeps it once the run has ended (``_finish``), so a
+        finished run's console is never read again for it."""
+        shown = dict(run)
+        if run["id"] == self.active:
+            self._keep_drawn_seed(shown)
+        return shown
 
     def _command(self, request: Launch, run_dir: Path) -> list[str]:
         """The child's argv: run.py in one of the six modes, or a standalone script.
@@ -1164,6 +1251,11 @@ class Workspace:
                 "directory": str(run_dir),
                 # subject, session and initials, for a mode that runs trials.
                 **_run_identity(request),
+                # The seed the launch passed, None when it passed none: the
+                # session then draws its own, and _keep_drawn_seed fills it in
+                # from the console. Read off the command, which is what the
+                # child was actually told.
+                "seed": seed_argument(command),
             }
             self.runs[key] = run
             self._save_run(run)
@@ -1212,6 +1304,10 @@ class Workspace:
             else:
                 status = "completed" if code == 0 else "failed"
             run.update(status=status, returncode=code, finished=now())
+            # The seed the session drew, kept in the record now that its
+            # console is complete, so the history shows it without reading
+            # the console again.
+            self._keep_drawn_seed(run)
             self._save_run(run)
             self.active = None
             self.process = None
@@ -1288,7 +1384,8 @@ class Workspace:
         with self.lock:
             if key not in self.runs:
                 raise ValueError("Unknown run")
-            run = dict(self.runs[key])
+            # As the history lists it, with an active run's drawn seed.
+            run = self._listed(self.runs[key])
         directory = self.directory / "runs" / key
         log = directory / "console.log"
         tail = ""

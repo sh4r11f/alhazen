@@ -382,6 +382,17 @@ class SessionRunner:
         the page. Read-only: the session, not its caller, owns the server."""
         return self._live_monitor.url if self._live_monitor is not None else None
 
+    @property
+    def seed(self) -> int:
+        """The seed this session runs with: the one it was given, or the one
+        drawn for it when it was given none (``core.rng.resolve_seed``).
+
+        Known from the build, like ``live_monitor_url``, so a caller can print
+        it before trial one — the CLI does, since the snapshot and session.log
+        that record it are read after the session, and the experiment
+        workspace reads that line to show which seed a launch drew."""
+        return self._cfg.info.seed
+
     def run(self) -> None:
         # How far the start got, for the teardown in the finally below. Every
         # setup step runs inside that try, not before it: by the time run() is

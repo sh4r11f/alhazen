@@ -785,7 +785,12 @@ describe('the subject’s initials', () => {
     });
     const app = await pageWith({ run: run });
     const row = app.byId('history').children[0];
-    assert.match(row.querySelector('small').textContent, / · demo\/mac · sub-s01 · HD$/);
+    /* The seed follows who (2.3.0: the history shows the seed each session
+     * ran with; this run passed none, and its console has not said which it
+     * drew). */
+    assert.match(
+      row.querySelector('small').textContent, / · demo\/mac · sub-s01 · HD · seed new$/,
+    );
     assert.match(app.byId('run-info').textContent, /^Run experiment · sub-s01 · HD · /);
   });
 
@@ -794,6 +799,120 @@ describe('the subject’s initials', () => {
     assert.doesNotMatch(app.byId('history').children[0].textContent, /sub-/);
     assert.doesNotMatch(app.byId('run-info').textContent, /sub-/);
   });
+});
+
+describe('the random seed', () => {
+  /* The field used to start at 0 and every launch sent --seed 0, so every
+   * session started from the workspace drew the same trial order, jitters
+   * and block order. The command line draws a fresh seed when given none;
+   * the workspace now does what it does. */
+
+  it('starts empty, says a new seed is drawn each run, and sends none', async () => {
+    const app = await pageWith();
+    chooseMode(app, 'simulate');
+    assert.equal(app.byId('seed').value, '');
+    assert.equal(app.byId('seed').placeholder, 'new each run');
+    assert.match(app.byId('seed-help').textContent, /draw a new one for every run/);
+    assert.match(app.byId('seed-help').textContent, /records the seed it drew/);
+    await launch(app);
+    assert.equal(launched(app).seed, null);
+  });
+
+  it('sends a typed seed, to repeat a session', async () => {
+    const app = await pageWith();
+    chooseMode(app, 'run');
+    app.byId('subject').value = 's01';
+    app.byId('initials').value = 'HD';
+    app.byId('seed').value = ' 2718281828 ';
+    await launch(app);
+    assert.equal(launched(app).seed, 2718281828);
+  });
+
+  it('refuses anything but a whole number of 0 or more, and sends nothing', async () => {
+    for (const typed of ['1.5', '-3', '1e3', '99999999999999999999']) {
+      const app = await pageWith();
+      chooseMode(app, 'simulate');
+      app.byId('seed').value = typed;
+      await launch(app);
+      assert.equal(app.server.posted.filter((p) => p.path === '/api/runs').length, 0, typed);
+      assert.equal(
+        app.byId('error').textContent,
+        'The random seed must be a whole number of 0 or more, or empty for a new one; '
+          + `got '${typed}'`,
+        typed,
+      );
+      assert.equal(app.run('launching'), false);
+    }
+  });
+
+  it('refuses what a browser could not read as a number, rather than drawing a new seed',
+    async () => {
+      /* A number field holding text it cannot read reports '' and flags it;
+       * read as empty, it would launch a new seed nobody asked for. */
+      const app = await pageWith();
+      chooseMode(app, 'simulate');
+      app.byId('seed').value = '';
+      app.byId('seed').validity = { badInput: true };
+      await launch(app);
+      assert.equal(app.server.posted.filter((p) => p.path === '/api/runs').length, 0);
+      assert.equal(
+        app.byId('error').textContent,
+        'The random seed must be a whole number of 0 or more, or empty for a new one',
+      );
+    });
+
+  it('says demo and movie use seed 0 when it is empty', async () => {
+    const app = await pageWith();
+    for (const mode of ['demo', 'movie']) {
+      chooseMode(app, mode);
+      assert.equal(app.byId('seed-fields').hidden, false, mode);
+      assert.equal(app.byId('seed').placeholder, '0', mode);
+      assert.match(app.byId('seed-help').textContent, /empty for seed 0/, mode);
+    }
+    await launch(app);
+    assert.equal(launched(app).seed, null);
+  });
+
+  it('is hidden and sent as none for measure and for a script', async () => {
+    const script = {
+      id: 'preview', label: 'Preview images', flags: ['--out'], params_flag: null,
+    };
+    for (const mode of ['measure', 'preview']) {
+      const app = await pageWith({ project: { ...PROJECT, scripts: [script] } });
+      chooseMode(app, 'simulate');
+      app.byId('seed').value = '5';  /* typed for another mode, then left */
+      chooseMode(app, mode);
+      assert.equal(app.byId('seed-fields').hidden, true, mode);
+      assert.equal(app.byId('seed').disabled, true, mode);
+      await launch(app);
+      assert.equal(launched(app).seed, null, mode);
+    }
+  });
+
+  it('is shown in the history and the run summary, or "new" until a session says it',
+    async () => {
+      const drawn = runDetail({ id: 'r3', seed: 2718281828, started: '2026-09-25T11:00:00' });
+      const waiting = runDetail({ id: 'r2', seed: null, started: '2026-09-25T10:30:00' });
+      /* A movie on its default seed: nothing drawn, nothing to show. */
+      const movie = runDetail({
+        id: 'r1', mode: 'movie', seed: null, status: 'completed', returncode: 0,
+        started: '2026-09-25T10:00:00',
+      });
+      const app = loadWorkspace();
+      app.server.state = {
+        projects: [PROJECT], runs: [drawn, waiting, movie].map(summary), active: 'r3',
+      };
+      app.server.details = { r1: movie, r2: waiting, r3: drawn };
+      app.server.configs = { 'configs/task.yaml': { text: 'trials: 4\n', values: { trials: 4 } } };
+      app.server.rigs = { 'configs/rig-mac.yaml': rig(true) };
+      await app.run('refresh()');
+      await settle();
+      const rows = app.byId('history').children.map((row) => row.querySelector('small'));
+      assert.match(rows[0].textContent, / · seed 2718281828$/);
+      assert.match(rows[1].textContent, / · seed new$/);
+      assert.doesNotMatch(rows[2].textContent, /seed/);
+      assert.match(app.byId('run-info').textContent, /^Simulate · .* · seed 2718281828$/);
+    });
 });
 
 describe('a request the launcher refuses', () => {
@@ -1026,7 +1145,9 @@ describe('the Rig menu', () => {
     });
     const app = await pageWith({ project: RIGGED, rigs: RIGS, run: run });
     const row = app.byId('history').children[0];
-    assert.match(row.querySelector('small').textContent, / · alhazen\/lab$/);
+    /* The rig's name, then the seed (2.3.0; a simulation that has not said
+     * which seed it drew). */
+    assert.match(row.querySelector('small').textContent, / · alhazen\/lab · seed new$/);
     const mine = await pageWith({
       project: RIGGED, rigs: RIGS,
       run: runDetail({
@@ -1034,9 +1155,11 @@ describe('the Rig menu', () => {
         rig_source: 'experiment',
       }),
     });
-    /* The experiment's own lab, owner first (was the bare "lab"). */
+    /* The experiment's own lab, owner first (was the bare "lab"); the seed
+     * after it, as above. */
     assert.match(
-      mine.byId('history').children[0].querySelector('small').textContent, / · demo\/lab$/,
+      mine.byId('history').children[0].querySelector('small').textContent,
+      / · demo\/lab · seed new$/,
     );
   });
 });

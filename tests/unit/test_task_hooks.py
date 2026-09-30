@@ -1186,3 +1186,42 @@ class TestTheLiveMonitorAddressIsPrinted:
         self.run_with(tmp_path, monkeypatch, live_monitor=False)
 
         assert "live monitor:" not in capsys.readouterr().out
+
+
+class TestTheSeedIsPrinted:
+    """A session given no --seed draws a fresh one, which its snapshot and
+    session.log record — both read after the session. The console now names
+    it before trial one, and says how to run with it again. The experiment
+    workspace reads that line from a launched run's console to show the seed
+    each session drew (cli/workspace.py console_seed, pinned against this
+    line in test_workspace.py)."""
+
+    def run(self, tmp_path, monkeypatch, *extra: str) -> None:
+        install(monkeypatch, task_with_file(params_file(tmp_path / "task.yaml", 1)))
+        from alhazen.cli.main import main
+
+        code = main(
+            ["run", "--task", "file-task", "--rig", str(rig_file(tmp_path))]
+            + ["--sub", "s01", "--ses", "1", "--initials", "SO", *extra]
+        )
+        assert code == 0
+
+    def test_a_drawn_seed_is_printed_before_trial_one_and_is_the_one_recorded(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        import re
+
+        self.run(tmp_path, monkeypatch)
+
+        out = capsys.readouterr().out
+        match = re.search(r"^seed: (\d+) \(drawn for this run; --seed \1 repeats it\)$", out, re.M)
+        assert match, out
+        (log,) = tmp_path.rglob("session.log")
+        # The same number the session ran with: session.log's opening line.
+        assert f", seed {match.group(1)}\n" in log.read_text(encoding="utf-8")
+        assert out.index("running file-task") < out.index("seed: ") < out.index("session complete")
+
+    def test_a_given_seed_is_printed_as_given(self, tmp_path, monkeypatch, capsys):
+        self.run(tmp_path, monkeypatch, "--seed", "5")
+
+        assert "seed: 5 (as given with --seed)" in capsys.readouterr().out.splitlines()

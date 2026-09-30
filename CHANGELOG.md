@@ -51,6 +51,27 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   `paradigms.config.validate_after_break_paths`, `build_pause_menu(resume_validates=)`
   and `EyeTrackerMonitor.validate(advance=)` are new. docs/eye-tracker.md,
   "Validation at block breaks".
+- **A session prints its seed before trial one**, and how to repeat it:
+  `seed: 2718281828 (drawn for this run; --seed 2718281828 repeats it)`, or
+  `seed: 5 (as given with --seed)`. The snapshot and `session.log` recorded it
+  already, but both are read after the session. `SessionRunner.seed` returns
+  it.
+
+### Changed
+
+- **The workspace draws a fresh seed for every session.** Its Random seed
+  field started at 0 and every launch sent `--seed 0`, so every session
+  started from the dashboard had the same trial order, jitters and, in
+  amodal-averaging, block order. The field now starts empty (*new each run*).
+  An empty field sends no `--seed`, and the session draws a seed and records
+  it, as the command line does; a typed seed is sent, to repeat a session.
+  `Launch.seed` is `int | None`, default None. Demo and movie say they use 0
+  when the field is empty (their command-line default); measure and the
+  experiment's scripts hide the field and send no seed. The history and the
+  run summary show each session's seed: the one typed, or the one it drew,
+  read from its console (`seed N`, or `seed new` until it has said), and
+  `run.json` keeps it as `seed`. Runs recorded before show the seed their
+  command passed.
 
 ## 2.2.0 - 2026-09-29
 

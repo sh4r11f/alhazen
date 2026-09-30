@@ -847,6 +847,21 @@ def _params_line(args: argparse.Namespace, task: Any, params: Any) -> str:
     )
 
 
+def _seed_line(seed: int, *, drawn: bool) -> str:
+    """The session's seed in one line before trial one, and how to run with
+    it again.
+
+    A session given no --seed draws a fresh one, which the snapshot and
+    session.log record; both are read after the session, and the console is
+    what the experimenter reads before it — and what the experiment workspace
+    reads to show the drawn seed in its history (cli/workspace.py
+    ``SEED_LINE``: the line starts ``seed: <digits>``).
+    """
+    if drawn:
+        return f"seed: {seed} (drawn for this run; --seed {seed} repeats it)"
+    return f"seed: {seed} (as given with --seed)"
+
+
 def _measure_rig(args: argparse.Namespace, rig: Any, root: Callable[[], Path]) -> int:
     """Measure the rig and write the report beside its config."""
     from alhazen.modes.measure import run_measurements
@@ -1057,6 +1072,11 @@ def _trial_session(args: argparse.Namespace, rig: Any, task: Any, params: Any, m
     # The task's own name, not args.task: an experiment's run.py has no
     # --task flag, because it already knows which experiment it is.
     print(f"running {task.name}: sub-{subject} ses-{session:03d} run-{built.run:02d}")
+    # The seed, drawn by the build when none was given. The experiment
+    # workspace (`alhazen dashboard`) reads this line from a launched run's
+    # console to show the seed a session drew in its history; that contract
+    # is tested on both sides.
+    print(_seed_line(built.runner.seed, drawn=args.seed is None))
     # The live monitor's address, on the console like everything else the
     # experimenter needs before trial one. The runner also logs it, but only
     # into the run's session.log — and with --no-live-monitor-browser nothing
