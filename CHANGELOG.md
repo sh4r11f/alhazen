@@ -29,6 +29,11 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Added
 
+- **`python -m alhazen …`** runs the same command line as the `alhazen`
+  script (`alhazen/__main__.py`). On Windows it is the way to start the
+  dashboard: a running `alhazen.exe` is a locked file, and reinstalling
+  alhazen while one runs failed part-way and could leave alhazen uninstalled
+  from the environment. docs/workspace.md says so where it shows the command.
 - **The eye tracker can be validated again at every block break.**
   `BlockConfig.validate_after_break: true` (off by default, beside `breaks`)
   ends each break between blocks with the pause menu's own validation. SPACE

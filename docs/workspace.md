@@ -9,6 +9,15 @@ keeps its existing keyboard-pause policy.
 alhazen dashboard --project ~/projects/amodal-averaging --project ~/projects/kde-vergence
 ```
 
+**On Windows, start it as `python -m alhazen dashboard`** (same arguments).
+The `alhazen` command is a small `alhazen.exe` launcher in the environment's
+`Scripts` folder, and Windows locks a running program's file: reinstalling
+alhazen into that environment while a dashboard started as `alhazen dashboard`
+is running fails part-way on the lock and can leave alhazen uninstalled there,
+while the running dashboard carries on as if nothing happened. Started with
+`python -m`, the dashboard holds only `python.exe`, which a reinstall never
+touches.
+
 The folders are remembered. Next time, `alhazen dashboard` is enough. Add more
 with **Add experiment**, using the path to a checkout containing `run.py`.
 Nothing is installed by registering a folder. Choose a Python interpreter in

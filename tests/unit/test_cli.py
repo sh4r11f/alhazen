@@ -74,3 +74,52 @@ def test_check_rig_rejects_a_test_only_backend(tmp_path, capsys):
     rig = rig_file(tmp_path, devices={"eyetracker": {"backend": "scripted"}})
     assert main(["check-rig", "--rig", str(rig)]) == 1
     assert "INVALID" in capsys.readouterr().err
+
+
+def test_python_dash_m_alhazen_is_the_same_command_line(tmp_path):
+    """`python -m alhazen …` runs the same main() as the `alhazen` script.
+
+    It is the way to start a long-running command (the dashboard) on Windows
+    without holding `alhazen.exe` open, which would make the next reinstall of
+    alhazen fail part-way (alhazen/__main__.py). Run as a real child process,
+    because what is under test is that the package is runnable with -m at all:
+    the exit status and the output are main()'s own.
+    """
+    import os
+    import subprocess
+    import sys
+
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+    version = subprocess.run(
+        [sys.executable, "-m", "alhazen", "--version"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+        timeout=120,
+    )
+    assert version.returncode == 0, version.stderr
+    assert version.stdout.startswith("alhazen ")
+
+    checked = subprocess.run(
+        [sys.executable, "-m", "alhazen", "validate", "--rig", str(rig_file(tmp_path))],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+        timeout=120,
+    )
+    assert checked.returncode == 0, checked.stderr
+    assert "OK" in checked.stdout
+
+    refused = subprocess.run(
+        [sys.executable, "-m", "alhazen", "validate", "--rig", str(rig_file(tmp_path, False))],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+        timeout=120,
+    )
+    # main()'s nonzero status reaches the shell unchanged.
+    assert refused.returncode == 1
+    assert "INVALID" in refused.stderr
