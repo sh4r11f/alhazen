@@ -196,6 +196,25 @@ class TestSimulateMode:
         assert spy.kwargs["tracker"] is built.simulation.tracker
         assert built.simulation.describe == {"seed": 7}
 
+    def test_an_unseeded_subject_draws_from_the_seed_the_session_draws(self, tmp_path):
+        # The bug this pins: with no --seed (every run the workspace starts),
+        # the subject was handed 0 while the session drew its own seed, so
+        # every rehearsal had the same subject, and re-running with the
+        # printed seed changed the subject. The session's seed is what the
+        # builder receives and the snapshot records.
+        built, spy = build(tmp_path, Mode.SIMULATE, task=SimTask(Params()))
+
+        drawn = spy.kwargs["seed"]
+        assert isinstance(drawn, int)
+        assert built.simulation.describe == {"seed": drawn}
+
+    def test_two_unseeded_rehearsals_have_different_subjects(self, tmp_path):
+        # Two fresh 32-bit draws collide once in four billion runs.
+        first, _ = build(tmp_path, Mode.SIMULATE, task=SimTask(Params()))
+        second, _ = build(tmp_path, Mode.SIMULATE, task=SimTask(Params()))
+
+        assert first.simulation.describe != second.simulation.describe
+
     def test_it_starts_itself(self, tmp_path):
         """Nobody is there to press SPACE at the instructions screen."""
         _, spy = build(tmp_path, Mode.SIMULATE, task=SimTask(Params()))

@@ -48,6 +48,7 @@ from typing import Any
 
 from alhazen.config.experiment import Experiment, session_experiment
 from alhazen.config.models import EyeTrackerConfig, RewardHwConfig, RigConfig
+from alhazen.core.rng import resolve_seed
 from alhazen.data import naming
 from alhazen.data.paths import session_dir
 from alhazen.errors import ConfigError
@@ -418,8 +419,18 @@ def build_mode_session(
         if reductions:
             task = type(task)(params)
 
+    # The session's seed, drawn here when none was given rather than left to
+    # the builder: the simulated subject below is the first thing in a
+    # session that draws at random, and it has to draw from the SAME seed the
+    # session records. It used to be handed 0 whenever no --seed was given,
+    # so every unseeded rehearsal — and every one the workspace starts — had
+    # the same subject making the same latencies, landings and lapses, and
+    # the printed "--seed N repeats it" repeated the session but not the
+    # subject. resolve_seed keeps a given seed as it is.
+    seed = resolve_seed(seed)
+
     if mode is Mode.SIMULATE:
-        simulation = task.simulation(seed if seed is not None else 0)
+        simulation = task.simulation(seed)
         if simulation is None or simulation.is_empty():
             raise ConfigError(
                 f"simulate mode needs {type(task).__name__}.simulation() to return the "
