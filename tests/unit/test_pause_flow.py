@@ -8,11 +8,15 @@ that an unattended session does not sit at it forever.
 
 from __future__ import annotations
 
+import pytest
+
+from alhazen.config.models import EyeTrackerConfig
 from alhazen.core.commands import Command
 from alhazen.devices.eyetracker import GazeSample
+from alhazen.devices.eyetracker.procedures import PROCEDURE_TRIAL_INDEX
 from alhazen.devices.eyetracker.scripted import ScriptedTracker
 from alhazen.session.pause import PAUSE_COLOR
-from alhazen.testing import FakeClock, ScriptedCommands
+from alhazen.testing import FakeClock, FakeDisplay, ScriptedCommands
 from support import SCREEN, SessionHarness
 
 
@@ -701,3 +705,248 @@ class TestASimulationsBreakResumesByItself:
         assert self._break_length(harness) < 1.0
         _title, body, _color = harness.display.menus[0]
         assert "resumes by itself" not in body
+
+
+def validating_blocks():
+    """Two blocks of one trial each, whose break ends with a validation of
+    the eye tracker (BlockConfig.validate_after_break)."""
+    import numpy as np
+
+    from alhazen.paradigms.base import Condition, SimpleSequence
+    from alhazen.paradigms.blocks import BlockPlan
+
+    def block():
+        return SimpleSequence([Condition({"condition": "a"})], rng=np.random.default_rng(0))
+
+    return BlockPlan([block(), block()], trials_per_block=1, validate_after_break=True)
+
+
+# The rig's eye-tracker config for these sessions: validation targets packed
+# within half a degree of the screen's centre (2% of the screen), so a
+# subject staring at the centre passes a 1° limit and one staring 2° to the
+# side does not.
+NEAR_CENTRE = EyeTrackerConfig(
+    backend="scripted", calibration_area=0.02, validate_after_calibration=False
+)
+
+
+class OffOnceTracker(ScriptedTracker):
+    """A subject who looks 2° right of the screen's centre through the first
+    validation walk, and at the centre from the second on: a validation that
+    fails once and passes when it is run again.
+
+    A walk opens a recording segment under the procedures' own trial index
+    (0), which is how this tracker counts them; trials start at 1."""
+
+    OFF_PX = 80.0  # 2° at the test screen's 40 px per degree
+
+    def get_gaze(self) -> GazeSample | None:
+        walks = sum(1 for index, _status in self.trials_started if index == PROCEDURE_TRIAL_INDEX)
+        offset = self.OFF_PX if walks <= 1 else 0.0
+        return GazeSample(
+            gx=SCREEN.width_px / 2 + offset, gy=SCREEN.height_px / 2, t=self._clock.now()
+        )
+
+
+class TestTheBreakEndsWithAValidation:
+    """`validate_after_break`: the design validates the calibration between
+    blocks, and the pilot showed nothing made that happen. SPACE at the end of
+    the break now runs the V key's validation before the next block; one that
+    fails keeps the break up under its amber heading until the experimenter
+    resumes from there. These run whole sessions with a subject whose first
+    validation fails and whose second passes."""
+
+    def run(self, tmp_path, presses, **harness):
+        clock = FakeClock()
+        commands = TimedKeys(clock, batches=[], presses=presses)
+        session = SessionHarness(
+            tmp_path,
+            commands=commands,
+            use_pause_menu=True,
+            source=validating_blocks(),
+            tracker=OffOnceTracker([], clock),
+            clock=clock,
+            eyetracker_config=NEAR_CENTRE,
+            **harness,
+        )
+        session.runner.run()
+        return session
+
+    def test_a_failed_validation_holds_the_break_until_one_passes(self, tmp_path):
+        from alhazen.session.pause import REST_COLOR, WARNING_COLOR
+
+        # SPACE ends the rest and runs the validation, which fails; V runs it
+        # again, which passes; SPACE then starts block 2. Each walk takes a
+        # few simulated seconds, so each key comes well after the last one.
+        harness = self.run(tmp_path, [(0.0, "space"), (30.0, "v"), (60.0, "space")])
+
+        validations = [e for e in harness.collector.events if e.name == "VALIDATION"]
+        assert [e.payload["accepted"] for e in validations] == [False, True]
+        # The break is one pause: PAUSED, the two validations, one RESUMED —
+        # which records no failed validation, since the last one passed — and
+        # only then block 2's first trial.
+        names = harness.collector.names()
+        paused = names.index("PAUSED")
+        resumed = names.index("RESUMED")
+        assert names.count("RESUMED") == 1
+        assert paused < names.index("VALIDATION") < resumed
+        assert names[resumed:].count("TRIAL_START") == 1
+        (event,) = [e for e in harness.collector.events if e.name == "RESUMED"]
+        assert "on_failed_validation" not in event.payload
+        rows = read_trials(harness)
+        assert [r["block"] for r in rows] == ["1", "2"]
+
+        # What the rig's screen showed: the rest, whose SPACE row said it
+        # validates first; the failure, in amber, with both ways on; the rest
+        # again once the validation passed, whose SPACE now just resumes.
+        (rest, rest_body, _), (failed, _, failed_color), (back, back_body, back_color) = (
+            harness.display.menus[:3]
+        )
+        assert rest == back == "BLOCK 1 OF 2 COMPLETE — REST"
+        assert "validate the calibration, then resume" in rest_body
+        assert failed.startswith("VALIDATION ABOVE THE 1° LIMIT")
+        assert failed.endswith("SPACE resumes on it, C recalibrates")
+        assert failed_color == WARNING_COLOR
+        assert back_color == REST_COLOR
+        assert "validate the calibration, then resume" not in back_body
+
+        log = harness.paths.log_path.read_text(encoding="utf-8")
+        assert "the eye tracker's calibration is validated before the next block" in log
+        assert "validating the eye tracker's calibration before resuming" in log
+        assert log.index("validation FAILED") < log.index("validation passed")
+        assert "resumed on a validation that did not pass" not in log
+
+    def test_space_on_the_failed_heading_resumes_on_it_and_says_so(self, tmp_path):
+        harness = self.run(tmp_path, [(0.0, "space"), (30.0, "space")])
+
+        validations = [e for e in harness.collector.events if e.name == "VALIDATION"]
+        assert [e.payload["accepted"] for e in validations] == [False]
+        (event,) = [e for e in harness.collector.events if e.name == "RESUMED"]
+        assert event.payload["on_failed_validation"]["threshold_deg"] == 1.0
+        assert len(read_trials(harness)) == 2
+        log = harness.paths.log_path.read_text(encoding="utf-8")
+        assert "resumed on a validation that did not pass, as the experimenter chose" in log
+
+    def test_an_unattended_session_validates_at_the_break_and_carries_on(self, tmp_path):
+        # No keyboard (a headless simulation): the break resumes at once, its
+        # validation runs by itself and goes on the record, and nothing waits.
+        clock = FakeClock()
+        harness = SessionHarness(
+            tmp_path,
+            source=validating_blocks(),
+            tracker=OffOnceTracker([], clock),
+            clock=clock,
+            eyetracker_config=NEAR_CENTRE,
+        )
+        harness.runner.run()
+
+        assert len(read_trials(harness)) == 2
+        (validation,) = [e for e in harness.collector.events if e.name == "VALIDATION"]
+        assert validation.payload["advance"] == "auto"
+        (event,) = [e for e in harness.collector.events if e.name == "RESUMED"]
+        assert "on_failed_validation" in event.payload
+        log = harness.paths.log_path.read_text(encoding="utf-8")
+        assert "with nobody there to decide" in log
+
+    def test_a_runner_with_no_eye_tracker_to_validate_is_refused(self, tmp_path):
+        # Enforced where every session passes, however it was wired: the
+        # runner, before anything is written.
+        from alhazen.errors import ConfigError
+
+        with pytest.raises(ConfigError, match="no eye tracker to validate"):
+            SessionHarness(tmp_path, source=validating_blocks())
+
+    def test_a_flag_that_is_not_a_bool_is_refused(self, tmp_path):
+        import numpy as np
+
+        from alhazen.paradigms.base import Condition, SimpleSequence
+
+        class Odd(SimpleSequence):
+            # Truthy, and not what anybody meant by switching it on.
+            validate_after_break = "no"
+
+        with pytest.raises(TypeError, match="must be True or False"):
+            SessionHarness(
+                tmp_path, source=Odd([Condition({"c": "a"})], rng=np.random.default_rng(0))
+            )
+
+    def test_a_break_that_asks_for_none_takes_none(self, tmp_path):
+        clock = FakeClock()
+        harness = SessionHarness(
+            tmp_path,
+            commands=TimedKeys(clock, batches=[], presses=[(0.0, "space")]),
+            use_pause_menu=True,
+            source=two_blocks(),
+            tracker=OffOnceTracker([], clock),
+            clock=clock,
+        )
+        harness.runner.run()
+
+        assert "VALIDATION" not in harness.collector.names()
+        assert len(read_trials(harness)) == 2
+
+
+class TestASimulationsBreakValidationCannotHang:
+    """Simulate mode on a real display: a keyboard is wired, so the rest waits
+    10 s for somebody and then resumes by itself. The validation after it
+    must not then wait for a SPACE at every target — the rig's own advance
+    mode, "manual" by default, which the display's kind no longer overrides
+    here — nor for a SPACE under a failed heading nobody will read."""
+
+    class RenderingDisplay(FakeDisplay):
+        """A FakeDisplay that reports itself as a real window, so nothing
+        treats it as the simulated display that forces automatic advance."""
+
+        kind = "psychopy"
+
+    class NobodyThere(ScriptedCommands):
+        """No key is ever pressed. A session still asking for one after ten
+        simulated minutes is hung, and fails here instead of hanging the
+        suite."""
+
+        def __init__(self, clock: FakeClock) -> None:
+            super().__init__()
+            self._clock = clock
+
+        def poll_raw_keys(self) -> list[str]:
+            if self._clock.now() > 600.0:
+                raise AssertionError(
+                    "still waiting for a key after 600 simulated seconds: nobody is going to "
+                    "press one in a simulation"
+                )
+            return []
+
+    def test_the_rest_the_validation_and_its_failure_all_end_by_themselves(
+        self, tmp_path, monkeypatch
+    ):
+        from alhazen.devices.eyetracker import procedures
+        from alhazen.testing import FakeStimulus
+
+        # A real window's fixation point needs PsychoPy; the walk's target is
+        # drawn through this factory, and a recording stand-in does as well.
+        monkeypatch.setattr(procedures, "make_fixation", lambda *args: FakeStimulus("target"))
+        clock = FakeClock()
+        harness = SessionHarness(
+            tmp_path,
+            commands=self.NobodyThere(clock),
+            use_pause_menu=True,
+            source=validating_blocks(),
+            tracker=OffOnceTracker([], clock),
+            clock=clock,
+            display=self.RenderingDisplay(clock, 1 / 60),
+            # "manual" is the default; said here because it is the point.
+            eyetracker_config=NEAR_CENTRE.model_copy(update={"calibration_advance": "manual"}),
+            rest_resume_after_s=10.0,
+        )
+
+        harness.runner.run()
+
+        assert len(read_trials(harness)) == 2, "the session did not get past the break"
+        (validation,) = [e for e in harness.collector.events if e.name == "VALIDATION"]
+        assert validation.payload["advance"] == "auto"
+        assert validation.payload["accepted"] is False
+        (event,) = [e for e in harness.collector.events if e.name == "RESUMED"]
+        assert "on_failed_validation" in event.payload
+        log = harness.paths.log_path.read_text(encoding="utf-8")
+        assert "resumed by itself after 10 s" in log
+        assert "with nobody there to decide" in log

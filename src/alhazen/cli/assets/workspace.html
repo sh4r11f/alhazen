@@ -203,15 +203,25 @@
               </div>
             </div>
 
+            <!-- The seed starts empty: an empty field sends no --seed, and the
+                 session draws a new one and records it, as the command line
+                 does. A typed seed is sent, to repeat a session. The
+                 placeholder and help follow the mode (modeChanged() in
+                 workspace.js): demo and movie use 0 when given none. -->
             <div class="field-pair" id="seed-fields">
               <div>
                 <label for="seed">Random seed</label>
-                <input id="seed" type="number" min="0" value="0" required>
+                <input id="seed" type="number" min="0" step="1" inputmode="numeric"
+                       placeholder="new each run" autocomplete="off"
+                       aria-describedby="seed-help">
               </div>
               <div id="trials-field">
                 <label for="trials">Trials per condition</label>
                 <input id="trials" type="number" min="1" value="1" required>
               </div>
+              <!-- Under the pair, the width of both: a half-width column made
+                   the sentence a tall, narrow block beside an empty one. -->
+              <p id="seed-help" class="help field-pair-note"></p>
             </div>
 
             <!-- Each label is a flex row, so the whitespace between the box

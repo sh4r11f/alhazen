@@ -75,6 +75,7 @@ from alhazen.devices.sync import SyncOutput
 from alhazen.display.backend import DisplayBackend
 from alhazen.display.frames import FrameMonitor
 from alhazen.display.screen import Screen
+from alhazen.errors import ConfigError
 from alhazen.live_monitor.panels import frame_intervals_panel
 from alhazen.live_monitor.runtime import LiveMonitorController, live_monitor_state
 from alhazen.live_monitor.spec import LiveMonitorSpec
@@ -125,6 +126,24 @@ def host_overlay_shapes(screen: Screen, regions: dict[str, CircleRegion]) -> lis
     shapes = [HostShape(kind="cross", x1=round(fx), y1=round(fy))]
     shapes.extend(box(region.center, region.radius) for region in regions.values())
     return shapes
+
+
+def _validates_after_break(source: TrialSource) -> bool:
+    """Whether ``source`` asks for every break to end with a validation of the
+    eye tracker's calibration (``BlockPlan.validate_after_break``).
+
+    An optional attribute, looked up the way ``take_block_break`` is: a
+    scheduler without it asks for nothing. Only a real bool is taken as an
+    answer, because anything else (a method of that name, a string) is truthy
+    and would switch the validation on while reading as if it did something
+    else — the same rule ``Task.mid_trial_reward`` is held to.
+    """
+    flag = getattr(source, "validate_after_break", False)
+    if not isinstance(flag, bool):
+        raise TypeError(
+            f"{type(source).__name__}.validate_after_break must be True or False, got {flag!r}"
+        )
+    return flag
 
 
 # The statuses during which a camera frame is read for the live monitor: when
@@ -260,6 +279,22 @@ class SessionRunner:
         if eyetracker is not None:
             eyetracker.publisher = self._publish_live_monitor
             eyetracker.emit = self._emit_session_event
+        # Whether every break between blocks ends with a validation of the eye
+        # tracker's calibration (BlockConfig.validate_after_break, carried by
+        # the scheduler: paradigms/blocks.py). Read once, here, where it is
+        # also enforced: a design that asks for the validation on a session
+        # with no eye tracker would take every break without it — what the
+        # pilot's breaks did — so it is refused before anything is written.
+        self._validates_after_break = _validates_after_break(source)
+        if self._validates_after_break and eyetracker is None:
+            raise ConfigError(
+                "the scheduler validates the eye tracker's calibration at every break between "
+                "blocks (validate_after_break: true), and this session has no eye tracker to "
+                "validate. Run it on a rig with one (devices.eyetracker). To rehearse it: test "
+                "mode stands the mouse cursor in on a machine with a window (or pass --mouse), "
+                "and simulate mode validates the tracker the task's simulation() supplies. "
+                "Otherwise set validate_after_break: false."
+            )
         self._wait = wait if wait is not None else time.sleep
         # Devices are owned here, not by the engine: the engine sees only the
         # narrow hooks the builder derived from them (gaze inputs, health
@@ -346,6 +381,17 @@ class SessionRunner:
         — the CLI does, and the experiment workspace reads that line to embed
         the page. Read-only: the session, not its caller, owns the server."""
         return self._live_monitor.url if self._live_monitor is not None else None
+
+    @property
+    def seed(self) -> int:
+        """The seed this session runs with: the one it was given, or the one
+        drawn for it when it was given none (``core.rng.resolve_seed``).
+
+        Known from the build, like ``live_monitor_url``, so a caller can print
+        it before trial one — the CLI does, since the snapshot and session.log
+        that record it are read after the session, and the experiment
+        workspace reads that line to show which seed a launch drew."""
+        return self._cfg.info.seed
 
     def run(self) -> None:
         # How far the start got, for the teardown in the finally below. Every
@@ -818,12 +864,32 @@ class SessionRunner:
         not be looking at the thing that appears when a calibration dies.
         The block count is the heading because "how much longer" is the one
         question a break gets asked.
+
+        Under ``validate_after_break`` resuming from the break validates the
+        eye tracker's calibration first, before this block's first trial is
+        built: the pause runs the V key's validation, and the break ends only
+        once it passes or the experimenter resumes on one that did not
+        (PauseController.handle, ``validate_before_resuming``).
         """
-        log.info("block %d of %d complete: taking the break", done, total)
+        log.info(
+            "block %d of %d complete: taking the break%s",
+            done,
+            total,
+            # Said in the log's own line for the break, so a reader can see
+            # which breaks were meant to end with a validation, and find the
+            # validation's verdict right after it.
+            "; the eye tracker's calibration is validated before the next block"
+            if self._validates_after_break
+            else "",
+        )
         self._emit_session_event(
             "PAUSED", {"reason": "block_break", "blocks_done": done, "blocks_total": total}
         )
-        return self._pauses.handle({}, rest=f"BLOCK {done} OF {total} COMPLETE — REST")
+        return self._pauses.handle(
+            {},
+            rest=f"BLOCK {done} OF {total} COMPLETE — REST",
+            validate_before_resuming=self._validates_after_break,
+        )
 
     def _failure_streak(self, outcome: Outcome, fault: str | None) -> FailureStreak | None:
         """Count this trial toward the subject's failure streak (the rules are

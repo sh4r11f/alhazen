@@ -47,6 +47,14 @@ const MODES = {
 const INITIALS_RULE = 'initials must be 1 to 5 letters, such as HD';
 const INITIALS_REQUIRED = 'Subject initials are required for run and test modes';
 
+/* The modes whose session draws a new seed when it is given none, records
+ * it, and prints it on its console, where the launcher reads it for the
+ * history (workspace.py SEED_DRAWING_MODES). Demo and movie use seed 0 when
+ * given none, the command line's own default; measure takes no seed. */
+const DRAWS_SEED = ['run', 'test', 'simulate'];
+/* What the seed field accepts, said when it holds anything else. */
+const SEED_RULE = 'The random seed must be a whole number of 0 or more, or empty for a new one';
+
 /* What installs PsychoPy for alhazen, word for word as the error a launch
  * without it prints (alhazen.display.psychopy_backend.PSYCHOPY_INSTALL; a
  * Python test holds the two together). The distribution is alhazen-vision:
@@ -305,6 +313,39 @@ function slugOf(p) {
 function who(run) {
   if (!run.subject) return '';
   return run.initials ? `sub-${run.subject} · ${run.initials}` : `sub-${run.subject}`;
+}
+
+/** The seed a run's session used, for the history and the summary line:
+ *  "seed 2718281828" when the record knows it — the one the launch passed,
+ *  or the one the session drew and printed, which the launcher reads from
+ *  its console — else "seed new" for a session that draws its own and has
+ *  not said which yet (or never will: an alhazen from before the console
+ *  line). '' for a launch with no seed to show: measure, a script, and demo
+ *  or movie left on their default. A record from before the launcher kept
+ *  the seed has it filled in from its command (workspace.py seed_argument). */
+function seedText(run) {
+  if (run.seed !== null && run.seed !== undefined) return `seed ${run.seed}`;
+  return DRAWS_SEED.includes(run.mode) ? 'seed new' : '';
+}
+
+/**
+ * The seed field as a launch sends it: `value` null when the field is empty
+ * — the session then draws its own — or the whole number typed. `problem`
+ * says why anything else cannot be sent, in words the reader can act on,
+ * rather than letting it turn into "empty" and a new seed nobody asked for.
+ * A browser hands an unreadable number field over as '' and flags it
+ * (`validity.badInput`), so that flag is read as well as the text; a number
+ * past 2^53 would not survive the trip through JSON and is refused too.
+ */
+function readSeed(field) {
+  const text = field.value.trim();
+  if (field.validity?.badInput) return {value: null, problem: SEED_RULE};
+  if (!text) return {value: null, problem: ''};
+  const value = Number(text);
+  if (!/^[0-9]+$/.test(text) || !Number.isSafeInteger(value)) {
+    return {value: null, problem: `${SEED_RULE}; got '${field.value}'`};
+  }
+  return {value: value, problem: ''};
 }
 
 /**
@@ -580,9 +621,25 @@ function modeChanged() {
   $('params-config').disabled = !usesParameters();
   $('task-parameters').hidden = !usesParameters();
   $('task-parameters').disabled = !usesParameters();
-  // Measuring the rig draws nothing random, so it takes no seed.
-  $('seed-fields').hidden = mode === 'measure';
-  $('seed').disabled = mode === 'measure';
+  // Measuring the rig draws nothing random, so it takes no seed; nor does an
+  // experiment's own script, which the launcher passes no seed to — a field
+  // shown for either would promise something the launch does not do.
+  const seedless = mode === 'measure' || !!script;
+  $('seed-fields').hidden = seedless;
+  $('seed').disabled = seedless;
+  // What an empty seed field means depends on the mode, and the field says
+  // so: a session draws a new seed each run and records it; demo and movie
+  // use seed 0, as they do on the command line.
+  if (DRAWS_SEED.includes(mode)) {
+    $('seed').placeholder = 'new each run';
+    $('seed-help').textContent = 'Leave the seed empty to draw a new one for every run: the '
+      + 'session records the seed it drew (session.log, config_snapshot.yaml) and the history '
+      + 'shows it. Type a seed only to repeat a session.';
+  } else {
+    $('seed').placeholder = '0';
+    $('seed-help').textContent = 'Leave the seed empty for seed 0, as on the command line; '
+      + 'type another for a different random draw of the stimulus.';
+  }
   // Subject and session name the recorded data. A real or rehearsal session
   // must name its subject; a simulation may fall back to its own default.
   $('identity').hidden = !['run', 'test', 'simulate'].includes(mode);
@@ -1188,9 +1245,15 @@ function renderHistory() {
     const text = node('span', 'history-text');
     // Who the run was for, when it names a subject: "sub-01 · HD".
     const subject = who(run) ? ` · ${who(run)}` : '';
+    // And the seed it ran with, so a session can be repeated and two
+    // sessions told apart: "seed 2718281828", or "seed new" while a drawn
+    // one is not known yet.
+    const seed = seedText(run) ? ` · ${seedText(run)}` : '';
     text.append(
       node('strong', '', title(run)),
-      node('small', '', `${date(run.started)} · ${runRig(run, slugOf(project()))}${subject}`),
+      node(
+        'small', '', `${date(run.started)} · ${runRig(run, slugOf(project()))}${subject}${seed}`,
+      ),
     );
     // A movie run gets a play glyph; every other mode opens a display.
     const icon = node('span', 'history-icon', run.mode === 'movie' ? '▷' : '↗');
@@ -1316,6 +1379,7 @@ async function refreshRun() {
     info = who(run)
       ? `${title(run)} · ${who(run)} · ${date(run.started)}`
       : `${title(run)} · ${date(run.started)}`;
+    if (seedText(run)) info += ' · ' + seedText(run);
     if (run.returncode !== null) info += ' · exit ' + run.returncode;
     if (run.error) info += ' · ' + run.error;
   }
@@ -1598,11 +1662,21 @@ $('launch-form').addEventListener('submit', guard(async (event) => {
     error(initials.problem);
     return;
   }
+  // The seed, for the modes that take one: empty is null, and the session
+  // draws its own. Measure and the experiment's scripts take none, so they
+  // send none, whatever the hidden or unused field holds.
+  const isScript = project().scripts.some((s) => s.id === mode);
+  const seed = mode === 'measure' || isScript
+    ? {value: null, problem: ''}
+    : readSeed($('seed'));
+  if (seed.problem) {
+    error(seed.problem);
+    return;
+  }
   launching = true;
   updateLaunch();
   error('');
   try {
-    const isScript = project().scripts.some((s) => s.id === mode);
     const request = {
       project: selected,
       mode,
@@ -1614,7 +1688,9 @@ $('launch-form').addEventListener('submit', guard(async (event) => {
       subject: $('subject').value,
       initials: initials.value,
       session: Number($('session').value),
-      seed: Number($('seed').value),
+      // null for an empty field (Number('') was 0, so every launch used to
+      // send seed 0); see readSeed.
+      seed: seed.value,
       trials: Number($('trials').value),
       // Options are sent only for the mode that shows them: a hidden checkbox
       // keeps its state across mode changes and must not leak into a launch.

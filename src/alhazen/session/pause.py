@@ -58,6 +58,11 @@ WARNING_COLOR = (1.0, 0.62, -0.85)
 # the row and that mapping cannot drift apart.
 RESUME_ROW_KEY = "SPACE"
 QUIT_ROW_KEY = "Q or ESC"
+# What the resume row says on a pause whose resume validates the eye tracker
+# first (a block break under BlockConfig.validate_after_break): what follows
+# SPACE there is a walk of targets, not the next trial, and the subject has
+# to be ready for it.
+RESUME_AFTER_VALIDATION = "validate the calibration, then resume"
 
 
 @dataclass(frozen=True)
@@ -212,6 +217,7 @@ def build_pause_menu(
     warning: str | None = None,
     keymap: dict[str, Command] | None = None,
     resumes_in_s: float | None = None,
+    resume_validates: bool = False,
 ) -> PauseMenu:
     """The menu for THIS session — only the controls it actually has.
 
@@ -229,11 +235,20 @@ def build_pause_menu(
     such as a validation over its limit, in its own amber and with every
     control kept: resuming on it is allowed, and is the experimenter's call.
     A pause has one heading, so a warning comes without a fault or a rest.
+    ``resume_validates`` is a pause whose resume validates the eye tracker's
+    calibration first (a block break under ``validate_after_break``), and
+    its SPACE row says so; it needs a tracker to validate.
     """
+    if resume_validates and not has_tracker:
+        raise ValueError("a pause can validate before resuming only with an eye tracker wired")
     keymap = DEFAULT_KEYMAP if keymap is None else keymap
     present = {"reward": has_reward, "training": has_training}
 
-    now = [MenuItem(RESUME_ROW_KEY, "resume", "resume")]
+    # Same key and same action either way: only what the row promises
+    # changes, because the pause controller runs the validation when the
+    # resume action arrives (session/pause_control.py).
+    resume_label = RESUME_AFTER_VALIDATION if resume_validates else "resume"
+    now = [MenuItem(RESUME_ROW_KEY, resume_label, "resume")]
     if has_tracker:
         # The three eye-tracker procedures (session/eyetracker.py). Listed
         # together because they are chosen together: a validation that fails

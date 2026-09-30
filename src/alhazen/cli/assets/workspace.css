@@ -689,6 +689,14 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   margin-bottom: 16px;
 }
 
+/* A help line under a pair of fields, across both columns (the seed's: what
+   an empty field means in this mode). The grid's gap already separates it
+   from the fields above, so it takes no margin of its own. */
+.field-pair-note {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
 /* Subject ID, initials, session: the ID gets the room, the initials (five
    letters at most) and the session number sit beside it. */
 #identity {

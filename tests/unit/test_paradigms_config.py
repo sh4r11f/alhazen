@@ -651,3 +651,99 @@ class TestAdaptiveBlocksLastAsLongAsTheEstimator:
         )
 
         assert [c.params["block"] for c in drain(source)] == [1, 1, 2]
+
+
+class TestValidationAfterBreaksFromAConfig:
+    """`blocks.validate_after_break` asks for the eye tracker's calibration to
+    be validated at the end of every break (the design validates between
+    blocks; the pilot's breaks never did). The config's part is small and
+    must be exact: off by default, refused where there is no break to
+    validate after, carried by the BlockPlan whichever kind of scheduler it
+    wraps, and findable in a params model whatever the fields are called."""
+
+    def test_it_is_off_unless_a_design_asks_for_it(self):
+        assert BlockConfig().validate_after_break is False
+        assert BlockConfig(n_blocks=2, validate_after_break=True).validate_after_break is True
+
+    def test_without_breaks_there_is_nothing_to_validate_after(self):
+        # Refused at load, like every other contradiction in a config: read
+        # as if the calibration were checked, it would run every block
+        # unchecked.
+        with pytest.raises(ValueError, match="validate_after_break: true needs breaks: true"):
+            BlockConfig(n_blocks=2, breaks=False, validate_after_break=True)
+
+    def test_a_queue_based_kind_carries_it_to_its_block_plan(self):
+        cfg = SchedulerConfig(
+            kind="constant", blocks=BlockConfig(n_blocks=2, validate_after_break=True)
+        )
+        source = make_scheduler(cfg, sides(), rng())
+        assert isinstance(source, BlockPlan)
+        assert source.validate_after_break is True
+
+    @pytest.mark.parametrize("kind", sorted(ADAPTIVE_CONFIGS))
+    def test_an_adaptive_kind_carries_it_too(self, kind):
+        # The other branch of make_scheduler: one estimator shared by every
+        # block, wrapped once.
+        blocks = BlockConfig(n_blocks=2, trials_per_block=2, validate_after_break=True)
+        source = make_scheduler(ADAPTIVE_CONFIGS[kind](blocks=blocks), sides(), rng())
+        assert source.validate_after_break is True
+
+    def test_left_off_the_plan_validates_nothing(self):
+        source = make_scheduler(
+            SchedulerConfig(kind="constant", blocks=BlockConfig(n_blocks=2)), sides(), rng()
+        )
+        assert source.validate_after_break is False
+
+
+class TestFindingTheRequestInAParamsModel:
+    """`validate_after_break_paths` is how the session builder learns that a
+    task's params ask for the validation, so it can refuse a scheduler that
+    dropped it. Found by type, because experiments name their paradigm fields
+    differently (one task has `saccade_paradigm` and `pursuit_paradigm`)."""
+
+    @staticmethod
+    def blocks(asked: bool) -> BlockConfig:
+        return BlockConfig(n_blocks=2, validate_after_break=asked)
+
+    def test_the_usual_field_is_found_by_its_path(self):
+        from alhazen import Model
+        from alhazen.paradigms.config import validate_after_break_paths
+
+        class Params(Model):
+            paradigm: SchedulerConfig = SchedulerConfig(blocks=self.blocks(True))
+
+        assert validate_after_break_paths(Params()) == ["paradigm.blocks"]
+
+    def test_any_name_any_depth_lists_and_mappings(self):
+        from alhazen import Model
+        from alhazen.paradigms.config import validate_after_break_paths
+
+        class Nested(Model):
+            pursuit_paradigm: SchedulerConfig = SchedulerConfig(blocks=self.blocks(True))
+
+        class Params(Model):
+            saccade_paradigm: SchedulerConfig = SchedulerConfig(blocks=self.blocks(False))
+            nested: Nested = Nested()
+            phases: list[SchedulerConfig] = [
+                SchedulerConfig(),
+                SchedulerConfig(blocks=self.blocks(True)),
+            ]
+            by_name: dict[str, SchedulerConfig] = {
+                "practice": SchedulerConfig(blocks=self.blocks(True))
+            }
+
+        assert validate_after_break_paths(Params()) == [
+            "nested.pursuit_paradigm.blocks",
+            "phases.1.blocks",
+            "by_name.practice.blocks",
+        ]
+
+    def test_params_that_ask_for_nothing_give_nothing(self):
+        from alhazen import Model
+        from alhazen.paradigms.config import validate_after_break_paths
+
+        class Params(Model):
+            paradigm: SchedulerConfig = SchedulerConfig(blocks=self.blocks(False))
+            other: int = 3
+
+        assert validate_after_break_paths(Params()) == []

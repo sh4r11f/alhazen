@@ -1251,6 +1251,15 @@ Two composition rules fall out of blocks and are worth stating:
   `ConfigError`: the last block would end the session with the estimate
   unfinished. A staircase stopped by `n_reversals` alone is not checked — its
   trial count cannot be known in advance.
+- `validate_after_break` (off by default) ends every break with a validation
+  of the eye tracker ([eye tracker](eye-tracker.md#validation-at-block-breaks)).
+  `BlockConfig` refuses it without `breaks`. `make_scheduler` hands it to the
+  `BlockPlan`, which only carries it (`BlockPlan.validate_after_break`): a
+  scheduler knows where blocks end and nothing about eye trackers. The runner
+  reads it once and refuses a session with no eye tracker to validate, and
+  `build_session` refuses a task whose own `make_source` built a plan without
+  it while its params ask for it (`validate_after_break_paths` finds the
+  request by type).
 
 ### 5.5 Live analysis (`task/live.py`)
 
@@ -1821,7 +1830,10 @@ then:
    another follows (`take_block_break`), and the runner takes it before
    the next block's first trial: the pause screen headed `BLOCK 3 OF 6
    COMPLETE — REST`, in its own colour, until SPACE — a rest is never the
-   screen a fault puts up;
+   screen a fault puts up. Under `validate_after_break` that SPACE first runs
+   the V key's validation, inside the same PAUSED … RESUMED, and the break
+   ends once it passes or the experimenter resumes on one that did not
+   ([eye tracker](eye-tracker.md#validation-at-block-breaks));
 4. teardown attempts every step regardless of earlier failures (recorder →
    frame log → close log file → manifest → display), re-raising the first
    teardown error only if nothing else is propagating. A Ctrl-C during a step
@@ -1857,8 +1869,9 @@ so the constructor `build_session` calls is unchanged:
   for what was paid. The runner rebinds its `policy` on every stage change.
 - `session/pause_control.py` — `PauseController`, every pause from raised to
   resumed or quit: the unattended, keyboard and live monitor loops, a rest that
-  resumes by itself, the menu's procedures, manual reward and stage keys, and
-  the RESUMED event.
+  resumes by itself, the menu's procedures, manual reward and stage keys, a
+  resume that owes a validation first (a block break under
+  `validate_after_break`), and the RESUMED event.
 
 ```mermaid
 flowchart LR
@@ -1867,7 +1880,7 @@ flowchart LR
     SM -->|"FailureStreak / DropoutStreak<br/>(heading) or None"| RUN
     RUN -->|"deliver(ctx, outcome, fault)"| RP["RewardPayer<br/>pay rule + delivery"]
     RP -->|"REWARD / NO_REWARD / REWARD_FAILED<br/>through the runner's emitter"| RUN
-    RUN -->|"handle(record, fault, rest)"| PC["PauseController<br/>both pause loops + menu actions"]
+    RUN -->|"handle(record, fault, rest,<br/>validate_before_resuming)"| PC["PauseController<br/>both pause loops + menu actions<br/>+ a break's owed validation"]
     PC -->|"publish · emit · stage commands<br/>through the runner's hooks"| RUN
 ```
 

@@ -511,6 +511,9 @@ class TestCommandContract:
                     mode=mode.value,
                     subject="s01",
                     initials="HD",
+                    # A typed seed: since 2.3.0 an empty field sends no
+                    # --seed, so "every option on" has to include one.
+                    seed=5,
                     parameters=None if mode is Mode.MEASURE else {"speed": 2},
                     headless=mode is Mode.SIMULATE,
                     mouse=mode is Mode.TEST,
@@ -523,6 +526,190 @@ class TestCommandContract:
                 command = workspace._command(request, workspace.directory / "job")
                 emitted.update(token for token in command if token.startswith("--"))
         assert emitted == MODE_FLAGS
+
+
+class TestTheSeed:
+    """The seed field defaulted to 0 and every launch sent --seed 0, so every
+    session started from the workspace had the same trial order, jitters and
+    (in amodal-averaging) block order. An empty field now sends no --seed, and
+    the session draws a fresh seed and records it, as the command line does;
+    a typed seed is still sent, to repeat a session. The run record keeps the
+    seed each session used — the one passed, or the one it drew, read from its
+    console — for the history to show."""
+
+    @staticmethod
+    def session_request(workspace, **overrides):
+        return request_for(
+            workspace, mode="simulate", subject="s01", parameters={"speed": 2}, **overrides
+        )
+
+    @staticmethod
+    def record(run) -> dict:
+        return json.loads((Path(run["directory"]) / "run.json").read_text(encoding="utf-8"))
+
+    def test_an_empty_field_passes_no_seed_and_the_session_draws_its_own(self, workspace):
+        request = self.session_request(workspace)
+        assert request.seed is None
+        command = workspace._command(request, workspace.directory / "job")
+        assert "--seed" not in command
+        # The runner's own parser then reads no seed, and the build draws one
+        # (core.rng.resolve_seed), exactly as for a command typed without it.
+        parser = argparse.ArgumentParser()
+        add_mode_arguments(parser)
+        assert parser.parse_args(command[3:]).seed is None
+
+    def test_a_typed_seed_is_passed_zero_included(self, workspace):
+        # 0 is a seed like any other once typed; only an empty field is none.
+        command = workspace._command(self.session_request(workspace, seed=0), workspace.directory)
+        assert command[command.index("--seed") + 1] == "0"
+
+    def test_a_negative_seed_is_refused(self, workspace):
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="greater than or equal to 0"):
+            self.session_request(workspace, seed=-1)
+
+    def test_the_record_keeps_the_seed_passed(self, workspace):
+        run = finish(workspace, workspace.start(self.session_request(workspace, seed=7)))
+        assert run["seed"] == 7 and self.record(run)["seed"] == 7
+
+    def test_a_drawn_seed_is_read_from_the_console_and_kept(self, workspace):
+        from alhazen.cli.main import _seed_line
+
+        # A run.py that prints what the command line prints before trial one.
+        root = Path(workspace.projects[0]["path"])
+        line = _seed_line(2718281828, drawn=True)
+        (root / "run.py").write_text(f"print({line!r}, flush=True)\n", encoding="utf-8")
+
+        run = finish(workspace, workspace.start(self.session_request(workspace)))
+
+        assert run["command"].count("--seed") == 0
+        assert run["seed"] == 2718281828
+        # Kept in the record, so the history shows it without the console.
+        assert self.record(run)["seed"] == 2718281828
+
+    def test_while_the_session_runs_it_shows_as_soon_as_it_is_printed(self, workspace, monkeypatch):
+        started, release = threading.Event(), threading.Event()
+
+        class Process:
+            pid = 123
+
+            def wait(self, timeout=None):
+                started.set()
+                assert release.wait(timeout=5)
+                return 0
+
+            def poll(self):
+                return 0 if release.is_set() else None
+
+        monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: Process())
+        run = workspace.start(self.session_request(workspace))
+        assert started.wait(timeout=5)
+        console = Path(run["directory"]) / "console.log"
+        assert workspace.state()["runs"][0]["seed"] is None  # not printed yet
+
+        console.write_text("mode: simulate\nseed: 31 (drawn for this run; --seed 31 repeats it)\n")
+        (listed,) = workspace.state()["runs"]
+        assert listed["seed"] == 31
+        assert workspace.detail(run["id"])["seed"] == 31
+        # The record is written once, when the run ends, not on every poll.
+        assert self.record(run)["seed"] is None
+
+        release.set()
+        assert self.record(finish(workspace, run))["seed"] == 31
+
+    def test_a_session_that_never_says_stays_unknown(self, workspace):
+        # The fixture's run.py prints only its argv: an alhazen from before
+        # the seed line. The page shows that as "new".
+        run = finish(workspace, workspace.start(self.session_request(workspace)))
+        assert run["seed"] is None
+
+    def test_a_mode_that_draws_no_seed_is_never_read_for_one(self, workspace):
+        # A movie takes seed 0 when given none; whatever its console prints,
+        # it drew nothing.
+        root = Path(workspace.projects[0]["path"])
+        (root / "run.py").write_text("print('seed: 99 (drawn for this run)')\n", encoding="utf-8")
+        run = finish(workspace, workspace.start(request_for(workspace)))
+        assert run["mode"] == "movie" and run["seed"] is None
+
+    def test_a_record_from_before_the_field_reads_its_command(self, workspace):
+        # 2.2 wrote no seed field, and always passed --seed: 0 unless typed.
+        run = finish(workspace, workspace.start(self.session_request(workspace, seed=0)))
+        path = Path(run["directory"]) / "run.json"
+        record = self.record(run)
+        del record["seed"]
+        path.write_text(json.dumps(record), encoding="utf-8")
+
+        restored = Workspace(workspace.directory)
+
+        assert restored.detail(run["id"])["seed"] == 0
+        assert restored.state()["runs"][0]["seed"] == 0
+
+    def test_an_interrupted_session_keeps_the_seed_it_printed(self, workspace):
+        run = finish(workspace, workspace.start(self.session_request(workspace)))
+        path = Path(run["directory"]) / "run.json"
+        record = self.record(run)
+        # As a server that died mid-run leaves it: still "running", no seed.
+        record.update(status="running", seed=None)
+        path.write_text(json.dumps(record), encoding="utf-8")
+        (Path(run["directory"]) / "console.log").write_text(
+            "seed: 42 (drawn for this run; --seed 42 repeats it)\n", encoding="utf-8"
+        )
+
+        restored = Workspace(workspace.directory)
+
+        detail = restored.detail(run["id"])
+        assert (detail["status"], detail["seed"]) == ("interrupted", 42)
+        assert json.loads(path.read_text(encoding="utf-8"))["seed"] == 42
+
+
+class TestTheSeedLine:
+    """The contract between the two ends: the line cli/main.py prints before
+    trial one, and what the workspace reads from a launched run's console."""
+
+    @pytest.mark.parametrize("seed, drawn", [(2718281828, True), (0, False), (7, True)])
+    def test_the_workspace_reads_the_line_the_command_line_prints(self, tmp_path, seed, drawn):
+        from alhazen.cli.main import _seed_line
+        from alhazen.cli.workspace import console_seed
+
+        console = tmp_path / "console.log"
+        # Among the lines printed before it, on a Windows console's line ends.
+        console.write_bytes(
+            (
+                "mode: simulate — the whole session\r\nautopilot: seed=5\r\n"
+                f"running demo: sub-s01 ses-001 run-01\r\n{_seed_line(seed, drawn=drawn)}\r\n"
+            ).encode()
+        )
+        assert console_seed(console) == seed
+
+    def test_only_a_line_that_starts_with_it_counts(self, tmp_path):
+        from alhazen.cli.workspace import console_seed
+
+        console = tmp_path / "console.log"
+        console.write_text("an experiment's own note: seed: 5\n", encoding="utf-8")
+        assert console_seed(console) is None
+
+    def test_no_console_no_seed(self, tmp_path):
+        from alhazen.cli.workspace import console_seed
+
+        assert console_seed(tmp_path / "missing.log") is None
+
+    def test_only_the_start_of_a_console_is_searched(self, tmp_path):
+        # The line comes before trial one; a console that never printed it is
+        # not read whole on every poll.
+        from alhazen.cli.workspace import SEED_SEARCH_BYTES, console_seed
+
+        console = tmp_path / "console.log"
+        console.write_text("x" * SEED_SEARCH_BYTES + "\nseed: 5 (drawn)\n", encoding="utf-8")
+        assert console_seed(console) is None
+
+    def test_a_recorded_command_is_read_for_the_seed_it_passed(self):
+        from alhazen.cli.workspace import seed_argument
+
+        assert seed_argument(["python", "run.py", "--mode", "run", "--seed", "0"]) == 0
+        assert seed_argument(["python", "run.py", "--mode", "run"]) is None
+        # A value that is not a seed is not read as one.
+        assert seed_argument(["python", "-m", "pkg.preview", "--seed", "abc"]) is None
 
 
 class TestTheNoBrowserFlag:

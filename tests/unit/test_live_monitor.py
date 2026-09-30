@@ -738,6 +738,81 @@ class TestRunnerIntegration:
         assert live_monitor.states[-1]["status"] == "complete"
 
 
+def validating_blocks():
+    """Two blocks of one trial each; the break between them ends with a
+    validation of the eye tracker (BlockConfig.validate_after_break)."""
+    from alhazen.paradigms.base import Condition, SimpleSequence
+    from alhazen.paradigms.blocks import BlockPlan
+
+    def block():
+        return SimpleSequence([Condition({"condition": "a"})], rng=np.random.default_rng(0))
+
+    return BlockPlan([block(), block()], trials_per_block=1, validate_after_break=True)
+
+
+class TestTheBreaksValidationFromTheBrowser:
+    """Resume in the browser ends a validating break the way SPACE does: the
+    validation runs first, under the "calibrating" status, and goes out as the
+    notice and the panel. A double-clicked Resume must not resume on a failed
+    validation nobody has read."""
+
+    def session(self, tmp_path, batches, offset_px):
+        from alhazen.config.models import EyeTrackerConfig
+
+        clock = FakeClock()
+        gaze = GazeSample(gx=SCREEN.width_px / 2 + offset_px, gy=SCREEN.height_px / 2, t=0.0)
+        live_monitor = FakeLiveMonitor(batches)
+        harness = SessionHarness(
+            tmp_path,
+            source=validating_blocks(),
+            tracker=ScriptedTracker([(0.0, gaze)], clock),
+            clock=clock,
+            # Targets within half a degree of the centre: a subject staring
+            # at it passes a 1° limit, one staring 2° off does not.
+            eyetracker_config=EyeTrackerConfig(
+                backend="scripted", calibration_area=0.02, validate_after_calibration=False
+            ),
+            **wired(live_monitor),
+        )
+        harness.runner.run()
+        return harness, live_monitor
+
+    def test_resume_validates_first_and_a_pass_goes_straight_on(self, tmp_path):
+        harness, live_monitor = self.session(tmp_path, [[], ["resume"]], offset_px=0.0)
+
+        names = [event.name for event in harness.collector.events]
+        assert names.count("VALIDATION") == 1 and names.count("RESUMED") == 1
+        paused = [s["message"] for s in live_monitor.states if s["status"] == "paused"]
+        # The break's notice said what Resume would do.
+        assert any("Resuming validates the eye tracker's calibration first." in m for m in paused)
+        progress = [s["message"] for s in live_monitor.states if s["status"] == "calibrating"]
+        assert any(m.startswith("validating: target") for m in progress), progress
+        running = [s["message"] for s in live_monitor.states if s["status"] == "running"]
+        assert any(m and m.startswith("validation passed") for m in running), running
+        assert len(harness.recorder.trials) == 2
+
+    def test_a_double_clicked_resume_does_not_resume_on_a_failure(self, tmp_path, caplog):
+        # Batch 2 is the double-click; batch 3 is what arrived while the walk
+        # ran (nothing); batch 4, a Resume clicked once the failure was shown.
+        with caplog.at_level(logging.INFO, logger="alhazen.session.runner"):
+            harness, live_monitor = self.session(
+                tmp_path, [[], ["resume", "resume"], [], ["resume"]], offset_px=80.0
+            )
+
+        names = [event.name for event in harness.collector.events]
+        assert names.count("VALIDATION") == 1, names
+        (resumed,) = [e for e in harness.collector.events if e.name == "RESUMED"]
+        assert "on_failed_validation" in resumed.payload
+        assert "discarding 1 command(s) queued while validate ran: resume" in caplog.text
+        # The session resumed on the later, single click: had the second
+        # click of the pair resumed it, that last batch would be unread.
+        assert live_monitor.batches == [], "the double-click's second Resume resumed the session"
+        paused = [s["message"] for s in live_monitor.states if s["status"] == "paused"]
+        assert any(m.startswith("validation FAILED") for m in paused), paused
+        headings = [title for title, _body, _color in harness.display.menus]
+        assert any(h.startswith("VALIDATION ABOVE THE 1° LIMIT") for h in headings), headings
+
+
 class FinalPublishFails(FakeLiveMonitor):
     """A live monitor whose last publish — the complete, end-of-session state —
     raises, the way building that state does when a panel's source (the eye

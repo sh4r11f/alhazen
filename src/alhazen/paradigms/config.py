@@ -18,7 +18,7 @@ from collections.abc import Callable
 from typing import Any, Literal
 
 import numpy as np
-from pydantic import model_validator
+from pydantic import BaseModel, model_validator
 
 from alhazen.config.models import Model
 from alhazen.core.engine import TrialResult
@@ -91,6 +91,16 @@ class BlockConfig(Model):
     # Whether the session pauses for a rest between blocks (BlockPlan). Off
     # for a design whose blocks are analysis structure only.
     breaks: bool = True
+    # Whether the eye tracker's calibration is validated again at the end of
+    # every break, before the next block's first trial. SPACE on the rest
+    # screen (or the live monitor's Resume) runs the same validation the pause
+    # menu's V runs; the next block starts once it passes, or once the
+    # experimenter resumes on one that did not from its amber heading. A
+    # validation the experimenter already ran during the break counts
+    # (docs/eye-tracker.md, "Validation at block breaks"). It needs breaks —
+    # refused below without them — and a session with an eye tracker, which
+    # the session refuses to start without. Off unless a design asks for it.
+    validate_after_break: bool = False
 
     @model_validator(mode="after")
     def _valid(self) -> BlockConfig:
@@ -98,6 +108,16 @@ class BlockConfig(Model):
             raise ValueError("n_blocks must be >= 1")
         if self.trials_per_block is not None and self.trials_per_block < 1:
             raise ValueError("trials_per_block must be >= 1")
+        if self.validate_after_break and not self.breaks:
+            # Refused rather than ignored: a config that says the calibration
+            # is checked between blocks, on a design with no breaks for the
+            # check to happen in, would run every block unchecked while
+            # reading as if it were not.
+            raise ValueError(
+                "validate_after_break: true needs breaks: true — the validation runs at the "
+                "end of each break between blocks, and with breaks: false there is no break "
+                "to run it after. Turn breaks on, or validate_after_break off"
+            )
         return self
 
 
@@ -168,6 +188,10 @@ def make_scheduler(
     blocks must also last as long as the estimator: ``n_blocks x
     trials_per_block`` below its ``n_trials`` is refused, because the last
     block would end the session with the estimate unfinished.
+
+    Either way the ``blocks`` block's ``breaks`` and ``validate_after_break``
+    go to the BlockPlan, which leaves the breaks for the session to take and
+    says whether each one ends with a validation of the eye tracker.
     """
     if cfg.blocks is None:
         return _make_inner(cfg, conditions, rng, score, task_name)
@@ -182,6 +206,7 @@ def make_scheduler(
             trials_per_block=cfg.blocks.trials_per_block,
             rng=rng,
             breaks=cfg.blocks.breaks,
+            validate_after_break=cfg.blocks.validate_after_break,
         )
     sources = [
         _make_inner(cfg, conditions, rng, score, task_name) for _ in range(cfg.blocks.n_blocks)
@@ -195,7 +220,42 @@ def make_scheduler(
         trials_per_block=cfg.blocks.trials_per_block,
         rng=rng,
         breaks=cfg.blocks.breaks,
+        validate_after_break=cfg.blocks.validate_after_break,
     )
+
+
+def validate_after_break_paths(params: BaseModel) -> list[str]:
+    """Where a params model asks for the calibration to be validated after
+    every break: the dotted path of each ``BlockConfig`` in it whose
+    ``validate_after_break`` is on (``"paradigm.blocks"``), in field order.
+
+    Found by type, at any depth — nested models, lists and dict values — the
+    way test mode finds the schedulers it shortens (modes/rehearsal.py),
+    because experiments do not agree on the field's name. The session builder
+    holds this against the scheduler the task actually built, so a task whose
+    own ``make_source`` drops the request is refused instead of running
+    breaks that validate nothing (session/builder.py).
+    """
+    found: list[str] = []
+
+    def walk(value: Any, path: str) -> None:
+        # BlockConfig first: it is a BaseModel too, and the one kind whose
+        # fields are the answer rather than more places to look.
+        if isinstance(value, BlockConfig):
+            if value.validate_after_break:
+                found.append(path)
+        elif isinstance(value, BaseModel):
+            for name, item in value:
+                walk(item, f"{path}.{name}" if path else name)
+        elif isinstance(value, (list, tuple)):
+            for index, item in enumerate(value):
+                walk(item, f"{path}.{index}")
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                walk(item, f"{path}.{key}")
+
+    walk(params, "")
+    return found
 
 
 def _refuse_a_bound_below_the_plan(

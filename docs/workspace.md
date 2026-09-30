@@ -9,6 +9,15 @@ keeps its existing keyboard-pause policy.
 alhazen dashboard --project ~/projects/amodal-averaging --project ~/projects/kde-vergence
 ```
 
+**On Windows, start it as `python -m alhazen dashboard`** (same arguments).
+The `alhazen` command is a small `alhazen.exe` launcher in the environment's
+`Scripts` folder, and Windows locks a running program's file: reinstalling
+alhazen into that environment while a dashboard started as `alhazen dashboard`
+is running fails part-way on the lock and can leave alhazen uninstalled there,
+while the running dashboard carries on as if nothing happened. Started with
+`python -m`, the dashboard holds only `python.exe`, which a reinstall never
+touches.
+
 The folders are remembered. Next time, `alhazen dashboard` is enough. Add more
 with **Add experiment**, using the path to a checkout containing `run.py`.
 Nothing is installed by registering a folder. Choose a Python interpreter in
@@ -148,6 +157,44 @@ it comes from, and a test checks the contrast of every pair it draws.
 6. Follow the console or view generated media. Images can be enlarged or saved.
    Movies appear once recording finishes, with native playback and seeking.
 
+### The random seed
+
+**Random seed** starts empty, with the placeholder *new each run*. An empty
+field sends no `--seed`, so a simulate, test or run session draws a fresh
+seed, as `run.py` does when it is typed without one, and records it in
+`session.log` and `config_snapshot.yaml`. Every session then gets its own
+trial order, jitters and, where a task draws it, block order. A typed seed
+is sent as `--seed`, which is how a session is repeated. Demo and movie use
+seed 0 when the field is empty, as on the command line, and the field says
+so. Measure and the experiment's own scripts take no seed, so the field is
+hidden for them.
+
+The history and the run summary show the seed each session ran with:
+`seed 2718281828`, or `seed new` until the session has said which one it
+drew. A session prints the seed before trial one:
+
+```
+seed: 2718281828 (drawn for this run; --seed 2718281828 repeats it)
+```
+
+The launcher reads that line from the run's console while the run is active,
+and keeps it in `run.json` (`seed`) once the run ends. A run started with a
+typed seed records that seed at launch. A run recorded before 2.3.0 shows the
+seed its command passed, which was 0 unless one was typed; that is how the
+sessions that all ran with seed 0 can be found. A project whose alhazen
+predates the line never says, and its sessions stay `seed new`; the seed is
+still in each run's `session.log`.
+
+```mermaid
+flowchart LR
+  field["seed field<br/>(workspace.js readSeed)"] -->|"null or a number"| launch["workspace.py<br/>Launch.seed"]
+  launch -->|"--seed only when typed"| child["run.py → cli/main.py<br/>build draws a seed if none"]
+  child -->|"seed: N (…)"| console["console.log"]
+  child --> record["session.log<br/>config_snapshot.yaml"]
+  console -->|"console_seed"| runjson["run.json seed<br/>(kept when the run ends)"]
+  runjson --> history["history · run summary<br/>seed N / seed new"]
+```
+
 ### PsychoPy: said before the launch, not after it
 
 Registering a project (Add, or **Project settings → Save**) asks its
@@ -265,8 +312,8 @@ alone would not say what ran — with the experiment's file as written kept
 beside it as `rig-source.yaml`. `run.json` records the rig launched (`rig`),
 its name (`rig_name`) and whose it is (`rig_source`: `experiment` or
 `alhazen`), and the history shows the qualified name (`amodal-averaging/lab`,
-`alhazen/lab`). Session data retains the
-experiment's normal real/rehearsal paths.
+`alhazen/lab`). It also records the session's `seed` ([above](#the-random-seed)).
+Session data retains the experiment's normal real/rehearsal paths.
 
 Only one job runs at a time in a workspace. **Stop run** interrupts the run:
 SIGINT to its process group on POSIX, a console break (`CTRL_BREAK_EVENT`) on

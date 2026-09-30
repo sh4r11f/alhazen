@@ -27,6 +27,12 @@ screen comes up with the block count as its heading — a rest, in its own
 colour, not the screen that appears when a calibration dies — and stays up
 until SPACE. ``breaks=False`` turns that off for a design whose blocks are
 analysis structure only.
+
+``validate_after_break=True`` makes every break end with a validation of the
+eye tracker's calibration, before the next block's first trial. The plan only
+carries the flag: the runner reads it (``SessionRunner._block_break``) and the
+pause runs the validation (``session/pause_control.py``), because a scheduler
+knows where blocks end and nothing about eye trackers.
 """
 
 from __future__ import annotations
@@ -63,6 +69,11 @@ class BlockPlan:
     together. A source that does not report one (an adaptive scheduler, a
     source written before the hook) is not checked. ``make_scheduler``
     refuses the same config first, with the config's own numbers.
+
+    ``breaks`` and ``validate_after_break`` are ``BlockConfig``'s. A task
+    that builds its own BlockPlan passes both on from its params; the session
+    refuses one whose params ask for the validation and whose plan does not
+    carry it (``session/builder.py``).
     """
 
     def __init__(
@@ -74,7 +85,17 @@ class BlockPlan:
         shuffle_blocks: bool = False,
         block_key: str = "block",
         breaks: bool = True,
+        validate_after_break: bool = False,
     ) -> None:
+        if validate_after_break and not breaks:
+            # The same refusal as BlockConfig's, for a plan built in code: a
+            # validation that runs at the end of each break has nothing to
+            # run after when there are none, and ignoring the flag would run
+            # every block unchecked while the code says otherwise.
+            raise ValueError(
+                "BlockPlan validate_after_break=True needs breaks=True: the validation runs at "
+                "the end of each break between blocks, and with breaks=False there is none"
+            )
         sources = list(inner) if isinstance(inner, list) else None
         if sources is not None:
             if not sources:
@@ -125,6 +146,9 @@ class BlockPlan:
         # another is about to start, cleared when the runner takes it.
         self._breaks = breaks
         self._pending_break: tuple[int, int] | None = None
+        # Whether each of those breaks ends with a validation of the eye
+        # tracker's calibration (see the ``validate_after_break`` property).
+        self._validate_after_break = validate_after_break
         # The condition this wrapper handed out, and the inner one it wraps,
         # so record() can give the inner scheduler back its own object. The
         # runner serves strictly one trial at a time, so one pair is enough.
@@ -186,6 +210,19 @@ class BlockPlan:
         """
         pending, self._pending_break = self._pending_break, None
         return pending
+
+    @property
+    def validate_after_break(self) -> bool:
+        """Whether the session validates the eye tracker's calibration at the
+        end of every break this plan leaves, before the next block's first
+        trial (``BlockConfig.validate_after_break``).
+
+        Read-only, and read by the runner once, when it is built: it refuses a
+        session with no eye tracker to validate, and hands the flag to every
+        break it takes. Any scheduler may carry it; one without the attribute
+        validates nothing.
+        """
+        return self._validate_after_break
 
     def record(self, condition: Condition, result: TrialResult) -> None:
         inner_condition = condition

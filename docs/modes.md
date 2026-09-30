@@ -277,6 +277,14 @@ there, and the break then waits for them. Fault pauses never time out. With no
 keyboard wired at all (`--headless`), the break resumes at once, as before.
 The wait is `SIMULATION_REST_RESUME_S` in `modes/session.py`.
 
+A design whose breaks end with a validation of the eye tracker
+(`blocks.validate_after_break`) is rehearsed with it: the validation runs
+against the autopilot's gaze. When nobody pressed anything, the validation
+advances from target to target by itself, and a result that does not pass is
+resumed on at once, with a line in the log saying nobody was there to decide
+([eye tracker](eye-tracker.md#validation-at-block-breaks)). A simulation
+never waits under a heading nobody will read.
+
 ## `demo` — look at the stimulus
 
 The stimulus is the one thing in an experiment that no test can check. A test

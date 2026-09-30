@@ -34,7 +34,8 @@ from alhazen.devices.eyetracker.procedures import GazeCorrection
 from alhazen.devices.reward import SimulatedReward
 from alhazen.errors import ConfigError, DataError
 from alhazen.paradigms.base import Condition, SimpleSequence
-from alhazen.paradigms.config import SchedulerConfig
+from alhazen.paradigms.blocks import BlockPlan
+from alhazen.paradigms.config import BlockConfig, SchedulerConfig, make_scheduler
 from alhazen.session.builder import (
     build_session,
     make_gaze_input_provider,
@@ -91,7 +92,7 @@ def build(tmp_path, schema, **kwargs):
         session=1,
         run=1,
         task_name="test-task",
-        task_params=Params(),
+        task_params=kwargs.pop("task_params", Params()),
         event_schema=schema,
         build_trial=build_trial,
         make_source=make_source,
@@ -1257,3 +1258,84 @@ class TestTheSubjectsInitials:
 
         (run_dir,) = tmp_path.glob("v0.1.0/sub-t01/ses-001/run-*")
         assert [p for p in run_dir.rglob("*") if p.is_file()] == []
+
+
+class ValidatingParams(Model):
+    """Params that ask for the eye tracker to be validated after every break,
+    under the usual field name."""
+
+    paradigm: SchedulerConfig = SchedulerConfig(
+        kind="sequence",
+        blocks=BlockConfig(n_blocks=2, validate_after_break=True),
+    )
+
+
+def blocks_from(params, rng):
+    """A make_source that builds its scheduler from the params' own paradigm,
+    as the default Task.make_source does."""
+    return make_scheduler(params.paradigm, [Condition({"c": "a"})], rng)
+
+
+def blocks_that_forget(params, rng):
+    """A make_source that orders its blocks itself and builds its BlockPlan
+    without passing the params' validate_after_break on — what an experiment
+    with its own block order did."""
+    return BlockPlan([SimpleSequence([Condition({"c": "a"})], rng=rng) for _ in range(2)], rng=rng)
+
+
+class TestValidationAfterBreaksIsWiredOrRefused:
+    """`blocks.validate_after_break` must end every break with a validation,
+    or the session must not start: the pilot ran a design that validates
+    between blocks, and nothing made it happen or said it had not."""
+
+    def test_with_a_tracker_every_break_ends_with_a_validation(self, tmp_path):
+        # The builder's own wiring end to end: the monitor it builds for the
+        # tracker, on the simulated display — unattended, so the break
+        # resumes at once and its validation advances by itself.
+        clock = FakeClock()
+        gaze = GazeSample(gx=960.0, gy=540.0, t=0.0)
+        runner = build(
+            tmp_path,
+            EventSchema(()),
+            task_params=ValidatingParams(),
+            make_source=blocks_from,
+            tracker=ScriptedTracker([(0.0, gaze)], clock),
+            clock=clock,
+        )
+        runner.run()
+
+        events = read_table(tmp_path, "events")
+        names = [row["event"] for row in events]
+        assert names.count("PAUSED") == 1 and names.count("RESUMED") == 1
+        assert names.index("PAUSED") < names.index("VALIDATION") < names.index("RESUMED")
+        assert len(read_table(tmp_path, "trials")) == 2
+
+    def test_without_an_eye_tracker_the_session_is_refused(self, tmp_path):
+        with pytest.raises(ConfigError, match="no eye tracker to validate") as refused:
+            build(
+                tmp_path, EventSchema(()), task_params=ValidatingParams(), make_source=blocks_from
+            )
+        # It names the ways on: a rig with one, the stand-ins, or the switch.
+        message = str(refused.value)
+        assert "devices.eyetracker" in message and "--mouse" in message
+        assert "validate_after_break: false" in message
+
+    def test_a_scheduler_that_drops_the_request_is_refused_naming_it(self, tmp_path):
+        clock = FakeClock()
+        with pytest.raises(ConfigError, match="paradigm.blocks.validate_after_break") as refused:
+            build(
+                tmp_path,
+                EventSchema(()),
+                task_params=ValidatingParams(),
+                make_source=blocks_that_forget,
+                tracker=ScriptedTracker([], clock),
+                clock=clock,
+            )
+        assert "must pass the setting on" in str(refused.value)
+
+    def test_params_that_ask_for_nothing_are_not_checked(self, tmp_path):
+        # The request comes from the params; a scheduler without the flag,
+        # with params that never asked, is every session before this one.
+        runner = build(tmp_path, EventSchema(()), make_source=blocks_that_forget)
+        runner.run()
+        assert len(read_table(tmp_path, "trials")) == 2

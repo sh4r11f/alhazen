@@ -10,14 +10,27 @@ answer it at all (no keyboard wired resumes at once, live monitor or not), the
 keyboard loop and the live monitor loop that wait for an answer, a rest that
 resumes by itself when nobody acts, the menu choices that are not resume or
 quit (eye-tracker procedures, the manual reward, the stage keys) and the
-heading the menu leads with after each of them, and the RESUMED event —
-with the failed validation the session went on under, when there was one.
+heading the menu leads with after each of them, a resume that owes a
+validation of the eye tracker first (a block break under
+``validate_after_break``), and the RESUMED event — with the failed
+validation the session went on under, when there was one.
 
-Interface: ``handle(record, fault=..., rest=...)``, True to go on and False
-when the experimenter quit. Everything it does to the world it does through
-what the runner handed it: the display, the clock, the keyboard, the
-live monitor, and the runner's own live monitor publisher, session-event emitter
-and stage-command handler.
+Interface: ``handle(record, fault=..., rest=..., validate_before_resuming=...)``,
+True to go on and False when the experimenter quit. Everything it does to the
+world it does through what the runner handed it: the display, the clock, the
+keyboard, the live monitor, and the runner's own live monitor publisher,
+session-event emitter and stage-command handler.
+
+A resume that owes a validation, as it runs::
+
+    SPACE / Resume ──▶ validation owed? ──no──▶ RESUMED
+                             │ yes
+                             ▼
+                  the V key's validation (_run_procedure)
+                  ├─ passed ─────────────────▶ RESUMED
+                  ├─ did not pass ──▶ amber heading; SPACE ──▶ RESUMED
+                  │                   (on_failed_validation)
+                  └─ ESC ───────────▶ the pause's own menu; SPACE validates again
 
 Callers must not rely on how many times the menu is drawn or the live monitor
 published while a pause is up, nor on the order keyboard and browser input
@@ -33,7 +46,7 @@ from typing import Any
 
 from alhazen.core.clock import Clock
 from alhazen.core.commands import Command, CommandSource
-from alhazen.devices.eyetracker.procedures import ValidationResult
+from alhazen.devices.eyetracker.procedures import Advance, ValidationResult
 from alhazen.display.backend import DisplayBackend
 from alhazen.live_monitor.runtime import LiveMonitorController
 from alhazen.session.eyetracker import EyeTrackerMonitor
@@ -79,6 +92,46 @@ def _validation_shortfall(validation: ValidationResult) -> str:
     if validation.n_missed:
         line += f", {validation.n_missed} target(s) missed"
     return line
+
+
+class _ValidationDue:
+    """A pause whose resume must see the eye tracker's calibration validated
+    first — a block break under ``BlockConfig.validate_after_break`` — and
+    whether that validation is still owed.
+
+    Owed until the monitor holds a validation measured during this pause
+    that the experimenter did not abandon: the one a resume runs, or one run
+    from the menu (V, or the validation that follows a calibration),
+    whatever its verdict. A validation that did not pass is the
+    experimenter's call — its heading says SPACE resumes on it — and resuming
+    on it is recorded (``PauseController._resumed``). A calibration that
+    takes clears the monitor's validation (``EyeTrackerMonitor.calibrate``),
+    so the pause owes a new one, measured against the new model.
+
+    Told apart by identity, not by time: the result the monitor held when the
+    pause began is the one that does not count, whatever clock stamped it.
+    """
+
+    def __init__(self, monitor: EyeTrackerMonitor) -> None:
+        self._monitor = monitor
+        self._held_before = monitor.validation
+
+    @property
+    def owed(self) -> bool:
+        latest = self._monitor.validation
+        return latest is None or latest is self._held_before or latest.aborted
+
+    @property
+    def passed(self) -> bool:
+        """Whether the latest validation passed; asked right after one ran."""
+        latest = self._monitor.validation
+        return latest is not None and latest.accepted
+
+
+def _owes_validation(due: _ValidationDue | None) -> bool:
+    """Whether a pause's resume still owes a validation: False for every
+    pause that asked for none."""
+    return due is not None and due.owed
 
 
 class PauseController:
@@ -132,13 +185,16 @@ class PauseController:
         rest: str | None = None,
         resumes_in_s: float | None = None,
         warning: str | None = None,
+        due: _ValidationDue | None = None,
     ) -> PauseMenu:
         """The menu for this session, built from what is actually wired.
 
         Built fresh at each pause rather than once at construction, because
         what is available can change during a session: a curriculum's stage
         keys are meaningless until a curriculum is running, and a fault
-        heading belongs only to the pause it describes.
+        heading belongs only to the pause it describes. ``due`` is the pause's
+        owed validation, if it has one: while it is owed, the SPACE row says
+        that resuming validates first.
         """
         return build_pause_menu(
             has_tracker=self._eyetracker is not None,
@@ -149,13 +205,19 @@ class PauseController:
             rest=rest,
             resumes_in_s=resumes_in_s,
             warning=warning,
+            resume_validates=_owes_validation(due),
         )
 
     def _show_pause_menu(self, menu: PauseMenu) -> None:
         self._display.show_menu(menu.title, menu.render(), color=menu.color)
 
     def handle(
-        self, record: dict[str, Any], *, fault: str | None = None, rest: str | None = None
+        self,
+        record: dict[str, Any],
+        *,
+        fault: str | None = None,
+        rest: str | None = None,
+        validate_before_resuming: bool = False,
     ) -> bool:
         """Resolve a PAUSED trial; returns False when the experimenter chose
         to quit. With no pause strategy wired (unattended runs), resume
@@ -170,12 +232,34 @@ class PauseController:
         wrong rather than with the word PAUSED. ``rest`` is the opposite: a
         scheduled break, headed and coloured as one.
 
+        ``validate_before_resuming`` makes resuming validate the eye
+        tracker's calibration first: a block break under
+        ``BlockConfig.validate_after_break``. It is the V key's validation,
+        run when the experimenter resumes (or a simulation's rest resumes by
+        itself). One that passes resumes; one that does not brings the menu
+        back headed by how it fell short, and SPACE then resumes on it; one
+        abandoned with ESC brings the pause's own menu back, and the next
+        SPACE validates again. A validation already run from this pause's
+        menu counts (``_ValidationDue``). Nothing can answer a failed one in
+        an unattended run or when a rest ended by itself, so the session then
+        resumes on it at once, and the log says so.
+
         The menu stays up across everything except resume and quit. Pressing
         the calibrate key used to calibrate and then resume in one press,
         which meant an experimenter who wanted to calibrate AND give a reward
         had to pause twice; and after a recalibration the natural thing to
         want is a look at the menu again, not the next trial.
         """
+        due: _ValidationDue | None = None
+        if validate_before_resuming:
+            if self._eyetracker is None:
+                # SessionRunner refuses to build such a session, so reaching
+                # this is a caller's bug. Resuming without the validation
+                # would be the silent skip the option exists to end.
+                raise ValueError(
+                    "validate_before_resuming needs an eye tracker to validate, and none is wired"
+                )
+            due = _ValidationDue(self._eyetracker)
         notice = "Paused — browser controls are enabled."
         if record.get("pause_action") == "calibrate":
             # The in-trial calibrate key: a pause that arrives with the
@@ -187,6 +271,10 @@ class PauseController:
             notice = f"{fault} — browser controls are enabled."
         elif rest is not None:
             notice = f"{rest.capitalize()} — resume when the subject is ready."
+        if _owes_validation(due):
+            # Said where the browser's reader sees it too: what follows
+            # Resume is a walk of targets, not the next trial.
+            notice += " Resuming validates the eye tracker's calibration first."
         # A rest can resume by itself when nobody acts in time: a simulation's
         # break, and only with someone who could act, since an unattended run
         # below resumes at once anyway. Never a fault: a pump or a
@@ -194,7 +282,7 @@ class PauseController:
         resume_after_s = (
             self._rest_resume_after_s if rest is not None and self._on_pause is not None else None
         )
-        menu = self._pause_menu(fault=fault, rest=rest, resumes_in_s=resume_after_s)
+        menu = self._pause_menu(fault=fault, rest=rest, resumes_in_s=resume_after_s, due=due)
         if self._on_pause is None:
             # Nobody is going to answer. `on_pause` is wired only for a
             # rendering display with a keyboard behind it (session/builder.py),
@@ -210,19 +298,27 @@ class PauseController:
             # what the session was asked to do and what it did, and the run
             # that finds out is the dry run, not the one with a subject in it.
             self._show_pause_menu(menu)
+            owed = _owes_validation(due)
             log.warning(
                 "pause with nobody to answer it (no keyboard wired — unattended run): "
-                "resuming immediately. %s",
+                "resuming immediately%s. %s",
+                ", once the calibration it asks for is validated" if owed else "",
                 notice,
             )
+            if owed:
+                # Run all the same, and on the record like any other: an
+                # unattended run is how a design's validation is rehearsed.
+                # Whatever it finds, nobody is here to decide on it, so the
+                # session resumes on it; _resumed says so in the log.
+                self._validate_before_resuming()
             if self._live_monitor is not None:
                 # Left out, a live monitor open on a dry run would sit on the
                 # last state it was told about while the session ran on.
                 self._publish("running", f"{notice} Unattended — resumed.")
-            return self._resumed()
+            return self._resumed(answered=False)
         if self._live_monitor is not None:
             return self._handle_live_monitor_pause(
-                menu, notice, fault=fault, rest=rest, resume_after_s=resume_after_s
+                menu, notice, fault=fault, rest=rest, resume_after_s=resume_after_s, due=due
             )
         deadline: float | None = None
         if resume_after_s is not None:
@@ -233,18 +329,29 @@ class PauseController:
                 # time out polls the keyboard here instead, until the deadline.
                 timed = self._next_menu_action_before(menu, deadline)
                 if timed is None:
-                    return self._resumed_by_itself(resume_after_s or 0.0)
+                    return self._resumed_by_itself(resume_after_s or 0.0, due)
                 # Somebody is there after all. From here the rest waits for
                 # them, and the screen stops promising otherwise.
                 action = timed
                 deadline = None
-                menu = self._pause_menu(fault=fault, rest=rest)
+                menu = self._pause_menu(fault=fault, rest=rest, due=due)
             else:
                 action = self._on_pause(menu)
             if action == "quit":
                 return False
             if action == "resume":
-                return self._resumed()
+                if not _owes_validation(due):
+                    return self._resumed()
+                assert due is not None  # owed implies a pause that asked for one
+                self._validate_before_resuming()
+                if due.passed:
+                    return self._resumed()
+                # Did not pass, or abandoned with ESC: the menu comes back as
+                # it does after V — headed by how the validation fell short
+                # (SPACE then resumes on it), or with the pause's own heading
+                # after an ESC, when the next SPACE validates again.
+                menu = self._menu_after_procedure("validate", fault=fault, rest=rest, due=due)
+                continue
             self._apply_pause_action(action)
             # The menu is rebuilt after every procedure, not only after one
             # that failed. A procedure that failed becomes the heading of the
@@ -254,7 +361,7 @@ class PauseController:
             # stays up after the recalibration that fixed it, and the pause's
             # own heading (a block break's REST) never comes back.
             if action in PROCEDURE_ACTIONS:
-                menu = self._menu_after_procedure(action, fault=fault, rest=rest)
+                menu = self._menu_after_procedure(action, fault=fault, rest=rest, due=due)
 
     def _next_menu_action_before(self, menu: PauseMenu, deadline: float) -> str | None:
         """Draw the menu and poll the keyboard until a key picks an action or
@@ -275,16 +382,45 @@ class PauseController:
             self._wait(0.01)
         return None
 
-    def _resumed_by_itself(self, after_s: float) -> bool:
-        """End a rest that nobody resolved in time: say so, then resume."""
+    def _resumed_by_itself(self, after_s: float, due: _ValidationDue | None) -> bool:
+        """End a rest that nobody resolved in time: say so, run the validation
+        it owes if it owes one, then resume.
+
+        Nobody answered the rest, so nobody is there to answer a validation
+        that fails either. It goes on the record like any other, and the
+        session resumes on it at once (``_resumed`` says so in the log)
+        rather than waiting under a heading nobody will read, which in a
+        simulation would be a session that never ends.
+        """
         log.info(
             "the rest between blocks resumed by itself after %g s: nothing was pressed "
             "(simulation)",
             after_s,
         )
+        outcome = ""
+        if _owes_validation(due):
+            outcome = f" {self._validate_before_resuming()}."
         if self._live_monitor is not None:
-            self._publish("running", f"Resumed by itself after {after_s:g} s (simulation).")
-        return self._resumed()
+            self._publish(
+                "running", f"Resumed by itself after {after_s:g} s (simulation).{outcome}"
+            )
+        return self._resumed(answered=False)
+
+    def _validate_before_resuming(self) -> str:
+        """The validation a resume owes: the pause menu's V, run through the
+        same procedure (``_run_procedure``), so it goes where every
+        validation goes — the VALIDATION event, the live monitor's
+        Validation panel, the log. Returns its one-line outcome.
+
+        It advances from target to target by itself ("auto") whenever nobody
+        may be at the keyboard to accept one: an unattended run, or a
+        simulation, whose rest resumes by itself. A walk there that waited
+        for SPACE at every target (the rig's setting, and the default) would
+        never end. Otherwise it advances as the rig says, exactly as V does.
+        """
+        log.info("validating the eye tracker's calibration before resuming (validate_after_break)")
+        unattended = self._on_pause is None or self._rest_resume_after_s is not None
+        return self._run_procedure("validate", advance="auto" if unattended else None)
 
     def _apply_pause_action(self, action: str) -> str | None:
         """One non-terminal menu choice; returns the line the live monitor shows
@@ -304,10 +440,14 @@ class PauseController:
         log.warning("unhandled pause action %r", action)
         return f"unhandled action {action!r}."
 
-    def _run_procedure(self, action: str) -> str:
+    def _run_procedure(self, action: str, advance: Advance | None = None) -> str:
         """One eye-tracker procedure from the pause menu, and its one-line
         outcome. The monitor keeps the results and shows them on the
         live monitor's Eye tracker tab; this line is what the pause notice says.
+
+        ``advance`` is for the validation a resume runs by itself
+        (``_validate_before_resuming``); a key pressed on the menu leaves it
+        None, and the walk advances as the rig says.
         """
         monitor = self._eyetracker
         if monitor is None:
@@ -323,11 +463,21 @@ class PauseController:
                 line += f" · {validation.summary()}"
             return line
         if action == "validate":
-            return monitor.validate().summary()
+            # The keyword only when there is one to give, so V's own call is
+            # exactly the one it always was — which a stand-in monitor that
+            # predates the keyword (a test's) still answers.
+            if advance is None:
+                return monitor.validate().summary()
+            return monitor.validate(advance=advance).summary()
         return monitor.drift_correct().summary()
 
     def _menu_after_procedure(
-        self, action: str, *, fault: str | None, rest: str | None
+        self,
+        action: str,
+        *,
+        fault: str | None,
+        rest: str | None,
+        due: _ValidationDue | None = None,
     ) -> PauseMenu:
         """The pause menu to show once a procedure has run.
 
@@ -335,15 +485,16 @@ class PauseController:
         not pass heads it as a warning; either replaces the pause's own
         heading while it stands. After a procedure that succeeded, the pause's
         own heading comes back: a block break's REST, or the fault that
-        opened the pause.
+        opened the pause. ``due`` is the pause's owed validation, which the
+        SPACE row describes while it is still owed.
         """
         failed = self._procedure_fault(action)
         if failed is not None:
-            return self._pause_menu(fault=failed)
+            return self._pause_menu(fault=failed, due=due)
         warned = self._procedure_warning(action)
         if warned is not None:
-            return self._pause_menu(warning=warned)
-        return self._pause_menu(fault=fault, rest=rest)
+            return self._pause_menu(warning=warned, due=due)
+        return self._pause_menu(fault=fault, rest=rest, due=due)
 
     def _procedure_fault(self, action: str) -> str | None:
         """The heading the pause screen leads with after a procedure that
@@ -383,7 +534,11 @@ class PauseController:
             return None
         return f"{_validation_shortfall(validation)} — SPACE resumes on it, C recalibrates"
 
-    def _resumed(self) -> bool:
+    def _resumed(self, *, answered: bool = True) -> bool:
+        """Emit RESUMED and go on. ``answered`` says whether somebody resumed
+        it (a key, the browser) rather than the session with nobody there —
+        an unattended run, or a rest that ended by itself — which is what the
+        log line about a failed validation has to say truthfully."""
         payload: dict[str, Any] = {}
         monitor = self._eyetracker
         validation = monitor.validation if monitor is not None else None
@@ -400,9 +555,18 @@ class PauseController:
                 "threshold_deg": validation.threshold_deg,
                 "n_missed": validation.n_missed,
             }
+            # Nobody chose it when nobody was there: an unattended run, or a
+            # rest that resumed by itself, goes on under a failed validation
+            # because nothing can answer it, and the log must not claim a
+            # decision nobody made.
+            chosen = (
+                "as the experimenter chose"
+                if answered
+                else "with nobody there to decide (an unattended run, or a rest that ended "
+                "by itself)"
+            )
             log.warning(
-                "resumed on a validation that did not pass, as the experimenter chose: %s",
-                validation.summary(),
+                "resumed on a validation that did not pass, %s: %s", chosen, validation.summary()
             )
         self._emit_session_event("RESUMED", payload)
         return True
@@ -415,6 +579,7 @@ class PauseController:
         fault: str | None = None,
         rest: str | None = None,
         resume_after_s: float | None = None,
+        due: _ValidationDue | None = None,
     ) -> bool:
         """Drive the local browser controls only after a keyboard pause.
 
@@ -423,7 +588,8 @@ class PauseController:
         can never strand an experimenter in the pause screen. `notice` is the
         line the browser shows as the pause begins; `fault` and `rest` are the
         pause's own heading, kept so that a procedure run from the browser can
-        put it back after replacing it.
+        put it back after replacing it. `due` is the validation the pause's
+        resume owes, if any (see `handle`).
         """
         assert self._live_monitor is not None
         live_monitor = self._live_monitor
@@ -474,30 +640,43 @@ class PauseController:
                     # waits for them from here, and the menu drawn after their
                     # action no longer says it will resume by itself.
                     deadline = None
-                    menu = self._pause_menu(fault=fault, rest=rest)
+                    menu = self._pause_menu(fault=fault, rest=rest, due=due)
                 elif self._clock.now() >= deadline:
-                    return self._resumed_by_itself(resume_after_s or 0.0)
+                    return self._resumed_by_itself(resume_after_s or 0.0, due)
             for index, action in enumerate(actions):
-                if action == "resume":
+                if action == "resume" and not _owes_validation(due):
                     self._publish("running", "Resumed.")
                     return self._resumed()
                 if action == "quit":
                     self._publish("stopping", "Quit requested.")
                     return False
-                message = self._apply_pause_action(action)
+                # The procedure this action runs, if any: its own name, or,
+                # for a resume that owes a validation, the V key's validation,
+                # run first and handled below exactly as V's would be.
+                procedure = action
+                message: str | None
+                if action == "resume":
+                    assert due is not None  # owed implies a pause that asked for one
+                    message = self._validate_before_resuming()
+                    if due.passed:
+                        self._publish("running", f"{message} — resumed.")
+                        return self._resumed()
+                    procedure = "validate"
+                else:
+                    message = self._apply_pause_action(action)
                 # Every non-terminal action redraws the menu, because
                 # _apply_pause_action may have put a calibration screen over
                 # it, and a menu that vanishes after one keypress looks like
                 # a session that has crashed. A procedure that failed becomes
                 # the menu's heading: the browser gets the verdict as its
                 # notice, but the rig's own screen must say it too.
-                if action in PROCEDURE_ACTIONS:
+                if procedure in PROCEDURE_ACTIONS:
                     # Rebuilt after every procedure, so a heading that a
                     # failure put up comes back down when a later procedure
                     # succeeds, and the pause's own heading returns with it.
-                    menu = self._menu_after_procedure(action, fault=fault, rest=rest)
+                    menu = self._menu_after_procedure(procedure, fault=fault, rest=rest, due=due)
                 self._show_pause_menu(menu)
-                if action in PROCEDURE_ACTIONS:
+                if procedure in PROCEDURE_ACTIONS:
                     # A procedure runs for seconds to minutes, and the browser
                     # keeps accepting clicks until it learns of the
                     # "calibrating" status — about 0.2 s after the first
@@ -508,11 +687,14 @@ class PauseController:
                     # buttons come back; the keys a walk polls are already
                     # consumed by the walk itself.
                     dropped = actions[index + 1 :] + [c.name for c in live_monitor.poll_commands()]
+                    # A second Resume in a double-click lands here too, when
+                    # the validation the first one ran did not pass: it must
+                    # not resume on that result before anyone has read it.
                     if dropped:
                         log.info(
                             "discarding %d command(s) queued while %s ran: %s",
                             len(dropped),
-                            action,
+                            procedure,
                             ", ".join(dropped),
                         )
                 if message is not None:
@@ -520,7 +702,7 @@ class PauseController:
                     # ran: the buttons are live again.
                     self._publish("paused", message)
                 published_at = self._clock.now()
-                if action in PROCEDURE_ACTIONS:
+                if procedure in PROCEDURE_ACTIONS:
                     break
             if live_camera and self._clock.now() - published_at >= CAMERA_REFRESH_S:
                 self._publish("paused", self._last_message())
