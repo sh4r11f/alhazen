@@ -39,9 +39,20 @@ real session, the amodal-averaging pilot (sub-pilot, ses-001, run-02, a
 TRACKPixx3 with ``eyetracker.eye: left``): the session's own online gaze at
 the moment each saccade landed (its trials.csv ``endpoint_x/y_dva``, at
 ``t_landed``) matches the file's ``Right Screen X/Y`` at that moment with a
-median absolute difference of 0.049 degrees over 125 trials, and its ``Left
-Screen X/Y`` with 1.46 degrees. So VPixx calls one physical channel
-"left" in its live API documentation and "Right" in its recording.
+median absolute difference of 0.049 degrees over its 128 completed trials,
+and its ``Left Screen X/Y`` with 1.46 degrees. So VPixx calls one physical
+channel "left" in its live API documentation and "Right" in its recording.
+
+A third VPixx call names it "right" as well, most likely. The calibration
+plot and the ``CALIBRATION`` event's per-eye errors (devices/eyetracker/
+viewpixx.py ``_fitted_calibration``) follow the per-target calibration call,
+``TPxGetEyePositionDuringCalib_returnsRaw``, which VPixx documents right eye
+first. On the same pilot the eye that call names ``right`` is the one that
+fits well (worst target 0.49 degrees against 2.62 for its ``left``, on the
+calibration every completed trial ran on), and the channel the session read
+as ``left`` is the one that passed validation. So on the live monitor's
+calibration plot, read ``right`` as the session's ``left`` until the rig test
+below says otherwise.
 
 The translation is made here, in one place — :data:`FILE_SIDE` — and every
 per-eye column this module reads or names goes through it: screen position,

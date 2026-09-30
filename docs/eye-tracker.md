@@ -259,8 +259,8 @@ Left Screen Y, Left Pupil Diameter, Right Screen X, ...`.
 This was found on the amodal-averaging pilot, a TRACKPixx3 session with
 `eyetracker.eye: left`. The session's own online gaze at the moment each
 saccade landed (the endpoint in its `trials.csv`) sits a median 0.049° from
-the file's `Right Screen X/Y` over 125 trials, and 1.46° from its `Left
-Screen X/Y`.
+the file's `Right Screen X/Y` over its 128 completed trials, and 1.46° from
+its `Left Screen X/Y`.
 
 ```mermaid
 flowchart LR
@@ -289,11 +289,20 @@ What alhazen does about it, from 2.2.1:
 - **Analyses made with an earlier alhazen read the other eye.** Before 2.2.1
   the reader mapped the names straight across. Re-run them.
 
+**The calibration plot uses a third naming.** Its per-eye errors, and the
+CALIBRATION event's `left_error_deg` and `right_error_deg`, follow VPixx's
+per-target calibration call, which is documented right eye first. On the
+pilot, the eye that call names `right` is the one that fits well (worst
+target 0.49° against 2.62° for its `left`), and the channel the session read
+as `left` is the one that passed validation. So, most likely, the plot's
+`right` is the session's `left`: read it that way until the test below.
+
 **Still not known: which channel is the subject's left eye.** The data
 cannot tell, because one name comes from VPixx's API documentation and the
-other from VPixx's file writer. Until the test below is done, `left` means
-"the channel the session calls left". Anything whose sign depends on anatomy
-is not established on a TRACKPixx3, vergence (left minus right) above all.
+others from VPixx's file writer and calibration call. Until the test below is
+done, `left` means "the channel the session calls left". Anything whose sign
+depends on anatomy is not established on a TRACKPixx3, vergence (left minus
+right) above all.
 
 ### The rig test: cover one eye
 

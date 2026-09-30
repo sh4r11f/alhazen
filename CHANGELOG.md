@@ -34,9 +34,9 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   the live backend's names: `select_eye` takes the first pair of the device's
   gaze report as `left`, as pypixxlib documents it. VPixx's own CSV writer
   files that same channel under `Right ...`. On the amodal-averaging pilot
-  (`eye: left`, 125 trials) the session's online gaze matches the file's
-  `Right Screen X/Y` to a median 0.049° and its `Left Screen X/Y` only to
-  1.46°. `alhazen.analysis.io.viewpixx` mapped the names straight across, so
+  (`eye: left`, 128 completed trials) the session's online gaze matches the
+  file's `Right Screen X/Y` to a median 0.049° and its `Left Screen X/Y` only
+  to 1.46°. `alhazen.analysis.io.viewpixx` mapped the names straight across, so
   every analysis of a TRACKPixx3 run read the eye the session did not use.
   It now translates in one place, the new public
   `FILE_SIDE = {"left": "Right", "right": "Left"}`:
@@ -58,7 +58,10 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   TRACKPixx3 run made with an earlier version.** Which channel is the
   subject's anatomical left eye is still open, and with it the sign of a
   TRACKPixx3 vergence: [eye-tracker.md](docs/eye-tracker.md#which-eye-is-which-on-a-trackpixx3)
-  has the rig test (cover one eye) that settles it.
+  has the rig test (cover one eye) that settles it. The same page notes that
+  the calibration plot's `left` and `right` follow a third VPixx naming, most
+  likely the file's: on the pilot its well-fitting `right` is the session's
+  `left`.
 
 ## 2.2.0 - 2026-09-29
 
