@@ -270,7 +270,8 @@ flowchart TD
 - **A validation already run during the break counts.** One from V, or the
   one that follows C (`validate_after_calibration`), whatever its verdict, so
   SPACE does not walk the targets twice. A calibration that takes replaces the
-  model the earlier validation measured, so after C the break owes a new one.
+  model any earlier validation measured, so that one no longer counts: with
+  `validate_after_calibration: false`, SPACE after C validates the new model.
 
 Everything goes where every validation's result goes: the VALIDATION event
 (inside the break's PAUSED … RESUMED), the live monitor's Validation panel

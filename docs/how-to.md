@@ -88,6 +88,13 @@ class MyScheduler:
   built-in ones refuse (`TypeError`) an answer that is not a `bool`.
 - A queue-based scheduler may define `remaining()` (planned trials still
   queued); `BlockPlan` then refuses a `trials_per_block` that would cut it.
+- A scheduler that leaves breaks between blocks (`take_block_break()`, as
+  `BlockPlan` does) may carry `validate_after_break = True` to end each
+  break with a validation of the eye tracker
+  ([eye tracker](eye-tracker.md#validation-at-block-breaks)). A task that
+  builds its own `BlockPlan` passes `breaks=` and `validate_after_break=` on
+  from its params' `BlockConfig`: a session whose params ask for the
+  validation and whose scheduler does not carry it is refused.
 - `record()` is called for *every* outcome, including PAUSED and ABORTED.
 
 ## Add a device backend
