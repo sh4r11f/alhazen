@@ -238,6 +238,14 @@ gaze has to know where *this trial's* target is, and target position is drawn
 per trial, so a scripted trace cannot do it. Substituting a task subclass that
 publishes the current plan is the smallest honest way to connect them.
 
+**The seed is the session's.** `simulation(seed)` receives the seed the
+session runs with: the one given with `--seed`, or the one the session drew
+when none was given (every run the workspace starts), which the console
+prints before trial one and the snapshot records. So two unseeded rehearsals
+have different subjects, and `--seed N` repeats the subject as well as the
+session. (Before 2.4.0 an unseeded rehearsal handed the subject 0, so every
+such rehearsal had the same subject.)
+
 **It drives no hardware.** Nobody is in the chair, so nothing that acts on
 a subject or reads one is driven: the rig's tracker stands down for the
 autopilot, a `nidaq` pump and sync lines become `simulated` (deliveries and
@@ -284,6 +292,50 @@ advances from target to target by itself, and a result that does not pass is
 resumed on at once, with a line in the log saying nobody was there to decide
 ([eye tracker](eye-tracker.md#validation-at-block-breaks)). A simulation
 never waits under a heading nobody will read.
+
+### A subject whose eye is never still
+
+Where a simulated subject looks, and when, is the experiment's own model. What
+every such model shares is that a real eye never holds still:
+
+```mermaid
+flowchart LR
+    B["the experiment's subject<br/><i>where it means to look now:<br/>fixation, flight, landing</i>"] --> A((+))
+    N["GazeNoise.offset_dva(t)<br/><i>drift + microsaccades<br/>+ tracker noise</i>"] --> A
+    A --> G["get_gaze()<br/><i>the sample the session reads</i>"]
+```
+
+`alhazen.modes.gaze_noise.GazeNoise` is that part, in degrees: a slow drift
+that is pulled back to the point being fixated (a standard deviation of
+0.15° per axis by default), about one microsaccade a second (0.3° typical,
+aimed roughly back at the point), and the tracker's own noise on every sample
+(0.02°). The subject adds the offset to the point it is aiming at, on every
+sample:
+
+```python
+from alhazen.modes.gaze_noise import GazeNoise
+
+class MyParticipant:
+    def __init__(self, seed: int) -> None:
+        plan_seed, noise_seed = np.random.SeedSequence(seed).spawn(2)
+        self._rng = np.random.default_rng(plan_seed)      # the trial plans
+        self._noise = GazeNoise(np.random.default_rng(noise_seed))
+
+    def get_gaze(self) -> GazeSample | None:
+        now = self._clock.now()
+        aim = self._aim_px(now)                            # the experiment's model
+        dx, dy = self._noise.offset_dva(now)
+        k = self._screen.px_per_deg
+        return GazeSample(gx=aim[0] + dx * k, gy=aim[1] + dy * k, t=now)
+```
+
+Give it a generator of its own. How many numbers it draws depends on how many
+samples are taken, which depends on the frame timing, so sharing the trial
+plans' generator would make one trial's plan depend on how fast the last one
+was drawn, and a seeded rehearsal would stop replaying. It is exact at any
+frame rate, refuses a clock that runs backwards, and with every size set to 0
+it is a still eye. Record `noise.describe()` in `Simulation.describe`, so the
+snapshot says how noisy the subject was.
 
 ## `demo` — look at the stimulus
 

@@ -114,6 +114,10 @@ explains each.
     options:
       members: [Simulation]
 
+::: alhazen.modes.gaze_noise
+    options:
+      members: [GazeNoise]
+
 ::: alhazen.modes.demo
     options:
       members: [DemoSetup, DemoView, DemoControl, DemoState, run_demo, RESERVED_KEYS,

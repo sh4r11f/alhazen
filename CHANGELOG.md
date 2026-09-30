@@ -25,6 +25,36 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## 2.4.0 - 2026-09-29
+
+### Added
+
+- **`alhazen.modes.gaze_noise.GazeNoise`: a simulated eye that is never
+  still.** Every experiment's simulated subject wrote the point it meant to
+  look at straight into its gaze samples, so the eye held the same pixel for
+  a whole fixation and the live monitor's gaze trace was a flat line.
+  `GazeNoise(rng).offset_dva(t)` is what a real gaze signal adds, in
+  degrees: a slow drift pulled back to the fixated point (0.15° per axis by
+  default, time constant 0.5 s), about one microsaccade a second (0.3°
+  typical, aimed roughly back at the point) and the tracker's own noise on
+  every sample (0.02°). The subject adds it to its aim on every sample. Exact
+  at any frame rate; a long gap is crossed at once; a clock that runs
+  backwards and a negative, infinite or NaN size are refused by name; every
+  size 0 is a still eye; `describe()` gives the settings for the snapshot.
+  docs/modes.md, "A subject whose eye is never still".
+
+### Fixed
+
+- **A simulated subject draws from the session's seed.** With no `--seed`
+  (every run the workspace starts), simulate mode handed
+  `Task.simulation()` the seed 0 while the session drew its own. So every
+  unseeded rehearsal had the same subject making the same latencies,
+  landings and lapses, and re-running with the printed
+  `--seed N repeats it` repeated the session but changed the subject. The
+  seed is now resolved once in `build_mode_session`, before the simulation is
+  built, and the same number reaches the subject, the session and the
+  snapshot.
+
 ## 2.3.0 - 2026-09-29
 
 ### Added
