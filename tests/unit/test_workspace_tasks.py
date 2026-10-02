@@ -460,6 +460,18 @@ class TestEveryLaunchNamesItsTask:
                 request_for(workspace, project=key, mode="simulate"), workspace.directory / "job"
             )
 
+    def test_an_unreadable_table_is_still_refused_in_its_own_words(self, workspace, monkeypatch):
+        """start() asks for a one-task name before anything else; a table it
+        cannot read is not a one-task project, and the refusal the person
+        sees is the table's shape, not a schema read's failure."""
+        key = self.on_alhazen(workspace, monkeypatch, "2.5.0")
+        spawned = self.schema_reads(monkeypatch, failing=True)
+        root = Path(workspace.projects[0]["path"])
+        write_run_py(root, 'run_experiment(tasks={"a": (A, "x.yaml")})\n')
+        with pytest.raises(ValueError, match="module-level dict literal"):
+            workspace.start(request_for(workspace, project=key, mode="simulate"))
+        assert spawned == []
+
     def test_a_standalone_script_is_sent_no_task(self, workspace, monkeypatch):
         """A script is not a session of the task, and declares its own flags."""
         root = Path(workspace.projects[0]["path"])

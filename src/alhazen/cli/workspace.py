@@ -1203,7 +1203,11 @@ class Workspace:
         """
         if request.mode not in {m.value for m in Mode}:
             return None
-        if project_tasks(Path(project["path"]))["tasks"]:
+        declared = project_tasks(Path(project["path"]))
+        # A table, or one that cannot be read: the Task menu's business
+        # (`_task_for`), whose refusal of an unreadable table must be the one
+        # the person sees, not a schema error from here.
+        if declared["tasks"] or declared["error"]:
             return None
         if _alhazen_release(project.get("alhazen_version")) < ONE_TASK_FLAG_SINCE:
             return None
