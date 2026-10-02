@@ -553,14 +553,13 @@ the same reason.
 only the one: `python run.py --task my-task --mode demo`. With `task_class=`
 the flag's only choice is the task's `name`. It is required in every mode but
 measure, which checks the machine and runs no task. Until alhazen 3.0 a
-command that leaves it out still runs the task it always ran, and warns — a
-`FutureWarning`, which Python always shows:
+command that leaves it out still runs the task it always ran, and warns with
+a `FutureWarning`, which Python always shows (a `DeprecationWarning` raised
+outside `__main__` is hidden), printed against run.py's line:
 
-```
-run.py:12: FutureWarning: running run.py without --task is deprecated since alhazen 2.5
-and will be removed in 3.0; use --task my-task instead. This session runs my-task,
-run.py's one task; alhazen 3.0 will refuse a command that names no task
-```
+> running run.py without --task is deprecated since alhazen 2.5 and will be
+> removed in 3.0; use --task my-task instead. This session runs my-task,
+> run.py's one task; alhazen 3.0 will refuse a command that names no task
 
 An experiment that ships several tasks declares them once, as a table, and
 alhazen owns the `--task` flag — its choices are the table's keys, and the
