@@ -147,7 +147,11 @@ command source, and the bus:
    row is flagged, a WARNING is logged, the phase runs to its end, and the
    trial keeps its outcome
 3. snapshot inputs into `ctx.inputs` (gaze, converted to centered px)
-4. `phase.on_frame(ctx)` draws and decides (CONTINUE / ADVANCE / Outcome)
+4. `phase.on_frame(ctx)` draws and decides (CONTINUE / ADVANCE / Outcome).
+   A phase whose time is up decides *before* drawing and ends through
+   `ctx.end_undrawn` (§2.3): the engine then skips steps 5–10 for it, and the
+   next phase is entered and draws this same frame, from step 4, with the
+   commands, health checks and inputs already taken
 5. draw the rig's `overlay(ctx)`, if any — today, the photodiode patch
 6. `display.flip()` — the only moment photons change
 7. read the session clock once — the flip's time, which steps 8–10 all
@@ -198,6 +202,10 @@ Invariants the tests pin:
   Events with no flip of their own (`TRIAL_START`, `TRIAL_END`, `PAUSED`, a
   manual `REWARD`, a drop's end) are stamped as they are emitted.
 - Every emitted event mirrors into the trial record as `t_<name>`.
+- A phase of duration *d* is on screen for *d*, to the nearest frame: a timed
+  phase asks `ctx.time_up` before drawing and ends through
+  `ctx.end_undrawn`, and the engine does not flip a frame a phase ended
+  undrawn (§2.3).
 - Every record carries `fault`: `none` unless a system fault hit the trial
   (`dropped_frames`, `tracker_stopped`) — a value on every row, never an
   empty cell, for the reason `n_dropped_frames` is `0` on a clean trial.
@@ -307,6 +315,196 @@ recycled the trial — flag `dropped_frames`, the fault the trial is served
 again for; the tracker stop is in the log. A failed health check is always a
 device that stopped, never something the subject did, so a check added later
 is treated like the tracker's: its reason becomes the row's `fault`.
+
+### 2.3 How long a phase lasts
+
+**The rule.** A phase of duration *d* is on screen for *d*, to the nearest
+frame: the next phase's first frame — or, when the phase ends the trial, the
+empty frame that takes its stimulus off — appears *d* after the phase's own
+first frame. 600 ms at 120 Hz is 72 frames. Every library phase with a
+duration, a timeout or a dwell follows it (§5.2), and an experiment's own
+phase gets it by calling the same two methods.
+
+| *d* | 60 Hz | 120 Hz | 144 Hz | 165 Hz |
+|---|---|---|---|---|
+| 600 ms | 36 | 72 | 86 (86.4) | 99 |
+| 500 ms | 30 | 60 | 72 | 83 (82.5) |
+| 100 ms | 6 | 12 | 14 (14.4) | 17 (16.5) |
+| 250 ms | 15 | 30 | 36 | 41 (41.25) |
+
+Until 2.5 every timed phase was one frame longer. The engine runs a frame as
+`on_frame` (draw, then decide) → flip, and a phase that compared its clock
+with its duration *after* drawing still showed the frame on which the answer
+became yes: `ceil(d·hz) + 1` frames — 608 ms for a 600 ms hold at 120 Hz, and
+at an exact multiple one more again whenever the clock's floating-point sum
+landed a hair short of it. `StimulusResponse` and `ResponseWindow`, which
+timed from their own first flip, showed one frame more than that. Events were
+always stamped with the real flips, so recorded times were right; the nominal
+durations were not.
+
+**The mechanism: decide before drawing, and end without the frame.** Two
+methods on the context, and one path in the engine.
+
+```python
+# fragment: the shape of every timed phase
+def on_enter(self, ctx):
+    self._t0 = ctx.clock.now()  # read right after the flip before this phase's first frame
+
+def on_frame(self, ctx):
+    if ctx.time_up(self._t0, self._duration_s):  # before anything is drawn
+        return ctx.end_undrawn(PhaseAction.ADVANCE)  # or an Outcome
+    draw_stimuli(ctx, ["fixation"])
+    return PhaseAction.CONTINUE
+```
+
+- `ctx.time_up(since, duration_s)` counts the frames flipped since `since`
+  *by the clock* — the time since `since` in frame periods, rounded to a
+  whole frame — and says whether they have reached `duration_s` in whole
+  frames. Asked at the top of `on_frame`, it is True on the first frame that
+  would be past the duration, so ending there leaves exactly that many
+  frames on screen. `since` is the moment the timed thing could first be
+  drawn: the clock read in `on_enter`, which is right after the flip before
+  the phase's first frame, or a flip-stamped event's time for something timed
+  from an earlier flip (`LandingSample` times its dwell from
+  `RESPONSE_ONSET`, the flip just before its own first frame).
+- `return ctx.end_undrawn(then)` ends the phase with `then` —
+  `PhaseAction.ADVANCE` or an Outcome — without showing this frame. The phase
+  must not have drawn anything on it. `end_undrawn` returns `then`
+  unchanged, so what `on_frame` returns is what it always returned; the
+  context carries "not shown" to the engine, which clears it before every
+  `on_frame`. Returning anything other than what it returned is a
+  `TypeError`, as is passing it `CONTINUE`.
+
+What the engine does with a frame a phase ended undrawn:
+
+- **No flip for it.** The next phase is entered at once and draws *this*
+  frame. Its `on_enter` events, and anything the ending phase queued, flush
+  on the flip that shows it — the flip that first shows the next phase, so
+  invariant 1 holds. The frame's commands, health checks and input snapshot
+  are not taken again: it is one frame, and the keys in it must reach the
+  next phase, and the database's frame log, exactly once.
+- **An Outcome** ends the measurement as any Outcome does. The closing phase
+  (`must_be_last`), when there is one, draws the frame, so feedback follows
+  the stimulus with no blank frame between. With none, the engine shows the
+  frame empty — the flip on which the stimulus goes off, stamped, fed to frame
+  QA and carrying the frame's events like any other — and then blanks the
+  display as it always has.
+
+```mermaid
+sequenceDiagram
+    participant E as TrialEngine
+    participant H as HoldFixation (d = 3 frames)
+    participant S as StimulusResponse
+    participant D as Display
+    E->>H: on_enter — t0 = the clock, just after the last flip
+    loop frames 0, 1, 2
+        E->>H: on_frame: gaze inside; time_up? no — draw the point, CONTINUE
+        E->>D: flip, stamp
+    end
+    E->>H: on_frame: gaze inside; time_up? yes (3 frames since t0) — end_undrawn(ADVANCE), nothing drawn
+    Note over E,D: no flip: the same frame, its inputs reused
+    E->>S: on_enter — queues STIM_ON
+    E->>S: on_frame: draw the target, CONTINUE
+    E->>D: flip — STIM_ON stamped 3 frames after the hold's first flip
+```
+
+**Rounding: the nearest frame, half a frame up.** A duration becomes
+`round(d / frame period)` whole frames, a value exactly half-way taking the
+longer count. `Duration.n_frames` uses the same function
+(`config.models.whole_frames`), so a phase given `Duration.seconds(hz)` lasts
+exactly `Duration.n_frames(hz)` frames. "The next frame" (at least *d*) was
+the alternative; it loses on two of the three things durations are for:
+
+- *An exact multiple must come out exact on a real rig.* The frame period is
+  the **measured** refresh rate, which is never exactly the nominal one: at
+  120.01 Hz, 600 ms is 72.006 frames and "the next frame" makes it 73; at
+  119.99 Hz it makes it 72. Flip stamps jitter by tens of microseconds as
+  well. Nearest puts the decision half a frame away from every whole number;
+  "the next frame" puts it on the whole number, where noise decides.
+- *A foreperiod's jitter wants no bias.* `HoldFixation` draws its duration
+  from a uniform range so that the go cannot be timed. Rounding each draw to
+  the nearest frame keeps the realised durations centred where they were
+  drawn; "the next frame" moves every one later, by half a frame on average.
+- *A response timeout wants the whole of it*, and that is the case for "the
+  next frame": a timeout that is not a whole number of frames can be cut by
+  up to half a frame. That is accepted, because the rounding is not the
+  larger loss. Input is read once per frame, at its start, so the last input
+  a phase can see is the one read at the start of its last frame on screen;
+  a response made during that frame is read after the stimulus has gone (see
+  below). A response window that must count every response up to *T* with
+  nothing on screen past *T* is more than a frame-locked display can give;
+  ask for *T* plus one frame.
+
+Half up because the two counts are equally near and the longer one is never
+short of what was asked. It matters more often than it looks: at 165 Hz every
+odd multiple of 100 ms is exactly half-way (500 ms is 82.5 frames), and the
+rounding half to even that `Duration.n_frames` used before gave 82 frames for
+500 ms and 116 for 700 ms.
+
+**What a phase still sees on its last frame.** The time-up check runs on a
+frame whose inputs have been read, and the phases that measure a hold or a
+response look at those inputs first and only then ask about the time. So:
+
+- a hold is verified up to the start of its last frame on screen, as before:
+  a break read on the time-up frame is a break, not a pass (the blink rule);
+- a response is counted when it is read by the time-up frame — up to one
+  frame before the timeout. Before 2.5 it was counted up to the timeout, with
+  the stimulus up two frames past it. `rt_ms` is measured as before.
+
+**Dropped frames.** Frames are counted by the clock, not by calls: a flip
+more than half a frame late — the line frame QA's default tolerance draws —
+counts as the frames it took. A phase with a dropped frame inside it still
+ends on time, one frame shorter. One whose own first flip is late ends on
+time too, because `since` is the flip *before* its first frame: it absorbs
+the late flip, and the trial keeps its schedule. A late flip of the next
+phase's first frame stretches this phase's last frame; nothing a phase does
+can prevent that, and frame QA records it.
+
+**The simulated display and its clock.** On simulated time — `FakeClock`
+with `FakeDisplay`, or a `SimulatedDisplay` handed the clock's `advance`
+(`build_session(clock=FakeClock())`) — every flip is exactly one frame, so
+every count is exact and the same on every machine. A `SimulatedDisplay`
+paced against real time behaves like a panel: a late flip is a drop, and is
+counted by time. An unpaced one (`frame_period_s=0`) flips as fast as the
+host allows, so a timed phase shows as many frames as fit and ends when real
+time reaches its duration, as it always did.
+
+**Where the frame period comes from.** The engine sets
+`ctx.frame_period_s` at the start of every trial: the frame monitor's
+expected period — the measured refresh rate, which every session wires — or,
+in an engine built without a monitor (a test), the display's own
+`frame_period_s` (`FakeDisplay` and `SimulatedDisplay` report one). A context
+that has neither — a phase stepped by hand in a test, with no engine —
+falls back to `ctx.dt` and says so with a `DeprecationWarning`; from 3.0 the
+period is required.
+
+**What does not change.** One clock: `time_up` reads `ctx.clock`, the
+session clock. Events stamped on flips: nothing is emitted except after a
+flip, and a phase's entry event lands on the flip that first shows it,
+carried frames included. `ctx.dt` is still the measured length of the frame
+before. Frame QA sees every flip and only flips: a frame not shown is not a
+skipped vsync, because the next phase draws in the same frame time. Phases
+that end on a condition — gaze arriving or leaving, a key, a commit, an eye
+that settles — still show the frame on which they saw it; only time ends
+changed. `FrameSequence` counts frames, not time, and already showed exactly
+its `n_frames`.
+
+**An experiment's own phase** gets the rule by moving its time check to the
+top of `on_frame` and ending through the context:
+`if ctx.time_up(self._t0, d): return ctx.end_undrawn(then)`, with
+`self._t0 = ctx.clock.now()` in `on_enter`. A phase that keeps checking after
+drawing keeps the old, one-frame-longer timing and nothing else changes for
+it; a phase that subclasses a library phase inherits the rule.
+
+Alternatives weighed, and why not:
+
+| Alternative | Why not |
+|---|---|
+| A helper that decides one frame ahead ("will the flip after this one be past my time?"), with no engine change | It has to predict the next flip from the nominal period, and the phase is gone before the input it should check last arrives: a break in a hold's final frame would reach `StimulusResponse` as a 0 ms saccade instead of a break. |
+| A new return value (`PhaseAction.ADVANCE_UNDRAWN`, or a wrapper around the Outcome) | Everything that runs or wraps `on_frame` would have to learn it: a subclass that inspects `super().on_frame()`, a test that steps a phase by hand. The mark on the context leaves every return value as it was. |
+| Timing from the phase's own first flip (its onset stamp) | Unknown until that flip, so the first frame cannot be decided, and a phase stepped by hand has no flips to read. The flip before the first frame is known in `on_enter`, and differs only when the first flip is late. |
+| "The next frame" rounding | Above: exact multiples become a coin toss on a measured refresh rate, and every jittered foreperiod moves half a frame later. |
+| A grace frame for response windows (the stimulus off at *T*, one more input read after it) | The trial ends a frame later, and when the response hands over to another phase (the landing) the target blinks off for a frame. |
 
 ## 3. Experiment-declared vocabulary
 
