@@ -5,7 +5,8 @@
 Prints the JSON schema of the params model of the task ``run.py`` runs: the
 class it passes to ``run_experiment(task_class=...)`` or, for an experiment
 that declares several with ``run_experiment(tasks=...)``, the one named —
-without a name, the table's default. The workspace runs this in the
+without a name, the table's default. The schema carries that task's name
+under ``x-alhazen-task`` (``TASK_NAME_KEY``). The workspace runs this in the
 project's own interpreter, where the task's imports resolve, never in its
 own; every refusal names what run.py must say for the choices to be read.
 """
@@ -24,6 +25,10 @@ SHAPE = (
     "run.py must call run_experiment(task_class=YourTask) or "
     "run_experiment(tasks=TASKS) with TASKS a module-level name to expose parameter choices"
 )
+
+# The key of the schema's top level that names the task it describes
+# (`task_schema`); the workspace reads it back under the same name.
+TASK_NAME_KEY = "x-alhazen-task"
 
 
 def _run_experiment_call(tree: ast.AST) -> ast.Call | None:
@@ -78,17 +83,28 @@ def task_schema(path: Path, task: str | None = None) -> dict[str, Any]:
                 f"run.py declares no task {task!r}; it declares {', '.join(map(str, table))}"
             )
         cls = table[task][0]
+        name = task
     elif "task_class" in keywords:
         if task is not None:
             raise ValueError(
                 f"run.py declares one task (task_class=); it has no task {task!r} to choose"
             )
         cls = _value(keywords["task_class"], namespace, "task_class")
+        # The one task's name, worked out exactly as run_experiment works
+        # out --task's only choice for task_class=, so the two cannot differ.
+        name = getattr(cls, "name", getattr(cls, "__name__", None))
     else:
         raise ValueError(SHAPE)
     if not hasattr(cls, "params_model"):
         raise ValueError(f"{getattr(cls, '__name__', cls)!r} declares no params_model")
-    return cls.params_model.model_json_schema()
+    schema: dict[str, Any] = cls.params_model.model_json_schema()
+    # Which task this is the schema of, under an "x-" key, the prefix JSON
+    # Schema leaves to annotations that validators ignore. The workspace
+    # reads it to name a one-task project's task with --task: run.py holds
+    # only the class, so the name cannot be read from the file alone.
+    if isinstance(name, str):
+        schema[TASK_NAME_KEY] = name
+    return schema
 
 
 def main() -> None:

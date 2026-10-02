@@ -37,6 +37,14 @@ def task_class_name(name: str) -> str:
     return "".join(part.capitalize() for part in python_name(name).split("_")) + "Task"
 
 
+def task_name(name: str) -> str:
+    """``motion_discrimination`` -> ``motion-discrimination``: the task's
+    ``name``, which its entry point registers and every command the scaffold
+    prints passes as ``--task`` (a task name is a filename segment, hyphens
+    not underscores)."""
+    return name.replace("_", "-")
+
+
 def scaffold(name: str, destination: Path, force: bool = False) -> Path:
     """Write a new experiment package, and return its directory.
 
@@ -62,7 +70,7 @@ def scaffold(name: str, destination: Path, force: bool = False) -> Path:
         "name": name,
         "package": package,
         "task_class": task_class_name(name),
-        "task_name": name.replace("_", "-"),
+        "task_name": task_name(name),
     }
 
     for source in sorted(TEMPLATE_ROOT.rglob("*")):

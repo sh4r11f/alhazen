@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -13,7 +14,7 @@ import numpy as np
 import pytest
 import yaml
 
-from alhazen._scaffold import scaffold, task_class_name
+from alhazen._scaffold import scaffold, task_class_name, task_name
 from alhazen.cli.calibrate import (
     fit_gamma,
     gamma_path,
@@ -265,6 +266,31 @@ class TestScaffold:
         pyproject = (root / "pyproject.toml").read_text()
         assert 'saccade-bias = "saccade_bias.task:SaccadeBiasTask"' in pyproject
 
+    def test_every_command_it_shows_names_the_task(self, tmp_path):
+        """Every session names its task (alhazen 2.5; 3.0 refuses a command
+        without --task), so every `python run.py` command the scaffold writes
+        — run.py's docstring, the README, the rig headers, the pyproject's
+        comment — passes --task with the task's own name, the one its entry
+        point registers and its run folders are named after."""
+        root = scaffold("saccade_bias", tmp_path)
+        assert task_name("saccade_bias") == "saccade-bias"
+        commands = [
+            line
+            for path in (
+                "run.py",
+                "README.md",
+                "pyproject.toml",
+                "configs/rig-lab.yaml",
+                "configs/rig-mac.yaml",
+            )
+            for line in (root / path).read_text(encoding="utf-8").splitlines()
+            if re.search(r"python run\.py\s+--", line)
+        ]
+        # 6 in run.py's docstring plus one in its prose, 5 in the README, 1
+        # in the pyproject, 10 in the two rig headers.
+        assert len(commands) == 23, commands
+        assert all(re.search(r"python run\.py --task saccade-bias\s", c) for c in commands)
+
     def test_a_name_that_is_not_a_package_is_refused(self, tmp_path):
         with pytest.raises(ConfigError, match="cannot be a package name"):
             scaffold("My Task", tmp_path)
@@ -289,6 +315,12 @@ class TestScaffoldCli:
         assert main(["new", "demo_task", "--into", str(tmp_path)]) == 0
         out = capsys.readouterr().out
         assert "created" in out and "pytest" in out and "run.py" in out
+
+    def test_the_commands_it_prints_name_the_task(self, tmp_path, capsys):
+        assert main(["new", "demo_task", "--into", str(tmp_path)]) == 0
+        commands = [line for line in capsys.readouterr().out.splitlines() if "run.py" in line]
+        assert len(commands) == 2
+        assert all("python run.py --task demo-task --mode" in line for line in commands)
 
     def test_a_bad_name_exits_nonzero(self, tmp_path, capsys):
         assert main(["new", "Bad Name", "--into", str(tmp_path)]) == 1
@@ -448,7 +480,60 @@ class TestScaffoldedPackageWorks:
         # new user sees fail. This is the README's quick start, verbatim:
         # simulate names its subject and reduces its own trial counts, and
         # --headless is what lets the rig's file run with no panel attached.
+        # (Changed in 2.5: the quick start names the task, as every command
+        # must, and so does this; it is checked to run without a warning.)
         simulate = subprocess.run(
+            [
+                sys.executable,
+                str(root / "run.py"),
+                "--task",
+                "bundled-demo",
+                "--mode",
+                "simulate",
+                "--rig",
+                str(root / "configs" / "rig-lab.yaml"),
+                "--headless",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=root,
+            env=environment,
+            timeout=600,
+        )
+        assert simulate.returncode == 0, simulate.stdout + simulate.stderr
+        assert "Warning" not in simulate.stderr, simulate.stderr
+        assert next((root / "data-rehearsal").glob("v0.1.0/sub-sim/**/run-*"), None) is not None
+        # run.py names no params file of its own: the one that ran is the
+        # file the task declares, found from the task's own location.
+        assert f"params: {(root / 'configs' / 'task.yaml').resolve()}" in simulate.stdout
+
+        # Movie needs no window at all, so it takes the rig's file as it is.
+        recorded = subprocess.run(
+            [
+                sys.executable,
+                str(root / "run.py"),
+                "--task",
+                "bundled-demo",
+                "--mode",
+                "movie",
+                "--rig",
+                str(root / "configs" / "rig-lab.yaml"),
+                "--out",
+                str(root / "movies"),
+            ],
+            capture_output=True,
+            text=True,
+            cwd=root,
+            env=environment,
+            timeout=600,
+        )
+        assert recorded.returncode == 0, recorded.stdout + recorded.stderr
+        assert "Warning" not in recorded.stderr, recorded.stderr
+        assert (root / "movies" / "fixation-hold.mp4").exists()
+
+        # And a command from before 2.5, naming no task, still runs — the
+        # same session — and says on the console that it is going away.
+        unnamed = subprocess.run(
             [
                 sys.executable,
                 str(root / "run.py"),
@@ -464,32 +549,10 @@ class TestScaffoldedPackageWorks:
             env=environment,
             timeout=600,
         )
-        assert simulate.returncode == 0, simulate.stdout + simulate.stderr
-        assert next((root / "data-rehearsal").glob("v0.1.0/sub-sim/**/run-*"), None) is not None
-        # run.py names no params file of its own: the one that ran is the
-        # file the task declares, found from the task's own location.
-        assert f"params: {(root / 'configs' / 'task.yaml').resolve()}" in simulate.stdout
-
-        # Movie needs no window at all, so it takes the rig's file as it is.
-        recorded = subprocess.run(
-            [
-                sys.executable,
-                str(root / "run.py"),
-                "--mode",
-                "movie",
-                "--rig",
-                str(root / "configs" / "rig-lab.yaml"),
-                "--out",
-                str(root / "movies"),
-            ],
-            capture_output=True,
-            text=True,
-            cwd=root,
-            env=environment,
-            timeout=600,
-        )
-        assert recorded.returncode == 0, recorded.stdout + recorded.stderr
-        assert (root / "movies" / "fixation-hold.mp4").exists()
+        assert unnamed.returncode == 0, unnamed.stdout + unnamed.stderr
+        assert "FutureWarning: running run.py without --task is deprecated" in unnamed.stderr
+        assert "This session runs bundled-demo, run.py's one task" in unnamed.stderr
+        assert "running bundled-demo: sub-sim" in unnamed.stdout
 
 
 class TestNextRunNumber:

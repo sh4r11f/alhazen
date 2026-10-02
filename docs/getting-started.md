@@ -74,13 +74,15 @@ loads, and that the task tells its subject what to do.
 ## Run a session
 
 ```bash
-python run.py --mode simulate --rig lab --headless --sub s01 --ses 1
+python run.py --task saccade-bias --mode simulate --rig lab --headless --sub s01 --ses 1
 ```
 
 That is a complete session, on the rig's own config, with nobody in the
 chair and no window open — `simulate` stands the rig's devices down and
 `--headless` takes the panel away, so it runs on a laptop with nothing
-attached. Look at what it wrote:
+attached. `--task saccade-bias` names the task, though the package has only
+the one: every session names its task (a command without it still runs, with
+a warning, until alhazen 3.0 refuses it). Look at what it wrote:
 
 ```
 data-rehearsal/v0.1.0/sub-s01/ses-001/run-01_task-saccade-bias/

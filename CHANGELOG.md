@@ -25,6 +25,53 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+### Added
+
+- **`--task` for a run.py with one task.** `run_experiment(task_class=...)`
+  puts `--task` on run.py's parser, with the task's `name` as its only
+  choice, as `tasks=` always did with the table's keys: every session names
+  its task (the owner's rule, 2026-10-02), so
+  `python run.py --task amodal-averaging --mode demo` now works where it was
+  refused as an unknown argument.
+
+### Changed
+
+- **Nothing promises a default task any more.** run.py's `--task` help and
+  its generated description say `--task` is required (in every mode but
+  measure, which runs no task) and what happens without it until 3.0, where
+  they used to say `(default: X)` and "without it, X". The workspace's Task
+  menu says every launch names the chosen task, not "X runs when no task is
+  named". `alhazen new` prints, and its run.py, README and rig files show,
+  every command with `--task`.
+- **The workspace names a one-task project's task.** A mode launch of a
+  project whose run.py declares one task sends `--task <name>`, the name the
+  task's parameter schema reports (`x-alhazen-task`, new in
+  `alhazen.cli.workspace_schema`), when the project's alhazen is 2.5 or later;
+  an older one's run.py would refuse the flag, and is sent none, as before. A
+  `--task` in the extra arguments names it instead. A name that cannot be read
+  refuses the launch, saying to type `--task <name>` there. A project with a
+  Task menu was already sent the chosen task on every launch.
+
+### Deprecated
+
+- **A run.py command without `--task`** (every mode but measure). It still
+  runs what it ran — `default_task=`, else the first task declared; the one
+  task of `task_class=` — and emits a `FutureWarning` naming that task:
+  "running run.py without --task is deprecated since alhazen 2.5 and will be
+  removed in 3.0; use --task mib-search instead. This session runs
+  mib-search, run.py's default_task; alhazen 3.0 will refuse a command that
+  names no task". A `FutureWarning` because the person who must change is
+  whoever typed the command, and Python always shows one; a
+  `DeprecationWarning` raised outside `__main__` is hidden. 3.0 refuses the
+  command.
+- **`run_experiment(default_task=...)`**: warns whenever it is passed ("the
+  'default_task' argument is deprecated since alhazen 2.5 and will be removed
+  in 3.0; use --task on every command line instead") and still chooses until
+  3.0. The workspace still reads it to choose which task its Task menu opens
+  on.
+
 ## 2.4.0 - 2026-09-29
 
 ### Added

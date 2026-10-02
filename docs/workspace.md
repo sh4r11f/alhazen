@@ -252,20 +252,33 @@ TASKS = {
     "mib-search": (MIBSearchTask, HERE / "configs" / "task-search-rdk.yaml"),
     "mt-tuning": (MTTuningTask, HERE / "configs" / "task-tuning.yaml"),
 }
-run_experiment(tasks=TASKS, default_task="mib-search", default_rig=..., argv=sys.argv[1:])
+run_experiment(tasks=TASKS, default_rig=..., argv=sys.argv[1:])
 ```
 
-— gets a **Task** menu. The page lists the table's names with the default
-selected, reads the chosen task's parameter choices, preselects that task's
-parameter file in the Task parameters menu when the table names one, sends `--task <name>`
-right after the mode, and shows the task beside the mode in the history. The
+— gets a **Task** menu. The page lists the table's names with the first
+selected (or the one run.py's `default_task=` names, while a run.py still
+passes that argument, deprecated since alhazen 2.5), reads the chosen task's
+parameter choices, preselects that task's parameter file in the Task
+parameters menu when the table names one, sends `--task <name>` right after
+the mode on every launch, and shows the task beside the mode in the history.
+Every session names its task, so no launch leaves `--task` out for run.py to
+fill in: from alhazen 3.0 a command without it is refused. The
 launcher reads the table from `run.py` itself (the way it finds rigs and
 scripts), so it must be a module-level dict literal with string keys and, for
 the preset, each entry's second element written as `HERE / "configs" / "x.yaml"`
 (with `HERE` bound from `__file__`) or as a string path; a `tasks=` written
 any other way is reported under the menu, with the shape expected, and a
 launch of that project is refused with the same words. A `run.py` that
-declares one task (`task_class=`) has no menu and takes no task.
+declares one task (`task_class=`) has no menu, and its launches are named all
+the same: when the project's alhazen is 2.5 or later, the launcher sends
+`--task` with the task's own name, which the task's parameter schema reports
+(an older alhazen's `run.py` takes no `--task` for one task, so it is sent
+none). A `--task` typed in the extra arguments names it instead, for an
+experiment that reads its own. A launch whose task name cannot be read — the
+schema fails to load, or `run.py` builds `task_class` where the file alone
+cannot follow it — is refused, saying to type `--task <name>` in the extra
+arguments. A project registered under an older alhazen keeps that version in
+its record until **Project settings** is saved again.
 
 **Extra run.py arguments** go to the experiment's entry point after the
 launcher's own flags, in every mode. The field is split like a shell command

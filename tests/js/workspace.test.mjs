@@ -556,7 +556,16 @@ describe('choosing a task', () => {
       assert.deepEqual(select.children.map((o) => o.value), ['mt-tuning', 'mib-search']);
       assert.deepEqual(select.children.map((o) => o.textContent), ['mt-tuning', 'mib-search']);
       assert.equal(select.value, 'mib-search');
-      assert.match(app.byId('task-help').textContent, /mib-search runs when no task is named/);
+      /* Changed at the owner's request (2026-10-02, every session names its
+       * task): the help used to say "mib-search runs when no task is named".
+       * No task runs unnamed from here — every launch sends --task — and
+       * alhazen 3.0 refuses a command without it, so the help promises no
+       * default and names no task. */
+      assert.equal(
+        app.byId('task-help').textContent,
+        'Declared in run.py; every launch names the task chosen here (--task).',
+      );
+      assert.doesNotMatch(app.byId('task-help').textContent, /when no task|default|mib-search/);
       /* The preset menu opens on the default task's own parameter file, and
        * the schema asked for is that task's. */
       assert.equal(app.byId('params-config').value, 'configs/task-search-rdk.yaml');

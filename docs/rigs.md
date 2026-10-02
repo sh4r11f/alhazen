@@ -63,8 +63,8 @@ Everything that takes `--rig` — `alhazen run`, an experiment's `run.py`,
 **path**:
 
 ```bash
-python run.py --mode test --rig lab --sub dev --ses 1   # a name
-alhazen check-rig --rig configs/rig-lab.yaml --pulse    # a path still works
+python run.py --task my-task --mode test --rig lab --sub dev --ses 1   # a name
+alhazen check-rig --rig configs/rig-lab.yaml --pulse                  # a path still works
 ```
 
 `lab`, `rig-lab` and `rig-lab.yaml` all mean the rig named `lab`. A path to a

@@ -549,10 +549,22 @@ from another folder starts on the same rig. A path works too, written as
 `HERE / "configs" / "rig-mac.yaml"` (with `HERE = Path(__file__).parent`) for
 the same reason.
 
+**Every session names its task**, with `--task`, even when the experiment has
+only the one: `python run.py --task my-task --mode demo`. With `task_class=`
+the flag's only choice is the task's `name`. It is required in every mode but
+measure, which checks the machine and runs no task. Until alhazen 3.0 a
+command that leaves it out still runs the task it always ran, and warns — a
+`FutureWarning`, which Python always shows:
+
+```
+run.py:12: FutureWarning: running run.py without --task is deprecated since alhazen 2.5
+and will be removed in 3.0; use --task my-task instead. This session runs my-task,
+run.py's one task; alhazen 3.0 will refuse a command that names no task
+```
+
 An experiment that ships several tasks declares them once, as a table, and
-alhazen owns the `--task` flag — its choices are the table's keys, the chosen
-task's params file stands in for `--params`, and `default_task` (else the
-first declared) runs when no task is named:
+alhazen owns the `--task` flag — its choices are the table's keys, and the
+chosen task's params file stands in for `--params`:
 
 ```python
 TASKS = {
@@ -563,12 +575,18 @@ TASKS = {
 raise SystemExit(
     run_experiment(
         tasks=TASKS,
-        default_task="rf-map-v4",
         default_rig="mac",
         argv=sys.argv[1:],
     )
 )
 ```
+
+A command without `--task` runs the first task declared, with the warning
+above, until 3.0. `default_task=` — which named another task for such a
+command — is deprecated since 2.5 and removed in 3.0; while a run.py still
+passes it, it still chooses, warns on every run (a `DeprecationWarning`
+pointing at run.py's line), and still decides which task the workspace's Task
+menu opens on.
 
 Name each params file as `HERE / "configs" / "task.yaml"` (with
 `HERE = Path(__file__).parent`), like a `default_rig` path: a bare string is resolved

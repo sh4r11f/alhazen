@@ -27,6 +27,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
+from alhazen.cli.workspace_schema import TASK_NAME_KEY
 from alhazen.config.experiment import experiment_title
 from alhazen.config.loader import validate_rig
 from alhazen.config.models import normalize_initials
@@ -368,11 +369,19 @@ def project_tasks(root: Path) -> dict[str, Any]:
 
     Returns ``{"tasks": [{"name", "params"}, ...], "default": name, "error":
     None}``; a run.py declaring one task (``task_class=``) gives an empty
-    list and no default. ``params`` is the task's params file relative to
-    the project, in posix form: a string as written, or run.py's own-folder
-    form ``HERE / "configs" / "x.yaml"`` (`_params_path`). It is None when the
-    table gives none or gives it as an expression the file alone cannot
-    evaluate.
+    list and no default. ``default`` is the task the Task menu opens on:
+    run.py's ``default_task=``, else the first declared. ``default_task=`` is
+    deprecated in run_experiment (alhazen 2.5; gone in 3.0, when every
+    command names its task), but while a run.py still passes it, it is still
+    read and checked here, because it is still that experiment's own answer
+    to which task to offer first. It only preselects: every launch sends the
+    task chosen in the menu as ``--task`` (`Workspace._task_for`), so no
+    session started here relies on run.py's default.
+
+    ``params`` is the task's params file relative to the project, in posix
+    form: a string as written, or run.py's own-folder form ``HERE /
+    "configs" / "x.yaml"`` (`_params_path`). It is None when the table gives
+    none or gives it as an expression the file alone cannot evaluate.
     """
     empty: dict[str, Any] = {"tasks": [], "default": None, "error": None}
     run_py = root / "run.py"
@@ -519,8 +528,10 @@ class Launch(BaseModel):
     extra_args: str = ""
     # Which of the experiment's tasks to run, for a run.py that declares
     # several (`run_experiment(tasks=...)`, read by `project_tasks`); None
-    # runs its default. A project declaring one task takes no task here, and
-    # neither does a standalone script.
+    # means the task the Task menu opens on, which is then sent as --task
+    # like any other choice (`Workspace._task_for`). A project declaring one
+    # task takes no task here — the launcher names that one itself
+    # (`Workspace._one_task`) — and neither does a standalone script.
     task: str | None = None
 
 
@@ -601,6 +612,13 @@ def _alhazen_release(alhazen_version: str | None) -> tuple[int, int]:
             "remove the project and register it again"
         )
     return int(match.group(1)), int(match.group(2))
+
+
+# The first alhazen whose run_experiment(task_class=...) takes --task, with
+# the one task's name as its only choice. A project on it or later is sent
+# --task for its one task, as a project with a Task menu always is; one on an
+# older alhazen is not, because its run.py would refuse the flag.
+ONE_TASK_FLAG_SINCE = (2, 5)
 
 
 def no_browser_flag(alhazen_version: str | None) -> str:
@@ -759,7 +777,9 @@ def _mode_command(
     output = run_dir / "media"
     command = [str(root / "run.py"), "--mode", mode.value]
     # The task right after the mode, where run_experiment's own --task reads
-    # it; none for an experiment that declares one task.
+    # it: the Task menu's, or a one-task project's own name; none only for a
+    # project on an alhazen too old to take it, or one whose extra arguments
+    # name it (`Workspace._one_task`).
     if task is not None:
         command += ["--task", task]
     command += ["--rig", rig]
@@ -791,8 +811,9 @@ def _mode_command(
             command += ["--clip", clip]
     if mode is Mode.DEMO:
         command += ["--screenshots", str(output)]
-    # Last, after every flag of the launcher's own: run.py strips what is
-    # its (`--task`) and hands the rest to run_experiment's parser.
+    # Last, after every flag of the launcher's own, where a typed command
+    # puts them: run.py takes what is its own (a run.py that reads its own
+    # `--task` before run_experiment does) and hands the rest on.
     return command + extra
 
 
@@ -1083,6 +1104,12 @@ class Workspace:
             # With a task chosen from the menu, `--task` is the form's too and
             # may not be contradicted from the extra arguments.
             reserved = MODE_FLAGS | {"--task"} if task is not None else MODE_FLAGS
+            # Every session names its task: the menu's for a project with
+            # several, else the one task's own name where the project's
+            # alhazen takes it (None: an older alhazen, or a --task the
+            # person typed in the extras, which then names it instead).
+            if task is None:
+                task = self._one_task(project, request)
             # The child resolves a shared rig by name, the way `--rig
             # alhazen/lab` typed at its terminal would, which also records in
             # its snapshot that the rig was alhazen's (sources["rig_source"]).
@@ -1156,12 +1183,59 @@ class Workspace:
             "values": merged.values,
         }
 
+    def _one_task(self, project: dict[str, Any], request: Launch) -> str | None:
+        """The name to send as ``--task`` in a mode launch of a project whose
+        run.py declares one task (``run_experiment(task_class=...)``), so that
+        its sessions name their task as every other session does — a command
+        without one is deprecated since alhazen 2.5 and refused in 3.0.
+
+        None, and nothing sent, when the launch is not of that kind, when the
+        project's alhazen predates the flag (`ONE_TASK_FLAG_SINCE`; its run.py
+        would refuse it), or when the extra arguments already carry a
+        ``--task`` — an experiment that reads its own, as attention-clamp's
+        run.py does, is named there, and a second ``--task`` would contradict
+        it. The name comes from the task's parameter schema, read in the
+        project's interpreter (`schema`, which caches it and which the page
+        has usually asked for already): run.py holds only the class, so the
+        file alone cannot say it. A name that cannot be read refuses the
+        launch, saying how to name the task by hand, rather than starting a
+        session that names none.
+        """
+        if request.mode not in {m.value for m in Mode}:
+            return None
+        if project_tasks(Path(project["path"]))["tasks"]:
+            return None
+        if _alhazen_release(project.get("alhazen_version")) < ONE_TASK_FLAG_SINCE:
+            return None
+        typed = _extra_arguments(request.extra_args, frozenset())
+        if any(token.split("=", 1)[0] == "--task" for token in typed):
+            return None
+        how = "type --task <its name> in the extra arguments to name it yourself"
+        try:
+            schema = self.schema(project["id"])
+        except ValueError as exc:
+            raise ValueError(
+                f"Every session names its task, and {project['name']}'s one task cannot be "
+                f"named for --task because its parameter schema cannot be read ({exc}); {how}"
+            ) from exc
+        name = schema.get(TASK_NAME_KEY)
+        if not isinstance(name, str):
+            raise ValueError(
+                f"Every session names its task, and {project['name']}'s alhazen did not say "
+                f"its one task's name, though registration recorded alhazen "
+                f"{project.get('alhazen_version')}; open Project settings and save, to "
+                f"register it again, or {how}"
+            )
+        return name
+
     def _task_for(self, project: dict[str, Any], request: Launch) -> str | None:
-        """The task this launch runs: the one asked for, else run.py's default,
-        for an experiment that declares several; None for one that declares
-        one (its run.py takes no --task) and for a standalone script (which
-        has no task). Each refusal says what to change, before anything is
-        written."""
+        """The Task menu's task for this launch: the one asked for, else the
+        one the menu opens on (run.py's ``default_task=``, else the first
+        declared), for an experiment that declares several — sent as
+        ``--task`` either way, so the session never falls back on run.py's
+        own default. None for one that declares one (named by `_one_task`
+        instead) and for a standalone script (which has no task). Each
+        refusal says what to change, before anything is written."""
         declared = project_tasks(Path(project["path"]))
         if declared["error"]:
             raise ValueError(declared["error"])
@@ -1187,6 +1261,13 @@ class Workspace:
         return task
 
     def start(self, request: Launch) -> dict[str, Any]:
+        # A one-task project's name for --task comes from its parameter
+        # schema, which may take a child interpreter seconds to read. Asked
+        # for here, before the lock, so that read never holds up the page's
+        # polls (`state` takes the lock); `_command`, under the lock, then
+        # finds it cached. A refusal raised here is the one `_command` would
+        # raise, only sooner.
+        self._one_task(self.project(request.project), request)
         with self.lock:
             if self.active:
                 raise ValueError(
