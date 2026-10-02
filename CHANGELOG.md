@@ -25,6 +25,17 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+### Changed
+
+- **The workspace's Rig menu opens on the laptop.** It used to open on the
+  experiment's own mac, else alhazen's shared mac, else the first rig listed.
+  It now opens on the experiment's own laptop (`configs/rig-laptop.yaml`,
+  which hides the shared one of that name), else `alhazen/laptop`, else the
+  first rig listed; a mac is chosen from the menu. docs/workspace.md says so
+  under "Configure and run".
+
 ## 2.4.0 - 2026-09-29
 
 ### Added
