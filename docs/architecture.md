@@ -959,6 +959,14 @@ none, that the model's defaults are running.
 | `Blank` / `Feedback` | a fixed duration elapses | — |
 | `TrialFeedback` | a fixed duration elapses; **must be the trial's last phase**, and the engine refuses it anywhere else. As the trial's *closing* phase it runs whatever the trial ended as, so a fixation break gets feedback too — but never on `PAUSED` or `ABORTED`, which are not trial results, and it cannot change an outcome the trial already had. A tracker that stops while it is on screen does not cut it short: the row is flagged `fault: tracker_stopped` and the trial keeps its outcome (§2.2) | `feedback` (`success`/`failure`) from the task's own `verdict` predicate over the record, or `failure` without asking the predicate when the trial ended with a non-completed outcome — beside the outcome, never derived from it: a saccade that missed is still a completed, scored measurement. Recolours the fixation point, emits `FEEDBACK`; the session's `FeedbackSounder` beeps, because a phase touches no hardware. Draws only the fixation point unless `keep_drawing` names other stimuli to stay on screen (the figure just saccaded to): those are updated and drawn every frame *before* the point, so the colour stays on top, and are never recoloured. A name the trial has no stimulus for fails when the phase starts, naming it; a trial that ended with a non-completed outcome keeps nothing, because what it names may never have been shown |
 
+Every duration, timeout, dwell and blink period above is how long the thing
+is on screen, to the nearest frame (§2.3): each is asked about with
+`ctx.time_up` before the phase draws, after the inputs it measures, and ends
+the phase through `ctx.end_undrawn`. Before 2.5 each lasted one frame longer
+(`StimulusResponse` and `ResponseWindow` timeouts two). `AcquireFixation`'s
+`hold_s` is a gaze criterion, measured between samples, not a time on
+screen; `FrameSequence` counts frames.
+
 Every constructor takes plain values — seconds, region names, stimulus keys,
 Outcomes — and never a config model: resolving a `Duration` against the
 measured refresh rate happens once, in `build_trial`. Every phase touches
@@ -1093,9 +1101,11 @@ What this means for a trial's row:
   has no settle verdict); with no valid sample outside the fixation window,
   `endpoint_measured` is False, no coordinates are written, and the trial is
   `on_miss`;
-- the trial ends `landing_timeout_s` after the `RESPONSE_ONSET` flip, on a
-  hit as on a miss, and `LANDED` goes out then for any measured endpoint,
-  hit or miss.
+- the landing is judged on the sample read `landing_timeout_s` after the
+  `RESPONSE_ONSET` flip, on a hit as on a miss; the landing phase is on
+  screen for `landing_timeout_s` from the frame after that flip (§2.3), and
+  `LANDED` goes out for any measured endpoint, hit or miss, stamped on the
+  flip that takes the target off.
 
 `FrameTimeline` (in `display/frames.py`) is the schedule `FrameSequence`
 plays: keyframes, linear ramps, visibility spans and events, all indexed by
