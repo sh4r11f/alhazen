@@ -1200,6 +1200,12 @@ class Workspace:
         file alone cannot say it. A name that cannot be read refuses the
         launch, saying how to name the task by hand, rather than starting a
         session that names none.
+
+        Asked from `_command`, after the rig is checked, so a launch with two
+        problems is refused for the one it always was. The price: when the
+        schema is not cached (run.py changed since the page last asked), the
+        read happens under `start`'s lock, and the page's polls wait the
+        seconds it takes.
         """
         if request.mode not in {m.value for m in Mode}:
             return None
@@ -1265,13 +1271,6 @@ class Workspace:
         return task
 
     def start(self, request: Launch) -> dict[str, Any]:
-        # A one-task project's name for --task comes from its parameter
-        # schema, which may take a child interpreter seconds to read. Asked
-        # for here, before the lock, so that read never holds up the page's
-        # polls (`state` takes the lock); `_command`, under the lock, then
-        # finds it cached. A refusal raised here is the one `_command` would
-        # raise, only sooner.
-        self._one_task(self.project(request.project), request)
         with self.lock:
             if self.active:
                 raise ValueError(

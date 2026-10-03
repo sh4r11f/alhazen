@@ -17,7 +17,6 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
-import threading
 from pathlib import Path
 
 import pytest
@@ -493,42 +492,33 @@ class TestEveryLaunchNamesItsTask:
         )
         assert "--task" not in command and spawned == []
 
-    def test_start_reads_the_name_before_taking_the_lock_and_the_child_gets_it(
-        self, workspace, monkeypatch
-    ):
-        """The read can take a child interpreter seconds; under the lock it
-        would hold up every poll of the page (`state` takes the lock)."""
+    def test_a_launched_run_hands_the_child_the_name(self, workspace, monkeypatch):
+        """Through start(), as the page launches: the child's argv carries
+        --task with the one task's name."""
         key = self.on_alhazen(workspace, monkeypatch, "2.5.0")
-        lock_free: list[bool] = []
-
-        def try_the_lock():
-            got = workspace.lock.acquire(blocking=False)
-            lock_free.append(got)
-            if got:
-                workspace.lock.release()
-
-        def fake_run(command, **kwargs):
-            # From another thread: the lock is re-entrant, so this thread
-            # would get it even while holding it.
-            other = threading.Thread(target=try_the_lock)
-            other.start()
-            other.join()
-            return subprocess.CompletedProcess(
-                command, 0, stdout=json.dumps(self.ONE_TASK_SCHEMA), stderr=""
-            )
-
-        monkeypatch.setattr(subprocess, "run", fake_run)
+        spawned = self.schema_reads(monkeypatch, self.ONE_TASK_SCHEMA)
         run = workspace.start(request_for(workspace, project=key, mode="simulate"))
         workspace.worker.join(timeout=60)
         detail = workspace.detail(run["id"])
-        assert lock_free == [True]
         argv = json.loads(
             Path(detail["directory"], "console.log").read_text(encoding="utf-8").splitlines()[0]
         )
         assert argv[argv.index("--task") + 1] == "the-one"
+        assert len(spawned) == 1
         # The run record's task stays the Task menu's: none for a project
         # with one task, so its history reads as it always has.
         assert detail["task"] is None
+
+    def test_a_bad_rig_is_still_refused_before_the_name_is_asked_for(self, workspace, monkeypatch):
+        """A launch with two problems is refused for the one it always was:
+        the rig is checked first, and its refusal is what the person sees."""
+        key = self.on_alhazen(workspace, monkeypatch, "2.5.0")
+        spawned = self.schema_reads(monkeypatch, failing=True)
+        with pytest.raises(ValueError, match="Choose an existing rig YAML file"):
+            workspace.start(
+                request_for(workspace, project=key, mode="simulate", rig="configs/nope.yaml")
+            )
+        assert spawned == [] and workspace.runs == {}
 
 
 class TestTheSchemaNamesItsTask:
