@@ -97,6 +97,12 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   `--task` in the extra arguments names it instead. A name that cannot be read
   refuses the launch, saying to type `--task <name>` there. A project with a
   Task menu was already sent the chosen task on every launch.
+- **The workspace's Rig menu opens on the laptop.** It used to open on the
+  experiment's own mac, else alhazen's shared mac, else the first rig listed.
+  It now opens on the experiment's own laptop (`configs/rig-laptop.yaml`,
+  which hides the shared one of that name), else `alhazen/laptop`, else the
+  first rig listed; a mac is chosen from the menu. docs/workspace.md says so
+  under "Configure and run".
 
 ### Added
 

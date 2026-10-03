@@ -105,7 +105,10 @@ it comes from, and a test checks the contrast of every pair it draws.
    alhazen ships ([Rigs](rigs.md)). The same spelling works on the command
    line (`--rig amodal-averaging/lab`). A shared rig the experiment's own rig
    of the same name hides is left out of the menu; the command line still
-   reaches it as `--rig alhazen/lab`. Under the menu, the rig's facts as it
+   reaches it as `--rig alhazen/lab`. The menu opens on the laptop — the
+   development machine, a window and no devices: the experiment's own
+   `configs/rig-laptop.yaml` when it has one, else `alhazen/laptop`, else the
+   first rig listed. Under the menu, the rig's facts as it
    would run — merged, for one that extends — as a short list: **Screen**,
    **Size**, **Display**, **Live monitor**, and **Rig**, whose it is and the
    shared rig it extends (`amodal-averaging/lab · this experiment's
