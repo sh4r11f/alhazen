@@ -443,9 +443,15 @@ function rigLabel(r, duplicates, slug) {
  *  shared ones, as two groups. A shared rig the experiment's own rig of the
  *  same name hides (`shadowed`) is left out: the experiment's is the one that
  *  name means, and the command line still reaches the shared one as
- *  alhazen/<name>. The safe first choice is a machine with a window and no
- *  devices — the experiment's own mac, else the shared mac — and otherwise
- *  the first rig listed. */
+ *  alhazen/<name>. The menu opens on the laptop, at the owner's request
+ *  (2026-10-02): the laptop rig is the development machine, where an
+ *  experiment is written and tried (docs/rigs.md), and it has a window and
+ *  no devices, so a launch nobody re-pointed cannot reach for hardware that
+ *  is not there. (It used to open on the mac, the same kind of machine for
+ *  someone working on a Mac, who now chooses it from the menu.)
+ *  The experiment's own laptop when it has one — it shadows the shared
+ *  laptop, which the menu then leaves out — else alhazen's shared laptop,
+ *  else the first rig listed. */
 function rigMenu(p) {
   const slug = slugOf(p);
   const rigs = p.rigs || [];
@@ -457,8 +463,10 @@ function rigMenu(p) {
     if (seen.has(r.name)) duplicates.add(r.name);
     seen.add(r.name);
   }
-  const mac = own.find((r) => r.name === 'mac') || shared.find((r) => r.name === 'mac');
-  const first = mac || own[0] || shared[0];
+  // The experiment's own laptop is looked for first: the shared one of that
+  // name is shadowed by it, so it is not in `shared` to be found anyway.
+  const laptop = own.find((r) => r.name === 'laptop') || shared.find((r) => r.name === 'laptop');
+  const first = laptop || own[0] || shared[0];
   groupedOptions($('rig'), [
     ['This experiment', own.map((r) => [rigValue(r), rigLabel(r, duplicates, slug)])],
     ['Shared (alhazen)', shared.map((r) => [rigValue(r), rigLabel(r, duplicates, slug)])],

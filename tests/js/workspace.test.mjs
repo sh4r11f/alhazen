@@ -1035,19 +1035,39 @@ describe('the Rig menu', () => {
       assert.equal(app.byId('rig-note').hidden, true);
     });
 
-  it('opens on the experiment’s own mac, else the shared mac, else the first rig', async () => {
-    /* No mac of the experiment's own: the shared one, a window and no devices. */
-    const shared = await pageWith({ project: RIGGED, rigs: RIGS });
-    assert.equal(shared.byId('rig').value, 'alhazen/mac');
-    const own = await pageWith({
-      project: { ...RIGGED, rigs: [...RIGGED.rigs, rigEntry('mac')] }, rigs: RIGS,
+  it('opens on the experiment’s own laptop, else the shared laptop, else the first rig',
+    async () => {
+      /* Changed at the owner's request (2026-10-02): the menu used to open
+       * on the experiment's own mac, else the shared mac. It opens on the
+       * laptop now, and a mac is no longer preferred to any other rig. */
+      const withoutOwnLaptop = RIGGED.rigs.filter((r) => r.name !== 'laptop');
+      /* The experiment's own laptop, which hides alhazen's laptop of the same
+       * name: the shared one is left out of the menu, and is not chosen. */
+      const own = await pageWith({
+        project: { ...RIGGED, rigs: [...RIGGED.rigs, sharedEntry('laptop', { shadowed: true })] },
+        rigs: RIGS,
+      });
+      assert.equal(own.byId('rig').value, 'configs/rig-laptop.yaml');
+      assert.ok(!menu(own).flatMap(([, options]) => options).some(([v]) => v === 'alhazen/laptop'));
+      /* No laptop of its own: alhazen's shared laptop, though the shared mac
+       * and the experiment's own rigs are listed before it. */
+      const shared = await pageWith({
+        project: { ...RIGGED, rigs: [...withoutOwnLaptop, sharedEntry('laptop')] },
+        rigs: { ...RIGS, 'alhazen/laptop': rig(false, false, { name: 'laptop', source: 'alhazen' }) },
+      });
+      assert.equal(shared.byId('rig').value, 'alhazen/laptop');
+      /* No laptop at all: the first rig listed — the experiment's lab, not
+       * the shared mac the menu used to prefer. */
+      const neither = await pageWith({
+        project: { ...RIGGED, rigs: withoutOwnLaptop }, rigs: RIGS,
+      });
+      assert.equal(neither.byId('rig').value, 'configs/rig-lab.yaml');
+      /* And with only shared rigs, the first of them. */
+      const onlyShared = await pageWith({
+        project: { ...RIGGED, rigs: [sharedEntry('vpixx'), sharedEntry('mac')] }, rigs: RIGS,
+      });
+      assert.equal(onlyShared.byId('rig').value, 'alhazen/vpixx');
     });
-    assert.equal(own.byId('rig').value, 'configs/rig-mac.yaml');
-    const neither = await pageWith({
-      project: { ...RIGGED, rigs: RIGGED.rigs.filter((r) => r.name !== 'mac') }, rigs: RIGS,
-    });
-    assert.equal(neither.byId('rig').value, 'configs/rig-lab.yaml');
-  });
 
   it('leaves out a group with no rigs in it', async () => {
     const app = await pageWith();
@@ -1069,9 +1089,12 @@ describe('the Rig menu', () => {
 
   it('summarises a shared rig from the merged answer, and says whose it is', async () => {
     const app = await pageWith({ project: RIGGED, rigs: RIGS });
-    /* Opened on the shared mac, which has the live monitor off. The summary
+    /* The shared mac, which has the live monitor off, chosen from the menu:
+     * the page used to open on it, and now opens on the experiment's own
+     * laptop (changed at the owner's request, 2026-10-02). The summary
      * names it as the menu does (changed at the owner's request from
      * "alhazen’s shared rig mac"). */
+    await chooseRig(app, 'alhazen/mac');
     assert.ok(app.fetches.some((f) => f.url === '/api/rig?project=p&rig=alhazen%2Fmac'));
     /* Every fact under its label (changed at the owner's request from three
      * lines of monospace text that wrapped mid-phrase). */

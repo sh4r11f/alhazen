@@ -82,6 +82,12 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   lasts exactly `Duration.n_frames(hz)` frames.
 - **`HoldFixation` refuses a `jitter_s` larger than its `duration_s`.** Some
   draws would have been negative: trials with no foreperiod at all.
+- **The workspace's Rig menu opens on the laptop.** It used to open on the
+  experiment's own mac, else alhazen's shared mac, else the first rig listed.
+  It now opens on the experiment's own laptop (`configs/rig-laptop.yaml`,
+  which hides the shared one of that name), else `alhazen/laptop`, else the
+  first rig listed; a mac is chosen from the menu. docs/workspace.md says so
+  under "Configure and run".
 
 ### Added
 
