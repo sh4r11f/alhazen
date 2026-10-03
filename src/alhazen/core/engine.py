@@ -18,6 +18,17 @@ recycle — are written onto the row as its ``fault`` (core/trial.py NO_FAULT),
 and what a failed health check said about it as its ``fault_detail``.
 What a fault then costs, pays and counts is the runner's business.
 
+A phase of d seconds is on screen for d, to the nearest frame. A timed phase
+asks ``ctx.time_up`` at the top of ``on_frame``, before drawing, and when its
+time is up ends through ``ctx.end_undrawn``: the engine then does not flip
+that frame — nothing new is on it — and the next phase is entered and draws
+it, with the frame's commands, health checks and inputs already taken. An
+Outcome ended that way hands the frame to the closing phase, or, with none,
+is shown as an empty frame (the flip that takes the stimulus off) before the
+usual blank. The engine hands phases the frame period they count in
+(``ctx.frame_period_s``) at the start of every trial. docs/architecture.md
+§2.3 has the rule, the rounding and why.
+
 The engine is the only code that touches the display, the command source,
 and the bus. Phases stay dumb (core/trial.py). Device-specific side effects
 (tracker messages, reward hardware) attach through the bus and the injected
@@ -219,6 +230,21 @@ class TrialEngine:
         # with no dispenser); with None, a request is a loud error at the call.
         self._reward_requests = reward_requests
         self._frame_index = 0
+        # The frame period timed phases count in (ctx.frame_period_s). The
+        # frame monitor's is the session's measured refresh rate — the rate
+        # every Duration was resolved against and frame QA judges by — so it
+        # wins. An engine built without one (a test, an experiment's own
+        # harness) takes the display's, when the display reports one:
+        # FakeDisplay and SimulatedDisplay do; the attribute is optional on
+        # the DisplayBackend protocol, read like a phase's `must_be_last`,
+        # so a backend written before it existed still satisfies the
+        # protocol. With neither, phases fall back to ctx.dt and warn
+        # (TrialContext.time_up).
+        self._frame_period_s: float | None = (
+            frame_monitor.expected_s
+            if frame_monitor is not None
+            else getattr(display, "frame_period_s", None)
+        )
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -260,6 +286,12 @@ class TrialEngine:
                 # a third and `astype(int)` raise on the rig's own data.
                 ctx.record["n_dropped_frames"] = 0
         ctx.accepts_reward_requests = self._reward_requests is not None
+        # The unit every timed phase counts in. Overwrites a value the caller
+        # put on the context: the engine knows the display it flips, and a
+        # phase timed against another rate would end on the wrong frame. Left
+        # alone when the engine knows none (see __init__).
+        if self._frame_period_s is not None:
+            ctx.frame_period_s = self._frame_period_s
         if self._reward_requests is not None:
             # Zero from the start, like n_dropped_frames and for the same
             # reason: a trial that asked for no drops must write 0, not leave
@@ -290,12 +322,16 @@ class TrialEngine:
         body = phases[:-1] if closing is not None else phases
 
         outcome: Outcome | None = None
+        # True while a frame is open that no phase has drawn: the last phase
+        # ended through ctx.end_undrawn, so the frame it found its time up on
+        # was not flipped, and whatever runs next draws it (§2.3).
+        undrawn = False
         for phase in body:
             # QuitRequested propagates straight out (its message/cleanup
             # happened at the raise site); any other exception propagates
             # too — a bug or hardware fault mid-trial must surface, not be
             # masked by cleanup that makes the trial look normal.
-            outcome = self._run_phase(phase, ctx)
+            outcome, undrawn = self._run_phase(phase, ctx, same_frame=undrawn)
             if outcome is not None:
                 break
 
@@ -314,8 +350,13 @@ class TrialEngine:
             # frames are part of the trial frame QA judges.
             ctx.outcome = outcome
             # closing=True: a device that stops during it is flagged, not
-            # allowed to end the trial — see _run_phase.
-            closing_outcome = self._run_phase(closing, ctx, closing=True)
+            # allowed to end the trial — see _run_phase. When the body's last
+            # phase ran out of time before its frame (a response timeout,
+            # say), the closing phase draws that frame: feedback follows the
+            # stimulus with no blank frame between.
+            closing_outcome, undrawn = self._run_phase(
+                closing, ctx, closing=True, same_frame=undrawn
+            )
             # A closing phase decides the outcome only when nothing else
             # has. Feedback is shown for a fixation break; it does not turn
             # one into a completed trial.
@@ -324,7 +365,21 @@ class TrialEngine:
         if outcome is None:
             # ADVANCE-ing off the end of the phase list is a programming
             # error in the task, not a runtime trial outcome.
-            raise RuntimeError("the last phase must end the trial with an Outcome, not ADVANCE")
+            raise RuntimeError(
+                "the last phase must end the trial with an Outcome, not ADVANCE "
+                "(nor ctx.end_undrawn(PhaseAction.ADVANCE))"
+            )
+
+        if undrawn:
+            # The trial's last phase ran out of time before this frame and
+            # drew nothing on it. The frame is still shown, empty: its flip
+            # is the moment the stimulus goes off, so it is stamped, logged
+            # by frame QA and the frame log like every other, and it carries
+            # whatever the frame queued (a LANDED, an end-of-phase reward)
+            # with the photodiode marking it. The blank below then follows,
+            # as on every trial. dt is measured from now: nothing reads it
+            # after the last phase.
+            self._show_frame(ctx, last_t=self._clock.now())
 
         # Blank the display before finishing: without this flip, the last
         # drawn frame would stay on screen through the ITI and the next
@@ -377,13 +432,19 @@ class TrialEngine:
     # ------------------------------------------------------------------
 
     def _run_phase(
-        self, phase: Phase, ctx: TrialContext, *, closing: bool = False
-    ) -> Outcome | None:
+        self, phase: Phase, ctx: TrialContext, *, closing: bool = False, same_frame: bool = False
+    ) -> tuple[Outcome | None, bool]:
         """Run one phase frame by frame until it ADVANCEs or ends the trial.
+
+        Returns the Outcome it ended the trial with (None for ADVANCE), and
+        whether it ended through ``ctx.end_undrawn`` — leaving the frame it
+        found its time up on unflipped, for whatever runs next to draw.
 
         ``closing`` marks the trial's closing phase (the one declaring
         ``must_be_last``), the only place a failed health check does not end
-        the trial.
+        the trial. ``same_frame`` says the previous phase ended undrawn: this
+        phase's first frame is that same frame, whose commands, health checks
+        and inputs were already taken (§2.3).
         """
         phase.on_enter(ctx)
         # dt reference resets per phase so a phase's first dt means "since
@@ -402,80 +463,128 @@ class TrialEngine:
         # only find the same device stopped.
         fault_flagged = False
         while True:
-            outcome = self._handle_commands(ctx)  # may raise QuitRequested
-            if outcome is not None:
-                return outcome
+            if same_frame:
+                # The previous phase ended undrawn: this is still the frame it
+                # found its time up on. Its commands were polled, its health
+                # checked and its inputs read once, for that frame; taking
+                # them again would poll the keyboard twice in one frame — the
+                # keys read for the frame that ended the last phase would
+                # never reach this one, nor the database's frame log.
+                same_frame = False
+            else:
+                outcome = self._handle_commands(ctx)  # may raise QuitRequested
+                if outcome is not None:
+                    return outcome, False
 
-            failed = None if fault_flagged else self._failed_health_check()
-            if failed is not None:
-                if not closing:
-                    # The measurement is still being made, and it cannot be
-                    # made without the device, so the trial is aborted and
-                    # its condition served again. `abort_reason` and `fault`
-                    # carry the same reason: that pairing is how
-                    # core.trial.lost_to_fault tells this abort from the
-                    # experimenter's skip, which is ABORTED too.
-                    ctx.record["abort_reason"] = failed.reason
-                    _write_fault(ctx, failed)
-                    return ABORTED
-                self._flag_closing_phase_fault(ctx, phase, failed)
-                fault_flagged = True
+                failed = None if fault_flagged else self._failed_health_check()
+                if failed is not None:
+                    if not closing:
+                        # The measurement is still being made, and it cannot
+                        # be made without the device, so the trial is aborted
+                        # and its condition served again. `abort_reason` and
+                        # `fault` carry the same reason: that pairing is how
+                        # core.trial.lost_to_fault tells this abort from the
+                        # experimenter's skip, which is ABORTED too.
+                        ctx.record["abort_reason"] = failed.reason
+                        _write_fault(ctx, failed)
+                        return ABORTED, False
+                    self._flag_closing_phase_fault(ctx, phase, failed)
+                    fault_flagged = True
 
-            ctx.inputs = self._input_provider()
+                ctx.inputs = self._input_provider()
 
+            # Cleared before every call, so only an end_undrawn made during
+            # THIS on_frame says the frame is not to be flipped.
+            ctx._undrawn_then = None
             step = phase.on_frame(ctx)
+            if ctx._undrawn_then is not None:
+                # The phase's time was up before this frame and it drew
+                # nothing: no flip. The frame goes to whatever runs next.
+                return self._ended_undrawn(phase, ctx, step), True
 
-            if self._overlay is not None:
-                self._overlay(ctx)
-
-            # The flip is the only moment the photons change. Nothing this
-            # frame queued is real until this call returns.
-            self._display.flip()
-            # The flip's time: read once, here, right after flip() returns,
-            # and handed to everything below that records this flip — dt,
-            # frame QA (frames.csv), the per-frame inputs (the database's
-            # frames), and every event this frame queued.
-            now = self._clock.now()
-            # dt = how long the just-shown frame actually took, available to
-            # the NEXT on_frame call to advance motion by the right amount.
-            # Floored as a divide-by-zero guard against a zero-duration flip.
-            ctx.dt, last_t = max(now - last_t, 1e-4), now
-
-            if self._frame_monitor is not None:
-                dropped = self._frame_monitor.note_flip(now)
-                if dropped and self._frame_monitor.marks_trials:
-                    ctx.record["n_dropped_frames"] = ctx.record.get("n_dropped_frames", 0) + 1
-
-            if self._on_frame_input is not None:
-                self._on_frame_input(ctx.trial_index, self._frame_index, now, ctx.inputs)
-            self._frame_index += 1
-
-            # Only after the flip do queued events emit, each stamped with
-            # `now` — the flip's time, the one that must line up with sync
-            # pulses in device recordings. Not with the clock read again as
-            # each is emitted: that read comes after the frame QA and input
-            # bookkeeping above, and, for every event but the first, after
-            # the bus's subscribers have handled the one before it (a tracker
-            # message, a sync pulse), which take real time. Events that
-            # appeared on one flip would carry different, later times.
-            self._flush_flip_events(ctx, t=now)
-            # This frame's reward requests go to the dispenser now, stamped
-            # with the flip that just followed them — `now` again, for the
-            # same reason — and then whatever the dispenser finished since
-            # the last frame is reported. Neither waits for the pump.
-            self._hand_over_reward_requests(ctx, frame=self._frame_index - 1, t=now)
-            self._report_reward_completions(ctx)
+            last_t = self._show_frame(ctx, last_t)
 
             if step == PhaseAction.CONTINUE:
                 continue
             if step == PhaseAction.ADVANCE:
-                return None
+                return None, False
             if isinstance(step, Outcome):
-                return step
+                return step, False
             raise TypeError(
                 f"phase {getattr(phase, 'name', phase)!r} returned {step!r}; expected "
                 f"PhaseAction.CONTINUE, PhaseAction.ADVANCE, or an Outcome"
             )
+
+    def _ended_undrawn(self, phase: Phase, ctx: TrialContext, step: Any) -> Outcome | None:
+        """What a phase that ended through ``ctx.end_undrawn`` ended with:
+        None for ADVANCE, else its Outcome.
+
+        ``end_undrawn`` already refused anything but those two, so the only
+        thing left to check is that the phase returned what it handed it. A
+        phase that marked its frame undrawn and then returned something
+        else — CONTINUE above all — has no frame left to show, and guessing
+        which of the two it meant would end a trial on the wrong outcome or
+        skip a frame it meant to draw.
+        """
+        then = ctx._undrawn_then
+        ctx._undrawn_then = None
+        if step is not then and step != then:
+            raise TypeError(
+                f"phase {getattr(phase, 'name', phase)!r} called ctx.end_undrawn({then!r}) and "
+                f"then returned {step!r}; a phase that ends undrawn must return what "
+                f"end_undrawn returned"
+            )
+        return None if then == PhaseAction.ADVANCE else then
+
+    def _show_frame(self, ctx: TrialContext, last_t: float) -> float:
+        """Flip the frame the current phase drew (or an empty one), and
+        record that flip everywhere it is recorded. Returns the flip's time,
+        the next frame's ``last_t``.
+
+        ``last_t`` is the previous flip's time, or the moment the phase
+        began, which is what ``ctx.dt`` is measured from.
+        """
+        if self._overlay is not None:
+            self._overlay(ctx)
+
+        # The flip is the only moment the photons change. Nothing this
+        # frame queued is real until this call returns.
+        self._display.flip()
+        # The flip's time: read once, here, right after flip() returns,
+        # and handed to everything below that records this flip — dt,
+        # frame QA (frames.csv), the per-frame inputs (the database's
+        # frames), and every event this frame queued.
+        now = self._clock.now()
+        # dt = how long the just-shown frame actually took, available to
+        # the NEXT on_frame call to advance motion by the right amount.
+        # Floored as a divide-by-zero guard against a zero-duration flip.
+        ctx.dt = max(now - last_t, 1e-4)
+
+        if self._frame_monitor is not None:
+            dropped = self._frame_monitor.note_flip(now)
+            if dropped and self._frame_monitor.marks_trials:
+                ctx.record["n_dropped_frames"] = ctx.record.get("n_dropped_frames", 0) + 1
+
+        if self._on_frame_input is not None:
+            self._on_frame_input(ctx.trial_index, self._frame_index, now, ctx.inputs)
+        self._frame_index += 1
+
+        # Only after the flip do queued events emit, each stamped with
+        # `now` — the flip's time, the one that must line up with sync
+        # pulses in device recordings. Not with the clock read again as
+        # each is emitted: that read comes after the frame QA and input
+        # bookkeeping above, and, for every event but the first, after
+        # the bus's subscribers have handled the one before it (a tracker
+        # message, a sync pulse), which take real time. Events that
+        # appeared on one flip would carry different, later times.
+        self._flush_flip_events(ctx, t=now)
+        # This frame's reward requests go to the dispenser now, stamped
+        # with the flip that just followed them — `now` again, for the
+        # same reason — and then whatever the dispenser finished since
+        # the last frame is reported. Neither waits for the pump.
+        self._hand_over_reward_requests(ctx, frame=self._frame_index - 1, t=now)
+        self._report_reward_completions(ctx)
+        return now
 
     # ------------------------------------------------------------------
     # Health checks

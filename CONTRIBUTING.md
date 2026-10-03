@@ -90,6 +90,11 @@ These are what the tests pin. Do not "simplify" one away without a discussion:
 10. **Exact-inverse geometry.** `deg2px` and `px2deg` are one linear model in
     both directions. A second model silently mis-measures every eccentric
     position — by up to a third of the effect size.
+11. **Durations to the frame.** A phase of d seconds is on screen for d, to
+    the nearest frame: a timed phase asks `ctx.time_up` before drawing and
+    ends through `ctx.end_undrawn`, and the engine does not flip a frame a
+    phase ended undrawn. A check made after drawing shows one frame too many
+    (docs/architecture.md §2.3).
 
 ## Style
 

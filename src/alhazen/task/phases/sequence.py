@@ -23,7 +23,13 @@ from alhazen.task.phases._draw import draw_stimuli
 
 
 class FrameSequence:
-    """Play ``timeline`` frame by frame, then hand back ``then``."""
+    """Play ``timeline`` frame by frame, then hand back ``then``.
+
+    It shows exactly ``timeline.n_frames`` frames: ``then`` is returned on
+    the frame that draws the timeline's last, so the next phase's first frame
+    is the one after. Counted in frames, so it needs no ``ctx.time_up``; a
+    dropped frame lengthens it in time (and shows in the frame log) rather
+    than costing it a frame of its schedule."""
 
     name = "frame_sequence"
 
