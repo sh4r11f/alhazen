@@ -29,12 +29,97 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Changed
 
+- **A phase of d seconds is on screen for d — every timed phase is one
+  frame shorter than before.** The engine flips every frame a phase draws,
+  and the library's phases compared their clock with their duration *after*
+  drawing, so the frame on which the answer became yes was still shown: a
+  phase lasted `ceil(d·hz) + 1` frames. A 600 ms hold was 73 frames
+  (608.3 ms) at 120 Hz and 100 (606.1 ms) at 165 Hz, and at an exact
+  multiple one frame more again whenever the clock's floating-point sum
+  landed a hair short of it. `StimulusResponse` and `ResponseWindow`, which
+  timed their timeout from their own first flip, were one frame longer
+  still. Now a phase of duration d shows d·hz frames, rounded to the
+  nearest frame (half a frame up): the next phase's first frame — or, at the
+  end of a trial, the empty frame that takes the stimulus off — appears d
+  after the phase's first frame. 600 ms is 72 frames at 120 Hz and 99 at
+  165 Hz. Each timed phase is one frame shorter: 16.7 ms at 60 Hz, 8.3 ms
+  at 120 Hz, 6.9 ms at 144 Hz, 6.1 ms at 165 Hz; a `StimulusResponse` or
+  `ResponseWindow` timeout two frames shorter; and a duration that is not a
+  whole number of frames can lose one frame more, because it now rounds to
+  the nearest frame rather than up (100 ms at 144 Hz is 14 frames, was 16).
+  Every trial is shorter by the sum. Events were stamped with the real flips
+  before and still are, so recorded times were right; what was wrong was
+  what stayed on screen.
+  - The phases: `HoldFixation` (its duration, jitter included),
+    `StimulusResponse` (timeout), `AcquireFixation` (timeout, and each half
+    of the blink cycle), `LandingCheck` (timeout), `LandingSample` (dwell,
+    and `max_wait_s`), `ResponseWindow` (timeout), `AdjustmentLoop`
+    (timeout), `Blank`, `Feedback`, `TrialFeedback`. `AcquireFixation`'s
+    timeout already ended before drawing, and changes only where the nearest
+    frame and the next one differ. `FrameSequence` counts frames and is
+    unchanged. Phases that end on a condition — gaze arriving or leaving, a
+    key, a commit, a settled eye — still show the frame they saw it on.
+  - A response is counted when it is read by the frame its timeout runs out
+    on, which is not drawn: up to one frame before the timeout. Before, a
+    departure or a key read *at* the timeout still counted, with the
+    stimulus up two frames past it. `rt_ms` is measured as before.
+    `ResponseWindow`'s deadline is now counted from `on_enter`, with or
+    without an onset event (it ran from the cue's flip). `LandingSample`
+    judges the landing on the same sample as before, the one read `dwell_s`
+    after saccade onset.
+  - When a body phase's time runs out with an Outcome — a response timeout —
+    the closing phase draws that frame, so `TrialFeedback` follows the
+    stimulus with no blank frame between. With no closing phase the engine
+    shows the frame empty: the flip on which the stimulus goes off, stamped,
+    in frames.csv, and carrying that frame's events (a `LANDED`).
+  - `TrialFeedback(duration_s=0)` shows no colour; the record, the
+    `FEEDBACK` event and the beep still happen.
+- **`Duration.n_frames` rounds a duration exactly half-way between two frame
+  counts up.** It rounded to the even count, so at 165 Hz, where every odd
+  multiple of 100 ms is an exact half, 500 ms was 82 frames and 700 ms 116.
+  500 ms is now 83. It shares the one rounding function with phase timing
+  (`config.models.whole_frames`), so a phase given `Duration.seconds(hz)`
+  lasts exactly `Duration.n_frames(hz)` frames.
+- **`HoldFixation` refuses a `jitter_s` larger than its `duration_s`.** Some
+  draws would have been negative: trials with no foreperiod at all.
 - **The workspace's Rig menu opens on the laptop.** It used to open on the
   experiment's own mac, else alhazen's shared mac, else the first rig listed.
   It now opens on the experiment's own laptop (`configs/rig-laptop.yaml`,
   which hides the shared one of that name), else `alhazen/laptop`, else the
   first rig listed; a mac is chosen from the menu. docs/workspace.md says so
   under "Configure and run".
+
+### Added
+
+- **The same rule for an experiment's own phases:**
+  `TrialContext.time_up(since, duration_s)` — has a duration that started
+  at `since` run out, in whole frames counted by the clock? — and
+  `TrialContext.end_undrawn(then)`, which ends the phase with `then`
+  (`PhaseAction.ADVANCE` or an Outcome) without showing the current frame.
+  The engine does not flip a frame a phase ended undrawn: the next phase is
+  entered and draws it, with the frame's commands, health checks and inputs
+  taken once. `TrialContext.frame_period_s` is the frame they count in, set
+  by the engine on every trial from its frame monitor (the measured refresh
+  rate) or, without one, from the display; `SimulatedDisplay.frame_period_s`
+  reports one, as `FakeDisplay` already did. docs/architecture.md §2.3 has
+  the rule, the rounding, dropped frames and the simulated display.
+
+  **What an experiment must do for its own phases.** A phase that times
+  itself — `if ctx.clock.now() - self._t0 >= d: return ...` after drawing —
+  keeps the old, one-frame-longer timing until it changes. Move the check to
+  the top of `on_frame`, before anything is drawn, as
+  `if ctx.time_up(self._t0, d): return ctx.end_undrawn(then)`, with
+  `self._t0 = ctx.clock.now()` in `on_enter`. A phase that subclasses a
+  library phase inherits the fix. A frame-by-frame model of a trial (a
+  movie, a preview) that counts `ceil(d·hz) + 1` frames per phase must count
+  `round(d·hz)`, and a test that pins the old counts must change with it.
+
+### Deprecated
+
+- **`TrialContext.time_up` on a context with no `frame_period_s`.** Only a
+  phase stepped by hand in a test, with no engine, meets it; it falls back
+  to `ctx.dt` and warns, and from 3.0 the period is required. Set
+  `ctx.frame_period_s` where the test builds its context.
 
 ## 2.4.0 - 2026-09-29
 

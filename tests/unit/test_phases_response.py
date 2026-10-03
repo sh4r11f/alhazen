@@ -14,7 +14,7 @@ from alhazen.task.phases import (
     ResponseWindow,
 )
 from alhazen.testing import FakeStimulus, ScriptedInputs
-from support import FRAME_S, EngineHarness
+from support import FRAME_S, EngineHarness, record_flips
 
 LEFT = Outcome("LEFT", completed=True, success=True)
 RIGHT = Outcome("RIGHT", completed=True, success=False)
@@ -118,30 +118,49 @@ class TestResponseWindow:
         assert result.outcome is NO_RESPONSE
         assert "response_key" not in result.record
 
-    def test_the_deadline_runs_from_the_cue_flip_not_from_phase_entry(self):
-        # The subject has the whole timeout_s with the cue on screen, the same
-        # window the reaction time is measured in. The cue's flip is one frame
-        # after on_enter; a deadline counted from on_enter would cut that
-        # frame off the end, and a key read with the cue up for exactly
-        # timeout_s (frame 5, 3 frame periods after the flip) would be scored
-        # a timeout.
+    def test_a_key_read_on_the_frame_the_time_runs_out_still_counts(self):
+        # The cue is on screen for timeout_s: frames 0-2. Keys are read at the
+        # start of each frame and checked before the time, so a key read at
+        # the start of frame 3 — the frame the time runs out on, which is not
+        # drawn — was pressed with the cue up and counts: 2 frame periods
+        # after the cue's flip, the last reaction time this window measures.
         timeout_s = 3 * FRAME_S
         harness, result = run(
             [self.phase(timeout_s=timeout_s)],
-            [NOTHING, NOTHING, NOTHING, NOTHING, press("left"), NOTHING],
+            [NOTHING, NOTHING, NOTHING, press("left"), NOTHING],
         )
         assert result.outcome is LEFT
-        assert result.record["rt_ms"] == pytest.approx(timeout_s * 1000, abs=1.0)
+        assert result.record["rt_ms"] == pytest.approx(2 * FRAME_S * 1000, abs=1.0)
 
-    def test_the_timeout_comes_timeout_s_after_the_cue_flip(self):
-        timeout_s = 3 * FRAME_S
-        harness, result = run([self.phase(timeout_s=timeout_s)], [NOTHING])
+    def test_a_key_read_after_the_cue_has_gone_is_a_timeout(self):
+        # Read on the 5th frame: the cue went off on the 4th's flip, three
+        # frames after it came on. Until 2.5 this key counted — the cue stayed
+        # up two frames past the timeout, and the deadline ran from its flip.
+        harness, result = run(
+            [self.phase(timeout_s=3 * FRAME_S)],
+            [NOTHING, NOTHING, NOTHING, NOTHING, press("left"), NOTHING],
+        )
         assert result.outcome is NO_RESPONSE
-        # The frame that timed out read the clock at cue + timeout_s; TRIAL_END
-        # is stamped two flips later (that frame's own, then the engine's
-        # blanking flip).
+
+    def test_the_cue_is_on_screen_for_timeout_s(self):
+        flips: dict[int, float] = {}
+        harness = EngineHarness(
+            input_provider=ScriptedInputs([NOTHING]),
+            declared_events=("RESPONSE_CUE", "RESPONSE"),
+            on_frame_input=record_flips(flips),
+        )
+        target = FakeStimulus("target")
+        ctx = harness.ctx(stimuli={"target": target})
+        result = harness.engine.run_trial(
+            ctx, [self.phase(timeout_s=3 * FRAME_S, stimulus_keys=["target"])]
+        )
+        assert result.outcome is NO_RESPONSE
+        # Three frames of cue, then the empty frame the engine shows to take
+        # it off — exactly timeout_s after the cue's flip — then its blank.
+        assert target.draw_count == 3
+        assert flips[3] - result.record["t_response_cue"] == pytest.approx(3 * FRAME_S)
         after_cue = result.record["t_trial_end"] - result.record["t_response_cue"]
-        assert after_cue == pytest.approx(timeout_s + 2 * FRAME_S)
+        assert after_cue == pytest.approx(4 * FRAME_S)
 
     def test_without_an_onset_event_the_deadline_runs_from_phase_entry(self):
         # No cue flip to count from: the window opened on entry, and so did

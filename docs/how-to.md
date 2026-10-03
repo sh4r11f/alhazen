@@ -45,22 +45,36 @@ class WaitForKey:
         self._on_press, self._on_timeout = on_press, on_timeout
 
     def on_enter(self, ctx):
+        # Read right after the flip before this phase's first frame: the
+        # moment the timeout starts.
         self._t0 = ctx.clock.now()
 
     def on_frame(self, ctx):
         if self._key in ctx.inputs.keys:
             return self._on_press
-        if ctx.clock.now() - self._t0 >= self._timeout_s:
-            return self._on_timeout
+        # Asked before anything is drawn. On the frame the time runs out the
+        # phase draws nothing and ends undrawn, so it is on screen for
+        # timeout_s, to the nearest frame — not one frame longer.
+        if ctx.time_up(self._t0, self._timeout_s):
+            return ctx.end_undrawn(self._on_timeout)
         return PhaseAction.CONTINUE
 ```
 
-Two rules that are not optional:
+Three rules that are not optional:
 
 - **Touch nothing but `ctx`.** No hardware, no bus, no window, no module
   state. That is what lets every phase be tested against a fake clock.
 - **Check gaze before checking completion.** If the phase requires fixation,
   test it first — otherwise a blink on the final frame passes as success.
+- **Time a duration with `ctx.time_up`, before drawing, and end with
+  `ctx.end_undrawn`.** The engine flips every frame a phase draws, so a
+  phase that compares `ctx.clock.now() - self._t0` with its duration after
+  drawing shows the frame its time ran out on as well: one frame too long.
+  `end_undrawn(then)` returns `then` unchanged and tells the engine not to
+  flip; the next phase draws that frame instead. Check what the phase
+  measures (a key, gaze) first, so the inputs read on that frame still
+  count. The rule, the rounding and what happens to a dropped frame are in
+  [architecture §2.3](architecture.md#23-how-long-a-phase-lasts).
 
 ## Add a paradigm
 

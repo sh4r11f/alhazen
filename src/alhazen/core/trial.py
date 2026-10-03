@@ -9,14 +9,17 @@ small contracts defined in this module.
 
 from __future__ import annotations
 
+import math
 import re
+import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 
-from alhazen.config.models import RewardPulses
+from alhazen._deprecation import deprecation_message
+from alhazen.config.models import RewardPulses, whole_frames
 from alhazen.core.clock import Clock
 from alhazen.display.screen import Screen, within_radius
 from alhazen.errors import RewardRequestError
@@ -331,7 +334,11 @@ class InputFrame:
 
 class PhaseAction:
     """Per-frame instruction back to the engine. A phase's ``on_frame``
-    returns CONTINUE, ADVANCE, or an Outcome that ends the whole trial."""
+    returns CONTINUE, ADVANCE, or an Outcome that ends the whole trial.
+
+    ADVANCE and an Outcome both mean "show this frame, then move on" — unless
+    the phase ended through ``TrialContext.end_undrawn``, before drawing,
+    which is how a timed phase ends on time (docs/architecture.md §2.3)."""
 
     CONTINUE = "CONTINUE"
     ADVANCE = "ADVANCE"
@@ -343,7 +350,12 @@ class Phase(Protocol):
     reads/mutates the TrialContext and queues events via
     ``ctx.emit_on_flip`` — it never sees hardware, the bus, or the window.
     That separation is what makes phase logic testable with a fake clock and
-    no display."""
+    no display.
+
+    A phase that lasts a duration asks ``ctx.time_up`` at the top of
+    ``on_frame``, before drawing, and ends through ``ctx.end_undrawn`` when
+    it is: that is what keeps a phase of d seconds on screen for d and not
+    one frame longer (docs/architecture.md §2.3)."""
 
     name: str
 
@@ -446,6 +458,123 @@ class TrialContext:
     # session's task declared ``mid_trial_reward`` and a dispenser is wired to
     # take the requests. False makes request_reward raise.
     accepts_reward_requests: bool = False
+    # One display frame, in seconds, at the session's measured refresh rate:
+    # the unit time_up counts in. Set by the engine at the start of every
+    # trial, from its frame monitor (which every session wires) or, in an
+    # engine built without one, from the display's own ``frame_period_s``
+    # (FakeDisplay and SimulatedDisplay report one). None only on a context
+    # nothing has set it on — a phase stepped by hand in a test, with no
+    # engine — where time_up falls back to ``dt`` and warns (removed in 3.0).
+    frame_period_s: float | None = None
+    # What end_undrawn was handed during the current on_frame call, or None.
+    # The engine clears it before every on_frame and reads it after: it is
+    # how a phase says "this frame is not mine, do not flip it" without
+    # changing what on_frame returns. Not part of the constructor, and not
+    # for phases to touch except through end_undrawn.
+    _undrawn_then: Any = field(default=None, init=False, repr=False, compare=False)
+
+    def time_up(self, since: float, duration_s: float) -> bool:
+        """Has a duration that started at ``since`` run out — counted in
+        whole frames, to the nearest one? Ask it at the top of ``on_frame``,
+        **before drawing anything**, and when it says True end the phase with
+        ``return ctx.end_undrawn(then)``: the phase is then on screen for
+        exactly ``duration_s``, rounded to the nearest frame (half a frame
+        up), and not one frame longer.
+
+        ``since`` is a time on this context's clock: the moment the timed
+        thing could first be drawn. For a phase timing itself, that is
+        ``ctx.clock.now()`` read in ``on_enter`` — which the engine calls
+        right after the flip before the phase's first frame. For a duration
+        timed from an earlier flip, it is that flip's stamped event time,
+        ``ctx.record["t_<event>"]`` (LandingSample times its dwell from
+        RESPONSE_ONSET, the flip just before its own first frame).
+
+        The frames since ``since`` are counted by the clock, not by calls:
+        the time since it in frame periods, rounded to a whole frame. So a
+        flip more than half a frame late — a dropped frame — counts as the
+        frames it took, and the phase still ends on time, one frame shorter.
+        The duration in frames is ``config.models.whole_frames``, the
+        rounding ``Duration.n_frames`` uses. docs/architecture.md §2.3 has
+        the rule and the reasoning.
+
+        Raises ValueError for a duration that is not a finite number of
+        seconds >= 0, a ``since`` later than now (a time that has not
+        happened cannot be what a duration started from), and a
+        ``frame_period_s`` that is not a positive number. With
+        ``frame_period_s`` None, uses ``dt`` — the measured length of the
+        last frame, which a test stepping a clock by hand sets to its step —
+        and raises a DeprecationWarning saying the period is required from
+        3.0.
+        """
+        period = self.frame_period_s
+        if period is None:
+            warnings.warn(
+                deprecation_message(
+                    "TrialContext.time_up() on a context with no frame_period_s (it falls back "
+                    "to ctx.dt, the length of the last frame)",
+                    since="2.5",
+                    removed_in="3.0",
+                    instead=(
+                        "a context the engine runs, which sets frame_period_s on every trial, or "
+                        "set ctx.frame_period_s to the frame period yourself when stepping a "
+                        "phase by hand"
+                    ),
+                ),
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            period = self.dt
+        if not (math.isfinite(period) and period > 0):
+            raise ValueError(
+                f"time_up counts in frames, and this context's frame_period_s is {period!r}; "
+                f"it must be a frame period in seconds > 0 (the engine sets it from the "
+                f"measured refresh rate)"
+            )
+        if not (math.isfinite(duration_s) and duration_s >= 0):
+            raise ValueError(
+                f"time_up was asked about a duration of {duration_s!r} s; a duration is a "
+                f"finite number of seconds >= 0"
+            )
+        elapsed = self.clock.now() - since
+        if elapsed < 0:
+            raise ValueError(
+                f"time_up was given since={since!r}, which is {-elapsed:.6f} s after now on this "
+                f"context's clock; pass the time the duration started (ctx.clock.now() read in "
+                f"on_enter, or a flip-stamped event's time from ctx.record)"
+            )
+        # Whole frames since `since`: rounded, so a stamp a little early or
+        # late — a real clock's jitter, a measured rate a hair off nominal —
+        # still counts as the frame it is, and only a flip more than half a
+        # frame late counts as two.
+        frames_shown = math.floor(elapsed / period + 0.5)
+        return frames_shown >= whole_frames(duration_s, period)
+
+    def end_undrawn(self, then: str | Outcome) -> str | Outcome:
+        """End the phase now, without showing this frame: ``return
+        ctx.end_undrawn(then)`` from ``on_frame``, before drawing anything,
+        when ``time_up`` says the phase's time is up.
+
+        ``then`` is what the phase would have returned — ``PhaseAction.ADVANCE``
+        or an Outcome — and comes back unchanged, so what ``on_frame``
+        returns is what it always returned; the context is what tells the
+        engine not to flip. The engine then hands this same frame, with its
+        inputs, to the next phase (or, for an Outcome, to the closing phase;
+        with none, shows it empty — the flip on which the stimulus goes off —
+        and blanks the display). Anything the phase queued on this frame
+        (events, reward requests) goes out on that next flip.
+
+        Raises TypeError for anything but ADVANCE or an Outcome: CONTINUE
+        would not end anything, and the engine would have no frame to flip.
+        The engine raises TypeError too when ``on_frame`` then returns
+        something other than what this returned.
+        """
+        if not (then == PhaseAction.ADVANCE or isinstance(then, Outcome)):
+            raise TypeError(
+                f"end_undrawn ends the phase, so it takes PhaseAction.ADVANCE or an Outcome; got "
+                f"{then!r}"
+            )
+        self._undrawn_then = then
+        return then
 
     def emit_on_flip(self, name: str, payload: dict | None = None) -> None:
         """Queue an event to be emitted right after the next flip, stamped
