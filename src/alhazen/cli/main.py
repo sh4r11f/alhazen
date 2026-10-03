@@ -347,21 +347,24 @@ def _rigs(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
 
 def _new(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     """Scaffold an experiment package, and say what to type next."""
-    from alhazen._scaffold import scaffold
+    from alhazen._scaffold import scaffold, task_name
 
     try:
         root = scaffold(args.name, Path(args.into), force=args.force)
     except ConfigError as e:
         print(f"CANNOT SCAFFOLD: {e}", file=sys.stderr)
         return 1
+    # Every session names its task, so the commands printed do too — the
+    # same name the package's entry point registers.
+    task = task_name(args.name)
     print(f"created {root}")
     print("\nnext:")
     print(f"  cd {root}")
     print('  pip install -e ".[dev]"')
     print("  pytest")
-    print("  python run.py --mode simulate --rig configs/rig-lab.yaml --headless")
+    print(f"  python run.py --task {task} --mode simulate --rig configs/rig-lab.yaml --headless")
     print("\nthen, on a machine with a screen:")
-    print("  python run.py --mode demo --rig configs/rig-mac.yaml")
+    print(f"  python run.py --task {task} --mode demo --rig configs/rig-mac.yaml")
     return 0
 
 
@@ -1069,8 +1072,9 @@ def _trial_session(args: argparse.Namespace, rig: Any, task: Any, params: Any, m
     # are not the numbers that ran, and the snapshot is the record.
     print(built.describe())
     print(_params_line(args, task, params))
-    # The task's own name, not args.task: an experiment's run.py has no
-    # --task flag, because it already knows which experiment it is.
+    # The task's own name, the one its run folder is named after, not
+    # args.task: that is the name the command used — an entry point's for
+    # `alhazen run`, a task table's key for run.py — which need not be it.
     print(f"running {task.name}: sub-{subject} ses-{session:03d} run-{built.run:02d}")
     # The seed, drawn by the build when none was given. The experiment
     # workspace (`alhazen dashboard`) reads this line from a launched run's

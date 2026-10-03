@@ -7,7 +7,7 @@ An experiment built on [alhazen](https://github.com/sh4r11f/alhazen).
 ```bash
 pip install -e ".[dev]"     # no renderer needed for this
 pytest                      # the task's own tests, on a fake clock
-python run.py --mode simulate --rig configs/rig-lab.yaml --headless
+python run.py --task $task_name --mode simulate --rig configs/rig-lab.yaml --headless
 ```
 
 That last command runs a complete session with nobody in the chair and no
@@ -20,10 +20,10 @@ manifest — in exactly the layout a real session writes under `data/`.
 rig file:
 
 ```bash
-python run.py --mode demo     --rig configs/rig-mac.yaml              # look at the stimulus
-python run.py --mode test     --rig configs/rig-mac.yaml --sub dev --ses 1 --initials DEV  # play it, mouse as gaze
-python run.py --mode simulate --rig configs/rig-lab.yaml --seed 1     # watch it run itself, on the rig
-python run.py --mode movie    --rig configs/rig-lab.yaml --out movies # files, at the rig's sizes
+python run.py --task $task_name --mode demo     --rig configs/rig-mac.yaml              # look at the stimulus
+python run.py --task $task_name --mode test     --rig configs/rig-mac.yaml --sub dev --ses 1 --initials DEV  # play it, mouse as gaze
+python run.py --task $task_name --mode simulate --rig configs/rig-lab.yaml --seed 1     # watch it run itself, on the rig
+python run.py --task $task_name --mode movie    --rig configs/rig-lab.yaml --out movies # files, at the rig's sizes
 ```
 
 A rig file describes a machine, not a purpose. Simulate mode stands the

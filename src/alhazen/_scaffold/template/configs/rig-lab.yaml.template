@@ -4,12 +4,12 @@
 # goes. Which of the six modes you run on it is not the file's business, so
 # every mode takes this file as it stands:
 #
-#   python run.py --mode measure  --rig configs/rig-lab.yaml
-#   python run.py --mode demo     --rig configs/rig-lab.yaml
-#   python run.py --mode movie    --rig configs/rig-lab.yaml
-#   python run.py --mode simulate --rig configs/rig-lab.yaml --seed 1
-#   python run.py --mode test     --rig configs/rig-lab.yaml --sub s01 --ses 1 --initials AB
-#   python run.py                 --rig configs/rig-lab.yaml --sub s01 --ses 1 --initials AB
+#   python run.py --task $task_name --mode measure  --rig configs/rig-lab.yaml
+#   python run.py --task $task_name --mode demo     --rig configs/rig-lab.yaml
+#   python run.py --task $task_name --mode movie    --rig configs/rig-lab.yaml
+#   python run.py --task $task_name --mode simulate --rig configs/rig-lab.yaml --seed 1
+#   python run.py --task $task_name --mode test     --rig configs/rig-lab.yaml --sub s01 --ses 1 --initials AB
+#   python run.py --task $task_name                 --rig configs/rig-lab.yaml --sub s01 --ses 1 --initials AB
 #
 # Simulate stands the real devices down (the autopilot supplies gaze, the
 # pump and the sync lines are logged rather than fired) and says so before

@@ -6,10 +6,15 @@ project, reads each one's parameter schema, sends the chosen one as `--task`
 right after the mode, keeps `--task` out of the extra arguments, and records
 the task on the run. A table it cannot read is an error it reports and a
 launch it refuses, never a project shown as having one task.
+
+Every session names its task (alhazen 2.5): a launch of a project with one
+task carries `--task` too, with the name its parameter schema reports, when
+the project's alhazen takes it.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
 from pathlib import Path
@@ -21,7 +26,9 @@ import pytest
 # module's namespace, and __all__ says the import is deliberate.
 from test_workspace import request_for, workspace
 
+from alhazen.cli.main import add_mode_arguments
 from alhazen.cli.workspace import project_tasks
+from alhazen.modes import Mode
 
 __all__ = ["request_for", "workspace"]
 
@@ -317,3 +324,234 @@ class TestTheSchemaPerTask:
         assert set(workspace.schema(key)["properties"]) == {"n"}
         with pytest.raises(ValueError, match="declares one task"):
             workspace.schema(key, "other")
+
+
+class TestEveryLaunchNamesItsTask:
+    """Every session names its task (the owner's rule, 2026-10-02), so every
+    mode launch the workspace builds carries `--task` — the Task menu's
+    choice for a project with several, the one task's own name for a project
+    with one — and no session started here leaves run.py to fall back on a
+    default, which alhazen 2.5 deprecates and 3.0 refuses."""
+
+    ONE_TASK_SCHEMA = {"properties": {"n": {"type": "integer"}}, "x-alhazen-task": "the-one"}
+
+    @staticmethod
+    def on_alhazen(workspace, monkeypatch, version):
+        """The registered project, recorded as running `version`."""
+        monkeypatch.setitem(workspace.projects[0], "alhazen_version", version)
+        return workspace.projects[0]["id"]
+
+    @staticmethod
+    def schema_reads(monkeypatch, schema=None, *, failing=False):
+        """Replace the child that reads a task's schema; returns the list of
+        commands it was asked to run, so a test can count the reads."""
+        spawned: list[list[str]] = []
+
+        def fake_run(command, **kwargs):
+            spawned.append(command)
+            if failing:
+                return subprocess.CompletedProcess(command, 1, stdout="", stderr="ImportError: x")
+            return subprocess.CompletedProcess(command, 0, stdout=json.dumps(schema), stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        return spawned
+
+    @staticmethod
+    def mode_request(workspace, mode, **overrides):
+        """A launch of `mode` the form would allow: run and test need a
+        subject and initials; measure takes no parameters."""
+        needs_subject = mode in {"run", "test"}
+        return request_for(
+            workspace,
+            mode=mode,
+            subject="s01" if needs_subject else "",
+            initials="HD" if needs_subject else "",
+            **overrides,
+        )
+
+    @pytest.mark.parametrize("mode", [m.value for m in Mode])
+    @pytest.mark.parametrize("asked", [None, "mt-tuning"], ids=["menu-default", "chosen"])
+    def test_a_project_with_a_menu_is_sent_a_task_in_every_mode(self, workspace, mode, asked):
+        root = Path(workspace.projects[0]["path"])
+        write_run_py(root, MULTI)
+        key = workspace.projects[0]["id"]
+        request = self.mode_request(workspace, mode, project=key, task=asked)
+        command = workspace._command(request, workspace.directory / "job")
+        start = command.index("--mode")
+        # Asked for none, it sends the one the menu opens on — run.py's
+        # default_task= here — explicitly, never leaving it to run.py.
+        assert command[start : start + 4] == ["--mode", mode, "--task", asked or "mib-search"]
+
+    @pytest.mark.parametrize("mode", [m.value for m in Mode])
+    def test_a_one_task_project_on_2_5_is_sent_its_name_in_every_mode(
+        self, workspace, monkeypatch, mode
+    ):
+        key = self.on_alhazen(workspace, monkeypatch, "2.5.0")
+        self.schema_reads(monkeypatch, self.ONE_TASK_SCHEMA)
+        request = self.mode_request(workspace, mode, project=key)
+        command = workspace._command(request, workspace.directory / "job")
+        start = command.index("--mode")
+        assert command[start : start + 4] == ["--mode", mode, "--task", "the-one"]
+        # And the launcher's arguments are ones run_experiment(task_class=)
+        # accepts: its mode flags plus --task with the one name as choice.
+        parser = argparse.ArgumentParser()
+        add_mode_arguments(parser)
+        parser.add_argument("--task", choices=["the-one"])
+        assert parser.parse_args(command[3:]).task == "the-one"
+
+    def test_the_name_is_read_once_and_then_cached(self, workspace, monkeypatch):
+        key = self.on_alhazen(workspace, monkeypatch, "2.5.0")
+        spawned = self.schema_reads(monkeypatch, self.ONE_TASK_SCHEMA)
+        for _ in range(3):
+            workspace._command(
+                request_for(workspace, project=key, mode="simulate"), workspace.directory / "job"
+            )
+        assert len(spawned) == 1
+        # The same read the page's parameter fields ask for: run.py's only task.
+        assert spawned[0][-1].endswith("run.py")
+
+    @pytest.mark.parametrize("version", ["1.9.0", "2.4.0"])
+    def test_a_project_on_an_older_alhazen_is_sent_none(self, workspace, monkeypatch, version):
+        """Its run_experiment(task_class=) has no --task, and would refuse
+        the flag; the session warns instead, in the child's console, only if
+        that alhazen is new enough to have the warning."""
+        key = self.on_alhazen(workspace, monkeypatch, version)
+        spawned = self.schema_reads(monkeypatch, self.ONE_TASK_SCHEMA)
+        command = workspace._command(
+            request_for(workspace, project=key, mode="simulate"), workspace.directory / "job"
+        )
+        assert "--task" not in command and spawned == []
+
+    @pytest.mark.parametrize("typed", ["--task the-one", "--task=the-one"])
+    def test_a_task_typed_in_the_extras_names_it_instead(self, workspace, monkeypatch, typed):
+        """An experiment that reads its own --task (attention-clamp) is named
+        from the extras, as before: one --task in the command, the typed one,
+        and no schema read for a name nobody needs."""
+        key = self.on_alhazen(workspace, monkeypatch, "2.5.0")
+        spawned = self.schema_reads(monkeypatch, self.ONE_TASK_SCHEMA)
+        request = request_for(workspace, project=key, mode="simulate", extra_args=typed)
+        command = workspace._command(request, workspace.directory / "job")
+        assert command[-len(typed.split()) :] == typed.split()
+        assert sum(token.split("=")[0] == "--task" for token in command) == 1
+        assert spawned == []
+
+    def test_a_name_that_cannot_be_read_refuses_the_launch_saying_how(self, workspace, monkeypatch):
+        key = self.on_alhazen(workspace, monkeypatch, "2.5.0")
+        self.schema_reads(monkeypatch, failing=True)
+        with pytest.raises(ValueError) as refused:
+            workspace._command(
+                request_for(workspace, project=key, mode="simulate"), workspace.directory / "job"
+            )
+        message = str(refused.value)
+        assert "one task cannot be named for --task" in message
+        assert "ImportError: x" in message, "the reason, not just the refusal"
+        assert "type --task <its name> in the extra arguments" in message
+
+    def test_a_schema_without_the_name_refuses_and_says_to_register_again(
+        self, workspace, monkeypatch
+    ):
+        """A record saying 2.5 over an interpreter whose alhazen wrote no
+        name: the registration is stale (alhazen reinstalled older since)."""
+        key = self.on_alhazen(workspace, monkeypatch, "2.5.0")
+        self.schema_reads(monkeypatch, {"properties": {}})
+        with pytest.raises(ValueError, match="open Project settings and save, to register"):
+            workspace._command(
+                request_for(workspace, project=key, mode="simulate"), workspace.directory / "job"
+            )
+
+    def test_an_unreadable_table_is_still_refused_in_its_own_words(self, workspace, monkeypatch):
+        """start() asks for a one-task name before anything else; a table it
+        cannot read is not a one-task project, and the refusal the person
+        sees is the table's shape, not a schema read's failure."""
+        key = self.on_alhazen(workspace, monkeypatch, "2.5.0")
+        spawned = self.schema_reads(monkeypatch, failing=True)
+        root = Path(workspace.projects[0]["path"])
+        write_run_py(root, 'run_experiment(tasks={"a": (A, "x.yaml")})\n')
+        with pytest.raises(ValueError, match="module-level dict literal"):
+            workspace.start(request_for(workspace, project=key, mode="simulate"))
+        assert spawned == []
+
+    def test_a_standalone_script_is_sent_no_task(self, workspace, monkeypatch):
+        """A script is not a session of the task, and declares its own flags."""
+        root = Path(workspace.projects[0]["path"])
+        script = root / "src" / "demo_pkg" / "preview.py"
+        script.parent.mkdir(parents=True)
+        script.write_text(
+            "import argparse\n"
+            "parser = argparse.ArgumentParser()\n"
+            "parser.add_argument('--out')\n"
+            "if __name__ == '__main__':\n"
+            "    parser.parse_args()\n",
+            encoding="utf-8",
+        )
+        key = self.on_alhazen(workspace, monkeypatch, "2.5.0")
+        spawned = self.schema_reads(monkeypatch, self.ONE_TASK_SCHEMA)
+        command = workspace._command(
+            request_for(workspace, project=key, mode="demo_pkg.preview"),
+            workspace.directory / "job",
+        )
+        assert "--task" not in command and spawned == []
+
+    def test_a_launched_run_hands_the_child_the_name(self, workspace, monkeypatch):
+        """Through start(), as the page launches: the child's argv carries
+        --task with the one task's name."""
+        key = self.on_alhazen(workspace, monkeypatch, "2.5.0")
+        spawned = self.schema_reads(monkeypatch, self.ONE_TASK_SCHEMA)
+        run = workspace.start(request_for(workspace, project=key, mode="simulate"))
+        workspace.worker.join(timeout=60)
+        detail = workspace.detail(run["id"])
+        argv = json.loads(
+            Path(detail["directory"], "console.log").read_text(encoding="utf-8").splitlines()[0]
+        )
+        assert argv[argv.index("--task") + 1] == "the-one"
+        assert len(spawned) == 1
+        # The run record's task stays the Task menu's: none for a project
+        # with one task, so its history reads as it always has.
+        assert detail["task"] is None
+
+    def test_a_bad_rig_is_still_refused_before_the_name_is_asked_for(self, workspace, monkeypatch):
+        """A launch with two problems is refused for the one it always was:
+        the rig is checked first, and its refusal is what the person sees."""
+        key = self.on_alhazen(workspace, monkeypatch, "2.5.0")
+        spawned = self.schema_reads(monkeypatch, failing=True)
+        with pytest.raises(ValueError, match="Choose an existing rig YAML file"):
+            workspace.start(
+                request_for(workspace, project=key, mode="simulate", rig="configs/nope.yaml")
+            )
+        assert spawned == [] and workspace.runs == {}
+
+
+class TestTheSchemaNamesItsTask:
+    """The child that reads a task's parameter schema says which task it
+    read, under `x-alhazen-task` — the only way the workspace can learn a
+    one-task project's name, which run.py does not spell out."""
+
+    def test_one_task_its_own_name(self, workspace):
+        root = Path(workspace.projects[0]["path"])
+        write_run_py(
+            root,
+            "from pydantic import BaseModel\n"
+            "class Params(BaseModel):\n    n: int = 1\n"
+            "class One:\n    name = 'the-one'\n    params_model = Params\n"
+            'if __name__ == "__main__":\n'
+            "    run_experiment(task_class=One)\n",
+        )
+        schema = workspace.schema(workspace.projects[0]["id"])
+        assert schema["x-alhazen-task"] == "the-one"
+        assert set(schema["properties"]) == {"n"}
+
+    def test_several_the_table_key_read(self, workspace):
+        root = Path(workspace.projects[0]["path"])
+        write_run_py(
+            root,
+            "from pydantic import BaseModel\n"
+            "class Params(BaseModel):\n    n: int = 1\n"
+            "class A:\n    name = 'class-name'\n    params_model = Params\n"
+            'TASKS = {"a": (A, None), "b": (A, None)}\n'
+            'if __name__ == "__main__":\n'
+            "    run_experiment(tasks=TASKS)\n",
+        )
+        key = workspace.projects[0]["id"]
+        # The key --task takes, not the class's own name.
+        assert workspace.schema(key, "b")["x-alhazen-task"] == "b"
+        assert workspace.schema(key)["x-alhazen-task"] == "a", "no name: the first declared"

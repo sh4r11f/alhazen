@@ -2297,6 +2297,32 @@ rig, and `alhazen run --task` starts the same session: a new experiment
 starts with its two entry points agreeing rather than inheriting a gap
 between them.
 
+**Every session names its task** (the owner's rule, 2026-10-02). `alhazen
+run` always needed `--task`; `run_experiment` now puts `--task` on run.py's
+parser in both forms — the table's keys for `tasks=`, the one task's `name`
+for `task_class=` — and every command the scaffold prints passes it.
+Refusing a command that used to work is a MAJOR change (versioning.md §1,
+§4), so in 2.x a run.py command without `--task` still runs what it ran
+(`default_task=`, else the first declared; the one task) and emits a
+`FutureWarning` naming that task and saying 3.0 refuses it — a
+`FutureWarning`, not a `DeprecationWarning`, because whoever typed the
+command must see it and Python hides a `DeprecationWarning` raised outside
+`__main__`. `default_task=` is deprecated with it. Measure mode runs no task
+and needs none. The workspace sends `--task` on every mode launch: the Task
+menu's choice, or for a one-task project on alhazen 2.5 or later the name
+its parameter schema reports (`x-alhazen-task`, written by
+`cli/workspace_schema.py`), which a launch that cannot read refuses.
+
+```mermaid
+flowchart LR
+    CMD["run.py command"] --> HAS{"--task given?"}
+    HAS -- "yes" --> RUN["that task runs"]
+    HAS -- "no, mode measure" --> MEAS["no task runs;<br/>the experiment's folder only"]
+    HAS -- "no, any other mode" --> OLD{"alhazen"}
+    OLD -- "2.x" --> WARN["FutureWarning naming the task,<br/>then default_task / first / the one task runs"]
+    OLD -- "3.0" --> REFUSE["refused"]
+```
+
 The acceptance test **installs** the rendered package (`pip --target`, in a
 subprocess), then lists its entry point, runs its tests and runs a session
 through `alhazen run` — because packaging is what breaks between a working

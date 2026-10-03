@@ -723,17 +723,24 @@ async function chooseProject(id) {
     ...Object.entries(MODES).map(([value, [text]]) => [value, text]),
     ...others.map((s) => [s.id, s.label]),
   ]);
-  // Tasks, in run.py's order, opening on the one that runs when none is
-  // named. The field shows only for an experiment that declares a table —
-  // or whose table could not be read, so the reader learns why from the
-  // help rather than from a refused launch. Filled before the parameter
-  // file menu: which file it opens on follows the selected task.
+  // Tasks, in run.py's order, opening on run.py's default_task= (deprecated
+  // in alhazen 2.5), else the first declared — the server's `default_task`.
+  // The help does not promise that a task runs when none is named: every
+  // launch sends the chosen one as --task, and from alhazen 3.0 a command
+  // without --task is refused. The field shows only for an experiment that
+  // declares a table — or whose table could not be read, so the reader
+  // learns why from the help rather than from a refused launch. Filled
+  // before the parameter file menu: which file it opens on follows the
+  // selected task.
   const declared = tasks(p);
   options($('task'), declared.map((t) => [t.name, t.name]), p.default_task);
   $('task-field').hidden = !declared.length && !p.tasks_error;
   $('task').disabled = !declared.length;
   $('task-help').textContent = p.tasks_error
-    || (declared.length ? `Declared in run.py; ${p.default_task} runs when no task is named.` : '');
+    // --task early in the sentence: a line that breaks inside it, after
+    // the "--", reads as two words (seen in the dashboard at its usual width).
+    || (declared.length ? 'Every launch passes --task with the task chosen here; the list '
+      + 'comes from run.py.' : '');
   // Rigs by name, the experiment's own and then the shared ones (rigMenu).
   rigMenu(p);
   // Parameter files by short name (presetLabels), opening on the selected

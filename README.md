@@ -17,9 +17,11 @@ pip install alhazen-vision
 alhazen new my_experiment && cd my_experiment
 pip install -e ".[dev]"
 pytest                                                    # no display needed
-python run.py --mode simulate --rig lab --headless
+python run.py --task my-experiment --mode simulate --rig lab --headless
 ```
 
+`--task my-experiment` names the scaffold's one task: every session names its
+task, and from alhazen 3.0 a command without `--task` is refused.
 `--rig lab` is the scaffold's `configs/rig-lab.yaml`: a rig is named by its
 file (`rig-<name>.yaml`), found in the experiment's `configs/` first and then
 among the rigs alhazen ships for every experiment to share, and a path works
