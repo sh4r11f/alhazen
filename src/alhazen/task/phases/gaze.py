@@ -14,6 +14,13 @@ Two rules run through all of them:
 - **Plain values in, no config.** Constructors take seconds, region names,
   stimulus keys and Outcomes. Resolving a ``Duration`` against the measured
   refresh rate is the task's job, done once in ``build_trial``.
+
+And one about time: every duration, timeout and dwell here is asked about
+with ``ctx.time_up`` before the phase draws, and ends the phase through
+``ctx.end_undrawn``, so a phase of d seconds is on screen for d — to the
+nearest frame, never one frame more (docs/architecture.md §2.3). What a
+phase measures from its inputs (a break, a departure, a landing) is looked
+at first, on that frame too: the time-up frame's inputs still count.
 """
 
 from __future__ import annotations
@@ -33,7 +40,15 @@ class AcquireFixation:
     *continuously*, not accumulate the same total with gaps in it. Optionally
     blinks the fixation point on and off, which is what draws a naive subject's
     eye to it — timed on the clock rather than on frames, so the rate is right
-    whatever the refresh rate.
+    whatever the refresh rate: each half of the cycle is on screen for
+    ``blink_period_s``, to the nearest frame.
+
+    ``timeout_s`` is how long the point is on screen before the trial ends
+    as ``on_timeout``, to the nearest frame (``ctx.time_up``); the frame on
+    which the time runs out is not drawn. ``hold_s`` is not a time on
+    screen but a gaze criterion — the time between the first and the latest
+    sample read inside the window — and is measured between samples, as it
+    always was.
     """
 
     name = "acquire_fixation"
@@ -69,10 +84,16 @@ class AcquireFixation:
             ctx.emit_on_flip(self._onset_event)
 
     def on_frame(self, ctx: TrialContext) -> str | Outcome:
+        # Before anything is drawn: the frame on which the time runs out is
+        # past the timeout, so it is not this phase's to show.
+        if ctx.time_up(self._t0, self._timeout_s):
+            return ctx.end_undrawn(self._on_timeout)
         now = ctx.clock.now()
-        if now - self._t0 >= self._timeout_s:
-            return self._on_timeout
-        if self._blink_period_s is not None and now - self._blink_t >= self._blink_period_s:
+        # Toggled before the draw for the same reason: each state is shown
+        # for the period, and the frame the period runs out on already
+        # belongs to the other state. Timed from the toggle itself, so the
+        # cycle never drifts from the clock.
+        if self._blink_period_s is not None and ctx.time_up(self._blink_t, self._blink_period_s):
             self._visible = not self._visible
             self._blink_t = now
         if self._visible:
@@ -103,6 +124,13 @@ class HoldFixation:
     The jitter is drawn once per trial from the session rng: a fixed foreperiod
     lets a subject time its response to the stimulus rather than react to it,
     which turns a reaction time into a guess about the clock.
+
+    The drawn duration (``hold_duration_s`` on the record) is how long the
+    hold is on screen: the next phase's first frame appears that long after
+    the hold's first, rounded to the nearest frame, half a frame up
+    (``ctx.time_up``). Rounding to the nearest keeps the realised durations
+    centred on the drawn ones. A jitter wider than the duration is refused,
+    because some draws would be below zero — a trial with no foreperiod.
     """
 
     name = "hold_fixation"
@@ -121,6 +149,17 @@ class HoldFixation:
             raise ValueError("HoldFixation needs an on_break outcome")
         if jitter_s < 0:
             raise ValueError("jitter_s must be >= 0")
+        if jitter_s > duration_s:
+            # The draw is uniform on duration ± jitter, so part of it would
+            # be below zero: those trials would have no foreperiod at all,
+            # and ctx.time_up refuses a negative duration mid-session. Caught
+            # here, where the numbers are written, rather than on whichever
+            # trial first draws one.
+            raise ValueError(
+                f"HoldFixation draws its duration from duration_s ± jitter_s, and jitter_s="
+                f"{jitter_s} is larger than duration_s={duration_s}: some trials would draw a "
+                f"negative hold. Make jitter_s <= duration_s"
+            )
         self._fixation_key = fixation_key
         self._region = region
         self._duration_s = duration_s
@@ -146,9 +185,13 @@ class HoldFixation:
         # break, never a lucky completion.
         if not ctx.regions[self._region].contains(ctx.inputs.gaze):
             return self._on_break
+        # Then the time, before drawing: on the frame it runs out the next
+        # phase draws instead, so the hold is on screen for its duration and
+        # not one frame more. The gaze read on this frame was checked above,
+        # so the hold is verified up to the start of its last frame.
+        if ctx.time_up(self._t0, self._duration):
+            return ctx.end_undrawn(PhaseAction.ADVANCE)
         draw_stimuli(ctx, [self._fixation_key, *self._concurrent])
-        if ctx.clock.now() - self._t0 >= self._duration:
-            return PhaseAction.ADVANCE
         return PhaseAction.CONTINUE
 
 
@@ -164,6 +207,16 @@ class StimulusResponse:
     The reaction time is measured from the *flip* that showed the stimulus
     (``ctx.record["t_<onset_event>"]``, stamped by the engine after the flip),
     never from the Python call that drew it.
+
+    ``timeout_s`` is how long the stimulus is on screen on a trial with no
+    departure: to the nearest frame (``ctx.time_up``, counted from the flip
+    before the stimulus's first frame), after which the trial ends as
+    ``on_timeout`` and the stimulus goes off. Gaze is read at the start of
+    each frame and departure is checked before the time, so the last
+    departure counted is the one read at the start of the stimulus's last
+    frame on screen: up to one frame before ``timeout_s``. Before 2.5 the
+    stimulus stayed up two frames past the timeout and a departure read at
+    the timeout counted.
 
     Where the eye *left from* is recorded too, as
     ``<depart_region>_x_dva``/``_y_dva``. A saccade is a displacement, and a
@@ -202,11 +255,14 @@ class StimulusResponse:
         self._start_prefix = start_record_prefix or depart_region
 
     def on_enter(self, ctx: TrialContext) -> None:
+        # What the timeout is counted from: the flip before the stimulus's
+        # first frame. Not the onset stamp, which is the flip OF that frame —
+        # counting from it would leave the stimulus up one frame longer.
+        self._t0 = ctx.clock.now()
         ctx.emit_on_flip(self._onset_event)
         self._launch: tuple[float, float] | None = None
 
     def on_frame(self, ctx: TrialContext) -> str | Outcome:
-        draw_stimuli(ctx, [self._stimulus_key, *self._concurrent])
         inside = ctx.regions[self._depart_region].contains(ctx.inputs.gaze)
         if inside:
             # Latched every frame, including the frames before the flip: the
@@ -214,19 +270,23 @@ class StimulusResponse:
             # departure is detected on the frame after it.
             self._launch = ctx.inputs.gaze
         onset_t = ctx.record.get(f"t_{self._onset_event.lower()}")
-        if onset_t is None:
-            # The stimulus has been drawn but not yet flipped: there is no
-            # honest onset time to measure a reaction from.
-            return PhaseAction.CONTINUE
-        now = ctx.clock.now()
-        if not inside:
-            ctx.record[self._rt_record_key] = (now - onset_t) * 1000.0
+        # Before the stimulus's first flip there is no honest onset time to
+        # measure a reaction from, so departure is only judged after it.
+        if onset_t is not None and not inside:
+            # A departure ends the phase on this frame, which is shown, as it
+            # always was: the next phase starts on the frame after.
+            draw_stimuli(ctx, [self._stimulus_key, *self._concurrent])
+            ctx.record[self._rt_record_key] = (ctx.clock.now() - onset_t) * 1000.0
             self._record_launch(ctx)
             if self._response_event is not None:
                 ctx.emit_on_flip(self._response_event)
             return PhaseAction.ADVANCE
-        if now - onset_t >= self._timeout_s:
-            return self._on_timeout
+        # The time only after the departure check: a departure read on the
+        # frame the timeout runs out on is still a response. Asked before
+        # drawing, so the stimulus is on screen for timeout_s and no longer.
+        if ctx.time_up(self._t0, self._timeout_s):
+            return ctx.end_undrawn(self._on_timeout)
+        draw_stimuli(ctx, [self._stimulus_key, *self._concurrent])
         return PhaseAction.CONTINUE
 
     def _record_launch(self, ctx: TrialContext) -> None:
@@ -260,6 +320,10 @@ class LandingCheck:
     on a timeout from the last verifiable sample. Recording only successful
     arrivals would leave a dataset of exactly the trials that agreed with the
     hypothesis.
+
+    ``timeout_s`` is how long the phase is on screen without a hit, to the
+    nearest frame (``ctx.time_up``); a hit read on the frame it runs out on
+    still counts, since gaze is checked before the time.
     """
 
     name = "landing_check"
@@ -315,19 +379,24 @@ class LandingCheck:
         )
 
     def on_frame(self, ctx: TrialContext) -> str | Outcome:
-        draw_stimuli(ctx, self._stimulus_keys)
         if ctx.inputs.gaze is not None:
             # Latched every frame, so a track loss right before the timeout
             # still leaves a real position to fall back on.
             self._last_gaze = ctx.inputs.gaze
         if ctx.regions[self._region].contains(ctx.inputs.gaze):
+            # A hit ends the phase on this frame, which is shown, as it
+            # always was.
+            draw_stimuli(ctx, self._stimulus_keys)
             self._record_endpoint(ctx, ctx.inputs.gaze, in_target=True)
             if self._landed_event is not None:
                 ctx.emit_on_flip(self._landed_event)
             return self._on_hit
-        if ctx.clock.now() - self._t0 >= self._timeout_s:
+        # The time after the hit check, before drawing: the frame the timeout
+        # runs out on is not shown, so the phase lasts timeout_s.
+        if ctx.time_up(self._t0, self._timeout_s):
             self._record_endpoint(ctx, self._last_gaze, in_target=False)
-            return self._on_miss
+            return ctx.end_undrawn(self._on_miss)
+        draw_stimuli(ctx, self._stimulus_keys)
         return PhaseAction.CONTINUE
 
 
@@ -388,6 +457,15 @@ class LandingSample:
     by default ``RESPONSE_ONSET``, which :class:`StimulusResponse` emits when
     gaze leaves the fixation window. ``onset_event=None`` times from this
     phase's own start instead.
+
+    The dwell and the cap are counted from that time with ``ctx.time_up``,
+    before drawing. Straight after a ``StimulusResponse``, RESPONSE_ONSET is
+    the flip just before this phase's first frame, so the phase is on screen
+    for ``dwell_s`` (or up to ``max_wait_s``), to the nearest frame, and the
+    landing is judged on the sample read ``dwell_s`` after onset — the frame
+    on which the time runs out is read, judged and not drawn. A settled eye
+    (the offset mode) ends the phase on the frame it is seen, which is shown,
+    as before.
 
     ``depart_region`` names the window the saccade starts from (usually
     ``"fixation"``), and makes the phase wait for the eye to leave it. Under
@@ -584,7 +662,6 @@ class LandingSample:
         return not ctx.regions[self._depart_region].contains(gaze)
 
     def on_frame(self, ctx: TrialContext) -> str | Outcome:
-        draw_stimuli(ctx, self._stimulus_keys)
         now = ctx.clock.now()
         gaze, gaze_t = ctx.inputs.gaze, ctx.inputs.gaze_t
         if gaze is not None and gaze_t is None and self._settle_speed is not None:
@@ -612,14 +689,26 @@ class LandingSample:
             # Settle before the cap: a sample that settles on the very frame
             # the cap expires is still a real saccade offset.
             if self._settles(ctx, gaze, gaze_t, has_left):
+                # A settled eye ends the phase on this frame, which is shown,
+                # as it always was — drawn first, so a moving reference is
+                # judged where this frame puts it.
+                draw_stimuli(ctx, self._stimulus_keys)
                 return self._finish(ctx, settled=True)
-            if now - self._onset_t >= self._max_wait_s:
-                return self._finish(ctx, settled=False)
+            # The cap, before drawing: the frame it runs out on is judged
+            # (its sample is the last) and not shown, so the phase lasts at
+            # most max_wait_s from onset. Nothing is drawn or advanced on it,
+            # so a moving reference is judged where it was last shown.
+            if ctx.time_up(self._onset_t, self._max_wait_s):
+                return ctx.end_undrawn(self._finish(ctx, settled=False))
+            draw_stimuli(ctx, self._stimulus_keys)
             return PhaseAction.CONTINUE
 
         assert self._dwell_s is not None
-        if now - self._onset_t >= self._dwell_s:
-            return self._finish(ctx, settled=None)
+        # The dwell, the same way: judged on the sample read dwell_s after
+        # onset, on a frame that is not shown.
+        if ctx.time_up(self._onset_t, self._dwell_s):
+            return ctx.end_undrawn(self._finish(ctx, settled=None))
+        draw_stimuli(ctx, self._stimulus_keys)
         return PhaseAction.CONTINUE
 
     def _settles(

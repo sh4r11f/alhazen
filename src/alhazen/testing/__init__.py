@@ -41,6 +41,11 @@ class FakeDisplay:
     real time never passes, simulated time is exact. Set ``next_flip_extra``
     to inject one long frame (a dropped frame) for QA tests.
 
+    ``frame_period_s`` is also what a TrialEngine built without a frame
+    monitor hands timed phases as ``TrialContext.frame_period_s``, so a phase
+    of d seconds shows ``round(d / frame_period_s)`` frames here exactly as
+    on the rig.
+
     ``kind`` is "simulated" so backend-branching factories (e.g.
     ``make_fixation``) treat it exactly like the SimulatedDisplay backend.
     """

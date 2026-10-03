@@ -38,8 +38,8 @@ class FixationParams(Model):
 
 
 class HoldFixationPeriod:
-    """Draw the fixation point every frame; end the trial COMPLETED once the
-    duration has elapsed on the session clock.
+    """Draw the fixation point every frame; end the trial COMPLETED once it
+    has been on screen for the duration.
 
     Written out rather than taken from ``alhazen.task.phases`` because this
     example exists to show what a phase *is*: an object with a name, an
@@ -58,11 +58,15 @@ class HoldFixationPeriod:
         ctx.emit_on_flip("FIX_ON")
 
     def on_frame(self, ctx: TrialContext) -> str | Outcome:
+        # Asked before anything is drawn: on the frame the duration runs out
+        # the phase draws nothing and ends undrawn, so the point is on screen
+        # for the duration, to the nearest frame. Compared after drawing, the
+        # frame the time ran out on would be shown too — one frame too long.
+        if ctx.time_up(self._t0, self._duration_s):
+            return ctx.end_undrawn(self._completed)
         fixation = ctx.stimuli["fixation"]
         fixation.update(ctx.dt)
         fixation.draw()
-        if ctx.clock.now() - self._t0 >= self._duration_s:
-            return self._completed
         return PhaseAction.CONTINUE
 
 

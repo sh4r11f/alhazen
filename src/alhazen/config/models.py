@@ -31,13 +31,51 @@ class Model(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+# How far below a half a frame count may land and still round up. A count is
+# seconds divided by a period, and floating point puts an exact half a hair
+# either side of it (0.5 s / (1/165 s) is 82.50000000000001 or
+# 82.49999999999999, depending on how the period was computed), which would
+# make the answer depend on arithmetic noise. A billionth of a frame is far
+# below any real duration's resolution and far above that noise.
+_HALF_FRAME_SLACK = 1e-9
+
+
+def whole_frames(seconds: float, frame_period_s: float) -> int:
+    """``seconds`` as whole display frames: the nearest, half a frame up.
+
+    The one rounding in the library. ``Duration.n_frames`` uses it, and so
+    does ``TrialContext.time_up``, which is how every timed phase decides
+    when it ends — so a phase given ``Duration.seconds(hz)`` is on screen for
+    exactly ``Duration.n_frames(hz)`` frames.
+
+    Nearest, because the frame period is a *measured* refresh rate that is
+    never exactly the nominal one: at 120.01 Hz, 600 ms is 72.006 frames,
+    and rounding up would make it 73 where nearest keeps it 72; and because a
+    jittered duration rounded to the nearest frame stays centred where it was
+    drawn. Half up, because an exact half is equally near both counts and the
+    longer one is never short of what was asked (at 165 Hz every odd multiple
+    of 100 ms is an exact half). docs/architecture.md §2.3 has the reasoning.
+
+    Raises ValueError for a duration that is not a finite number of seconds
+    >= 0, or a period that is not a finite number > 0: either would silently
+    give a frame count that means nothing, and a NaN would end no phase ever.
+    """
+    if not (math.isfinite(seconds) and seconds >= 0):
+        raise ValueError(f"a duration is a finite number of seconds >= 0, got {seconds!r}")
+    if not (math.isfinite(frame_period_s) and frame_period_s > 0):
+        raise ValueError(
+            f"a frame period is a finite number of seconds > 0, got {frame_period_s!r}"
+        )
+    return math.floor(seconds / frame_period_s + 0.5 + _HALF_FRAME_SLACK)
+
+
 class Duration(Model):
     """A duration expressed in exactly one of milliseconds or display frames.
 
     ``frames`` is exact by construction; ``ms`` is resolved to the nearest
-    whole frame when frame counts are needed. Both resolutions require the
-    display's *measured* refresh rate, so they happen at session build time,
-    not at config load time.
+    whole frame, half a frame up (``whole_frames``), when frame counts are
+    needed. Both resolutions require the display's *measured* refresh rate,
+    so they happen at session build time, not at config load time.
     """
 
     ms: float | None = None
@@ -60,13 +98,17 @@ class Duration(Model):
         return self.frames / refresh_rate_hz
 
     def n_frames(self, refresh_rate_hz: float) -> int:
-        """Whole display frames. A millisecond duration rounds to nearest —
-        the rounding is done once, here, so every consumer of the same config
-        agrees on the same frame count."""
+        """Whole display frames. A millisecond duration rounds to the nearest
+        frame, half a frame up, by ``whole_frames`` — the function every
+        timed phase ends by — so every consumer of the same config agrees on
+        the same frame count, a phase's frames on screen included.
+
+        Before 2.5 an exact half rounded to the even count (Python's
+        ``round``): at 165 Hz, 500 ms was 82 frames and 700 ms 116."""
         if self.frames is not None:
             return self.frames
         assert self.ms is not None
-        return round(self.ms / 1000.0 * refresh_rate_hz)
+        return whole_frames(self.ms / 1000.0, 1.0 / refresh_rate_hz)
 
 
 class MonitorConfig(Model):

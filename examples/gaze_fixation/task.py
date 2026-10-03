@@ -81,17 +81,19 @@ class AcquireFixation:
         ctx.emit_on_flip("FIX_ON")
 
     def on_frame(self, ctx: TrialContext) -> str | Outcome:
-        fixation = ctx.stimuli["fixation"]
-        fixation.update(ctx.dt)
-        fixation.draw()
         if ctx.regions["fixation"].contains(ctx.inputs.gaze):
+            _draw_fixation(ctx)
             # Queued, not emitted: the acquisition is only true once the
             # frame that showed it has actually flipped.
             ctx.emit_on_flip("FIX_ACQUIRED")
             ctx.record["acquire_latency_s"] = ctx.clock.now() - self._t0
             return PhaseAction.ADVANCE
-        if ctx.clock.now() - self._t0 >= self._timeout_s:
-            return self._on_timeout
+        # The timeout is asked before drawing: on the frame it runs out the
+        # point is not drawn, so it was on screen for timeout_s, to the
+        # nearest frame. Checking after drawing would show one frame more.
+        if ctx.time_up(self._t0, self._timeout_s):
+            return ctx.end_undrawn(self._on_timeout)
+        _draw_fixation(ctx)
         return PhaseAction.CONTINUE
 
 
@@ -110,14 +112,23 @@ class HoldFixation:
         self._t0 = ctx.clock.now()
 
     def on_frame(self, ctx: TrialContext) -> str | Outcome:
-        fixation = ctx.stimuli["fixation"]
-        fixation.update(ctx.dt)
-        fixation.draw()
+        # Gaze first, even on the frame the hold would finish on: a blink
+        # there is a break, not a pass.
         if not ctx.regions["fixation"].contains(ctx.inputs.gaze):
             return self._on_break
-        if ctx.clock.now() - self._t0 >= self._duration_s:
-            return self._on_held
+        # Then the time, before drawing, so the hold is on screen for its
+        # duration and not one frame longer.
+        if ctx.time_up(self._t0, self._duration_s):
+            return ctx.end_undrawn(self._on_held)
+        _draw_fixation(ctx)
         return PhaseAction.CONTINUE
+
+
+def _draw_fixation(ctx: TrialContext) -> None:
+    """Advance the fixation point by this frame's dt, then draw it."""
+    fixation = ctx.stimuli["fixation"]
+    fixation.update(ctx.dt)
+    fixation.draw()
 
 
 class GazeFixationTask(Task):

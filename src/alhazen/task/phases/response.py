@@ -27,17 +27,22 @@ class ResponseWindow:
     nothing in the library records one yet — ``StimulusResponse`` likewise
     just waits for its onset stamp.
 
-    The deadline runs from that same flip: ``timeout_s`` is how long the
-    subject has with the cue on screen, the window the reaction time is
-    measured in — as in ``StimulusResponse``. Counted from ``on_enter``, it
-    would lose the frame the cue waited for its flip, and a key pressed with
-    the cue up for exactly ``timeout_s`` would be scored a timeout.
+    ``timeout_s`` is how long the cue is on screen when no key comes: the
+    phase's frames on screen are ``timeout_s`` to the nearest frame
+    (``ctx.time_up``, counted from the flip before the cue's first frame),
+    and the trial then ends as ``on_timeout``. Keys are read at the start of
+    each frame and checked before the time, so the last key counted is one
+    read at the start of the cue's last frame on screen — pressed up to one
+    frame before ``timeout_s`` after the cue appeared. Before 2.5 the cue
+    stayed up two frames past the timeout, and a key read at the timeout
+    still counted.
 
     With ``onset_event=None`` there is no cue flip to wait for: the window
     opens when the phase is entered, keys count from its first frame, and the
-    reaction time and the deadline both run from ``on_enter``. A key read on
-    that first frame may have been pressed before the phase began, during the
-    frame before it; a task that drops the onset event has chosen that.
+    reaction time runs from ``on_enter``. A key read on that first frame may
+    have been pressed before the phase began, during the frame before it; a
+    task that drops the onset event has chosen that. The deadline is the
+    same either way: the phase is on screen for ``timeout_s``.
     """
 
     name = "response_window"
@@ -108,7 +113,6 @@ class ResponseWindow:
         return float(onset_t)
 
     def on_frame(self, ctx: TrialContext) -> str | Outcome:
-        draw_stimuli(ctx, self._stimulus_keys)
         now = ctx.clock.now()
         reference_t = self._reference_time(ctx)
         # Before the cue, bound keys are dropped with the rest of the batch.
@@ -122,23 +126,23 @@ class ResponseWindow:
                     # rather than counted as a wrong answer: the subject's
                     # hand slipping onto an unbound key is not a decision.
                     continue
+                # A response ends the trial on this frame, which is shown,
+                # as it always was.
+                draw_stimuli(ctx, self._stimulus_keys)
                 ctx.record[self._key_record_key] = key
                 ctx.record[self._rt_record_key] = (now - reference_t) * 1000.0
                 if self._response_event is not None:
                     ctx.emit_on_flip(self._response_event)
                 return outcome
-        # The deadline's start: the cue's flip, read straight from its stamp
-        # rather than from _reference_time, which withholds the stamp for one
-        # frame to drop the pre-cue keys — the deadline has no such frame to
-        # skip. Before the flip there is no stamp and so no deadline yet,
-        # the same wait StimulusResponse makes.
-        deadline_from = (
-            self._t0
-            if self._onset_event is None
-            else ctx.record.get(f"t_{self._onset_event.lower()}")
-        )
-        if deadline_from is not None and now - float(deadline_from) >= self._timeout_s:
-            return self._on_timeout
+        # The deadline, after the keys (a key read on the frame it runs out
+        # on still counts) and before drawing (that frame is not shown).
+        # Counted from on_enter — right after the flip before the cue's first
+        # frame — whether or not there is an onset event: the cue's own
+        # stamp is the flip of that first frame, and counting from it would
+        # keep the cue up one frame longer.
+        if ctx.time_up(self._t0, self._timeout_s):
+            return ctx.end_undrawn(self._on_timeout)
+        draw_stimuli(ctx, self._stimulus_keys)
         return PhaseAction.CONTINUE
 
 
@@ -149,6 +153,13 @@ class AdjustmentLoop:
     frame's wheel movement and does whatever "turning the knob" means for that
     stimulus (a contrast, an orientation, a position). The phase owns the loop,
     the committing, the timeout and the record; the task owns the meaning.
+
+    ``timeout_s`` is how long the stimulus is on screen without a commit, to
+    the nearest frame (``ctx.time_up``). The inputs read on the frame the
+    time runs out on were made before it, so they still count: that frame's
+    wheel movement is applied and its commit key honoured, and only then is
+    the time asked. The setting recorded at a timeout therefore includes the
+    last turn, whose effect the subject did not get to see.
     """
 
     name = "adjustment_loop"
@@ -187,8 +198,10 @@ class AdjustmentLoop:
         if ctx.inputs.wheel:
             self._adjust(ctx, ctx.inputs.wheel)
             self._turns += 1
-        draw_stimuli(ctx, self._stimulus_keys)
         if self._commit_key in ctx.inputs.keys:
+            # A commit ends the trial on this frame, which is shown, as it
+            # always was.
+            draw_stimuli(ctx, self._stimulus_keys)
             # Recorded at commit, from the task's own accessor: the setting the
             # subject settled on IS the measurement here.
             ctx.record[self._value_record_key] = self._value(ctx)
@@ -197,12 +210,15 @@ class AdjustmentLoop:
             if self._commit_event is not None:
                 ctx.emit_on_flip(self._commit_event)
             return self._on_commit
-        if self._timeout_s is not None and ctx.clock.now() - self._t0 >= self._timeout_s:
+        # The time after the inputs and before drawing: the frame it runs out
+        # on is not shown, so the stimulus is up for timeout_s.
+        if self._timeout_s is not None and ctx.time_up(self._t0, self._timeout_s):
             # The setting at timeout is still recorded — the subject was
             # somewhere when they ran out of time, and that is data even
             # though the outcome says they never committed.
             ctx.record[self._value_record_key] = self._value(ctx)
             ctx.record["adjustment_turns"] = self._turns
             assert self._on_timeout is not None
-            return self._on_timeout
+            return ctx.end_undrawn(self._on_timeout)
+        draw_stimuli(ctx, self._stimulus_keys)
         return PhaseAction.CONTINUE
