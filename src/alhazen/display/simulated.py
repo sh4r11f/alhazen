@@ -92,6 +92,19 @@ class SimulatedDisplay:
         # stay distinguishable.
         self.gamma: float | None = None
 
+    @property
+    def frame_period_s(self) -> float:
+        """One frame, in seconds: the paced period, or the nominal one when
+        the display is unpaced — the frame a flip moves simulated time by,
+        and the rate ``measure_refresh_rate`` reports.
+
+        Read by a TrialEngine built without a frame monitor, to hand timed
+        phases the frame they count in (``TrialContext.frame_period_s``). A
+        session's engine has a monitor at the same measured rate, and uses
+        that.
+        """
+        return self._simulated_frame_s
+
     def open(self) -> None:
         self._opened = True
         # Fine ticks are for waiting accurately, and a display in simulated

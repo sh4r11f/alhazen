@@ -65,13 +65,14 @@ class TestTheVerdictIsNotTheOutcome:
         result, _, _ = run_with_feedback(lambda ctx: False, then=outcome)
         assert result.outcome is MISSED
 
-    def test_it_stays_up_for_at_least_the_duration_then_ends(self):
-        # Two and a half frames: the phase ends on the first flip at or past
-        # the duration, so the colour is up for three frames, plus one more
-        # draw on the frame that returns. Two flips for the first phase, four
-        # feedback flips, and the engine's blanking flip.
+    def test_it_stays_up_for_the_duration_to_the_nearest_frame_then_ends(self):
+        # Two and a half frames is exactly half-way, which rounds up: the
+        # colour is up for three frames, and the frame on which the time runs
+        # out is not drawn (before 2.5 it was, a fourth). Two flips for the
+        # first phase, three of colour, the empty frame that takes it off, and
+        # the engine's blanking flip.
         result, fixation, harness = run_with_feedback(lambda ctx: True, duration_s=2.5 * FRAME_S)
-        assert fixation.draw_count == 4
+        assert fixation.draw_count == 3
         assert harness.display.flip_count == 7
         assert result.outcome is COMPLETED
 
@@ -337,7 +338,9 @@ class TestKeepDrawing:
         """The option defaults to empty, and empty is today's behaviour."""
         result, stimuli, _ = self.run()
 
-        assert stimuli["fixation"].draw_count == 3
+        # Two frames: a 2-frame feedback (three draws before 2.5, when the
+        # frame its time ran out on was drawn too).
+        assert stimuli["fixation"].draw_count == 2
         assert stimuli["figure"].draw_count == 0
         assert stimuli["figure"].updates == []
         assert result.outcome is COMPLETED
@@ -346,8 +349,8 @@ class TestKeepDrawing:
         _, stimuli, _ = self.run(keep_drawing=("figure",))
 
         figure, fixation = stimuli["figure"], stimuli["fixation"]
-        assert figure.draw_count == fixation.draw_count == 3
-        assert figure.updates == pytest.approx([FRAME_S] * 3)
+        assert figure.draw_count == fixation.draw_count == 2
+        assert figure.updates == pytest.approx([FRAME_S] * 2)
         # Only the stimuli named are kept; the rest still go off.
         assert stimuli["mask"].draw_count == 0
 
@@ -364,7 +367,7 @@ class TestKeepDrawing:
             ("update", "fixation"),
             ("draw", "fixation"),
         ]
-        assert log == one_frame * 3
+        assert log == one_frame * 2
 
     def test_only_the_feedback_stimulus_changes_colour(self):
         _, stimuli, _ = self.run(keep_drawing=("figure",))
@@ -414,7 +417,7 @@ class TestKeepDrawing:
 
         assert stimuli["figure"].draw_count == 0
         assert stimuli["fixation"].colors == [FAILURE_COLOR]
-        assert stimuli["fixation"].draw_count == 3
+        assert stimuli["fixation"].draw_count == 2
         assert result.outcome.name == "FIX_BREAK"
 
     def test_a_completed_outcome_from_an_earlier_phase_keeps_it(self):
@@ -422,7 +425,7 @@ class TestKeepDrawing:
         so it stays up for the feedback."""
         result, stimuli, _ = self.run(keep_drawing=("figure",), first=MISSED)
 
-        assert stimuli["figure"].draw_count == 3
+        assert stimuli["figure"].draw_count == 2
         assert result.outcome is MISSED
 
 

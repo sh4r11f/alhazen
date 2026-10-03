@@ -18,7 +18,10 @@ FAILURE_COLOR = (1.0, -1.0, -1.0)
 class Blank:
     """Show nothing for a fixed time — an inter-stimulus gap, a mask-free
     interval, the pause before feedback. Drawn as an empty frame rather than
-    skipped, so the display keeps flipping and frame QA keeps measuring."""
+    skipped, so the display keeps flipping and frame QA keeps measuring.
+
+    On screen for ``duration_s``, to the nearest frame (``ctx.time_up``); a
+    duration under half a frame shows no frame at all."""
 
     name = "blank"
 
@@ -30,8 +33,10 @@ class Blank:
         self._t0 = ctx.clock.now()
 
     def on_frame(self, ctx: TrialContext) -> str | Outcome:
-        if ctx.clock.now() - self._t0 >= self._duration_s:
-            return self._then
+        # Asked before the (empty) frame is shown: on the frame the time runs
+        # out on, whatever comes next draws instead.
+        if ctx.time_up(self._t0, self._duration_s):
+            return ctx.end_undrawn(self._then)
         return PhaseAction.CONTINUE
 
 
@@ -40,7 +45,8 @@ class Feedback:
 
     Which stimulus is "correct feedback" and which is "wrong" is the task's
     choice, made in build_trial where the outcome so far is known; this phase
-    just shows what it is given for as long as it is told to.
+    just shows what it is given for as long as it is told to: ``duration_s``,
+    to the nearest frame (``ctx.time_up``).
     """
 
     name = "feedback"
@@ -67,9 +73,10 @@ class Feedback:
             self._on_show(ctx)
 
     def on_frame(self, ctx: TrialContext) -> str | Outcome:
+        # Before drawing: the frame the time runs out on is the next phase's.
+        if ctx.time_up(self._t0, self._duration_s):
+            return ctx.end_undrawn(self._then)
         draw_stimuli(ctx, self._stimulus_keys)
-        if ctx.clock.now() - self._t0 >= self._duration_s:
-            return self._then
         return PhaseAction.CONTINUE
 
 
@@ -79,7 +86,10 @@ class TrialFeedback:
     The fixation point turns green for a good trial and red for a bad one,
     the ``FEEDBACK`` event goes out on the flip that showed it (the session
     sounds the beep from that; a phase touches no hardware), and after
-    ``duration_s`` the trial ends with the task's outcome.
+    ``duration_s`` — the colour's time on screen, to the nearest frame — the
+    trial ends with the task's outcome. A duration of 0 shows no colour at
+    all: the record and the FEEDBACK event (and so the beep) still happen,
+    stamped on the flip that ends the trial.
 
     **It runs on trials that ended early too.** A phase declaring
     ``must_be_last`` is the trial's closing phase, and the engine runs a
@@ -254,12 +264,15 @@ class TrialFeedback:
         self._t0 = ctx.clock.now()
 
     def on_frame(self, ctx: TrialContext) -> str | Outcome:
-        # Updated then drawn, in order, like every other phase's stimuli.
-        draw_stimuli(ctx, self._drawn_keys)
-        if ctx.clock.now() - self._t0 >= self._duration_s:
+        # The time first, before drawing: the colour is on screen for
+        # duration_s, and the frame the time runs out on is shown empty by
+        # the engine — the flip that takes the feedback off.
+        if ctx.time_up(self._t0, self._duration_s):
             # Discarded by the engine when the trial already had an outcome;
             # returned rather than skipped so the phase ends the same way in
             # both cases and `then` stays the single answer to "what does a
             # trial that got this far end as".
-            return self._then(ctx) if callable(self._then) else self._then
+            return ctx.end_undrawn(self._then(ctx) if callable(self._then) else self._then)
+        # Updated then drawn, in order, like every other phase's stimuli.
+        draw_stimuli(ctx, self._drawn_keys)
         return PhaseAction.CONTINUE
