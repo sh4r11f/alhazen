@@ -563,7 +563,7 @@ describe('choosing a task', () => {
        * default and names no task. */
       assert.equal(
         app.byId('task-help').textContent,
-        'Declared in run.py; every launch names the task chosen here (--task).',
+        'Every launch passes --task with the task chosen here; the list comes from run.py.',
       );
       assert.doesNotMatch(app.byId('task-help').textContent, /when no task|default|mib-search/);
       /* The preset menu opens on the default task's own parameter file, and

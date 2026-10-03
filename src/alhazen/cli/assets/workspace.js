@@ -729,8 +729,10 @@ async function chooseProject(id) {
   $('task-field').hidden = !declared.length && !p.tasks_error;
   $('task').disabled = !declared.length;
   $('task-help').textContent = p.tasks_error
-    || (declared.length ? 'Declared in run.py; every launch names the task chosen here '
-      + '(--task).' : '');
+    // --task early in the sentence: a line that breaks inside it, after
+    // the "--", reads as two words (seen in the dashboard at its usual width).
+    || (declared.length ? 'Every launch passes --task with the task chosen here; the list '
+      + 'comes from run.py.' : '');
   // Rigs by name, the experiment's own and then the shared ones (rigMenu).
   rigMenu(p);
   // Parameter files by short name (presetLabels), opening on the selected
