@@ -47,7 +47,7 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   second: the trials file never held the foreperiod the subject actually
   waited, and nothing said so. The default is still `hold_duration_s`, so a
   trial with one hold writes what it wrote; give the second hold another
-  name (`duration_record_key="baseline_s"`). The name must be a plain
+  name (`duration_record_key="baseline_hold_s"`). The name must be a plain
   identifier (letters, digits, underscores, not starting with a digit) and
   not one of the columns alhazen writes itself
   (`core.trial.TRIAL_RECORD_COLUMNS` — most are written after the phases

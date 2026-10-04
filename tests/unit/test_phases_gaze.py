@@ -203,9 +203,9 @@ class TestHoldFixationRecordsUnderItsOwnName:
 
     def test_the_drawn_duration_goes_under_the_name_given(self):
         _harness, result = run(
-            [self.baseline(duration_record_key="baseline_s"), _EndPhase()], [IN_FIX]
+            [self.baseline(duration_record_key="baseline_hold_s"), _EndPhase()], [IN_FIX]
         )
-        assert result.record["baseline_s"] == pytest.approx(2 * FRAME_S)
+        assert result.record["baseline_hold_s"] == pytest.approx(2 * FRAME_S)
         assert "hold_duration_s" not in result.record
 
     def test_two_holds_with_names_of_their_own_record_both_and_say_nothing(self):
@@ -214,13 +214,17 @@ class TestHoldFixationRecordsUnderItsOwnName:
         with warnings.catch_warnings():
             warnings.simplefilter("error", FutureWarning)
             _harness, result = run(
-                [self.foreperiod(), self.baseline(duration_record_key="baseline_s"), _EndPhase()],
+                [
+                    self.foreperiod(),
+                    self.baseline(duration_record_key="baseline_hold_s"),
+                    _EndPhase(),
+                ],
                 [IN_FIX],
             )
         assert result.outcome is _DONE
         # The foreperiod is the jittered draw, kept; the baseline its own.
         assert 3 * FRAME_S <= result.record["hold_duration_s"] <= 5 * FRAME_S
-        assert result.record["baseline_s"] == pytest.approx(2 * FRAME_S)
+        assert result.record["baseline_hold_s"] == pytest.approx(2 * FRAME_S)
 
     def test_two_holds_under_one_name_warn_naming_the_column(self):
         with pytest.warns(FutureWarning) as caught:
@@ -288,7 +292,7 @@ class TestHoldFixationRecordsUnderItsOwnName:
     def test_the_name_is_keyword_only(self):
         # Read at the call site, never as the eighth positional argument.
         with pytest.raises(TypeError):
-            HoldFixation("fixation", "fixation", 0.5, 0.0, BROKE, None, None, "baseline_s")  # type: ignore[misc]
+            HoldFixation("fixation", "fixation", 0.5, 0.0, BROKE, None, None, "baseline_hold_s")  # type: ignore[misc]
 
 
 class TestStimulusResponse:

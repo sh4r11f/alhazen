@@ -158,9 +158,9 @@ class HoldFixation:
     (default ``hold_duration_s``), written once, in ``on_enter``. A trial
     with two holds — a jittered foreperiod, then a fixed baseline with the
     stimulus up — gives each its own name
-    (``duration_record_key="baseline_s"``): under one name the second would
-    replace the first, and the trials file would never hold the foreperiod
-    the subject actually waited. A name the trial's record already holds
+    (``duration_record_key="baseline_hold_s"``): under one name the second
+    would replace the first, and the trials file would never hold the
+    foreperiod the subject actually waited. A name the trial's record already holds
     when the hold starts — written by an earlier phase, the condition or
     ``build_trial`` — is still overwritten, as it always was, with a
     ``FutureWarning`` naming the column (since 2.6); 3.0 refuses it. A name
