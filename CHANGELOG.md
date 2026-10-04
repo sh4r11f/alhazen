@@ -42,11 +42,24 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   (`core.trial.TRIAL_RECORD_COLUMNS` — most are written after the phases
   run, where the hold's value would be replaced unseen); anything else is
   refused when the phase is built. Keyword-only.
+- **The same for the three other phases whose columns had fixed names**,
+  each keyword-only and checked the same way, each default the name it
+  wrote: `AcquireFixation(latency_record_key=...)` (`acquire_latency_s`), for
+  a trial that acquires fixation twice; `FrameSequence(record_prefix=...)`
+  (`sequence`: `sequence_frames`, `sequence_break_frame`), for a trial with
+  two sequences; `AdjustmentLoop(record_prefix=...)` (`adjustment`:
+  `adjustment_turns`, `adjustment_s`), which with `value_record_key` lets two
+  adjustments in one trial keep all their columns. No experiment runs two of
+  these in a trial today. The phases whose columns were already renamable
+  (`StimulusResponse`, `LandingCheck`, `LandingSample`, `ResponseWindow`,
+  `TrialFeedback`) are unchanged.
 
 ### Deprecated
 
-- **A `HoldFixation` writing a column the trial's record already holds.**
-  It still writes, replacing the value as it always did, and emits a
+- **A `HoldFixation` writing a column the trial's record already holds**,
+  and the same for `AcquireFixation`, `FrameSequence` and `AdjustmentLoop`
+  (every column each writes, `AdjustmentLoop`'s `value_record_key` one
+  included). It still writes, replacing the value as it always did, and emits a
   `FutureWarning` naming the column and the argument to change: "HoldFixation
   writing its 'hold_duration_s' column over a value the trial's record
   already holds is deprecated since alhazen 2.6 and will be removed in 3.0;

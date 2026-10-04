@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
 from alhazen.core.trial import Outcome, PhaseAction, TrialContext
 from alhazen.task.phases._draw import draw_stimuli
+from alhazen.task.phases._record import column_prefix, record_once
 
 
 class ResponseWindow:
@@ -160,6 +162,17 @@ class AdjustmentLoop:
     wheel movement is applied and its commit key honoured, and only then is
     the time asked. The setting recorded at a timeout therefore includes the
     last turn, whose effect the subject did not get to see.
+
+    Records the setting under ``value_record_key`` (default
+    ``adjusted_value``) at a commit or a timeout, and, under
+    ``record_prefix`` (default ``adjustment``), ``<prefix>_turns`` — the
+    frames the wheel moved on — at either, and ``<prefix>_s``, the time to
+    the commit, at a commit only. A trial with two adjustments gives each its
+    own ``value_record_key`` and ``record_prefix``, for the reason
+    ``HoldFixation`` gives: any of the three columns the record already
+    holds is still overwritten, with a ``FutureWarning`` naming it (since
+    2.6), and 3.0 refuses it. A prefix that is not a plain identifier, or
+    that makes one of the columns alhazen writes itself, is refused here.
     """
 
     name = "adjustment_loop"
@@ -175,6 +188,8 @@ class AdjustmentLoop:
         stimulus_keys: list[str] | None = None,
         value_record_key: str = "adjusted_value",
         commit_event: str | None = "RESPONSE",
+        *,
+        record_prefix: str = "adjustment",
     ) -> None:
         if on_commit is None:
             raise ValueError("AdjustmentLoop needs an on_commit outcome")
@@ -187,12 +202,23 @@ class AdjustmentLoop:
         self._on_commit = on_commit
         self._on_timeout = on_timeout
         self._stimulus_keys = list(stimulus_keys or [])
+        # Not checked as a column name, unlike record_prefix: it has been
+        # accepted unchecked since it was added, and refusing a name that
+        # works today is a MAJOR change. Its writes are guarded all the same.
         self._value_record_key = value_record_key
         self._commit_event = commit_event
+        self._prefix = column_prefix(
+            "AdjustmentLoop", "record_prefix", record_prefix, ("turns", "s")
+        )
 
     def on_enter(self, ctx: TrialContext) -> None:
         self._t0 = ctx.clock.now()
         self._turns = 0
+
+    def _record(self, ctx: TrialContext, key: str, value: Any, argument: str) -> None:
+        """One of this phase's columns, never over another writer's value in
+        silence (``HoldFixation`` says why)."""
+        record_once(ctx, key, value, phase="AdjustmentLoop", argument=argument)
 
     def on_frame(self, ctx: TrialContext) -> str | Outcome:
         if ctx.inputs.wheel:
@@ -204,9 +230,9 @@ class AdjustmentLoop:
             draw_stimuli(ctx, self._stimulus_keys)
             # Recorded at commit, from the task's own accessor: the setting the
             # subject settled on IS the measurement here.
-            ctx.record[self._value_record_key] = self._value(ctx)
-            ctx.record["adjustment_turns"] = self._turns
-            ctx.record["adjustment_s"] = ctx.clock.now() - self._t0
+            self._record(ctx, self._value_record_key, self._value(ctx), "value_record_key")
+            self._record(ctx, f"{self._prefix}_turns", self._turns, "record_prefix")
+            self._record(ctx, f"{self._prefix}_s", ctx.clock.now() - self._t0, "record_prefix")
             if self._commit_event is not None:
                 ctx.emit_on_flip(self._commit_event)
             return self._on_commit
@@ -216,8 +242,8 @@ class AdjustmentLoop:
             # The setting at timeout is still recorded — the subject was
             # somewhere when they ran out of time, and that is data even
             # though the outcome says they never committed.
-            ctx.record[self._value_record_key] = self._value(ctx)
-            ctx.record["adjustment_turns"] = self._turns
+            self._record(ctx, self._value_record_key, self._value(ctx), "value_record_key")
+            self._record(ctx, f"{self._prefix}_turns", self._turns, "record_prefix")
             assert self._on_timeout is not None
             return ctx.end_undrawn(self._on_timeout)
         draw_stimuli(ctx, self._stimulus_keys)

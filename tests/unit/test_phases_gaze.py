@@ -98,6 +98,43 @@ class TestAcquireFixation:
         # draws a naive subject's eye to the point does not exist.
         assert 0 < fixation.draw_count < 6
 
+    def test_the_latency_goes_under_the_name_given(self):
+        phase = self.phase(latency_record_key="refixation_latency_s")
+        _harness, result = run([phase, _EndPhase()], [AWAY, IN_FIX])
+        assert result.record["refixation_latency_s"] == pytest.approx(FRAME_S)
+        assert "acquire_latency_s" not in result.record
+
+    def test_two_acquisitions_with_names_of_their_own_record_both_and_say_nothing(self):
+        # A trial that fixates twice (a second point, a re-fixation) must
+        # keep both latencies.
+        first, second = self.phase(), self.phase(latency_record_key="refixation_latency_s")
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", FutureWarning)
+            _harness, result = run([first, second, _EndPhase()], [AWAY, IN_FIX])
+        assert result.outcome is _DONE
+        assert result.record["acquire_latency_s"] == pytest.approx(FRAME_S)
+        # Already inside the window when the second point came on.
+        assert result.record["refixation_latency_s"] == pytest.approx(0.0)
+
+    def test_two_acquisitions_under_one_name_warn_naming_the_column(self):
+        with pytest.warns(FutureWarning) as caught:
+            _harness, result = run([self.phase(), self.phase(), _EndPhase()], [AWAY, IN_FIX])
+        assert [str(w.message) for w in caught if w.category is FutureWarning] == [
+            "AcquireFixation writing its 'acquire_latency_s' column over a value the trial's "
+            "record already holds is deprecated since alhazen 2.6 and will be removed in 3.0; "
+            "use a different latency_record_key for each AcquireFixation in the trial instead. "
+            "An earlier phase of this trial — most likely another AcquireFixation — or the "
+            "trial's condition or build_trial wrote 'acquire_latency_s' first, and that value "
+            "is lost from trials.csv; alhazen 3.0 will refuse it"
+        ]
+        # Still overwritten, as before 2.6: the second acquisition's zero.
+        assert result.record["acquire_latency_s"] == pytest.approx(0.0)
+
+    @pytest.mark.parametrize("name", ["", "latency ms", "1st", "outcome"])
+    def test_a_name_that_cannot_be_its_column_is_refused_when_built(self, name):
+        with pytest.raises(ValueError, match=r"AcquireFixation\(latency_record_key="):
+            self.phase(latency_record_key=name)
+
 
 class TestHoldFixation:
     def phase(self, **kwargs):

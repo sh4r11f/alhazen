@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import warnings
+
 import pytest
 
-from alhazen.core.trial import InputFrame, Outcome
+from alhazen.core.trial import CircleRegion, InputFrame, Outcome, PhaseAction
 from alhazen.display.frames import FrameTimeline
 from alhazen.task.phases import (
     AdjustmentLoop,
@@ -21,7 +23,10 @@ RIGHT = Outcome("RIGHT", completed=True, success=False)
 NO_RESPONSE = Outcome("NO_RESPONSE", completed=False)
 COMMITTED = Outcome("COMMITTED", completed=True, success=True)
 GAVE_UP = Outcome("GAVE_UP", completed=False)
+BROKE = Outcome("BROKE", completed=False)
 NOTHING = InputFrame()
+AT_FIX = InputFrame(gaze=(0.0, 0.0))
+AWAY = InputFrame(gaze=(500.0, 500.0))
 
 
 def press(*keys: str) -> InputFrame:
@@ -218,6 +223,63 @@ class TestAdjustmentLoop:
                 timeout_s=1.0,
             )
 
+    def test_the_commit_time_is_recorded_under_the_prefix_too(self):
+        store = {"value": 0.0}
+        inputs = [InputFrame(wheel=1.0), NOTHING, press("space")]
+        _harness, result = run([self.phase(store)], inputs)
+        # Committed on the third frame, two flips after the phase began.
+        assert result.record["adjustment_s"] == pytest.approx(2 * FRAME_S)
+
+    def test_the_prefix_renames_the_turns_and_the_time(self):
+        store = {"value": 0.0}
+        phase = self.phase(store, value_record_key="contrast", record_prefix="contrast_adjustment")
+        _harness, result = run([phase], [InputFrame(wheel=1.0), press("space")])
+        assert result.record["contrast"] == pytest.approx(1.0)
+        assert result.record["contrast_adjustment_turns"] == 1
+        assert result.record["contrast_adjustment_s"] == pytest.approx(FRAME_S)
+        assert not {"adjusted_value", "adjustment_turns", "adjustment_s"} & set(result.record)
+
+    def two_adjustments(self, second_names):
+        """A trial that adjusts two things in turn: the first commits and
+        hands over (ADVANCE), the second ends the trial."""
+        store = {"value": 0.0}
+        first = self.phase(store, on_commit=PhaseAction.ADVANCE)
+        second = self.phase(store, **second_names)
+        inputs = [InputFrame(wheel=1.0), press("space"), InputFrame(wheel=2.0), press("space")]
+        return run([first, second], inputs)
+
+    def test_two_adjustments_with_names_of_their_own_record_both_and_say_nothing(self):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", FutureWarning)
+            _harness, result = self.two_adjustments(
+                dict(value_record_key="second_value", record_prefix="second")
+            )
+        assert result.outcome is COMMITTED
+        assert (result.record["adjusted_value"], result.record["adjustment_turns"]) == (1.0, 1)
+        assert (result.record["second_value"], result.record["second_turns"]) == (3.0, 1)
+        assert "second_s" in result.record
+
+    def test_two_adjustments_under_the_same_names_warn_once_per_column(self):
+        with pytest.warns(FutureWarning) as caught:
+            _harness, result = self.two_adjustments({})
+        messages = [str(w.message) for w in caught if w.category is FutureWarning]
+        # Each column says which argument renames it.
+        assert len(messages) == 3, messages
+        assert messages[0].startswith(
+            "AdjustmentLoop writing its 'adjusted_value' column over a value"
+        )
+        assert "use a different value_record_key for each AdjustmentLoop" in messages[0]
+        assert messages[1].startswith("AdjustmentLoop writing its 'adjustment_turns' column")
+        assert messages[2].startswith("AdjustmentLoop writing its 'adjustment_s' column")
+        assert all("use a different record_prefix" in m for m in messages[1:])
+        # Still overwritten, as before 2.6.
+        assert result.record["adjusted_value"] == 3.0
+
+    @pytest.mark.parametrize("prefix", ["", "adjust ment", "2nd", None])
+    def test_a_prefix_that_cannot_begin_a_column_is_refused_when_built(self, prefix):
+        with pytest.raises(ValueError, match=r"AdjustmentLoop\(record_prefix=.*is not a column"):
+            self.phase({"value": 0.0}, record_prefix=prefix)
+
 
 class TestFrameSequence:
     def timeline(self) -> FrameTimeline:
@@ -251,8 +313,70 @@ class TestFrameSequence:
         # The last setting applied is the ramp's end value.
         assert target.pos == (40.0, 0.0)
 
-    def timeline_phase(self):
-        return FrameSequence(self.timeline())
+    def timeline_phase(self, **kwargs):
+        return FrameSequence(self.timeline(), **kwargs)
+
+    def run_holding(self, phases, inputs):
+        """Run with a fixation window, for a sequence that holds one."""
+        harness = EngineHarness(input_provider=ScriptedInputs(inputs), declared_events=("STIM_ON",))
+        ctx = harness.ctx(
+            stimuli={"target": FakeStimulus("target")},
+            regions={"fixation": CircleRegion((0.0, 0.0), 40.0)},
+        )
+        return harness.engine.run_trial(ctx, list(phases))
+
+    def test_a_break_records_the_frame_it_happened_on(self):
+        phase = self.timeline_phase(on_break=BROKE, hold_region="fixation")
+        result = self.run_holding([phase], [AT_FIX, AT_FIX, AWAY])
+        assert result.outcome is BROKE
+        assert result.record["sequence_break_frame"] == 2
+
+    def test_the_prefix_renames_both_columns(self):
+        phase = self.timeline_phase(on_break=BROKE, hold_region="fixation", record_prefix="probe")
+        result = self.run_holding([phase], [AT_FIX, AWAY])
+        assert (result.record["probe_frames"], result.record["probe_break_frame"]) == (5, 1)
+        assert not {"sequence_frames", "sequence_break_frame"} & set(result.record)
+
+    def test_two_sequences_with_prefixes_of_their_own_record_both_and_say_nothing(self):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", FutureWarning)
+            _harness, result = run(
+                [
+                    self.timeline_phase(),
+                    FrameSequence(FrameTimeline(3), record_prefix="probe"),
+                    _EndPhase(),
+                ],
+                [NOTHING],
+            )
+        assert (result.record["sequence_frames"], result.record["probe_frames"]) == (5, 3)
+
+    def test_two_sequences_under_one_prefix_warn_naming_the_column(self):
+        with pytest.warns(FutureWarning) as caught:
+            _harness, result = run(
+                [self.timeline_phase(), FrameSequence(FrameTimeline(3)), _EndPhase()], [NOTHING]
+            )
+        (message,) = [str(w.message) for w in caught if w.category is FutureWarning]
+        assert message.startswith(
+            "FrameSequence writing its 'sequence_frames' column over a value the trial's record "
+            "already holds is deprecated since alhazen 2.6"
+        )
+        assert "use a different record_prefix for each FrameSequence in the trial" in message
+        # Still overwritten, as before 2.6.
+        assert result.record["sequence_frames"] == 3
+
+    @pytest.mark.parametrize(
+        ("prefix", "match"),
+        [
+            ("", "is not a column prefix"),
+            ("probe 1", "is not a column prefix"),
+            (None, "is not a column prefix"),
+            # A prefix whose column is one the engine writes on every trial.
+            ("n_dropped", "makes the column 'n_dropped_frames'"),
+        ],
+    )
+    def test_a_prefix_that_cannot_begin_its_columns_is_refused_when_built(self, prefix, match):
+        with pytest.raises(ValueError, match=rf"FrameSequence\(record_prefix=.*{match}"):
+            self.timeline_phase(record_prefix=prefix)
 
 
 class TestSimplePhases:

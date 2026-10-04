@@ -50,6 +50,14 @@ class AcquireFixation:
     screen but a gaze criterion — the time between the first and the latest
     sample read inside the window — and is measured between samples, as it
     always was.
+
+    The time from the point's appearance to acquisition goes on the record
+    under ``latency_record_key`` (default ``acquire_latency_s``), once, when
+    fixation is acquired. A trial that acquires fixation twice — a second
+    point, a re-fixation — gives each its own name, for the reason
+    :class:`HoldFixation` gives: a name the record already holds is still
+    overwritten, with a ``FutureWarning`` naming it (since 2.6), and 3.0
+    refuses it. The name is checked as ``HoldFixation``'s is.
     """
 
     name = "acquire_fixation"
@@ -64,6 +72,8 @@ class AcquireFixation:
         blink_period_s: float | None = None,
         onset_event: str | None = "FIX_ON",
         acquired_event: str | None = "FIX_ACQUIRED",
+        *,
+        latency_record_key: str = "acquire_latency_s",
     ) -> None:
         if on_timeout is None:
             raise ValueError("AcquireFixation needs an on_timeout outcome")
@@ -75,6 +85,9 @@ class AcquireFixation:
         self._blink_period_s = blink_period_s
         self._onset_event = onset_event
         self._acquired_event = acquired_event
+        self._latency_record_key = column_name(
+            "AcquireFixation", "latency_record_key", latency_record_key
+        )
 
     def on_enter(self, ctx: TrialContext) -> None:
         self._t0 = ctx.clock.now()
@@ -110,7 +123,15 @@ class AcquireFixation:
             if now - self._hold_start >= self._hold_s:
                 if self._acquired_event is not None:
                     ctx.emit_on_flip(self._acquired_event)
-                ctx.record["acquire_latency_s"] = now - self._t0
+                # Never over another phase's value in silence (HoldFixation
+                # says why).
+                record_once(
+                    ctx,
+                    self._latency_record_key,
+                    now - self._t0,
+                    phase="AcquireFixation",
+                    argument="latency_record_key",
+                )
                 return PhaseAction.ADVANCE
         else:
             # Reset, not paused: the hold must be continuous, so the next

@@ -54,16 +54,43 @@ def column_name(phase: str, argument: str, name: object) -> str:
             "identifier — letters, digits and underscores, not starting with a digit — because "
             "it becomes a column in trials.csv"
         )
-    if name in TRIAL_RECORD_COLUMNS:
+    _refuse_framework_column(phase, argument, name, name)
+    return name
+
+
+def column_prefix(phase: str, argument: str, prefix: object, suffixes: tuple[str, ...]) -> str:
+    """``prefix`` if every ``<prefix>_<suffix>`` column it makes can be one
+    this phase owns; else ValueError.
+
+    For a phase that writes several columns under one prefix, as
+    ``LandingSample(record_prefix=...)`` always has. The prefix is checked
+    as a name, and each column it makes against the framework's own.
+    """
+    if not isinstance(prefix, str) or not _COLUMN_NAME.fullmatch(prefix):
+        raise ValueError(
+            f"{phase}({argument}={prefix!r}) is not a column prefix: it must be a non-empty "
+            "identifier — letters, digits and underscores, not starting with a digit — because "
+            f"it begins the names of columns in trials.csv "
+            f"({', '.join('<prefix>_' + suffix for suffix in suffixes)})"
+        )
+    for suffix in suffixes:
+        _refuse_framework_column(phase, argument, prefix, f"{prefix}_{suffix}")
+    return prefix
+
+
+def _refuse_framework_column(phase: str, argument: str, given: str, column: str) -> None:
+    """ValueError when ``column`` — the name ``given`` as ``argument``, or
+    one it makes — is a column alhazen writes itself."""
+    if column in TRIAL_RECORD_COLUMNS:
         # Most of these are written after every phase has run, so the
         # phase's value would be replaced later in the trial, out of sight
         # of record_once's check.
+        made = "" if column == given else f" makes the column {column!r}, which"
         raise ValueError(
-            f"{phase}({argument}={name!r}) names one of the columns alhazen itself writes on "
-            f"every trial (core.trial.TRIAL_RECORD_COLUMNS): the framework's value would replace "
-            "the phase's, or the phase's the framework's. Choose another name"
+            f"{phase}({argument}={given!r}){made} names one of the columns alhazen itself "
+            "writes on every trial (core.trial.TRIAL_RECORD_COLUMNS): the framework's value "
+            "would replace the phase's, or the phase's the framework's. Choose another name"
         )
-    return name
 
 
 def record_once(ctx: TrialContext, key: str, value: Any, *, phase: str, argument: str) -> None:
