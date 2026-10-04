@@ -26,6 +26,14 @@ python run.py --task $task_name --mode simulate --rig configs/rig-lab.yaml --see
 python run.py --task $task_name --mode movie    --rig configs/rig-lab.yaml --out movies # files, at the rig's sizes
 ```
 
+With no `--rig`, `run.py` starts on the rig named `laptop`: your own
+`configs/rig-laptop.yaml` if you add one, else alhazen's shared laptop rig —
+the lab's development laptop, with that machine's screen measurements. On
+any other machine, add `configs/rig-laptop.yaml` (begin it with
+`extends: laptop` and say only what differs) or pass `--rig`; `--rig mac` is
+the Mac file below. `alhazen rigs --project .` lists every rig a name can
+reach.
+
 A rig file describes a machine, not a purpose. Simulate mode stands the
 rig's real devices down (the autopilot supplies gaze; the pump and the sync
 lines are logged, not fired) and prints what it stood down before trial

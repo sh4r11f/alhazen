@@ -1,6 +1,6 @@
 """Run $name, in any of alhazen's six modes, on any rig.
 
-    python run.py --task $task_name --mode demo      --rig configs/rig-mac.yaml
+    python run.py --task $task_name --mode demo
     python run.py --task $task_name --mode movie     --rig configs/rig-lab.yaml --out movies
     python run.py --task $task_name --mode measure   --rig configs/rig-lab.yaml
     python run.py --task $task_name --mode simulate  --rig configs/rig-lab.yaml --seed 1 --headless
@@ -8,11 +8,19 @@
     python run.py --task $task_name                  --rig configs/rig-lab.yaml --sub s01 --ses 1 --initials AB
 
 A rig file describes a machine; the mode decides what to do with it. So the
-laptop config and the rig config each take all six modes — simulate stands
+Mac's config and the rig's config each take all six modes — simulate stands
 the rig's real devices down, test lets the mouse stand in for a tracker the
-laptop does not have. The default rig is the laptop, so that
-``python run.py --task $task_name --mode demo`` with no ``--rig`` shows the
-stimulus wherever you are sitting.
+Mac does not have.
+
+With no ``--rig``, as in the first command, a session starts on the rig
+named ``laptop``: this experiment's own ``configs/rig-laptop.yaml`` if it has
+one, else alhazen's shared laptop (``alhazen rigs --project .`` lists every
+rig a name can reach, and whose it is). The shared one is the lab's
+development laptop, with that machine's screen measurements. On another
+machine, give it a ``configs/rig-laptop.yaml`` of its own — begin it with
+``extends: laptop`` and say only what differs — or name a rig with ``--rig``,
+as ``python run.py --task $task_name --mode demo --rig mac`` does for the Mac's
+file here.
 
 Every command names the task, ``--task $task_name``, though this package has
 only the one: every session alhazen starts names its task. Until alhazen 3.0
@@ -26,8 +34,8 @@ through the same code, because what else a session needs from this
 experiment is declared on its task, which both are handed: the params file
 (``default_params`` in src/$package/task.py, used when ``--params`` is not
 given) and what the subject reads before trial one (``instructions``). The
-one difference is the rig: this file starts on the laptop's by default, and
-``alhazen run`` needs ``--rig``.
+one difference is the rig: this file starts on the rig named ``laptop`` by
+default, and ``alhazen run`` needs ``--rig``.
 
 The argument parser, the run-number counter, the rehearsal path — everything
 every experiment needs — is alhazen's ``run_experiment``. What belongs here
@@ -38,19 +46,19 @@ task it is, and which rig to start on.
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 
 from alhazen.cli.modes import run_experiment
 
 from $package.task import $task_class
 
-HERE = Path(__file__).parent
-
 if __name__ == "__main__":
     raise SystemExit(
         run_experiment(
             task_class=$task_class,
-            default_rig=HERE / "configs" / "rig-mac.yaml",
+            # A rig's name, not a path, so it is looked up as --rig is: in
+            # this experiment's configs/ first, wherever the command is
+            # typed, then among alhazen's shared rigs.
+            default_rig="laptop",
             argv=sys.argv[1:],
         )
     )

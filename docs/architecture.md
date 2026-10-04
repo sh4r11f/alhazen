@@ -2315,7 +2315,11 @@ its own params file (`default_params`, found from the task's own file) and
 its instructions (§5.1), so its `run.py` passes only the task and a default
 rig, and `alhazen run --task` starts the same session: a new experiment
 starts with its two entry points agreeing rather than inheriting a gap
-between them.
+between them. The default rig is the name `"laptop"` (the owner's choice,
+2026-10-04; it was the scaffolded `rig-mac.yaml`, by path), resolved as
+`--rig laptop` is: the experiment's own `configs/rig-laptop.yaml` once it has
+one, else alhazen's shared laptop — the same default the lab's experiments
+pass.
 
 **Every session names its task** (the owner's rule, 2026-10-02). `alhazen
 run` always needed `--task`; `run_experiment` now puts `--task` on run.py's

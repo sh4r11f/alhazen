@@ -27,7 +27,18 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ## Unreleased
 
-### Added
+### Changed
+
+- **`alhazen new`'s run.py starts on the laptop rig.** A command with no
+  `--rig` ran on the scaffolded `configs/rig-mac.yaml`, by path, although
+  run.py's own docstring said the default was the laptop. It now passes
+  `default_rig="laptop"`, the rig name the lab's experiments pass: the
+  experiment's own `configs/rig-laptop.yaml` if it adds one, else alhazen's
+  shared laptop (the scaffold writes none, so a new experiment starts on the
+  shared one). `--rig mac` still reaches the scaffolded Mac file. run.py's
+  docstring, the scaffold's README, docs/getting-started.md, and the
+  `default_rig` examples in docs/modes.md and docs/rigs.md say so. A run.py
+  already scaffolded keeps the default it was written with.
 
 - **`HoldFixation(duration_record_key=...)`: each hold records its drawn
   duration under a name of its own.** Every `HoldFixation` wrote
