@@ -115,8 +115,9 @@ flowchart TD
   would be. A task installed from a wheel has no folder of its own; the
   current folder stands in.
 
-`run_experiment(default_rig=...)` takes a name too: `default_rig="mac"` starts
-on the experiment's own mac, else the shared one.
+`run_experiment(default_rig=...)` takes a name too: `default_rig="laptop"`
+starts on the experiment's own laptop, else the shared one. It is what the
+run.py `alhazen new` writes passes.
 
 ## 4. Extending a shared rig
 

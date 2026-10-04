@@ -536,16 +536,18 @@ from alhazen.cli.modes import run_experiment
 raise SystemExit(
     run_experiment(
         task_class=MyTask,
-        default_rig="mac",
+        default_rig="laptop",
         argv=sys.argv[1:],
     )
 )
 ```
 
 `default_rig` takes what `--rig` takes. A name is looked up in the experiment
-the task belongs to — `"mac"` is its own `configs/rig-mac.yaml`, else
-alhazen's shared mac — wherever the command is typed, so `python ~/exp/run.py`
-from another folder starts on the same rig. A path works too, written as
+the task belongs to — `"laptop"` is its own `configs/rig-laptop.yaml`, else
+alhazen's shared laptop — wherever the command is typed, so
+`python ~/exp/run.py` from another folder starts on the same rig. `"laptop"`
+is what the run.py `alhazen new` writes passes, and what the lab's
+experiments pass. A path works too, written as
 `HERE / "configs" / "rig-mac.yaml"` (with `HERE = Path(__file__).parent`) for
 the same reason.
 
@@ -574,7 +576,7 @@ TASKS = {
 raise SystemExit(
     run_experiment(
         tasks=TASKS,
-        default_rig="mac",
+        default_rig="laptop",
         argv=sys.argv[1:],
     )
 )

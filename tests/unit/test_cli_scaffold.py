@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import os
 import re
 import subprocess
@@ -248,6 +249,25 @@ class TestScaffold:
         assert "default_params" not in runner.split('if __name__ == "__main__":')[1]
         assert "does the same job" not in runner
         assert "--rig" in runner
+
+    def test_the_template_runner_starts_on_the_rig_named_laptop(self, tmp_path):
+        """The owner's default (2026-10-04): a command with no --rig runs on
+        the rig NAMED laptop — the experiment's own configs/rig-laptop.yaml
+        if it adds one, else alhazen's shared laptop — as the lab's five
+        experiments do, and no longer on the scaffolded Mac file's path.
+        Read out of the source, since run.py runs a session when executed;
+        the acceptance test below runs one."""
+        import ast
+
+        root = scaffold("saccade_bias", tmp_path)
+        tree = ast.parse((root / "run.py").read_text(encoding="utf-8"))
+        (call,) = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "run_experiment"
+        ]
+        (default_rig,) = [kw.value for kw in call.keywords if kw.arg == "default_rig"]
+        assert isinstance(default_rig, ast.Constant) and default_rig.value == "laptop"
 
     def test_the_generated_task_is_importable_and_declares_itself(self, tmp_path):
         root = scaffold("saccade_bias", tmp_path)
@@ -530,6 +550,33 @@ class TestScaffoldedPackageWorks:
         assert recorded.returncode == 0, recorded.stdout + recorded.stderr
         assert "Warning" not in recorded.stderr, recorded.stderr
         assert (root / "movies" / "fixation-hold.mp4").exists()
+
+        # No --rig: run.py's default, the rig named laptop. The scaffold
+        # writes no configs/rig-laptop.yaml, so it is alhazen's shared one,
+        # and the run's identity card says so.
+        runs_before = set((root / "data-rehearsal").glob("v0.1.0/sub-sim/ses-*/run-*"))
+        default = subprocess.run(
+            [
+                sys.executable,
+                str(root / "run.py"),
+                "--task",
+                "bundled-demo",
+                "--mode",
+                "simulate",
+                "--headless",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=root,
+            env=environment,
+            timeout=600,
+        )
+        assert default.returncode == 0, default.stdout + default.stderr
+        assert "Warning" not in default.stderr, default.stderr
+        (new_run,) = set((root / "data-rehearsal").glob("v0.1.0/sub-sim/ses-*/run-*")) - runs_before
+        card = json.loads((new_run / "session.json").read_text(encoding="utf-8"))
+        assert (card["rig"]["name"], card["rig"]["source"]) == ("laptop", "alhazen")
+        assert Path(card["rig"]["file"]).name == "rig-laptop.yaml"
 
         # And a command from before 2.5, naming no task, still runs — the
         # same session — and says on the console that it is going away.

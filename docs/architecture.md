@@ -948,14 +948,14 @@ none, that the model's defaults are running.
 
 | Phase | Ends when | Records |
 |---|---|---|
-| `AcquireFixation` | gaze holds the window for `hold_s` (timer **resets** on any excursion) or times out | `acquire_latency_s` |
-| `HoldFixation` | the jittered duration elapses; any excursion is a break | `hold_duration_s` |
+| `AcquireFixation` | gaze holds the window for `hold_s` (timer **resets** on any excursion) or times out | `acquire_latency_s`, or the name `latency_record_key` gives it |
+| `HoldFixation` | the jittered duration elapses; any excursion is a break | the drawn duration, as `hold_duration_s` or the name `duration_record_key` gives it — a trial with two holds names one of them |
 | `StimulusResponse` | gaze leaves the depart-region, or the deadline passes | `rt_ms`, `<depart_region>_x/y_dva` (where the eye left from — measured, never assumed to be the fixation point) |
 | `LandingCheck` | gaze enters the target region, or the window times out. **Records where gaze first crossed into the region — mid-flight for any usable window — not where the saccade ended**; use `LandingSample` for landing error | `endpoint_x/y_dva`, `endpoint_error_dva`, `endpoint_in_target` |
 | `LandingSample` | a fixed dwell after saccade onset (`dwell_s`), **or** saccade offset: the first *new* sample slower than `settle_speed_dva_per_s`, capped at `max_wait_s`. The region is ignored until then; the last valid sample is the endpoint, judged once. With `depart_region` (the fixation window), a sample still inside that window is never the endpoint and never settles — a blink at the cue counts as departure, and would otherwise end the trial as a miss at fixation | `endpoint_measured`, `endpoint_in_target`, `endpoint_x/y_dva`, `endpoint_error_dva`, `endpoint_latency_ms`, `endpoint_reference_x/y_dva`; `endpoint_settled` in the saccade-offset mode |
 | `ResponseWindow` | a bound key is pressed, or the deadline passes. **Keys pressed before the cue was on screen are ignored**: a frame's keys are everything pressed since the previous frame's read, so they count only once that read came after the flip stamped `t_<onset_event>` — never on the phase's first frame (before the flip) or its second (the presses made while the cue waited for its flip). The deadline (`timeout_s`) also runs from the cue's flip, so the subject has all of it with the cue on screen. With `onset_event=None` keys count from the first frame, and the reaction time and the deadline run from phase entry | `response_key`, `rt_ms` (from the cue's flip) |
-| `AdjustmentLoop` | the commit key is pressed, or the deadline passes | `adjusted_value`, `adjustment_turns` |
-| `FrameSequence` | a compiled `FrameTimeline` finishes | `sequence_frames` |
+| `AdjustmentLoop` | the commit key is pressed, or the deadline passes | `adjusted_value` (renamed by `value_record_key`), `adjustment_turns`, and `adjustment_s` at a commit (`adjustment` renamed by `record_prefix`) |
+| `FrameSequence` | a compiled `FrameTimeline` finishes | `sequence_frames`, and `sequence_break_frame` when gaze leaves `hold_region` (`sequence` renamed by `record_prefix`) |
 | `Blank` / `Feedback` | a fixed duration elapses | — |
 | `TrialFeedback` | a fixed duration elapses; **must be the trial's last phase**, and the engine refuses it anywhere else. As the trial's *closing* phase it runs whatever the trial ended as, so a fixation break gets feedback too — but never on `PAUSED` or `ABORTED`, which are not trial results, and it cannot change an outcome the trial already had. A tracker that stops while it is on screen does not cut it short: the row is flagged `fault: tracker_stopped` and the trial keeps its outcome (§2.2) | `feedback` (`success`/`failure`) from the task's own `verdict` predicate over the record, or `failure` without asking the predicate when the trial ended with a non-completed outcome — beside the outcome, never derived from it: a saccade that missed is still a completed, scored measurement. Recolours the fixation point, emits `FEEDBACK`; the session's `FeedbackSounder` beeps, because a phase touches no hardware. Draws only the fixation point unless `keep_drawing` names other stimuli to stay on screen (the figure just saccaded to): those are updated and drawn every frame *before* the point, so the colour stays on top, and are never recoloured. A name the trial has no stimulus for fails when the phase starts, naming it; a trial that ended with a non-completed outcome keeps nothing, because what it names may never have been shown |
 
@@ -966,6 +966,26 @@ the phase through `ctx.end_undrawn`. Before 2.5 each lasted one frame longer
 (`StimulusResponse` and `ResponseWindow` timeouts two). `AcquireFixation`'s
 `hold_s` is a gaze criterion, measured between samples, not a time on
 screen; `FrameSequence` counts frames.
+
+**One writer per column.** A phase's columns go on `ctx.record`, the dict
+that becomes the trial's row, and a write to a name another writer already
+filled replaces its value without a word. That is how a trial with two
+`HoldFixation`s lost its jittered foreperiod: both wrote `hold_duration_s`,
+and the second won. So the four phases whose columns had fixed names —
+`HoldFixation`, `AcquireFixation`, `FrameSequence`, `AdjustmentLoop` — take
+an argument that renames them (in the table above), and write every column
+through `task/phases/_record.record_once`. The record is built fresh for
+every attempt (`session/runner.py`), phases run once each and in order, and
+each of these writes a column once: a name already on the record then was
+written earlier in the same attempt — by another phase, or by the
+condition or `build_trial` — and is about to be lost. Since 2.6 that is a
+`FutureWarning` naming the column and the argument that renames it; 3.0
+refuses it. The new names are checked when the phase is built
+(`_record.column_name`, `column_prefix`): an identifier, and none of
+`TRIAL_RECORD_COLUMNS`, most of which the engine writes after the phases
+run, where no check at write time could see the phase's value replaced.
+The other phases' columns were renamable already (`rt_record_key`,
+`record_prefix`, ...) and are written as before, unchecked.
 
 Every constructor takes plain values — seconds, region names, stimulus keys,
 Outcomes — and never a config model: resolving a `Duration` against the
@@ -2295,7 +2315,11 @@ its own params file (`default_params`, found from the task's own file) and
 its instructions (§5.1), so its `run.py` passes only the task and a default
 rig, and `alhazen run --task` starts the same session: a new experiment
 starts with its two entry points agreeing rather than inheriting a gap
-between them.
+between them. The default rig is the name `"laptop"` (the owner's choice,
+2026-10-04; it was the scaffolded `rig-mac.yaml`, by path), resolved as
+`--rig laptop` is: the experiment's own `configs/rig-laptop.yaml` once it has
+one, else alhazen's shared laptop — the same default the lab's experiments
+pass.
 
 **Every session names its task** (the owner's rule, 2026-10-02). `alhazen
 run` always needed `--task`; `run_experiment` now puts `--task` on run.py's

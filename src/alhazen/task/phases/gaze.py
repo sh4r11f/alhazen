@@ -31,6 +31,7 @@ from typing import Any
 
 from alhazen.core.trial import CircleRegion, Outcome, PhaseAction, TrialContext
 from alhazen.task.phases._draw import draw_stimuli
+from alhazen.task.phases._record import column_name, record_once
 
 
 class AcquireFixation:
@@ -49,6 +50,14 @@ class AcquireFixation:
     screen but a gaze criterion — the time between the first and the latest
     sample read inside the window — and is measured between samples, as it
     always was.
+
+    The time from the point's appearance to acquisition goes on the record
+    under ``latency_record_key`` (default ``acquire_latency_s``), once, when
+    fixation is acquired. A trial that acquires fixation twice — a second
+    point, a re-fixation — gives each its own name, for the reason
+    :class:`HoldFixation` gives: a name the record already holds is still
+    overwritten, with a ``FutureWarning`` naming it (since 2.6), and 3.0
+    refuses it. The name is checked as ``HoldFixation``'s is.
     """
 
     name = "acquire_fixation"
@@ -63,6 +72,8 @@ class AcquireFixation:
         blink_period_s: float | None = None,
         onset_event: str | None = "FIX_ON",
         acquired_event: str | None = "FIX_ACQUIRED",
+        *,
+        latency_record_key: str = "acquire_latency_s",
     ) -> None:
         if on_timeout is None:
             raise ValueError("AcquireFixation needs an on_timeout outcome")
@@ -74,6 +85,9 @@ class AcquireFixation:
         self._blink_period_s = blink_period_s
         self._onset_event = onset_event
         self._acquired_event = acquired_event
+        self._latency_record_key = column_name(
+            "AcquireFixation", "latency_record_key", latency_record_key
+        )
 
     def on_enter(self, ctx: TrialContext) -> None:
         self._t0 = ctx.clock.now()
@@ -109,7 +123,15 @@ class AcquireFixation:
             if now - self._hold_start >= self._hold_s:
                 if self._acquired_event is not None:
                     ctx.emit_on_flip(self._acquired_event)
-                ctx.record["acquire_latency_s"] = now - self._t0
+                # Never over another phase's value in silence (HoldFixation
+                # says why).
+                record_once(
+                    ctx,
+                    self._latency_record_key,
+                    now - self._t0,
+                    phase="AcquireFixation",
+                    argument="latency_record_key",
+                )
                 return PhaseAction.ADVANCE
         else:
             # Reset, not paused: the hold must be continuous, so the next
@@ -125,12 +147,25 @@ class HoldFixation:
     lets a subject time its response to the stimulus rather than react to it,
     which turns a reaction time into a guess about the clock.
 
-    The drawn duration (``hold_duration_s`` on the record) is how long the
-    hold is on screen: the next phase's first frame appears that long after
-    the hold's first, rounded to the nearest frame, half a frame up
-    (``ctx.time_up``). Rounding to the nearest keeps the realised durations
-    centred on the drawn ones. A jitter wider than the duration is refused,
-    because some draws would be below zero — a trial with no foreperiod.
+    The drawn duration is how long the hold is on screen: the next phase's
+    first frame appears that long after the hold's first, rounded to the
+    nearest frame, half a frame up (``ctx.time_up``). Rounding to the nearest
+    keeps the realised durations centred on the drawn ones. A jitter wider
+    than the duration is refused, because some draws would be below zero — a
+    trial with no foreperiod.
+
+    The drawn duration goes on the record under ``duration_record_key``
+    (default ``hold_duration_s``), written once, in ``on_enter``. A trial
+    with two holds — a jittered foreperiod, then a fixed baseline with the
+    stimulus up — gives each its own name
+    (``duration_record_key="baseline_hold_s"``): under one name the second
+    would replace the first, and the trials file would never hold the
+    foreperiod the subject actually waited. A name the trial's record already holds
+    when the hold starts — written by an earlier phase, the condition or
+    ``build_trial`` — is still overwritten, as it always was, with a
+    ``FutureWarning`` naming the column (since 2.6); 3.0 refuses it. A name
+    that is not a plain identifier, or that is one of the columns alhazen
+    writes itself (``core.trial.TRIAL_RECORD_COLUMNS``), is refused here.
     """
 
     name = "hold_fixation"
@@ -144,6 +179,8 @@ class HoldFixation:
         on_break: Outcome | None = None,
         concurrent: list[str] | None = None,
         onset_event: str | None = None,
+        *,
+        duration_record_key: str = "hold_duration_s",
     ) -> None:
         if on_break is None:
             raise ValueError("HoldFixation needs an on_break outcome")
@@ -167,6 +204,9 @@ class HoldFixation:
         self._on_break = on_break
         self._concurrent = list(concurrent or [])
         self._onset_event = onset_event
+        self._duration_record_key = column_name(
+            "HoldFixation", "duration_record_key", duration_record_key
+        )
 
     def on_enter(self, ctx: TrialContext) -> None:
         self._t0 = ctx.clock.now()
@@ -175,7 +215,16 @@ class HoldFixation:
             if self._jitter_s > 0
             else self._duration_s
         )
-        ctx.record["hold_duration_s"] = self._duration
+        # Through record_once, not a bare assignment: a second hold writing
+        # the same column is what lost kde-vergence its foreperiod, and it
+        # must not happen in silence again.
+        record_once(
+            ctx,
+            self._duration_record_key,
+            self._duration,
+            phase="HoldFixation",
+            argument="duration_record_key",
+        )
         if self._onset_event is not None:
             ctx.emit_on_flip(self._onset_event)
 

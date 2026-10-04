@@ -25,6 +25,67 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+### Changed
+
+- **`alhazen new`'s run.py starts on the laptop rig.** A command with no
+  `--rig` ran on the scaffolded `configs/rig-mac.yaml`, by path, although
+  run.py's own docstring said the default was the laptop. It now passes
+  `default_rig="laptop"`, the rig name the lab's experiments pass: the
+  experiment's own `configs/rig-laptop.yaml` if it adds one, else alhazen's
+  shared laptop (the scaffold writes none, so a new experiment starts on the
+  shared one). `--rig mac` still reaches the scaffolded Mac file. run.py's
+  docstring, the scaffold's README, docs/getting-started.md, and the
+  `default_rig` examples in docs/modes.md and docs/rigs.md say so. A run.py
+  already scaffolded keeps the default it was written with.
+
+- **`HoldFixation(duration_record_key=...)`: each hold records its drawn
+  duration under a name of its own.** Every `HoldFixation` wrote
+  `hold_duration_s`, so a trial with two holds — kde-vergence's jittered
+  foreperiod, then a fixed baseline with the stimulus up — kept only the
+  second: the trials file never held the foreperiod the subject actually
+  waited, and nothing said so. The default is still `hold_duration_s`, so a
+  trial with one hold writes what it wrote; give the second hold another
+  name (`duration_record_key="baseline_hold_s"`). The name must be a plain
+  identifier (letters, digits, underscores, not starting with a digit) and
+  not one of the columns alhazen writes itself
+  (`core.trial.TRIAL_RECORD_COLUMNS` — most are written after the phases
+  run, where the hold's value would be replaced unseen); anything else is
+  refused when the phase is built. Keyword-only.
+- **The same for the three other phases whose columns had fixed names**,
+  each keyword-only and checked the same way, each default the name it
+  wrote: `AcquireFixation(latency_record_key=...)` (`acquire_latency_s`), for
+  a trial that acquires fixation twice; `FrameSequence(record_prefix=...)`
+  (`sequence`: `sequence_frames`, `sequence_break_frame`), for a trial with
+  two sequences; `AdjustmentLoop(record_prefix=...)` (`adjustment`:
+  `adjustment_turns`, `adjustment_s`), which with `value_record_key` lets two
+  adjustments in one trial keep all their columns. No experiment runs two of
+  these in a trial today. The phases whose columns were already renamable
+  (`StimulusResponse`, `LandingCheck`, `LandingSample`, `ResponseWindow`,
+  `TrialFeedback`) are unchanged.
+
+### Deprecated
+
+- **A `HoldFixation` writing a column the trial's record already holds**,
+  and the same for `AcquireFixation`, `FrameSequence` and `AdjustmentLoop`
+  (every column each writes, `AdjustmentLoop`'s `value_record_key` one
+  included). It still writes, replacing the value as it always did, and emits a
+  `FutureWarning` naming the column and the argument to change: "HoldFixation
+  writing its 'hold_duration_s' column over a value the trial's record
+  already holds is deprecated since alhazen 2.6 and will be removed in 3.0;
+  use a different duration_record_key for each HoldFixation in the trial
+  instead. An earlier phase of this trial — most likely another HoldFixation
+  — or the trial's condition or build_trial wrote 'hold_duration_s' first,
+  and that value is lost from trials.csv; alhazen 3.0 will refuse it". The
+  record is built fresh for every attempt and the hold writes once, when it
+  starts, so a name already on it was written earlier in the same attempt:
+  a trial with one hold never warns. A `FutureWarning` for the reason the
+  missing `--task` one is: the code to change is the experiment's
+  `build_trial`, outside `__main__`, where a `DeprecationWarning` is hidden.
+  Its text is the same on every trial, so it prints once per session. 3.0
+  refuses the trial.
+
 ## 2.5.0 - 2026-10-03
 
 ### Changed

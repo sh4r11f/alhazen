@@ -59,6 +59,13 @@ both files, substituting for what the machine lacks and saying so
 numbers in each file decide what a degree of visual angle is, which is why
 there is one per machine and never one shared between them.
 
+A `run.py` command with no `--rig` starts on the rig named `laptop`: the
+experiment's own `configs/rig-laptop.yaml` once you add one, else alhazen's
+shared laptop — the lab's development laptop, with that machine's screen
+measurements ([Rigs](rigs.md) has the shared rigs, and how a file of your own
+can extend one and change only what differs). On your own laptop, add that
+file, or name a rig: `--rig mac` is the scaffolded Mac file.
+
 ## Run its tests
 
 ```bash
