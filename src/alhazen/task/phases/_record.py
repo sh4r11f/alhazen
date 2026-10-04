@@ -18,11 +18,11 @@ Two rules close it, and a phase that writes through this module keeps both:
 - **A column already on the record is never overwritten in silence**
   (:func:`record_once`). The record is built fresh for every attempt
   (``session/runner.py``), phases run once each and in order, and such a
-  phase writes each of its columns once. So a name already on the record when the
-  phase writes it was put there earlier in the same attempt: by another phase
-  (most often a second instance of the same one), or by the trial's own
-  condition or ``build_trial``. Whichever it was, its value is about to be
-  lost. Until 3.0 that is a ``FutureWarning``; 3.0 refuses it.
+  phase writes each of its columns once. So a name already on the record
+  when the phase writes it was put there earlier in the same attempt: by
+  another phase (most often a second instance of the same one), or by the
+  trial's own condition or ``build_trial``. Whichever it was, its value is
+  about to be lost. Until 3.0 that is a ``FutureWarning``; 3.0 refuses it.
 """
 
 from __future__ import annotations

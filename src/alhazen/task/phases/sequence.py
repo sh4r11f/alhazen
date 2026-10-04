@@ -36,11 +36,11 @@ class FrameSequence:
     ``<prefix>_frames``, the timeline's length, when the phase starts; and
     ``<prefix>_break_frame``, the frame gaze left ``hold_region`` on, when
     that ends the trial. A trial with two sequences gives each its own
-    prefix, for the reason ``HoldFixation`` gives:
-    a column the record already holds is still overwritten, with a
-    ``FutureWarning`` naming it (since 2.6), and 3.0 refuses it. A prefix
-    that is not a plain identifier, or that makes one of the columns
-    alhazen writes itself, is refused here."""
+    prefix, for the reason ``HoldFixation`` gives: a column the record
+    already holds is still overwritten, with a ``FutureWarning`` naming it
+    (since 2.6), and 3.0 refuses it. A prefix that is not a plain
+    identifier, or that makes one of the columns alhazen writes itself, is
+    refused here."""
 
     name = "frame_sequence"
 
