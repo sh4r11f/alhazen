@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import warnings
+
 import pytest
 
 from alhazen.core.trial import CircleRegion, InputFrame, Outcome, PhaseAction
@@ -133,6 +135,123 @@ class TestHoldFixation:
         )
         harness.engine.run_trial(ctx, [self.phase(concurrent=["target"]), _EndPhase()])
         assert target.draw_count == fixation.draw_count > 0
+
+
+class TestHoldFixationRecordsUnderItsOwnName:
+    """Two holds in one trial — kde-vergence's jittered foreperiod, then a
+    fixed baseline with the stimulus up — both wrote `hold_duration_s`, so
+    the second replaced the first and the trials file never held the
+    foreperiod the subject waited. Each hold now names its column, and a
+    hold about to replace a value already on the record says so."""
+
+    # What an experimenter reads on the console, pinned whole: it must name
+    # the column and say what to change, and a reworded message that lost
+    # either would still pass a test that matched a fragment.
+    COLLISION = (
+        "HoldFixation writing its 'hold_duration_s' column over a value the trial's record "
+        "already holds is deprecated since alhazen 2.6 and will be removed in 3.0; use a "
+        "different duration_record_key for each HoldFixation in the trial instead. An earlier "
+        "phase of this trial — most likely another HoldFixation — or the trial's condition or "
+        "build_trial wrote 'hold_duration_s' first, and that value is lost from trials.csv; "
+        "alhazen 3.0 will refuse it"
+    )
+
+    def foreperiod(self, **kwargs):
+        defaults = dict(duration_s=4 * FRAME_S, jitter_s=FRAME_S, on_break=BROKE)
+        return HoldFixation(**{**defaults, **kwargs})
+
+    def baseline(self, **kwargs):
+        defaults = dict(duration_s=2 * FRAME_S, on_break=BROKE, concurrent=["target"])
+        return HoldFixation(**{**defaults, **kwargs})
+
+    def test_the_drawn_duration_goes_under_the_name_given(self):
+        _harness, result = run(
+            [self.baseline(duration_record_key="baseline_s"), _EndPhase()], [IN_FIX]
+        )
+        assert result.record["baseline_s"] == pytest.approx(2 * FRAME_S)
+        assert "hold_duration_s" not in result.record
+
+    def test_two_holds_with_names_of_their_own_record_both_and_say_nothing(self):
+        # A FutureWarning raised as an error fails the trial, so a run that
+        # completes is one that did not warn.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", FutureWarning)
+            _harness, result = run(
+                [self.foreperiod(), self.baseline(duration_record_key="baseline_s"), _EndPhase()],
+                [IN_FIX],
+            )
+        assert result.outcome is _DONE
+        # The foreperiod is the jittered draw, kept; the baseline its own.
+        assert 3 * FRAME_S <= result.record["hold_duration_s"] <= 5 * FRAME_S
+        assert result.record["baseline_s"] == pytest.approx(2 * FRAME_S)
+
+    def test_two_holds_under_one_name_warn_naming_the_column(self):
+        with pytest.warns(FutureWarning) as caught:
+            _harness, result = run([self.foreperiod(), self.baseline(), _EndPhase()], [IN_FIX])
+        collisions = [w for w in caught if issubclass(w.category, FutureWarning)]
+        # Once, from the second hold: the first found the column empty.
+        assert [str(w.message) for w in collisions] == [self.COLLISION]
+        # Pointed at the phase's own line, which says which phase wrote it;
+        # the experiment's build_trial is not on the stack by then.
+        assert collisions[0].filename.endswith("gaze.py")
+        # Deprecated, not refused: the trial runs as it did before 2.6, the
+        # second hold's value replacing the first.
+        assert result.outcome is _DONE
+        assert result.record["hold_duration_s"] == pytest.approx(2 * FRAME_S)
+
+    def test_a_column_the_trials_setup_wrote_is_not_overwritten_in_silence_either(self):
+        # The record a phase sees also carries the condition and whatever
+        # build_trial put there (session/runner.py). A hold that replaces one
+        # of those loses a value just the same.
+        harness = EngineHarness(input_provider=ScriptedInputs([IN_FIX]))
+        ctx = harness.ctx(
+            stimuli={"fixation": FakeStimulus("fix"), "target": FakeStimulus("target")},
+            regions={"fixation": FIX},
+            record={"hold_duration_s": 0.25},
+        )
+        with pytest.warns(FutureWarning, match="'hold_duration_s' column over a value"):
+            result = harness.engine.run_trial(ctx, [self.baseline(), _EndPhase()])
+        assert result.record["hold_duration_s"] == pytest.approx(2 * FRAME_S)
+
+    def test_one_hold_per_trial_never_warns_on_any_trial(self):
+        # Every experiment but kde-vergence runs one hold per trial, many of
+        # them with the phase objects built once and reused. The record is
+        # built fresh for each trial, so trial 2's hold must not find trial
+        # 1's column and warn about it.
+        hold = self.foreperiod()
+        harness = EngineHarness(input_provider=ScriptedInputs([IN_FIX]))
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", FutureWarning)
+            for trial_index in (1, 2, 3):
+                ctx = harness.ctx(
+                    trial_index=trial_index,
+                    stimuli={"fixation": FakeStimulus("fix")},
+                    regions={"fixation": FIX},
+                )
+                result = harness.engine.run_trial(ctx, [hold, _EndPhase()])
+                assert result.outcome is _DONE
+                assert 3 * FRAME_S <= result.record["hold_duration_s"] <= 5 * FRAME_S
+
+    @pytest.mark.parametrize("name", ["", "baseline s", "2nd_hold", "hold.duration", None, 3])
+    def test_a_name_that_cannot_be_a_column_is_refused_when_built(self, name):
+        # Refused where it is written, not on the first trial with a subject
+        # in the chair.
+        with pytest.raises(
+            ValueError, match=r"HoldFixation\(duration_record_key=.*is not a column name"
+        ):
+            self.baseline(duration_record_key=name)
+
+    @pytest.mark.parametrize("name", ["outcome", "feedback", "trial_index", "fault"])
+    def test_a_column_alhazen_writes_itself_is_refused_when_built(self, name):
+        # Most of these are written after every phase has run, where no check
+        # at write time could see the hold's value being replaced.
+        with pytest.raises(ValueError, match="one of the columns alhazen itself writes"):
+            self.baseline(duration_record_key=name)
+
+    def test_the_name_is_keyword_only(self):
+        # Read at the call site, never as the eighth positional argument.
+        with pytest.raises(TypeError):
+            HoldFixation("fixation", "fixation", 0.5, 0.0, BROKE, None, None, "baseline_s")  # type: ignore[misc]
 
 
 class TestStimulusResponse:

@@ -31,6 +31,7 @@ from typing import Any
 
 from alhazen.core.trial import CircleRegion, Outcome, PhaseAction, TrialContext
 from alhazen.task.phases._draw import draw_stimuli
+from alhazen.task.phases._record import column_name, record_once
 
 
 class AcquireFixation:
@@ -125,12 +126,25 @@ class HoldFixation:
     lets a subject time its response to the stimulus rather than react to it,
     which turns a reaction time into a guess about the clock.
 
-    The drawn duration (``hold_duration_s`` on the record) is how long the
-    hold is on screen: the next phase's first frame appears that long after
-    the hold's first, rounded to the nearest frame, half a frame up
-    (``ctx.time_up``). Rounding to the nearest keeps the realised durations
-    centred on the drawn ones. A jitter wider than the duration is refused,
-    because some draws would be below zero — a trial with no foreperiod.
+    The drawn duration is how long the hold is on screen: the next phase's
+    first frame appears that long after the hold's first, rounded to the
+    nearest frame, half a frame up (``ctx.time_up``). Rounding to the nearest
+    keeps the realised durations centred on the drawn ones. A jitter wider
+    than the duration is refused, because some draws would be below zero — a
+    trial with no foreperiod.
+
+    The drawn duration goes on the record under ``duration_record_key``
+    (default ``hold_duration_s``), written once, in ``on_enter``. A trial
+    with two holds — a jittered foreperiod, then a fixed baseline with the
+    stimulus up — gives each its own name
+    (``duration_record_key="baseline_s"``): under one name the second would
+    replace the first, and the trials file would never hold the foreperiod
+    the subject actually waited. A name the trial's record already holds
+    when the hold starts — written by an earlier phase, the condition or
+    ``build_trial`` — is still overwritten, as it always was, with a
+    ``FutureWarning`` naming the column (since 2.6); 3.0 refuses it. A name
+    that is not a plain identifier, or that is one of the columns alhazen
+    writes itself (``core.trial.TRIAL_RECORD_COLUMNS``), is refused here.
     """
 
     name = "hold_fixation"
@@ -144,6 +158,8 @@ class HoldFixation:
         on_break: Outcome | None = None,
         concurrent: list[str] | None = None,
         onset_event: str | None = None,
+        *,
+        duration_record_key: str = "hold_duration_s",
     ) -> None:
         if on_break is None:
             raise ValueError("HoldFixation needs an on_break outcome")
@@ -167,6 +183,9 @@ class HoldFixation:
         self._on_break = on_break
         self._concurrent = list(concurrent or [])
         self._onset_event = onset_event
+        self._duration_record_key = column_name(
+            "HoldFixation", "duration_record_key", duration_record_key
+        )
 
     def on_enter(self, ctx: TrialContext) -> None:
         self._t0 = ctx.clock.now()
@@ -175,7 +194,16 @@ class HoldFixation:
             if self._jitter_s > 0
             else self._duration_s
         )
-        ctx.record["hold_duration_s"] = self._duration
+        # Through record_once, not a bare assignment: a second hold writing
+        # the same column is what lost kde-vergence its foreperiod, and it
+        # must not happen in silence again.
+        record_once(
+            ctx,
+            self._duration_record_key,
+            self._duration,
+            phase="HoldFixation",
+            argument="duration_record_key",
+        )
         if self._onset_event is not None:
             ctx.emit_on_flip(self._onset_event)
 

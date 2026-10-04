@@ -949,7 +949,7 @@ none, that the model's defaults are running.
 | Phase | Ends when | Records |
 |---|---|---|
 | `AcquireFixation` | gaze holds the window for `hold_s` (timer **resets** on any excursion) or times out | `acquire_latency_s` |
-| `HoldFixation` | the jittered duration elapses; any excursion is a break | `hold_duration_s` |
+| `HoldFixation` | the jittered duration elapses; any excursion is a break | the drawn duration, as `hold_duration_s` or the name `duration_record_key` gives it — a trial with two holds names one of them |
 | `StimulusResponse` | gaze leaves the depart-region, or the deadline passes | `rt_ms`, `<depart_region>_x/y_dva` (where the eye left from — measured, never assumed to be the fixation point) |
 | `LandingCheck` | gaze enters the target region, or the window times out. **Records where gaze first crossed into the region — mid-flight for any usable window — not where the saccade ended**; use `LandingSample` for landing error | `endpoint_x/y_dva`, `endpoint_error_dva`, `endpoint_in_target` |
 | `LandingSample` | a fixed dwell after saccade onset (`dwell_s`), **or** saccade offset: the first *new* sample slower than `settle_speed_dva_per_s`, capped at `max_wait_s`. The region is ignored until then; the last valid sample is the endpoint, judged once. With `depart_region` (the fixation window), a sample still inside that window is never the endpoint and never settles — a blink at the cue counts as departure, and would otherwise end the trial as a miss at fixation | `endpoint_measured`, `endpoint_in_target`, `endpoint_x/y_dva`, `endpoint_error_dva`, `endpoint_latency_ms`, `endpoint_reference_x/y_dva`; `endpoint_settled` in the saccade-offset mode |
@@ -966,6 +966,22 @@ the phase through `ctx.end_undrawn`. Before 2.5 each lasted one frame longer
 (`StimulusResponse` and `ResponseWindow` timeouts two). `AcquireFixation`'s
 `hold_s` is a gaze criterion, measured between samples, not a time on
 screen; `FrameSequence` counts frames.
+
+**One writer per column.** A phase's columns go on `ctx.record`, the dict
+that becomes the trial's row, and a write to a name another writer already
+filled replaces its value without a word. That is how a trial with two
+`HoldFixation`s lost its jittered foreperiod: both wrote `hold_duration_s`,
+and the second won. So `HoldFixation` writes through
+`task/phases/_record.record_once`. The record is built fresh for every
+attempt (`session/runner.py`), phases run once each and in order, and the
+hold writes once, in `on_enter`: a name already on the record then was
+written earlier in the same attempt — by another phase, or by the
+condition or `build_trial` — and is about to be lost. Since 2.6 that is a
+`FutureWarning` naming the column and the argument that renames it; 3.0
+refuses it. The name itself is checked when the phase is built
+(`_record.column_name`): an identifier, and none of
+`TRIAL_RECORD_COLUMNS`, most of which the engine writes after the phases
+run, where no check at write time could see the phase's value replaced.
 
 Every constructor takes plain values — seconds, region names, stimulus keys,
 Outcomes — and never a config model: resolving a `Duration` against the
