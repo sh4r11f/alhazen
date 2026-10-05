@@ -40,6 +40,32 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   its lab rig. The value is part of the merged rig, so the snapshot's
   `config.rig` records it.
 
+### Changed
+
+- **Run mode refuses a development rig, before anything is written.** Every
+  experiment's run.py starts on the shared laptop when a command names no
+  `--rig`, and run mode drove it as written: a forgotten `--rig` opened a
+  fullscreen window, filed a run under the real `data/v<version>/`,
+  registered the subject, got no gaze (a gaze-contingent task looped on
+  `NO_FIXATION`), and an experiment whose params hook carries state across
+  sessions loaded and re-saved that subject's real state. Now a run-mode
+  session on a rig whose settings say `real_data: false` — alhazen's
+  `laptop`, `mac` or `lab-rehearsal`, or an experiment rig extending one —
+  is refused as soon as the rig is read: before the params are loaded, before
+  the subject prompts, before the params hook, before any folder, registry
+  row, database row, window or device. It exits 2 with `CANNOT RUN:`, names
+  the rig, says no `--rig` was given when that is what happened, lists the
+  rigs here that collect real data (`--rig lab or --rig vpixx`), and names the
+  deliberate exception: the experiment's own rig file saying `real_data:
+  true` (for the laptop, `configs/rig-laptop.yaml` with `extends: laptop`),
+  which is version-controlled and copied into every run it records. There is
+  no flag for it. `build_mode_session` refuses the same session with a
+  `ConfigError`, for code that starts one itself (`build_session`, which
+  takes no mode, is unchanged). Measure, demo, movie, simulate and test run
+  on a development rig exactly as before. Not deprecated first: the
+  refused command only ever recorded a session with no tracker into the real
+  data root, and every deliberate use stays possible through the rig file.
+
 ## 2.6.0 - 2026-10-04
 
 ### Changed

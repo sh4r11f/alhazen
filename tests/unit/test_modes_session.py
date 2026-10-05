@@ -149,6 +149,65 @@ class TestRunModeChangesNothing:
         assert spy.kwargs["auto_start"] is False
 
 
+class TestRunModeOnADevelopmentRig:
+    """docs/rigs.md §5, for code that starts a run-mode session itself: the
+    command line refuses earlier, but no command line stands in front of a
+    script calling build_mode_session."""
+
+    def development_rig(self, tmp_path):
+        return rig(tmp_path).model_copy(update={"real_data": False})
+
+    def test_run_mode_is_refused_before_anything_is_built(self, tmp_path):
+        spy = Spy()
+        with pytest.raises(ConfigError) as refused:
+            build_mode_session(
+                Mode.RUN,
+                rig=self.development_rig(tmp_path),
+                task=ModeTask(Params()),
+                subject="t01",
+                session=1,
+                build_session=spy,
+                # As the command line records them: the refusal names the rig.
+                sources={
+                    "rig": str(tmp_path / "rig-laptop.yaml"),
+                    "rig_name": "laptop",
+                    "rig_source": "alhazen",
+                },
+            )
+        assert spy.kwargs is None
+        assert not (tmp_path / "data").exists()
+        message = str(refused.value)
+        assert message.startswith(
+            "run mode records real data, and alhazen/laptop (alhazen's shared rig) is a "
+            "development rig"
+        )
+        assert "rehearse it on this one in test or simulate mode" in message
+
+    def test_without_sources_the_rig_is_refused_unnamed(self, tmp_path):
+        with pytest.raises(ConfigError, match="and this rig is a development rig"):
+            build_mode_session(
+                Mode.RUN,
+                rig=self.development_rig(tmp_path),
+                task=ModeTask(Params()),
+                subject="t01",
+                session=1,
+                build_session=Spy(),
+            )
+
+    @pytest.mark.parametrize("mode", [Mode.TEST, Mode.SIMULATE])
+    def test_a_rehearsal_on_it_is_built_as_before(self, tmp_path, mode):
+        spy = Spy()
+        build_mode_session(
+            mode,
+            rig=self.development_rig(tmp_path),
+            task=SimTask(Params()),
+            subject="t01",
+            session=1,
+            build_session=spy,
+        )
+        assert spy.kwargs["rig"].data_root == rehearsal_root(tmp_path / "data")
+
+
 class TestTestModeShortensAndRedirects:
     def test_trial_counts_come_down(self, tmp_path):
         built, spy = build(tmp_path, Mode.TEST)

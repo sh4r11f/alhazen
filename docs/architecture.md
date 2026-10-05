@@ -2319,7 +2319,14 @@ between them. The default rig is the name `"laptop"` (the owner's choice,
 2026-10-04; it was the scaffolded `rig-mac.yaml`, by path), resolved as
 `--rig laptop` is: the experiment's own `configs/rig-laptop.yaml` once it has
 one, else alhazen's shared laptop — the same default the lab's experiments
-pass.
+pass. The shared laptop says `real_data: false`, so a run-mode command that
+leaves `--rig` out is refused by `_run_session` as soon as the rig is read —
+before the params, the prompts, the params hook and `build_session` — by
+`alhazen.modes.real_data_refusal`, which `build_mode_session` and the
+workspace's launch call too ([rigs](rigs.md) §5). `run_experiment` fills in
+the default rig after parsing, not as the flag's default, so the refusal can
+say that no `--rig` was given; the rigs it offers instead are
+`config.rigs.collecting_rigs`.
 
 **Every session names its task** (the owner's rule, 2026-10-02). `alhazen
 run` always needed `--task`; `run_experiment` now puts `--task` on run.py's

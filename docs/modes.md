@@ -38,7 +38,12 @@ goes. It says nothing about what you are about to do on it, because that is
 the mode's business. So there is one rig file per machine — `alhazen new`
 scaffolds a laptop (`rig-mac.yaml`) and the rig (`rig-lab.yaml`), and alhazen
 ships the machines several experiments share ([Rigs](rigs.md)) — and every
-mode takes any of them as it stands.
+mode takes any of them as it stands, with one exception: run mode, the one
+mode that records real data, refuses a **development rig** — one whose file
+says `real_data: false`, as alhazen's `laptop`, `mac` and `lab-rehearsal` do
+— before anything is written, and says which rigs to name instead
+([Rigs](rigs.md#5-real-data-only-on-a-rig-meant-for-it)). Every other mode
+runs on a development rig as before; that is what one is for.
 
 The framework used to ship a file per *purpose* as well: `rig-sim` for a
 headless run, `rig-auto` for a dry run with the live monitor, `rig-mouse` for
@@ -55,7 +60,7 @@ trial one:
 
 | mode | what it drives | what it substitutes, and says so |
 |---|---|---|
-| `run` | the rig, exactly as written | nothing |
+| `run` | the rig, exactly as written — and refuses a development rig (`real_data: false`) before anything is written | nothing |
 | `test` | the rig, with a person in the chair | on a rig with no tracker, the mouse cursor stands in for gaze; `--mouse` asks for that on a rig whose tracker is off; on a rig with no pump, a task that pays mid-trial gets a simulated one |
 | `simulate` | nothing that acts on or reads a subject | the task's autopilot for the tracker; the pump and the sync lines are logged rather than fired (and a task that pays mid-trial gets a simulated pump on a rig with none); the recorder is marked absent; a live spike stream is dropped; `--headless` takes the window and the browser away too |
 | `measure`, `demo`, `movie` | the panel (`movie`: not even that) | nothing |
@@ -549,7 +554,10 @@ alhazen's shared laptop — wherever the command is typed, so
 is what the run.py `alhazen new` writes passes, and what the lab's
 experiments pass. A path works too, written as
 `HERE / "configs" / "rig-mac.yaml"` (with `HERE = Path(__file__).parent`) for
-the same reason.
+the same reason. The shared laptop is a development rig, so a run-mode
+command that names no `--rig` is refused before anything is written, its
+first remedy line saying that no `--rig` was given
+([Rigs](rigs.md#5-real-data-only-on-a-rig-meant-for-it)).
 
 **Every session names its task**, with `--task`, even when the experiment has
 only the one: `python run.py --task my-task --mode demo`. With `task_class=`

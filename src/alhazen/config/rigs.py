@@ -56,7 +56,7 @@ from typing import Any, Literal, NamedTuple, TypeAlias
 
 from alhazen.config.experiment import experiment_title
 from alhazen.config.gamma import GAMMA_FILENAME_SUFFIX
-from alhazen.config.loader import read_mapping
+from alhazen.config.loader import read_mapping, validate_rig
 from alhazen.errors import ConfigError
 
 # The shared rigs ship inside the package, as package data (pyproject's
@@ -216,6 +216,41 @@ def list_rigs(
         RigRef(name, Path(path), "alhazen", shadowed=name in names)
         for name, path in sorted(files.items())
     ]
+
+
+def collecting_rigs(
+    experiment_root: Path | None, *, shared: Mapping[str, Path] | None = None
+) -> tuple[list[RigRef], list[RigRef]]:
+    """The rigs a name reaches here that may collect real data, and apart from
+    them the rigs that could not be read to tell.
+
+    What a refused run-mode session suggests instead
+    (``alhazen.modes.real_data_refusal``): the machines this experiment
+    records subjects on, found the way ``alhazen rigs`` lists them
+    (:func:`list_rigs`), merged over any shared rig they extend and validated
+    as a session would load them, so an answer inherited from a shared rig
+    counts. A shared rig the experiment shadows is left out: ``--rig <name>``
+    means the experiment's own, which is listed on its own answer. A rig that
+    cannot be read is returned in the second list rather than dropped, so the
+    suggestion can say it was not considered. ``shared`` is as for
+    :func:`list_rigs`.
+    """
+    collecting: list[RigRef] = []
+    unreadable: list[RigRef] = []
+    for ref in list_rigs(experiment_root, shared=shared):
+        if ref.shadowed:
+            continue
+        try:
+            rig = validate_rig(rig_mapping(ref.path, shared=shared), ref.path)
+        except ConfigError:
+            # Not this function's error to report: the file is refused, with
+            # the loader's own words, by whatever loads it as a rig. Here it
+            # is only a rig that cannot be suggested, and the caller says so.
+            unreadable.append(ref)
+            continue
+        if rig.real_data:
+            collecting.append(ref)
+    return collecting, unreadable
 
 
 def resolve_rig(
