@@ -88,6 +88,14 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   connect), and that folder, holding a file, then refused its run number.
   `SessionRunner` takes `recording=` (a `RecordingSystem`, default None) for
   it; `build_session` passes the rig's.
+- **The workspace refuses a Run launch on a development rig, and says so
+  first.** Its Rig menu opens on the laptop. A **Run experiment** launch on a
+  rig that says `real_data: false` is refused by the launcher before a run
+  record or anything else is written, with the words the session would use
+  and the Rig menu's collecting rigs by name; the page shows it in its error
+  banner. Before the click, the rig summary adds **Real data: refused** and
+  the note under the launch button warns that the launch will be refused and
+  what to choose instead (it warns; it does not disable the button).
 
 ## 2.6.0 - 2026-10-04
 

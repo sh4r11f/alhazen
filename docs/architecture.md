@@ -102,6 +102,11 @@ alhazen, not the workspace's, so the workspace speaks each child's version:
 pre-1.9 `dashboard:` section, which 2.0 refuses, read as `live_monitor:` by
 the check before a launch when the project's alhazen is 1.x and still reads
 it (`_as_the_project_reads_it`; `config.loader.validate_rig` is that check).
+The same check refuses a Run launch on a development rig (`real_data:
+false`) with `alhazen.modes.real_data_refusal` — the rule the command line
+applies — naming the menu's collecting rigs (`config.rigs.collecting_rigs`
+over the project's shared rigs), before a run record exists; the page only
+warns ahead of it, from the merged rig it summarises.
 
 Three placements carry the weight:
 

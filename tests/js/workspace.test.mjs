@@ -1947,3 +1947,85 @@ describe('the PsychoPy warning in the launch footer', () => {
     assert.equal(note(app).classList.contains('launch-warning'), false);
   });
 });
+
+describe('a development rig in the launch form', () => {
+  /* docs/rigs.md §5: run mode refuses a rig whose settings say
+   * real_data: false — the laptop the Rig menu opens on. The page says so
+   * under the rig and above the launch, and shows the server's refusal when
+   * a launch is sent anyway; it warns and never blocks, because the server
+   * makes the check. PsychoPy is present, so its warning stays out of it. */
+  const LAPTOP = Object.freeze({
+    ...PROJECT, psychopy_version: '2026.2.4', rigs: [sharedEntry('lab'), sharedEntry('laptop')],
+  });
+  const DEVELOPMENT = rig(true, false, { name: 'laptop', source: 'alhazen' });
+  DEVELOPMENT.values.real_data = false;
+  const RIGS = {
+    'alhazen/laptop': DEVELOPMENT,
+    'alhazen/lab': rig(true, false, { name: 'lab', source: 'alhazen' }),
+  };
+
+  async function chooseRig(app, value) {
+    app.byId('rig').value = value;
+    app.byId('rig').fire('change');
+    await settle();
+  }
+
+  function note(app) {
+    return app.byId('launch-note');
+  }
+
+  it('says under the rig that real data is refused there, and only for such a rig', async () => {
+    const app = await pageWith({ project: LAPTOP, rigs: RIGS });
+    assert.equal(app.byId('rig').value, 'alhazen/laptop');
+    assert.equal(facts(app)['Real data'], 'refused · a development rig (real_data: false)');
+    await chooseRig(app, 'alhazen/lab');
+    assert.equal('Real data' in facts(app), false);
+  });
+
+  it('warns in Run mode before the launch, names the rig and the way on, and still launches',
+    async () => {
+      const app = await pageWith({ project: LAPTOP, rigs: RIGS });
+      chooseMode(app, 'run');
+      assert.equal(
+        note(app).textContent,
+        'Run experiment records real data, and alhazen/laptop is a development rig '
+          + '(real_data: false): this launch will be refused before anything is written. '
+          + 'Choose a rig that collects real data, or Test session or Simulate to try the '
+          + 'session on this machine.',
+      );
+      assert.equal(note(app).classList.contains('launch-warning'), true);
+      assert.equal(app.byId('launch').disabled, false);
+    });
+
+  it('says nothing of it in the modes that run there', async () => {
+    const app = await pageWith({ project: LAPTOP, rigs: RIGS });
+    for (const mode of ['test', 'simulate', 'demo', 'movie', 'measure']) {
+      chooseMode(app, mode);
+      assert.doesNotMatch(note(app).textContent, /development rig/, mode);
+      assert.equal(note(app).classList.contains('launch-warning'), false, mode);
+    }
+  });
+
+  it('gives a collecting rig in Run mode the usual reminder', async () => {
+    const app = await pageWith({ project: LAPTOP, rigs: RIGS });
+    await chooseRig(app, 'alhazen/lab');
+    chooseMode(app, 'run');
+    assert.match(note(app).textContent, /^This mode records real subject data/);
+    assert.equal(note(app).classList.contains('launch-warning'), false);
+  });
+
+  it('shows the server’s refusal in the error banner', async () => {
+    const app = await pageWith({ project: LAPTOP, rigs: RIGS });
+    const refusal = 'run mode records real data, and alhazen/laptop (alhazen’s shared rig) is '
+      + 'a development rig: its settings say `real_data: false`. Nothing was started and '
+      + 'nothing was written.';
+    app.server.launch = () => { throw new Error(refusal); };
+    chooseMode(app, 'run');
+    app.byId('subject').value = '01';
+    app.byId('initials').value = 'HD';
+    await launch(app);
+    assert.equal(app.byId('error').hidden, false);
+    assert.equal(app.byId('error').textContent, refusal);
+    assert.equal(app.run('launching'), false);
+  });
+});
