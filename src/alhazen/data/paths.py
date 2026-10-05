@@ -19,6 +19,7 @@ and the pre-2.0 one, which started at ``sub-<ID>/``.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import date
@@ -26,6 +27,8 @@ from pathlib import Path
 
 from alhazen.data import naming
 from alhazen.errors import DataError
+
+log = logging.getLogger(__name__)
 
 
 def session_dir(data_root: Path | str, experiment_version: str, subject: str, session: int) -> Path:
@@ -52,6 +55,11 @@ class SessionPaths:
 
     run_dir: Path
     base: str  # sub-.._ses-.._run-.._task-.._YYYYMMDD
+    # The folders `create` made because they did not exist yet, deepest
+    # first: the run folder's `figures`, the run folder, and each level above
+    # it that was missing (ses-, sub-, v<version>, even the data root). What
+    # `discard_unused` may take away again, and nothing else.
+    made: tuple[Path, ...] = ()
 
     @classmethod
     def create(
@@ -78,10 +86,61 @@ class SessionPaths:
             naming.run_dirname(run, task_name)
         )
         base = naming.base_name(subject, session, run, task_name, stamp)
-        paths = cls(run_dir=run_dir, base=base)
         _refuse_a_used_run_dir(run_dir)
-        (run_dir / "figures").mkdir(parents=True, exist_ok=True)
-        return paths
+        figures = run_dir / "figures"
+        # Noted before they are made: every level up to the first one that
+        # already exists. A session refused after this (a window the wrong
+        # size, a tracker that will not connect) removes exactly these again
+        # (`discard_unused`), so the data root is left as it was found.
+        made: list[Path] = []
+        level = figures
+        while not level.exists() and level.parent != level:
+            made.append(level)
+            level = level.parent
+        figures.mkdir(parents=True, exist_ok=True)
+        return cls(run_dir=run_dir, base=base, made=tuple(made))
+
+    def discard_unused(self) -> list[Path]:
+        """Remove the folders `create` made, for a session that never became
+        a run — refused at its start, before its snapshot was written — and
+        return the ones removed.
+
+        A refused session used to leave its empty run folder behind, and with
+        it a spent run number (`modes.session.next_run` counts folders). This
+        undoes `create`, and only that: a folder `create` did not make is
+        never touched, and one it made is removed only while it holds nothing
+        else, deepest first, stopping at the first level that holds something
+        — another run's folder, a file. If the run folder itself holds
+        anything `create` did not make, nothing is removed and a WARNING says
+        what is in it: alhazen never deletes a file. An OSError from the
+        filesystem (a folder held open by another program) is raised, for
+        the caller to report: the build logs it beside its own error, and the
+        runner's teardown records it as a failed step.
+        """
+        made = set(self.made)
+        if self.run_dir in made and self.run_dir.is_dir():
+            foreign = sorted(p for p in self.run_dir.rglob("*") if p not in made)
+            if foreign:
+                names = ", ".join(p.relative_to(self.run_dir).as_posix() for p in foreign[:3])
+                log.warning(
+                    "left %s in place although its session never started: it holds %s, which "
+                    "this session did not make, and alhazen never deletes a file",
+                    self.run_dir,
+                    names,
+                )
+                return []
+        removed: list[Path] = []
+        for folder in self.made:
+            if not folder.is_dir():
+                # Already gone, or never a folder: nothing of ours to remove.
+                continue
+            if any(folder.iterdir()):
+                # Holds something else — another run, another subject — and
+                # so does every level above it.
+                break
+            folder.rmdir()
+            removed.append(folder)
+        return removed
 
     @property
     def trials_path(self) -> Path:
@@ -155,10 +214,11 @@ def _refuse_a_used_run_dir(run_dir: Path) -> None:
     day's snapshot. A run that crashed before writing its trials file (it has
     a snapshot and a log) is protected the same way.
 
-    An EMPTY directory is not a run: a build that failed before the session
-    started (a tracker that would not connect) leaves one behind, with only
-    the empty ``figures`` folder, and trying again with the same number is
-    fine.
+    An EMPTY directory is not a run, and trying again with the same number
+    is fine. A session refused at its start (a tracker that would not
+    connect) no longer leaves one behind — it removes what `create` made
+    (`SessionPaths.discard_unused`) — but one left by an older alhazen, with
+    only the empty ``figures`` folder in it, is still taken as unused.
     """
     if not run_dir.exists():
         return

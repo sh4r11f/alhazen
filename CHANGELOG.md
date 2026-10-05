@@ -65,6 +65,29 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   on a development rig exactly as before. Not deprecated first: the
   refused command only ever recorded a session with no tracker into the real
   data root, and every deliberate use stays possible through the rig file.
+- **A session refused at its start leaves no run folder behind.** The checks
+  that can only run once the run folder exists — the window refused because
+  its drawing surface is not the rig's size (another machine's screen,
+  Windows display scaling), a refresh rate that disagrees, a rig naming an
+  event the task does not declare, a tracker or spike source that will not
+  connect, a scheduler that refuses, `validate_after_break` with no tracker —
+  left the folder there, empty, and its run number spent; so did the runner's
+  own refusals before the snapshot (the registry changed since the build, a
+  snapshot that cannot be written). Now the build, and the runner's teardown
+  for a session whose snapshot was never written, remove the folders
+  `SessionPaths.create` made for the run — the run folder, its `figures`,
+  and each level above that did not exist, the data root included — deepest
+  first, only while they hold nothing it did not make, after the window and
+  the devices are released. A folder that holds anything else is left whole,
+  with a WARNING saying what is in it: alhazen never deletes a file. The data
+  root is left as the session found it.
+- **`recording_pointer.yaml` is written right after the snapshot**, by
+  `SessionRunner.run()`, instead of by `build_session` — still before trial 1,
+  still hashed by the manifest. Written by the builder, it was left behind
+  in the folder of a build refused after it (a tracker that would not
+  connect), and that folder, holding a file, then refused its run number.
+  `SessionRunner` takes `recording=` (a `RecordingSystem`, default None) for
+  it; `build_session` passes the rig's.
 
 ## 2.6.0 - 2026-10-04
 

@@ -349,6 +349,13 @@ def build_session(
     the rig config built: the runner's teardown releases it when the session
     ends, and a build that fails releases it before raising.
 
+    A build that fails — a window refused for its size, a tracker that will
+    not connect, any refusal after the run folder was made — also removes the
+    folders it made for the run (``SessionPaths.discard_unused``), so a
+    refused session leaves the data root as it found it and spends no run
+    number. The build writes no file of its own into the run folder; the
+    first ones are the run's record of itself, written by the runner.
+
     ``clock`` is the session clock: every time the session records — events,
     the trial rows' ``t_*`` stamps, flips, gaze — is read from it (the
     one-clock invariant, CONTRIBUTING.md). None makes a ``MonotonicClock``,
@@ -583,6 +590,16 @@ def build_session(
     # succeeds drops them unrun (`pop_all` at the end): from then on the
     # runner's teardown owns every one.
     with ExitStack() as on_failure:
+        # The run folder is the first thing held, so its release runs last:
+        # after the window is closed and every device released, nothing can
+        # write into it any more. A session refused here — a window the
+        # wrong size, a tracker that will not connect — used to leave its
+        # empty folder behind and its run number spent. The folders `create`
+        # made are removed again, only while they hold nothing it did not
+        # make (SessionPaths.discard_unused), so the data root is left as it
+        # was found. The build writes no file into the folder for this to
+        # find: the recording pointer waits for the snapshot (runner).
+        on_failure.callback(_release_on_abort, "remove the unused run folder", paths.discard_unused)
         live_monitor_controller = (
             LiveMonitorController(
                 port=rig_cfg.live_monitor.port, auto_open=rig_cfg.live_monitor.auto_open
@@ -723,12 +740,15 @@ def build_session(
             sync = make_sync(devices.sync)
         if sync is not None:
             on_failure.callback(_release_on_abort, "close the sync output", sync.close)
-        # The recorder is annotated once, before trial 1: a run directory should
-        # say which external recording it belongs to even if the session then
-        # crashes, and the manifest hashes that pointer along with everything
-        # else the run produced.
-        if rig_cfg.devices.recording is not None:
-            make_recording(rig_cfg.devices.recording).annotate_session(info, paths.run_dir)
+        # The external recorder this run belongs to. Its pointer file is
+        # written by the runner right after the snapshot, before trial 1, not
+        # here: a file written now would outlive a build refused a moment
+        # later, and keep its folder from being removed.
+        recording = (
+            make_recording(rig_cfg.devices.recording)
+            if rig_cfg.devices.recording is not None
+            else None
+        )
         if spikes is None and devices.spikes is not None:
             spikes = make_spikes(devices.spikes)
         if spikes is not None:
@@ -984,6 +1004,7 @@ def build_session(
             live=live,
             experiment_dir=_experiment_dir(task, build_trial),
             identity=identity,
+            recording=recording,
         )
         # Built. Every release registered above now belongs to the runner's
         # teardown, so they are dropped here without running.

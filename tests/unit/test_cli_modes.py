@@ -630,3 +630,22 @@ class TestAWindowThatCannotOpenIsReportedNotTracedBack:
         )
         assert code == 1
         self._expect_the_message(capsys, "CANNOT RUN")
+
+    def test_a_real_session_refused_at_its_window_leaves_no_run_folder(
+        self, tmp_path, capsys, no_psychopy
+    ):
+        """Refused after the build made the run folder — the window is the
+        first thing that needs PsychoPy — and the folder is gone again: the
+        data root is as it was (here, not there at all) and the run number
+        is not spent (docs/rigs.md §5). It used to be left, empty."""
+        from alhazen.cli.modes import run_experiment
+
+        code = run_experiment(
+            task_class=self._task_class(),
+            default_rig=rig_file(tmp_path, backend="psychopy"),
+            argv=["--task", "window-check", "--mode", "run", "--sub", "01", "--ses", "1"]
+            + ["--initials", "HD"],
+        )
+        assert code == 1
+        self._expect_the_message(capsys, "CANNOT RUN")
+        assert not (tmp_path / "data").exists()

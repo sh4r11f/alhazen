@@ -121,12 +121,95 @@ class TestSessionPaths:
 
     def test_a_folder_left_empty_by_a_failed_build_can_be_used(self, tmp_path):
         # A build that failed before the session began (a tracker that would
-        # not connect) leaves only the empty figures folder behind; trying
-        # again with the same number is not an overwrite of anything.
+        # not connect) left only the empty figures folder behind under alhazen
+        # 2.6 and earlier — it now removes it (TestUnusedRunFolders) — and
+        # trying again with the same number is not an overwrite of anything.
         SessionPaths.create(tmp_path, "M1", 1, 1, "task", "20260826", experiment_version="0.1.0")
         again = SessionPaths.create(
             tmp_path, "M1", 1, 1, "task", "20260826", experiment_version="0.1.0"
         )
+        assert again.figures_dir.is_dir()
+
+
+def tree(root):
+    """Every file and folder under ``root``, with each file's bytes."""
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes() if path.is_file() else None
+        for path in sorted(root.rglob("*"))
+    }
+
+
+class TestUnusedRunFolders:
+    """A session refused at its start removes the folders `create` made for
+    it (`discard_unused`), so a refusal leaves the data root as it was and
+    spends no run number — and never removes anything it did not make."""
+
+    def create(self, data_root, subject="M1", session=1, run=1):
+        return SessionPaths.create(
+            data_root, subject, session, run, "task", "20260826", experiment_version="0.1.0"
+        )
+
+    def test_create_notes_every_level_it_made_deepest_first(self, tmp_path):
+        data_root = tmp_path / "data"
+        paths = self.create(data_root)
+        assert paths.made == (
+            paths.figures_dir,
+            paths.run_dir,
+            data_root / "v0.1.0" / "sub-M1" / "ses-001",
+            data_root / "v0.1.0" / "sub-M1",
+            data_root / "v0.1.0",
+            data_root,
+        )
+
+    def test_a_data_root_it_made_is_gone_again(self, tmp_path):
+        paths = self.create(tmp_path / "data")
+        removed = paths.discard_unused()
+        assert removed == list(paths.made)
+        assert list(tmp_path.iterdir()) == []
+
+    def test_what_was_there_before_is_left_exactly_as_it_was(self, tmp_path):
+        # Another subject's run, and this subject's registry row: a refused
+        # session takes neither with it, and nothing above its own folders.
+        other = self.create(tmp_path, subject="M2")
+        (other.run_dir / "config_snapshot.yaml").write_text("snapshot", encoding="utf-8")
+        registry = "participant_id\nsub-M2\n"
+        (tmp_path / "participants.tsv").write_text(registry, encoding="utf-8")
+        before = tree(tmp_path)
+
+        self.create(tmp_path).discard_unused()
+
+        assert tree(tmp_path) == before
+
+    def test_it_stops_at_a_level_that_holds_another_run(self, tmp_path):
+        first = self.create(tmp_path, run=1)
+        (first.run_dir / "session.log").write_text("ran", encoding="utf-8")
+        second = self.create(tmp_path, run=2)
+
+        removed = second.discard_unused()
+
+        assert removed == [second.figures_dir, second.run_dir]
+        assert (first.run_dir / "session.log").read_text(encoding="utf-8") == "ran"
+
+    def test_a_run_folder_holding_a_file_is_left_whole_and_said_so(self, tmp_path, caplog):
+        import logging
+
+        paths = self.create(tmp_path)
+        (paths.run_dir / "notes.txt").write_text("not this session's", encoding="utf-8")
+        before = tree(tmp_path)
+
+        with caplog.at_level(logging.WARNING, logger="alhazen.data.paths"):
+            assert paths.discard_unused() == []
+
+        assert tree(tmp_path) == before
+        assert "notes.txt" in caplog.text and "never deletes a file" in caplog.text
+
+    def test_a_folder_it_did_not_make_is_never_touched(self, tmp_path):
+        # An empty run folder an older alhazen left behind: reused, as it
+        # always was, and not this session's to remove.
+        self.create(tmp_path)
+        again = self.create(tmp_path)
+        assert again.made == ()
+        assert again.discard_unused() == []
         assert again.figures_dir.is_dir()
 
 
