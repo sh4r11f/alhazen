@@ -21,6 +21,9 @@ resolution-markers = [
     "python_full_version < '3.11' and sys_platform != 'win32'",
 ]
 
+[manifest]
+overrides = [{ package = { name = "psychopy" }, dependencies = [{ name = "pywinhook", marker = "python_full_version < '3.12' and sys_platform == 'win32'" }] }]
+
 [[package]]
 name = "alhazen-vision"
 version = "2.8.0"
@@ -3768,7 +3771,7 @@ dependencies = [
     { name = "python-bidi" },
     { name = "python-vlc" },
     { name = "python-xlib", marker = "sys_platform == 'linux'" },
-    { name = "pywinhook", marker = "sys_platform == 'win32'" },
+    { name = "pywinhook", marker = "python_full_version < '3.12' and sys_platform == 'win32'" },
     { name = "pyyaml" },
     { name = "pyzmq" },
     { name = "questplus" },

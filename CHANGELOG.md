@@ -38,6 +38,13 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   and `pip install alhazen-vision` are as before, and CI's test matrix still
   installs with pip. A release now commits `uv.lock` with the version bump,
   and CI fails when `uv.lock` no longer matches `pyproject.toml`.
+- **`uv sync --extra psychopy` installs on Windows with Python 3.12.**
+  PsychoPy asks for pyWinhook there, which has no wheel for 3.12 and needs
+  a C compiler to build; `[tool.uv] override-dependencies` keeps it only
+  where a wheel exists (Windows, Python below 3.12). It serves PsychoPy's
+  ioHub hooks, which alhazen does not use. The package's own metadata is
+  unchanged, so `pip install "alhazen-vision[psychopy]"` on Windows with
+  3.12 still needs pyWinhook from somewhere (conda-forge has it).
 
 ## 2.8.0 - 2026-10-04
 
