@@ -161,7 +161,7 @@ list, each name with its replacement, is under "Removed" in the changelog's
 
 ```mermaid
 graph LR
-    A["1. Rename<br/>## Unreleased<br/>→ ## X.Y.Z - date"] --> B["2. Set version<br/>in pyproject.toml"]
+    A["1. Rename<br/>## Unreleased<br/>→ ## X.Y.Z - date"] --> B["2. Set version<br/>in pyproject.toml<br/>and run uv lock"]
     B --> C["3. release_check.py<br/>--tag vX.Y.Z"]
     C --> D["4. Commit + push<br/>to main"]
     D --> E["5. git tag vX.Y.Z<br/>git push origin vX.Y.Z"]
@@ -169,12 +169,17 @@ graph LR
 ```
 
 Steps 1 and 2 belong in the **same commit** — that is what the always-on check
-enforces. Step 3 is the same gate CI will run; running it locally means a
-mismatch costs an edit rather than a deleted tag.
+enforces. `uv.lock` records the project's own version, so step 2 changes it
+too, and CI's lockfile job fails a release commit that left it behind. Step 3
+is the same gate CI will run; running it locally means a mismatch costs an
+edit rather than a deleted tag.
 
 ```bash
+# 2. after setting the version
+uv lock
+
 # 3. before committing
-python scripts/release_check.py --tag vX.Y.Z
+uv run python scripts/release_check.py --tag vX.Y.Z
 
 # 5. after the release commit is on main
 git tag vX.Y.Z
@@ -239,3 +244,22 @@ it needs is the fix that landed this morning, it has to clone main and accept
 that the number will not distinguish it. Cutting a release closes the gap for
 whatever is in `Unreleased` at that moment, which is a reason to cut small
 ones rather than let `Unreleased` grow.
+
+**Installing the tag with uv.** An experiment developed with uv names the
+tag as the source of `alhazen-vision`, beside the floor it keeps in
+`dependencies`:
+
+```toml
+[project]
+dependencies = ["alhazen-vision>=X.Y.Z"]
+
+[tool.uv.sources]
+alhazen-vision = { git = "https://github.com/sh4r11f/alhazen", tag = "vX.Y.Z" }
+```
+
+`uv lock` then records the commit the tag points at, so every `uv sync` of
+that lockfile installs the same alhazen, and moving to a newer release is
+one edit to the tag and `uv lock`. The order above still holds, one step
+later: the tag must exist on GitHub before a downstream source names it.
+The source is uv's alone; `pip install` of the experiment still reads only
+the floor, which is why the floor stays.

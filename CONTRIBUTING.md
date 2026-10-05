@@ -1,20 +1,44 @@
 # Contributing to alhazen
 
+## The environment
+
+alhazen is developed with [uv](https://docs.astral.sh/uv/). One command
+builds the whole development environment, in `.venv` inside the clone:
+
+```bash
+uv sync                         # Python 3.12 (.python-version), exactly as uv.lock pins it
+```
+
+uv downloads the Python itself if the machine has none. `uv sync` installs
+alhazen editable with the `dev` dependency group, which is the `dev` extra
+in `pyproject.toml` plus pip and setuptools; an extra is added with
+`--extra`, e.g. `uv sync --extra psychopy` for a real window. Nothing needs
+activating: `uv run <command>` runs a command in that environment, and
+brings the environment up to date with `uv.lock` first.
+
+- **Adding or changing a dependency:** edit `pyproject.toml` (development
+  tools go in the `dev` extra, which pip users install too), run `uv lock`,
+  and commit `uv.lock` in the same commit. CI fails when the two disagree.
+- **Without uv:** `pip install -e ".[dev]"` in any Python 3.10 or newer
+  still works, unlocked; it is what CI's test matrix runs.
+
 ## The gates
 
 Every change passes all six, and none of them is ever weakened to get green.
 If a gate seems wrong, say so in the pull request rather than adjusting it.
 
 ```bash
-pip install -e ".[dev]"
-pytest                          # must stay green; no display, no hardware needed
-ruff check . && ruff format --check .
-mypy                            # zero errors, src/ only
-lint-imports                    # the layering contract must stay KEPT
+uv run pytest                   # must stay green; no display, no hardware needed
+uv run ruff check . && uv run ruff format --check .
+uv run mypy                     # zero errors, src/ only
+uv run lint-imports             # the layering contract must stay KEPT
 node --test "tests/js/*.test.mjs"  # the live monitor renderer; Node 22+, nothing to install
 ```
 
-The last one runs the live monitor's browser script,
+A change to `docs/` also builds the site the way `.github/workflows/docs.yml`
+does: `uv run --extra docs mkdocs build --strict`.
+
+The last gate in the block runs the live monitor's browser script,
 `src/alhazen/live_monitor/assets/live_monitor.js`, which pytest cannot execute. It
 needs only Node 22 or newer (<https://nodejs.org>) — no npm install and no
 `package.json`; keep the quotes, Node expands the pattern itself. The tests in
@@ -128,11 +152,13 @@ until all three match. [docs/versioning.md](docs/versioning.md) has the full
 policy; the steps are:
 
 ```bash
-# 1. In one commit: rename `## Unreleased` to `## X.Y.Z - YYYY-MM-DD`
-#    and set version = "X.Y.Z" in pyproject.toml.
+# 1. In one commit: rename `## Unreleased` to `## X.Y.Z - YYYY-MM-DD`,
+#    set version = "X.Y.Z" in pyproject.toml, and run `uv lock` (uv.lock
+#    records the project's own version, so it changes too; CI fails without it).
+uv lock
 # 2. Run the same gate CI will run. A mismatch here costs an edit;
 #    the same mismatch after tagging costs a deleted tag.
-python scripts/release_check.py --tag vX.Y.Z
+uv run python scripts/release_check.py --tag vX.Y.Z
 
 # 3. Land that commit on main, then tag it.
 git tag vX.Y.Z
