@@ -465,12 +465,144 @@ after the spec's panels under their own sidebar section.
 
 They introduce one wire form of their own, `heatmap`: one or many cell
 matrices on a shared colour scale (small multiples with one colourbar,
-because per-map scales would quietly break the comparison), cells at the
-data's own aspect ratio, `null` cells drawn muted as *not measured yet* —
-never as zero. The scale interpolates the theme's own ordinal ramp, so it
-follows light and dark like every other mark; the theme toggle repaints it.
-Hover reads out the cell's position, value and flash count, and the table
-view lists every cell.
+because per-map scales would quietly break the comparison), `null` cells
+drawn muted as *not measured yet* — never as zero. The scale interpolates
+the theme's own ordinal ramp, so it follows light and dark like every other
+mark; the theme toggle repaints it. Hover reads out the cell's position,
+value and flash count, and the table view lists every cell.
+
+### The heatmap form
+
+A receptive-field map has two axes in the same unit, degrees, and is read by
+its shape. Other heatmaps are not like that. mbri's search shows a slice of
+its posterior across two different parameters — speed, 4 to 32 dva/s on a log
+scale, by dot density, 0.2 to 3 dots/dva² on a log scale — and its reader
+needs to read real coordinates off the map. So a heatmap can say, per axis,
+how its cells map to real values, and the page then draws real axes for it.
+Every field below that is marked *optional* is new in this form and changes
+nothing when it is left out.
+
+| field | | meaning |
+| --- | --- | --- |
+| `maps` | required | `[{name, matrix, centroid?}]`; `matrix[row][col]`, row 0 the **bottom** row; a cell is a number or `null` (not measured yet). Every map has the same shape. |
+| `x_edges`, `y_edges` | required | the cells' boundaries in real units, strictly increasing: `cols + 1` and `rows + 1` of them |
+| `x_scale`, `y_scale` | optional, both or neither | `"linear"` or `"log"`. Giving them draws the axes: ticks, tick labels and axis titles |
+| `x_unit`, `y_unit` | optional | the unit the hover readout and the table write after a coordinate (`"dva/s"`, `"°"`) |
+| `vmin`, `vmax` | `vmin` optional | the colour range: `vmin` is the bottom of the colourbar (0 when left out), `vmax` its top. `vmin` needs `vmax` and must be below it |
+| `x_label`, `y_label`, `value_label` | optional | the axis titles and the colourbar's caption |
+| `flashes` | optional | a count per cell, shown in the hover readout and the table |
+
+**The axes come from the edges and the scale — one mapping, used four
+times.** The payload gives the cells' edges in real units and says whether
+each axis is linear or logarithmic. From those two facts the page places the
+cells, chooses and places the ticks, and writes the cell positions in the
+hover readout and in the table. The alternative — the payload sending its own
+tick positions and labels — was rejected: the cells would then be placed by
+one description and labelled by another, and nothing would keep the two
+agreeing. A slice drawn on a 0–1 grid with "4", "8", "16", "32" written under
+it reads correctly at the ticks, while its hover and table still say 0.25 and
+0.5. With edges and a scale there is no second description to drift.
+
+```mermaid
+flowchart LR
+  P["payload axis<br/>x_edges + x_scale"] --> A["heatAxis()<br/>linear: v · log: log10 v"]
+  A --> C["cells<br/>placed between edges"]
+  A --> T["ticks<br/>chosen and placed on the same scale"]
+  A --> H["hover readout<br/>cell centre + x_unit"]
+  A --> B["table view<br/>cell centre + x_unit"]
+```
+
+- **A log axis places everything at `log10` of its value**, so equal ratios
+  take equal lengths: 4 to 8 is as long as 16 to 32. Its edges must all be
+  positive.
+- **A cell's position is its centre on its own scale**: the midpoint of its
+  edges on a linear axis, their geometric mean (√(a·b)) on a log one. That is
+  where the cell sits on the drawn axis, so the hover and the table give the
+  value a reader of the ticks would read there. A payload that evaluates each
+  cell at its centre on the same scale (mbri's search does) gets back exactly
+  the coordinates it computed.
+- **Both ends of an axis are labelled** with their values, because the map's
+  extent is data: the axis ends where the cells end, and the reader must not
+  have to extrapolate along a log scale to find it. Between the ends, ticks
+  sit at round values: on a linear axis steps of 1, 2, 2.5 or 5 times a power
+  of ten, as on every other panel; on a log axis the densest of 1–9, 1–2–5,
+  1–3 and whole decades (every second or third decade over a wide range) that
+  fits the axis's length. A log axis spanning less than about a factor of
+  two holds almost no such values, and is nearly straight anyway, so it takes
+  the linear steps. A tick whose label would touch its neighbour's is
+  dropped; an end label is never dropped.
+- **Tick labels carry no unit**; the axis title does, as on every panel.
+- **Aspect.** Cells keep the data's aspect ratio when both axes are linear
+  and give the same unit (or neither gives one): a degree up is then as long
+  as a degree across, as a receptive field needs. Otherwise there is no
+  shared length to keep — a decade of speed is not a length of density — and
+  each map is drawn square.
+
+**The colour range.** `vmin` and `vmax` set the colourbar's two ends; a
+payload that gives no `vmin` keeps today's scale from 0 to `vmax`. Narrowing
+the range is how a quantity living in 0.30–0.49 gets the whole ramp. A value
+outside the range is drawn in the colour of the end it passed, and is never
+clipped in silence:
+
+- the colourbar grows an arrow-head at that end;
+- the legend says how many cells fell outside and how far, as in
+  *3 cells below the colour range (lowest 0.12)*;
+- the hover readout of such a cell says *below the colour range* (or above)
+  and which colour it is drawn as; the table always holds the true value.
+
+This applies to every heatmap, with or without `vmin`: before, a negative
+value on a scale from 0 was drawn as 0 and the page said nothing.
+
+**Units say what they are.** The hover readout writes `x_unit` after the x
+coordinate and `y_unit` after the y coordinate (`11.3 dva/s, 0.775
+dots/dva²`), and the table's column heads name them (`Speed (dva/s)`; a unit
+the title already ends with is not repeated). An axis with no unit gets a bare
+number. The one exception keeps existing pages as they are: a heatmap that
+gives *none* of `x_scale`, `y_scale`, `x_unit`, `y_unit` reads out its
+coordinates as before 2.8 — followed by "dva" whenever it has an `x_label` —
+because the receptive-field maps it was written for are in degrees and rely on
+it.
+
+**Existing pages are unchanged.** A heatmap with none of the new fields, and
+every value inside its colour range (every receptive-field map, by
+construction: rates are never negative and `vmax` is their maximum), draws
+exactly what 2.7 drew — the same cells, colours, titles, colourbar, legend,
+hover and table, with no axes. `tests/js/heatmap.test.mjs` pins that against
+drawings recorded from the 2.7.0 renderer. The only difference an old payload
+can show is the out-of-range marking above, and only where cells fell outside
+its range.
+
+**Checked before it is sent.** `live_monitor_state()` checks every extra
+panel whose form is `heatmap` with
+`alhazen.live_monitor.heatmap.check_heatmap`, and raises `SessionError`
+naming the panel and the problem: maps of different shapes or ragged rows, a
+cell that is not a number or `null`, edges that are not strictly increasing
+or are the wrong length for the matrix, an unknown scale, one scale without
+the other, a log axis with an edge at or below 0, a unit that is not text,
+and a colour range given the wrong way round or a `vmin` without a `vmax`. A
+malformed map would otherwise reach the page as a card that only says
+*Malformed map*. An experiment can call `check_heatmap` in its own tests.
+
+What mbri sends for its posterior slice — the edges in real units, and four
+fields more than before:
+
+```python
+{
+    "form": "heatmap",
+    "maps": [{"name": "posterior mean", "matrix": matrix.tolist()}],  # row 0 = lowest density
+    "x_edges": speed_edges,       # 22 edges, 4 ... 32, equal ratios
+    "y_edges": density_edges,     # 22 edges, 0.2 ... 3, equal ratios
+    "x_scale": "log",
+    "y_scale": "log",
+    "x_unit": "dva/s",
+    "y_unit": "dots/dva²",
+    "x_label": "speed (dva/s)",
+    "y_label": "dot density (dots/dva²)",
+    "value_label": "balanced accuracy",
+    "vmin": 0.30,                 # optional: the colour range
+    "vmax": 0.49,
+}
+```
 
 ## Eye-tracker panels
 
