@@ -103,3 +103,8 @@ devices: {}
   #     TRIAL_START: Dev1/port0/line0
   #     FIX_ON: Dev1/port0/line1
 data_root: data
+
+# The machine that collects the data: run mode records real data here. This is
+# the default, said so that the difference from rig-mac.yaml, a development
+# rig that run mode refuses, is in plain sight.
+real_data: true

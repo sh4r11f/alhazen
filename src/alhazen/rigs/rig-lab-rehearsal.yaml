@@ -29,9 +29,10 @@
 # Named here, no event would suit every experiment: a session refuses a rig
 # naming an event its task never declares, which is the validation working.
 #
-# The ONE deliberate exception is frame QA, for the same reason the laptop rigs
-# make it: rig-lab.yaml recycles a trial that missed more than 10% of its
-# frames, a budget argued for a real panel. A simulated display still paces
+# Two deliberate exceptions. `real_data: false`, at the end of this file: a
+# rehearsal is never a real session. And frame QA, for the same reason the
+# laptop rigs make it: rig-lab.yaml recycles a trial that missed more than 10%
+# of its frames, a budget argued for a real panel. A simulated display still paces
 # against the wall clock, so on a loaded machine it misses flips for reasons
 # that have nothing to do with the rig, and recycling on those would re-serve
 # trials faster than it retired them — a rehearsal that never ends. Here a
@@ -102,3 +103,12 @@ devices:
 # is no dev root to get wrong. Naming data-rehearsal here would put a simulate
 # run in data-rehearsal-rehearsal/ — a second rehearsal tree that nothing globs.
 data_root: data
+
+# A DEVELOPMENT RIG — the second deliberate difference from rig-lab.yaml. Not
+# a machine at all: every device here is simulated and there is no window, so
+# a run-mode session on it would file a scripted participant's arithmetic
+# under data/ as a subject. Run mode refuses it before anything is written;
+# simulate and test, what this file exists for, run as before and write to
+# data-rehearsal/. An experiment's own rig-lab-rehearsal.yaml that extends
+# this one inherits the refusal (docs/rigs.md §5).
+real_data: false

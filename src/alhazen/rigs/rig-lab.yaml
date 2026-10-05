@@ -169,3 +169,9 @@ devices:
     pulse_ms: 2.0
 
 data_root: data
+
+# A COLLECTING RIG: run mode records real data here. Said even though it is
+# the default, so that every shared rig states its answer and an experiment
+# rig that `extends: lab` reads the same as this file. rig-lab-rehearsal.yaml,
+# laptop and mac say false: run mode refuses them (docs/rigs.md §5).
+real_data: true

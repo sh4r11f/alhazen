@@ -141,6 +141,21 @@ class TestScaffold:
             for mode in Mode:
                 rig_for_mode(mode, rig)
 
+    def test_the_laptop_is_a_development_rig_and_the_lab_rig_collects(self, tmp_path):
+        """docs/rigs.md §5: a new experiment's Mac says it collects no real
+        data, so run mode refuses it, and its lab rig says it does — both
+        written out, so the line to change for a deliberate pilot is there to
+        be read."""
+        import yaml
+
+        from alhazen.config.loader import load_rig
+
+        root = scaffold("saccade_bias", tmp_path)
+        for name, collects in (("rig-mac.yaml", False), ("rig-lab.yaml", True)):
+            path = root / "configs" / name
+            assert yaml.safe_load(path.read_text(encoding="utf-8"))["real_data"] is collects
+            assert load_rig(path).real_data is collects, name
+
     def test_the_laptop_rig_has_no_devices_and_the_mode_supplies_them(self, tmp_path):
         """A laptop has no tracker, and the file no longer pretends it does
         with a mouse_sim block: test mode substitutes the mouse and simulate

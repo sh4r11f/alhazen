@@ -25,6 +25,21 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+### Added
+
+- **A rig says whether real data may be collected on it: `real_data:`**
+  (`RigConfig.real_data`, docs/rigs.md §5). `false` makes it a *development
+  rig* — a machine for writing, trying and rehearsing an experiment. alhazen's
+  shared `laptop`, `mac` and `lab-rehearsal` say `false`; `lab` and `vpixx`
+  say `true`. The default is `true`, so a rig file that does not say collects
+  exactly as before, and a rig that `extends` a shared one inherits its
+  answer like any other setting it does not mention. `alhazen new` writes
+  `real_data: false` into the Mac rig it scaffolds and `real_data: true` into
+  its lab rig. The value is part of the merged rig, so the snapshot's
+  `config.rig` records it.
+
 ## 2.6.0 - 2026-10-04
 
 ### Changed

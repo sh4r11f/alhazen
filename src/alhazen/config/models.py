@@ -901,6 +901,15 @@ class RigConfig(Model):
     database: DatabaseConfig = DatabaseConfig()
     devices: DevicesConfig = DevicesConfig()
     data_root: Path
+    # Whether real data may be collected on this machine. False makes it a
+    # development rig — a machine for writing, trying and rehearsing an
+    # experiment — which run mode, the one mode that records real data,
+    # refuses before anything is written (alhazen.modes.real_data_refusal;
+    # docs/rigs.md §5). True by default, so a rig written before the field
+    # existed collects exactly as it did; alhazen's shared laptop, mac and
+    # lab-rehearsal say False, and a rig that `extends` one of them inherits
+    # that like any other setting it does not mention.
+    real_data: bool = True
 
     @model_validator(mode="before")
     @classmethod
