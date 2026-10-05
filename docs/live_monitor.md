@@ -479,16 +479,16 @@ its posterior across two different parameters — speed, 4 to 32 dva/s on a log
 scale, by dot density, 0.2 to 3 dots/dva² on a log scale — and its reader
 needs to read real coordinates off the map. So a heatmap can say, per axis,
 how its cells map to real values, and the page then draws real axes for it.
-Every field below that is marked *optional* is new in this form and changes
-nothing when it is left out.
+The fields marked *new* are what this adds; each changes nothing when it is
+left out.
 
 | field | | meaning |
 | --- | --- | --- |
 | `maps` | required | `[{name, matrix, centroid?}]`; `matrix[row][col]`, row 0 the **bottom** row; a cell is a number or `null` (not measured yet). Every map has the same shape. |
 | `x_edges`, `y_edges` | required | the cells' boundaries in real units, strictly increasing: `cols + 1` and `rows + 1` of them |
-| `x_scale`, `y_scale` | optional, both or neither | `"linear"` or `"log"`. Giving them draws the axes: ticks, tick labels and axis titles |
-| `x_unit`, `y_unit` | optional | the unit the hover readout writes after a coordinate and the table's column head names (`"dva/s"`, `"°"`) |
-| `vmin`, `vmax` | `vmin` optional | the colour range: `vmin` is the bottom of the colourbar (0 when left out), `vmax` its top. `vmin` needs `vmax` and must be below it |
+| `x_scale`, `y_scale` | new; optional, both or neither | `"linear"` or `"log"`. Giving them draws the axes: ticks, tick labels and axis titles |
+| `x_unit`, `y_unit` | new; optional | the unit the hover readout writes after a coordinate and the table's column head names (`"dva/s"`, `"°"`) |
+| `vmin`, `vmax` | `vmin` new and optional; `vmax` as before | the colour range: `vmin` is the bottom of the colourbar (0 when left out), `vmax` its top. `vmin` needs `vmax` and must be below it |
 | `x_label`, `y_label`, `value_label` | optional | the axis titles and the colourbar's caption |
 | `flashes` | optional | a count per cell, shown in the hover readout and the table |
 
