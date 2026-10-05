@@ -100,6 +100,10 @@ dev = [
 # extra stays the source because it is what pip reads; a group is not package
 # metadata, so moving the list here would leave pip users with no dev tools.
 #
+# .python-version says 3.11, not newer, because of the psychopy extra: on
+# Windows PsychoPy requires pyWinhook, whose PyPI wheels stop at Python 3.11,
+# and building it needs SWIG and a C compiler no rig should need.
+#
 # Plus two packages the conda environments had and a uv-made one does not:
 # pip and setuptools. The scaffold acceptance test
 # (tests/unit/test_cli_scaffold.py) installs with `python -m pip install
@@ -108,23 +112,6 @@ dev = [
 # that test skips under uv, and the packaging it checks goes unchecked.
 [dependency-groups]
 dev = ["alhazen-vision[dev]", "pip", "setuptools>=68"]
-
-# PsychoPy on Windows asks for pyWinhook, whose PyPI wheels stop at Python
-# 3.11; on 3.12 uv (or pip) would have to compile it, which needs SWIG and a
-# Microsoft C compiler that a laptop or a rig is not expected to have, so
-# `uv sync --extra psychopy` failed there. pyWinhook serves only PsychoPy's
-# ioHub keyboard and mouse hooks, which alhazen does not use (it reads keys
-# through psychopy.event). So, for uv only, PsychoPy's requirement on it is
-# narrowed to where a wheel exists, Windows below 3.12, and dropped
-# elsewhere; the package metadata, which pip reads, is unchanged. The conda
-# envs had it from conda-forge's build. Remove this once pyWinhook publishes
-# a cp312 wheel, or PsychoPy stops requiring it.
-[tool.uv]
-override-dependencies = [
-  { package = { name = "psychopy" }, dependencies = [
-    "pywinhook; sys_platform == 'win32' and python_full_version < '3.12'",
-  ] },
-]
 
 [project.scripts]
 alhazen = "alhazen.cli.main:main"

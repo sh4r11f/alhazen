@@ -6,7 +6,7 @@ alhazen is developed with [uv](https://docs.astral.sh/uv/). One command
 builds the whole development environment, in `.venv` inside the clone:
 
 ```bash
-uv sync                         # Python 3.12 (.python-version), exactly as uv.lock pins it
+uv sync                         # Python 3.11 (.python-version), exactly as uv.lock pins it
 ```
 
 uv downloads the Python itself if the machine has none. `uv sync` installs

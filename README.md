@@ -45,7 +45,7 @@ device channels can be queried together.
 
 Working on alhazen itself: install [uv](https://docs.astral.sh/uv/), then
 `uv sync` in the clone builds the locked development environment (Python
-3.12, `uv.lock`) and `uv run pytest` runs the suite; CONTRIBUTING.md has
+3.11, `uv.lock`) and `uv run pytest` runs the suite; CONTRIBUTING.md has
 every gate.
 
 ## What it gives an experiment
