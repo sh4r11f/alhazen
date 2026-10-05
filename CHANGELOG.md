@@ -25,6 +25,24 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+### Added
+
+- **A heatmap payload is checked before it is sent:
+  `alhazen.live_monitor.heatmap.check_heatmap`.** `live_monitor_state()`
+  runs it on every extra panel whose form is `heatmap` (a live analysis's
+  receptive-field map, an optimiser's posterior slice) and raises
+  `SessionError` naming the panel and the field: maps of different shapes or
+  with ragged rows, a cell that is neither a number nor `null`, edges that
+  are missing, not strictly increasing or the wrong length for the matrix, an
+  unknown scale or only one of the two, a log axis with an edge at or below
+  0, a unit that is not text, and a colour range the wrong way round or a
+  `vmin` with no `vmax`. Such a map used to reach the page as a card saying
+  only "Malformed map" for the rest of the session. rf-mapping's and mbri's
+  heatmaps pass unchanged. An experiment can call `check_heatmap` in its own
+  tests.
+
 ## 2.7.0 - 2026-10-04
 
 ### Added

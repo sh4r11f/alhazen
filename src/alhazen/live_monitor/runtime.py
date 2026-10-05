@@ -27,6 +27,7 @@ from urllib.parse import parse_qs
 
 from alhazen.config.models import IRIS_SIZE_RANGE_PX
 from alhazen.errors import SessionError
+from alhazen.live_monitor.heatmap import check_heatmap
 from alhazen.live_monitor.panels import panel_payload
 from alhazen.live_monitor.presentation import present
 from alhazen.live_monitor.spec import LiveMonitorSpec
@@ -785,7 +786,9 @@ def live_monitor_state(
     arrives as a finished ``{"title", "section", "data"}`` payload in the
     same wire shapes panels.py produces, so the page draws them exactly like
     every other panel. Validated here, loudly: a malformed entry would
-    otherwise render as a permanently and inexplicably blank card.
+    otherwise render as a permanently and inexplicably blank card. A
+    ``heatmap`` is checked in full (:func:`~alhazen.live_monitor.heatmap.check_heatmap`),
+    because the page can only answer a malformed one with "Malformed map".
     """
     for panel in extra_panels:
         missing = [key for key in ("title", "data") if key not in panel]
@@ -794,6 +797,14 @@ def live_monitor_state(
                 f"an extra live monitor panel is missing {missing}; each entry of "
                 f"panels() must carry title and data (got keys {sorted(panel)})"
             )
+        data = panel["data"]
+        if isinstance(data, dict) and data.get("form") == "heatmap":
+            try:
+                check_heatmap(data)
+            except SessionError as error:
+                # The check knows the field; only this loop knows which of a
+                # session's panels it came from.
+                raise SessionError(f"live monitor panel {panel['title']!r}: {error}") from error
     return {
         "revision": revision,
         "status": status,
