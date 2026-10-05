@@ -487,7 +487,7 @@ nothing when it is left out.
 | `maps` | required | `[{name, matrix, centroid?}]`; `matrix[row][col]`, row 0 the **bottom** row; a cell is a number or `null` (not measured yet). Every map has the same shape. |
 | `x_edges`, `y_edges` | required | the cells' boundaries in real units, strictly increasing: `cols + 1` and `rows + 1` of them |
 | `x_scale`, `y_scale` | optional, both or neither | `"linear"` or `"log"`. Giving them draws the axes: ticks, tick labels and axis titles |
-| `x_unit`, `y_unit` | optional | the unit the hover readout and the table write after a coordinate (`"dva/s"`, `"°"`) |
+| `x_unit`, `y_unit` | optional | the unit the hover readout writes after a coordinate and the table's column head names (`"dva/s"`, `"°"`) |
 | `vmin`, `vmax` | `vmin` optional | the colour range: `vmin` is the bottom of the colourbar (0 when left out), `vmax` its top. `vmin` needs `vmax` and must be below it |
 | `x_label`, `y_label`, `value_label` | optional | the axis titles and the colourbar's caption |
 | `flashes` | optional | a count per cell, shown in the hover readout and the table |
@@ -559,7 +559,7 @@ dots/dva²`), and the table's column heads name them (`Speed (dva/s)`; a unit
 the title already ends with is not repeated). An axis with no unit gets a bare
 number. The one exception keeps existing pages as they are: a heatmap that
 gives *none* of `x_scale`, `y_scale`, `x_unit`, `y_unit` reads out its
-coordinates as before 2.8 — followed by "dva" whenever it has an `x_label` —
+coordinates as 2.7 did — followed by "dva" whenever it has an `x_label` —
 because the receptive-field maps it was written for are in degrees and rely on
 it.
 

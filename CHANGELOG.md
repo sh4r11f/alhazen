@@ -43,6 +43,38 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   heatmaps pass unchanged. An experiment can call `check_heatmap` in its own
   tests.
 
+- **The live monitor's heatmap draws real axes, takes a colour range, and
+  says what its units are** (docs/live_monitor.md, "The heatmap form"). A
+  heatmap payload can give `x_scale` and `y_scale` (`"linear"` or `"log"`)
+  beside its edges in real units, and the page then draws ticks, tick labels
+  and axis titles: both ends of each axis labelled with their values, round
+  values between (1, 2 and 5 of each decade on a log axis, where they fit),
+  no two labels touching. A log axis places everything at log10 of its
+  value. The map is drawn square unless both axes are linear and give the
+  same unit, where a unit up stays as long as a unit across. The hover
+  readout and the table give each cell's centre on its axis's own scale —
+  the geometric mean of its edges on a log axis — so they read what the
+  ticks read there. `x_unit`/`y_unit` follow the coordinates in the hover
+  (`11.3 dva/s, 0.775 dots/dva²`) and name the table's columns. `vmin` sets
+  the bottom of the colour scale (0 when left out, as before). Exported SVG
+  and PNG figures keep the axes. mbri's posterior slice can now be sent in
+  its real units instead of on a 0–1 grid with its ranges written out in
+  words.
+
+### Changed
+
+- **A heatmap value outside its colour range is no longer clipped in
+  silence.** It is still drawn in the colour of the end it passed; now the
+  colourbar grows an arrow-head at that end, the legend says how many cells
+  went past and how far (*3 cells below the colour range (lowest −0.12)*),
+  and the cell's hover readout says so. A heatmap in the 2.7 form whose
+  values all lie inside 0 to `vmax` — every rf-mapping map — draws exactly
+  as before, cell for cell, label for label, hover and table included, and
+  keeps the "dva" its hover readout writes; `tests/js/heatmap.test.mjs`
+  pins that against drawings recorded from the 2.7.0 renderer. One with
+  values outside its range (a slice dipping below 0) gains these marks and
+  nothing else.
+
 ## 2.7.0 - 2026-10-04
 
 ### Added
