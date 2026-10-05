@@ -1357,6 +1357,9 @@ class TestAMissingPsychoPyIsNamedWithItsInterpreter:
         # The install command runs pip through that same interpreter, under
         # the distribution's real name (a bare `alhazen` is someone else's).
         assert f'"{executable}" -m pip install "alhazen-vision[psychopy]"' in message
+        # And the way for a uv-made environment, which has no pip and whose
+        # next `uv sync` would remove a pip-installed extra.
+        assert "uv sync --extra psychopy" in message
         assert "Project settings" in message
         # The ImportError stays attached for whoever wants the traceback.
         assert isinstance(caught.value.__cause__, ModuleNotFoundError)
@@ -1372,6 +1375,7 @@ class TestAMissingPsychoPyIsNamedWithItsInterpreter:
         assert "could not be imported (ModuleNotFoundError: No module named 'pyglet')" in message
         assert "registering a monitor needs it" in message
         assert "Repair that installation" in message
+        assert "uv sync --extra psychopy" in message
         other = str(psychopy_missing(ImportError("DLL load failed")))
         assert "could not be imported (ImportError: DLL load failed)" in other
 
