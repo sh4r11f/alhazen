@@ -280,6 +280,7 @@ class SessionHarness:
         identity: RunIdentity | None = None,
         eyetracker_config: EyeTrackerConfig | None = None,
         display: FakeDisplay | None = None,
+        live: Any = None,
     ) -> None:
         """``on_pause`` is the pause strategy, and wins over ``use_pause_menu``.
         ``eyetracker`` replaces the monitor the harness builds from ``tracker``
@@ -287,7 +288,8 @@ class SessionHarness:
         the rig's eye-tracker config that monitor is built with (by default a
         scripted tracker that does not validate after calibrating).
         ``display`` replaces the harness's FakeDisplay, and must be built on
-        the ``clock`` handed in. ``pause_menu_reward``
+        the ``clock`` handed in. ``live`` is the live analysis (task/live.py)
+        the runner drives between trials. ``pause_menu_reward``
         hands the pause menu the engine's own manual-reward hook, as
         build_session wires it; ``manual_reward`` hands it a hook of the
         test's own instead. ``frame_qa`` configures the one FrameMonitor the
@@ -448,6 +450,7 @@ class SessionHarness:
             reward_policy=reward_policy,
             eyetracker=self.eyetracker,
             live_monitor=live_monitor,
+            live=live,
             training=training,
             instructions=instructions,
             await_start=await_start,

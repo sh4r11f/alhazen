@@ -335,6 +335,10 @@ class SessionRunner:
         # tracker's; what they compute is the experiment's business.
         self._spikes = spikes
         self._live = live
+        # Each (panel title, problem) already written to session.log as an
+        # ERROR: a malformed live monitor panel is reported once, not on every
+        # publish it stays malformed for (_report_invalid_panel).
+        self._invalid_panels_reported: set[tuple[str, str]] = set()
         # Insertion-ordered, so the first factor a task names is the one the
         # spatial panels take their colours from.
         self._condition_fields: list[str] = []
@@ -1056,10 +1060,30 @@ class SessionRunner:
             message=message,
             max_rows=None if full else self._cfg.rig.live_monitor.max_rows,
             extra_panels=extra_panels,
+            # A panel whose payload fails its check is drawn as an error card
+            # and reported, never raised: this runs after every trial and in
+            # teardown, and a broken view of the data must not end the
+            # recording of it.
+            on_invalid_panel=self._report_invalid_panel,
         )
         self._live_monitor_message = message
         self._live_monitor.publish(state)
         return state
+
+    def _report_invalid_panel(self, title: str, problem: str) -> None:
+        """One ERROR line in session.log for a live monitor panel that could
+        not be drawn — once per panel and problem, however many publishes it
+        stays that way for. The page shows the same problem in the panel's
+        place, so the experimenter watching it and the log read later agree."""
+        if (title, problem) in self._invalid_panels_reported:
+            return
+        self._invalid_panels_reported.add((title, problem))
+        log.error(
+            "live monitor panel %r is not drawn: %s. The session goes on; the panel shows "
+            "this message in its place until its payload is valid.",
+            title,
+            problem,
+        )
 
     def _poll_tracker_settings(self) -> list[tuple[str, object]]:
         """The tracker settings the page sent, for the monitor to apply."""

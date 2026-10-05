@@ -900,6 +900,118 @@ class IrisScriptedTracker(CameraScriptedTracker):
         return px
 
 
+class FlatteningSlice:
+    """A live analysis whose heatmap is well formed for its first trial, then
+    goes flat — as a posterior does before the search has learned anything —
+    so its colour range, set from its own min and max, has no width. The data
+    made the payload malformed, not the code: it happens mid-recording."""
+
+    TITLE = "Posterior slice"
+
+    def __init__(self) -> None:
+        self.trials = 0
+        self.finished = False
+
+    def on_trial(self, record: dict) -> None:
+        self.trials += 1
+
+    def panels(self) -> list[dict]:
+        matrix = [[0.31, 0.38], [0.36, 0.45]] if self.trials <= 1 else [[0.4, 0.4], [0.4, 0.4]]
+        values = [v for row in matrix for v in row]
+        return [
+            {
+                "title": self.TITLE,
+                "section": "Search",
+                "data": {
+                    "form": "heatmap",
+                    "maps": [{"name": "posterior mean", "matrix": matrix}],
+                    "x_edges": [4.0, 11.3, 32.0],
+                    "y_edges": [0.2, 0.77, 3.0],
+                    "x_scale": "log",
+                    "y_scale": "log",
+                    "vmin": min(values),
+                    "vmax": max(values),
+                },
+            }
+        ]
+
+    def finish(self, run_dir: Path) -> None:
+        self.finished = True
+
+
+class SavingLiveMonitor(FakeLiveMonitor):
+    """Saves through the real controller's save, so figures/ holds the real
+    page and state a session leaves behind."""
+
+    def save(self, figures_dir: Path, state: dict) -> None:
+        LiveMonitorController(auto_open=False).save(figures_dir, state)
+
+
+class TestAMalformedPanelDoesNotEndTheSession:
+    """The live monitor is a view of the data, not the data. A panel whose
+    payload turns malformed mid-run is loud — one ERROR in session.log, and an
+    error card in its place on the page and in the saved page — and the
+    recording goes on."""
+
+    PROBLEM = "heatmap colour range is empty: vmin and vmax are both 0.4; vmin must be below vmax"
+
+    def run(self, tmp_path: Path, caplog):
+        live_monitor = SavingLiveMonitor([])
+        analysis = FlatteningSlice()
+        harness = SessionHarness(tmp_path, n_trials=4, live=analysis, **wired(live_monitor))
+        with caplog.at_level(logging.ERROR, logger="alhazen.session.runner"):
+            harness.runner.run()
+        return harness, live_monitor, analysis
+
+    @staticmethod
+    def slice_of(state: dict) -> dict:
+        (panel,) = [p for p in state["panels"] if p["title"] == FlatteningSlice.TITLE]
+        return panel["data"]
+
+    def test_every_trial_is_recorded_and_the_session_completes(self, tmp_path: Path, caplog):
+        harness, live_monitor, analysis = self.run(tmp_path, caplog)
+        assert analysis.trials == 4
+        assert len(harness.recorder.trials) == 4
+        rows = harness.paths.trials_path.read_text(encoding="utf-8").strip().splitlines()
+        assert len(rows) == 1 + 4  # header and four trials
+        assert live_monitor.states[-1]["status"] == "complete"
+        assert analysis.finished
+        assert harness.paths.manifest_path.exists()
+
+    def test_one_error_names_the_panel_and_the_field(self, tmp_path: Path, caplog):
+        self.run(tmp_path, caplog)
+        errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+        # Malformed for three trials' publishes and teardown's: logged once.
+        assert len(errors) == 1, [r.getMessage() for r in errors]
+        message = errors[0].getMessage()
+        assert f"live monitor panel {FlatteningSlice.TITLE!r} is not drawn" in message
+        assert self.PROBLEM in message
+        assert "The session goes on" in message
+
+    def test_the_page_shows_the_problem_in_the_panels_place(self, tmp_path: Path, caplog):
+        _harness, live_monitor, _analysis = self.run(tmp_path, caplog)
+        forms = [self.slice_of(state)["form"] for state in live_monitor.states]
+        # Drawn while well formed (before trial 1, after it), then the card.
+        assert forms[:2] == ["heatmap", "heatmap"]
+        assert set(forms[2:]) == {"error"}
+        card = self.slice_of(live_monitor.states[-1])
+        assert card == {"form": "error", "message": f"Malformed map: {self.PROBLEM}"}
+
+    def test_the_saved_page_shows_the_same_card(self, tmp_path: Path, caplog):
+        harness, _live_monitor, _analysis = self.run(tmp_path, caplog)
+        figures = harness.paths.figures_dir
+        saved = json.loads((figures / "live_monitor_state.json").read_text(encoding="utf-8"))
+        assert self.slice_of(saved) == {
+            "form": "error",
+            "message": f"Malformed map: {self.PROBLEM}",
+        }
+        # The page embeds that state; its renderer draws an "error" form as
+        # the red card (tests/js/page.test.mjs).
+        page = (figures / "live_monitor.html").read_text(encoding="utf-8")
+        assert f"Malformed map: {self.PROBLEM}" in page
+        assert '"form": "error"' in page
+
+
 class TestTrackerSettingsThroughThePause:
     def test_a_setting_from_the_page_is_applied_reported_and_recorded(self, tmp_path: Path):
         clock = FakeClock()

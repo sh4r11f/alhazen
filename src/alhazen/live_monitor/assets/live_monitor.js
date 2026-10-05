@@ -485,6 +485,17 @@ function hideTip(host) {
 /* Legend                                                              */
 /* ------------------------------------------------------------------ */
 
+/* Legend entries drawn even when they are the only one: a definition (what
+ * an error bar means) or a warning (cells past an end of a heatmap's colour
+ * range), which no panel title says for them. */
+const ALWAYS_SHOWN = new Set(['whisker', 'below', 'above']);
+
+/** Whether a legend of these entries is drawn at all: two or more, or any
+ *  that must always be shown. The page and an exported figure ask the same. */
+function legendDrawn(entries) {
+  return entries.length >= 2 || entries.some((entry) => ALWAYS_SHOWN.has(entry.shape));
+}
+
 /** A legend whenever two or more things are drawn — identity is never left to
  *  colour-matching alone. One series needs none: the title already names it. */
 function drawLegend(parent, entries, title) {
@@ -492,9 +503,10 @@ function drawLegend(parent, entries, title) {
    * the SVG it writes rather than lose it with the page around the plot. */
   parent._legend = { entries: entries, title: title || '' };
   /* A lone series is left out, since the panel's title already names it. A
-   * definition is the exception: what an error bar means has to be stated
+   * definition or a warning is the exception (ALWAYS_SHOWN): what an error
+   * bar means, or that cells fell outside a colour range, has to be stated
    * even when it is the only thing the legend holds. */
-  if (entries.length < 2 && !entries.some((entry) => entry.shape === 'whisker')) return;
+  if (!legendDrawn(entries)) return;
   const legend = htmlEl('div', 'legend', null, parent);
   /* What the colours stand for, named before them: "Alignment", then the
    * levels. Without it a legend is a set of words with no question. */
@@ -1285,16 +1297,279 @@ function heatColor(stops, v) {
   return 'rgb(' + c.join(',') + ')';
 }
 
+/* The two ways a heatmap axis can map its values onto the drawing. */
+const HEAT_SCALES = ['linear', 'log'];
+
+/* Whether a payload field was given at all. JSON's null means "not given",
+ * as an absent key does. */
+const given = (value) => value !== undefined && value !== null;
+
 /**
- * One or many cell maps on a shared colour scale — a receptive-field panel.
+ * Whether a heatmap names its axes — gives a scale or a unit for either one.
+ * Such a payload gets the newer behaviour; one that gives none of these is
+ * drawn and read out exactly as before they existed, because receptive-field
+ * maps (rf-mapping) were written against that and must not change under an
+ * experiment on an upgrade.
+ */
+function namesItsAxes(data) {
+  return ['x_scale', 'y_scale', 'x_unit', 'y_unit'].some((key) => given(data[key]));
+}
+
+/**
+ * One heatmap axis: how its cells' edges map onto the drawing, in one place.
+ *
+ * `t` takes a value to the coordinate the axis is laid out in — the value
+ * itself on a linear axis, log10 of it on a log axis, so equal ratios take
+ * equal lengths. Everything placed along the axis goes through it: the
+ * cells, the ticks, and the cell positions the hover readout and the table
+ * write. Ticks placed by a second description of the axis could disagree
+ * with the cells; ticks placed by this one cannot.
+ *
+ * On a linear axis `t` is the identity, so `t(v) - t0` is `v - edges[0]`,
+ * the arithmetic every heatmap was drawn with before scales existed —
+ * which keeps an old map's drawing the same to the last digit.
+ */
+function heatAxis(edges, scale) {
+  const log = scale === 'log';
+  const t = log ? (v) => Math.log10(v) : (v) => v;
+  const t0 = t(edges[0]);
+  return {
+    log: log,
+    edges: edges,
+    lo: edges[0],
+    hi: edges[edges.length - 1],
+    t: t,
+    t0: t0,
+    span: t(edges[edges.length - 1]) - t0,
+    /* Where cell i sits: the middle of its edges on the axis's own scale.
+     * On a log axis that is their geometric mean — the arithmetic mean
+     * would sit off-centre in the drawn cell, and a reader of the ticks
+     * would read a different value there than the hover reports. */
+    centre: (i) => (log ? Math.sqrt(edges[i] * edges[i + 1]) : (edges[i] + edges[i + 1]) / 2),
+  };
+}
+
+/**
+ * What is wrong with a heatmap's axes or colour range, or '' when nothing
+ * is. The session checks these before it sends a map
+ * (live_monitor/heatmap.py); this is for a payload that did not come
+ * through that check, which then says what is wrong instead of drawing a
+ * wrong map.
+ */
+function heatProblem(data) {
+  if (given(data.x_scale) !== given(data.y_scale)) return 'give both x_scale and y_scale';
+  for (const axis of ['x', 'y']) {
+    const scale = data[axis + '_scale'];
+    if (given(scale) && !HEAT_SCALES.includes(scale)) {
+      return axis + '_scale must be "linear" or "log", not ' + JSON.stringify(scale);
+    }
+    if (scale === 'log' && !(data[axis + '_edges'][0] > 0)) {
+      return 'a log axis needs every edge above 0 (' + axis + '_edges starts at ' + data[axis + '_edges'][0] + ')';
+    }
+  }
+  if (given(data.vmin) && !(data.vmin < data.vmax)) return 'vmin must be below vmax';
+  return '';
+}
+
+/**
+ * Round values for a log axis from lo to hi (both above 0): the densest of
+ * these ladders that puts at most `target` of them on the axis —
+ *   1, 2, … 9 times each power of ten; 1, 2 and 5; 1 and 3; whole decades;
+ *   then every 2nd, 3rd, … decade over a wide range
+ * — the values a reader of a log axis expects, evenly spread by ratio. An
+ * axis spanning less than about a factor of two holds fewer than two of even
+ * the densest ladder's values, and is nearly straight anyway, so it takes
+ * the linear axis's steps instead.
+ */
+const LOG_LADDERS = [[1, 2, 3, 4, 5, 6, 7, 8, 9], [1, 2, 5], [1, 3], [1]];
+function logTicks(lo, hi, target) {
+  if (!(lo > 0) || !(hi > lo)) return [];
+  const first = Math.floor(Math.log10(lo));
+  const last = Math.ceil(Math.log10(hi));
+  /* Thinned decades count from the first one on the axis, so a range that
+   * starts on a decade keeps it: 0.001, 0.1, 10, 1000 rather than 0.01, 1,
+   * 100 beside an end label of 0.001. */
+  const anchor = Math.ceil(Math.log10(lo) - 1e-9);
+  /* The values of one ladder inside [lo, hi], keeping every `every`-th
+   * decade from the anchor. toPrecision tidies 3 × 0.1 into 0.3. */
+  const inside = (subs, every) => {
+    const values = [];
+    for (let power = first; power <= last; power += 1) {
+      if ((((power - anchor) % every) + every) % every !== 0) continue;
+      subs.forEach((sub) => {
+        const value = Number((sub * Math.pow(10, power)).toPrecision(12));
+        if (value >= lo * (1 - 1e-9) && value <= hi * (1 + 1e-9)) values.push(value);
+      });
+    }
+    return values;
+  };
+  if (inside(LOG_LADDERS[0], 1).length < 2) return niceTicks(lo, hi, target);
+  for (const subs of LOG_LADDERS) {
+    const values = inside(subs, 1);
+    if (values.length <= target) return values;
+  }
+  /* Thinning whole decades ends: once `every` exceeds the number of decades,
+   * at most one multiple of it is left, and `target` is at least 2. */
+  for (let every = 2; ; every += 1) {
+    const values = inside([1], every);
+    if (values.length <= Math.max(2, target)) return values;
+  }
+}
+
+/**
+ * A heatmap tick label: up to three significant digits and no padding zeros
+ * ("4", "0.2", "10.5", "1,500"). An axis's two ends are the data's own
+ * values rather than steps of a ladder, so the step-based decimals of the
+ * other panels' ticks do not apply, and fmt's fixed decimals ("4.00") would
+ * set the round values between them apart.
+ */
+function heatTickText(value) {
+  if (value === 0) return '0';
+  if (Math.abs(value) >= 999.5) return minus(groupThousands(fixedHalfEven(value, 0)));
+  return minus(significantHalfEven(value, 3));
+}
+
+/**
+ * The labelled ticks of one heatmap axis, as [{value, at, text}] sorted
+ * along the axis; `at` is `place(value)`, pixels from the axis's start.
+ *
+ * Both ends are labelled with their own values: the map's extent is data —
+ * the axis ends where the cells end — and a reader must not have to
+ * extrapolate along a log scale to find it. Round values between them are
+ * then added from the start of the axis on, each only if its label keeps
+ * clear of every label already placed; `extent(text)` is how much of the
+ * axis a label takes up. So an end label is never dropped, and no two
+ * labels touch.
+ */
+function heatTicks(axis, place, extent, target) {
+  const GAP = 6;
+  const tick = (value) => ({ value: value, at: place(value), text: heatTickText(value) });
+  const placed = [tick(axis.lo), tick(axis.hi)];
+  const round = axis.log ? logTicks(axis.lo, axis.hi, target) : niceTicks(axis.lo, axis.hi, target);
+  round.forEach((value) => {
+    const candidate = tick(value);
+    const clear = placed.every((other) =>
+      Math.abs(candidate.at - other.at) >= (extent(candidate.text) + extent(other.text)) / 2 + GAP);
+    if (clear) placed.push(candidate);
+  });
+  return placed.sort((a, b) => a.at - b.at);
+}
+
+/* How many round values an axis of `length` pixels is offered: one per
+ * `spacing` pixels, at least 2 and at most 8. */
+const tickTarget = (length, spacing) => Math.max(2, Math.min(8, Math.floor(length / spacing)));
+
+/**
+ * The colour range and what fell outside it.
+ *
+ * `lo`/`hi` are the colourbar's ends: `vmin`, or 0 when the payload gives
+ * none (the scale every heatmap had before vmin existed), and `vmax`.
+ * `below`/`above` count the cells past each end across every map, with the
+ * most extreme value past it. A cell past an end is drawn in that end's
+ * colour and would pass for it, so the page says how many there are and how
+ * far they went rather than clipping them in silence.
+ */
+function heatRange(maps, data) {
+  const range = {
+    lo: given(data.vmin) ? data.vmin : 0,
+    hi: data.vmax || 0,
+    below: 0,
+    above: 0,
+    lowest: Infinity,
+    highest: -Infinity,
+  };
+  maps.forEach((one) => one.matrix.forEach((row) => row.forEach((value) => {
+    if (value === null || value === undefined) return;
+    if (value < range.lo) {
+      range.below += 1;
+      range.lowest = Math.min(range.lowest, value);
+    } else if (value > range.hi) {
+      range.above += 1;
+      range.highest = Math.max(range.highest, value);
+    }
+  })));
+  return range;
+}
+
+/** A value's place on the colour scale, 0 at the bottom of the range and 1
+ *  at its top. With no vmin this is value / vmax, as it always was. */
+function heatShare(range, value) {
+  return (value - range.lo) / Math.max(range.hi - range.lo, 1e-9);
+}
+
+/** "3 cells", "1 cell". */
+const cellCount = (n) => n + (n === 1 ? ' cell' : ' cells');
+
+/**
+ * The hover readout's head: where the cell is.
+ *
+ * A heatmap that names its axes gets each coordinate with the unit it gives
+ * for that axis, and a bare number where it gives none. One that names
+ * neither keeps the 2.7 readout, which wrote "dva" after both coordinates
+ * whenever the map had an x_label: receptive-field maps are in degrees and
+ * rely on it.
+ */
+function heatHead(data, xAxis, yAxis, r, c) {
+  if (!namesItsAxes(data)) {
+    return fmt(xAxis.centre(c)) + ', ' + fmt(yAxis.centre(r)) + ' ' + (data.x_label ? 'dva' : '');
+  }
+  return withUnit(fmt(xAxis.centre(c)), data.x_unit || '') + ', ' +
+    withUnit(fmt(yAxis.centre(r)), data.y_unit || '');
+}
+
+/** A table column's head with its unit, once: "Speed (dva/s)". A title that
+ *  already ends with that unit keeps it as it is. */
+function headWithUnit(label, unit) {
+  if (!unit) return label;
+  const suffix = '(' + unit + ')';
+  return String(label).trim().endsWith(suffix) ? label : label + ' ' + suffix;
+}
+
+/**
+ * Draw one map's axes: two spines along its left and bottom edges, outward
+ * ticks at the labelled values, and their labels. `box` is the map's place
+ * on the page and the two pixels-per-unit scales its cells were drawn with,
+ * so a tick lands exactly on the cell edge carrying its value.
+ */
+function drawHeatAxes(svg, xAxis, yAxis, box) {
+  const { x0, y1, mapW, mapH, sx, sy } = box;
+  svgEl('line', { x1: x0, x2: x0, y1: y1 - mapH, y2: y1, class: 'spine' }, svg);
+  svgEl('line', { x1: x0, x2: x0 + mapW, y1: y1, y2: y1, class: 'spine' }, svg);
+  const xTicks = heatTicks(xAxis, (v) => (xAxis.t(v) - xAxis.t0) * sx,
+    (text) => textWidth(text), tickTarget(mapW, 60));
+  xTicks.forEach((tick) => {
+    const x = x0 + tick.at;
+    svgEl('line', { x1: x, x2: x, y1: y1, y2: y1 + 5, class: 'tick-mark' }, svg);
+    svgEl('text', { x: x, y: y1 + 16, class: 'tick-text', 'text-anchor': 'middle' }, svg)
+      .textContent = tick.text;
+  });
+  /* A y label's extent along its axis is the text's height, not its width. */
+  const yTicks = heatTicks(yAxis, (v) => (yAxis.t(v) - yAxis.t0) * sy, () => 11, tickTarget(mapH, 40));
+  yTicks.forEach((tick) => {
+    const y = y1 - tick.at;
+    svgEl('line', { x1: x0 - 5, x2: x0, y1: y, y2: y, class: 'tick-mark' }, svg);
+    svgEl('text', { x: x0 - 9, y: y + 4, class: 'tick-text', 'text-anchor': 'end' }, svg)
+      .textContent = tick.text;
+  });
+}
+
+/**
+ * One or many cell maps on a shared colour scale — a receptive-field panel,
+ * or any other quantity on a grid of cells.
  *
  * `data.maps` is [{name, matrix, centroid?}] with matrix[row][col], row 0
  * the BOTTOM row (y ascending, matching y_edges — the same y-up convention
  * every spatial panel keeps); a null cell means "not measured yet" and is
- * drawn muted, never as zero. All maps share x_edges/y_edges (data units,
- * e.g. dva), `vmax`, and one colourbar. Cells keep the data's aspect ratio:
- * a degree up must be the same length as a degree across, or the map's
- * shape lies about the field's.
+ * drawn muted, never as zero. All maps share x_edges/y_edges (real units),
+ * the colour range and one colourbar.
+ *
+ * A payload that gives x_scale/y_scale ("linear" or "log") gets real axes:
+ * ticks and labels from its edges, and the axis titles. Cells keep the
+ * data's aspect ratio when both axes are linear and give the same unit — a
+ * degree up must be as long as a degree across, or a receptive field's
+ * shape lies — and are drawn square otherwise, where the two axes share no
+ * length to keep. docs/live_monitor.md, "The heatmap form", has the whole
+ * form; a payload with none of the newer fields draws exactly as in 2.7.
  */
 function drawHeatmap(legendHost, host, data) {
   const maps = (data.maps || []).filter((m) => m.matrix && m.matrix.length);
@@ -1306,41 +1581,83 @@ function drawHeatmap(legendHost, host, data) {
   if (xEdges.length !== cols + 1 || yEdges.length !== rows + 1) {
     return drawEmpty(host, 'Malformed map: edges do not match the matrix');
   }
+  const problem = heatProblem(data);
+  if (problem) return drawEmpty(host, 'Malformed map: ' + problem);
+
+  const axes = given(data.x_scale);
+  const xAxis = heatAxis(xEdges, data.x_scale);
+  const yAxis = heatAxis(yEdges, data.y_scale);
+  const equalAspect = !xAxis.log && !yAxis.log && (data.x_unit || '') === (data.y_unit || '');
+  const range = heatRange(maps, data);
 
   const width = host.clientWidth || 380;
   const height = chartHeight(width);
   const svg = svgEl('svg', { width: width, height: height }, host);
   const stops = heatStops();
-  const vmax = Math.max(data.vmax || 0, 1e-9);
 
   /* The colourbar takes a fixed strip at the bottom; the maps tile the rest
-   * in a near-square grid, each with a small title above it. */
+   * in a near-square grid, each with a small title above it. With axes, the
+   * two axis titles take a row below the grid and a column left of it, and
+   * each tile keeps room for its tick labels. */
   const barH = 34;
+  const xTitleH = axes && data.x_label ? 16 : 0;
+  const yTitleW = axes && data.y_label ? 18 : 0;
   const tileCols = maps.length === 1 ? 1 : (width >= 560 && maps.length > 4 ? 3 : 2);
   const tileRows = Math.ceil(maps.length / tileCols);
-  const tileW = (width - 8) / tileCols;
-  const tileH = (height - barH - 6) / tileRows;
+  const tileW = (width - 8 - yTitleW) / tileCols;
+  const tileH = (height - barH - 6 - xTitleH) / tileRows;
   const titleH = 15;
 
-  const spanX = xEdges[cols] - xEdges[0];
-  const spanY = yEdges[rows] - yEdges[0];
+  let tickLeft = 0;
+  let tickRight = 0;
+  let tickBottom = 0;
+  if (axes) {
+    /* The y labels' width decides the left margin, before the map's height
+     * is known; the labels for the tile's whole height are a close upper
+     * bound on the ones the map ends up with. */
+    const room = tileH - titleH - 8 - 19;
+    const estimate = heatTicks(yAxis, (v) => ((yAxis.t(v) - yAxis.t0) / yAxis.span) * room,
+      () => 11, tickTarget(room, 40));
+    tickLeft = 5 + 4 + Math.max(...estimate.map((tick) => textWidth(tick.text)));
+    tickBottom = 19;
+    /* The last x label is centred on the map's right edge: half of it
+     * hangs past the map. */
+    tickRight = Math.ceil(textWidth(heatTickText(xAxis.hi)) / 2);
+  }
+  const extent = { left: Infinity, right: -Infinity, top: Infinity, bottom: -Infinity };
 
   maps.forEach((one, index) => {
-    const tx = 4 + (index % tileCols) * tileW;
+    const tx = 4 + yTitleW + (index % tileCols) * tileW;
     const ty = (Math.floor(index / tileCols)) * tileH;
-    /* Fit the map into the tile at the data's own aspect, centred. */
-    const availW = tileW - 10;
-    const availH = tileH - titleH - 8;
-    const scale = Math.min(availW / spanX, availH / spanY);
-    const mapW = spanX * scale;
-    const mapH = spanY * scale;
-    const x0 = tx + (tileW - mapW) / 2;
+    /* Fit the map into the tile, centred: at the data's own aspect, or
+     * square when the axes share no unit of length. */
+    const availW = tileW - 10 - tickLeft - tickRight;
+    const availH = tileH - titleH - 8 - tickBottom;
+    let sx;
+    let sy;
+    if (equalAspect) {
+      sx = Math.min(availW / xAxis.span, availH / yAxis.span);
+      sy = sx;
+    } else {
+      const side = Math.min(availW, availH);
+      sx = side / xAxis.span;
+      sy = side / yAxis.span;
+    }
+    const mapW = xAxis.span * sx;
+    const mapH = yAxis.span * sy;
+    const x0 = tx + tickLeft + (tileW - tickLeft - tickRight - mapW) / 2;
     const y1 = ty + titleH + (availH - mapH) / 2 + mapH;
-    const xScale = (v) => x0 + (v - xEdges[0]) * scale;
-    const yScale = (v) => y1 - (v - yEdges[0]) * scale;
+    const xScale = (v) => x0 + (xAxis.t(v) - xAxis.t0) * sx;
+    const yScale = (v) => y1 - (yAxis.t(v) - yAxis.t0) * sy;
+    extent.left = Math.min(extent.left, x0);
+    extent.right = Math.max(extent.right, x0 + mapW);
+    extent.top = Math.min(extent.top, y1 - mapH);
+    extent.bottom = Math.max(extent.bottom, y1);
 
+    /* Over its own map; without axes the map is centred in its tile, and
+     * the tile's middle is where 2.7 put the title. */
     svgEl('text', {
-      x: tx + tileW / 2, y: ty + 11, class: 'tick-text', 'text-anchor': 'middle',
+      x: axes ? x0 + mapW / 2 : tx + tileW / 2, y: ty + 11, class: 'tick-text', 'text-anchor': 'middle',
     }, svg).textContent = shown(one, 'name') || '';
 
     for (let r = 0; r < rows; r += 1) {
@@ -1348,25 +1665,30 @@ function drawHeatmap(legendHost, host, data) {
         const value = one.matrix[r][c];
         const cellX = xScale(xEdges[c]);
         const cellY = yScale(yEdges[r + 1]);
+        const colour = value === null ? 'var(--muted)' : heatColor(stops, heatShare(range, value));
         const cell = svgEl('rect', {
           x: cellX,
           y: cellY,
           width: Math.max(0.5, xScale(xEdges[c + 1]) - cellX),
           height: Math.max(0.5, yScale(yEdges[r]) - cellY),
-          style: value === null
-            ? 'fill:var(--muted);fill-opacity:0.12'
-            : 'fill:' + heatColor(stops, value / vmax),
+          style: value === null ? 'fill:var(--muted);fill-opacity:0.12' : 'fill:' + colour,
         }, svg);
         cell.classList.add('hit');
-        const head = fmt((xEdges[c] + xEdges[c + 1]) / 2) + ', ' +
-                     fmt((yEdges[r] + yEdges[r + 1]) / 2) + ' ' + (data.x_label ? 'dva' : '');
+        const head = heatHead(data, xAxis, yAxis, r, c);
         cell.addEventListener('pointermove', (event) => {
           const rect = svg.getBoundingClientRect();
           const readout = [{
             name: data.value_label || 'value',
             value: value === null ? 'not probed yet' : fmt(value),
-            color: value === null ? 'var(--muted)' : heatColor(stops, value / vmax),
+            color: colour,
           }];
+          /* A cell past an end of the colour range shares that end's
+           * colour; the readout says which it really is. */
+          if (value !== null && value < range.lo) {
+            readout.push({ value: 'below the colour range', name: 'drawn as ' + fmt(range.lo) });
+          } else if (value !== null && value > range.hi) {
+            readout.push({ value: 'above the colour range', name: 'drawn as ' + fmt(range.hi) });
+          }
           if (data.flashes && data.flashes[r]) {
             readout.push({ name: 'flashes', value: String(data.flashes[r][c]) });
           }
@@ -1378,7 +1700,8 @@ function drawHeatmap(legendHost, host, data) {
     }
 
     /* The origin, when it is inside the mapped extent: a spatial map with
-     * its fixation point unmarked makes the reader count cells. */
+     * its fixation point unmarked makes the reader count cells. (Never on a
+     * log axis, whose edges are all above 0.) */
     if (xEdges[0] < 0 && xEdges[cols] > 0) {
       svgEl('line', {
         x1: xScale(0), x2: xScale(0), y1: yScale(yEdges[rows]), y2: yScale(yEdges[0]),
@@ -1392,18 +1715,39 @@ function drawHeatmap(legendHost, host, data) {
       }, svg);
     }
 
-    /* The map's estimated centre, same summary mark as the scatter's mean. */
+    /* The map's estimated centre, same summary mark as the scatter's mean.
+     * A centre with no place on a log axis (at or below 0) is left out. */
     if (one.centroid && isFinite(one.centroid[0])) {
       const mx = xScale(one.centroid[0]);
       const my = yScale(one.centroid[1]);
-      const diamond = 'M' + mx + ',' + (my - 5) + 'L' + (mx + 5) + ',' + my +
-                      'L' + mx + ',' + (my + 5) + 'L' + (mx - 5) + ',' + my + 'Z';
-      svgEl('path', {
-        d: diamond,
-        style: 'fill:var(--surface);stroke:var(--ink);stroke-width:1.4',
-      }, svg);
+      if (isFinite(mx) && isFinite(my)) {
+        const diamond = 'M' + mx + ',' + (my - 5) + 'L' + (mx + 5) + ',' + my +
+                        'L' + mx + ',' + (my + 5) + 'L' + (mx - 5) + ',' + my + 'Z';
+        svgEl('path', {
+          d: diamond,
+          style: 'fill:var(--surface);stroke:var(--ink);stroke-width:1.4',
+        }, svg);
+      }
     }
+
+    if (axes) drawHeatAxes(svg, xAxis, yAxis, { x0: x0, y1: y1, mapW: mapW, mapH: mapH, sx: sx, sy: sy });
   });
+
+  /* The axis titles, once for the whole plate: every map shares the same
+   * axes, and a title per map would repeat itself in every tile. */
+  if (axes && data.x_label) {
+    svgEl('text', {
+      x: (extent.left + extent.right) / 2, y: extent.bottom + tickBottom + 14,
+      class: 'axis-text', 'text-anchor': 'middle',
+    }, svg).textContent = data.x_label;
+  }
+  if (axes && data.y_label) {
+    const x = extent.left - tickLeft - 8;
+    const y = (extent.top + extent.bottom) / 2;
+    svgEl('text', {
+      x: x, y: y, class: 'axis-text', 'text-anchor': 'middle', transform: 'rotate(-90 ' + x + ' ' + y + ')',
+    }, svg).textContent = data.y_label;
+  }
 
   /* One colourbar for every map — a shared scale is the whole point of
    * small multiples, and each map carrying its own would quietly break it. */
@@ -1423,23 +1767,63 @@ function drawHeatmap(legendHost, host, data) {
     x: barX0, y: barY, width: Math.max(10, barX1 - barX0), height: 8, rx: 3,
     style: 'fill:url(#' + gradientId + ')',
   }, svg);
+  /* An arrow-head at each end some cells went past, in that end's colour —
+   * the colourbar's way of saying "and beyond", as printed colourbars do.
+   * It overlaps the bar's rounded corner, and pushes the end's number out
+   * by its own length. */
+  const CAP = 7;
+  const lowColour = 'rgb(' + stops[0].join(',') + ')';
+  const highColour = 'rgb(' + stops[stops.length - 1].join(',') + ')';
+  if (range.below) {
+    svgEl('path', {
+      d: 'M' + (barX0 + 3) + ',' + barY + 'L' + (barX0 - CAP) + ',' + (barY + 4) +
+         'L' + (barX0 + 3) + ',' + (barY + 8) + 'Z',
+      class: 'out-of-range', style: 'fill:' + lowColour,
+    }, svg);
+  }
+  if (range.above) {
+    svgEl('path', {
+      d: 'M' + (barX1 - 3) + ',' + barY + 'L' + (barX1 + CAP) + ',' + (barY + 4) +
+         'L' + (barX1 - 3) + ',' + (barY + 8) + 'Z',
+      class: 'out-of-range', style: 'fill:' + highColour,
+    }, svg);
+  }
   svgEl('text', {
-    x: barX0 - 6, y: barY + 8, class: 'tick-text', 'text-anchor': 'end',
-  }, svg).textContent = '0';
+    x: barX0 - 6 - (range.below ? CAP : 0), y: barY + 8, class: 'tick-text', 'text-anchor': 'end',
+  }, svg).textContent = fmt(range.lo);
   svgEl('text', {
-    x: barX1 + 6, y: barY + 8, class: 'tick-text',
-  }, svg).textContent = fmt(data.vmax || 0);
+    x: barX1 + 6 + (range.above ? CAP : 0), y: barY + 8, class: 'tick-text',
+  }, svg).textContent = fmt(range.hi);
+  /* With axes, the axis titles are on the axes; without, the colourbar's
+   * caption is the only place that names them. */
   svgEl('text', {
     x: (barX0 + barX1) / 2, y: barY + 22, class: 'axis-text', 'text-anchor': 'middle',
-  }, svg).textContent = (data.value_label || '') +
-    (data.x_label ? ' · ' + data.x_label + ' / ' + (data.y_label || '') : '');
+  }, svg).textContent = axes
+    ? (data.value_label || '')
+    : (data.value_label || '') + (data.x_label ? ' · ' + data.x_label + ' / ' + (data.y_label || '') : '');
 
+  const entries = [];
   if (maps.some((one) => one.centroid)) {
-    drawLegend(legendHost, [
+    entries.push(
       { name: 'unprobed cell', color: 'var(--muted)', shape: 'box' },
       { name: 'estimated centre', color: 'var(--ink-2)', shape: 'diamond' },
-    ]);
+    );
   }
+  /* The words for the colourbar's arrow-heads: how many cells went past
+   * each end, and how far. */
+  if (range.below) {
+    entries.push({
+      name: cellCount(range.below) + ' below the colour range (lowest ' + fmt(range.lowest) + ')',
+      color: lowColour, shape: 'below',
+    });
+  }
+  if (range.above) {
+    entries.push({
+      name: cellCount(range.above) + ' above the colour range (highest ' + fmt(range.highest) + ')',
+      color: highColour, shape: 'above',
+    });
+  }
+  if (entries.length) drawLegend(legendHost, entries);
 }
 
 /** One number is one number. A single scalar drawn as a one-bar bar chart
@@ -1666,11 +2050,14 @@ async function cameraLoop() {
   }
 }
 
-function drawEmpty(host, message) {
+function drawEmpty(host, message, status) {
   /* The same height as a drawn plot, so a panel with nothing to show yet does
    * not pull its row out of alignment. */
   const box = htmlEl('div', 'empty', message || 'No data yet', host);
   box.style.height = chartHeight(host.clientWidth || 380) + 'px';
+  /* "critical" for a panel that could not be drawn: the same status the
+   * stats strip and the verdict tiles use, so it reads red like them. */
+  if (status) box.dataset.status = status;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1729,22 +2116,35 @@ function tableRows(data) {
       return null;
     case 'heatmap': {
       /* One row per cell, top row first (the reading order of the drawn
-       * map), a column per map — every plotted rate readable as text. */
+       * map), a column per map — every plotted rate readable as text. The
+       * cell positions come from the same axis mapping the drawing and the
+       * hover use (heatAxis), so on a log axis the table gives the value a
+       * reader of the ticks would read at the cell's middle. */
       const maps = data.maps || [];
       if (!maps.length) return null;
+      const xAxis = heatAxis(data.x_edges || [], data.x_scale);
+      const yAxis = heatAxis(data.y_edges || [], data.y_scale);
       const rows = [];
       for (let r = maps[0].matrix.length - 1; r >= 0; r -= 1) {
         for (let c = 0; c < maps[0].matrix[r].length; c += 1) {
           rows.push([
-            fmt((data.x_edges[c] + data.x_edges[c + 1]) / 2),
-            fmt((data.y_edges[r] + data.y_edges[r + 1]) / 2),
+            fmt(xAxis.centre(c)),
+            fmt(yAxis.centre(r)),
             data.flashes && data.flashes[r] ? String(data.flashes[r][c]) : '',
             ...maps.map((m) => (m.matrix[r][c] === null ? '' : fmt(m.matrix[r][c]))),
           ]);
         }
       }
+      /* The heads name each axis's unit when the payload names its axes;
+       * one that does not keeps its titles exactly as before. */
+      const named = namesItsAxes(data);
       return {
-        head: [data.x_label || 'x', data.y_label || 'y', 'Flashes', ...maps.map((m) => shown(m, 'name'))],
+        head: [
+          headWithUnit(data.x_label || 'x', named ? data.x_unit : ''),
+          headWithUnit(data.y_label || 'y', named ? data.y_unit : ''),
+          'Flashes',
+          ...maps.map((m) => shown(m, 'name')),
+        ],
         rows: rows,
       };
     }
@@ -1821,14 +2221,31 @@ function resolveColour(value) {
   return getComputedStyle(document.documentElement).getPropertyValue(match[1]).trim() || '#000000';
 }
 
+/**
+ * Whether an element exists only for the screen: the hover crosshair, and
+ * the invisible hover targets ("hit") laid over a chart's marks.
+ *
+ * A heatmap's cell is both at once — the painted mark and its own hover
+ * target — and carries its fill in its own style, where a plain hover target
+ * has none. Such a cell is a mark and stays in a figure: up to 2.7 it was
+ * dropped with the hover targets, and every exported heatmap was an empty
+ * frame over its colourbar.
+ */
+function onlyForScreen(element) {
+  if (!element.classList) return false;
+  if (element.classList.contains('hairline')) return true;
+  const paintsItself = /(^|;)\s*fill:/.test(element.getAttribute('style') || '');
+  return element.classList.contains('hit') && !paintsItself;
+}
+
 /** Write each element's computed look onto its copy, and drop what exists
- *  only for the screen: hover targets and the hover crosshair. */
+ *  only for the screen (onlyForScreen). */
 function inlineStyles(original, copy) {
   const sources = [original, ...original.querySelectorAll('*')];
   const targets = [copy, ...copy.querySelectorAll('*')];
   sources.forEach((source, index) => {
     const target = targets[index];
-    const onlyForScreen = source.classList && (source.classList.contains('hit') || source.classList.contains('hairline'));
+    const screenOnly = onlyForScreen(source);
     const computed = getComputedStyle(source);
     SHAPE_STYLE.forEach((property) => {
       const value = computed.getPropertyValue(property);
@@ -1840,7 +2257,7 @@ function inlineStyles(original, copy) {
     }
     target.removeAttribute('style');
     target.removeAttribute('class');
-    if (onlyForScreen) target.setAttribute('data-screen-only', '1');
+    if (screenOnly) target.setAttribute('data-screen-only', '1');
   });
   copy.querySelectorAll('[data-screen-only]').forEach((node) => node.remove());
 }
@@ -1848,9 +2265,9 @@ function inlineStyles(original, copy) {
 /** Lay the legend out as rows of swatch-and-name inside the figure's width. */
 function legendRows(legend, widthPx) {
   const empty = { height: 0, items: [], lineHeight: 16 };
-  /* The page legend's rule: a lone series is named by the title, but an
-   * error bar's definition is always drawn. */
-  if (!legend || (legend.entries.length < 2 && !legend.entries.some((e) => e.shape === 'whisker'))) return empty;
+  /* The page legend's rule: a lone series is named by the title, but a
+   * definition or a warning is always drawn. */
+  if (!legend || !legendDrawn(legend.entries)) return empty;
   const font = '11px ' + EXPORT_FONT;
   const items = [];
   if (legend.title) {
@@ -1901,6 +2318,9 @@ function drawLegendRows(group, layout) {
     }
     else if (shape === 'outline') svgEl('rect', { x: cx - 5, y: cy - 5, width: 10, height: 10, fill: 'none', stroke: colour, 'stroke-width': 1.2 }, group);
     else if (shape === 'diamond') svgEl('path', { d: 'M' + cx + ',' + (cy - 4.5) + 'L' + (cx + 4.5) + ',' + cy + 'L' + cx + ',' + (cy + 4.5) + 'L' + (cx - 4.5) + ',' + cy + 'Z', fill: colour }, group);
+    /* A heatmap colourbar's arrow-heads, pointing the way the cells went. */
+    else if (shape === 'below') svgEl('path', { d: 'M' + (cx + 4.5) + ',' + (cy - 5) + 'L' + (cx - 4.5) + ',' + cy + 'L' + (cx + 4.5) + ',' + (cy + 5) + 'Z', fill: colour }, group);
+    else if (shape === 'above') svgEl('path', { d: 'M' + (cx - 4.5) + ',' + (cy - 5) + 'L' + (cx + 4.5) + ',' + cy + 'L' + (cx - 4.5) + ',' + (cy + 5) + 'Z', fill: colour }, group);
     else svgEl('line', { x1: cx - 6, x2: cx + 6, y1: cy, y2: cy, stroke: colour, 'stroke-width': 2, 'stroke-linecap': 'round' }, group);
     text(item.x + 18, item.text);
   });
@@ -2118,6 +2538,13 @@ function paintPanel(entry) {
   entry.host.replaceChildren();
   entry.legendHost.replaceChildren();
   const data = entry.data;
+  /* A panel the session could not send as drawn — a heatmap that failed its
+   * check (live_monitor/heatmap.py) — arrives as an error card naming the
+   * problem, which session.log records too. Loud, in place of the plot. */
+  if (data.form === 'error') {
+    drawEmpty(entry.host, data.message || 'This panel could not be drawn', 'critical');
+    return;
+  }
   if (data.form === 'empty' || !DRAW[data.form]) {
     drawEmpty(entry.host, data.message || 'Nothing to draw');
     return;

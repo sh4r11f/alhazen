@@ -404,6 +404,10 @@ is for: [data layout](data.md).
     options:
       members: [panel_payload]
 
+::: alhazen.live_monitor.heatmap
+    options:
+      members: [check_heatmap]
+
 Until 1.8 the live monitor was "the dashboard". The old spellings
 (`alhazen.dashboard`, `DashboardSpec`, `DashboardPanel`, `DashboardConfig`)
 warned through 1.9 and 1.10 and were removed in 2.0; the table in

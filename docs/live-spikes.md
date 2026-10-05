@@ -231,3 +231,9 @@ because per-map scales would quietly break the comparison — cells at the
 data's own aspect ratio, and `null` cells drawn muted as *not measured
 yet*, never as zero. The scale interpolates the theme's own ordinal ramp,
 so it follows light and dark like every other mark.
+
+A heatmap whose axes are not both degrees — two different parameters, or a
+log scale — can give each axis a scale and a unit and its colourbar a range;
+the page then draws real axes with ticks. The fields, and how a map that
+gives none of them keeps looking as it always has, are in
+[live_monitor.md](live_monitor.md#the-heatmap-form).

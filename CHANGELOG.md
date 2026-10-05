@@ -25,6 +25,71 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+### Added
+
+- **A heatmap payload is checked before it is sent:
+  `alhazen.live_monitor.heatmap.check_heatmap`.** It refuses, with
+  `SessionError` naming the field, maps of different shapes or with ragged
+  rows, a cell that is neither a finite number nor `null`, edges that are
+  missing, not strictly increasing or the wrong length for the matrix, an
+  unknown scale or only one of the two, a log axis with an edge at or below
+  0, a unit that is not text, and a colour range that is empty, the wrong
+  way round, or a `vmin` with no `vmax`. It is public and strict so that an
+  experiment calls it in its own tests. `live_monitor_state()` runs it on
+  every extra panel whose form is `heatmap`; called directly it raises, and
+  with the new `on_invalid_panel` reporter — which the session runner
+  passes — it draws the panel as a red card saying *Malformed map:* and the
+  problem instead. So during a session a malformed heatmap, however it got
+  that way (a flat surface's colour range, a NaN), logs one ERROR in
+  session.log per panel and problem, shows the card on the live page and in
+  the saved `figures/live_monitor.html`, and never stops the recording. Such
+  a map used to reach the page as a card saying only "Malformed map", and a
+  NaN in one broke the live page's reading of every update. rf-mapping's and
+  mbri's heatmaps pass unchanged.
+
+- **The live monitor's heatmap draws real axes, takes a colour range, and
+  says what its units are** (docs/live_monitor.md, "The heatmap form"). A
+  heatmap payload can give `x_scale` and `y_scale` (`"linear"` or `"log"`)
+  beside its edges in real units, and the page then draws ticks, tick labels
+  and axis titles: both ends of each axis labelled with their values, round
+  values between (1, 2 and 5 of each decade on a log axis, where they fit),
+  no two labels touching. A log axis places everything at log10 of its
+  value. The map is drawn square unless both axes are linear and give the
+  same unit, where a unit up stays as long as a unit across. The hover
+  readout and the table give each cell's centre on its axis's own scale —
+  the geometric mean of its edges on a log axis — so they read what the
+  ticks read there. `x_unit`/`y_unit` follow the coordinates in the hover
+  (`11.3 dva/s, 0.775 dots/dva²`) and name the table's columns. `vmin` sets
+  the bottom of the colour scale (0 when left out, as before). Exported SVG
+  and PNG figures keep the axes. mbri's posterior slice can now be sent in
+  its real units instead of on a 0–1 grid with its ranges written out in
+  words.
+
+### Changed
+
+- **A heatmap value outside its colour range is no longer clipped in
+  silence.** It is still drawn in the colour of the end it passed; now the
+  colourbar grows an arrow-head at that end, the legend says how many cells
+  went past and how far (*3 cells below the colour range (lowest −0.12)*),
+  and the cell's hover readout says so. A heatmap in the 2.7 form whose
+  values all lie inside 0 to `vmax` — every rf-mapping map — draws exactly
+  as before, cell for cell, label for label, hover and table included, and
+  keeps the "dva" its hover readout writes; `tests/js/heatmap.test.mjs`
+  pins that against drawings recorded from the 2.7.0 renderer. One with
+  values outside its range (a slice dipping below 0) gains these marks and
+  nothing else.
+
+### Fixed
+
+- **An exported heatmap figure has its cells.** Each cell of a heatmap is
+  both the painted mark and its own hover target, and the figure export
+  dropped every hover target — so in 2.7.0 a heatmap's SVG and PNG exports
+  were an empty frame over a colourbar. A hover target that
+  carries its own fill is now kept as the mark it is; the invisible hover
+  targets of every other chart are still left out.
+
 ## 2.7.0 - 2026-10-04
 
 ### Added

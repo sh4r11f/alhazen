@@ -1968,7 +1968,11 @@ of the page is described in [`live_monitor.md`](live_monitor.md):
   trial 40, and no statistic lives in page JavaScript. A live
   analysis (§5.5) obeys the same division: its `panels()` are finished
   payloads (a receptive-field map travels as a `heatmap` form the page
-  only renders), appended after the spec's own panels. So does the
+  only renders, checked on its way out by `live_monitor/heatmap.py`'s
+  `check_heatmap` — a malformed one is drawn as an error card and logged
+  once, never allowed to end the session; its axes, scales, units and
+  colour range are in live_monitor.md, "The heatmap form"), appended after
+  the spec's own panels. So does the
   session's eye-tracker monitor (`session/eyetracker.py`), whose
   calibration, validation and drift-correction results and camera image
   make up the *Eye tracker* group — and the runner's own *Frame intervals*

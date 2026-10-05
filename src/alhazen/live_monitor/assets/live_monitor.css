@@ -343,6 +343,10 @@ main { flex: 1 1 auto; min-width: 0; padding: 22px 28px 56px; }
 }
 /* An unfilled square: a region outlined on the plot, not a datum. */
 .legend i.outline { width: 11px; height: 11px; border: 1.2px solid; }
+/* A heatmap's out-of-range warning: the arrow-head its colourbar grows at
+ * the end some cells went past, pointing the way they went. */
+.legend i.below { width: 9px; height: 10px; clip-path: polygon(100% 0, 0 50%, 100% 100%); }
+.legend i.above { width: 9px; height: 10px; clip-path: polygon(0 0, 100% 50%, 0 100%); }
 .legend .legend-title { color: var(--ink); font-weight: 600; }
 
 /* Always present, empty or not: a caveat on one panel must not push its
@@ -356,6 +360,14 @@ main { flex: 1 1 auto; min-width: 0; padding: 22px 28px 56px; }
   font-size: 13.5px;
   border: 1px dashed var(--rule);
   border-radius: 6px;
+}
+/* A panel that could not be drawn says why, in the status red, with room on
+ * either side for a message that names a field and its value. */
+.empty[data-status="critical"] {
+  color: var(--critical);
+  border: 1px solid var(--critical);
+  padding: 0 16px;
+  text-align: center;
 }
 
 /* The table view: every value on every chart is also readable as text. */
