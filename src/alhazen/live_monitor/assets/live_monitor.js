@@ -2218,14 +2218,31 @@ function resolveColour(value) {
   return getComputedStyle(document.documentElement).getPropertyValue(match[1]).trim() || '#000000';
 }
 
+/**
+ * Whether an element exists only for the screen: the hover crosshair, and
+ * the invisible hover targets ("hit") laid over a chart's marks.
+ *
+ * A heatmap's cell is both at once — the painted mark and its own hover
+ * target — and carries its fill in its own style, where a plain hover target
+ * has none. Such a cell is a mark and stays in a figure: up to 2.7 it was
+ * dropped with the hover targets, and every exported heatmap was an empty
+ * frame over its colourbar.
+ */
+function onlyForScreen(element) {
+  if (!element.classList) return false;
+  if (element.classList.contains('hairline')) return true;
+  const paintsItself = /(^|;)\s*fill:/.test(element.getAttribute('style') || '');
+  return element.classList.contains('hit') && !paintsItself;
+}
+
 /** Write each element's computed look onto its copy, and drop what exists
- *  only for the screen: hover targets and the hover crosshair. */
+ *  only for the screen (onlyForScreen). */
 function inlineStyles(original, copy) {
   const sources = [original, ...original.querySelectorAll('*')];
   const targets = [copy, ...copy.querySelectorAll('*')];
   sources.forEach((source, index) => {
     const target = targets[index];
-    const onlyForScreen = source.classList && (source.classList.contains('hit') || source.classList.contains('hairline'));
+    const screenOnly = onlyForScreen(source);
     const computed = getComputedStyle(source);
     SHAPE_STYLE.forEach((property) => {
       const value = computed.getPropertyValue(property);
@@ -2237,7 +2254,7 @@ function inlineStyles(original, copy) {
     }
     target.removeAttribute('style');
     target.removeAttribute('class');
-    if (onlyForScreen) target.setAttribute('data-screen-only', '1');
+    if (screenOnly) target.setAttribute('data-screen-only', '1');
   });
   copy.querySelectorAll('[data-screen-only]').forEach((node) => node.remove());
 }

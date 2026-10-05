@@ -75,6 +75,15 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   values outside its range (a slice dipping below 0) gains these marks and
   nothing else.
 
+### Fixed
+
+- **An exported heatmap figure has its cells.** Each cell of a heatmap is
+  both the painted mark and its own hover target, and the figure export
+  dropped every hover target — so in 2.7.0 a heatmap's SVG and PNG exports
+  were an empty frame over a colourbar. A hover target that
+  carries its own fill is now kept as the mark it is; the invisible hover
+  targets of every other chart are still left out.
+
 ## 2.7.0 - 2026-10-04
 
 ### Added

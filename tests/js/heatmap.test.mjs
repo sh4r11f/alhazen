@@ -485,4 +485,18 @@ describe('a heatmap\'s figure export', () => {
     for (const text of wanted) assert.ok(markup.includes(text), text + ' missing from the exported figure');
     assert.doesNotMatch(markup, /class="hit"|data-screen-only/);
   });
+
+  it('keeps every cell of every map, which are its marks as well as its hover targets', async () => {
+    // Up to 2.7 the export dropped each cell as a hover target, and saved
+    // an empty frame with a colourbar under it.
+    const live_monitor = loadLiveMonitor();
+    const letter = live_monitor.document.createElement('span');
+    const data = structuredClone(RECORDED['rf-mapping, three maps'].payload);
+    live_monitor.get('exportFigure')({ data: data, letter: letter, title: 'Receptive fields' }, 'svg', 'single');
+    const markup = await live_monitor.downloads[0].blob.text();
+    // The white ground, three maps of 3 x 4 cells, the colourbar, and the
+    // legend's "unprobed cell" swatch.
+    assert.equal(markup.match(/<rect /g).length, 1 + 3 * 12 + 1 + 1);
+    assert.doesNotMatch(markup, /class="hit"|data-screen-only/);
+  });
 });
