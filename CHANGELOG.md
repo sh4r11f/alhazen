@@ -25,6 +25,20 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+### Changed
+
+- **alhazen is developed with uv.** `uv.lock` pins the whole development
+  environment, `.python-version` says 3.12, and `uv sync` builds it in
+  `.venv` in one command; every gate runs as `uv run ...`
+  (CONTRIBUTING.md). The `dev` dependency group is the `dev` extra plus pip
+  and setuptools, which the scaffold acceptance test installs with. Nothing
+  changes for anyone installing alhazen: the package metadata, its extras
+  and `pip install alhazen-vision` are as before, and CI's test matrix still
+  installs with pip. A release now commits `uv.lock` with the version bump,
+  and CI fails when `uv.lock` no longer matches `pyproject.toml`.
+
 ## 2.8.0 - 2026-10-04
 
 ### Added
