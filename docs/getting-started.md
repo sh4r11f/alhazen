@@ -64,7 +64,10 @@ experiment's own `configs/rig-laptop.yaml` once you add one, else alhazen's
 shared laptop — the lab's development laptop, with that machine's screen
 measurements ([Rigs](rigs.md) has the shared rigs, and how a file of your own
 can extend one and change only what differs). On your own laptop, add that
-file, or name a rig: `--rig mac` is the scaffolded Mac file.
+file, or name a rig: `--rig mac` is the scaffolded Mac file. Both are
+development rigs: every mode runs on them except run mode, the real session,
+which refuses them before anything is written — a real session names the rig
+the subject sits at, `--rig lab` ([Rigs](rigs.md#5-real-data-only-on-a-rig-meant-for-it)).
 
 ## Run its tests
 
