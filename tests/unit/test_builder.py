@@ -594,6 +594,140 @@ class TestAFailedBuildReleasesWhatItHeld:
         assert tracker.shutdowns == [None]
 
 
+def tree(root: Path) -> dict[str, bytes | None]:
+    """Every file and folder under ``root``, with each file's bytes."""
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes() if path.is_file() else None
+        for path in sorted(root.rglob("*"))
+    }
+
+
+class TestARefusedSessionLeavesTheDataRootAsItWas:
+    """Every refusal at a session's start leaves nothing behind (docs/rigs.md
+    §5). The checks that can only run after the run folder exists — the
+    window's size, a device that will not connect — used to leave it there,
+    empty, with its run number spent; now the build removes what it made.
+
+    The data root already holds another subject's run and the registry, so
+    "as it was" is a claim about something, not about an empty folder.
+    """
+
+    def seed(self, data_root: Path) -> dict[str, bytes | None]:
+        from alhazen.data.paths import SessionPaths
+
+        other = SessionPaths.create(
+            data_root, "s99", 1, 1, "test-task", "20260801", experiment_version="0.1.0"
+        )
+        (other.run_dir / "config_snapshot.yaml").write_text("a run", encoding="utf-8")
+        (data_root / "participants.tsv").write_text(
+            "participant_id\tinitials\nsub-s99\tZZ\n", encoding="utf-8"
+        )
+        return tree(data_root)
+
+    def test_a_window_refused_for_its_size(self, tmp_path, monkeypatch):
+        # What PsychoPyDisplay.open does on a machine whose screen is not the
+        # rig's: it opens the window, measures it, and refuses.
+        from alhazen.errors import DisplayError
+        from alhazen.modes.session import next_run
+        from alhazen.session import builder as builder_module
+
+        class WrongSizedScreen:
+            kind = "psychopy"
+
+            def __init__(self, monitor, windowed=False):
+                self.window = None
+
+            def open(self):
+                self.window = object()
+                raise DisplayError("the fullscreen drawing surface is 2880x1800 pixels")
+
+            def close(self):
+                self.window = None
+
+        monkeypatch.setattr(builder_module, "PsychoPyDisplay", WrongSizedScreen)
+        before = self.seed(tmp_path)
+
+        with pytest.raises(DisplayError, match="2880x1800"):
+            build(tmp_path, EventSchema(()), display=DisplayConfig(backend="psychopy"))
+
+        assert tree(tmp_path) == before
+        # The run number it would have had is still the next one.
+        assert next_run(tmp_path, "t01", 1, experiment_version="0.1.0") == 1
+
+    def test_a_tracker_that_will_not_connect_on_a_rig_with_a_recorder(self, tmp_path):
+        # The recorder's pointer used to be written before the tracker was
+        # connected, so this folder kept a file and its run number was
+        # refused outright afterwards.
+        from alhazen.config.models import RecordingConfig
+        from alhazen.errors import TrackerError
+
+        class Unplugged(ScriptedTracker):
+            def connect(self):
+                raise TrackerError("no tracker answers at 100.1.1.1")
+
+        before = self.seed(tmp_path)
+
+        with pytest.raises(TrackerError, match="no tracker answers"):
+            build(
+                tmp_path,
+                EventSchema(()),
+                tracker=Unplugged([], FakeClock()),
+                rig_recording=RecordingConfig(backend="simulated"),
+            )
+
+        assert tree(tmp_path) == before
+
+    def test_a_refusal_made_by_the_runners_constructor(self, tmp_path):
+        before = self.seed(tmp_path)
+
+        with pytest.raises(ConfigError, match="no eye tracker to validate"):
+            build(
+                tmp_path, EventSchema(()), task_params=ValidatingParams(), make_source=blocks_from
+            )
+
+        assert tree(tmp_path) == before
+
+    def test_a_data_root_that_was_not_there_is_not_there_afterwards(self, tmp_path):
+        data_root = tmp_path / "data"
+
+        with pytest.raises(ValueError, match="the scheduler refused"):
+            build(data_root, EventSchema(()), make_source=refusing_scheduler)
+
+        assert not data_root.exists()
+
+    def test_a_snapshot_that_cannot_be_written_removes_the_folder_too(self, tmp_path, monkeypatch):
+        from alhazen.session import runner as runner_module
+
+        def full_disk(*args, **kwargs):
+            raise OSError(28, "No space left on device")
+
+        before = self.seed(tmp_path)
+        runner = build(tmp_path, EventSchema(()))
+        monkeypatch.setattr(runner_module, "write_run_identity", full_disk)
+
+        with pytest.raises(OSError, match="No space left"):
+            runner.run()
+
+        assert tree(tmp_path) == before
+
+    def test_a_build_writes_no_file_and_the_pointer_follows_the_snapshot(self, tmp_path):
+        from alhazen.config.models import RecordingConfig
+
+        runner = build(
+            tmp_path, EventSchema(()), rig_recording=RecordingConfig(backend="simulated")
+        )
+        (run_dir,) = tmp_path.glob("v0.1.0/sub-t01/ses-001/run-*")
+        # Built, not yet run: the folder and its figures, no file at all.
+        assert [p for p in run_dir.rglob("*") if p.is_file()] == []
+
+        runner.run()
+
+        pointer = run_dir / "recording_pointer.yaml"
+        assert yaml.safe_load(pointer.read_text(encoding="utf-8"))["system"] == "simulated"
+        manifest = yaml.safe_load((run_dir / "manifest.yaml").read_text(encoding="utf-8"))
+        assert "recording_pointer.yaml" in {entry["path"] for entry in manifest["artifacts"]}
+
+
 class TestGazeInputProvider:
     def test_screen_px_become_centered_px(self, tmp_path):
         # The one conversion site in the codebase: trackers report y down
@@ -1249,15 +1383,18 @@ class TestTheSubjectsInitials:
         # A built session can wait while another one registers the subject:
         # the runner checks once more, before it writes anything.
         runner = build(tmp_path, EventSchema(()), initials="HD")
-        (tmp_path / "participants.tsv").write_text(
-            "participant_id\tinitials\nsub-t01\tXY\n", encoding="utf-8"
-        )
+        registry = tmp_path / "participants.tsv"
+        registry.write_text("participant_id\tinitials\nsub-t01\tXY\n", encoding="utf-8")
+        before = registry.read_bytes()
 
         with pytest.raises(DataError, match="recorded as XY; this session says HD"):
             runner.run()
 
-        (run_dir,) = tmp_path.glob("v0.1.0/sub-t01/ses-001/run-*")
-        assert [p for p in run_dir.rglob("*") if p.is_file()] == []
+        # Nothing written, and the folders the build made for the run are
+        # gone again (they used to be left, empty, with the run number
+        # spent): the data root holds the registry it was given, unchanged.
+        assert [p.name for p in tmp_path.iterdir()] == ["participants.tsv"]
+        assert registry.read_bytes() == before
 
 
 class ValidatingParams(Model):

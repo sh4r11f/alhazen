@@ -125,6 +125,13 @@ const rigMonitor = {};
  * rigMonitor): 'psychopy' or 'simulated'. A rig not read yet has no entry,
  * which psychopyNeeded treats as "cannot tell yet", not as either answer. */
 const rigBackend = {};
+/* The rigs that say `real_data: false` — development rigs, which run mode
+ * refuses before anything is written (docs/rigs.md §5) — keyed like
+ * rigMonitor, holding the name the summary shows; null for a rig that
+ * collects. A rig not read yet has no entry, and the footer then says
+ * nothing about it: the server makes the same check at launch, so the page
+ * only warns ahead of it and never blocks. */
+const rigDevelopment = {};
 /* The run most recently started from this page, and the run whose monitor
  * tab has already been brought up on its own: the tab is switched once, for
  * the reader who is waiting on the run they launched, and never again. */
@@ -565,6 +572,22 @@ function psychopyWarning(p, mode, backend, headless) {
 }
 
 /**
+ * The launch footer's warning when a Run launch is about to be refused
+ * because the selected rig is a development rig (`real_data: false`), else
+ * null. `name` is the rig as the summary names it, or null/undefined for a
+ * rig that collects or has not been read. The server refuses the launch
+ * itself, in the session's own words and naming the rigs that do collect;
+ * this says so before the click.
+ */
+function developmentRigWarning(mode, name) {
+  if (mode !== 'run' || !name) return null;
+  return `${label('run')} records real data, and ${name} is a development rig `
+    + '(real_data: false): this launch will be refused before anything is written. Choose '
+    + `a rig that collects real data, or ${label('test')} or ${label('simulate')} to try `
+    + 'the session on this machine.';
+}
+
+/**
  * The launch button's state and the note under it. Disabled while a run is
  * active (one job at a time), while a launch is in flight, while parameters
  * are still loading (a launch then would silently use defaults for the
@@ -588,6 +611,9 @@ function updateLaunch() {
   const backend = p ? rigBackend[`${p.id}:${$('rig').value}`] : undefined;
   const headless = mode === 'simulate' && $('headless').checked;
   const psychopy = psychopyWarning(p, mode, backend, headless);
+  const development = developmentRigWarning(
+    mode, p ? rigDevelopment[`${p.id}:${$('rig').value}`] : null,
+  );
   let note;
   if (p?.tasks_error) {
     // Before the active-run note: this one asks the reader to fix run.py,
@@ -596,6 +622,10 @@ function updateLaunch() {
       + p.tasks_error;
   } else if (state.active) {
     note = 'One run at a time keeps the rig available to its active experiment.';
+  } else if (development) {
+    // Before the PsychoPy warning: a launch refused for its rig never opens
+    // a window, so the rig is the thing to change first.
+    note = development;
   } else if (psychopy) {
     // Before the real-data reminder: a run that cannot open its window
     // records nothing, so the missing PsychoPy is the thing to fix first.
@@ -607,8 +637,9 @@ function updateLaunch() {
   }
   $('launch-note').textContent = note;
   // Styled as a warning (workspace.css .launch-warning) only while the note
-  // is the PsychoPy one; every other note is plain help text.
-  $('launch-note').classList.toggle('launch-warning', note === psychopy);
+  // is the development-rig or the PsychoPy one; every other note is plain
+  // help text.
+  $('launch-note').classList.toggle('launch-warning', note === development || note === psychopy);
 }
 
 /**
@@ -887,12 +918,21 @@ async function loadRig() {
   // The display backend, for the launch footer's PsychoPy warning. A rig
   // that does not say gets the model's default (DisplayConfig.backend).
   rigBackend[`${p.id}:${value}`] = rig.display?.backend || 'psychopy';
+  // Whether real data may be collected on it. The model's default is true,
+  // so only an explicit false — in the file or the shared rig it extends,
+  // the answer already merged here — makes a development rig.
+  const development = rig.real_data === false;
+  rigDevelopment[`${p.id}:${value}`] = development ? name : null;
   // '?' rather than 'undefined' for a field the YAML leaves to its default.
   rigFacts([
     ['Screen', [`${m.width_px ?? '?'} × ${m.height_px ?? '?'} px`, `${m.refresh_rate_hz ?? '?'} Hz`]],
     ['Size', [`${m.width_cm ?? '?'} cm wide`, `${m.distance_cm ?? '?'} cm away`]],
     ['Display', [rig.display?.backend || 'default display']],
     ['Live monitor', [monitorOn ? 'on' : 'off']],
+    // Shown only for a development rig: every other rig collects, as every
+    // rig did before the setting existed, and a line saying so on each
+    // would be noise.
+    ...(development ? [['Real data', ['refused', 'a development rig (real_data: false)']]] : []),
     ['Rig', origin],
   ]);
   // The footer's warning depends on the backend just learned.

@@ -154,6 +154,28 @@ class TestTheSharedRigs:
         assert rehearsal.devices.sync.backend == "simulated"
         assert rehearsal.devices.sync.pulse_ms == lab.devices.sync.pulse_ms
         assert rehearsal.data_root == lab.data_root
+        # The second deliberate difference: a rehearsal is never a real
+        # session, so run mode refuses it while the lab collects.
+        assert lab.real_data is True
+        assert rehearsal.real_data is False
+
+    def test_each_shared_rig_says_whether_real_data_is_collected_on_it(self):
+        """docs/rigs.md §5: the development machines and the rehearsal say
+        no, the two rooms where subjects sit say yes — each in its own file,
+        even where the answer is the default, so a new shared rig cannot
+        slip in without one and an experiment rig that extends a shared one
+        reads the same as the file it extends."""
+        expected = {
+            "lab": True,
+            "lab-rehearsal": False,
+            "laptop": False,
+            "mac": False,
+            "vpixx": True,
+        }
+        for name, path in shared_rig_files().items():
+            written = yaml.safe_load(path.read_text(encoding="utf-8"))
+            assert written.get("real_data") is expected[name], name
+            assert load_rig(path).real_data is expected[name], name
 
     def test_every_shared_rig_file_ships_in_the_wheel(self):
         """A file left out of package-data installs fine and then `--rig lab`
@@ -531,6 +553,46 @@ class TestExtends:
         override = {"a": {"b": 2}}
         assert deep_merge(base, override) == {"a": {"b": 2, "c": [1]}}
         assert base == {"a": {"b": 1, "c": [1]}} and override == {"a": {"b": 2}}
+
+
+class TestWhetherARigCollectsRealData:
+    """`real_data` (docs/rigs.md §5): what a rig file that says nothing gets,
+    and what one that extends a shared rig inherits — the real shared rigs,
+    since their answers are the point."""
+
+    def test_a_rig_that_does_not_say_collects_as_every_rig_did_before(self, experiment):
+        assert load_rig(experiment / "configs" / "rig-lab.yaml").real_data is True
+
+    @pytest.mark.parametrize(
+        ("shared_name", "inherited"),
+        [("laptop", False), ("mac", False), ("lab-rehearsal", False), ("lab", True)],
+    )
+    def test_a_rig_that_extends_a_shared_one_inherits_its_answer(
+        self, tmp_path, shared_name, inherited
+    ):
+        path = write_yaml(
+            tmp_path / "configs" / f"rig-{shared_name}.yaml", {"extends": shared_name}
+        )
+        assert load_rig(path).real_data is inherited
+
+    def test_the_deliberate_exception_is_the_experiments_own_line(self, tmp_path):
+        # A keyboard pilot on the laptop, on purpose: the experiment's own
+        # file overrides the shared laptop's answer and nothing else.
+        path = write_yaml(
+            tmp_path / "configs" / "rig-laptop.yaml", {"extends": "laptop", "real_data": True}
+        )
+        rig = load_rig(path)
+        assert rig.real_data is True
+        laptop = load_rig(shared_rig_files()["laptop"])
+        assert rig.monitor.model_dump(exclude={"name"}) == laptop.monitor.model_dump(
+            exclude={"name"}
+        )
+        assert rig.devices == laptop.devices
+
+    def test_an_answer_that_is_not_yes_or_no_is_refused_naming_the_file(self, tmp_path):
+        path = write_yaml(tmp_path / "rig-odd.yaml", {**whole_rig(), "real_data": "sometimes"})
+        with pytest.raises(ConfigError, match=r"rig-odd\.yaml[\s\S]*real_data"):
+            load_rig(path)
 
 
 class TestWhereMeasurementsOfASharedRigGo:

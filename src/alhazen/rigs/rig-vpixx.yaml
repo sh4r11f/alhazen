@@ -112,3 +112,8 @@ devices:
     # analysis fits the two clocks together from those pairs.
 
 data_root: data
+
+# A COLLECTING RIG: run mode records real data here. Said even though it is
+# the default, so that every shared rig states its answer; laptop, mac and
+# lab-rehearsal say false, and run mode refuses them (docs/rigs.md §5).
+real_data: true

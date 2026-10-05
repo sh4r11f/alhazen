@@ -100,3 +100,11 @@ live_monitor:
 devices: {}
 
 data_root: data
+
+# A DEVELOPMENT RIG, for the same reasons as rig-laptop.yaml — no tracker, a
+# compositor that drops frames, and monitor numbers above that are an example
+# MacBook's rather than yours: run mode refuses it before anything is written,
+# and every other mode runs here as before. An experiment's own rig-mac.yaml
+# that says `extends: mac` stays one unless it also says `real_data: true`,
+# which is how a deliberate pilot on a Mac is recorded (docs/rigs.md §5).
+real_data: false

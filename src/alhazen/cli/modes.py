@@ -54,7 +54,10 @@ def run_experiment(
     experiment's own ``configs/rig-mac.yaml``, else alhazen's shared mac;
     ``"alhazen/mac"`` for the shared one always) or a path to a rig file. A
     name is looked up in the experiment this task belongs to, wherever the
-    command is typed (``alhazen.config.rigs``). The three
+    command is typed (``alhazen.config.rigs``). Run mode refuses a
+    development rig (``real_data: false``) — the laptop most run.py files
+    name here — before anything is written, saying no ``--rig`` was given
+    and which rigs do collect (docs/rigs.md §5). The three
     optional arguments below are each something the task can declare for
     itself, and a task that does has it applied by ``alhazen run --task`` as
     well as here. **Each one, when given, takes precedence over the task's
@@ -175,15 +178,21 @@ def run_experiment(
     # argparse with the real names listed, before anything loads. No default:
     # a command that names no task is told so below, not quietly given one.
     parser.add_argument("--task", choices=names, default=None, help=task_help)
-    # The default rig goes in as typed — a name or a path — and is resolved by
-    # the dispatch exactly as a --rig typed on the command line would be.
     # run.py's params file becomes --params's default, which is exactly what
     # gives it precedence over the task's own (the dispatch asks the task only
     # when --params is still None) and keeps an explicit --params above both.
-    parser.set_defaults(
-        rig=str(default_rig), params=str(default_params) if default_params else None
-    )
+    parser.set_defaults(params=str(default_params) if default_params else None)
     args = parser.parse_args(argv)
+    # The default rig goes in as typed — a name or a path — and is resolved by
+    # the dispatch exactly as a --rig typed on the command line would be. It
+    # is filled in after parsing rather than as the flag's default so the
+    # dispatch can tell the two apart: run mode refused on a development rig
+    # says "no --rig was given" first when that is what happened, because a
+    # forgotten --rig on the laptop every run.py starts on is the usual way
+    # to get there (docs/rigs.md §5).
+    args.rig_defaulted = args.rig is None
+    if args.rig is None:
+        args.rig = str(default_rig)
     # The command line as it was parsed, for the run folder to record
     # (session.json's `command`): this process's program — run.py, made
     # relative to the experiment when the run is recorded — and then the

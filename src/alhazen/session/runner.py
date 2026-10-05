@@ -6,10 +6,12 @@ Contract, in order:
    crashes still documents what it was trying to run — together with the
    rest of the run's record of itself: session.json, and byte copies of the
    rig and params files (session/identity.py), all or none. A session whose
-   snapshot cannot be written never started: teardown releases its devices
-   and writes nothing into its run directory.
+   snapshot cannot be written never started: teardown releases its devices,
+   writes nothing into its run directory, and removes the folders the
+   builder made for it (``SessionPaths.discard_unused``).
 2. File logging attaches at the root logger so every module's logging lands
-   in this run's ``session.log``; then the subject is registered.
+   in this run's ``session.log``; then the recording pointer is written, if
+   the rig names a recorder, and the subject is registered.
 3. Loop: ask the paradigm for a condition, build the trial through the
    task's ``build_trial``, open the tracker's recording segment (and close it
    in a ``finally``), run it through the engine and let its mid-trial reward
@@ -69,6 +71,7 @@ from alhazen.data.paths import SessionPaths
 from alhazen.data.percents import threshold_percent
 from alhazen.devices.eyetracker import EyeTracker, HostShape
 from alhazen.devices.eyetracker.protocol import CameraFrame
+from alhazen.devices.recording import RecordingSystem
 from alhazen.devices.reward import RewardDispenser
 from alhazen.devices.spikes import SpikeSource
 from alhazen.devices.sync import SyncOutput
@@ -205,6 +208,7 @@ class SessionRunner:
         max_consecutive_dropouts: int | None = DEFAULT_MAX_CONSECUTIVE_DROPOUTS,
         experiment_dir: Path | None = None,
         identity: RunIdentity | None = None,
+        recording: RecordingSystem | None = None,
     ) -> None:
         # What the run records about how it was set up: the experiment and
         # version its data is filed under, the mode, the files it started
@@ -220,6 +224,12 @@ class SessionRunner:
             )
         self._identity = identity
         self._cfg = cfg
+        # The external recorder this run belongs to (devices.recording), or
+        # None. Its pointer file is written once the snapshot is, in run():
+        # a run directory says which recording it pairs with even if the
+        # session then crashes, and nothing is written for a session refused
+        # before it became a run.
+        self._recording = recording
         # Where the experiment's code lives, so the snapshot's
         # `experiment_git_sha` describes that repository. None falls back to
         # the working directory (config.snapshot.build_provenance), which is
@@ -427,6 +437,14 @@ class SessionRunner:
             # be written ends with a "session end: FAILED" line in this run's
             # own log rather than only on a terminal.
             file_handler = self._attach_file_logging()
+            # Which external recording this run pairs with, before trial 1, so
+            # a session that crashes still says; the manifest hashes the
+            # pointer with everything else. Written here, after the snapshot,
+            # rather than by the builder: a file written before the snapshot
+            # would outlive a session refused at its start and keep its
+            # folder from being removed.
+            if self._recording is not None:
+                self._recording.annotate_session(self._cfg.info, self._paths.run_dir)
             # Records the subject's initials with a new subject, fills them in
             # on a row from before 2.0, and refuses ones that disagree — the
             # builder already checked, before anything was written; this is
@@ -1097,9 +1115,10 @@ class SessionRunner:
         — no data files, no manifest, no saved live monitor, no database row, and
         the tracker is not handed a destination for its recording, which
         holds no trial. A curriculum hands its task back, but the subject's
-        training state is not saved for a session that never started. The
-        directory stays as the build left it, so a run number whose folder is
-        still empty can be used again (data/paths.py).
+        training state is not saved for a session that never started. Last of
+        all the folders the builder made for it are removed again, while they
+        hold nothing else (SessionPaths.discard_unused), so its run number is
+        not spent and the data root is as the session found it.
 
         A Ctrl-C during a step abandons that step only; the rest still run,
         and the interrupt is raised when they are done. A second one abandons
@@ -1164,11 +1183,12 @@ class SessionRunner:
         logged_status = self._terminal_status(teardown_failed=False)
         step("log.session_end", self._log_session_end)
         if not snapshot_written:
-            # Said once, so an experimenter who finds the folder empty knows
-            # it was left that way on purpose.
+            # Said once, so an experimenter who looks for the folder knows why
+            # it is not there (or, holding something this session did not
+            # make, why it was left: discard_unused says so).
             log.warning(
                 "the config snapshot was never written, so %s is not a run: the devices are "
-                "released and nothing is written into it",
+                "released, nothing is written into it, and the folders made for it are removed",
                 self._paths.run_dir,
             )
 
@@ -1303,6 +1323,14 @@ class SessionRunner:
                 ),
             )
         step("display.close", self._display.close)
+        if not snapshot_written:
+            # Last, once nothing can write into it: a session refused before
+            # its snapshot (the registry changed since the build, a snapshot
+            # that cannot be written) never became a run, so the folders the
+            # builder made for it are removed again, as a refused build's
+            # are — only while they hold nothing it did not make
+            # (SessionPaths.discard_unused). Its run number is not spent.
+            step("run_folder.discard", self._paths.discard_unused)
 
         # Nothing is raised here while the session's own exception is
         # propagating: a teardown failure must never mask the exception that

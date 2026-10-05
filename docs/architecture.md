@@ -102,6 +102,11 @@ alhazen, not the workspace's, so the workspace speaks each child's version:
 pre-1.9 `dashboard:` section, which 2.0 refuses, read as `live_monitor:` by
 the check before a launch when the project's alhazen is 1.x and still reads
 it (`_as_the_project_reads_it`; `config.loader.validate_rig` is that check).
+The same check refuses a Run launch on a development rig (`real_data:
+false`) with `alhazen.modes.real_data_refusal` — the rule the command line
+applies — naming the menu's collecting rigs (`config.rigs.collecting_rigs`
+over the project's shared rigs), before a run record exists; the page only
+warns ahead of it, from the merged rig it summarises.
 
 Three placements carry the weight:
 
@@ -1689,9 +1694,13 @@ graph TB
 
 Most acquisition software cannot be annotated programmatically, so alhazen
 records what it *can*: a `recording_pointer.yaml` in the run directory naming
-the system and where its files are expected. It is written before the session
-starts, so a crashed session still says what it was recording against, and
-the manifest hashes it like everything else. `check-rig` covers the recorder
+the system and where its files are expected. It is written before trial 1 —
+by `SessionRunner.run()`, right after the snapshot — so a crashed session
+still says what it was recording against, and the manifest hashes it like
+everything else. It used to be written by the builder, and a build refused
+after it (a tracker that would not connect) left the file behind in a folder
+that was never a run; now the build writes no file at all, and a refused one
+removes its folder (§10). `check-rig` covers the recorder
 too — the failure that actually happens is an acquisition host's share that
 did not mount, and it should be found on an empty rig.
 
@@ -2005,7 +2014,14 @@ session was started from for their byte copies (`session/identity.py`
 `source_file`), and checks the experiment database's schema
 (`ExperimentDatabase.check_schema`): one from an older schema is moved aside
 and a new one started, one from a newer alhazen refused. The run folder is then made under
-`<data_root>/v<version>/` ([data on disk](data.md)). `SessionRunner.run()`
+`<data_root>/v<version>/` ([data on disk](data.md)), and released like every
+device the build acquires after it: a build refused once the folder exists —
+the window refused for its size, a refresh rate that disagrees, a tracker
+that will not connect, a scheduler that raises — removes the folders it made
+(`SessionPaths.discard_unused`: only those `create` made, only while they hold
+nothing it did not make, deepest first), after the window and the devices are
+released, so the data root is as it was and the run number is not spent
+([rigs](rigs.md) §5). The build writes no file into the folder. `SessionRunner.run()`
 then:
 
 1. writes the run's record of itself **before trial 1**, all or none
@@ -2078,9 +2094,11 @@ then:
    and started the reward, sync and spike devices and the live monitor's child
    process. A session whose snapshot could not be written never started: a
    run directory without one is not an analysable run, so teardown releases
-   every device (the tracker without a destination for its recording) and
+   every device (the tracker without a destination for its recording),
    writes nothing into it — no data files, manifest, saved live monitor,
-   database row or training state.
+   database row or training state — and, last, removes the folders the
+   build made for it, as a refused build does. The same holds for a session
+   refused by the registry check at the start of `run()`.
 
 The runner itself keeps the trial loop and the session's lifecycle (setup,
 live monitor publishing, the session log's structure, teardown). Three
@@ -2319,7 +2337,14 @@ between them. The default rig is the name `"laptop"` (the owner's choice,
 2026-10-04; it was the scaffolded `rig-mac.yaml`, by path), resolved as
 `--rig laptop` is: the experiment's own `configs/rig-laptop.yaml` once it has
 one, else alhazen's shared laptop — the same default the lab's experiments
-pass.
+pass. The shared laptop says `real_data: false`, so a run-mode command that
+leaves `--rig` out is refused by `_run_session` as soon as the rig is read —
+before the params, the prompts, the params hook and `build_session` — by
+`alhazen.modes.real_data_refusal`, which `build_mode_session` and the
+workspace's launch call too ([rigs](rigs.md) §5). `run_experiment` fills in
+the default rig after parsing, not as the flag's default, so the refusal can
+say that no `--rig` was given; the rigs it offers instead are
+`config.rigs.collecting_rigs`.
 
 **Every session names its task** (the owner's rule, 2026-10-02). `alhazen
 run` always needed `--task`; `run_experiment` now puts `--task` on run.py's

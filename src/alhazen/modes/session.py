@@ -22,7 +22,8 @@ snapshot, the analysis that reads it afterwards — is the same code.
 driven, and that is why the same rig file serves all three. A rig file
 describes the machine; the mode decides what to do with it (``rig_for_mode``):
 
-- ``run`` drives the rig exactly as written.
+- ``run`` drives the rig exactly as written — and refuses a development rig,
+  one whose settings say ``real_data: false``, before anything is written.
 - ``test`` puts a person in the chair. On a rig with no tracker — a laptop —
   their mouse cursor stands in for gaze; ``--mouse`` asks for that on a rig
   whose tracker is switched off.
@@ -48,11 +49,12 @@ from typing import Any
 
 from alhazen.config.experiment import Experiment, session_experiment
 from alhazen.config.models import EyeTrackerConfig, RewardHwConfig, RigConfig
+from alhazen.config.rigs import RigRef
 from alhazen.core.rng import resolve_seed
 from alhazen.data import naming
 from alhazen.data.paths import session_dir
 from alhazen.errors import ConfigError
-from alhazen.modes import Mode, flag_refusal
+from alhazen.modes import Mode, flag_refusal, real_data_refusal
 from alhazen.modes.rehearsal import Reduction, rehearsal_root, shrink_params
 from alhazen.modes.simulation import Simulation
 from alhazen.session.runner import SessionRunner
@@ -268,6 +270,17 @@ def rig_for_mode(
     return rig, notes
 
 
+def _named_rig(sources: dict[str, str] | None) -> RigRef | None:
+    """The rig the caller's ``sources`` name — the file, its name and whose it
+    is, as the command line records them — for a refusal to name; None when
+    they do not name it (a rig built in code, a caller passing no sources)."""
+    sources = sources or {}
+    path, name, source = sources.get("rig"), sources.get("rig_name"), sources.get("rig_source")
+    if path is None or name is None or source not in ("experiment", "alhazen"):
+        return None
+    return RigRef(name, Path(path), "alhazen" if source == "alhazen" else "experiment")
+
+
 def _stand_in_reward(mode: Mode, rig: RigConfig, task: Task, notes: list[str]) -> RigConfig:
     """A simulated dispenser for a mid-trial-reward task rehearsed on a rig
     that has none.
@@ -343,7 +356,10 @@ def build_mode_session(
 
     ``headless`` and ``mouse`` are the two flags that override the machine
     (see :func:`alhazen.modes.flag_refusal`); a mode that cannot honour one
-    raises ``ConfigError`` before anything is wired.
+    raises ``ConfigError`` before anything is wired. So does run mode on a
+    development rig, one whose settings say ``real_data: false``
+    (:func:`alhazen.modes.real_data_refusal`, docs/rigs.md §5), naming the
+    rig ``sources`` names when it names one.
 
     The run is filed under its experiment's version — the one the
     ``pyproject.toml`` above ``task``'s class declares, unless
@@ -374,6 +390,22 @@ def build_mode_session(
     # the mouse standing in for a missing tracker in test — decided before
     # anything else, so a flag the mode refuses is refused first.
     rig, notes = rig_for_mode(mode, rig, headless=headless, mouse=mouse)
+    # Then run mode on a development rig, before anything is found, numbered,
+    # built or written. The command line refuses it earlier still, before the
+    # params hook (alhazen.cli.main); this is the same rule for code that
+    # starts a run-mode session itself, which no command line stands in
+    # front of. docs/rigs.md §5.
+    refusal = real_data_refusal(
+        mode,
+        rig,
+        _named_rig(sources),
+        instead=lambda: [
+            "Start the session on a rig that collects real data, or rehearse it on this one "
+            "in test or simulate mode."
+        ],
+    )
+    if refusal is not None:
+        raise ConfigError(refusal)
     rig = _stand_in_reward(mode, rig, task, notes)
 
     # The experiment the run is filed under, found from the task class the

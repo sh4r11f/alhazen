@@ -32,7 +32,9 @@ the lab's development laptop, with that machine's screen measurements. On
 any other machine, add `configs/rig-laptop.yaml` (begin it with
 `extends: laptop` and say only what differs) or pass `--rig`; `--rig mac` is
 the Mac file below. `alhazen rigs --project .` lists every rig a name can
-reach.
+reach. The laptop and the Mac are development rigs (`real_data: false`): every
+mode runs on them except run mode, the real session, which refuses them
+before anything is written. A real session names its rig: `--rig lab`.
 
 A rig file describes a machine, not a purpose. Simulate mode stands the
 rig's real devices down (the autopilot supplies gaze; the pump and the sync

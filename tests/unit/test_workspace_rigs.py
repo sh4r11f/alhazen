@@ -307,6 +307,84 @@ class TestARigSayingDashboard:
         assert rig_argument(self.command(workspace, mode="demo.preview")).endswith("rig-sim.yaml")
 
 
+class TestARunOnADevelopmentRig:
+    """docs/rigs.md §5: a Run launch on a rig that says `real_data: false` is
+    refused by the workspace, in the session's own words and naming the Rig
+    menu's rigs that do collect, before a run record or anything else is
+    written. Here the project's shared mac is the development rig."""
+
+    @pytest.fixture
+    def development_mac(self, project_alhazen):
+        mac = yaml.safe_load(project_alhazen["mac"].read_text(encoding="utf-8"))
+        project_alhazen["mac"].write_text(
+            yaml.safe_dump({**mac, "real_data": False}), encoding="utf-8"
+        )
+        return project_alhazen["mac"]
+
+    def test_it_is_refused_before_anything_is_written(self, workspace, development_mac):
+        # No subject and no initials either: the rig is refused first, as
+        # the command line refuses it before asking for them.
+        with pytest.raises(ValueError) as refused:
+            workspace.start(launch(workspace, "alhazen/mac", mode="run"))
+        assert workspace.runs == {}
+        assert list((workspace.directory / "runs").iterdir()) == []
+        lines = str(refused.value).split("\n  ")
+        assert lines[0] == (
+            "run mode records real data, and alhazen/mac (alhazen's shared rig) is a "
+            "development rig: its settings say `real_data: false`. Nothing was started and "
+            "nothing was written."
+        )
+        # The menu's names for the rigs that collect: the experiment's own
+        # lab and sim (the shared lab is hidden by the experiment's), not the
+        # mac.
+        assert lines[1] == (
+            "To record a subject, choose a rig that collects real data in the Rig menu: "
+            "experiment/lab, experiment/sim."
+        )
+        assert lines[2] == "To try the session on this machine, choose Test session or Simulate."
+        assert "configs/rig-mac.yaml saying `extends: mac` and `real_data: true`" in lines[3]
+
+    def test_the_page_gets_the_refusal_over_http(self, http, workspace, development_mac):  # noqa: F811
+        call, _ = http
+        status, _, body = call(
+            "/api/runs",
+            {
+                "project": workspace.projects[0]["id"],
+                "mode": "run",
+                "rig": "alhazen/mac",
+                "subject": "01",
+                "initials": "HD",
+            },
+        )
+        assert status == 400
+        assert (
+            "alhazen/mac (alhazen's shared rig) is a development rig" in (json.loads(body)["error"])
+        )
+
+    @pytest.mark.parametrize("mode", ["test", "simulate", "demo", "movie", "measure"])
+    def test_every_other_mode_launches_there(self, workspace, development_mac, mode):
+        request = launch(
+            workspace, "alhazen/mac", mode=mode, subject="01", initials="HD", headless=False
+        )
+        command = workspace._command(request, workspace.directory)
+        assert rig_argument(command) == "alhazen/mac"
+
+    def test_an_experiment_rig_extending_it_is_refused_naming_its_file(
+        self, workspace, development_mac
+    ):
+        own = Path(workspace.projects[0]["path"]) / "configs" / "rig-mac.yaml"
+        own.write_text("extends: mac\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="development rig") as refused:
+            workspace.start(launch(workspace, "configs/rig-mac.yaml", mode="run"))
+        assert f"write `real_data: true` in {own}" in str(refused.value)
+
+    def test_the_experiments_own_file_saying_so_launches(self, workspace, development_mac):
+        own = Path(workspace.projects[0]["path"]) / "configs" / "rig-mac.yaml"
+        own.write_text("# A keyboard pilot, on purpose.\nextends: mac\nreal_data: true\n")
+        request = launch(workspace, "configs/rig-mac.yaml", mode="run", subject="01", initials="HD")
+        assert rig_argument(workspace._command(request, workspace.directory)) == str(own)
+
+
 class TestTheSummary:
     def test_an_extending_rig_is_summarised_merged(self, workspace):
         summary = workspace.rig(workspace.projects[0]["id"], "configs/rig-lab.yaml")

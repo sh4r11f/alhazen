@@ -32,9 +32,15 @@ from alhazen.cli.console_break import interrupt_on_console_break
 from alhazen.config.experiment import experiment_title
 from alhazen.config.loader import load_rig
 from alhazen.config.models import normalize_initials
-from alhazen.config.rigs import list_rigs, local_rig_file, resolve_rig, rig_extends
+from alhazen.config.rigs import (
+    collecting_rigs,
+    list_rigs,
+    local_rig_file,
+    resolve_rig,
+    rig_extends,
+)
 from alhazen.errors import AlhazenError, ConfigError, DataError, DisplayError
-from alhazen.modes import Mode, flag_refusal
+from alhazen.modes import Mode, flag_refusal, real_data_refusal
 from alhazen.session.checks import check_rig, format_result
 from alhazen.testing.sorter import FAULTS
 from alhazen.version import get_version
@@ -625,6 +631,21 @@ def _run_session(
     # beside it (`rig_name`, `rig_source`; _trial_session) and not in its place.
     args.rig = str(args.rig_ref.path)
 
+    # Run mode on a development rig (`real_data: false`: the shared laptop
+    # every run.py starts on, the mac, the lab rehearsal) is refused as soon
+    # as the rig is read — before the params load, before anyone is asked for
+    # a subject, before the params hook (which may load and save a subject's
+    # state) and before build_session makes a folder, registers the subject or
+    # connects a device. A forgotten --rig used to record a session with no
+    # tracker into the real data root. Exit 2, like the flag refusal above: a
+    # usage error. docs/rigs.md §5.
+    refusal = real_data_refusal(
+        mode, rig, args.rig_ref, instead=lambda: _real_data_instead(args, root)
+    )
+    if refusal is not None:
+        print(f"CANNOT RUN: {refusal}", file=sys.stderr)
+        return 2
+
     if mode is Mode.MEASURE:
         return _measure_rig(args, rig, root)
 
@@ -661,6 +682,56 @@ def _run_session(
     if mode is Mode.MOVIE:
         return _movie_task(args, rig, task_class(params), params)
     return _trial_session(args, rig, task_class(params), params, mode)
+
+
+def _real_data_instead(args: argparse.Namespace, root: Callable[[], Path]) -> list[str]:
+    """What to type instead of a run-mode command refused on a development
+    rig, in the command line's words: the lines ``real_data_refusal`` puts
+    between its first sentence and the deliberate exception.
+
+    The rigs offered are the ones here that collect real data
+    (``config.rigs.collecting_rigs``), spelled as ``--rig`` takes them: a
+    rig file that cannot be read is named as left out, and a folder whose
+    rigs cannot be listed at all says why, so the suggestion never quietly
+    shrinks. Called only for a refused session.
+    """
+    lines: list[str] = []
+    # Set by run_experiment when run.py's default stood in for --rig: the
+    # common case, a forgotten --rig, and the first thing to know about it.
+    if getattr(args, "rig_defaulted", False):
+        lines.append("No --rig was given, so run.py started on its default rig.")
+    try:
+        collecting, unreadable = collecting_rigs(root())
+    except ConfigError as e:
+        lines.append(f"To record a subject, name the machine it sits at with --rig ({e}).")
+    else:
+        if collecting:
+            options = _either([f"--rig {ref.name}" for ref in collecting])
+            line = (
+                f"To record a subject, name the machine it sits at: {options} "
+                "(the rigs here that collect real data)."
+            )
+        else:
+            line = (
+                "To record a subject, name the machine it sits at with --rig; no rig here "
+                "collects real data (`alhazen rigs` lists them)."
+            )
+        if unreadable:
+            names = ", ".join(str(ref.path) for ref in unreadable)
+            line += f" Not considered, because they cannot be read: {names}."
+        lines.append(line)
+    lines.append(
+        "To try the session on this machine, use --mode test or --mode simulate; "
+        "their data goes to the rehearsal root."
+    )
+    return lines
+
+
+def _either(options: list[str]) -> str:
+    """``a``, ``a or b``, ``a, b or c``: alternatives as a sentence says them."""
+    if len(options) <= 2:
+        return " or ".join(options)
+    return f"{', '.join(options[:-1])} or {options[-1]}"
 
 
 def _load_params(task_class: Any, named: str | None) -> tuple[Any, str | None]:

@@ -80,3 +80,10 @@ live_monitor:
 devices: {}
 
 data_root: data
+
+# A development rig: no real data is collected on this laptop. Run mode, the
+# one mode that records real data, refuses it before anything is written and
+# names the rig to use instead; every other mode above runs here as usual. A
+# real pilot on this machine, if you ever want one, is recorded by changing
+# this line to `real_data: true` and saying why in a comment above it.
+real_data: false

@@ -31,7 +31,9 @@ That last command runs a complete session on the rig's own config, with
 nobody in the chair and no window open, and writes a real run directory —
 trials, events and frame timings, a config snapshot, a session log and a
 hashed manifest — on a laptop with no rig attached. Every mode runs on every
-rig file: the mode decides what to do with the machine, not the file.
+rig file: the mode decides what to do with the machine, not the file. The one
+exception is real data: run mode refuses a development rig (`real_data:
+false`, as the shared laptop says) before anything is written.
 
 Every run is also mirrored into `data/experiment.sqlite3`, where subjects,
 sessions, trials, displayed frames, gaze/responses, artifacts and aligned

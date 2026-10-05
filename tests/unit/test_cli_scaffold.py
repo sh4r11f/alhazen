@@ -131,7 +131,10 @@ class TestScaffold:
 
     def test_every_mode_takes_both_rig_files(self, tmp_path):
         """The property the two-file scaffold rests on: each of the six modes
-        accepts each machine, so nobody needs a third file."""
+        can drive each machine, so nobody needs a third file. (Run mode then
+        refuses the Mac before driving it, because it is a development rig —
+        the next test's subject — which is a reason to name the lab rig, not
+        to write a third file.)"""
         from alhazen.config.loader import load_rig
         from alhazen.modes.session import rig_for_mode
 
@@ -140,6 +143,28 @@ class TestScaffold:
             rig = load_rig(root / "configs" / name)
             for mode in Mode:
                 rig_for_mode(mode, rig)
+
+    def test_the_laptop_is_a_development_rig_and_the_lab_rig_collects(self, tmp_path):
+        """docs/rigs.md §5: a new experiment's Mac says it collects no real
+        data, so run mode refuses it, and its lab rig says it does — both
+        written out, so the line to change for a deliberate pilot is there to
+        be read."""
+        import yaml
+
+        from alhazen.config.loader import load_rig
+        from alhazen.modes import real_data_refusal
+
+        root = scaffold("saccade_bias", tmp_path)
+        for name, collects in (("rig-mac.yaml", False), ("rig-lab.yaml", True)):
+            path = root / "configs" / name
+            assert yaml.safe_load(path.read_text(encoding="utf-8"))["real_data"] is collects
+            rig = load_rig(path)
+            assert rig.real_data is collects, name
+            # Run mode refuses the Mac and takes the lab rig; every other mode
+            # takes both.
+            for mode in Mode:
+                refused = real_data_refusal(mode, rig) is not None
+                assert refused is (mode is Mode.RUN and not collects), (name, mode)
 
     def test_the_laptop_rig_has_no_devices_and_the_mode_supplies_them(self, tmp_path):
         """A laptop has no tracker, and the file no longer pretends it does

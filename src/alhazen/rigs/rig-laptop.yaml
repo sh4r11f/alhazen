@@ -110,3 +110,15 @@ live_monitor:
 devices: {}
 
 data_root: data
+
+# A DEVELOPMENT RIG: no real data is collected on this machine. Every
+# experiment's run.py starts here when a command names no --rig, and run
+# mode drives a rig exactly as written, so a forgotten --rig used to record a
+# "real" session with no tracker into data/ — junk, filed where the analysis
+# looks for subjects. Run mode now refuses this rig before anything is
+# written, and says which rigs to name instead; every other mode runs here as
+# before. To collect real data on this laptop ON PURPOSE (a keyboard pilot),
+# the experiment writes its own configs/rig-laptop.yaml with `extends: laptop`
+# and `real_data: true`, which is version-controlled and copied into every run
+# it records (docs/rigs.md §5).
+real_data: false

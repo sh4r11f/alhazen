@@ -25,6 +25,78 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+### Added
+
+- **A rig says whether real data may be collected on it: `real_data:`**
+  (`RigConfig.real_data`, docs/rigs.md §5). `false` makes it a *development
+  rig* — a machine for writing, trying and rehearsing an experiment. alhazen's
+  shared `laptop`, `mac` and `lab-rehearsal` say `false`; `lab` and `vpixx`
+  say `true`. The default is `true`, so a rig file that does not say collects
+  exactly as before, and a rig that `extends` a shared one inherits its
+  answer like any other setting it does not mention. `alhazen new` writes
+  `real_data: false` into the Mac rig it scaffolds and `real_data: true` into
+  its lab rig. The value is part of the merged rig, so the snapshot's
+  `config.rig` records it.
+
+### Changed
+
+- **Run mode refuses a development rig, before anything is written.** Every
+  experiment's run.py starts on the shared laptop when a command names no
+  `--rig`, and run mode drove it as written: a forgotten `--rig` opened a
+  fullscreen window, filed a run under the real `data/v<version>/`,
+  registered the subject, got no gaze (a gaze-contingent task looped on
+  `NO_FIXATION`), and an experiment whose params hook carries state across
+  sessions loaded and re-saved that subject's real state. Now a run-mode
+  session on a rig whose settings say `real_data: false` — alhazen's
+  `laptop`, `mac` or `lab-rehearsal`, or an experiment rig extending one —
+  is refused as soon as the rig is read: before the params are loaded, before
+  the subject prompts, before the params hook, before any folder, registry
+  row, database row, window or device. It exits 2 with `CANNOT RUN:`, names
+  the rig, says no `--rig` was given when that is what happened, lists the
+  rigs here that collect real data (`--rig lab or --rig vpixx`), and names the
+  deliberate exception: the experiment's own rig file saying `real_data:
+  true` (for the laptop, `configs/rig-laptop.yaml` with `extends: laptop`),
+  which is version-controlled and copied into every run it records. There is
+  no flag for it. `build_mode_session` refuses the same session with a
+  `ConfigError`, for code that starts one itself (`build_session`, which
+  takes no mode, is unchanged). Measure, demo, movie, simulate and test run
+  on a development rig exactly as before. Not deprecated first: the
+  refused command only ever recorded a session with no tracker into the real
+  data root, and every deliberate use stays possible through the rig file.
+- **A session refused at its start leaves no run folder behind.** The checks
+  that can only run once the run folder exists — the window refused because
+  its drawing surface is not the rig's size (another machine's screen,
+  Windows display scaling), a refresh rate that disagrees, a rig naming an
+  event the task does not declare, a tracker or spike source that will not
+  connect, a scheduler that refuses, `validate_after_break` with no tracker —
+  left the folder there, empty, and its run number spent; so did the runner's
+  own refusals before the snapshot (the registry changed since the build, a
+  snapshot that cannot be written). Now the build, and the runner's teardown
+  for a session whose snapshot was never written, remove the folders
+  `SessionPaths.create` made for the run — the run folder, its `figures`,
+  and each level above that did not exist, the data root included — deepest
+  first, only while they hold nothing it did not make, after the window and
+  the devices are released. A folder that holds anything else is left whole,
+  with a WARNING saying what is in it: alhazen never deletes a file. The data
+  root is left as the session found it.
+- **`recording_pointer.yaml` is written right after the snapshot**, by
+  `SessionRunner.run()`, instead of by `build_session` — still before trial 1,
+  still hashed by the manifest. Written by the builder, it was left behind
+  in the folder of a build refused after it (a tracker that would not
+  connect), and that folder, holding a file, then refused its run number.
+  `SessionRunner` takes `recording=` (a `RecordingSystem`, default None) for
+  it; `build_session` passes the rig's.
+- **The workspace refuses a Run launch on a development rig, and says so
+  first.** Its Rig menu opens on the laptop. A **Run experiment** launch on a
+  rig that says `real_data: false` is refused by the launcher before a run
+  record or anything else is written, with the words the session would use
+  and the Rig menu's collecting rigs by name; the page shows it in its error
+  banner. Before the click, the rig summary adds **Real data: refused** and
+  the note under the launch button warns that the launch will be refused and
+  what to choose instead (it warns; it does not disable the button).
+
 ## 2.6.0 - 2026-10-04
 
 ### Changed

@@ -35,6 +35,7 @@ from alhazen.config.rigs import (
     SHARED_PREFIX,
     MergedRig,
     RigRef,
+    collecting_rigs,
     file_rig_name,
     list_rigs,
     rig_extends,
@@ -42,7 +43,7 @@ from alhazen.config.rigs import (
 )
 from alhazen.data.atomic import replace_atomically
 from alhazen.errors import ConfigError
-from alhazen.modes import Mode, flag_refusal
+from alhazen.modes import Mode, flag_refusal, real_data_refusal
 
 log = logging.getLogger(__name__)
 
@@ -873,6 +874,34 @@ def _describe_rigs(root: Path, shared: dict[str, Path] | None) -> list[dict[str,
     return entries
 
 
+def _real_data_instead(root: Path, shared: dict[str, Path] | None) -> list[str]:
+    """What to choose instead of a Run launch refused on a development rig,
+    in the page's words: the lines ``real_data_refusal`` puts between its
+    first sentence and the deliberate exception.
+
+    The rigs offered are the Rig menu's that collect real data
+    (``config.rigs.collecting_rigs``, over the project's shared rigs), by the
+    qualified names the menu shows; a rig file that cannot be read is named
+    as left out. Called only for a refused launch.
+    """
+    slug = experiment_title(root).slug
+    collecting, unreadable = collecting_rigs(root, shared=shared or {})
+    if collecting:
+        names = ", ".join(ref.qualified(slug) for ref in collecting)
+        line = (
+            f"To record a subject, choose a rig that collects real data in the Rig menu: {names}."
+        )
+    else:
+        line = (
+            "To record a subject, choose its machine's rig; no rig in the Rig menu collects "
+            "real data."
+        )
+    if unreadable:
+        files = ", ".join(str(ref.path) for ref in unreadable)
+        line += f" Not considered, because they cannot be read: {files}."
+    return [line, "To try the session on this machine, choose Test session or Simulate."]
+
+
 def _merged_rig_text(launched: str, merged: MergedRig) -> str:
     """A run folder's rig.yaml for a rig that extends a shared one: the merged
     settings as YAML, headed by where each half came from. What ran is then
@@ -1097,7 +1126,21 @@ class Workspace:
         # the PROJECT's shared rig when it extends one, not the workspace's,
         # and read as the project's alhazen reads it (_as_the_project_reads_it).
         merged = rig_mapping(ref.path, shared=shared)
-        validate_rig(_as_the_project_reads_it(merged, project.get("alhazen_version")), ref.path)
+        checked = validate_rig(
+            _as_the_project_reads_it(merged, project.get("alhazen_version")), ref.path
+        )
+        # Run mode on a development rig (`real_data: false` — the laptop the
+        # Rig menu opens on, the mac, the lab rehearsal), refused here with
+        # the words the session itself would use, before a run record or
+        # anything else exists, and with the menu's names for the rigs that
+        # do collect: the child would refuse it too, but only after the
+        # workspace had filed a failed run for it (docs/rigs.md §5).
+        if request.mode == Mode.RUN.value:
+            refusal = real_data_refusal(
+                Mode.RUN, checked, ref, instead=lambda: _real_data_instead(root, shared)
+            )
+            if refusal is not None:
+                raise ValueError(refusal)
         task = self._task_for(project, request)
         base = [project["python"], "-u"]
         if request.mode in {m.value for m in Mode}:

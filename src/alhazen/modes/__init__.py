@@ -32,11 +32,22 @@ flags override the machine itself: ``--headless`` (simulate with no window,
 for CI and ssh) and ``--mouse`` (test with the mouse cursor as gaze, on a rig
 whose tracker is off). Each is honoured by exactly one mode and refused by
 name everywhere else — see :func:`flag_refusal`.
+
+The one thing a rig says about modes is whether real data may be collected
+on it at all. Run mode refuses a development rig (``real_data: false``: the
+shared laptop, the mac, the lab rehearsal) before anything is written — see
+:func:`real_data_refusal`.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from enum import Enum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # annotations only: this module stays importable without pydantic models
+    from alhazen.config.models import RigConfig
+    from alhazen.config.rigs import RigRef
 
 
 class Mode(str, Enum):
@@ -115,6 +126,70 @@ def flag_refusal(mode: Mode, *, headless: bool = False, mouse: bool = False) -> 
     if mouse and mode is not Mode.TEST:
         return f"--mouse: only test mode takes the mouse cursor as gaze — {_NOT_MOUSE[mode]}"
     return None
+
+
+# Where the rule below and its one exception are written up. Every refusal
+# points there, because the exception is a file to write, and a person who has
+# just been refused needs to know which file and why it is not a flag.
+REAL_DATA_DOCS = "docs/rigs.md §5"
+
+
+def real_data_refusal(
+    mode: Mode,
+    rig: RigConfig,
+    ref: RigRef | None = None,
+    *,
+    instead: Callable[[], Sequence[str]] = tuple,
+) -> str | None:
+    """Why ``mode`` may not run on ``rig`` — or None when it may.
+
+    A mode that writes real data (run) may not run on a development rig: one
+    whose settings say ``real_data: false`` (docs/rigs.md §5). Every run.py
+    starts on the shared laptop when no ``--rig`` is given, and run mode
+    drives a rig exactly as written, so a forgotten ``--rig`` used to record a
+    session with no tracker into the real data root — junk, filed where the
+    analysis looks for subjects. Every other mode takes a development rig as
+    it always has: rehearsing is what one is for.
+
+    One function, like :func:`flag_refusal`, called by everything that can
+    start a run-mode session — the command line as soon as the rig is read,
+    ``build_mode_session`` for code that starts one itself, the experiment
+    workspace before a launch — so the rule and its words live in one place.
+    Each caller refuses before it writes or connects anything, which is why
+    the message can say that nothing was.
+
+    ``ref`` names the rig in the message and decides what the exception is: a
+    shared rig is extended by a file of the experiment's own, an experiment
+    rig gets one line added. None, for a rig built in code, names neither.
+    ``instead`` returns the caller's own lines on what to do instead — the
+    command line names ``--rig`` and ``--mode``, the workspace its menus —
+    and is called only for a session that is refused, because finding the
+    rigs that do collect reads every rig file.
+    """
+    if not mode.writes_real_data or rig.real_data:
+        return None
+    if ref is None:
+        who = "this rig"
+        on_purpose = "give the experiment a rig file of its own that says `real_data: true`"
+    elif ref.source == "alhazen":
+        who = f"{ref.spec} (alhazen's shared rig)"
+        on_purpose = (
+            f"give the experiment its own configs/rig-{ref.name}.yaml saying "
+            f"`extends: {ref.name}` and `real_data: true`"
+        )
+    else:
+        who = f"{ref.name} ({ref.path})"
+        on_purpose = f"write `real_data: true` in {ref.path}, with a comment saying why"
+    lines = [
+        f"{mode.value} mode records real data, and {who} is a development rig: its settings "
+        f"say `real_data: false`. Nothing was started and nothing was written.",
+        *instead(),
+        f"To record real data on this machine on purpose, {on_purpose} ({REAL_DATA_DOCS}).",
+    ]
+    # One line per thing to read, the later ones indented under the first, so
+    # the refusal reads as a heading and its remedies on a terminal and in the
+    # workspace's banner alike.
+    return "\n  ".join(lines)
 
 
 # `__all__` holds only the names docs/reference.md lists as public (a test in

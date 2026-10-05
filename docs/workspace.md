@@ -112,9 +112,18 @@ it comes from, and a test checks the contrast of every pair it draws.
    would run — merged, for one that extends — as a short list: **Screen**,
    **Size**, **Display**, **Live monitor**, and **Rig**, whose it is and the
    shared rig it extends (`amodal-averaging/lab · this experiment's
-   configs/rig-lab.yaml · extends alhazen/lab`). A project registered before
-   shared rigs were listed shows none, and says so: save its **Project
-   settings** to register it again.
+   configs/rig-lab.yaml · extends alhazen/lab`). A development rig — one
+   whose settings say `real_data: false`, as the laptop the menu opens on
+   does ([Rigs](rigs.md#5-real-data-only-on-a-rig-meant-for-it)) — adds
+   **Real data: refused**. In **Run experiment** on such a rig, the note
+   under the launch button says, as a warning, that the launch will be
+   refused and what to choose instead; it does not disable the button. The
+   launch itself is refused by the launcher before a run record or anything
+   else is written, in the words the session itself would use and naming
+   the rigs in the menu that do collect, and the page shows that in its
+   error banner. Every other mode launches on a development rig as before.
+   A project registered before shared rigs were listed shows none, and says
+   so: save its **Project settings** to register it again.
 3. **Task parameters**, below the rig, starts with the menu of the
    experiment's parameter files: the files in `configs/` whose names start
    with `task` or `params`, each shown without its `task-`/`params-` prefix
