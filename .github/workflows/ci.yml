@@ -80,6 +80,26 @@ jobs:
       - run: uv pip list --system
       - run: pytest
 
+  # uv.lock pins the development environment that `uv sync` builds
+  # (CONTRIBUTING.md). A change to pyproject.toml's dependencies, or a version
+  # bump, made without re-running `uv lock` leaves the committed lock
+  # describing a different project, and the next `uv run` in a fresh clone
+  # rewrites it without a word. This job fails instead. The test matrix above
+  # does not use the lock on purpose: it installs with pip, as alhazen's users
+  # do, which keeps checking that alhazen installs with plain pip.
+  lockfile:
+    name: uv.lock matches pyproject.toml
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      # Pinned to the uv the lock is written with, so a new uv release cannot
+      # change the answer between two runs of the same commit.
+      - run: python -m pip install "uv==0.12.19"
+      - run: uv lock --check
+
   # The live monitor's renderer (src/alhazen/live_monitor/assets/live_monitor.js) is
   # browser JavaScript that pytest cannot run. tests/js runs it in a fake
   # page with Node's built-in test runner: no npm install, no package.json.

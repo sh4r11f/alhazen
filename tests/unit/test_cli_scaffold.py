@@ -413,8 +413,15 @@ class TestScaffoldedPackageWorks:
             text=True,
             timeout=600,
         )
-        if install.returncode != 0:
-            pytest.skip(f"pip could not install into a target directory:\n{install.stderr}")
+        # A failure here is a failure of the acceptance claim, not a reason to
+        # skip it: an environment without pip (a uv-made one before the dev
+        # group carried it) once made this test skip itself silently, and the
+        # packaging it checks went unchecked.
+        assert install.returncode == 0, (
+            f"pip could not install the scaffolded package into a target directory "
+            f"(exit {install.returncode}); the test environment needs pip and setuptools "
+            f"(the dev group has both):\n{install.stderr}"
+        )
         # The target holds only the two packages; alhazen's own dependencies
         # come from the environment running the tests.
         return scrubbed_env([target, os.environ.get("PYTHONPATH", "")], tmp_path)

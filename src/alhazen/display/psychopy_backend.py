@@ -32,6 +32,12 @@ log = logging.getLogger(__name__)
 # command in the same words (workspace.js PSYCHOPY_INSTALL; a test holds the
 # two together).
 PSYCHOPY_INSTALL = f'pip install "{DISTRIBUTION}[psychopy]"'
+# The same install for a project developed with uv (a `.venv` built from a
+# lockfile, such as alhazen itself and the experiments that pin it from a
+# tag): there pip is usually absent from the environment, and a `pip install`
+# into it would be undone by the next `uv sync` anyway, so the extra is added
+# through uv, in the project folder.
+PSYCHOPY_INSTALL_UV = "uv sync --extra psychopy"
 
 
 def psychopy_missing(error: ImportError, needed_for: str = "opening a window") -> DisplayError:
@@ -56,6 +62,13 @@ def psychopy_missing(error: ImportError, needed_for: str = "opening a window") -
     # The command runs pip through that exact interpreter, so it installs
     # into the environment named, whatever `pip` happens to be on PATH.
     command = f'"{python}" -m {PSYCHOPY_INSTALL}'
+    # Both ways, because the error cannot tell a pip-made environment from a
+    # uv-made one, and each way is wrong for the other.
+    how = (
+        f"  {command}\n"
+        f"or, if the project is developed with uv (it has a uv.lock), in its folder\n"
+        f"  {PSYCHOPY_INSTALL_UV}\n"
+    )
     elsewhere = (
         "or run the experiment with an interpreter that has PsychoPy "
         "(in the experiment dashboard: Project settings)"
@@ -64,14 +77,14 @@ def psychopy_missing(error: ImportError, needed_for: str = "opening a window") -
         return DisplayError(
             f"PsychoPy is not installed in the Python environment this runs in ({python}), "
             f"and {needed_for} needs it. Install it into that environment with\n"
-            f"  {command}\n"
+            f"{how}"
             f"{elsewhere}."
         )
     return DisplayError(
         f"PsychoPy is installed in the Python environment this runs in ({python}) but "
         f"could not be imported ({type(error).__name__}: {error}), and {needed_for} needs "
         f"it. Repair that installation, for example with\n"
-        f"  {command}\n"
+        f"{how}"
         f"{elsewhere}."
     )
 

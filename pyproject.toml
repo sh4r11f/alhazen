@@ -92,6 +92,27 @@ dev = [
   "tomli>=2.0; python_version < '3.11'",
 ]
 
+# uv's development environment (`uv sync`, `uv run`), which installs the
+# `dev` dependency group by default and extras only when asked. The group is
+# the `dev` extra above, so the tool list lives in one place:
+# `pip install -e ".[dev]"` (CI's matrix, the lowest-deps job) and `uv sync`
+# install the same tools, and a tool added to the extra reaches both. The
+# extra stays the source because it is what pip reads; a group is not package
+# metadata, so moving the list here would leave pip users with no dev tools.
+#
+# .python-version says 3.11, not newer, because of the psychopy extra: on
+# Windows PsychoPy requires pyWinhook, whose PyPI wheels stop at Python 3.11,
+# and building it needs SWIG and a C compiler no rig should need.
+#
+# Plus two packages the conda environments had and a uv-made one does not:
+# pip and setuptools. The scaffold acceptance test
+# (tests/unit/test_cli_scaffold.py) installs with `python -m pip install
+# --no-build-isolation`, which needs pip, and setuptools (this file's build
+# backend, at its build-system floor) in the environment itself. Without them
+# that test skips under uv, and the packaging it checks goes unchecked.
+[dependency-groups]
+dev = ["alhazen-vision[dev]", "pip", "setuptools>=68"]
+
 [project.scripts]
 alhazen = "alhazen.cli.main:main"
 
