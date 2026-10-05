@@ -361,6 +361,14 @@ main { flex: 1 1 auto; min-width: 0; padding: 22px 28px 56px; }
   border: 1px dashed var(--rule);
   border-radius: 6px;
 }
+/* A panel that could not be drawn says why, in the status red, with room on
+ * either side for a message that names a field and its value. */
+.empty[data-status="critical"] {
+  color: var(--critical);
+  border: 1px solid var(--critical);
+  padding: 0 16px;
+  text-align: center;
+}
 
 /* The table view: every value on every chart is also readable as text. */
 details.table { margin-top: auto; padding-top: 12px; }

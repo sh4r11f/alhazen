@@ -484,7 +484,7 @@ left out.
 
 | field | | meaning |
 | --- | --- | --- |
-| `maps` | required | `[{name, matrix, centroid?}]`; `matrix[row][col]`, row 0 the **bottom** row; a cell is a number or `null` (not measured yet). Every map has the same shape. |
+| `maps` | required | `[{name, matrix, centroid?}]`; `matrix[row][col]`, row 0 the **bottom** row; a cell is a finite number or `null` (not measured yet). Every map has the same shape. |
 | `x_edges`, `y_edges` | required | the cells' boundaries in real units, strictly increasing: `cols + 1` and `rows + 1` of them |
 | `x_scale`, `y_scale` | new; optional, both or neither | `"linear"` or `"log"`. Giving them draws the axes: ticks, tick labels and axis titles |
 | `x_unit`, `y_unit` | new; optional | the unit the hover readout writes after a coordinate and the table's column head names (`"dva/s"`, `"°"`) |
@@ -572,16 +572,35 @@ drawings recorded from the 2.7.0 renderer. The only difference an old payload
 can show is the out-of-range marking above, and only where cells fell outside
 its range.
 
-**Checked before it is sent.** `live_monitor_state()` checks every extra
-panel whose form is `heatmap` with
-`alhazen.live_monitor.heatmap.check_heatmap`, and raises `SessionError`
-naming the panel and the problem: maps of different shapes or ragged rows, a
-cell that is not a number or `null`, edges that are not strictly increasing
-or are the wrong length for the matrix, an unknown scale, one scale without
-the other, a log axis with an edge at or below 0, a unit that is not text,
-and a colour range given the wrong way round or a `vmin` without a `vmax`. A
-malformed map would otherwise reach the page as a card that only says
-*Malformed map*. An experiment can call `check_heatmap` in its own tests.
+**Checked before it is sent — and a bad one never stops a session.**
+`alhazen.live_monitor.heatmap.check_heatmap` says what a heatmap payload must
+be, and refuses one with `SessionError` naming the field: maps of different
+shapes or ragged rows, a cell that is not a finite number or `null` (JSON has
+no NaN, and one NaN in an update breaks the page's reading of all of it),
+edges that are not strictly increasing or are the wrong length for the
+matrix, an unknown scale, one scale without the other, a log axis with an
+edge at or below 0, a unit that is not text, and a colour range that is
+empty, the wrong way round, or a `vmin` without a `vmax`.
+
+`live_monitor_state()` runs that check on every heatmap among the extra
+panels. What a failure does depends on who is asking:
+
+- **In a session**, the runner passes `on_invalid_panel`, and a malformed
+  heatmap is loud without stopping anything. session.log gets one ERROR
+  naming the panel and the problem — once per panel and problem, not on
+  every update it stays that way for — and the panel goes out as a red card
+  saying *Malformed map:* and the same problem, in the live page and in the
+  page saved to `figures/`. The trials go on being recorded. A payload can
+  turn malformed through its data alone, in the middle of a recording (a
+  flat surface whose colour range is its own minimum and maximum, a NaN), and
+  the live monitor is a view of the data, not the data.
+- **Called directly** — by a test, or a tool that builds a state itself —
+  it raises `SessionError` naming the panel, as for any other malformed
+  input.
+
+`check_heatmap` stays strict and public so that an experiment can call it in
+its own tests, on the payloads its live analysis builds: a test is where a
+payload's mistakes should fail, since a session will only report them.
 
 What mbri sends for its posterior slice — the edges in real units, and four
 fields more than before:

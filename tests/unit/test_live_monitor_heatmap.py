@@ -165,7 +165,15 @@ class TestMaps:
     def test_a_cell_that_is_not_a_number_or_none_is_refused(self, cell):
         payload = rf_map()
         payload["maps"][1]["matrix"][1][2] = cell
-        refused(payload, r"maps\[1\] cell \[1\]\[2\] is .*; a cell is a number, or None")
+        refused(payload, r"maps\[1\] cell \[1\]\[2\] is .*; a cell is a finite number, or None")
+
+    @pytest.mark.parametrize("cell", [float("nan"), float("inf"), np.float64("-inf")])
+    def test_a_cell_that_is_not_finite_is_refused(self, cell):
+        # JSON has no NaN: one in a published state breaks the live page's
+        # reading of the whole update. A cell not measured yet is None.
+        payload = rf_map()
+        payload["maps"][0]["matrix"][0][0] = cell
+        refused(payload, r"maps\[0\] cell \[0\]\[0\] is .*; a cell is a finite number, or None")
 
     def test_a_map_without_a_matrix_is_refused(self):
         payload = rf_map()
@@ -196,11 +204,16 @@ class TestUnits:
 
 
 class TestColourRange:
-    @pytest.mark.parametrize(("vmin", "vmax"), [(0.49, 0.30), (0.4, 0.4)])
-    def test_a_range_the_wrong_way_round_is_refused(self, vmin, vmax):
+    def test_a_range_the_wrong_way_round_is_refused(self):
         payload = search_slice()
-        payload.update(vmin=vmin, vmax=vmax)
-        refused(payload, "colour range is the wrong way round: vmin .* is not below vmax")
+        payload.update(vmin=0.49, vmax=0.30)
+        refused(payload, "colour range is the wrong way round: vmin 0.49 is not below vmax 0.3")
+
+    def test_an_empty_range_is_refused_and_called_empty(self):
+        # What a flat surface gives when its limits are its own min and max.
+        payload = search_slice()
+        payload.update(vmin=0.4, vmax=0.4)
+        refused(payload, "colour range is empty: vmin and vmax are both 0.4")
 
     def test_vmin_without_vmax_is_refused(self):
         payload = search_slice()
@@ -235,11 +248,63 @@ class TestPublishing:
             extra_panels=list(extra),
         )
 
-    def test_a_malformed_heatmap_is_refused_naming_its_panel(self):
+    def test_called_directly_a_malformed_heatmap_raises_naming_its_panel(self):
+        # The default: a test or a tool building a state gets the exception.
         payload = search_slice()
         payload["vmin"], payload["vmax"] = 0.5, 0.3
         with pytest.raises(SessionError, match=r"panel 'Posterior slice': heatmap colour range"):
             self.publish({"title": "Posterior slice", "data": payload})
+
+    def test_with_a_reporter_a_malformed_heatmap_becomes_an_error_card(self):
+        """How a session publishes: the problem is reported and drawn, and
+        nothing is raised."""
+        reported: list[tuple[str, str]] = []
+        payload = search_slice()
+        payload["x_edges"] = payload["x_edges"][:-1]
+        state = live_monitor_state(
+            revision=1,
+            status="running",
+            identity={},
+            trials=[],
+            events=[],
+            spec=LiveMonitorSpec(include_defaults=False),
+            extra_panels=[
+                {"title": "Posterior slice", "section": "Search", "data": payload},
+                {"title": "Receptive fields", "data": rf_map()},
+            ],
+            on_invalid_panel=lambda title, problem: reported.append((title, problem)),
+        )
+        problem = (
+            "heatmap x_edges has 3 values, but the matrix is 3 cell(s) wide: it needs 4, "
+            "one more than the cells"
+        )
+        assert reported == [("Posterior slice", problem)]
+        card, untouched = state["panels"]
+        # The panel keeps its title and section; its data says what is wrong,
+        # naming the field as the payload does (x_edges, not "x edges").
+        assert (card["title"], card["section"]) == ("Posterior slice", "Search")
+        assert card["data"] == {"form": "error", "message": f"Malformed map: {problem}"}
+        # A well-formed neighbour is published as it always was.
+        assert untouched["data"]["form"] == "heatmap"
+        assert untouched["data"]["x_label"] == "Azimuth (dva)"
+
+    def test_an_error_card_keeps_a_nan_out_of_the_published_state(self):
+        # A NaN reaching the page's JSON would break the reading of the
+        # whole update; replaced by the card, it never gets there.
+        payload = search_slice()
+        payload["maps"][0]["matrix"][1][1] = float("nan")
+        state = live_monitor_state(
+            revision=1,
+            status="running",
+            identity={},
+            trials=[],
+            events=[],
+            spec=LiveMonitorSpec(include_defaults=False),
+            extra_panels=[{"title": "Posterior slice", "data": payload}],
+            on_invalid_panel=lambda title, problem: None,
+        )
+        assert state["panels"][0]["data"]["form"] == "error"
+        json.dumps(state, allow_nan=False)
 
     def test_well_formed_heatmaps_old_and_new_are_published_and_serialise(self):
         state = self.publish(

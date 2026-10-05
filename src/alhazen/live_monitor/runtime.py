@@ -759,6 +759,7 @@ def live_monitor_state(
     message: str | None = None,
     max_rows: int | None = None,
     extra_panels: Sequence[dict[str, Any]] = (),
+    on_invalid_panel: Callable[[str, str], None] | None = None,
 ) -> dict[str, Any]:
     """Construct the stable wire shape consumed by the bundled frontend.
 
@@ -786,9 +787,22 @@ def live_monitor_state(
     arrives as a finished ``{"title", "section", "data"}`` payload in the
     same wire shapes panels.py produces, so the page draws them exactly like
     every other panel. Validated here, loudly: a malformed entry would
-    otherwise render as a permanently and inexplicably blank card. A
-    ``heatmap`` is checked in full (:func:`~alhazen.live_monitor.heatmap.check_heatmap`),
-    because the page can only answer a malformed one with "Malformed map".
+    otherwise render as a permanently and inexplicably blank card.
+
+    A ``heatmap`` is checked in full
+    (:func:`~alhazen.live_monitor.heatmap.check_heatmap`). What happens to
+    one that fails depends on ``on_invalid_panel``:
+
+    - ``None`` (the default): :class:`~alhazen.errors.SessionError`, naming
+      the panel and the problem. A test or a tool that builds a state itself
+      gets the exception, as from any other malformed input.
+    - a callable: it is called with the panel's title and the problem, and
+      the panel goes out as an ``error`` card that says what is wrong, in
+      the live page and in the copy saved to ``figures/``. The session
+      runner passes one, because a payload can turn malformed through its
+      data (a flat surface's limits, a NaN) in the middle of a recording,
+      and the live monitor is a view of the data, not the data: a broken
+      panel must be loud, but must not end the session.
     """
     for panel in extra_panels:
         missing = [key for key in ("title", "data") if key not in panel]
@@ -797,14 +811,6 @@ def live_monitor_state(
                 f"an extra live monitor panel is missing {missing}; each entry of "
                 f"panels() must carry title and data (got keys {sorted(panel)})"
             )
-        data = panel["data"]
-        if isinstance(data, dict) and data.get("form") == "heatmap":
-            try:
-                check_heatmap(data)
-            except SessionError as error:
-                # The check knows the field; only this loop knows which of a
-                # session's panels it came from.
-                raise SessionError(f"live monitor panel {panel['title']!r}: {error}") from error
     return {
         "revision": revision,
         "status": status,
@@ -831,7 +837,7 @@ def live_monitor_state(
             # Through the same presentation pass as the trial panels, so an eye
             # tracker's or a live analysis's panel reads like every other one.
             *(
-                {"section": "Live analysis", **panel, "data": present(panel["data"])}
+                {"section": "Live analysis", **panel, "data": _extra_data(panel, on_invalid_panel)}
                 for panel in extra_panels
             ),
         ],
@@ -839,6 +845,29 @@ def live_monitor_state(
         "message": message,
         "updated_at": time.time(),
     }
+
+
+def _extra_data(
+    panel: dict[str, Any], on_invalid_panel: Callable[[str, str], None] | None
+) -> dict[str, Any]:
+    """One extra panel's data as it goes out: presented for print, or — for
+    a heatmap that fails its check — raised, or replaced by an error card
+    (see ``live_monitor_state``'s ``on_invalid_panel``)."""
+    data = panel["data"]
+    if isinstance(data, dict) and data.get("form") == "heatmap":
+        try:
+            check_heatmap(data)
+        except SessionError as error:
+            if on_invalid_panel is None:
+                # The check knows the field; only the caller's loop knows
+                # which of a session's panels it came from.
+                raise SessionError(f"live monitor panel {panel['title']!r}: {error}") from error
+            on_invalid_panel(str(panel["title"]), str(error))
+            # Not through present(): its prose pass would spell a field name
+            # such as x_edges out as words, and the card must name the field
+            # exactly as the payload does.
+            return {"form": "error", "message": f"Malformed map: {error}"}
+    return present(data)
 
 
 _ASSETS = Path(__file__).parent / "assets"

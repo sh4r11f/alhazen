@@ -6,14 +6,20 @@ mbri's posterior slices. Nothing between the experiment that builds one and
 the page that draws it looked inside, so a payload whose edges did not fit
 its matrix reached the page as a card that only said "Malformed map", for
 the rest of the session. :func:`check_heatmap` is the one place the Python
-side says what such a payload must be; ``live_monitor_state()`` calls it on
-every heatmap it publishes, so a mistake is refused where it is made.
+side says what such a payload must be.
+
+It is strict on purpose, and experiments call it in their own tests: that is
+where a payload's mistakes should fail. A running session does not stop for
+one — ``live_monitor_state()`` runs this check on every heatmap it publishes,
+and in a session (``SessionRunner``) a payload that fails it is drawn as an
+error card naming the problem and logged once at ERROR, while the recording
+goes on. The live monitor is a view of the data, not the data.
 
 The form (docs/live_monitor.md, "The heatmap form"):
 
 ``maps``                 ``[{name, matrix, centroid?}]``; ``matrix[row][col]``,
-                         row 0 the bottom row; a cell is a number or ``None``
-                         (not measured yet); every map the same shape
+                         row 0 the bottom row; a cell is a finite number or
+                         ``None`` (not measured yet); every map the same shape
 ``x_edges``/``y_edges``  the cells' boundaries in real units, strictly
                          increasing, ``cols + 1`` / ``rows + 1`` of them
 ``x_scale``/``y_scale``  optional, both or neither: ``"linear"`` or ``"log"``
@@ -43,7 +49,9 @@ def check_heatmap(data: Mapping[str, Any]) -> None:
     """Raise :class:`~alhazen.errors.SessionError` unless ``data`` is a
     well-formed heatmap payload.
 
-    The message names the field and what is wrong with it. A payload whose
+    The message names the field and what is wrong with it. Call it in an
+    experiment's tests on the payloads its live analysis builds: a session
+    only reports a malformed one (see the module docstring). A payload whose
     ``maps`` hold no cells yet (an empty list, or empty matrices) is valid —
     the page draws "No map yet" — and then the edges' lengths are not
     checked, since there is nothing to check them against.
@@ -100,10 +108,13 @@ def _maps_shape(maps: Any) -> tuple[int | None, int | None]:
                 )
             widths.add(len(row))
             for col_index, cell in enumerate(row):
-                if cell is not None and not _is_number(cell):
+                # NaN and infinity are refused as well as non-numbers: JSON
+                # has neither, and one NaN in a published state breaks the
+                # live page's parsing of the whole update, not just this map.
+                if cell is not None and not (_is_number(cell) and math.isfinite(cell)):
                     raise SessionError(
                         f"heatmap maps[{index}] cell [{row_index}][{col_index}] is {cell!r}; "
-                        f"a cell is a number, or None for a cell not measured yet"
+                        f"a cell is a finite number, or None for a cell not measured yet"
                     )
         if len(widths) > 1:
             raise SessionError(
@@ -195,6 +206,12 @@ def _colour_range(data: Mapping[str, Any]) -> None:
     if vmax is None:
         raise SessionError(
             "heatmap gives vmin but no vmax; the colour range needs its top as well as its bottom"
+        )
+    if vmin == vmax:
+        # What a flat surface gives when its limits are its own min and max.
+        raise SessionError(
+            f"heatmap colour range is empty: vmin and vmax are both {vmin:g}; vmin must be "
+            f"below vmax"
         )
     if not vmin < vmax:
         raise SessionError(

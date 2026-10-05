@@ -30,18 +30,24 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 ### Added
 
 - **A heatmap payload is checked before it is sent:
-  `alhazen.live_monitor.heatmap.check_heatmap`.** `live_monitor_state()`
-  runs it on every extra panel whose form is `heatmap` (a live analysis's
-  receptive-field map, an optimiser's posterior slice) and raises
-  `SessionError` naming the panel and the field: maps of different shapes or
-  with ragged rows, a cell that is neither a number nor `null`, edges that
-  are missing, not strictly increasing or the wrong length for the matrix, an
+  `alhazen.live_monitor.heatmap.check_heatmap`.** It refuses, with
+  `SessionError` naming the field, maps of different shapes or with ragged
+  rows, a cell that is neither a finite number nor `null`, edges that are
+  missing, not strictly increasing or the wrong length for the matrix, an
   unknown scale or only one of the two, a log axis with an edge at or below
-  0, a unit that is not text, and a colour range the wrong way round or a
-  `vmin` with no `vmax`. Such a map used to reach the page as a card saying
-  only "Malformed map" for the rest of the session. rf-mapping's and mbri's
-  heatmaps pass unchanged. An experiment can call `check_heatmap` in its own
-  tests.
+  0, a unit that is not text, and a colour range that is empty, the wrong
+  way round, or a `vmin` with no `vmax`. It is public and strict so that an
+  experiment calls it in its own tests. `live_monitor_state()` runs it on
+  every extra panel whose form is `heatmap`; called directly it raises, and
+  with the new `on_invalid_panel` reporter — which the session runner
+  passes — it draws the panel as a red card saying *Malformed map:* and the
+  problem instead. So during a session a malformed heatmap, however it got
+  that way (a flat surface's colour range, a NaN), logs one ERROR in
+  session.log per panel and problem, shows the card on the live page and in
+  the saved `figures/live_monitor.html`, and never stops the recording. Such
+  a map used to reach the page as a card saying only "Malformed map", and a
+  NaN in one broke the live page's reading of every update. rf-mapping's and
+  mbri's heatmaps pass unchanged.
 
 - **The live monitor's heatmap draws real axes, takes a colour range, and
   says what its units are** (docs/live_monitor.md, "The heatmap form"). A

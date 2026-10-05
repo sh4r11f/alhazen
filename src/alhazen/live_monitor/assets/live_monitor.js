@@ -2050,11 +2050,14 @@ async function cameraLoop() {
   }
 }
 
-function drawEmpty(host, message) {
+function drawEmpty(host, message, status) {
   /* The same height as a drawn plot, so a panel with nothing to show yet does
    * not pull its row out of alignment. */
   const box = htmlEl('div', 'empty', message || 'No data yet', host);
   box.style.height = chartHeight(host.clientWidth || 380) + 'px';
+  /* "critical" for a panel that could not be drawn: the same status the
+   * stats strip and the verdict tiles use, so it reads red like them. */
+  if (status) box.dataset.status = status;
 }
 
 /* ------------------------------------------------------------------ */
@@ -2535,6 +2538,13 @@ function paintPanel(entry) {
   entry.host.replaceChildren();
   entry.legendHost.replaceChildren();
   const data = entry.data;
+  /* A panel the session could not send as drawn — a heatmap that failed its
+   * check (live_monitor/heatmap.py) — arrives as an error card naming the
+   * problem, which session.log records too. Loud, in place of the plot. */
+  if (data.form === 'error') {
+    drawEmpty(entry.host, data.message || 'This panel could not be drawn', 'critical');
+    return;
+  }
   if (data.form === 'empty' || !DRAW[data.form]) {
     drawEmpty(entry.host, data.message || 'Nothing to draw');
     return;

@@ -16,7 +16,7 @@ import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 
 import { serialize } from './fake_dom.mjs';
-import { hostFor, loadLiveMonitor } from './load_live_monitor.mjs';
+import { SAVED_STATE, hostFor, loadLiveMonitor } from './load_live_monitor.mjs';
 
 const RECORDED = JSON.parse(
   readFileSync(new URL('fixtures/heatmap_2_7_0.json', import.meta.url), 'utf8'),
@@ -498,5 +498,35 @@ describe('a heatmap\'s figure export', () => {
     // legend's "unprobed cell" swatch.
     assert.equal(markup.match(/<rect /g).length, 1 + 3 * 12 + 1 + 1);
     assert.doesNotMatch(markup, /class="hit"|data-screen-only/);
+  });
+});
+
+describe('a heatmap the session could not send as drawn', () => {
+  /* What live_monitor_state() publishes, during a session, in place of a
+   * heatmap that failed its check: an error card with the check's message. */
+  const MESSAGE = 'Malformed map: heatmap colour range is empty: vmin and vmax are both 0.4; ' +
+    'vmin must be below vmax';
+  const savedPage = () => loadLiveMonitor({
+    staticState: {
+      ...SAVED_STATE,
+      panels: [{ title: 'Posterior slice', section: 'Search', data: { form: 'error', message: MESSAGE } }],
+    },
+  });
+
+  it('shows the problem in the panel\'s place, in the status red, live and saved alike', () => {
+    const live_monitor = savedPage();
+    const card = live_monitor.document.querySelector('section.panel');
+    assert.equal(card.querySelector('h2').textContent, 'aPosterior slice');
+    const box = card.querySelector('div.empty');
+    assert.equal(box.textContent, MESSAGE);
+    assert.equal(box.getAttribute('data-status'), 'critical');
+    assert.equal(card.querySelector('svg'), null);
+    assert.deepEqual(live_monitor.consoleErrors, []);
+  });
+
+  it('offers no table and no figure export for a panel with nothing drawn', () => {
+    const card = savedPage().document.querySelector('section.panel');
+    assert.equal(card.querySelector('details.table'), null);
+    assert.equal(card.querySelector('div.figure-export'), null);
   });
 });
