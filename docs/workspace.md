@@ -308,11 +308,25 @@ settings cannot be contradicted from the text field. Those flags are `--mode`,
 `--seed 5` or the `--seed=5` spelling, and `--task` for a project with a Task
 menu; every other flag passes through.
 
-The launcher discovers standalone `src/<package>/preview.py` and `movie.py`
-modules when they declare a literal `--out` argparse option and a `__main__`
-entry point. **Preview images** runs Amodal's PNG generator; **Movie script**
-runs its standalone recorder, which offers additional sheet options. The
-launcher passes `--rig` and `--params` or `--task-config` when the script
+**Preview images** draws every stimulus an experiment declares, for an
+experiment whose pyproject.toml names the function that draws them
+(`[tool.alhazen] stimuli`; [How to](how-to.md#preview-an-experiments-stimuli)).
+It runs `alhazen preview --project <experiment> --rig <rig> --out <run>/media`
+in the project's interpreter: one PNG per stimulus and an index, at the
+chosen rig's pixel scale. It takes no task and no parameter file, because
+neither changes what an experiment shows, so the form hides the Task menu
+and the parameter file for it. Its reserved flags are `--out`, `--rig` and
+`--project`. It replaces the button the experiment's own `preview.py` would
+get. A declaration that cannot be used keeps the button, and launching it
+says why. The project's own alhazen must have the command; an older one
+stops the run with `invalid choice: 'preview'` in its console.
+
+For an experiment that declares no stimuli, the launcher discovers
+standalone `src/<package>/preview.py` and `movie.py` modules when they
+declare a literal `--out` argparse option and a `__main__` entry point.
+**Preview images** then runs the experiment's own PNG generator; **Movie
+script** runs its standalone recorder, which offers additional sheet options.
+The launcher passes `--rig` and `--params` or `--task-config` when the script
 supports them; those and `--out` are the flags reserved for a script, and
 anything else it declares goes in the same extra-arguments field, whose help
 lists the flags the script offers. Scripts that are only internal viewer

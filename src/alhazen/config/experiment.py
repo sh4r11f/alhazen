@@ -25,6 +25,10 @@ The same file also names the experiment for people: its short name, the
 *slug* (``[project] name``), and an optional display title
 (``[tool.alhazen] title``), which the experiment workspace shows and rig names
 are qualified with (``amodal-averaging/lab``); see `experiment_title`.
+
+And it says where the experiment's stimuli are defined
+(``[tool.alhazen] stimuli``), which ``alhazen preview`` draws as images and
+the workspace offers as **Preview images**; see `experiment_stimuli`.
 """
 
 from __future__ import annotations
@@ -213,6 +217,83 @@ def experiment_title(root: Path) -> ExperimentTitle:
             ),
         )
     return ExperimentTitle(slug=slug, title=title.strip())
+
+
+# What ``[tool.alhazen] stimuli`` must look like: a dotted module path, a
+# colon, and the name of a function in that module, the way a Python entry
+# point is written (``amodal_averaging.stimulus_set:stimulus_images``).
+STIMULI_TARGET = re.compile(
+    r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*:[A-Za-z_][A-Za-z0-9_]*"
+)
+
+
+@dataclass(frozen=True)
+class StimulusDeclaration:
+    """Where an experiment's stimuli are defined, as its pyproject.toml says.
+
+    ``target`` is the function that draws them, written
+    ``"package.module:function"`` (``[tool.alhazen] stimuli``), or None when
+    the experiment declares none. ``error`` says why a declaration that is
+    there cannot be used, and is None when nothing is wrong. Like the title,
+    an unusable declaration is reported rather than raised, so the workspace
+    still lists the experiment; ``alhazen preview`` raises it.
+
+    The function itself is ``alhazen.stimuli.preview``'s business: this only
+    reads the file, so nothing here imports the experiment's code.
+    """
+
+    target: str | None
+    error: str | None = None
+
+
+def experiment_stimuli(root: Path) -> StimulusDeclaration:
+    """The stimulus declaration of the experiment in folder ``root``.
+
+    Read from ``root/pyproject.toml`` with tomllib, never by importing the
+    experiment, for the same reason as `experiment_title`: the workspace's web
+    server asks it of every registered experiment and must not run their
+    code. The experiment declares its stimuli once, for all its tasks::
+
+        [tool.alhazen]
+        stimuli = "amodal_averaging.stimulus_set:stimulus_images"
+
+    A folder with no pyproject.toml, or one without the key, declares none,
+    and that is not an error. A file that cannot be read, a ``[tool.alhazen]``
+    that is not a table, or a value that is not ``module:function`` is
+    reported in ``error`` with the file and what to write instead.
+    """
+    path = root.resolve() / "pyproject.toml"
+    if not path.is_file():
+        return StimulusDeclaration(target=None)
+    try:
+        document = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        return StimulusDeclaration(
+            target=None, error=f"cannot read {path} for the experiment's stimuli: {exc}"
+        )
+    tool = document.get("tool", {})
+    table = tool.get("alhazen") if isinstance(tool, dict) else None
+    if table is None:
+        return StimulusDeclaration(target=None)
+    if not isinstance(table, dict):
+        return StimulusDeclaration(
+            target=None, error=f"{path}: [tool.alhazen] must be a table, not {table!r}"
+        )
+    if "stimuli" not in table:
+        return StimulusDeclaration(target=None)
+    target = table["stimuli"]
+    # Held to the pattern here, where the file can be named, rather than left
+    # to an import that would fail later with only the module's name in it.
+    if not isinstance(target, str) or not STIMULI_TARGET.fullmatch(target.strip()):
+        return StimulusDeclaration(
+            target=None,
+            error=(
+                f"{path}: [tool.alhazen] stimuli must name a function as "
+                f'"package.module:function", such as stimuli = '
+                f'"my_experiment.stimulus_set:stimulus_images"; got {target!r}'
+            ),
+        )
+    return StimulusDeclaration(target=target.strip())
 
 
 def _checked(version: str, where: str) -> str:

@@ -227,8 +227,119 @@ class TestProjects:
         assert str(broken) in caplog.text
         assert f"line {error.value.lineno}: {error.value.msg}" in caplog.text
 
+    def test_declared_stimuli_get_alhazens_preview_instead_of_the_experiments_own(self, workspace):
+        """An experiment that declares its stimuli gets one Preview images,
+        alhazen's, which draws them with no task and no parameter file. Its
+        own preview.py, which would read a parameter file, is not offered
+        beside it; its other scripts still are."""
+        root = Path(workspace.projects[0]["path"])
+        declare_stimuli(root)
+        package = root / "src/my_experiment"
+        package.mkdir(parents=True)
+        for script in ("preview.py", "movie.py"):
+            (package / script).write_text(
+                "parser.add_argument('--out')\nparser.add_argument('--task-config')\n"
+                "if __name__ == '__main__': main()\n"
+            )
+        actions = script_actions(root)
+        assert [a["id"] for a in actions] == ["alhazen.preview", "my_experiment.movie"]
+        preview = actions[0]
+        assert preview["label"] == "Preview images"
+        assert (preview["params_flag"], preview["task_free"], preview["error"]) == (
+            None,
+            True,
+            None,
+        )
+        # The experiment's own scripts may read the task's file, so they keep
+        # the Task menu.
+        assert actions[1]["task_free"] is False
+
+    def test_the_preview_command_names_no_task_and_no_parameter_file(self, workspace):
+        root = Path(workspace.projects[0]["path"])
+        declare_stimuli(root)
+        job = workspace.directory / "job"
+        args = workspace._command(request_for(workspace, mode="alhazen.preview"), job)
+        assert args[2:] == [
+            "-m",
+            "alhazen",
+            "preview",
+            "--project",
+            str(root),
+            "--rig",
+            str(root / "configs/rig-sim.yaml"),
+            "--out",
+            str(job / "media"),
+        ]
+        with pytest.raises(ValueError, match="takes no parameter file"):
+            workspace._command(
+                request_for(workspace, mode="alhazen.preview", parameters={"speed": 4}), job
+            )
+        # What the launcher sets may not be contradicted from the extras.
+        with pytest.raises(ValueError, match=r"--project is set from the dashboard controls"):
+            workspace._command(
+                request_for(workspace, mode="alhazen.preview", extra_args="--project=/elsewhere"),
+                job,
+            )
+
+    def test_a_declaration_that_cannot_be_used_is_offered_and_refused_with_its_reason(
+        self, workspace
+    ):
+        """The button stays, so the reader learns why on launching it: a
+        missing button would say "nothing declared" instead."""
+        root = Path(workspace.projects[0]["path"])
+        (root / "pyproject.toml").write_text(
+            '[project]\nname = "demo"\nversion = "0.1.0"\n[tool.alhazen]\nstimuli = 42\n',
+            encoding="utf-8",
+        )
+        (action,) = script_actions(root)
+        assert action["id"] == "alhazen.preview"
+        assert "package.module:function" in action["error"]
+        with pytest.raises(ValueError, match="package.module:function"):
+            workspace._command(
+                request_for(workspace, mode="alhazen.preview"), workspace.directory / "job"
+            )
+
+
+def declare_stimuli(root: Path) -> None:
+    """Give the workspace fixture's experiment a pyproject.toml that declares
+    its stimuli, and the package that draws them: one grey dot, one degree
+    across at the rig's scale."""
+    (root / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0.1.0"\n\n'
+        '[tool.alhazen]\nstimuli = "declared_demo.stimulus_set:stimulus_images"\n',
+        encoding="utf-8",
+    )
+    package = root / "src/declared_demo"
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "stimulus_set.py").write_text(
+        "import numpy as np\n"
+        "from alhazen.stimuli import StimulusImage\n\n"
+        "def stimulus_images(screen):\n"
+        "    size = int(round(screen.px_per_deg))\n"
+        "    return [StimulusImage('dot', np.full((size, size), 0.5), 'a grey square')]\n",
+        encoding="utf-8",
+    )
+
 
 class TestLaunches:
+    def test_preview_images_draws_the_declared_stimuli_in_a_real_process(self, workspace):
+        """The whole path: the page's request, the project's interpreter
+        running `python -m alhazen preview`, and the images in the run's media
+        folder, where the gallery shows them."""
+        root = Path(workspace.projects[0]["path"])
+        declare_stimuli(root)
+        run = finish(workspace, workspace.start(request_for(workspace, mode="alhazen.preview")))
+        assert run["status"] == "completed", run["log"]
+        assert run["returncode"] == 0
+        # The gallery lists the images; the index is beside them on disk.
+        assert [a["path"] for a in run["artifacts"]] == ["dot.png"]
+        media = Path(run["directory"]) / "media"
+        assert (media / "README.md").is_file()
+        assert (media / "dot.png").read_bytes().startswith(b"\x89PNG")
+        # No parameter file was written for it: it takes none.
+        assert not (Path(run["directory"]) / "params.yaml").exists()
+
     def test_real_process_media_snapshot_logs_and_history(self, workspace):
         original = Path(workspace.projects[0]["path"]) / "configs/task.yaml"
         content = original.read_bytes()

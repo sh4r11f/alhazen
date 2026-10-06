@@ -28,7 +28,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
 from alhazen.cli.workspace_schema import TASK_NAME_KEY
-from alhazen.config.experiment import experiment_title
+from alhazen.config.experiment import experiment_stimuli, experiment_title
 from alhazen.config.loader import validate_rig
 from alhazen.config.models import normalize_initials
 from alhazen.config.rigs import (
@@ -441,16 +441,53 @@ def project_tasks(root: Path) -> dict[str, Any]:
     return {"tasks": tasks, "default": default, "error": None}
 
 
+# The id of the Preview images action an experiment gets by declaring its
+# stimuli: alhazen's own command rather than a module of the experiment's, so
+# it can never be mistaken for one (theirs are "<package>.preview").
+STIMULUS_PREVIEW = "alhazen.preview"
+
+
 def script_actions(root: Path) -> list[dict[str, Any]]:
     """Recognise runnable preview/movie modules by their literal argparse flags.
 
     A preview.py without a CLI (kde-vergence's viewer helper, for example)
     is not an image generator. Requiring --out and a __main__ guard avoids
     offering a button which runs successfully but produces nothing.
+
+    An experiment that declares its stimuli (``[tool.alhazen] stimuli``, read
+    from its pyproject.toml without importing anything) gets **Preview
+    images** from alhazen instead: ``alhazen preview``, which draws every
+    declared stimulus with no task and no parameter file, because neither
+    changes what an experiment shows. That button replaces the one its own
+    preview.py would have had. The declaration is the experiment's explicit
+    statement of what to draw, and two buttons of one name would leave the
+    reader guessing which draws what. A declaration that cannot be used still
+    gets the button, carrying the reason as ``error``, which a launch raises:
+    a missing button would read as "nothing declared" when the truth is
+    "declared wrongly".
     """
-    actions = []
+    declaration = experiment_stimuli(root)
+    declared = declaration.target is not None or declaration.error is not None
+    actions: list[dict[str, Any]] = []
+    if declared:
+        actions.append(
+            {
+                "id": STIMULUS_PREVIEW,
+                "label": "Preview images",
+                "module": "alhazen",
+                "params_flag": None,
+                "rig_flag": True,
+                "flags": ["--out", "--project", "--rig"],
+                # The page hides the Task menu for it: whichever task is
+                # chosen, the same images are drawn.
+                "task_free": True,
+                "error": declaration.error,
+            }
+        )
     for source in sorted((root / "src").glob("*/*.py")):
         if source.stem not in {"preview", "movie"}:
+            continue
+        if source.stem == "preview" and declared:
             continue
         text = source.read_text(encoding="utf-8")
         try:
@@ -487,6 +524,11 @@ def script_actions(root: Path) -> list[dict[str, Any]]:
                 "params_flag": params_flag,
                 "rig_flag": "--rig" in flags,
                 "flags": sorted(flags),
+                # The experiment's own script may read the task's parameter
+                # file (--params / --task-config), so the Task menu, which
+                # picks that file, stays.
+                "task_free": False,
+                "error": None,
             }
         )
     return actions
@@ -828,6 +870,8 @@ def _script_command(request: Launch, root: Path, rig_path: Path, run_dir: Path) 
     action = next((s for s in script_actions(root) if s["id"] == request.mode), None)
     if action is None:
         raise ValueError("Unknown experiment mode or script")
+    if action["id"] == STIMULUS_PREVIEW:
+        return _stimulus_preview_command(action, request, root, rig_path, run_dir)
     command = ["-m", action["module"], "--out", str(run_dir / "media")]
     if action["rig_flag"]:
         command += ["--rig", str(rig_path)]
@@ -836,6 +880,40 @@ def _script_command(request: Launch, root: Path, rig_path: Path, run_dir: Path) 
             raise ValueError("This script has no parameter-file option; use its own arguments")
         command += [action["params_flag"], str(run_dir / "params.yaml")]
     return command + _extra_arguments(request.extra_args, SCRIPT_FLAGS)
+
+
+def _stimulus_preview_command(
+    action: dict[str, Any], request: Launch, root: Path, rig_path: Path, run_dir: Path
+) -> list[str]:
+    """``alhazen preview`` for an experiment that declares its stimuli, in
+    the project's own interpreter: every declared stimulus, at the chosen
+    rig's scale, into the run's media folder.
+
+    The project's own alhazen must have the command (the first release after
+    2.8.0). An older one refuses it in the run's console, as ``invalid
+    choice: 'preview'``. The workspace does not decide from the version it
+    recorded at registration, which goes stale whenever the project
+    upgrades and would refuse a development checkout that has the command.
+    """
+    if action["error"] is not None:
+        raise ValueError(action["error"])
+    if request.parameters is not None or request.parameters_yaml is not None:
+        raise ValueError(
+            "Preview images draws every stimulus the experiment declares, whatever the task "
+            "and its parameters, so it takes no parameter file"
+        )
+    command = [
+        "-m",
+        "alhazen",
+        "preview",
+        "--project",
+        str(root),
+        "--rig",
+        str(rig_path),
+        "--out",
+        str(run_dir / "media"),
+    ]
+    return command + _extra_arguments(request.extra_args, SCRIPT_FLAGS | {"--project"})
 
 
 def _describe_rigs(root: Path, shared: dict[str, Path] | None) -> list[dict[str, Any]]:

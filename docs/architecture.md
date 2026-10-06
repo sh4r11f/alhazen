@@ -18,7 +18,8 @@ src/alhazen/
 ├── display/        # DisplayBackend protocol, simulated + psychopy backends, Screen, FrameMonitor,
 │                   #   text.reflow (hard-wrapped prose → paragraphs, for show_message),
 │                   #   ruler.py (the bar `calibrate ruler` and measure mode draw)
-├── stimuli/        # Stimulus protocol, NullStimulus, FixationPoint, PhotodiodePatch
+├── stimuli/        # Stimulus protocol, NullStimulus, FixationPoint, PhotodiodePatch,
+│                   #   preview.py (an experiment's declared stimuli as PNGs: alhazen preview)
 ├── scenes/         # illusion-studio scenes: expressions, loader, headless renderer
 ├── devices/        # EyeTracker (eyelink/viewpixx/mouse_sim/scripted), RewardDispenser,
 │                   #   SyncOutput, SubjectKeyboard, SpikeSource (spikeglx/simulated);
@@ -42,7 +43,8 @@ src/alhazen/
 │                   #   internal parts: streaks.py, reward_payer.py, pause_control.py
 ├── config/         # pydantic models (extra=forbid, frozen), YAML loader, snapshot writer,
 │                   #   rigs.py (rig names, the shared rigs, `extends`; §12),
-│                   #   experiment.py (which experiment and version a task belongs to)
+│                   #   experiment.py (which experiment and version a task belongs to,
+│                   #   and where it declares its stimuli)
 ├── rigs/           # the shared rig files: package data, not a Python package
 ├── data/           # naming, SessionPaths and find_runs, manifest, participants registry, percents
 │                   #   (a measured fraction written beside its threshold, §10.2),
@@ -51,7 +53,8 @@ src/alhazen/
 ├── testing/        # PUBLIC fakes: FakeClock/FakeDisplay/FakeStimulus/Scripted*/EventCollector
 │                  # and SortedSpikePublisher, the sorter that lives outside this repo
 ├── _scaffold/      # the template `alhazen new` renders
-└── cli/            # new · run · dashboard · validate · check-rig · sim-sorter · calibrate · report
+└── cli/            # new · run · dashboard · validate · rigs · preview · check-rig · sim-sorter ·
+                    #   calibrate · report
 ```
 
 Layering is enforced by import-linter (pyproject `[tool.importlinter]`),
@@ -77,7 +80,12 @@ checkouts by reading config and script files, then supervises each project's
 own entry point in a child process. A loopback HTTP server serves the bundled
 `cli/assets/` interface, authenticated control requests, bounded log tails,
 and media with byte-range support. A workspace stores its project registry
-and unique run directories with parameter/rig snapshots and logs. No launcher
+and unique run directories with parameter/rig snapshots and logs. An
+experiment that declares its stimuli (`[tool.alhazen] stimuli`) gets its
+Preview images from alhazen, `alhazen preview` in the project's interpreter,
+rather than from its own `preview.py`: the declaration is read from the
+pyproject with `config/experiment.py`, never by importing the experiment,
+and drawn by `stimuli/preview.py` in the child. No launcher
 HTTP or process bookkeeping enters the trial engine. The existing `live_monitor/`
 package remains the session monitor, with its own pause-only controls. See
 [Experiment workspace](workspace.md) for the launch and storage contracts.
@@ -2315,9 +2323,9 @@ backend, display backend, training stage or metric — are in
 
 ## 12. The command line
 
-Six commands, each doing one thing an experimenter needs, and each doing it
-through the same code a session would — a tool whose "OK" comes from a
-parallel implementation is a tool whose OK means nothing.
+Each command does one thing an experimenter needs, and does it through the
+same code a session would — a tool whose "OK" comes from a parallel
+implementation is a tool whose OK means nothing.
 
 | | |
 |---|---|
@@ -2325,6 +2333,7 @@ parallel implementation is a tool whose OK means nothing.
 | `alhazen run --task ...` | run one session of an installed task, found through the `alhazen.tasks` entry-point group; picks the next free run number (within the experiment's version), prompts for subject, session and — in `run` and `test` — the subject's initials if omitted, runs the task's own params file when `--params` is not given, applies its params hook, and shows the subject its instructions (§5.1). An experiment's `run.py` starts the same session through the same dispatch |
 | `alhazen validate --rig` | is this config file well-formed? |
 | `alhazen rigs` | which rigs can `--rig` name from here, whose is each, and what does each extend? |
+| `alhazen preview --rig --out` | draw every stimulus the experiment declares (`[tool.alhazen] stimuli`) as PNGs at the rig's pixel scale, with an index; no task and no parameter file, because neither changes what the experiment shows. The workspace's Preview images runs it |
 | `alhazen check-rig --rig` | is this rig actually wired? Constructs the real backends; `--pulse` fires the pump and the sync lines |
 | `alhazen sim-sorter` | publish the sorted-spike wire contract, so `check-rig` can be rehearsed with no sorter and no probe; `--fault` publishes a named non-conformance instead |
 | `alhazen calibrate ruler\|gamma` | draw a bar of a known angular size on the rig's own display and say what it should measure; fit and store a gamma curve from photometer readings |

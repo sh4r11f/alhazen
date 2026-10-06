@@ -29,6 +29,59 @@ def make_bar(display, screen, length_dva, pos):
     return Bar(display, screen, length_dva, pos)
 ```
 
+## Preview an experiment's stimuli
+
+Declare every stimulus the experiment shows once, for all its tasks, by
+naming the function that draws them in its `pyproject.toml`:
+
+```toml
+[tool.alhazen]
+stimuli = "my_experiment.stimulus_set:stimulus_images"
+```
+
+The function takes the rig's `Screen` and returns one `StimulusImage` per
+stimulus: its name, which becomes the file's name; the picture at the rig's
+pixel scale, `(height, width)` luminance or `(height, width, 3)` RGB, as
+floats in [0, 1] or uint8; and a one-line caption saying what to look for.
+
+```python
+import numpy as np
+
+from alhazen.stimuli import StimulusImage
+
+
+def stimulus_images(screen):
+    size = int(round(screen.deg2px(2.0)))
+    return [
+        StimulusImage("square-grey", np.full((size, size), 0.5), "a grey square, 2 deg across"),
+        StimulusImage("square-white", np.ones((size, size)), "the same square at full white"),
+    ]
+```
+
+Then draw them all, in the experiment's folder:
+
+```bash
+alhazen preview --rig lab --out docs/stimulus-check
+```
+
+That writes one PNG per stimulus and an index, `README.md`, listing them
+with their sizes and captions, at the scale of the rig named. It takes no
+task and no parameter file: the stimuli are the experiment's, and a shorter
+configuration runs fewer of them, not different ones. The workspace's
+**Preview images** runs the same command
+([Experiment workspace](workspace.md)).
+
+Each stimulus is declared once. The command refuses the same picture under
+two names, two names one filesystem would take for one file, and an output
+folder that holds an image the declaration no longer has, so the folder
+always shows exactly the declared set. Everything is drawn and checked
+before anything is written.
+
+A test worth keeping beside the declaration: draw every condition each of
+the experiment's parameter files can run, and check that each one is among
+`alhazen.stimuli.preview.declared_stimuli(root, screen)`. That is what makes
+the set the experiment's own rather than one file's.
+
 ## Add a phase
 
 An object with `name`, `on_enter(ctx)` and `on_frame(ctx) -> PhaseAction |

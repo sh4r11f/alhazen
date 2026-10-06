@@ -655,6 +655,35 @@ describe('choosing a task', () => {
     assert.equal(launched(app).task, null);
   });
 
+  it('hides the Task menu for the declared stimuli, which are drawn whatever the task',
+    async () => {
+      /* What the server describes for an experiment that declares its
+       * stimuli ([tool.alhazen] stimuli): alhazen's own Preview images. */
+      const declared = {
+        id: 'alhazen.preview', label: 'Preview images', module: 'alhazen',
+        flags: ['--out', '--project', '--rig'], params_flag: null, rig_flag: true,
+        task_free: true, error: null,
+      };
+      const app = await taskedPage({ project: { ...TASKED, scripts: [declared] } });
+      /* First in the menu, as an experiment's own Preview images is. */
+      assert.equal(app.byId('mode').children[0].value, 'alhazen.preview');
+      chooseMode(app, 'alhazen.preview');
+      assert.equal(app.byId('task-field').hidden, true);
+      assert.equal(app.byId('task-parameters').hidden, true);
+      /* The flags the launcher sets are not offered for retyping. */
+      assert.equal(app.byId('extra-help').textContent, 'Available flags: none');
+      await launch(app);
+      const body = launched(app);
+      assert.equal(body.mode, 'alhazen.preview');
+      assert.equal(body.task, null);
+      assert.equal(body.parameters ?? null, null);
+      assert.equal(body.parameters_yaml ?? null, null);
+
+      /* Back on a mode that runs a task, the menu is offered again. */
+      chooseMode(app, 'simulate');
+      assert.equal(app.byId('task-field').hidden, false);
+    });
+
   it('names the task after the mode in the history and the run summary', async () => {
     const run = runDetail({ task: 'mt-tuning', status: 'completed', returncode: 0 });
     const app = await taskedPage({ run: run });

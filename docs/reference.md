@@ -248,7 +248,7 @@ explains each.
 
 ::: alhazen.config.experiment
     options:
-      members: [Experiment, find_experiment, session_experiment, ExperimentTitle, experiment_title]
+      members: [Experiment, find_experiment, session_experiment, ExperimentTitle, experiment_title, StimulusDeclaration, experiment_stimuli]
 
 ## Display and stimuli
 
@@ -283,6 +283,10 @@ explains each.
 ::: alhazen.stimuli.fixation
     options:
       members: [make_fixation]
+
+::: alhazen.stimuli.preview
+    options:
+      members: [StimulusImage, declared_stimuli, write_preview]
 
 ## Scenes
 

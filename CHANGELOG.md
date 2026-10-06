@@ -27,6 +27,43 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ## Unreleased
 
+### Added
+
+- **An experiment declares its stimuli once, and `alhazen preview` draws
+  them all.** `[tool.alhazen] stimuli = "package.module:function"` in the
+  experiment's pyproject.toml names a function that takes the rig's
+  `Screen` and returns one `alhazen.stimuli.StimulusImage` per stimulus: a
+  name (the file's), the picture at the rig's pixel scale (luminance or RGB,
+  floats in [0, 1] or uint8) and a one-line caption. `alhazen preview --rig
+  <rig> --out <folder>` imports it from the experiment's checkout, installed
+  or not, and writes one 8-bit PNG per stimulus and an index, `README.md`,
+  listing each with its size and caption and the command that drew it. It
+  takes no task and no parameter file: the stimuli are the experiment's,
+  and a shorter configuration runs fewer of them, not different ones.
+  Before this, each experiment wrote its own preview script, and the
+  workspace ran it with one task's parameter file, so an experiment with
+  two tasks had its images split across scripts and folders. Everything is
+  drawn and checked before a file is written, and the command refuses, with
+  `ConfigError` naming the declaration and its file: a declaration that is
+  not `module:function`, a module that cannot be imported, a function that
+  is not there, anything but `StimulusImage`s, an empty set, two names one
+  filesystem would take for the same file, the same picture under two
+  names, an image a PNG cannot hold as it stands (out of [0, 1], NaN, the
+  wrong shape), an output folder holding a PNG the declaration no longer has,
+  and a `README.md` there that it did not write. The PNGs are written with
+  the standard library's zlib, so alhazen gains no dependency. Also public:
+  `declared_stimuli` (the images, for an experiment's own tests),
+  `write_preview`, and `alhazen.config.experiment.experiment_stimuli`, which
+  reads the declaration without importing the experiment.
+- **The workspace's Preview images draws the declared stimuli.** For an
+  experiment that declares them it runs `alhazen preview` in the project's
+  interpreter, into the run's media folder, at the chosen rig's scale, and
+  hides the Task menu and the parameter file, which do not change what it
+  draws. It replaces the button the experiment's own `preview.py` would have
+  had. A declaration that cannot be used keeps the button, and launching it
+  says why. The project's own alhazen must have the command; an older one
+  stops the run with `invalid choice: 'preview'`.
+
 ### Changed
 
 - **alhazen is developed with uv.** `uv.lock` pins the whole development
