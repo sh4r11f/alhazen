@@ -52,6 +52,7 @@ dev = [
     { name = "pytest-cov" },
     { name = "pyzmq" },
     { name = "ruff" },
+    { name = "setuptools" },
     { name = "tomli", marker = "python_full_version < '3.11'" },
     { name = "types-pyyaml" },
 ]
@@ -78,7 +79,6 @@ zmq = [
 dev = [
     { name = "alhazen-vision", extra = ["dev"] },
     { name = "pip" },
-    { name = "setuptools" },
 ]
 
 [package.metadata]
@@ -103,6 +103,7 @@ requires-dist = [
     { name = "pyzmq", marker = "extra == 'zmq'", specifier = ">=25" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6.0" },
     { name = "scipy", marker = "extra == 'analysis'", specifier = ">=1.10" },
+    { name = "setuptools", marker = "extra == 'dev'", specifier = ">=70.1" },
     { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0" },
     { name = "tomli", marker = "python_full_version < '3.11' and extra == 'dev'", specifier = ">=2.0" },
     { name = "types-pyyaml", marker = "extra == 'dev'" },
@@ -113,7 +114,6 @@ provides-extras = ["psychopy", "nidaq", "movie", "analysis", "zmq", "docs", "dev
 dev = [
     { name = "alhazen-vision", extras = ["dev"] },
     { name = "pip" },
-    { name = "setuptools", specifier = ">=68" },
 ]
 
 [[package]]
