@@ -420,7 +420,7 @@ class TestScaffoldedPackageWorks:
         assert install.returncode == 0, (
             f"pip could not install the scaffolded package into a target directory "
             f"(exit {install.returncode}); the test environment needs pip and setuptools "
-            f"(the dev group has both):\n{install.stderr}"
+            f"(the dev extra carries setuptools; uv's dev group adds pip):\n{install.stderr}"
         )
         # The target holds only the two packages; alhazen's own dependencies
         # come from the environment running the tests.

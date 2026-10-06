@@ -90,6 +90,16 @@ dev = [
   # scripts/release_check.py reads pyproject.toml. tomllib is stdlib from
   # 3.11; this is the backport for the 3.10 job.
   "tomli>=2.0; python_version < '3.11'",
+  # The scaffold acceptance test (tests/unit/test_cli_scaffold.py) installs
+  # alhazen and a scaffolded package with `pip install --no-build-isolation`,
+  # so the build backend comes from this environment, not from an isolated
+  # one pip would download. Python 3.12+ environments start without
+  # setuptools at all, and the setuptools some 3.10 installs bundle (65.x)
+  # cannot build a wheel without the separate `wheel` package ("invalid
+  # command 'bdist_wheel'"). 70.1 is the first setuptools with bdist_wheel
+  # built in. It is here, in the extra CI's matrix installs, rather than only
+  # in the uv group below, which CI does not install.
+  "setuptools>=70.1",
 ]
 
 # uv's development environment (`uv sync`, `uv run`), which installs the
@@ -104,14 +114,14 @@ dev = [
 # Windows PsychoPy requires pyWinhook, whose PyPI wheels stop at Python 3.11,
 # and building it needs SWIG and a C compiler no rig should need.
 #
-# Plus two packages the conda environments had and a uv-made one does not:
-# pip and setuptools. The scaffold acceptance test
-# (tests/unit/test_cli_scaffold.py) installs with `python -m pip install
-# --no-build-isolation`, which needs pip, and setuptools (this file's build
-# backend, at its build-system floor) in the environment itself. Without them
-# that test skips under uv, and the packaging it checks goes unchecked.
+# Plus pip, which the conda environments had and a uv-made one does not. The
+# scaffold acceptance test (tests/unit/test_cli_scaffold.py) installs with
+# `python -m pip install --no-build-isolation`, which needs pip, and
+# setuptools in the environment itself. setuptools is in the `dev` extra
+# (above), so pip installs (CI's matrix) get it too; a pip environment always
+# has pip.
 [dependency-groups]
-dev = ["alhazen-vision[dev]", "pip", "setuptools>=68"]
+dev = ["alhazen-vision[dev]", "pip"]
 
 [project.scripts]
 alhazen = "alhazen.cli.main:main"

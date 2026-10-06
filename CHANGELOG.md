@@ -25,6 +25,18 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+### Fixed
+
+- **The scaffold acceptance test passes in CI on every OS and Python.** It
+  installs with `pip install --no-build-isolation`, so it needs setuptools in
+  the test environment, but only uv's `dev` group carried it and CI installs
+  the `dev` extra with pip. Python 3.12+ environments have no setuptools, and
+  the 65.x some 3.10 installs bundle cannot build a wheel without `wheel`. The
+  `dev` extra now requires `setuptools>=70.1` (bdist_wheel built in); the
+  group keeps only pip on top of the extra.
+
 ## 2.10.0 - 2026-10-06
 
 ### Changed
