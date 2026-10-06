@@ -660,6 +660,14 @@ function modeChanged() {
   $('params-config').disabled = !usesParameters();
   $('task-parameters').hidden = !usesParameters();
   $('task-parameters').disabled = !usesParameters();
+  // The Task menu: shown for an experiment that declares tasks, or whose
+  // task table could not be read (its help says why), except for a script
+  // that runs no task. The experiment's declared stimuli are drawn whatever
+  // the task (`task_free`), so a menu offering a choice would suggest the
+  // images depend on it.
+  const p = project();
+  const taskTable = p ? tasks(p) : [];
+  $('task-field').hidden = (!taskTable.length && !p?.tasks_error) || !!script?.task_free;
   // Measuring the rig draws nothing random, so it takes no seed; nor does an
   // experiment's own script, which the launcher passes no seed to — a field
   // shown for either would promise something the launch does not do.
@@ -704,7 +712,7 @@ function modeChanged() {
   // server refuses a flag the form owns, by name (workspace.py).
   $('extra-label').textContent = script ? 'Extra script arguments' : 'Extra run.py arguments';
   if (script) {
-    const managed = ['--out', '--rig', '--params', '--task-config'];
+    const managed = ['--out', '--rig', '--params', '--task-config', '--project'];
     const offered = script.flags.filter((f) => !managed.includes(f));
     $('extra-help').textContent = `Available flags: ${offered.join(', ') || 'none'}`;
     $('extra-args').placeholder = offered.length ? `e.g. ${offered[0]}` : '';
@@ -765,7 +773,8 @@ async function chooseProject(id) {
   // selected task.
   const declared = tasks(p);
   options($('task'), declared.map((t) => [t.name, t.name]), p.default_task);
-  $('task-field').hidden = !declared.length && !p.tasks_error;
+  // Whether the field shows is modeChanged's to say, below: it depends on
+  // the mode as well (a script that runs no task hides it).
   $('task').disabled = !declared.length;
   $('task-help').textContent = p.tasks_error
     // --task early in the sentence: a line that breaks inside it, after

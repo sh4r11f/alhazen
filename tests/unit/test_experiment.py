@@ -21,6 +21,8 @@ from alhazen.config.experiment import (
     GIVEN_BY_CALLER,
     Experiment,
     ExperimentTitle,
+    StimulusDeclaration,
+    experiment_stimuli,
     experiment_title,
     find_experiment,
     session_experiment,
@@ -260,3 +262,72 @@ class TestExperimentTitle:
         root = tmp_path / "checkout"
         task = make_project(root, '[project]\nname = "amodal-averaging"\nversion = "0.1.0"\n')
         assert find_experiment(task).name == experiment_title(root).slug == "amodal-averaging"
+
+
+class TestExperimentStimuli:
+    """`experiment_stimuli`: where an experiment says its stimuli are drawn,
+    read from its pyproject.toml without importing anything."""
+
+    def write(self, root: Path, text: str) -> Path:
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "pyproject.toml").write_text(textwrap.dedent(text), encoding="utf-8")
+        return root
+
+    def test_a_declared_function_is_read_as_written(self, tmp_path):
+        root = self.write(
+            tmp_path / "exp",
+            """
+            [project]
+            name = "demo"
+            [tool.alhazen]
+            stimuli = "  demo_pkg.stimulus_set:stimulus_images  "
+            """,
+        )
+        assert experiment_stimuli(root) == StimulusDeclaration(
+            target="demo_pkg.stimulus_set:stimulus_images"
+        )
+
+    @pytest.mark.parametrize(
+        "text",
+        [None, '[project]\nname = "demo"\n', '[tool.alhazen]\ntitle = "Demo"\n'],
+        ids=["no pyproject", "no tool table", "no stimuli key"],
+    )
+    def test_declaring_nothing_is_not_an_error(self, tmp_path, text):
+        root = tmp_path / "exp"
+        root.mkdir()
+        if text is not None:
+            (root / "pyproject.toml").write_text(text, encoding="utf-8")
+        assert experiment_stimuli(root) == StimulusDeclaration(target=None, error=None)
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "42",
+            '"no_colon"',
+            '"pkg.module:"',
+            '":function"',
+            '"pkg..module:function"',
+            '"pkg.module:function:extra"',
+            '"1pkg.module:function"',
+            '"pkg.module:function()"',
+        ],
+    )
+    def test_a_value_that_names_no_function_is_reported_with_the_file(self, tmp_path, value):
+        root = self.write(tmp_path / "exp", f"[tool.alhazen]\nstimuli = {value}\n")
+        declaration = experiment_stimuli(root)
+        assert declaration.target is None
+        assert declaration.error is not None
+        assert str(root.resolve() / "pyproject.toml") in declaration.error
+        assert "package.module:function" in declaration.error
+
+    def test_a_tool_alhazen_that_is_not_a_table_is_reported(self, tmp_path):
+        root = self.write(tmp_path / "exp", "[tool]\nalhazen = 3\n")
+        declaration = experiment_stimuli(root)
+        assert declaration.target is None
+        assert "[tool.alhazen] must be a table" in (declaration.error or "")
+
+    def test_a_pyproject_that_cannot_be_read_is_reported_not_raised(self, tmp_path):
+        root = self.write(tmp_path / "exp", '[tool.alhazen\nstimuli = "a:b"\n')
+        declaration = experiment_stimuli(root)
+        assert declaration.target is None
+        assert "cannot read" in (declaration.error or "")

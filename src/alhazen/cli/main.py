@@ -70,6 +70,26 @@ def main(argv: list[str] | None = None) -> int:
         help="the experiment's folder, holding configs/ (default: the current folder)",
     )
 
+    preview = sub.add_parser(
+        "preview",
+        help="draw every stimulus the experiment declares ([tool.alhazen] stimuli) as PNGs",
+    )
+    preview.add_argument(
+        "--project",
+        default=None,
+        metavar="PATH",
+        help="the experiment's folder, holding its pyproject.toml (default: the current folder)",
+    )
+    preview.add_argument(
+        "--rig", required=True, help=RIG_HELP + ". The images are drawn at its pixel scale"
+    )
+    preview.add_argument(
+        "--out",
+        required=True,
+        metavar="FOLDER",
+        help="where to write one PNG per stimulus and their index, README.md",
+    )
+
     new = sub.add_parser("new", help="scaffold a new experiment package")
     new.add_argument("name", help="package name, e.g. saccade_bias")
     new.add_argument("--into", default=".", help="where to create it (default: here)")
@@ -269,6 +289,37 @@ def _validate(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
         f"{rig.monitor.width_px}x{rig.monitor.height_px}@{rig.monitor.refresh_rate_hz:g}Hz, "
         f"data_root={rig.data_root}"
     )
+    return 0
+
+
+def _preview(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    """Draw every stimulus the experiment declares into ``--out``
+    (``alhazen.stimuli.preview``). No task and no parameter file: the
+    stimuli are the experiment's, whichever task or configuration runs them.
+
+    Prints each file written, the index last. A declaration that cannot be
+    used, a rig that cannot be read or an output folder that would be left
+    misleading exits 1 with the reason, and nothing written.
+    """
+    from alhazen.stimuli.preview import write_preview
+
+    root = Path(args.project).expanduser() if args.project else Path.cwd()
+    if not (root / "pyproject.toml").is_file():
+        # Said here, where the flag can be named: without it the reason would
+        # read "declares no stimuli", which sends the reader to the wrong file.
+        print(
+            f"CANNOT PREVIEW: {root} holds no pyproject.toml. Run this in the experiment's "
+            "folder, or name that folder with --project",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        written = write_preview(root, args.rig, Path(args.out))
+    except ConfigError as e:
+        print(f"CANNOT PREVIEW: {e}", file=sys.stderr)
+        return 1
+    for path in written:
+        print(path)
     return 0
 
 
@@ -1377,6 +1428,7 @@ _COMMANDS: dict[str, Handler] = {
     "dashboard": _dashboard,
     "validate": _validate,
     "rigs": _rigs,
+    "preview": _preview,
     "new": _new,
     "run": lambda args, parser: _run_session(args),
     "calibrate": _calibrate,

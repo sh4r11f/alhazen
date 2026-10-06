@@ -3,6 +3,7 @@ from alhazen.stimuli.fixation import FixationPoint as FixationPoint
 from alhazen.stimuli.fixation import make_fixation
 from alhazen.stimuli.photodiode import PhotodiodePatch as PhotodiodePatch
 from alhazen.stimuli.photodiode import make_photodiode as make_photodiode
+from alhazen.stimuli.preview import StimulusImage
 
 # `__all__` holds only the names docs/reference.md lists as public (a test in
 # tests/unit/test_docs_snippets.py holds it to that). The `X as X` imports
@@ -11,5 +12,6 @@ from alhazen.stimuli.photodiode import make_photodiode as make_photodiode
 __all__ = [
     "NullStimulus",
     "Stimulus",
+    "StimulusImage",
     "make_fixation",
 ]
