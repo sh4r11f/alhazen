@@ -96,6 +96,14 @@ it comes from, and a test checks the contrast of every pair it draws.
 
 ## Configure and run
 
+The form reads as a signal path (2026-10-06): its stages — Mode, Run
+options, Rig, Task parameters — are numbered nodes on one rail that ends at
+the launch button, the node of the stage being edited lights up, and the
+line above the button says what the launch will start ("Simulate · Main ·
+amodal-averaging/vpixx · sub-s01 · ses 1"). The sidebar is a graphite rail in
+the light theme; the dark theme is unchanged.
+
+
 1. Select an experiment in the sidebar.
 2. Choose a mode and its options (the Mode menu lists the modes and the
    experiment's scripts by name, and opens on Preview images when the

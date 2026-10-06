@@ -50,43 +50,58 @@
  * field, as a control's edge must. */
 :root {
   color-scheme: light;
-  --paper: #f5f6f8;
+  /* The instrument palette (2026-10-06): cool neutral paper, white panels,
+   * near-black ink, one signal blue for action and selection, and a
+   * graphite rail (the --rail-* tokens) for the sidebar, whose selection is
+   * the same amber the dark theme's selection has. */
+  --paper: #eceef1;
   --surface: #ffffff;
-  --surface-2: #f4f6f9;
-  --surface-3: #e9edf2;
-  --ink: #1d2733;
-  --muted: #56616e;
-  --line: #e1e5eb;
+  --surface-2: #f3f5f7;
+  --surface-3: #e5e8ec;
+  --ink: #0e1317;
+  --muted: #4c5662;
+  --line: #d6dbe1;
   --field: #ffffff;
-  --field-border: #8a95a3;
-  --hover-border: #9eabbb;
-  --hover-bg: #f5f8fd;
-  --accent: #3563d6;
-  --accent-hover: #2a52b8;
-  --accent-soft: #e9efff;
+  --field-border: #7c8794;
+  --hover-border: #94a0ad;
+  --hover-bg: #f2f5f9;
+  --accent: #1f4bd6;
+  --accent-hover: #183db0;
+  --accent-soft: #e6ecfd;
   --on-accent: #ffffff;
-  /* The selected experiment in the sidebar (the same as --accent on
-   * --accent-soft here; its own tokens so the dark theme can give it the
-   * VS Code theme's yellow-on-grey). */
-  --selected-bg: #e9efff;
-  --selected-ink: #3563d6;
-  --focus: #3563d6;
-  --run-ink: #2d5cbc;
-  --run-bg: #ebf1ff;
-  --run-line: #c3d4f6;
-  --ok-ink: #22704c;
-  --ok-bg: #e9f6ee;
-  --ok-line: #bfe0cc;
-  --bad-ink: #ac3434;
-  --bad-bg: #fff0ee;
-  --bad-line: #eccac3;
-  --console-bg: #19232f;
+  /* The selected experiment in the sidebar: on the rail (below), amber on
+   * graphite in both themes. */
+  --selected-bg: #222c36;
+  --selected-ink: #ffcf33;
+  --focus: #1f4bd6;
+  --run-ink: #1f4bd6;
+  --run-bg: #e6ecfd;
+  --run-line: #b9c8f6;
+  --ok-ink: #1d6b47;
+  --ok-bg: #e7f4ec;
+  --ok-line: #b6dcc5;
+  --bad-ink: #a52f2f;
+  --bad-bg: #fdeeec;
+  --bad-line: #eac3bd;
+  --console-bg: #0f1418;
   --console-ink: #d3dfeb;
-  --media-bg: #e7ebf0;
-  --shadow: #1d344510;
-  --backdrop: #182a4566;
-  --logo-ground: #ffffff;
-  --logo-brick: #27313d;
+  --media-bg: #e3e7ec;
+  --shadow: #0e131714;
+  --backdrop: #0e131780;
+  /* The sidebar is a graphite rail in the light theme. Its own tokens, which
+   * the sidebar rebinds the page tokens to (.sidebar, "Instrument" below),
+   * so every rule inside it keeps naming the ordinary tokens. */
+  --rail: #11171c;
+  --rail-2: #1b232b;
+  --rail-3: #26303a;
+  --rail-ink: #e8edf1;
+  --rail-muted: #9ba6b2;
+  --rail-line: #2c3741;
+  --logo-ground: #11171c;
+  --logo-brick: #c7cfd7;
+  /* Step numbers on the configuration's signal path. */
+  --node: #ffffff;
+  --node-ink: #4c5662;
   /* Nunito, the page's own font (@font-face above); the system's own
    * friendly sans-serifs stand in until it loads, or if it cannot. */
   --sans: "Nunito",ui-rounded,"SF Pro Rounded","Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
@@ -188,6 +203,14 @@
     --backdrop: #000000b3;
     --logo-ground: #080808;
     --logo-brick: #b2b2b1;
+    --rail: #0c0c0c;
+    --rail-2: #1f1f1e;
+    --rail-3: #212121;
+    --rail-ink: #d0d0d0;
+    --rail-muted: #8c8c8a;
+    --rail-line: #3d3d3c;
+    --node: #0c0c0c;
+    --node-ink: #8c8c8a;
   }
 }
 
@@ -228,6 +251,14 @@
     --backdrop: #000000b3;
     --logo-ground: #080808;
     --logo-brick: #b2b2b1;
+    --rail: #0c0c0c;
+    --rail-2: #1f1f1e;
+    --rail-3: #212121;
+    --rail-ink: #d0d0d0;
+    --rail-muted: #8c8c8a;
+    --rail-line: #3d3d3c;
+    --node: #0c0c0c;
+    --node-ink: #8c8c8a;
 }
 
 /* ---- Element defaults ---- */
@@ -1489,6 +1520,338 @@ dialog code {
   grid-template-columns: minmax(0,1fr) minmax(150px,1fr);
 }
 
+/* ---- Instrument: the 2026-10-06 visual system ----
+ *
+ * The owner asked for a dashboard that is "more modern and exciting, not
+ * bland". The answer is a scientific instrument's panel, not an app's card
+ * grid: a graphite rail, stronger type, mono for every value an
+ * experimenter reads off (paths, rig facts, counts, statuses), status lamps
+ * instead of pills, and ONE idea carried by the configuration form: it is a
+ * signal path. Each stage (Mode, Run options, Rig, Task parameters) is a
+ * numbered node on a rail that ends at the launch; the node of the stage
+ * being edited lights up (:focus-within), and the footer says in one line
+ * what the launch will start (#launch-summary). Nothing here animates while
+ * a run is live, and nothing touches the live monitor's charts.
+ *
+ * This layer sits on the rules above and restyles them; the responsive
+ * rules after it still apply. The design notes live with the project in
+ * Mana (Apps/neuro-experiments, page/data/design).
+ */
+
+/* The rail: the sidebar rebinds the page tokens to the rail's, so every
+ * sidebar rule above keeps naming --ink, --surface and the rest. */
+.sidebar {
+  --ink: var(--rail-ink);
+  --muted: var(--rail-muted);
+  --surface: var(--rail);
+  --surface-2: var(--rail-2);
+  --surface-3: var(--rail-3);
+  --line: var(--rail-line);
+  --hover-bg: var(--rail-2);
+  --hover-border: var(--rail-line);
+  --field: var(--rail);
+  --field-border: var(--rail-muted);
+  color: var(--rail-ink);
+  background: var(--rail);
+  border-right-color: var(--rail-line);
+}
+
+.brand {
+  font-weight: 800;
+  letter-spacing: -.8px;
+}
+
+.sidebar-label {
+  font: 600 11px/1.6 var(--mono);
+  letter-spacing: 1.4px;
+}
+
+.project-button {
+  border-radius: 8px;
+  font-weight: 600;
+  color: var(--rail-ink);
+}
+
+/* The selected experiment: amber text, and a lamp on its left edge. */
+.project-button.selected {
+  box-shadow: inset 3px 0 0 var(--selected-ink);
+  font-weight: 750;
+}
+
+.project-views {
+  border-left-color: var(--rail-3);
+}
+
+.view-button.selected {
+  color: var(--rail-ink);
+  background: var(--rail-3);
+}
+
+/* Type: a heavier, tighter display size for the experiment's name, and the
+ * eyebrows and small print in mono, the instrument's labelling voice. */
+h1 {
+  font-size: 40px;
+  font-weight: 800;
+  letter-spacing: -1px;
+  line-height: 1.1;
+}
+
+.eyebrow {
+  font: 600 11px/1.6 var(--mono);
+  letter-spacing: 1.6px;
+  color: var(--accent);
+}
+
+.topbar {
+  height: 60px;
+  font-size: 14px;
+}
+
+.local-badge {
+  font: 600 11px var(--mono);
+  letter-spacing: 1.2px;
+  border-radius: 999px;
+  padding: 5px 11px;
+}
+
+.page-heading {
+  padding: 28px 0 24px;
+}
+
+/* Panels: flat, hairline-edged, squarer than before; no resting shadow. */
+.card {
+  border-radius: 10px;
+  box-shadow: none;
+}
+
+.card-heading {
+  min-height: 56px;
+  padding: 0 22px;
+}
+
+.card-heading h2 {
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: -.2px;
+}
+
+.step {
+  font: 600 11px var(--mono);
+  letter-spacing: 1.2px;
+}
+
+/* ---- The signal path ---- */
+.configuration form {
+  counter-reset: stage;
+  padding: 18px 22px 0;
+}
+
+.stage {
+  counter-increment: stage;
+  position: relative;
+  padding-left: 42px;
+  padding-bottom: 22px;
+  margin: 0;
+}
+
+/* The rail between this node and the next: a hairline from under the node
+ * to the bottom of the stage, so consecutive stages join into one line
+ * that runs down into the launch footer. */
+.stage::after {
+  content: "";
+  position: absolute;
+  left: 13px;
+  top: 30px;
+  bottom: 0;
+  width: 2px;
+  background: var(--line);
+}
+
+/* The node: the stage's number, in mono, in a square. */
+.stage::before {
+  content: counter(stage, decimal-leading-zero);
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  font: 700 11px var(--mono);
+  color: var(--node-ink);
+  background: var(--node);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+
+/* The stage being edited: its node lights in the signal colour, and its
+ * stretch of rail with it. */
+.stage:focus-within::before {
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.stage:focus-within::after {
+  background: var(--accent);
+}
+
+/* Each stage's title sits on its node's line. */
+.stage-title,
+.stage .section-title label {
+  display: block;
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: -.1px;
+  line-height: 28px;
+  margin: 0 0 10px;
+}
+
+/* Rig and Task parameters were sections with a rule above; on the path
+ * the rail separates them instead. The fieldset's own reset (an id rule,
+ * near the end of the file) is matched by id here so the stage wins. */
+.form-section.stage,
+#task-parameters.stage {
+  border-top: 0;
+  margin-top: 0;
+  padding: 0 0 22px 42px;
+}
+
+.parameters-heading {
+  align-items: center;
+}
+
+.parameters-heading .section-title label {
+  margin: 0;
+}
+
+/* The rig's facts read like an instrument's readout: values in mono. */
+.rig-summary {
+  border-radius: 8px;
+}
+
+.rig-facts dt {
+  font: 600 11px/1.9 var(--mono);
+  letter-spacing: .6px;
+  text-transform: uppercase;
+}
+
+.rig-facts dd {
+  font-size: 14px;
+  line-height: 1.7;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+
+input:not([type=checkbox]), select, textarea {
+  border-radius: 8px;
+  min-height: 40px;
+}
+
+/* The end of the path: the launch, with a terminal node on the rail. */
+.launch-footer {
+  margin: 0 -22px;
+  padding: 16px 22px 20px 64px;
+  position: sticky;
+}
+
+.launch-footer::before {
+  content: "▶";
+  position: absolute;
+  left: 22px;
+  top: 16px;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+  color: var(--on-accent);
+  background: var(--ink);
+  border-radius: 7px;
+}
+
+.launch-summary {
+  font: 600 13px/1.5 var(--mono);
+  color: var(--ink);
+  margin: 4px 0 6px;
+  overflow-wrap: anywhere;
+}
+
+.launch-summary:empty {
+  display: none;
+}
+
+.primary {
+  border-radius: 9px;
+  font-weight: 800;
+  letter-spacing: .2px;
+  box-shadow: none;
+}
+
+.launch {
+  min-height: 48px;
+}
+
+/* ---- Results: status lamps, tabs, the monitor frame ---- */
+
+/* A status is a lamp and a word, not a pill: the dot carries the colour. */
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font: 700 11px var(--mono);
+  letter-spacing: 1.2px;
+  border-radius: 999px;
+  padding: 4px 10px;
+}
+
+.status::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.output-toolbar {
+  padding: 0 22px;
+}
+
+.output-tabs button {
+  font-weight: 700;
+}
+
+.output-tabs button.selected {
+  color: var(--ink);
+  border-bottom-color: var(--accent);
+  border-bottom-width: 3px;
+}
+
+#monitor-frame {
+  border-radius: 8px;
+}
+
+.history-text strong {
+  font-weight: 750;
+}
+
+footer {
+  letter-spacing: .4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stage::before, .stage::after {
+    transition: none;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  /* The one transition: a node lighting, 120 ms, only while editing. */
+  .stage::before, .stage::after {
+    transition: background-color 120ms ease-out, color 120ms ease-out;
+  }
+}
+
 /* ---- Responsive layout ----
  * Wide screens: a wider configuration column and three gallery columns. */
 @media (min-width: 1550px) {
@@ -1523,8 +1886,11 @@ dialog code {
   .launch-footer {
     margin-left: -18px;
     margin-right: -18px;
-    padding-left: 18px;
+    padding-left: 60px;
     padding-right: 18px;
+  }
+  .launch-footer::before {
+    left: 18px;
   }
   .card-heading {
     padding: 0 18px;
@@ -1594,9 +1960,12 @@ dialog code {
     padding: 20px;
   }
   .launch-footer {
-    position: static;
-    margin: 20px -20px -20px;
-    padding: 16px 20px;
+    position: relative;
+    margin: 0 -20px -20px;
+    padding: 16px 20px 16px 62px;
+  }
+  .launch-footer::before {
+    left: 20px;
   }
   .results-column {
     gap: 18px;

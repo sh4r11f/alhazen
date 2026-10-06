@@ -1359,6 +1359,23 @@ describe('the launch form', () => {
   });
 });
 
+describe('the launch summary', () => {
+  it('says in one line what the button will start, and follows the form', async () => {
+    const app = await pageWith();
+    chooseMode(app, 'simulate');
+    assert.equal(app.byId('launch-summary').textContent, 'Simulate · task · demo/mac · ses 1');
+    app.byId('subject').value = 's01';
+    app.byId('subject').fire('input');
+    app.byId('session').value = '2';
+    app.byId('session').fire('input');
+    assert.equal(app.byId('launch-summary').textContent,
+      'Simulate · task · demo/mac · sub-s01 · ses 2');
+    /* Measure takes no parameters and names no subject. */
+    chooseMode(app, 'measure');
+    assert.equal(app.byId('launch-summary').textContent, 'Measure rig · demo/mac');
+  });
+});
+
 describe('the Mode menu', () => {
   it('lists the modes and the experiment’s scripts by name, opening on Simulate', async () => {
     const script = { id: 'movie_script', label: 'Contact sheet', flags: [], params_flag: null };
@@ -1700,11 +1717,18 @@ describe('the colour theme', () => {
       ['ok-ink', ['ok-bg', 'surface']],
       ['bad-ink', ['bad-bg', 'surface', 'paper']],
       ['console-ink', ['console-bg']],
+      /* The sidebar's rail (2026-10-06): its own text on its own grounds,
+       * and the signal path's step numbers on their nodes. */
+      ['rail-ink', ['rail', 'rail-2', 'rail-3']],
+      ['rail-muted', ['rail', 'rail-2']],
+      ['node-ink', ['node']],
+      ['on-accent', ['accent']],
     ];
     const EDGES = [
       ['field-border', ['field', 'surface']],
       ['focus', ['paper', 'surface']],
       ['logo-brick', ['logo-ground']],
+      ['logo-brick', ['rail']],
     ];
     const light = palette(':root {');
     const dark = palette(':root[data-theme=dark]');

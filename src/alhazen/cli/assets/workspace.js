@@ -606,7 +606,32 @@ function developmentRigWarning(mode, name) {
  * when run.py's task table could not be read: the server would refuse the
  * launch with the same message, so the page says so first.
  */
+/**
+ * The launch in one line, for the footer: the mode, the Task parameters
+ * entry (when the mode takes parameters), the rig by its menu name, and the
+ * subject and session (when the mode names one) — "Simulate · Main ·
+ * alhazen/laptop · sub-s01 · ses 1". What the button will start, read before
+ * pressing it; '' with no project.
+ */
+function launchSummary() {
+  const p = project();
+  if (!p) return '';
+  const mode = $('mode').value;
+  const parts = [label(mode)];
+  if (usesParameters() && selectedSet()) parts.push(selectedSet().label);
+  const rig = [...$('rig').querySelectorAll('option')]
+    .find((o) => o.value === $('rig').value)?.textContent;
+  if (rig) parts.push(rig);
+  if (['run', 'test', 'simulate'].includes(mode)) {
+    const subject = $('subject').value.trim();
+    if (subject) parts.push(`sub-${subject}`);
+    parts.push(`ses ${$('session').value || 1}`);
+  }
+  return parts.join(' · ');
+}
+
 function updateLaunch() {
+  $('launch-summary').textContent = launchSummary();
   const p = project();
   const waitingForParameters = usesParameters() && (loadingConfig || loadingSchema);
   $('launch').disabled = !!state.active
@@ -1652,6 +1677,9 @@ $('rig').addEventListener('change', guard(loadRig));
 // Headless simulate opens no window, so the PsychoPy warning follows it.
 $('headless').addEventListener('change', updateLaunch);
 $('params-config').addEventListener('change', guard(parameterSetChanged));
+// Typing a subject or session changes the launch summary, nothing else.
+$('subject').addEventListener('input', () => updateLaunch());
+$('session').addEventListener('input', () => updateLaunch());
 $('parameter-search').addEventListener('input', filterParameters);
 $('fields-tab').addEventListener('click', guard(() => switchEditor('fields')));
 $('yaml-tab').addEventListener('click', guard(() => switchEditor('yaml')));

@@ -508,3 +508,48 @@ details.table th { color: var(--muted); font-weight: 600; }
 /* Where a panel is redrawn for export: laid out, so it can be measured, but
  * never on screen. */
 .export-stage { position: absolute; top: 0; left: -100000px; }
+
+/* ------------------------------------------------------------------ */
+/* Instrument chrome (2026-10-06)                                      */
+/* ------------------------------------------------------------------ */
+/* The workspace's visual system carried into the monitor's chrome only:
+ * mono for labels and readouts, a status lamp, firmer panel titles. No
+ * chart colour, axis, size or drawing changes here, and nothing animates,
+ * so a running session pays nothing for it. */
+:root { --mono: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; }
+
+.brand { font: 700 13px/1.4 var(--mono); letter-spacing: 0.16em; }
+
+#status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 10px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+#status::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+#counts { font-family: var(--mono); font-size: 12px; }
+
+.side-title { font-family: var(--mono); letter-spacing: 0.14em; }
+
+.panel { border-radius: 8px; }
+.panel h2 { font-size: 14.5px; font-weight: 700; }
+
+.stat-label {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.stat-label i { text-transform: none; }
+.stat-value { font-family: var(--mono); font-size: 17px; font-variant-numeric: tabular-nums; }

@@ -45,6 +45,12 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 - **Every workspace menu is sorted by name**: the Mode menu (modes and the
   experiment's scripts), each group of the Rig menu and the Task parameters
   menu. Mode still opens on Preview images, else Simulate; Rig on the laptop.
+- **A new look for the workspace ("Instrument")**: a graphite sidebar rail in
+  the light theme, heavier type, mono readouts, status lamps, and the
+  configuration form as a numbered signal path whose active stage lights up,
+  ending in a one-line summary of the launch. The dark palette (the owner's
+  VS Code theme) is unchanged; the live monitor's chrome follows (mono
+  labels and readouts, a status lamp) without any change to its charts.
 - **Live monitor panels are no longer lettered a, b, c**, on screen or in an
   exported figure, whose file name is now `<title>-<width>mm`.
 
