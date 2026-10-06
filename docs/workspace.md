@@ -96,8 +96,18 @@ it comes from, and a test checks the contrast of every pair it draws.
 
 ## Configure and run
 
+The form reads as a signal path (2026-10-06): its stages — Mode, Run
+options, Rig, Task parameters — are numbered nodes on one rail that ends at
+the launch button, the node of the stage being edited lights up, and the
+line above the button says what the launch will start ("Simulate · Main ·
+amodal-averaging/vpixx · sub-s01 · ses 1"). The sidebar is a graphite rail in
+the light theme; the dark theme is unchanged.
+
+
 1. Select an experiment in the sidebar.
-2. Choose a mode and its options. **Rig**, a section of its own, lists every
+2. Choose a mode and its options (the Mode menu lists the modes and the
+   experiment's scripts by name, and opens on Preview images when the
+   experiment has it, else on Simulate). **Rig**, a section of its own, lists every
    rig by its owner and name — `amodal-averaging/lab` for the experiment's
    `configs/rig-lab.yaml`, `alhazen/mac` for a shared one — in two groups:
    **This experiment**, its `configs/rig-<name>.yaml` files (subdirectories
@@ -105,7 +115,7 @@ it comes from, and a test checks the contrast of every pair it draws.
    alhazen ships ([Rigs](rigs.md)). The same spelling works on the command
    line (`--rig amodal-averaging/lab`). A shared rig the experiment's own rig
    of the same name hides is left out of the menu; the command line still
-   reaches it as `--rig alhazen/lab`. The menu opens on the laptop — the
+   reaches it as `--rig alhazen/lab`. Each group is sorted by name. The menu opens on the laptop — the
    development machine, a window and no devices: the experiment's own
    `configs/rig-laptop.yaml` when it has one, else `alhazen/laptop`, else the
    first rig listed. Under the menu, the rig's facts as it
@@ -124,18 +134,38 @@ it comes from, and a test checks the contrast of every pair it draws.
    error banner. Every other mode launches on a development rig as before.
    A project registered before shared rigs were listed shows none, and says
    so: save its **Project settings** to register it again.
-3. **Task parameters**, below the rig, starts with the menu of the
-   experiment's parameter files: the files in `configs/` whose names start
-   with `task` or `params`, each shown without its `task-`/`params-` prefix
-   and ending (`configs/task-pilot.yaml` is `pilot`, `configs/task.yaml` is
-   `task`, `configs/presets/task-x.yaml` is `presets/x`; two files that would
-   read the same show their paths). With a Task menu it opens on the selected
-   task's own file — the one run.py's table names — and only that: a task
-   whose entry names no file (`None`), or one the project lacks, opens on
-   **No file (the task's own defaults)**, runs on the defaults in its code and
-   launches without `--params`; the other files stay in the menu for a
-   deliberate choice, never pre-selected. Without a task table it opens on
-   `task.yaml`, else the first file. A launch with a file sends that file's
+3. **Task parameters**, below the rig, starts with one menu that chooses the
+   parameter file **and the task it runs**; there is no separate Task menu, so
+   the two can never be paired wrongly (the owner's request, 2026-10-06).
+   Its entries are sorted by name (case ignored, numbers in number order), and
+   under the menu a line says which task the chosen entry runs and with which
+   file. An experiment names its entries in `run.py`, beside `TASKS`, as a
+   module-level dict literal:
+
+   ```python
+   PARAMETERS = {
+       "Main": ("amodal-averaging", HERE / "configs" / "task.yaml"),
+       "Main (less trials)": ("amodal-averaging", HERE / "configs" / "task-light.yaml"),
+       "Neon": ("neon-averaging", HERE / "configs" / "task-neon.yaml"),
+   }
+   ```
+
+   Each value is `(task, file)`, the task one of `TASKS` and the file in
+   either of `TASKS`' path forms, or `None` for the task's own defaults; a
+   `run.py` with one task (`task_class=`) writes the path alone. The labels are
+   display names only: a run keeps its task's name (its folder, `--task`,
+   `session.json`), and the run record and history add the label
+   (`parameter_set`; "Simulate · Main (less trials)"). Without `PARAMETERS`
+   the menu is derived and nothing is guessed: each task on its own file
+   (by the task's name), every other file once per task as `<task> · <file>`,
+   and, without a task table, every file in `configs/` whose name starts with
+   `task` or `params` by its short name (`configs/task-pilot.yaml` is `pilot`,
+   `configs/presets/task-x.yaml` is `presets/x`; two that would read the same
+   show their paths). A `PARAMETERS` that cannot be read is said under the
+   menu, and the derived entries are offered meanwhile. The menu opens on the
+   default task's own file. An entry with no file (a task whose table entry
+   names none, or one the project lacks) runs on the defaults in its code and
+   launches without `--params`. A launch with a file sends that file's
    (edited) values, so its run folder has its `params.yaml`. An experiment
    with no parameter file at all shows no menu: its task runs on the defaults
    written in its code (run.py's `default_params=` or the task's own), and
@@ -305,8 +335,9 @@ settings cannot be contradicted from the text field. Those flags are `--mode`,
 `--rig`, `--params`, `--seed`, `--no-live-monitor-browser`, `--sub`, `--ses`,
 `--initials`, `--trials-per-condition`, `--headless`, `--mouse`, `--windowed`, `--out`,
 `--scale`, `--sheet`, `--columns`, `--clip` and `--screenshots`, in either the
-`--seed 5` or the `--seed=5` spelling, and `--task` for a project with a Task
-menu; every other flag passes through.
+`--seed 5` or the `--seed=5` spelling, and `--task` for a project with a task
+table (its Task parameters entry names the task); every other flag passes
+through.
 
 **Preview images** draws every stimulus an experiment declares, for an
 experiment whose pyproject.toml names the function that draws them
@@ -314,8 +345,8 @@ experiment whose pyproject.toml names the function that draws them
 It runs `alhazen preview --project <experiment> --rig <rig> --out <run>/media`
 in the project's interpreter: one PNG per stimulus and an index, at the
 chosen rig's pixel scale. It takes no task and no parameter file, because
-neither changes what an experiment shows, so the form hides the Task menu
-and the parameter file for it. Its reserved flags are `--out`, `--rig` and
+neither changes what an experiment shows, so the form hides the Task
+parameters for it. Its reserved flags are `--out`, `--rig` and
 `--project`. It replaces the button the experiment's own `preview.py` would
 get. A declaration that cannot be used keeps the button, and launching it
 says why. The project's own alhazen must have the command; an older one
@@ -334,7 +365,7 @@ helpers (such as KDE's preview module) are not presented as runnable image
 generators; use demo or movie instead.
 
 Parameter choices are read from the class passed to `run_experiment(task_class=...)`
-— or, with a Task menu, from the chosen entry of `run_experiment(tasks=...)` —
+— or, with a task table, from the task of the chosen Task parameters entry —
 in a separate process using the project's selected Python interpreter. This
 imports the task but does not execute the `run.py` main block or start a session.
 

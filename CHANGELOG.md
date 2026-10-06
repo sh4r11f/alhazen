@@ -25,6 +25,35 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+### Changed
+
+- **The workspace has no Task menu; the Task parameters menu chooses the
+  task.** Each entry is a parameter file and the task it runs, so the two
+  cannot be paired wrongly. An experiment names the entries in run.py as a
+  module-level `PARAMETERS = {"Label": ("task", HERE / "configs" /
+  "task-x.yaml"), ...}` literal (the path alone for a one-task run.py; `None`
+  for the task's defaults); without one the entries are derived from TASKS
+  and configs/, every non-default file offered once per task. Labels are
+  display names: a run keeps its task's name and records the label as
+  `parameter_set` in run.json, which the history shows. A launch naming an
+  entry for another task than the one it sends is refused before anything is
+  written. `Workspace.describe` gains `parameter_sets`,
+  `default_parameter_set` and `parameter_sets_error`; `Launch` gains
+  `parameter_set`.
+- **Every workspace menu is sorted by name**: the Mode menu (modes and the
+  experiment's scripts), each group of the Rig menu and the Task parameters
+  menu. Mode still opens on Preview images, else Simulate; Rig on the laptop.
+- **A new look for the workspace ("Instrument")**: a graphite sidebar rail in
+  the light theme, heavier type, mono readouts, status lamps, and the
+  configuration form as a numbered signal path whose active stage lights up,
+  ending in a one-line summary of the launch. The dark palette (the owner's
+  VS Code theme) is unchanged; the live monitor's chrome follows (mono
+  labels and readouts, a status lamp) without any change to its charts.
+- **Live monitor panels are no longer lettered a, b, c**, on screen or in an
+  exported figure, whose file name is now `<title>-<width>mm`.
+
 ## 2.9.0 - 2026-10-06
 
 ### Added

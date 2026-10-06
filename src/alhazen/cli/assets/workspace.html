@@ -171,121 +171,122 @@
           <div class="card-heading">
             <h2>Configure a run</h2>
           </div>
+          <!-- The form is a signal path, top to bottom: each stage (Mode,
+               Run options, Rig, Task parameters) is a numbered node on one
+               rail that ends at the launch, and the node of the stage being
+               edited lights up (workspace.css "Instrument"). The numbers are
+               a CSS counter, so a stage the mode hides takes its number
+               with it. -->
           <form id="launch-form">
-            <label for="mode">Mode</label>
-            <select id="mode"></select>
-            <p id="mode-help" class="help"></p>
+            <section class="stage" id="mode-stage">
+              <label for="mode" class="stage-title">Mode</label>
+              <select id="mode"></select>
+              <p id="mode-help" class="help"></p>
+            </section>
 
-            <!-- The task, for an experiment whose run.py declares several
-                 (TASKS = {...}). Shown only then; chooseProject() fills it
-                 and the help says every launch names the chosen task, or
-                 says why the table could not be read, in which case no
-                 launch is offered. -->
-            <div id="task-field">
-              <label for="task">Task</label>
-              <select id="task"></select>
-              <p id="task-help" class="help"></p>
-            </div>
+            <section class="stage" id="options-stage" aria-labelledby="options-title">
+              <h3 class="stage-title" id="options-title">Run options</h3>
 
-            <!-- Subject ID and initials side by side: the initials are the
-                 check on the number, recorded and never put in a file name. -->
-            <div id="identity" class="field-pair">
-              <div>
-                <label for="subject">Subject ID</label>
-                <input id="subject" placeholder="e.g. s01">
-              </div>
-              <div>
-                <label for="initials">Initials</label>
-                <input id="initials" placeholder="e.g. HD" maxlength="5" autocomplete="off">
-              </div>
-              <div>
-                <label for="session">Session</label>
-                <input id="session" type="number" min="1" value="1" required>
-              </div>
-            </div>
-
-            <!-- The seed starts empty: an empty field sends no --seed, and the
-                 session draws a new one and records it, as the command line
-                 does. A typed seed is sent, to repeat a session. The
-                 placeholder and help follow the mode (modeChanged() in
-                 workspace.js): demo and movie use 0 when given none. -->
-            <div class="field-pair" id="seed-fields">
-              <div>
-                <label for="seed">Random seed</label>
-                <input id="seed" type="number" min="0" step="1" inputmode="numeric"
-                       placeholder="new each run" autocomplete="off"
-                       aria-describedby="seed-help">
-              </div>
-              <div id="trials-field">
-                <label for="trials">Trials per condition</label>
-                <input id="trials" type="number" min="1" value="1" required>
-              </div>
-              <!-- Under the pair, the width of both: a half-width column made
-                   the sentence a tall, narrow block beside an empty one. -->
-              <p id="seed-help" class="help field-pair-note"></p>
-            </div>
-
-            <!-- Each label is a flex row, so the whitespace between the box
-                 and its text is ignored; only the mode decides which show. -->
-            <div class="checks">
-              <label id="headless-field">
-                <input id="headless" type="checkbox" checked> Headless simulation
-              </label>
-              <label id="mouse-field">
-                <input id="mouse" type="checkbox"> Mouse as gaze
-              </label>
-              <label id="windowed-field">
-                <input id="windowed" type="checkbox" checked> Windowed display
-              </label>
-            </div>
-
-            <!-- Movie mode only. -->
-            <div id="movie-options">
-              <div class="field-pair">
+              <!-- Subject ID and initials side by side: the initials are the
+                   check on the number, recorded and never put in a file name. -->
+              <div id="identity" class="field-pair">
                 <div>
-                  <label for="scale">Movie scale</label>
-                  <select id="scale">
-                    <option value="0.25">¼ resolution</option>
-                    <option value="0.5" selected>½ resolution</option>
-                    <option value="1">Full resolution</option>
-                  </select>
+                  <label for="subject">Subject ID</label>
+                  <input id="subject" placeholder="e.g. s01">
                 </div>
                 <div>
-                  <label for="columns">Sheet columns</label>
-                  <input id="columns" type="number" min="1" placeholder="Automatic">
+                  <label for="initials">Initials</label>
+                  <input id="initials" placeholder="e.g. HD" maxlength="5" autocomplete="off">
+                </div>
+                <div>
+                  <label for="session">Session</label>
+                  <input id="session" type="number" min="1" value="1" required>
                 </div>
               </div>
-              <label class="check">
-                <input id="sheet" type="checkbox"> Combine clips into a contact sheet
-              </label>
-              <label for="clips">
-                Clip names <span class="optional">optional · comma separated</span>
-              </label>
-              <input id="clips" placeholder="Leave empty to record every clip">
-            </div>
 
-            <!-- Extra arguments, for every mode and script: what the entry
-                 point takes beyond the form's own flags — a curriculum, a
-                 discovered script's options, or --task for an experiment
-                 that ships several tasks but has no task table for the Task
-                 menu above. The label names run.py or the script and the
-                 help and placeholder say what fits (modeChanged() in
-                 workspace.js). -->
-            <div>
-              <label for="extra-args">
-                <span id="extra-label">Extra run.py arguments</span>
-                <span class="optional">optional</span>
-              </label>
-              <input id="extra-args" placeholder="e.g. --task mib-detect">
-              <p class="help" id="extra-help"></p>
-            </div>
+              <!-- The seed starts empty: an empty field sends no --seed, and the
+                   session draws a new one and records it, as the command line
+                   does. A typed seed is sent, to repeat a session. The
+                   placeholder and help follow the mode (modeChanged() in
+                   workspace.js): demo and movie use 0 when given none. -->
+              <div class="field-pair" id="seed-fields">
+                <div>
+                  <label for="seed">Random seed</label>
+                  <input id="seed" type="number" min="0" step="1" inputmode="numeric"
+                         placeholder="new each run" autocomplete="off"
+                         aria-describedby="seed-help">
+                </div>
+                <div id="trials-field">
+                  <label for="trials">Trials per condition</label>
+                  <input id="trials" type="number" min="1" value="1" required>
+                </div>
+                <!-- Under the pair, the width of both: a half-width column made
+                     the sentence a tall, narrow block beside an empty one. -->
+                <p id="seed-help" class="help field-pair-note"></p>
+              </div>
+
+              <!-- Each label is a flex row, so the whitespace between the box
+                   and its text is ignored; only the mode decides which show. -->
+              <div class="checks">
+                <label id="headless-field">
+                  <input id="headless" type="checkbox" checked> Headless simulation
+                </label>
+                <label id="mouse-field">
+                  <input id="mouse" type="checkbox"> Mouse as gaze
+                </label>
+                <label id="windowed-field">
+                  <input id="windowed" type="checkbox" checked> Windowed display
+                </label>
+              </div>
+
+              <!-- Movie mode only. -->
+              <div id="movie-options">
+                <div class="field-pair">
+                  <div>
+                    <label for="scale">Movie scale</label>
+                    <select id="scale">
+                      <option value="0.25">¼ resolution</option>
+                      <option value="0.5" selected>½ resolution</option>
+                      <option value="1">Full resolution</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label for="columns">Sheet columns</label>
+                    <input id="columns" type="number" min="1" placeholder="Automatic">
+                  </div>
+                </div>
+                <label class="check">
+                  <input id="sheet" type="checkbox"> Combine clips into a contact sheet
+                </label>
+                <label for="clips">
+                  Clip names <span class="optional">optional · comma separated</span>
+                </label>
+                <input id="clips" placeholder="Leave empty to record every clip">
+              </div>
+
+              <!-- Extra arguments, for every mode and script: what the entry
+                   point takes beyond the form's own flags — a curriculum, a
+                   discovered script's options, or --task for an experiment
+                   that ships several tasks but has no task table for the Task
+                   menu above. The label names run.py or the script and the
+                   help and placeholder say what fits (modeChanged() in
+                   workspace.js). -->
+              <div>
+                <label for="extra-args">
+                  <span id="extra-label">Extra run.py arguments</span>
+                  <span class="optional">optional</span>
+                </label>
+                <input id="extra-args" placeholder="e.g. --task mib-detect">
+                <p class="help" id="extra-help"></p>
+              </div>
+            </section>
 
             <!-- Rig: its own section, directly above the task parameters.
                  The menu names every rig with its owner (amodal-averaging/lab,
                  alhazen/mac) and leaves out a shared rig the experiment's own
                  rig of that name hides (rigMenu() in workspace.js); the
                  summary under it is the rig as it would run (loadRig()). -->
-            <section id="rig-section" class="form-section">
+            <section id="rig-section" class="form-section stage">
               <h3 class="section-title"><label for="rig">Rig</label></h3>
               <select id="rig" required></select>
               <div id="rig-summary" class="rig-summary"></div>
@@ -295,17 +296,23 @@
               <p id="rig-note" class="help" hidden></p>
             </section>
 
-            <!-- Task parameters: the parameter file to start from (its menu
+            <!-- Task parameters: the parameter set to start from (its menu
                  sits in the heading, labelled by it), then a fields editor or
                  a text editor over the same values (renderEditor() and
-                 switchEditor() in workspace.js). A project without parameter
+                 switchEditor() in workspace.js). Each entry names its task
+                 too (run.py's PARAMETERS, or one derived from TASKS), so
+                 choosing an entry chooses the task: there is no separate
+                 Task menu to disagree with it. A project without parameter
                  files has no menu; the editor says the task then runs on the
                  defaults in its code. -->
-            <fieldset id="task-parameters" class="form-section">
+            <fieldset id="task-parameters" class="form-section stage">
               <div class="parameters-heading">
                 <h3 class="section-title"><label for="params-config">Task parameters</label></h3>
                 <select id="params-config"></select>
               </div>
+              <!-- Which task the chosen entry runs, or why run.py's task
+                   table or PARAMETERS could not be read (presetMenu()). -->
+              <p id="parameter-set-help" class="help"></p>
               <!-- "Text", not "YAML": switching from Fields fills the editor
                    with the values as JSON (valid YAML, but not what a "YAML"
                    label promises); either notation may be typed. -->
@@ -331,6 +338,9 @@
             </fieldset>
 
             <div class="launch-footer">
+              <!-- What the button will start, in one line: mode, Task
+                   parameters entry, rig and subject (launchSummary()). -->
+              <p id="launch-summary" class="launch-summary" aria-live="polite"></p>
               <p id="launch-note" class="help"></p>
               <button class="primary launch" type="submit" id="launch">▶ Start run</button>
             </div>

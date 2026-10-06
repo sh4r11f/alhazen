@@ -263,20 +263,18 @@ describe('figure export', () => {
     ],
   };
 
-  /* A built panel as exportFigure receives it: its data, title and letter. */
-  function panel(letter) {
-    const letterNode = live_monitor.document.createElement('span');
-    letterNode.textContent = letter;
-    return { data: outcomes, letter: letterNode, title: 'Saccade landings' };
+  /* A built panel as exportFigure receives it: its data and title. */
+  function panel() {
+    return { data: outcomes, title: 'Saccade landings' };
   }
 
   const root = () => live_monitor.document.documentElement;
 
   it('saves a single-column SVG 89 mm wide, drawn at 400 px across', async () => {
-    draw('exportFigure')(panel('b'), 'svg', 'single');
+    draw('exportFigure')(panel(), 'svg', 'single');
     assert.equal(live_monitor.downloads.length, 1);
     const { filename, blob } = live_monitor.downloads[0];
-    assert.equal(filename, 'b-saccade-landings-89mm.svg');
+    assert.equal(filename, 'saccade-landings-89mm.svg');
     const markup = await blob.text();
     assert.match(markup, /^<\?xml version="1\.0" encoding="UTF-8"\?>\n<svg /);
     const svg = /^[^\n]*\n(<svg [^>]*>)/.exec(markup)[1];
@@ -285,9 +283,9 @@ describe('figure export', () => {
   });
 
   it('saves a double-column SVG 183 mm wide at the same drawing scale', async () => {
-    draw('exportFigure')(panel('c'), 'svg', 'double');
+    draw('exportFigure')(panel(), 'svg', 'double');
     const { filename, blob } = live_monitor.downloads[0];
-    assert.equal(filename, 'c-saccade-landings-183mm.svg');
+    assert.equal(filename, 'saccade-landings-183mm.svg');
     const svg = /^[^\n]*\n(<svg [^>]*>)/.exec(await blob.text())[1];
     // 183 mm at 400 px per 89 mm is 822 px: text prints the same size.
     assert.match(svg, / width="183mm"/);
@@ -295,7 +293,7 @@ describe('figure export', () => {
   });
 
   it('leaves the screen-only hover targets out of the file', async () => {
-    draw('exportFigure')(panel('b'), 'svg', 'single');
+    draw('exportFigure')(panel(), 'svg', 'single');
     const markup = await live_monitor.downloads[0].blob.text();
     // The white ground and three bars; the three row hit targets are gone.
     assert.equal(markup.match(/<rect /g).length, 1 + 3);
@@ -303,11 +301,11 @@ describe('figure export', () => {
   });
 
   it('rasterises a PNG at 600 dpi', async () => {
-    draw('exportFigure')(panel('b'), 'png', 'single');
+    draw('exportFigure')(panel(), 'png', 'single');
     await settle();
     assert.equal(live_monitor.downloads.length, 1);
     const { filename, blob } = live_monitor.downloads[0];
-    assert.equal(filename, 'b-saccade-landings-89mm-600dpi.png');
+    assert.equal(filename, 'saccade-landings-89mm-600dpi.png');
     // 89 mm is 3.504 inches; at 600 dpi that is 2102 pixels across.
     assert.equal(JSON.parse(await blob.text()).width, 2102);
   });
@@ -322,7 +320,7 @@ describe('figure export', () => {
       drawBars(legendHost, host, data);
     };
 
-    draw('exportFigure')(panel('b'), 'svg', 'single');
+    draw('exportFigure')(panel(), 'svg', 'single');
 
     assert.deepEqual(during, { theme: 'light', exportMode: true });
     assert.equal(root().getAttribute('data-theme'), 'dark');
@@ -337,7 +335,7 @@ describe('figure export', () => {
       throw new Error('boom');
     };
 
-    draw('exportFigure')(panel('b'), 'svg', 'single');
+    draw('exportFigure')(panel(), 'svg', 'single');
 
     assert.equal(root().getAttribute('data-theme'), null);
     assert.equal(live_monitor.get('exportMode'), false);

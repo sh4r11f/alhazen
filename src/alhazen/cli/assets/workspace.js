@@ -117,6 +117,10 @@ let loadingSchema = false;
  * the reader picks another of its tasks) for the parameter dropdowns; {}
  * until it arrives or when it could not be read. */
 let parameterSchema = {};
+/* The task parameterSchema was asked for (null: the project's one task), so
+ * choosing another Task parameters entry for the same task reloads only its
+ * file. */
+let schemaTask = null;
 /* Whether each rig YAML the page has read turns the live monitor on, keyed
  * "<project id>:<rig path>" (two projects may both have a configs/rig.yaml).
  * The Live monitor tab reads it to say why an active run shows no monitor. */
@@ -217,9 +221,12 @@ function label(mode) {
 }
 
 /** A run's heading for the history and the summary line: its mode, then the
- *  task it ran when the experiment ships several — "Simulate · mt-tuning". */
+ *  Task parameters entry it was launched from — "Simulate · Main (less
+ *  trials)" — or, for a run recorded before entries had labels, the task it
+ *  ran when the experiment ships several — "Simulate · mt-tuning". */
 function title(run) {
-  return run.task ? `${label(run.mode)} · ${run.task}` : label(run.mode);
+  const what = run.parameter_set || run.task;
+  return what ? `${label(run.mode)} · ${what}` : label(run.mode);
 }
 
 /** The tasks a project's run.py declares (`run_experiment(tasks=TASKS)`),
@@ -230,75 +237,76 @@ function tasks(p) {
   return p?.tasks || [];
 }
 
-/** The task a launch or a schema request names: the Task menu's choice for
- *  a project with tasks, null otherwise. Null, not '', so a project without
- *  tasks never sends a task the server would refuse. */
+/** Labels in the order a person looks for them: alphabetical, ignoring
+ *  case, with numbers in number order ("Block 2" before "Block 10"). Every
+ *  menu on the form is sorted this way, at the owner's request (2026-10-06). */
+function byName(a, b) {
+  return a.localeCompare(b, undefined, {numeric: true, sensitivity: 'base'});
+}
+
+/** The project's Task parameters entries, {label, task, params}, sorted by
+ *  label. Each one is a parameter file (or none: the task's own defaults)
+ *  AND the task it runs — run.py's PARAMETERS, or the pairs the server
+ *  derives from TASKS and configs/ when run.py names none
+ *  (workspace.project_parameter_sets). */
+function parameterSets(p) {
+  return [...(p?.parameter_sets || [])].sort((a, b) => byName(a.label, b.label));
+}
+
+/** The entry the Task parameters menu shows, or undefined (no entries). */
+function selectedSet() {
+  return parameterSets(project()).find((s) => s.label === $('params-config').value);
+}
+
+/** The task a launch or a schema request names: the one the chosen Task
+ *  parameters entry runs, for a project with a task table; null otherwise.
+ *  Null, not '', so a project without tasks never sends a task the server
+ *  would refuse. There is no Task menu: the parameter entry says the task,
+ *  so the two cannot be chosen apart (the owner's request, 2026-10-06). */
 function selectedTask() {
-  return tasks(project()).length ? $('task').value : null;
+  if (!tasks(project()).length) return null;
+  return selectedSet()?.task ?? null;
+}
+
+/** The parameter file the chosen entry starts from, '' for none. */
+function selectedParams() {
+  return selectedSet()?.params || '';
 }
 
 /**
- * The parameter file the Task parameters menu opens on ('' for none).
- *
- * With a task table (run.py's TASKS) it is the selected task's own file, and
- * only that: a task whose entry names no file (None) — or names one the
- * project does not have — opens on no file, because run.py runs such a task
- * on the defaults in its code, and pre-selecting another task's file would
- * send that task's parameters to this one. Other files stay in the menu for
- * a deliberate choice. Without a task table: a plain task.yaml, the usual
- * starting point, else the first file; '' only when there is none.
+ * Fill the Task parameters menu for project `p`, sorted by name, and open it
+ * on `previous` when that is still an entry, else on the server's
+ * `default_parameter_set` (the default task's own file). Under the menu,
+ * which task the entry runs — or why run.py's task table or PARAMETERS
+ * could not be read. A project with no entry at all has no menu, and the
+ * editor says what runs instead (renderEditor).
  */
-function defaultPreset(p) {
-  if (tasks(p).length) {
-    const task = selectedTaskEntry(p);
-    return task?.params && p.configs.includes(task.params) ? task.params : '';
+function presetMenu(p, previous = null) {
+  const sets = parameterSets(p);
+  const labels = sets.map((s) => s.label);
+  const start = labels.includes(previous) ? previous : p.default_parameter_set;
+  options($('params-config'), sets.map((s) => [s.label, s.label]), start);
+  $('params-config').hidden = !sets.length;
+  describeSet(p);
+}
+
+/** The sentence under the Task parameters menu: which task the chosen entry
+ *  runs (when the experiment declares several) and with which file, and
+ *  any problem reading run.py's PARAMETERS, said rather than hidden. */
+function describeSet(p) {
+  const set = selectedSet();
+  const parts = [];
+  if (p?.tasks_error) parts.push(p.tasks_error);
+  else if (set?.task) {
+    parts.push(`Runs the task ${set.task}`
+      + (set.params ? ` with ${set.params}.` : ' on the defaults in its code.'));
   }
-  return p.configs.find((path) => path.endsWith('/task.yaml')) || p.configs[0] || '';
-}
-
-/** The task table's entry for the selected task, or undefined. */
-function selectedTaskEntry(p) {
-  return tasks(p).find((t) => t.name === selectedTask());
-}
-
-/**
- * Fill the Task parameters menu for project `p` and the selected task, and
- * open it on defaultPreset(p). The files come by their short names
- * (presetLabels). A "No file" entry heads the list only for a task of a
- * table that has no file of its own — the one case where running without a
- * file is what run.py itself would do — so it is never pre-selected
- * anywhere else. A project with no file at all has no menu, and the editor
- * says what runs instead (renderEditor).
- */
-function presetMenu(p) {
-  const items = presetLabels(p.configs);
-  const start = defaultPreset(p);
-  if (tasks(p).length && !start) items.unshift(['', 'No file (the task’s own defaults)']);
-  options($('params-config'), items, start);
-  $('params-config').value = start;
-  $('params-config').hidden = !p.configs.length;
-}
-
-/**
- * The Task parameters menu's text for each parameter file, as [path, text]
- * pairs in the order given: the file's name without its folder under
- * configs/, the task- or params- prefix and the .yaml/.yml ending, so
- * configs/task-pilot.yaml reads "pilot" and configs/task.yaml "task". A file
- * in a subfolder keeps the subfolder (configs/presets/task-x.yaml is
- * "presets/x"). When two files would read the same, both show their path
- * instead, so no two entries look alike. The option value stays the path.
- */
-function presetLabels(paths) {
-  const short = (path) => {
-    const inside = path.replace(/^configs\//, '');
-    const cut = inside.lastIndexOf('/') + 1;
-    const folder = inside.slice(0, cut);
-    const file = inside.slice(cut).replace(/\.ya?ml$/, '').replace(/^(task|params)-/, '');
-    return folder + file;
-  };
-  const counts = new Map();
-  for (const path of paths) counts.set(short(path), (counts.get(short(path)) || 0) + 1);
-  return paths.map((path) => [path, counts.get(short(path)) > 1 ? path : short(path)]);
+  if (p?.parameter_sets_error) {
+    parts.push('run.py’s PARAMETERS could not be read, so the menu pairs each task with each '
+      + `file instead: ${p.parameter_sets_error}`);
+  }
+  $('parameter-set-help').textContent = parts.join(' ');
+  $('parameter-set-help').hidden = !parts.length;
 }
 
 /** What the selected experiment is called on the page: the title its
@@ -447,7 +455,7 @@ function rigLabel(r, duplicates, slug) {
 }
 
 /** Fill the Rig menu for project `p`: the experiment's own rigs, then the
- *  shared ones, as two groups. A shared rig the experiment's own rig of the
+ *  shared ones, as two groups, each sorted by name. A shared rig the experiment's own rig of the
  *  same name hides (`shadowed`) is left out: the experiment's is the one that
  *  name means, and the command line still reaches the shared one as
  *  alhazen/<name>. The menu opens on the laptop, at the owner's request
@@ -474,9 +482,12 @@ function rigMenu(p) {
   // name is shadowed by it, so it is not in `shared` to be found anyway.
   const laptop = own.find((r) => r.name === 'laptop') || shared.find((r) => r.name === 'laptop');
   const first = laptop || own[0] || shared[0];
+  // Each group sorted by name (byName), at the owner's request (2026-10-06).
+  const items = (list) => list.map((r) => [rigValue(r), rigLabel(r, duplicates, slug)])
+    .sort((a, b) => byName(a[1], b[1]));
   groupedOptions($('rig'), [
-    ['This experiment', own.map((r) => [rigValue(r), rigLabel(r, duplicates, slug)])],
-    ['Shared (alhazen)', shared.map((r) => [rigValue(r), rigLabel(r, duplicates, slug)])],
+    ['This experiment', items(own)],
+    ['Shared (alhazen)', items(shared)],
   ], first ? rigValue(first) : '');
   // Said under the menu when the registration predates shared rigs, so a
   // menu without them is explained rather than mistaken for "there are none".
@@ -595,7 +606,32 @@ function developmentRigWarning(mode, name) {
  * when run.py's task table could not be read: the server would refuse the
  * launch with the same message, so the page says so first.
  */
+/**
+ * The launch in one line, for the footer: the mode, the Task parameters
+ * entry (when the mode takes parameters), the rig by its menu name, and the
+ * subject and session (when the mode names one) — "Simulate · Main ·
+ * alhazen/laptop · sub-s01 · ses 1". What the button will start, read before
+ * pressing it; '' with no project.
+ */
+function launchSummary() {
+  const p = project();
+  if (!p) return '';
+  const mode = $('mode').value;
+  const parts = [label(mode)];
+  if (usesParameters() && selectedSet()) parts.push(selectedSet().label);
+  const rig = [...$('rig').querySelectorAll('option')]
+    .find((o) => o.value === $('rig').value)?.textContent;
+  if (rig) parts.push(rig);
+  if (['run', 'test', 'simulate'].includes(mode)) {
+    const subject = $('subject').value.trim();
+    if (subject) parts.push(`sub-${subject}`);
+    parts.push(`ses ${$('session').value || 1}`);
+  }
+  return parts.join(' · ');
+}
+
 function updateLaunch() {
+  $('launch-summary').textContent = launchSummary();
   const p = project();
   const waitingForParameters = usesParameters() && (loadingConfig || loadingSchema);
   $('launch').disabled = !!state.active
@@ -660,14 +696,6 @@ function modeChanged() {
   $('params-config').disabled = !usesParameters();
   $('task-parameters').hidden = !usesParameters();
   $('task-parameters').disabled = !usesParameters();
-  // The Task menu: shown for an experiment that declares tasks, or whose
-  // task table could not be read (its help says why), except for a script
-  // that runs no task. The experiment's declared stimuli are drawn whatever
-  // the task (`task_free`), so a menu offering a choice would suggest the
-  // images depend on it.
-  const p = project();
-  const taskTable = p ? tasks(p) : [];
-  $('task-field').hidden = (!taskTable.length && !p?.tasks_error) || !!script?.task_free;
   // Measuring the rig draws nothing random, so it takes no seed; nor does an
   // experiment's own script, which the launcher passes no seed to — a field
   // shown for either would promise something the launch does not do.
@@ -707,7 +735,7 @@ function modeChanged() {
   // what goes here is a runner flag the form has no control for
   // (--curriculum) or, for an experiment that ships several tasks without
   // declaring a task table, its own --task; one with a table picks the task
-  // in the Task menu instead, so --task is not suggested. The placeholder
+  // through its Task parameters entry instead, so --task is not suggested. The placeholder
   // follows the help so it never shows a flag the help does not offer. The
   // server refuses a flag the form owns, by name (workspace.py).
   $('extra-label').textContent = script ? 'Extra script arguments' : 'Extra run.py arguments';
@@ -719,7 +747,7 @@ function modeChanged() {
   } else if (tasks(project()).length) {
     $('extra-help').textContent = 'Passed to run.py after the launcher’s own flags: runner '
       + 'flags the form has no control for, e.g. --curriculum configs/shaping.yaml. '
-      + 'The task is chosen above.';
+      + 'The task is the one the Task parameters entry runs.';
     $('extra-args').placeholder = 'e.g. --curriculum configs/shaping.yaml';
   } else {
     $('extra-help').textContent = 'Passed to run.py after the launcher’s own flags — e.g. '
@@ -753,41 +781,20 @@ async function chooseProject(id) {
   $('title-error').textContent = p.title_error || '';
   $('title-error').hidden = !p.title_error;
   showView(rememberedView(id));
-  // Menu order: a project's "Preview images" script first (the quickest look
-  // at the stimulus), the built-in modes, then its other scripts.
-  const previews = p.scripts.filter((s) => s.label === 'Preview images');
-  const others = p.scripts.filter((s) => s.label !== 'Preview images');
-  options($('mode'), [
-    ...previews.map((s) => [s.id, s.label]),
+  // The modes and the experiment's scripts, sorted by name (byName), at the
+  // owner's request (2026-10-06). The menu still opens where it did before
+  // it was sorted: on the project's "Preview images" (the quickest look at
+  // the stimulus) when it has one, else on Simulate.
+  const preview = p.scripts.find((s) => s.label === 'Preview images');
+  const modes = [
     ...Object.entries(MODES).map(([value, [text]]) => [value, text]),
-    ...others.map((s) => [s.id, s.label]),
-  ]);
-  // Tasks, in run.py's order, opening on run.py's default_task= (deprecated
-  // in alhazen 2.5), else the first declared — the server's `default_task`.
-  // The help does not promise that a task runs when none is named: every
-  // launch sends the chosen one as --task, and from alhazen 3.0 a command
-  // without --task is refused. The field shows only for an experiment that
-  // declares a table — or whose table could not be read, so the reader
-  // learns why from the help rather than from a refused launch. Filled
-  // before the parameter file menu: which file it opens on follows the
-  // selected task.
-  const declared = tasks(p);
-  options($('task'), declared.map((t) => [t.name, t.name]), p.default_task);
-  // Whether the field shows is modeChanged's to say, below: it depends on
-  // the mode as well (a script that runs no task hides it).
-  $('task').disabled = !declared.length;
-  $('task-help').textContent = p.tasks_error
-    // --task early in the sentence: a line that breaks inside it, after
-    // the "--", reads as two words (seen in the dashboard at its usual width).
-    || (declared.length ? 'Every launch passes --task with the task chosen here; the list '
-      + 'comes from run.py.' : '');
+    ...p.scripts.map((s) => [s.id, s.label]),
+  ].sort((a, b) => byName(a[1], b[1]));
+  options($('mode'), modes, preview ? preview.id : 'simulate');
   // Rigs by name, the experiment's own and then the shared ones (rigMenu).
   rigMenu(p);
-  // Parameter files by short name (presetLabels), opening on the selected
-  // task's own file when it has one (defaultPreset). There is no "no file"
-  // entry: a launch with a file always sends its parameters, so every run
-  // folder gets a params.yaml. A project with no file at all has no menu,
-  // and the editor says what runs instead (renderEditor).
+  // The Task parameters entries by name, each pairing a file with the task
+  // it runs, opening on the default task's own file (presetMenu).
   presetMenu(p);
   // "Each launch saves a parameter snapshot" is untrue without a file, and
   // with nothing to edit the Fields / Text switch goes too: only the
@@ -822,6 +829,7 @@ async function loadSchema(id) {
   $('choices-notice').hidden = true;
   let query = `project=${encodeURIComponent(id)}`;
   const task = selectedTask();
+  schemaTask = task;
   if (task !== null) query += `&task=${encodeURIComponent(task)}`;
   // A stale answer must not land on the current task's schema, nor end the
   // "loading" state of a newer request that is still in flight.
@@ -870,15 +878,18 @@ function showChoicesError(message) {
 }
 
 /**
- * The reader picked another task: open the Task parameters menu on that
- * task's own file, then load its schema and that file together, so the
- * editor shows the new task's parameters with the new task's choices. Each
- * load drops its answer if the reader has moved on again meanwhile.
+ * The reader picked another Task parameters entry: load its file, and — when
+ * it runs another task than the schema on hand is for — that task's schema
+ * with it, so the editor shows the new task's parameters with the new
+ * task's choices. Each load drops its answer if the reader has moved on
+ * again meanwhile.
  */
-async function taskChanged() {
+async function parameterSetChanged() {
   const p = project();
-  presetMenu(p);
-  await Promise.all([loadSchema(p.id), loadConfig()]);
+  describeSet(p);
+  const loads = [loadConfig()];
+  if (selectedTask() !== schemaTask) loads.push(loadSchema(p.id));
+  await Promise.all(loads);
 }
 
 /**
@@ -956,7 +967,7 @@ async function loadRig() {
  */
 async function loadConfig() {
   const epoch = ++configEpoch;
-  const path = $('params-config').value;
+  const path = selectedParams();
   const p = project();
   loadingConfig = true;
   updateLaunch();
@@ -993,15 +1004,15 @@ async function loadConfig() {
  * emptied in the text editor, that the launch now sends nothing.
  */
 function noValuesHint(p) {
-  const task = tasks(p).length ? selectedTaskEntry(p) : undefined;
-  if (task && !$('params-config').value) {
-    if (task.params && !p.configs.includes(task.params)) {
-      return `run.py names ${task.params} as ${task.name}’s parameter file, but the project `
+  const set = selectedSet();
+  if (set?.task && !set.params) {
+    if (set.missing) {
+      return `run.py names ${set.missing} as ${set.task}’s parameter file, but the project `
         + 'has no such file. A launch sends no parameters, and run.py will look for that '
-        + 'file itself; choose a file above, or fix run.py.';
+        + 'file itself; choose another entry above, or fix run.py.';
     }
-    return `${task.name} has no parameter file; it runs on the defaults in its code, and `
-      + 'launches without --params. Choose a file above only if you mean to.';
+    return `${set.label} has no parameter file: ${set.task} runs on the defaults in its code, `
+      + 'and launches without --params.';
   }
   if (!p?.configs?.length) {
     return 'No task parameter files in configs/ (task*.yaml or params*.yaml). The task runs on '
@@ -1033,7 +1044,7 @@ function renderEditor() {
   $('parameter-search').hidden = editor !== 'fields' || values === null;
   $('parameter-yaml').hidden = editor !== 'yaml';
   // "Each launch saves a parameter snapshot" holds only with a file chosen.
-  $('parameters-help').hidden = !$('params-config').value;
+  $('parameters-help').hidden = !selectedParams();
   if (editor !== 'fields') return;
   const host = $('parameter-fields');
   host.replaceChildren();
@@ -1662,11 +1673,13 @@ $('project-settings').addEventListener('click', () => openProject(true));
 $('close-dialog').addEventListener('click', () => $('project-dialog').close());
 $('close-image').addEventListener('click', () => $('image-dialog').close());
 $('mode').addEventListener('change', modeChanged);
-$('task').addEventListener('change', guard(taskChanged));
 $('rig').addEventListener('change', guard(loadRig));
 // Headless simulate opens no window, so the PsychoPy warning follows it.
 $('headless').addEventListener('change', updateLaunch);
-$('params-config').addEventListener('change', guard(loadConfig));
+$('params-config').addEventListener('change', guard(parameterSetChanged));
+// Typing a subject or session changes the launch summary, nothing else.
+$('subject').addEventListener('input', () => updateLaunch());
+$('session').addEventListener('input', () => updateLaunch());
 $('parameter-search').addEventListener('input', filterParameters);
 $('fields-tab').addEventListener('click', guard(() => switchEditor('fields')));
 $('yaml-tab').addEventListener('click', guard(() => switchEditor('yaml')));
@@ -1744,10 +1757,14 @@ $('launch-form').addEventListener('submit', guard(async (event) => {
     const request = {
       project: selected,
       mode,
-      // The task the run is for, when the experiment declares several. A
-      // script takes none — the server refuses one — so it is null there,
-      // whatever the Task menu shows.
+      // The task the run is for, when the experiment declares several: the
+      // one its Task parameters entry runs. A script takes none — the
+      // server refuses one — so it is null there.
       task: isScript ? null : selectedTask(),
+      // The Task parameters entry, by its label, for the history: the run's
+      // task and folder keep the task's own name. None for a launch that
+      // takes no parameters.
+      parameter_set: !isScript && usesParameters() ? (selectedSet()?.label ?? null) : null,
       rig: $('rig').value,
       subject: $('subject').value,
       initials: initials.value,

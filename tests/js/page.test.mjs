@@ -81,7 +81,7 @@ describe('a saved page', () => {
     assert.deepEqual(live_monitor.pendingTimers(), []);
   });
 
-  it('letters the panels a, b, c in order and starts each title with a capital', () => {
+  it('titles each panel with a capital and no letter in front of it', () => {
     const stat = { form: 'stat', value: '1', label: 'x' };
     const live_monitor = loadLiveMonitor({
       staticState: stateWith([
@@ -91,7 +91,9 @@ describe('a saved page', () => {
       ]),
     });
     const headings = cards(live_monitor).map((card) => card.querySelector('h2').textContent);
-    assert.deepEqual(headings, ['aAccuracy', 'bReaction time', 'cP(occluder) by alignment']);
+    /* No a, b, c in front of the titles (the owner's request, 2026-10-06). */
+    assert.deepEqual(headings, ['Accuracy', 'Reaction time', 'P(occluder) by alignment']);
+    assert.equal(live_monitor.document.querySelector('.panel-letter'), null);
   });
 
   it('draws a form it does not know as a placeholder rather than a blank card', () => {

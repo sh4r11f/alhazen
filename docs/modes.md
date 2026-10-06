@@ -595,16 +595,19 @@ above, until 3.0. `default_task=` — which named another task for such a
 command — is deprecated since 2.5 and removed in 3.0; while a run.py still
 passes it, it still chooses, warns on every run (a `DeprecationWarning`
 pointing at run.py's line), and still decides which task the workspace's Task
-menu opens on.
+parameters menu opens on.
 
 Name each params file as `HERE / "configs" / "task.yaml"` (with
 `HERE = Path(__file__).parent`), like a `default_rig` path: a bare string is resolved
 against the directory the command is typed in, so `python ~/exp/run.py` from
 elsewhere would not find it. Write the table as a module-level dict literal:
 the experiment workspace
-([workspace](workspace.md)) reads it out of `run.py` to offer the tasks in its
-Task menu, so the two never disagree about which tasks there are. Exactly one
-of `task_class=` and `tasks=` is given.
+([workspace](workspace.md)) reads it out of `run.py` to know which tasks
+there are. Beside it, a module-level `PARAMETERS = {"Label": ("task",
+HERE / "configs" / "task-x.yaml"), ...}` names the workspace's Task
+parameters menu, each entry pairing a parameter file with the task it runs
+([workspace](workspace.md#configure-and-run)); `run_experiment` does not
+read it. Exactly one of `task_class=` and `tasks=` is given.
 
 Everything else the session needs from the experiment is declared on the
 task, because an installed package's entry point hands `alhazen run --task`

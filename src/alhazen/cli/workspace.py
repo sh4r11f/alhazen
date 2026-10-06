@@ -441,6 +441,174 @@ def project_tasks(root: Path) -> dict[str, Any]:
     return {"tasks": tasks, "default": default, "error": None}
 
 
+PARAMETERS_SHAPE = (
+    "run.py's PARAMETERS must be a module-level dict literal naming each entry of the Task "
+    'parameters menu: {"Main": ("task-name", HERE / "configs" / "task.yaml"), ...}, or '
+    '{"Main": "configs/task.yaml"} for a run.py with one task; None for a path means the '
+    "task's own defaults"
+)
+
+
+def _short_parameter_name(path: str) -> str:
+    """A parameter file's name without configs/, its task- or params- prefix
+    and its .yaml/.yml ending: configs/task-pilot.yaml is "pilot". A file in
+    a subfolder keeps the subfolder (configs/presets/task-x.yaml is
+    "presets/x")."""
+    inside = path.removeprefix("configs/")
+    folder, _, file = inside.rpartition("/")
+    file = re.sub(r"\.ya?ml$", "", file)
+    file = re.sub(r"^(task|params)-", "", file)
+    return f"{folder}/{file}" if folder else file
+
+
+def _derived_parameter_sets(configs: list[str], declared: dict[str, Any]) -> list[dict[str, Any]]:
+    """The Task parameters menu for a run.py that declares no PARAMETERS.
+
+    Nothing is guessed. With a task table, each task is offered on its own
+    file (by the task's name; on no file when its entry names none, or names
+    one the project lacks), and every other file is offered once per task as
+    "<task> · <file>", because the file alone does not say which task it is
+    for. Without one, every file is offered by its short name.
+    """
+    shorts = [_short_parameter_name(path) for path in configs]
+    labels = {
+        path: (path if shorts.count(short) > 1 else short)
+        for path, short in zip(configs, shorts, strict=True)
+    }
+    tasks = declared["tasks"]
+    if not tasks:
+        return [{"label": labels[path], "task": None, "params": path} for path in configs]
+    own = {task["params"] for task in tasks if task["params"] in configs}
+    sets: list[dict[str, Any]] = []
+    for task in tasks:
+        entry: dict[str, Any] = {
+            "label": task["name"],
+            "task": task["name"],
+            "params": task["params"] if task["params"] in configs else None,
+        }
+        if task["params"] and task["params"] not in configs:
+            entry["missing"] = task["params"]
+        sets.append(entry)
+    for path in configs:
+        if path in own:
+            continue
+        for task in tasks:
+            sets.append(
+                {"label": f"{task['name']} · {labels[path]}", "task": task["name"], "params": path}
+            )
+    return sets
+
+
+def project_parameter_sets(
+    root: Path, configs: list[str], declared: dict[str, Any]
+) -> dict[str, Any]:
+    """The Task parameters menu: every parameter set the page offers, each
+    with the task it runs, read from run.py without running it.
+
+    An experiment names its menu in run.py, beside TASKS, as a module-level
+    dict literal ``PARAMETERS = {"Main": ("amodal-averaging", HERE / "configs"
+    / "task.yaml"), "Main (less trials)": ("amodal-averaging", HERE /
+    "configs" / "task-light.yaml"), ...}``: the label shown, the task it runs
+    (one of TASKS) and its parameter file, in either of TASKS' path forms
+    (`_params_path`), or None for the task's own defaults. A run.py with one
+    task writes the path alone. Choosing an entry chooses its task, which is
+    why the page has no separate Task menu: the file and the task cannot be
+    paired wrongly.
+
+    Returns ``{"sets": [{"label", "task", "params"}, ...], "default": label,
+    "error": None}``. ``default`` is the entry the menu opens on: the one
+    pairing the default task with that task's own file, else the first entry
+    for the default task, else (no table) task.yaml's, else the first. When
+    run.py has no PARAMETERS the sets are derived from TASKS and configs/
+    (`_derived_parameter_sets`); when it has one that cannot be read the
+    derived sets are offered and ``error`` says what to fix, so a typo there
+    never stops a session from being launched.
+    """
+    sets = _derived_parameter_sets(configs, declared)
+    error = None
+    run_py = root / "run.py"
+    if not declared["error"] and run_py.is_file():
+        try:
+            tree = ast.parse(run_py.read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError):
+            tree = None  # project_tasks reports it already
+        node = _module_assignment(tree, "PARAMETERS") if tree is not None else None
+        if tree is not None and node is not None:
+            try:
+                sets = _declared_parameter_sets(tree, node, configs, declared)
+            except ValueError as exc:
+                error = str(exc)
+    return {"sets": sets, "default": _default_parameter_set(sets, declared), "error": error}
+
+
+def _declared_parameter_sets(
+    tree: ast.Module, node: ast.expr, configs: list[str], declared: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """run.py's PARAMETERS, checked: every label a non-empty string literal
+    given once, every task one of TASKS, every path one of the project's
+    parameter files. Raises ValueError naming the first entry that is not."""
+    if not isinstance(node, ast.Dict) or not node.keys:
+        raise ValueError(PARAMETERS_SHAPE)
+    names = [task["name"] for task in declared["tasks"]]
+    sets: list[dict[str, Any]] = []
+    for key, value in zip(node.keys, node.values, strict=True):
+        if not (isinstance(key, ast.Constant) and isinstance(key.value, str) and key.value.strip()):
+            raise ValueError(PARAMETERS_SHAPE)
+        label = key.value.strip()
+        if any(entry["label"] == label for entry in sets):
+            raise ValueError(f"run.py's PARAMETERS names {label!r} twice")
+        task: str | None = None
+        if names:
+            if not (isinstance(value, ast.Tuple | ast.List) and len(value.elts) == 2):
+                raise ValueError(
+                    f"run.py's PARAMETERS[{label!r}] must be (task, params file); "
+                    f"{PARAMETERS_SHAPE}"
+                )
+            first, value = value.elts
+            if not (isinstance(first, ast.Constant) and first.value in names):
+                raise ValueError(
+                    f"run.py's PARAMETERS[{label!r}] names a task that is not one of TASKS "
+                    f"({', '.join(names)})"
+                )
+            task = str(first.value)
+        if isinstance(value, ast.Constant) and value.value is None:
+            params = None
+        else:
+            params = _params_path(tree, value)
+            if params is None:
+                raise ValueError(
+                    f"run.py's PARAMETERS[{label!r}] gives its file in a form that cannot be "
+                    f"read without running run.py; {PARAMETERS_SHAPE}"
+                )
+            if params not in configs:
+                raise ValueError(
+                    f"run.py's PARAMETERS[{label!r}] names {params}, which is not one of the "
+                    f"project's parameter files (configs/task*.yaml, configs/params*.yaml)"
+                )
+        sets.append({"label": label, "task": task, "params": params})
+    return sets
+
+
+def _default_parameter_set(sets: list[dict[str, Any]], declared: dict[str, Any]) -> str | None:
+    """The label the Task parameters menu opens on (see project_parameter_sets)."""
+    if not sets:
+        return None
+    if declared["tasks"]:
+        default = declared["default"]
+        own = next((t["params"] for t in declared["tasks"] if t["name"] == default), None)
+        for entry in sets:
+            if entry["task"] == default and entry["params"] == own:
+                return str(entry["label"])
+        for entry in sets:
+            if entry["task"] == default:
+                return str(entry["label"])
+        return str(sets[0]["label"])
+    for entry in sets:
+        if entry["params"] and entry["params"].endswith("/task.yaml"):
+            return str(entry["label"])
+    return str(sets[0]["label"])
+
+
 # The id of the Preview images action an experiment gets by declaring its
 # stimuli: alhazen's own command rather than a module of the experiment's, so
 # it can never be mistaken for one (theirs are "<package>.preview").
@@ -576,6 +744,12 @@ class Launch(BaseModel):
     # task takes no task here — the launcher names that one itself
     # (`Workspace._one_task`) — and neither does a standalone script.
     task: str | None = None
+    # The Task parameters menu entry the launch was made from, by its label
+    # (`project_parameter_sets`), for the history and run.json: the run's
+    # task and folder keep the task's own name, so changing a label never
+    # renames anything already recorded. None from a client that sends no
+    # label, and for a launch that takes no parameters.
+    parameter_set: str | None = None
 
 
 # Every flag `_mode_command` can emit, whichever mode. An extra argument
@@ -1095,6 +1269,7 @@ class Workspace:
             if path.stem.startswith(("task", "params")):
                 params.append(path.relative_to(root).as_posix())
         declared = project_tasks(root)
+        menu = project_parameter_sets(root, params, declared)
         shared = _shared_rigs(project)
         # The experiment's names, read from its pyproject.toml on every
         # describe (like its rigs and tasks) so an edit shows on the next
@@ -1120,6 +1295,11 @@ class Workspace:
             "tasks": declared["tasks"],
             "default_task": declared["default"],
             "tasks_error": declared["error"],
+            # The Task parameters menu, each entry with the task it runs
+            # (project_parameter_sets): choosing one chooses both.
+            "parameter_sets": menu["sets"],
+            "default_parameter_set": menu["default"],
+            "parameter_sets_error": menu["error"],
             "available": (root / "run.py").is_file(),
         }
 
@@ -1391,6 +1571,29 @@ class Workspace:
             )
         return task
 
+    def _check_parameter_set(
+        self, project: dict[str, Any], request: Launch, task: str | None
+    ) -> None:
+        """Refuse a launch whose Task parameters label is not one of the
+        project's, or whose task is not the one that entry runs, so the label
+        the history shows cannot disagree with the session that ran. Checked
+        before anything is written."""
+        if request.parameter_set is None:
+            return
+        sets = self.describe(project["id"])["parameter_sets"]
+        entry = next((e for e in sets if e["label"] == request.parameter_set), None)
+        if entry is None:
+            raise ValueError(
+                f"{project['name']} has no Task parameters entry {request.parameter_set!r}; "
+                f"choose one of {', '.join(e['label'] for e in sets)}"
+            )
+        is_mode = request.mode in {m.value for m in Mode}
+        if entry["task"] is not None and is_mode and entry["task"] != task:
+            raise ValueError(
+                f"Task parameters {request.parameter_set!r} run the task {entry['task']}, "
+                f"but the launch names {task}; choose the entry again"
+            )
+
     def start(self, request: Launch) -> dict[str, Any]:
         with self.lock:
             if self.active:
@@ -1412,6 +1615,7 @@ class Workspace:
                 parse_parameters(text)
             project = self.project(request.project)
             task = self._task_for(project, request)
+            self._check_parameter_set(project, request, task)
             ref, shared = self._launch_rig(project, request.rig)
             merged = rig_mapping(ref.path, shared=shared)
             (run_dir / "media").mkdir(parents=True)
@@ -1438,6 +1642,9 @@ class Workspace:
                 # The task run, for the history and anyone reading run.json;
                 # None for a project with one task and for a script.
                 "task": task,
+                # The Task parameters entry it was launched from, by its
+                # label; None when the client named none.
+                "parameter_set": request.parameter_set,
                 # What was launched: a project-relative path, stored as posix
                 # whatever the client typed so run.json reads the same on
                 # every OS, or `alhazen/<name>` for a shared rig. The rig
