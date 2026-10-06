@@ -236,18 +236,6 @@ function sentenceStart(text) {
   return value ? value[0].toUpperCase() + value.slice(1) : value;
 }
 
-/** a, b, … z, then aa, ab, …: how a plate with more panels than letters
- *  keeps going. */
-function panelLetter(position) {
-  let text = '';
-  let n = position;
-  do {
-    text = String.fromCharCode(97 + (n % 26)) + text;
-    n = Math.floor(n / 26) - 1;
-  } while (n >= 0);
-  return text;
-}
-
 /* Text width without laying anything out: bar charts need to know how wide a
  * label column must be *before* they can choose the plot width. */
 const measurer = document.createElement('canvas').getContext('2d');
@@ -2326,14 +2314,16 @@ function drawLegendRows(group, layout) {
   });
 }
 
-/** One panel as a standalone SVG document: white ground, panel letter, the
- *  plot with its styles written on, and the legend beneath it. */
-function figureMarkup(plot, legend, letter, widthPx, widthMm) {
+/** One panel as a standalone SVG document: white ground, the plot with its
+ *  styles written on, and the legend beneath it. No panel letter: panels
+ *  are not lettered, on screen or in a figure (the owner's request,
+ *  2026-10-06); a plate's letters are the paper's to set. */
+function figureMarkup(plot, legend, widthPx, widthMm) {
   const plotHeight = Number(plot.getAttribute('height')) || 0;
   const copy = plot.cloneNode(true);
   inlineStyles(plot, copy);
   const layout = legendRows(legend, widthPx);
-  const top = letter ? 20 : 0;
+  const top = 0;
   const height = top + plotHeight + layout.height;
 
   const figure = document.createElementNS(SVG, 'svg');
@@ -2342,12 +2332,6 @@ function figureMarkup(plot, legend, letter, widthPx, widthMm) {
   figure.setAttribute('height', (height / EXPORT_PX_PER_MM).toFixed(2) + 'mm');
   figure.setAttribute('viewBox', '0 0 ' + widthPx + ' ' + height);
   svgEl('rect', { x: 0, y: 0, width: widthPx, height: height, fill: '#ffffff' }, figure);
-  if (letter) {
-    svgEl('text', {
-      x: 2, y: 14, 'font-family': EXPORT_FONT, 'font-size': '14px', 'font-weight': '700',
-      fill: resolveColour('var(--ink)'),
-    }, figure).textContent = letter;
-  }
   const body = svgEl('g', { transform: 'translate(0,' + top + ')' }, figure);
   while (copy.firstChild) body.appendChild(copy.firstChild);
   const legendGroup = svgEl('g', { transform: 'translate(0,' + (top + plotHeight) + ')' }, figure);
@@ -2395,13 +2379,12 @@ function saveBlob(blob, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
 
-/** "b-saccade-landings-89mm": letter, title and width, so a folder of
- *  exports sorts into the plate's order and says which column each fits. */
+/** "saccade-landings-89mm": title and width, so a folder of exports says
+ *  which panel each is and which column it fits. */
 function figureFileName(entry, columns) {
   const slug = String(entry.title || 'panel').toLowerCase()
     .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'panel';
-  const letter = entry.letter.textContent || '';
-  return (letter ? letter + '-' : '') + slug + '-' + FIGURE_WIDTH_MM[columns] + 'mm';
+  return slug + '-' + FIGURE_WIDTH_MM[columns] + 'mm';
 }
 
 /**
@@ -2431,7 +2414,7 @@ function exportFigure(entry, format, columns) {
     DRAW[data.form](legendHost, host, data);
     const plot = host.querySelector('svg');
     if (!plot) throw new Error('this panel drew no chart to export');
-    markup = figureMarkup(plot, legendHost._legend, entry.letter.textContent, widthPx, widthMm);
+    markup = figureMarkup(plot, legendHost._legend, widthPx, widthMm);
   } catch (error) {
     console.error('figure export failed', error);
     alert('Figure export failed: ' + error.message);
@@ -2494,11 +2477,9 @@ const DRAW = {
  */
 function buildPanel(panel, index, openTables) {
   const card = htmlEl('section', 'panel');
-  /* A bold lowercase letter before the title, as a journal figure labels its
-   * panels. Filled in once the panels on screen are known (render), so the
-   * letters run a, b, c through what the reader is actually looking at. */
+  /* The title alone: panels are not lettered (a, b, c …), at the owner's
+   * request (2026-10-06). */
   const heading = htmlEl('h2', null, null, card);
-  const letter = htmlEl('span', 'panel-letter', null, heading);
   htmlEl('span', null, sentenceStart(panel.title), heading);
   const data = panel.data || { form: 'empty', message: 'No data yet' };
 
@@ -2526,7 +2507,6 @@ function buildPanel(panel, index, openTables) {
     legendHost: legendHost,
     data: data,
     section: panel.section || 'Other',
-    letter: letter,
     title: panel.title || '',
   };
   addExportActions(entry);
@@ -2652,7 +2632,6 @@ function render() {
    * shown ones: an element that is not in the document has no width, and a
    * chart drawn against that width would be drawn wrong. */
   panels = shown;
-  panels.forEach((entry, position) => { entry.letter.textContent = panelLetter(position); });
   panels.forEach(paintPanel);
   if (editing) {
     const input = document.querySelector('input[data-setting="' + editing.setting + '"]');

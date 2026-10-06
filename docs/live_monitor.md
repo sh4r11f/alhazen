@@ -214,8 +214,9 @@ thing wherever it appears.
   is the data, and an axis that stops at an unlabelled value leaves the reader
   guessing what its end is worth. Values a tick does not carry are on a direct
   label, in the hover readout, or in the table.
-- **Panels are lettered a, b, c** in the order they are shown, in bold
-  lowercase, the way a figure plate letters them.
+- **Panels carry their title and no letter.** They used to be lettered
+  a, b, c in the order shown, the way a figure plate letters them; the owner
+  asked for the letters to go (2026-10-06).
 - **A mean marker appears only where a mean is a position.** With more than
   one target on screen, the mean landing falls between the clusters — where
   nothing landed — so the landing panel omits it.
@@ -688,22 +689,22 @@ theme and at a scale that sets tick labels at about 7 pt and prints a 1 px
 line at 0.6 pt, whatever the reader's theme or window width. Each element's
 computed style is written onto it, so the SVG needs no stylesheet and opens the
 same in a vector editor as in a browser, and its text is set in Arial or
-Helvetica. The panel letter and the legend are drawn inside the figure, and a
-bar chart is cropped to its rows.
+Helvetica. The legend is drawn inside the figure (no panel letter: a plate's
+letters are the paper's to set), and a bar chart is cropped to its rows.
 
 ```mermaid
 flowchart LR
   P["panel payload<br/>(already presented)"] --> D["redraw off screen<br/>light theme · 400 px per 89 mm"]
   D --> I["inline computed styles<br/>drop hover targets"]
-  I --> L["panel letter + legend<br/>drawn into the SVG"]
+  I --> L["legend<br/>drawn into the SVG"]
   L --> S["SVG<br/>89 or 183 mm"]
   S --> R["canvas at 600 dpi"]
   R --> G["PNG"]
 ```
 
 A failed export says so in the page, with the reason, rather than quietly
-saving nothing. File names carry the letter, the title and the width, such as
-`d-saccade-latency-89mm.svg`, so a folder of exports sorts into plate order.
+saving nothing. File names carry the title and the width, such as
+`saccade-latency-89mm.svg`.
 
 ## Saved output
 

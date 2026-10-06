@@ -35,6 +35,10 @@ const PROJECT = Object.freeze({
   id: 'p', name: 'demo-folder', title: 'Demo task', slug: 'demo', title_error: null,
   path: 'C:/projects/demo', python: 'python', available: true,
   rigs: [rigEntry('mac')], rigs_note: null, configs: ['configs/task.yaml'], scripts: [],
+  /* The Task parameters menu as Workspace.describe derives it for a run.py
+   * with one task and no PARAMETERS: each file by its short name. */
+  parameter_sets: [{ label: 'task', task: null, params: 'configs/task.yaml' }],
+  default_parameter_set: 'task', parameter_sets_error: null,
 });
 
 /* A rig as /api/rig returns it: its name, whose it is, the shared rig it
@@ -422,6 +426,8 @@ describe('launching a run', () => {
         /* headless and windowed start checked in the markup. */
         headless: true, mouse: false, windowed: true,
         scale: 0.5, sheet: false, columns: null, clips: [], extra_args: '',
+        /* The Task parameters entry it was launched from, for the history. */
+        parameter_set: 'task',
         parameters: { trials: 4 },
       });
       /* The token travels in a header, as JSON, and the page moved on to the
@@ -500,10 +506,11 @@ describe('launching a run', () => {
   });
 });
 
-describe('choosing a task', () => {
-  /* An experiment whose run.py declares two tasks, each with its own
-   * parameter file, and runs mib-search when none is named. PROJECT is
-   * frozen, so the task-bearing project is built from a copy of it. */
+describe('choosing a Task parameters entry', () => {
+  /* An experiment whose run.py declares two tasks and names its Task
+   * parameters menu (PARAMETERS): each entry is a file AND the task it runs,
+   * so there is no Task menu (the owner's request, 2026-10-06). Listed out
+   * of order, as run.py may; the menu sorts them by name. */
   const TASKED = Object.freeze({
     ...PROJECT,
     tasks: [
@@ -512,194 +519,206 @@ describe('choosing a task', () => {
     ],
     default_task: 'mib-search',
     configs: ['configs/task.yaml', 'configs/task-tuning.yaml', 'configs/task-search-rdk.yaml'],
+    parameter_sets: [
+      { label: 'Tuning', task: 'mt-tuning', params: 'configs/task-tuning.yaml' },
+      { label: 'Search (RDK)', task: 'mib-search', params: 'configs/task-search-rdk.yaml' },
+      { label: 'Search (base)', task: 'mib-search', params: 'configs/task.yaml' },
+    ],
+    default_parameter_set: 'Search (RDK)',
   });
-  /* Each task's parameter file and model. The files hold one string each and
-   * the schemas give that string a choice list, so the fields editor shows a
+  /* Each file and each task's model. The files hold one string each and the
+   * schemas give that string a choice list, so the fields editor shows a
    * dropdown whose options say which task's model it was drawn from. */
   const CONFIGS = {
     'configs/task-tuning.yaml': { text: 'speed: fast\n', values: { speed: 'fast' } },
     'configs/task-search-rdk.yaml': { text: 'motion: moving\n', values: { motion: 'moving' } },
+    'configs/task.yaml': { text: 'motion: static\n', values: { motion: 'static' } },
   };
   const SCHEMAS = {
     'mt-tuning': { properties: { speed: { enum: ['slow', 'fast'], default: 'slow' } } },
     'mib-search': { properties: { motion: { enum: ['static', 'moving'], default: 'static' } } },
   };
 
-  /** A page on TASKED, its presets and schemas served. */
+  /** A page on TASKED, its files and schemas served. */
   function taskedPage(options = {}) {
     return pageWith({ project: TASKED, configs: CONFIGS, schemas: SCHEMAS, ...options });
   }
 
-  /** Change the Task menu as the reader would and let the reloads finish. */
-  async function chooseTask(app, name) {
-    app.byId('task').value = name;
-    app.byId('task').fire('change');
+  /** Choose a Task parameters entry as the reader would; let the loads finish. */
+  async function chooseSet(app, label) {
+    app.byId('params-config').value = label;
+    app.byId('params-config').fire('change');
     await settle();
   }
 
-  it('hides the field for a project without a task table and asks for its one schema', async () => {
-    const app = await pageWith();
-    assert.equal(app.byId('task-field').hidden, true);
-    assert.equal(app.byId('task').disabled, true);
-    /* No `task` in the query: the server refuses one for such a project. */
-    assert.deepEqual(schemaRequests(app), ['/api/schema?project=p']);
-    /* The plain task.yaml stays the preset to open on. */
-    assert.equal(app.byId('params-config').value, 'configs/task.yaml');
-  });
-
-  it('lists the declared tasks with the default selected, and opens on its preset and schema',
+  it('has no Task menu, and asks for the one schema of a project without a task table',
     async () => {
-      const app = await taskedPage();
-      const select = app.byId('task');
-      assert.equal(app.byId('task-field').hidden, false);
-      assert.equal(select.disabled, false);
-      assert.deepEqual(select.children.map((o) => o.value), ['mt-tuning', 'mib-search']);
-      assert.deepEqual(select.children.map((o) => o.textContent), ['mt-tuning', 'mib-search']);
-      assert.equal(select.value, 'mib-search');
-      /* Changed at the owner's request (2026-10-02, every session names its
-       * task): the help used to say "mib-search runs when no task is named".
-       * No task runs unnamed from here — every launch sends --task — and
-       * alhazen 3.0 refuses a command without it, so the help promises no
-       * default and names no task. */
-      assert.equal(
-        app.byId('task-help').textContent,
-        'Every launch passes --task with the task chosen here; the list comes from run.py.',
-      );
-      assert.doesNotMatch(app.byId('task-help').textContent, /when no task|default|mib-search/);
-      /* The preset menu opens on the default task's own parameter file, and
-       * the schema asked for is that task's. */
-      assert.equal(app.byId('params-config').value, 'configs/task-search-rdk.yaml');
-      assert.deepEqual(schemaRequests(app), ['/api/schema?project=p&task=mib-search']);
-      /* The editor shows that file's values with that model's choices. */
-      const field = app.byId('param-0');
-      assert.equal(field.localName, 'select');
-      assert.deepEqual(field.children.map((o) => o.value), ['static', 'moving']);
-      assert.equal(field.value, 'moving');
-      assert.equal(app.byId('launch').disabled, false);
+      const app = await pageWith();
+      assert.equal(app.byId('task'), null);
+      assert.equal(app.byId('task-field'), null);
+      /* No `task` in the query: the server refuses one for such a project. */
+      assert.deepEqual(schemaRequests(app), ['/api/schema?project=p']);
+      assert.equal(app.byId('params-config').value, 'task');
+      /* No task to name under the menu. */
+      assert.equal(app.byId('parameter-set-help').hidden, true);
     });
 
-  it('reloads the preset, schema and parameter fields when another task is picked', async () => {
+  it('lists the entries by name, opens on the default task’s own file and asks that task’s '
+    + 'schema', async () => {
     const app = await taskedPage();
-    await chooseTask(app, 'mt-tuning');
-    assert.equal(app.byId('params-config').value, 'configs/task-tuning.yaml');
-    assert.deepEqual(schemaRequests(app), [
-      '/api/schema?project=p&task=mib-search',
-      '/api/schema?project=p&task=mt-tuning',
-    ]);
-    /* The fields are the new task's: its file's value, its model's choices. */
+    const select = app.byId('params-config');
+    assert.deepEqual(select.children.map((o) => o.value),
+      ['Search (base)', 'Search (RDK)', 'Tuning']);
+    assert.deepEqual(select.children.map((o) => o.textContent),
+      ['Search (base)', 'Search (RDK)', 'Tuning']);
+    assert.equal(select.value, 'Search (RDK)');
+    assert.equal(app.byId('parameter-set-help').textContent,
+      'Runs the task mib-search with configs/task-search-rdk.yaml.');
+    assert.deepEqual(schemaRequests(app), ['/api/schema?project=p&task=mib-search']);
+    /* The editor shows that file's values with that model's choices. */
     const field = app.byId('param-0');
     assert.equal(field.localName, 'select');
-    assert.deepEqual(field.children.map((o) => o.value), ['slow', 'fast']);
-    assert.equal(field.value, 'fast');
-    assert.equal(app.byId('parameter-fields').children.length, 1);
-    assert.deepEqual(plain(app.run('values')), { speed: 'fast' });
+    assert.deepEqual(field.children.map((o) => o.value), ['static', 'moving']);
+    assert.equal(field.value, 'moving');
     assert.equal(app.byId('launch').disabled, false);
   });
 
-  it('opens on no file for a task whose table entry names none, or one the project lacks',
+  it('reloads the file, schema and fields when an entry for another task is chosen',
     async () => {
-      /* Changed at the owner's request: this used to fall back to task.yaml,
-       * which sent one task's parameters to another (kde-vergence's check
-       * task opened on the pursuit pilot's file). With a task table, only
-       * the task's own file is ever pre-selected. */
+      const app = await taskedPage();
+      await chooseSet(app, 'Tuning');
+      assert.deepEqual(schemaRequests(app), [
+        '/api/schema?project=p&task=mib-search',
+        '/api/schema?project=p&task=mt-tuning',
+      ]);
+      /* The fields are the new task's: its file's value, its model's choices. */
+      const field = app.byId('param-0');
+      assert.equal(field.localName, 'select');
+      assert.deepEqual(field.children.map((o) => o.value), ['slow', 'fast']);
+      assert.equal(field.value, 'fast');
+      assert.deepEqual(plain(app.run('values')), { speed: 'fast' });
+      assert.equal(app.byId('parameter-set-help').textContent,
+        'Runs the task mt-tuning with configs/task-tuning.yaml.');
+      assert.equal(app.byId('launch').disabled, false);
+    });
+
+  it('reloads only the file when another entry for the same task is chosen', async () => {
+    const app = await taskedPage();
+    await chooseSet(app, 'Search (base)');
+    assert.deepEqual(schemaRequests(app), ['/api/schema?project=p&task=mib-search']);
+    assert.deepEqual(plain(app.run('values')), { motion: 'static' });
+  });
+
+  it('runs an entry with no file on its task’s defaults, and one naming a missing file says so',
+    async () => {
       const project = {
         ...TASKED,
-        tasks: [
-          { name: 'mt-tuning', params: null },
-          { name: 'mib-search', params: 'configs/gone.yaml' },
+        parameter_sets: [
+          { label: 'Check', task: 'mt-tuning', params: null },
+          { label: 'Search (RDK)', task: 'mib-search', params: null, missing: 'configs/gone.yaml' },
         ],
+        default_parameter_set: 'Search (RDK)',
       };
       const app = await taskedPage({ project: project });
-      /* mib-search, the default, names a file the project does not have. */
-      assert.equal(app.byId('params-config').value, '');
       assert.equal(app.run('values'), null);
       assert.match(app.byId('parameter-fields').textContent, /configs\/gone\.yaml/);
-      await chooseTask(app, 'mt-tuning');
-      assert.equal(app.byId('params-config').value, '');
+      assert.equal(app.byId('parameter-set-help').textContent,
+        'Runs the task mib-search on the defaults in its code.');
+      await chooseSet(app, 'Check');
       assert.equal(app.run('values'), null);
       assert.equal(
         app.byId('parameter-fields').textContent,
-        'mt-tuning has no parameter file; it runs on the defaults in its code, and launches '
-        + 'without --params. Choose a file above only if you mean to.',
+        'Check has no parameter file: mt-tuning runs on the defaults in its code, and launches '
+        + 'without --params.',
       );
+      assert.equal(app.byId('parameters-help').hidden, true);
       assert.equal(app.fetches.filter((f) => f.url.startsWith('/api/config')).length, 0);
+      chooseMode(app, 'movie');
+      await launch(app);
+      assert.equal(launched(app).task, 'mt-tuning');
+      assert.equal('parameters' in launched(app), false);
     });
 
-  it('sends the selected task with a built-in mode, and never with a script', async () => {
-    const script = {
-      id: 'preview', label: 'Preview images', flags: ['--out', '--sheet'], params_flag: null,
-    };
-    const app = await taskedPage({ project: { ...TASKED, scripts: [script] } });
-    await chooseTask(app, 'mt-tuning');
-    chooseMode(app, 'simulate');
-    /* The help no longer suggests --task: the task is chosen in the menu. */
-    const help = app.byId('extra-help').textContent;
-    assert.doesNotMatch(help, /--task/);
-    assert.match(help, /--curriculum configs\/shaping\.yaml/);
-    assert.match(help, /chosen above/);
-    assert.doesNotMatch(app.byId('extra-args').placeholder, /--task/);
-    app.byId('subject').value = 's01';
-    await launch(app);
-    const body = launched(app);
-    assert.equal(body.mode, 'simulate');
-    assert.equal(body.task, 'mt-tuning');
-    assert.deepEqual(body.parameters, { speed: 'fast' });
-
-    /* A script launch: the Task menu stays in view, but the server refuses a
-     * task on a script, so none is sent. */
-    app.server.posted.length = 0;
-    chooseMode(app, 'preview');
-    assert.equal(app.byId('task-field').hidden, false);
-    await launch(app);
-    assert.equal(launched(app).mode, 'preview');
-    assert.equal(launched(app).task, null);
-  });
-
-  it('hides the Task menu for the declared stimuli, which are drawn whatever the task',
+  it('sends the chosen entry’s task and label with a built-in mode, and neither with a script',
     async () => {
-      /* What the server describes for an experiment that declares its
-       * stimuli ([tool.alhazen] stimuli): alhazen's own Preview images. */
-      const declared = {
-        id: 'alhazen.preview', label: 'Preview images', module: 'alhazen',
-        flags: ['--out', '--project', '--rig'], params_flag: null, rig_flag: true,
-        task_free: true, error: null,
+      const script = {
+        id: 'preview', label: 'Preview images', flags: ['--out', '--sheet'], params_flag: null,
       };
-      const app = await taskedPage({ project: { ...TASKED, scripts: [declared] } });
-      /* First in the menu, as an experiment's own Preview images is. */
-      assert.equal(app.byId('mode').children[0].value, 'alhazen.preview');
-      chooseMode(app, 'alhazen.preview');
-      assert.equal(app.byId('task-field').hidden, true);
-      assert.equal(app.byId('task-parameters').hidden, true);
-      /* The flags the launcher sets are not offered for retyping. */
-      assert.equal(app.byId('extra-help').textContent, 'Available flags: none');
+      const app = await taskedPage({ project: { ...TASKED, scripts: [script] } });
+      await chooseSet(app, 'Tuning');
+      chooseMode(app, 'simulate');
+      /* The help does not suggest --task: the entry names the task. */
+      const help = app.byId('extra-help').textContent;
+      assert.doesNotMatch(help, /--task/);
+      assert.match(help, /--curriculum configs\/shaping\.yaml/);
+      assert.match(help, /Task parameters entry/);
+      assert.doesNotMatch(app.byId('extra-args').placeholder, /--task/);
+      app.byId('subject').value = 's01';
       await launch(app);
       const body = launched(app);
-      assert.equal(body.mode, 'alhazen.preview');
-      assert.equal(body.task, null);
-      assert.equal(body.parameters ?? null, null);
-      assert.equal(body.parameters_yaml ?? null, null);
+      assert.equal(body.mode, 'simulate');
+      assert.equal(body.task, 'mt-tuning');
+      assert.equal(body.parameter_set, 'Tuning');
+      assert.deepEqual(body.parameters, { speed: 'fast' });
 
-      /* Back on a mode that runs a task, the menu is offered again. */
-      chooseMode(app, 'simulate');
-      assert.equal(app.byId('task-field').hidden, false);
+      /* A script launch: the server refuses a task on a script, so none is
+       * sent, and no entry either. */
+      app.server.posted.length = 0;
+      chooseMode(app, 'preview');
+      await launch(app);
+      assert.equal(launched(app).mode, 'preview');
+      assert.equal(launched(app).task, null);
+      assert.equal(launched(app).parameter_set, null);
     });
 
-  it('names the task after the mode in the history and the run summary', async () => {
-    const run = runDetail({ task: 'mt-tuning', status: 'completed', returncode: 0 });
-    const app = await taskedPage({ run: run });
-    const row = app.byId('history').children[0];
-    assert.equal(row.querySelector('strong').textContent, 'Simulate · mt-tuning');
-    assert.match(app.byId('run-info').textContent, /^Simulate · mt-tuning · /);
+  it('takes the declared stimuli out of the task’s hands: no parameters, no task', async () => {
+    /* What the server describes for an experiment that declares its stimuli
+     * ([tool.alhazen] stimuli): alhazen's own Preview images. */
+    const declared = {
+      id: 'alhazen.preview', label: 'Preview images', module: 'alhazen',
+      flags: ['--out', '--project', '--rig'], params_flag: null, rig_flag: true,
+      task_free: true, error: null,
+    };
+    const app = await taskedPage({ project: { ...TASKED, scripts: [declared] } });
+    /* The menu is sorted by name now, and still opens on Preview images. */
+    assert.equal(app.byId('mode').value, 'alhazen.preview');
+    chooseMode(app, 'alhazen.preview');
+    assert.equal(app.byId('task-parameters').hidden, true);
+    /* The flags the launcher sets are not offered for retyping. */
+    assert.equal(app.byId('extra-help').textContent, 'Available flags: none');
+    await launch(app);
+    const body = launched(app);
+    assert.equal(body.mode, 'alhazen.preview');
+    assert.equal(body.task, null);
+    assert.equal(body.parameters ?? null, null);
+    assert.equal(body.parameters_yaml ?? null, null);
+    /* Back on a mode that runs a task, its parameters are offered again. */
+    chooseMode(app, 'simulate');
+    assert.equal(app.byId('task-parameters').hidden, false);
   });
+
+  it('names the entry after the mode in the history, and the task for an older record',
+    async () => {
+      const run = runDetail({
+        task: 'mt-tuning', parameter_set: 'Tuning', status: 'completed', returncode: 0,
+      });
+      const app = await taskedPage({ run: run });
+      const row = app.byId('history').children[0];
+      assert.equal(row.querySelector('strong').textContent, 'Simulate · Tuning');
+      assert.match(app.byId('run-info').textContent, /^Simulate · Tuning · /);
+      /* A run recorded before entries had labels keeps its task's name. */
+      const older = runDetail({ task: 'mt-tuning', status: 'completed', returncode: 0 });
+      const before = await taskedPage({ run: older });
+      assert.equal(before.byId('history').children[0].querySelector('strong').textContent,
+        'Simulate · mt-tuning');
+    });
 
   it('shows why the task table could not be read and offers no launch', async () => {
     const message = 'TASKS in run.py is not a dict literal';
     const broken = { ...PROJECT, tasks: [], default_task: null, tasks_error: message };
     const app = await pageWith({ project: broken });
-    assert.equal(app.byId('task-field').hidden, false);
-    assert.equal(app.byId('task').disabled, true);
-    assert.equal(app.byId('task').children.length, 0);
-    assert.equal(app.byId('task-help').textContent, message);
+    assert.equal(app.byId('parameter-set-help').hidden, false);
+    assert.equal(app.byId('parameter-set-help').textContent, message);
     assert.equal(app.byId('launch').disabled, true);
     assert.match(app.byId('launch-note').textContent, /run\.py/);
     assert.match(app.byId('launch-note').textContent, new RegExp(message));
@@ -711,6 +730,18 @@ describe('choosing a task', () => {
     await launch(app);
     assert.equal(app.server.posted.filter((p) => p.path === '/api/runs').length, 0);
   });
+
+  it('says when run.py’s PARAMETERS could not be read, and still offers the derived entries',
+    async () => {
+      const project = {
+        ...TASKED,
+        parameter_sets_error: "run.py's PARAMETERS['Main'] names a task that is not one of TASKS",
+      };
+      const app = await taskedPage({ project: project });
+      assert.match(app.byId('parameter-set-help').textContent,
+        /PARAMETERS could not be read.*names a task that is not one of TASKS/);
+      assert.equal(app.byId('launch').disabled, false);
+    });
 });
 
 describe('the parameter text editor', () => {
@@ -1120,9 +1151,29 @@ describe('the Rig menu', () => {
       },
       rigs: { 'configs/rig-lab.yaml': rig(true, false, { name: 'lab' }) },
     });
+    /* Sorted by name like every rig (2026-10-06), so the file decides. */
     assert.deepEqual(plain(menu(app)[0][1].map(([, text]) => text)), [
-      'demo/lab (configs/rig-lab.yaml)', 'demo/lab (configs/old/rig-lab.yaml)',
+      'demo/lab (configs/old/rig-lab.yaml)', 'demo/lab (configs/rig-lab.yaml)',
     ]);
+  });
+
+  it('sorts each group by name, and still opens on the laptop', async () => {
+    const app = await pageWith({
+      project: {
+        ...PROJECT,
+        rigs: [
+          rigEntry('vpixx'), rigEntry('lab-rehearsal'), rigEntry('lab'),
+          sharedEntry('mac'), sharedEntry('laptop'), sharedEntry('lab', { shadowed: true }),
+        ],
+      },
+      rigs: { 'alhazen/laptop': rig(true, false, { name: 'laptop', source: 'alhazen' }) },
+    });
+    const groups = menu(app);
+    assert.deepEqual(plain(groups.map(([heading, items]) => [heading, items.map(([, t]) => t)])), [
+      ['This experiment', ['demo/lab', 'demo/lab-rehearsal', 'demo/vpixx']],
+      ['Shared (alhazen)', ['alhazen/laptop', 'alhazen/mac']],
+    ]);
+    assert.equal(app.byId('rig').value, 'alhazen/laptop');
   });
 
   it('summarises a shared rig from the merged answer, and says whose it is', async () => {
@@ -1287,9 +1338,10 @@ describe('the launch form', () => {
     };
     assert.doesNotMatch(html, /01 — SETUP/);
     const order = [
-      'id="mode"', 'id="task-field"', 'id="identity"', 'id="seed-fields"', 'id="movie-options"',
+      'id="mode"', 'id="identity"', 'id="seed-fields"', 'id="movie-options"',
       'id="extra-args"', 'id="rig-section"', 'id="rig"', 'id="rig-summary"', 'id="rig-note"',
-      'id="task-parameters"', 'id="params-config"', 'id="fields-tab"', 'id="parameter-search"',
+      'id="task-parameters"', 'id="params-config"', 'id="parameter-set-help"', 'id="fields-tab"',
+      'id="parameter-search"',
       'id="parameter-fields"', 'class="launch-footer"',
     ].map(at);
     assert.deepEqual(order, [...order].sort((a, b) => a - b));
@@ -1299,36 +1351,59 @@ describe('the launch form', () => {
     assert.match(fieldset, /<label for="params-config">Task parameters<\/label>/);
     assert.match(fieldset, /id="params-config"/);
     assert.doesNotMatch(html, /Parameter preset/);
+    /* No Task menu: the Task parameters entry names the task (2026-10-06). */
+    assert.doesNotMatch(html, /id="task"|id="task-field"/);
     /* The Data view's slot, right after the workspace view. */
     assert.match(html, /<div id="data-view" hidden><\/div>/);
     assert.ok(at('id="data-view"') > at('id="workspace"'));
   });
 });
 
+describe('the Mode menu', () => {
+  it('lists the modes and the experiment’s scripts by name, opening on Simulate', async () => {
+    const script = { id: 'movie_script', label: 'Contact sheet', flags: [], params_flag: null };
+    const app = await pageWith({ project: { ...PROJECT, scripts: [script] } });
+    const texts = app.byId('mode').children.map((o) => o.textContent);
+    assert.deepEqual(plain(texts), [
+      'Contact sheet', 'Demo', 'Measure rig', 'Record movies', 'Run experiment', 'Simulate',
+      'Test session',
+    ]);
+    /* Where the menu opened before it was sorted: Simulate, with no preview. */
+    assert.equal(app.byId('mode').value, 'simulate');
+  });
+});
+
 describe('the Task parameters menu', () => {
   /** The menu's entries as [value, text]. */
-  function files(app) {
+  function entries(app) {
     return app.byId('params-config').children.map((o) => [o.value, o.textContent]);
   }
 
-  it('names each file without its folder, task-/params- prefix or ending, and has no '
-    + '"Task defaults"', async () => {
-    const app = await pageWith({
-      project: {
-        ...PROJECT,
-        configs: [
-          'configs/presets/task-x.yaml', 'configs/params-fast.yml', 'configs/task-pilot.yaml',
-          'configs/task.yaml',
-        ],
-      },
-    });
-    /* Changed at the owner's request: the menu used to start with "Task
-     * defaults" (no file) and show file names with their endings. */
-    assert.deepEqual(plain(files(app)), [
-      ['configs/presets/task-x.yaml', 'presets/x'],
-      ['configs/params-fast.yml', 'fast'],
-      ['configs/task-pilot.yaml', 'pilot'],
-      ['configs/task.yaml', 'task'],
+  /* A run.py with one task and four files, as the server derives its menu
+   * (each file by its short name; workspace.project_parameter_sets, whose
+   * Python tests cover the names). */
+  const FOUR = Object.freeze({
+    ...PROJECT,
+    configs: [
+      'configs/presets/task-x.yaml', 'configs/params-fast.yml', 'configs/task-pilot.yaml',
+      'configs/task.yaml',
+    ],
+    parameter_sets: [
+      { label: 'presets/x', task: null, params: 'configs/presets/task-x.yaml' },
+      { label: 'task', task: null, params: 'configs/task.yaml' },
+      { label: 'fast', task: null, params: 'configs/params-fast.yml' },
+      { label: 'Pilot 10', task: null, params: 'configs/task-pilot.yaml' },
+    ],
+    default_parameter_set: 'task',
+  });
+
+  it('lists the server’s entries sorted by name, ignoring case', async () => {
+    const app = await pageWith({ project: FOUR });
+    assert.deepEqual(plain(entries(app)), [
+      ['fast', 'fast'],
+      ['Pilot 10', 'Pilot 10'],
+      ['presets/x', 'presets/x'],
+      ['task', 'task'],
     ]);
     assert.equal(app.byId('params-config').hidden, false);
     assert.equal(app.byId('parameter-search').hidden, false);
@@ -1336,37 +1411,40 @@ describe('the Task parameters menu', () => {
     assert.equal(app.byId('editor-switch').hidden, false);
   });
 
-  it('shows the path of two files that would read the same', async () => {
+  it('sorts numbers in number order: Block 2 before Block 10', async () => {
     const app = await pageWith({
       project: {
         ...PROJECT,
-        configs: ['configs/params-pilot.yaml', 'configs/task-pilot.yaml', 'configs/task.yaml'],
+        parameter_sets: [
+          { label: 'Block 10', task: null, params: 'configs/task.yaml' },
+          { label: 'Block 2', task: null, params: 'configs/task.yaml' },
+        ],
+        default_parameter_set: 'Block 10',
       },
     });
-    assert.deepEqual(plain(files(app)), [
-      ['configs/params-pilot.yaml', 'configs/params-pilot.yaml'],
-      ['configs/task-pilot.yaml', 'configs/task-pilot.yaml'],
-      ['configs/task.yaml', 'task'],
-    ]);
+    assert.deepEqual(plain(entries(app)).map(([value]) => value), ['Block 2', 'Block 10']);
+    assert.equal(app.byId('params-config').value, 'Block 10');
   });
 
-  it('opens on task.yaml, else on the first file, and sends its parameters', async () => {
+  it('opens on the server’s default entry, and sends its file’s parameters', async () => {
     const pilot = { text: 'trials: 2\n', values: { trials: 2 } };
-    const withTask = await pageWith({
-      project: { ...PROJECT, configs: ['configs/task-pilot.yaml', 'configs/task.yaml'] },
-      configs: { 'configs/task-pilot.yaml': pilot },
-    });
-    assert.equal(withTask.byId('params-config').value, 'configs/task.yaml');
-    /* No task.yaml: the first file, never "no file" as long as there is one. */
+    const withTask = await pageWith({ project: FOUR, configs: { 'configs/task-pilot.yaml': pilot } });
+    assert.equal(withTask.byId('params-config').value, 'task');
     const without = await pageWith({
-      project: { ...PROJECT, configs: ['configs/task-pilot.yaml'] },
+      project: {
+        ...PROJECT,
+        configs: ['configs/task-pilot.yaml'],
+        parameter_sets: [{ label: 'pilot', task: null, params: 'configs/task-pilot.yaml' }],
+        default_parameter_set: 'pilot',
+      },
       configs: { 'configs/task-pilot.yaml': pilot },
     });
-    assert.equal(without.byId('params-config').value, 'configs/task-pilot.yaml');
+    assert.equal(without.byId('params-config').value, 'pilot');
     assert.deepEqual(plain(without.run('values')), { trials: 2 });
     chooseMode(without, 'movie');
     await launch(without);
     assert.deepEqual(launched(without).parameters, { trials: 2 });
+    assert.equal(launched(without).parameter_set, 'pilot');
   });
 
   it('says so when the text editor is emptied, since a launch then sends no parameters',
@@ -1387,7 +1465,9 @@ describe('the Task parameters menu', () => {
 
   it('says a project without parameter files runs on its code’s defaults, and sends none',
     async () => {
-      const app = await pageWith({ project: { ...PROJECT, configs: [] } });
+      const app = await pageWith({
+        project: { ...PROJECT, configs: [], parameter_sets: [], default_parameter_set: null },
+      });
       /* No menu to choose from, and no request for a file. */
       assert.equal(app.byId('params-config').hidden, true);
       assert.equal(app.byId('params-config').children.length, 0);
@@ -1716,8 +1796,8 @@ describe('the logo', () => {
 });
 
 describe('a task table with a task that has no parameter file', () => {
-  /* kde-vergence's table: the check task names None, the other two their own
-   * files, and each has a pilot file beside it. */
+  /* kde-vergence's menu (its run.py's PARAMETERS): the check task runs on no
+   * file, the other two on their own files, each with a shorter twin. */
   const KDE = Object.freeze({
     ...PROJECT,
     tasks: [
@@ -1730,6 +1810,20 @@ describe('a task table with a task that has no parameter file', () => {
       'configs/task-pursuit-pilot.yaml', 'configs/task-pursuit.yaml',
       'configs/task-report-pilot.yaml', 'configs/task-report.yaml',
     ],
+    parameter_sets: [
+      { label: 'Vergence check', task: 'kde-vergence-check', params: null },
+      { label: 'Pursuit', task: 'kde-vergence-pursuit', params: 'configs/task-pursuit.yaml' },
+      {
+        label: 'Pursuit (less trials)', task: 'kde-vergence-pursuit',
+        params: 'configs/task-pursuit-pilot.yaml',
+      },
+      { label: 'Report', task: 'kde-vergence-report', params: 'configs/task-report.yaml' },
+      {
+        label: 'Report (less trials)', task: 'kde-vergence-report',
+        params: 'configs/task-report-pilot.yaml',
+      },
+    ],
+    default_parameter_set: 'Vergence check',
   });
   const CONFIGS = {
     'configs/task-pursuit-pilot.yaml': { text: 'speed: 1\n', values: { speed: 1 } },
@@ -1747,9 +1841,9 @@ describe('a task table with a task that has no parameter file', () => {
     return app;
   }
 
-  async function chooseTask(app, name) {
-    app.byId('task').value = name;
-    app.byId('task').fire('change');
+  async function chooseSet(app, label) {
+    app.byId('params-config').value = label;
+    app.byId('params-config').fire('change');
     await settle();
   }
 
@@ -1760,69 +1854,49 @@ describe('a task table with a task that has no parameter file', () => {
     return launched(app);
   }
 
-  it('selects no file for it, says so, and launches without parameters', async () => {
+  it('opens on the check, with no file, and launches it without parameters', async () => {
     const app = await kdePage();
     const menu = app.byId('params-config');
-    assert.equal(app.byId('task').value, 'kde-vergence-check');
-    assert.equal(menu.value, '');
-    /* The other files stay on offer, after a "No file" entry. */
-    assert.deepEqual(plain(menu.children.map((o) => [o.value, o.textContent])), [
-      ['', 'No file (the task’s own defaults)'],
-      ['configs/task-pursuit-pilot.yaml', 'pursuit-pilot'],
-      ['configs/task-pursuit.yaml', 'pursuit'],
-      ['configs/task-report-pilot.yaml', 'report-pilot'],
-      ['configs/task-report.yaml', 'report'],
+    assert.equal(menu.value, 'Vergence check');
+    assert.deepEqual(plain(menu.children.map((o) => o.value)), [
+      'Pursuit', 'Pursuit (less trials)', 'Report', 'Report (less trials)', 'Vergence check',
     ]);
     assert.match(app.byId('parameter-fields').textContent,
-      /^kde-vergence-check has no parameter file; it runs on the defaults in its code/);
+      /^Vergence check has no parameter file: kde-vergence-check runs on the defaults/);
     assert.equal(app.byId('parameters-help').hidden, true);
     const body = await launchBody(app);
     assert.equal(body.task, 'kde-vergence-check');
+    assert.equal(body.parameter_set, 'Vergence check');
     assert.equal('parameters' in body, false);
     assert.equal('parameters_yaml' in body, false);
   });
 
-  it('follows the task back and forth, never carrying one task’s file to another',
+  it('pairs every entry with its own task, back and forth, so no file reaches another task',
     async () => {
       const app = await kdePage();
-      await chooseTask(app, 'kde-vergence-pursuit');
-      assert.equal(app.byId('params-config').value, 'configs/task-pursuit.yaml');
-      /* Its own file: no "No file" entry to fall back on. */
-      assert.equal(app.byId('params-config').children[0].value, 'configs/task-pursuit-pilot.yaml');
+      await chooseSet(app, 'Pursuit');
       assert.deepEqual(plain(app.run('values')), { speed: 2 });
       assert.equal(app.byId('parameters-help').hidden, false);
-      assert.deepEqual((await launchBody(app)).parameters, { speed: 2 });
+      let body = await launchBody(app);
+      assert.equal(body.task, 'kde-vergence-pursuit');
+      assert.deepEqual(body.parameters, { speed: 2 });
 
-      await chooseTask(app, 'kde-vergence-check');
-      assert.equal(app.byId('params-config').value, '');
+      await chooseSet(app, 'Vergence check');
       assert.equal(app.run('values'), null);
-      assert.equal('parameters' in (await launchBody(app)), false);
+      body = await launchBody(app);
+      assert.equal(body.task, 'kde-vergence-check');
+      assert.equal('parameters' in body, false);
 
-      await chooseTask(app, 'kde-vergence-report');
-      assert.equal(app.byId('params-config').value, 'configs/task-report.yaml');
-      assert.deepEqual((await launchBody(app)).parameters, { gap: 4 });
+      await chooseSet(app, 'Report (less trials)');
+      body = await launchBody(app);
+      assert.equal(body.task, 'kde-vergence-report');
+      assert.deepEqual(body.parameters, { gap: 3 });
 
-      await chooseTask(app, 'kde-vergence-check');
-      assert.equal(app.byId('params-config').value, '');
-      assert.equal('parameters' in (await launchBody(app)), false);
+      await chooseSet(app, 'Pursuit (less trials)');
+      body = await launchBody(app);
+      assert.equal(body.task, 'kde-vergence-pursuit');
+      assert.deepEqual(body.parameters, { speed: 1 });
     });
-
-  it('sends a file chosen on purpose for it', async () => {
-    const app = await kdePage();
-    app.byId('params-config').value = 'configs/task-pursuit-pilot.yaml';
-    app.byId('params-config').fire('change');
-    await settle();
-    assert.deepEqual(plain(app.run('values')), { speed: 1 });
-    assert.deepEqual((await launchBody(app)).parameters, { speed: 1 });
-  });
-
-  it('keeps the task.yaml fallback for a project without a task table', async () => {
-    const app = await pageWith({
-      project: { ...PROJECT, configs: ['configs/task-pilot.yaml', 'configs/task.yaml'] },
-    });
-    assert.equal(app.byId('params-config').value, 'configs/task.yaml');
-    assert.equal(app.byId('params-config').children.some((o) => o.value === ''), false);
-  });
 });
 
 describe('a task whose parameter choices cannot be read', () => {

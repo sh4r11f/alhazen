@@ -176,17 +176,6 @@
             <select id="mode"></select>
             <p id="mode-help" class="help"></p>
 
-            <!-- The task, for an experiment whose run.py declares several
-                 (TASKS = {...}). Shown only then; chooseProject() fills it
-                 and the help says every launch names the chosen task, or
-                 says why the table could not be read, in which case no
-                 launch is offered. -->
-            <div id="task-field">
-              <label for="task">Task</label>
-              <select id="task"></select>
-              <p id="task-help" class="help"></p>
-            </div>
-
             <!-- Subject ID and initials side by side: the initials are the
                  check on the number, recorded and never put in a file name. -->
             <div id="identity" class="field-pair">
@@ -295,10 +284,13 @@
               <p id="rig-note" class="help" hidden></p>
             </section>
 
-            <!-- Task parameters: the parameter file to start from (its menu
+            <!-- Task parameters: the parameter set to start from (its menu
                  sits in the heading, labelled by it), then a fields editor or
                  a text editor over the same values (renderEditor() and
-                 switchEditor() in workspace.js). A project without parameter
+                 switchEditor() in workspace.js). Each entry names its task
+                 too (run.py's PARAMETERS, or one derived from TASKS), so
+                 choosing an entry chooses the task: there is no separate
+                 Task menu to disagree with it. A project without parameter
                  files has no menu; the editor says the task then runs on the
                  defaults in its code. -->
             <fieldset id="task-parameters" class="form-section">
@@ -306,6 +298,9 @@
                 <h3 class="section-title"><label for="params-config">Task parameters</label></h3>
                 <select id="params-config"></select>
               </div>
+              <!-- Which task the chosen entry runs, or why run.py's task
+                   table or PARAMETERS could not be read (presetMenu()). -->
+              <p id="parameter-set-help" class="help"></p>
               <!-- "Text", not "YAML": switching from Fields fills the editor
                    with the values as JSON (valid YAML, but not what a "YAML"
                    label promises); either notation may be typed. -->

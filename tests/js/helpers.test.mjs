@@ -331,25 +331,6 @@ describe('sentenceStart', () => {
   });
 });
 
-describe('panelLetter', () => {
-  const panelLetter = fn('panelLetter');
-
-  it('runs a to z, then aa, ab, …', () => {
-    assert.equal(panelLetter(0), 'a');
-    assert.equal(panelLetter(25), 'z');
-    assert.equal(panelLetter(26), 'aa');
-    assert.equal(panelLetter(27), 'ab');
-    assert.equal(panelLetter(52), 'ba');
-    assert.equal(panelLetter(701), 'zz');
-    assert.equal(panelLetter(702), 'aaa');
-  });
-
-  it('never gives two panels the same letter', () => {
-    const letters = Array.from({ length: 800 }, (_, i) => panelLetter(i));
-    assert.equal(new Set(letters).size, letters.length);
-  });
-});
-
 describe('ellipsize', () => {
   // The fake canvas measures every character as 6 px wide.
   const ellipsize = fn('ellipsize');

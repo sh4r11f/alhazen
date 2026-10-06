@@ -475,10 +475,8 @@ describe('a malformed heatmap says what is wrong instead of drawing a wrong map'
 describe('a heatmap\'s figure export', () => {
   it('keeps the axes and the out-of-range legend in the saved SVG', async () => {
     const live_monitor = loadLiveMonitor();
-    const letter = live_monitor.document.createElement('span');
-    letter.textContent = 'c';
     const data = searchSlice({ maps: [{ name: 'm', matrix: [[0.12, 0.4, 0.4], [0.4, 0.4, 0.4], [0.4, 0.4, 0.4]] }] });
-    live_monitor.get('exportFigure')({ data: data, letter: letter, title: 'Posterior' }, 'svg', 'single');
+    live_monitor.get('exportFigure')({ data: data, title: 'Posterior' }, 'svg', 'single');
     const markup = await live_monitor.downloads[0].blob.text();
     const wanted = ['>4<', '>32<', '>0.2<', '>3<', '>Speed (dva/s)<', '>Dot density (dots/dva²)<',
       '>1 cell below the colour range (lowest 0.12)<'];
@@ -490,9 +488,8 @@ describe('a heatmap\'s figure export', () => {
     // Up to 2.7 the export dropped each cell as a hover target, and saved
     // an empty frame with a colourbar under it.
     const live_monitor = loadLiveMonitor();
-    const letter = live_monitor.document.createElement('span');
     const data = structuredClone(RECORDED['rf-mapping, three maps'].payload);
-    live_monitor.get('exportFigure')({ data: data, letter: letter, title: 'Receptive fields' }, 'svg', 'single');
+    live_monitor.get('exportFigure')({ data: data, title: 'Receptive fields' }, 'svg', 'single');
     const markup = await live_monitor.downloads[0].blob.text();
     // The white ground, three maps of 3 x 4 cells, the colourbar, and the
     // legend's "unprobed cell" swatch.
@@ -516,7 +513,7 @@ describe('a heatmap the session could not send as drawn', () => {
   it('shows the problem in the panel\'s place, in the status red, live and saved alike', () => {
     const live_monitor = savedPage();
     const card = live_monitor.document.querySelector('section.panel');
-    assert.equal(card.querySelector('h2').textContent, 'aPosterior slice');
+    assert.equal(card.querySelector('h2').textContent, 'Posterior slice');
     const box = card.querySelector('div.empty');
     assert.equal(box.textContent, MESSAGE);
     assert.equal(box.getAttribute('data-status'), 'critical');

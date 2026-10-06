@@ -260,10 +260,6 @@ main { flex: 1 1 auto; min-width: 0; padding: 22px 28px 56px; }
   font-weight: 600;
   letter-spacing: 0;
 }
-/* Panel letters, as a journal figure sets them: bold, lowercase, ahead of
- * the title. */
-.panel h2 .panel-letter { margin-right: 0.5em; font-weight: 700; }
-
 /* The KPI strip: the numbers a chart should not have to be measured for. */
 .stats { display: flex; flex-wrap: wrap; gap: 22px; margin: 12px 0 2px; min-height: 40px; }
 .stat-label {
