@@ -25,6 +25,10 @@
   <!-- The schema helpers load first: workspace.js reads ParameterChoices. -->
   <script src="/workspace_parameters.js" defer></script>
   <script src="/workspace_calibration.js" defer></script>
+  <!-- Measure rig's checklist and progress: window.MeasureChoice, a module
+       workspace.js mounts into #measurement-list and #measure-progress. -->
+  <link rel="stylesheet" href="/workspace_measure.css">
+  <script src="/workspace_measure.js" defer></script>
   <script src="/workspace.js" defer></script>
   <!-- The Data view: its stylesheet, then the view itself.
        workspace_data.js defines window.WorkspaceData = {show, hide};
@@ -376,6 +380,19 @@
                         aria-label="Parameter text (YAML or JSON)" hidden></textarea>
             </fieldset>
 
+            <!-- Measure rig: the measurements to run instead of Task
+                 parameters (workspace_measure.js draws the list; shown only
+                 for a project whose alhazen lists them). -->
+            <fieldset id="measurements" class="form-section stage" hidden disabled>
+              <h3 class="section-title">Measurements</h3>
+              <p id="measurements-help" class="help">
+                Tick what to measure. They run one after another, in a fixed order, into one
+                report beside the rig file; a measurement that needs a person at the rig
+                pauses and asks there.
+              </p>
+              <div id="measurement-list"></div>
+            </fieldset>
+
             <div class="launch-footer">
               <!-- What the button will start, in one line: mode, Task
                    parameters entry, rig and subject (launchSummary()). -->
@@ -394,6 +411,8 @@
               <span id="run-status" class="status">READY</span>
             </div>
             <div id="run-info" class="run-info"></div>
+            <!-- A Measure rig run's queue (workspace_measure.js renderProgress). -->
+            <div id="measure-progress" aria-live="polite" hidden></div>
             <div class="output-toolbar">
               <div class="output-tabs">
                 <button id="media-tab" class="selected">
