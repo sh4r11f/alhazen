@@ -783,44 +783,55 @@
     const aside = el('div', 'm-panel-actions');
     const box = panel('MACHINES', 'Rigs', aside);
     const editor = el('div');
-    aside.append(button('＋ New rig', 'primary', () => rigEditor(editor, p, null)));
+    const wrap = el('div', 'm-table-wrap');
+    /** After a save: the table again from the workspace's fresh state, and
+     *  the saved file open for editing. */
+    const saved = async (path) => {
+      await h.refresh();
+      const fresh = h.state().projects.find((x) => x.id === p.id) || p;
+      drawRows(fresh);
+      await rigEditor(editor, fresh, path, null, saved, `Saved ${path}.`);
+    };
+    aside.append(button('＋ New rig', 'primary', () => rigEditor(editor, p, null, null, saved)));
     box.append(el('p', 'm-hint', 'Rigs stay YAML files: the experiment’s own in configs/, and '
       + 'the shared rigs its alhazen ships, read only. Change a shared rig by making a local rig '
       + 'that extends it. Calibration and gamma results are written by Measure rig, not here.'));
-    const t = el('table', 'm-table');
-    const head = el('tr');
-    for (const c of ['Rig', 'Whose', 'Builds on', 'File', '']) head.append(el('th', '', c));
-    t.append(head);
-    for (const r of p.rigs) {
-      const tr = el('tr', r.shadowed ? 'm-archived' : '');
-      const acts = actionCell();
-      const path = r.source === 'alhazen' ? `alhazen/${r.name}` : r.path;
-      acts.box.append(button(r.source === 'alhazen' ? 'View' : 'Edit', 'quiet m-small',
-        () => rigEditor(editor, p, path)));
-      if (r.source === 'alhazen' && !r.shadowed) {
-        acts.box.append(button('Make local', 'quiet m-small', () => rigEditor(editor, p, null,
-          r.name)));
+    function drawRows(project) {
+      const t = el('table', 'm-table');
+      const head = el('tr');
+      for (const c of ['Rig', 'Whose', 'Builds on', 'File', '']) head.append(el('th', '', c));
+      t.append(head);
+      for (const r of project.rigs) {
+        const tr = el('tr', r.shadowed ? 'm-archived' : '');
+        const acts = actionCell();
+        const path = r.source === 'alhazen' ? `alhazen/${r.name}` : r.path;
+        acts.box.append(button(r.source === 'alhazen' ? 'View' : 'Edit', 'quiet m-small',
+          () => rigEditor(editor, project, path, null, saved)));
+        if (r.source === 'alhazen' && !r.shadowed) {
+          acts.box.append(button('Make local', 'quiet m-small', () => rigEditor(editor, project,
+            null, r.name, saved)));
+        }
+        tr.append(
+          el('td', 'm-mono', r.source === 'alhazen' ? `alhazen/${r.name}`
+            : `${h.slugOf(project)}/${r.name}`),
+          el('td', '', r.source === 'alhazen' ? (r.shadowed ? 'shared (hidden by local)'
+            : 'shared') : 'experiment'),
+          el('td', 'm-mono', r.error ? `cannot be read: ${r.error}` : r.extends || '—'),
+          el('td', 'm-mono m-cell-path', r.source === 'alhazen' ? 'alhazen installation'
+            : r.path),
+          acts,
+        );
+        t.append(tr);
       }
-      tr.append(
-        el('td', 'm-mono', r.source === 'alhazen' ? `alhazen/${r.name}`
-          : `${h.slugOf(p)}/${r.name}`),
-        el('td', '', r.source === 'alhazen' ? (r.shadowed ? 'shared (hidden by local)'
-          : 'shared') : 'experiment'),
-        el('td', 'm-mono', r.error ? `cannot be read: ${r.error}` : r.extends || '—'),
-        el('td', 'm-mono m-cell-path', r.source === 'alhazen' ? 'alhazen installation'
-          : r.path),
-        acts,
-      );
-      t.append(tr);
+      wrap.replaceChildren(t);
     }
-    const wrap = el('div', 'm-table-wrap');
-    wrap.append(t);
+    drawRows(p);
     if (p.rigs_note) box.append(message('note', p.rigs_note));
     box.append(wrap, editor);
     return box;
   }
 
-  async function rigEditor(where, p, path, base = null) {
+  async function rigEditor(where, p, path, base = null, onSaved = null, notice = '') {
     where.replaceChildren(el('p', 'm-loading', 'Opening…'));
     let file = null;
     if (path) {
@@ -854,6 +865,7 @@
     }
     form.append(field('YAML', text));
     const result = el('div');
+    if (notice) result.append(message('ok', notice));
     const actions = el('div', 'm-form-actions');
     actions.append(button('Close', 'quiet', () => { clean('rig'); where.replaceChildren(); }));
     if (editable) {
@@ -877,12 +889,10 @@
         ? {project: p.id, path: file.path, text: text.value, sha256: file.sha256}
         : {project: p.id, name: name.value, text: text.value};
       const answer = await attempt(result, () => h.api('/api/manage/rig-save', body),
-        () => rigEditor(where, p, file?.path || null, base));
+        () => rigEditor(where, p, file?.path || null, base, onSaved));
       if (answer) {
         clean('rig');
-        file = answer;
-        h.refresh();
-        result.replaceChildren(message('ok', `Saved ${answer.path}.`));
+        if (onSaved) await onSaved(answer.path);
       }
     });
     box.append(form);

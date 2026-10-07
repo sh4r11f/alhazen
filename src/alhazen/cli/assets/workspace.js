@@ -1840,6 +1840,7 @@ function pageHelpers() {
     register: () => openProject(false),
     peopleChanged,
     refresh: () => guard(refresh)(),
+
     viewRun: (id) => {
       runId = id;
       gallerySignature = '';
