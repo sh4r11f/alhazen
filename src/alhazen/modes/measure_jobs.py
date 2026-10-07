@@ -281,6 +281,7 @@ class Devices:
         self._factories = dict(factories)
         self._open: dict[str, Any] = {}
         self._stack = ExitStack()
+        self._handed_back: set[str] = set()
         self.released: list[str] = []
 
     def get(self, name: str) -> Any:
@@ -295,12 +296,24 @@ class Devices:
     def is_open(self, name: str) -> bool:
         return name in self._open
 
+    def hand_back(self, name: str) -> Any:
+        """Take a device out of the run's keeping: a job that has released it
+        itself (ending the tracker to keep its recording) hands it back, and
+        its registered release then does nothing. Returns the device."""
+        device = self._open.pop(name)
+        self._handed_back.add(name)
+        self.released.append(name)
+        return device
+
+    def was_handed_back(self, name: str) -> bool:
+        return name in self._handed_back
+
     def close(self) -> None:
         """Release everything opened, in reverse order, each one attempted."""
         try:
             self._stack.close()
         finally:
-            self.released = list(self._open)
+            self.released = [*self.released, *self._open]
             self._open.clear()
 
 
@@ -330,6 +343,22 @@ class JobContext:
     set_waiting: Callable[[str | None], None]
     later_needs: frozenset[str] = frozenset()
     provided: dict[str, Any] = field(default_factory=dict)
+
+    def keep_tracker_recording(self, destination: Path) -> Path:
+        """End the tracker now and leave its native recording at
+        ``destination`` (the tracker's ``shutdown`` contract: its stem, the
+        backend's own suffix). Only for the last job in the run that uses the
+        tracker; refused otherwise, since the next one would find it closed.
+        Returns the directory the recording was left in."""
+        if "tracker" in self.later_needs:
+            raise RuntimeError(
+                f"{self.job.key} cannot keep the tracker's recording: a later measurement in "
+                "this run still needs the tracker"
+            )
+        tracker = self.devices.hand_back("tracker")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        tracker.shutdown(destination)
+        return destination.parent
 
     def input(self, name: str) -> str | None:
         """A value given with --measure-input <job key>.<name>=<value>."""

@@ -1013,3 +1013,63 @@ class TestCommandLine:
             == 2
         )
         assert not (tmp_path / "measurements").exists()
+
+
+class TestKeepingTheTrackersRecording:
+    class Tracker:
+        def __init__(self):
+            self.shutdowns = []
+
+        def shutdown(self, destination):
+            self.shutdowns.append(destination)
+
+    def _devices(self, tracker):
+        devices = Devices(
+            {
+                "tracker": lambda stack: (
+                    stack.callback(
+                        lambda: (
+                            None if devices.was_handed_back("tracker") else tracker.shutdown(None)
+                        )
+                    ),
+                    tracker,
+                )[1]
+            }
+        )
+        return devices
+
+    def test_the_last_tracker_job_keeps_the_recording_and_it_is_ended_once(self, tmp_path):
+        tracker = self.Tracker()
+
+        def keeps(ctx):
+            ctx.devices.get("tracker")
+            ctx.keep_tracker_recording(ctx.output_dir / "bead" / "bead.edf")
+            return FACT
+
+        report = run(
+            [job("p.bead", 1, run=keeps, needs=["tracker"])],
+            tmp_path,
+            devices=self._devices(tracker),
+        )
+        assert report.records[0].state == MEASURED
+        assert tracker.shutdowns == [tmp_path / "out" / "bead" / "bead.edf"]
+        assert report.provenance["released"] == ["tracker"]
+
+    def test_it_is_refused_while_a_later_job_needs_the_tracker(self, tmp_path):
+        tracker = self.Tracker()
+
+        def keeps(ctx):
+            ctx.devices.get("tracker")
+            ctx.keep_tracker_recording(ctx.output_dir / "x.edf")
+            return FACT
+
+        report = run(
+            [
+                job("p.bead", 1, run=keeps, needs=["tracker"]),
+                job("p.after", 2, OK, needs=["tracker"]),
+            ],
+            tmp_path,
+            devices=self._devices(tracker),
+        )
+        assert report.records[0].state == ERROR and "later measurement" in report.records[0].summary
+        assert tracker.shutdowns == [None]  # released once, by the run, keeping nothing

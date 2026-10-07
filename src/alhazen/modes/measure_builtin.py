@@ -877,8 +877,12 @@ def rig_devices(rig: RigConfig, *, windowed: bool = False) -> Devices:
         clock = MonotonicClock()
         device = make_tracker(rig.devices.eyetracker, window, screen, clock)
         device.connect()
-        # shutdown(None): measure mode keeps no native eye recording.
-        stack.callback(device.shutdown, None)
+        # shutdown(None): measure mode keeps no native eye recording — unless
+        # a job ended the tracker itself to keep one (JobContext
+        # .keep_tracker_recording), which hands it back first.
+        stack.callback(
+            lambda: None if devices.was_handed_back("tracker") else device.shutdown(None)
+        )
         device.configure(screen, clock)
         return device
 
