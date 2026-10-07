@@ -42,9 +42,11 @@
 
   --critical:    #d03b3b;   /* status: a delivery the hardware refused */
   --good:        #0ca30c;   /* status: running */
-  /* The circle on a found eye. It is drawn over the camera image, which is
-   * grey in both themes, so it is the same colour in both. */
+  /* The same in both themes: the circle on a found eye is drawn over the
+   * camera image, which is grey in both, and an alert's text sits on the
+   * critical colour, which is the same red in both. */
   --eye-marker:  #3ee06c;
+  --on-critical: #ffffff;
 
   --radius: 4px;
   --font: "Helvetica Neue", Helvetica, Arial, "Liberation Sans", system-ui, sans-serif;
@@ -312,7 +314,19 @@ main { flex: 1 1 auto; min-width: 0; padding: 22px 28px 56px; }
   vector-effect: non-scaling-stroke;
 }
 .camera-eye-label { fill: var(--eye-marker); font-weight: 600; }
-/* Under a streamed image: its frame rate while it is live, or why it is not. */
+/* The panel's alert (no eye in the image): a red bar under the image and
+ * its controls, so that it neither covers the picture nor moves them. */
+.camera-alert {
+  margin-top: 8px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--critical);
+  color: var(--on-critical);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+/* Under a streamed image and its controls: the frame rate while the image is
+ * live, or why it is not. */
 .camera-live {
   margin-top: 6px;
   color: var(--muted);

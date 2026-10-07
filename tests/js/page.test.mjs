@@ -197,6 +197,39 @@ describe('the eye-tracker panels', () => {
     assert.equal(card.querySelector('.legend-slot').textContent, '');
   });
 
+  it('put the no-eye alert under the image and its control, where it moves neither', () => {
+    // The bug this exists for: the sentence used to be a value in the strip
+    // above the image, wrapped onto more lines, and pushed the image and the
+    // iris control down each time the eye was lost. It is not laid over the
+    // image either: there it hid the picture the eye is being looked for in.
+    const alert = 'NO EYE IN THE CAMERA IMAGE — check position, focus and LED (accept is refused)';
+    const panel = (extra) => ({
+      ...CAMERA_PANEL,
+      data: {
+        ...CAMERA_PANEL.data,
+        stats: [{ label: 'eyes', value: extra.alert ? 'none' : 'both tracked' }],
+        ...extra,
+      },
+    });
+    const withAlert = loadLiveMonitor({ staticState: stateWith([panel({ alert: alert })]) });
+    const without = loadLiveMonitor({ staticState: stateWith([panel({})]) });
+
+    assert.equal(cards(withAlert)[0].querySelector('.camera-alert').textContent, alert);
+    assert.equal(cards(without)[0].querySelector('.camera-alert'), null);
+    // Not in the strip above the image, and not inside the picture's box.
+    assert.doesNotMatch(cards(withAlert)[0].querySelector('.stats').textContent, /NO EYE/);
+    assert.equal(cards(withAlert)[0].querySelector('.camera-box').querySelector('.camera-alert'), null);
+    // The picture and the control come first either way, so the alert's
+    // coming and going moves only what is under them.
+    const outline = (live_monitor) =>
+      cards(live_monitor)[0].querySelector('.plot').children.map((node) => node.className);
+    assert.deepEqual(outline(without), ['camera-box', 'tracker-control', 'camera-live']);
+    assert.deepEqual(
+      outline(withAlert),
+      ['camera-box', 'tracker-control', 'camera-alert', 'camera-live'],
+    );
+  });
+
   it('colour a verdict tile by its status', () => {
     const live_monitor = loadLiveMonitor({
       staticState: stateWith([{

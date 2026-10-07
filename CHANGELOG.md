@@ -58,6 +58,16 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Fixed
 
+- **The camera panel's iris size control stays where it is when the eye
+  is lost.** With no eye in the image, the *eyes* value above the picture
+  was a whole sentence in red. It wrapped onto more lines and pushed the
+  picture and the control under it down, and back up when the eye was found,
+  so the − and + moved out from under the pointer. The value is now one word
+  (`none`), and the sentence is a red bar under the control (the panel's
+  `alert`), where it moves neither the picture nor the control and covers
+  nothing. The control sits straight under the picture, above the alert and
+  the line that says whether the image is live.
+
 - **The missing-pypixxlib error gives commands that install it into the
   environment that failed.** It said to "pip install" VPixx's archive "into
   this environment". A uv-made `.venv` has no pip, so a bare `pip` was

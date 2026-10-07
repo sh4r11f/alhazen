@@ -37,6 +37,7 @@ from alhazen.session.eyetracker import (
     SECTION,
     EyeTrackerMonitor,
     encode_image,
+    eye_alert,
     eye_markers,
     eye_stat,
 )
@@ -521,12 +522,34 @@ class TestCameraPanel:
         ]
         assert data["note"] == "live while paused or calibrating"
 
-    def test_no_eye_in_the_image_is_a_critical_stat(self, session) -> None:
+    def test_no_eye_in_the_image_is_one_red_word_and_an_alert(self, session) -> None:
+        """The strip above the image keeps one short line whether or not an
+        eye is found. The sentence used to be the strip's value: it wrapped
+        onto more lines and pushed the image and the iris control down each
+        time the eye was lost, out from under the pointer stepping it. The
+        sentence is the panel's alert, which the page shows under the control."""
         s = session(CameraTracker)
         s.tracker.eyes = (False, False)
-        eyes = s.panel("Camera", camera=True)["data"]["stats"][1]
-        assert eyes["status"] == "critical"
-        assert "NO EYE" in eyes["value"]
+        data = s.panel("Camera", camera=True)["data"]
+        assert data["stats"][1] == {"label": "eyes", "value": "none", "status": "critical"}
+        assert data["alert"] == eye_status_text(False, False)
+        assert "NO EYE" in data["alert"]
+
+    def test_a_found_eye_has_no_alert(self, session) -> None:
+        s = session(CameraTracker)
+        assert "alert" not in s.panel("Camera", camera=True)["data"]
+        s.tracker.eyes = (False, True)
+        assert "alert" not in s.panel("Camera", camera=True)["data"]
+
+    def test_the_strip_is_as_many_entries_with_an_eye_as_without(self, session) -> None:
+        """Same labels, and no value longer than a few words, in either
+        state: what changes above the image is a word and its colour."""
+        s = session(CameraTracker)
+        found = s.panel("Camera", camera=True)["data"]["stats"]
+        s.tracker.eyes = (False, False)
+        lost = s.panel("Camera", camera=True)["data"]["stats"]
+        assert [stat["label"] for stat in found] == [stat["label"] for stat in lost]
+        assert all(len(stat["value"]) <= 16 for stat in found + lost)
 
     def test_a_frames_eyes_reach_the_panel_as_markers(self, session) -> None:
         s = session(CameraTracker)
@@ -569,9 +592,8 @@ class TestCameraPanel:
         s.tracker.eye_error = TrackerError("TPxGetEyePositionDuringCalib returned nothing")
         data = s.panel("Camera", camera=True)["data"]
         assert data["form"] == "image"
-        eyes = data["stats"][1]
-        assert eyes["label"] == "eyes" and eyes["status"] == "critical"
-        assert "TPxGetEyePositionDuringCalib" in eyes["value"]
+        assert data["stats"][1] == {"label": "eyes", "value": "not read", "status": "critical"}
+        assert "TPxGetEyePositionDuringCalib" in data["alert"]
 
     def test_last_frame_is_shown_when_not_reading(self, session) -> None:
         s = session(CameraTracker)
@@ -630,7 +652,14 @@ class TestCameraPanel:
         # changes, this is the test that says so.
         assert eye_stat(eye_status_text(True, True)) == {"label": "eyes", "value": "both tracked"}
         assert eye_stat(eye_status_text(True, False)) == {"label": "eyes", "value": "left only"}
-        assert eye_stat(eye_status_text(False, False))["status"] == "critical"
+        assert eye_stat(eye_status_text(False, False)) == {
+            "label": "eyes",
+            "value": "none",
+            "status": "critical",
+        }
+        # ...and only the no-eye line is an alert.
+        assert eye_alert(eye_status_text(True, False)) is None
+        assert eye_alert(eye_status_text(False, False)) == eye_status_text(False, False)
 
     def test_encode_image_is_row_major_bytes(self) -> None:
         pixels = np.array([[1, 2], [3, 4]], dtype=np.uint8)

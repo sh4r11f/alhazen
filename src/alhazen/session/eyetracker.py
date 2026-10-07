@@ -103,12 +103,26 @@ def eye_stat(status: str) -> dict[str, Any]:
 
     The viewpixx status text is either ``eyes: <which>`` or a loud sentence
     saying no eye is in the image; the first becomes a plain value, the
-    second a critical one, so the strip is red exactly when the camera sees
-    nothing to track.
+    second the one word ``none`` in the critical colour, so the strip is red
+    exactly when the camera sees nothing to track.
+
+    One word, not the sentence. The strip sits above the image, and a
+    sentence wrapped it onto more lines, which pushed the image and the iris
+    size control under it down the page each time the eye was lost and back
+    up each time it was found: the control moved from under the pointer of
+    whoever was stepping it. The sentence is the panel's alert instead
+    (``eye_alert``), which the page shows under the image and the control,
+    where it moves neither.
     """
     if status.startswith("eyes: "):
         return {"label": "eyes", "value": status[len("eyes: ") :]}
-    return {"label": "eyes", "value": status, "status": "critical"}
+    return {"label": "eyes", "value": "none", "status": "critical"}
+
+
+def eye_alert(status: str) -> str | None:
+    """The camera panel's alert for an eye line: the tracker's own sentence
+    when it is not ``eyes: <which>`` (no eye in the image), otherwise None."""
+    return None if status.startswith("eyes: ") else status
 
 
 def eye_markers(frame: CameraFrame) -> list[dict[str, Any]] | None:
@@ -423,10 +437,18 @@ class EyeTrackerMonitor:
             data["stream"] = True
         status = getattr(self._tracker, "eye_status", None)
         if status is not None and live:
+            # A short value in the strip and the sentence as the alert, which
+            # the page shows under the image and the control (see eye_stat).
             try:
-                data["stats"].append(eye_stat(status()))
+                line = status()
             except TrackerError as e:
-                data["stats"].append({"label": "eyes", "value": str(e), "status": "critical"})
+                data["stats"].append({"label": "eyes", "value": "not read", "status": "critical"})
+                data["alert"] = f"The eyes could not be read: {e}"
+            else:
+                data["stats"].append(eye_stat(line))
+                alert = eye_alert(line)
+                if alert is not None:
+                    data["alert"] = alert
         if self.has_iris_size:
             # Read once, between trials, and kept: only this session changes it.
             if live and self.iris_size_px is None:
