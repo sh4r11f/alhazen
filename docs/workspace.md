@@ -31,6 +31,84 @@ importing alhazen with that interpreter, refuses with the reason when it
 cannot, and records the alhazen and Python versions it found, and the
 [shared rigs](rigs.md) that alhazen ships.
 
+## Experiments, and an experiment's pages
+
+The page opens on **Experiments**: every registered experiment with its
+folder, protocol version (its `pyproject.toml` version), environment (Python,
+alhazen, PsychoPy), whether it can run, and its last launch, with a search
+box and the archive below. **Register experiment** adds a folder; a folder
+already registered is refused by name. Opening an experiment shows its four
+pages in the sidebar, as nodes on one rail:
+
+| Page | What it is |
+| --- | --- |
+| **General** | The experiment's notes (description, notes), its registration (folder, interpreter, versions, whether its alhazen records the experimenter), and Project settings / Archive. Its **subjects** and **experimenters**: add, edit, archive, import from the data folders' `participants.tsv`, and read back an edited CSV copy. Its **rigs**: the experiment's own YAML files, editable, and the shared rigs its alhazen ships, read only, with *Make local* to write a `configs/rig-<name>.yaml` that extends one. |
+| **Run** | The launch form as before, with **Subject** and **Experimenter** menus of the records on General (a subject that is not registered can still be typed under *Type an unregistered subject instead*). |
+| **Data** | The Data view ([below](#data)). |
+| **History** | Every session folder in the experiment's data folders — launched from here or from a terminal — and every launch this workspace made, joined where a launch's console names its folder. A session opens to its records, its log, its files (downloads) and its saved live monitor page; a launch to its console, `launch.json` and `run.json`. What a record does not say is "not recorded", not a guess. |
+
+Each screen is an address — `/?view=experiments`, `/?project=<id>&view=run`
+(or `general`, `data`, `history`) — so Back, Forward, a reload and a link in
+a new tab land on the same screen; `/?project=<id>` alone opens the page used
+last for that experiment. Leaving a page never stops a run: a run in progress
+shows in the sidebar on every page, with a link back to its Run page.
+Unsaved edits on General are asked about before the page is left.
+
+Unregistering (Project settings → Unregister…) removes the experiment from
+this list only: its folder, data, sessions, launch records and people records
+stay, and registering the same folder again brings them back. Archiving keeps
+it registered and moves it to the archive.
+
+### Subjects and experimenters
+
+A **subject** belongs to one experiment: its ID (the `sub-<ID>` of its
+folders, letters and digits, kept as text so `007` stays `007`) is unique in
+that experiment only, and its initials follow the command line's rule. Other
+columns (handedness, group, …) are kept in order, a missing value apart from
+an empty one. An **experimenter** is shared: one record, assigned to the
+experiments they run; two people with one name stay two records. Records are
+archived, never deleted. A subject's ID, and initials once recorded, are fixed
+after its first launch.
+
+Choosing a subject and an experimenter on the Run page sends their record ids;
+the server takes the subject's ID and initials from the record, checks both
+records (this experiment's, active, the experimenter assigned), checks the
+initials against the data folder's `participants.tsv` before anything is
+written, and records a snapshot of both records in `runs/<id>/launch.json`,
+which is written once and never changed. The session itself records the
+experimenter in `session.json` and `session.log` (`--experimenter`,
+`--experimenter-id`; [data](data.md)) when the experiment's alhazen has that
+flag; the Run page says beforehand when it does not, and the launch keeps it
+in the workspace's records only. Run and test with a registered subject need
+an experimenter; a typed subject launches as before.
+
+Where they are kept:
+
+| | |
+| --- | --- |
+| `people/people.sqlite3` | the records: the system of record, one SQLite file per workspace |
+| `people/csv/experimenters.csv` | every experimenter (a copy) |
+| `people/csv/<experiment id>/subjects.csv`, `…/experimenters.csv` | the experiment's subjects and assigned experimenters (copies) |
+| `people/backups/` | a copy of the database before every import |
+
+The CSV copies are rewritten after every change, each file replaced whole.
+If they cannot be written (a full disk, a file open in another program), the
+change is still saved, General says the copies are behind and why, and **Write
+CSV copies again** retries. In a copy, a value that a spreadsheet would run as
+a formula (starting with `=`, `+`, `-`, `@`) starts with one extra `'`, and a
+value that is missing rather than empty is named in `missing_fields`; reading
+the copy back undoes both. An edited copy comes back only through **Read back
+edited CSV…**: a preview, then an apply for exactly that file — a row edited
+from an older copy is a conflict, a deleted row deletes nothing, a row
+without a `record_id` is new.
+
+`participants.tsv` stays what it was: the data folder's record, written by
+sessions in the order subjects first ran (which some experiments
+counterbalance by). The workspace only reads it. **Import participants.tsv…**
+previews every row of every data folder's file — new, already imported, or a
+conflict (the same ID with other initials, never merged) — then imports with
+a backup first; importing again changes nothing.
+
 ## The page
 
 ```mermaid
@@ -40,16 +118,23 @@ flowchart LR
         JS["workspace.js<br/>form, views, theme"]
         PJS["workspace_parameters.js<br/>schema choices"]
         DJS["workspace_data.js<br/>Data view (WorkspaceData)"]
+        MJS["workspace_manage.js<br/>Experiments, General, History"]
         CSS["workspace.css<br/>light / dark tokens"]
     end
     subgraph server["alhazen dashboard (loopback)"]
         DASH["dashboard.py<br/>routes, token, CSP"]
         WS["workspace.py<br/>registry, describe, launch"]
+        MAN["workspace_manage.py<br/>people, rigs, history"]
+        PEO["people.py<br/>people.sqlite3, CSV copies"]
         EXP["config/experiment.py<br/>experiment_title"]
         RIGS["config/rigs.py<br/>list_rigs, resolve_rig"]
     end
     JS -- "/api/state, /api/rig, /api/config, /api/runs" --> DASH
     JS -- "show(project, helpers) / hide()" --> DJS
+    JS -- "renderHome / showGeneral / showHistory" --> MJS
+    MJS -- "/api/manage/*" --> DASH
+    DASH --> MAN
+    MAN --> PEO
     PJS --> JS
     DASH --> WS
     WS --> EXP
@@ -612,8 +697,10 @@ header comments.
 By default, state is under `~/.alhazen/live_monitor/`:
 
 ```text
-projects.json
+projects.json       # registered experiments, their notes and archive flag
+people/             # subjects and experimenters (see "Subjects and experimenters")
 runs/<unique-id>/
+  launch.json       # written once at launch: who it was for, who ran it, the command
   run.json          # the command, status — and subject, session, initials for a session
   params.yaml       # when supplied
   rig.yaml          # the rig as it ran (merged, when it extends a shared one)

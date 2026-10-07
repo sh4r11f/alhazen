@@ -29,6 +29,22 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Added
 
+- The experiment workspace opens on an **Experiments** page (register,
+  search, archive) and gives each experiment four pages — **General**, **Run**,
+  **Data**, **History** — each an address that Back, Forward and reload keep.
+  General manages the experiment's notes, its **subjects and experimenters**
+  (a SQLite registry in the workspace, `people/people.sqlite3`, with CSV
+  copies, an import of the data folders' `participants.tsv` and a checked
+  read-back of edited copies) and its rig YAML files. The Run page chooses a
+  registered subject and experimenter; the server resolves them, checks them
+  and the data folder's `participants.tsv`, and writes an immutable
+  `launch.json`. History lists launches and every session folder, with logs,
+  files and saved live monitor pages.
+- `--experimenter NAME` and `--experimenter-id ID` record who ran a session in
+  `session.json` (`experimenter`, null when not given) and `session.log`.
+  `alhazen.cli.capabilities` names what a command line records, for the
+  workspace to ask an experiment's own alhazen.
+
 - **Calibration targets can be pictures, and can pulsate.** The eye
   tracker's `calibration_target` chooses the target's appearance — the
   `standard` disc (the default, drawn exactly as before), the named

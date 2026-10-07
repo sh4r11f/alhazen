@@ -59,4 +59,5 @@ nav:
   - Design proposals:
       - Precomputed sessions: design/precomputed-sessions.md
       - Calibration targets: design/calibration-targets.md
+      - Experiment management: design/experiment-management.md
   - API reference: reference.md

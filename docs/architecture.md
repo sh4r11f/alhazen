@@ -86,7 +86,14 @@ Preview images from alhazen, `alhazen preview` in the project's interpreter,
 rather than from its own `preview.py`: the declaration is read from the
 pyproject with `config/experiment.py`, never by importing the experiment,
 and drawn by `stimuli/preview.py` in the child. No launcher
-HTTP or process bookkeeping enters the trial engine. The existing `live_monitor/`
+HTTP or process bookkeeping enters the trial engine. The management pages
+(Experiments, General, History) are `cli/workspace_manage.py` and
+`assets/workspace_manage.js`; the subjects and experimenters they manage are
+`cli/people.py`'s SQLite database in the workspace, the system of record for
+those records, with CSV copies derived from it. Sessions keep writing
+`participants.tsv` and the rebuildable `experiment.sqlite3` mirror as before;
+the workspace reads `participants.tsv` (import, a pre-launch initials check)
+and never writes it. The existing `live_monitor/`
 package remains the session monitor, with its own pause-only controls. See
 [Experiment workspace](workspace.md) for the launch and storage contracts.
 Parameter dropdowns read the task's Pydantic schema through an isolated
