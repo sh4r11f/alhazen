@@ -69,7 +69,13 @@ from alhazen.paradigms.config import validate_after_break_paths
 from alhazen.session.database import ExperimentDatabase, FrameInputBuffer
 from alhazen.session.eyetracker import EyeTrackerMonitor
 from alhazen.session.feedback import FeedbackSounder
-from alhazen.session.identity import RunIdentity, merged_rig, recorded_command, source_file
+from alhazen.session.identity import (
+    Experimenter,
+    RunIdentity,
+    merged_rig,
+    recorded_command,
+    source_file,
+)
 from alhazen.session.pause import PauseMenu, run_pause_menu
 from alhazen.session.recorder import DataRecorder
 from alhazen.session.runner import SessionRunner
@@ -292,6 +298,7 @@ def build_session(
     mode: str | None = None,
     initials: str | None = None,
     command: Sequence[str] | None = None,
+    experimenter: Experimenter | None = None,
 ) -> SessionRunner:
     """Wire one runnable session.
 
@@ -316,6 +323,9 @@ def build_session(
     ``mode`` is the mode that started the session (``"run"``, ``"test"``,
     ``"simulate"``), recorded in the run's session.json; None for a session
     built here directly.
+
+    ``experimenter`` is who ran the session, recorded in session.json and
+    session.log (`session.identity.Experimenter`); None records null.
 
     ``command`` is the command line the session was started with — the
     program, then the arguments exactly as its parser received them — which
@@ -542,6 +552,7 @@ def build_session(
         params_file=source_file(given_sources.get("task"), "params"),
         rig_merged=merged_rig(rig_file),
         command=recorded_command(command, experiment.root) if command is not None else None,
+        experimenter=experimenter,
     )
 
     # A database from before 2.0's schema is moved aside now (kept, renamed

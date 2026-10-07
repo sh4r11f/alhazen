@@ -475,6 +475,10 @@ class SessionRunner:
                 experiment.version,
                 experiment.version_source,
             )
+            # Who ran it, on a line of its own, when the command line said.
+            if self._identity.experimenter is not None:
+                who = self._identity.experimenter
+                log.info("experimenter: %s%s", who.name, f" ({who.id})" if who.id else "")
             log.info("devices: %s", self._devices_line())
             for note in self.setup_notes:
                 log.info("setup: %s", note)

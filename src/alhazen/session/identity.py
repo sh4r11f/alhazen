@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -102,6 +103,46 @@ def source_file(value: str | Path | None, what: str) -> SourceFile | None:
         ) from exc
 
 
+# What an experimenter's name and id may be. The name is recorded as typed
+# (any script, one line); the id is a workspace record id or a lab's own code.
+EXPERIMENTER_NAME_LIMIT = 120
+EXPERIMENTER_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
+
+
+@dataclass(frozen=True)
+class Experimenter:
+    """Who ran a session, as session.json records it: a name, and the id of
+    the record it came from when there is one (the experiment workspace's
+    people registry). Recorded, never put in a path."""
+
+    name: str
+    id: str | None = None
+
+    @classmethod
+    def parse(cls, name: str | None, record_id: str | None = None) -> Experimenter | None:
+        """``--experimenter`` / ``--experimenter-id`` as recorded, None when
+        neither is given; a ValueError, in words for the console, otherwise."""
+        if name is None and record_id is None:
+            return None
+        if name is None:
+            raise ValueError("--experimenter-id needs --experimenter (the experimenter's name)")
+        text = name.strip()
+        if not text or len(text) > EXPERIMENTER_NAME_LIMIT:
+            raise ValueError(
+                f"the experimenter's name must be 1 to {EXPERIMENTER_NAME_LIMIT} characters"
+            )
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in text):
+            raise ValueError("the experimenter's name must be one line of text")
+        if record_id is not None and not EXPERIMENTER_ID.fullmatch(record_id):
+            raise ValueError(
+                "--experimenter-id must be letters, digits, '.', '_' or '-' (at most 64)"
+            )
+        return cls(name=text, id=record_id)
+
+    def as_json(self) -> dict[str, str | None]:
+        return {"id": self.id, "name": self.name}
+
+
 @dataclass(frozen=True)
 class RunIdentity:
     """What a run records about how it was set up, beyond its config.
@@ -122,6 +163,9 @@ class RunIdentity:
     - ``command`` — the command line the session was started with
       (`recorded_command`), or None for a session built in code, where no
       command line was parsed.
+    - ``experimenter`` — who ran the session (``--experimenter``), or None
+      when nobody said: the card then records null, "not recorded", never a
+      guess.
     """
 
     experiment: Experiment
@@ -130,6 +174,7 @@ class RunIdentity:
     params_file: SourceFile | None = None
     rig_merged: bytes | None = None
     command: tuple[str, ...] | None = None
+    experimenter: Experimenter | None = None
 
 
 # How the alhazen console command is recorded: by its name, which is what a
@@ -253,6 +298,12 @@ def session_card(
         "mode": identity.mode,
         # Initials are recorded here and in the registry, never in a path.
         "subject": {"id": info.subject, "initials": info.initials},
+        # Who ran it ({id, name}), or null: not recorded. Added after
+        # 2.10.0 without a schema bump, like ``command``: a new key, which a reader
+        # of schema 1 ignores; a card without it was written before.
+        "experimenter": (
+            identity.experimenter.as_json() if identity.experimenter is not None else None
+        ),
         "session": info.session,
         "run": info.run,
         "seed": info.seed,

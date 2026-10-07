@@ -47,6 +47,7 @@ from alhazen.config.rigs import (
 from alhazen.errors import AlhazenError, ConfigError, DataError, DisplayError
 from alhazen.modes import Mode, flag_refusal, real_data_refusal
 from alhazen.session.checks import check_rig, format_result
+from alhazen.session.identity import Experimenter
 from alhazen.testing.sorter import FAULTS
 from alhazen.version import get_version
 
@@ -508,6 +509,19 @@ def add_mode_arguments(parser: argparse.ArgumentParser) -> None:
         help="the subject's initials, 1-5 letters: recorded, never put in a file name "
         "(run and test: prompted if omitted)",
     )
+    # Who runs the session: recorded in session.json and session.log, never
+    # in a path. Optional everywhere; the experiment workspace sends the
+    # experimenter chosen on its Run page, with the record's id.
+    parser.add_argument(
+        "--experimenter",
+        default=None,
+        help="the experimenter's name, recorded in session.json (optional)",
+    )
+    parser.add_argument(
+        "--experimenter-id",
+        default=None,
+        help="the experimenter's record id (with --experimenter), recorded beside the name",
+    )
     parser.add_argument("--seed", type=int, default=None, help="session seed")
     parser.add_argument("--windowed", action="store_true", help="bordered window, for dev")
     # The two flags that override the machine rather than the experiment.
@@ -673,6 +687,15 @@ def _run_session(
     refused = _normalize_initials_flag(args)
     if refused is not None:
         print(refused, file=sys.stderr)
+        return 2
+    # The experimenter likewise: --experimenter-id alone, a name of several
+    # lines, an id that is not a plain code, are usage errors in every mode.
+    try:
+        args.experimenter_record = Experimenter.parse(
+            getattr(args, "experimenter", None), getattr(args, "experimenter_id", None)
+        )
+    except ValueError as exc:
+        print(f"INVALID: {exc}", file=sys.stderr)
         return 2
 
     if getattr(args, "list", False):
@@ -1235,6 +1258,14 @@ def _trial_session(args: argparse.Namespace, rig: Any, task: Any, params: Any, m
             },
             # Recorded and checked against the registry, never in a path.
             initials=args.initials,
+            # Who runs it, when the command line said (--experimenter):
+            # recorded in session.json and session.log. Passed only when
+            # given, so a session started without one is built as before.
+            **(
+                {"experimenter": args.experimenter_record}
+                if getattr(args, "experimenter_record", None) is not None
+                else {}
+            ),
             # How this session was started, for session.json and the
             # snapshot: set by `main` and `run_experiment` from the argv they
             # parsed. A namespace built some other way has none, and the run
