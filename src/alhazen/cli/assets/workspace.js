@@ -1815,7 +1815,13 @@ function renderNav() {
 function renderHome() {
   const manage = window.WorkspaceManage;
   if (typeof manage?.renderHome === 'function') {
-    manage.renderHome($('home-list'), state, pageHelpers());
+    try {
+      manage.renderHome($('home-list'), state, pageHelpers());
+    } catch (e) {
+      console.error(e);
+      $('home-list').replaceChildren(node('p', 'data-unavailable',
+        `The experiments could not be listed: ${e.message}`));
+    }
   } else {
     $('home-list').replaceChildren(node('p', 'data-unavailable',
       'Experiment management is not available'));
@@ -1907,7 +1913,14 @@ function showView(next) {
     const target = $(`${next}-view`);
     const method = next === 'general' ? 'showGeneral' : 'showHistory';
     if (typeof manage?.[method] === 'function') {
-      manage[method](target, p, pageHelpers());
+      // A page that fails to draw says so, rather than staying on "Loading…".
+      Promise.resolve()
+        .then(() => manage[method](target, p, pageHelpers()))
+        .catch((e) => {
+          console.error(e);
+          target.replaceChildren(node('p', 'data-unavailable',
+            `This page could not be drawn: ${e.message}`));
+        });
     } else {
       target.replaceChildren(node('p', 'data-unavailable',
         'Experiment management is not available'));
