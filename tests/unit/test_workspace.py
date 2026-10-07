@@ -187,11 +187,13 @@ class TestProjects:
             "parser.add_argument('--out')\nparser.add_argument('--task-config')\n"
             "parser.add_argument('--rig')\nif __name__ == '__main__': main()\n"
         )
-        (package / "movie.py").write_text("def views(): pass\n")
         actions = script_actions(root)
         assert len(actions) == 1
         assert actions[0]["module"] == "my_experiment.preview"
         assert actions[0]["params_flag"] == "--task-config"
+        # The experiment's own script may read the task's file, so it keeps
+        # the Task menu.
+        assert actions[0]["task_free"] is False
         args = workspace._command(
             request_for(workspace, mode=actions[0]["id"], parameters={"speed": 4}),
             workspace.directory / "job",
@@ -203,6 +205,21 @@ class TestProjects:
                 request_for(workspace, mode=actions[0]["id"], extra_args="--out=/tmp/elsewhere"),
                 workspace.directory,
             )
+
+    def test_a_movie_script_is_not_offered(self, workspace):
+        """Movies are the Record movies mode's alone. A movie.py with a command
+        line, which used to be listed beside the mode as "Movie script", gets
+        no button, with or without declared stimuli."""
+        root = Path(workspace.projects[0]["path"])
+        package = root / "src/my_experiment"
+        package.mkdir(parents=True)
+        (package / "movie.py").write_text(
+            "parser.add_argument('--out')\nparser.add_argument('--task-config')\n"
+            "parser.add_argument('--rig')\nif __name__ == '__main__': main()\n"
+        )
+        assert script_actions(root) == []
+        declare_stimuli(root)
+        assert [a["id"] for a in script_actions(root)] == ["alhazen.preview"]
 
     def test_a_preview_that_does_not_parse_is_reported_not_hidden(self, workspace, caplog):
         """A preview.py with a syntax error gets no button — but silently, the
@@ -231,18 +248,17 @@ class TestProjects:
         """An experiment that declares its stimuli gets one Preview images,
         alhazen's, which draws them with no task and no parameter file. Its
         own preview.py, which would read a parameter file, is not offered
-        beside it; its other scripts still are."""
+        beside it."""
         root = Path(workspace.projects[0]["path"])
         declare_stimuli(root)
         package = root / "src/my_experiment"
         package.mkdir(parents=True)
-        for script in ("preview.py", "movie.py"):
-            (package / script).write_text(
-                "parser.add_argument('--out')\nparser.add_argument('--task-config')\n"
-                "if __name__ == '__main__': main()\n"
-            )
+        (package / "preview.py").write_text(
+            "parser.add_argument('--out')\nparser.add_argument('--task-config')\n"
+            "if __name__ == '__main__': main()\n"
+        )
         actions = script_actions(root)
-        assert [a["id"] for a in actions] == ["alhazen.preview", "my_experiment.movie"]
+        assert [a["id"] for a in actions] == ["alhazen.preview"]
         preview = actions[0]
         assert preview["label"] == "Preview images"
         assert (preview["params_flag"], preview["task_free"], preview["error"]) == (
@@ -250,9 +266,6 @@ class TestProjects:
             True,
             None,
         )
-        # The experiment's own scripts may read the task's file, so they keep
-        # the Task menu.
-        assert actions[1]["task_free"] is False
 
     def test_the_preview_command_names_no_task_and_no_parameter_file(self, workspace):
         root = Path(workspace.projects[0]["path"])

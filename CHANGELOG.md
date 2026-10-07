@@ -27,6 +27,19 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ## Unreleased
 
+### Removed
+
+- **The workspace no longer lists an experiment's `movie.py` as a "Movie
+  script".** Movies have one entry in the Mode menu, **Record movies**
+  (`--mode movie`), which records the task's `movie_clips` with the form's
+  own scale, sheet and clip controls. The script button sat beside it and
+  wrote the same clips by another route, so the menu offered two ways to one
+  set of files. An experiment whose `src/<package>/movie.py` has a command
+  line (a literal `--out` and a `__main__` guard) loses that button; the
+  module still runs from a terminal, and whatever it wrote that the mode does
+  not belongs in the task's `movie_clips`. `script_actions` looks for
+  `preview.py` only.
+
 ### Fixed
 
 - **The scaffold acceptance test passes in CI on every OS and Python.** It

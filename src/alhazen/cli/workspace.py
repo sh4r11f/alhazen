@@ -616,11 +616,17 @@ STIMULUS_PREVIEW = "alhazen.preview"
 
 
 def script_actions(root: Path) -> list[dict[str, Any]]:
-    """Recognise runnable preview/movie modules by their literal argparse flags.
+    """Recognise a runnable preview module by its literal argparse flags.
 
     A preview.py without a CLI (kde-vergence's viewer helper, for example)
     is not an image generator. Requiring --out and a __main__ guard avoids
     offering a button which runs successfully but produces nothing.
+
+    Only preview.py is looked for. A movie.py with a command line used to
+    get a **Movie script** button beside the Record movies mode, and the two
+    wrote the same clips by different routes. Movies are the mode's alone
+    now: it records the task's ``movie_clips``, with the form's own
+    controls for scale, sheet and clip selection.
 
     An experiment that declares its stimuli (``[tool.alhazen] stimuli``, read
     from its pyproject.toml without importing anything) gets **Preview
@@ -652,11 +658,9 @@ def script_actions(root: Path) -> list[dict[str, Any]]:
                 "error": declaration.error,
             }
         )
-    for source in sorted((root / "src").glob("*/*.py")):
-        if source.stem not in {"preview", "movie"}:
-            continue
-        if source.stem == "preview" and declared:
-            continue
+    # The experiment's own preview.py, unless the declaration above replaced it.
+    sources = [] if declared else sorted((root / "src").glob("*/preview.py"))
+    for source in sources:
         text = source.read_text(encoding="utf-8")
         try:
             tree = ast.parse(text)
@@ -687,7 +691,7 @@ def script_actions(root: Path) -> list[dict[str, Any]]:
         actions.append(
             {
                 "id": module,
-                "label": "Preview images" if source.stem == "preview" else "Movie script",
+                "label": "Preview images",
                 "module": module,
                 "params_flag": params_flag,
                 "rig_flag": "--rig" in flags,
@@ -789,7 +793,7 @@ MODE_FLAGS = frozenset(
         "--screenshots",
     }
 )
-# The same for a standalone preview/movie module: the flags `_script_command`
+# The same for a standalone preview module: the flags `_script_command`
 # passes it, which are what makes the run reproducible from its directory.
 SCRIPT_FLAGS = frozenset({"--out", "--rig", "--params", "--task-config"})
 
@@ -1035,7 +1039,7 @@ def _mode_command(
 
 
 def _script_command(request: Launch, root: Path, rig_path: Path, run_dir: Path) -> list[str]:
-    """A standalone preview/movie module's arguments, from the flags it declares.
+    """A standalone preview module's arguments, from the flags it declares.
 
     The rig, parameters and output directory are the launcher's to set (they
     are what makes the run reproducible from its directory), so the free-form

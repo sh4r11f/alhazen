@@ -182,7 +182,7 @@ class TestLaunchingARig:
         assert (folder / "rig-source.yaml").read_bytes() == own.read_bytes()
 
     def test_a_script_gets_the_shared_rigs_file(self, workspace, project_alhazen):
-        """A standalone preview/movie script hands --rig to load_rig, which
+        """A standalone preview script hands --rig to load_rig, which
         takes a file, not a name."""
         package = Path(workspace.projects[0]["path"]) / "src/demo"
         package.mkdir(parents=True)
