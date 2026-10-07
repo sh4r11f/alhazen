@@ -305,7 +305,10 @@ card = {"schema_version": 1, "task": "demo", "mode": "test", "date": "20261007",
 (root / "figures" / "live_monitor.html").write_text(
     "<!doctype html><title>saved</title><script>document.title='ran'</script>",
     encoding="utf-8")
-print(f"data: {root}", flush=True)
+# The lines a session prints (cli/main.py, modes/session.py) that name its folder.
+print("experiment: demo 0.1.0 — filed under v0.1.0/ (version from pyproject.toml)")
+print("running demo: sub-007 ses-001 run-01", flush=True)
+print(f"session complete — data under {(Path.cwd() / 'data-rehearsal').resolve()}")
 """
 
 
@@ -392,6 +395,26 @@ class TestHistory:
         assert status == 200 and b"<title>saved</title>" in page
         assert "connect-src 'none'" in headers["Content-Security-Policy"]
         assert "form-action 'none'" in headers["Content-Security-Policy"]
+
+    def test_a_console_without_the_completion_line_is_matched_by_its_kind(self, tmp_path):
+        from alhazen.cli.workspace_data import DataRoot
+        from alhazen.cli.workspace_manage import _console_run_folder
+
+        real, rehearsal = tmp_path / "data", tmp_path / "data-rehearsal"
+        for folder in (real, rehearsal):
+            (folder / "v1" / "sub-01" / "ses-001" / "run-02_task-t").mkdir(parents=True)
+        roots = [DataRoot("a", real, "real"), DataRoot("b", rehearsal, "rehearsal")]
+        console = tmp_path / "console.log"
+        console.write_text("filed under v1/ (from pyproject)\nrunning t: sub-01 ses-001 run-02\n")
+        found = _console_run_folder(console, roots, "test")
+        assert found == str((rehearsal / "v1/sub-01/ses-001/run-02_task-t").resolve())
+        assert _console_run_folder(console, roots, "run") == str(
+            (real / "v1/sub-01/ses-001/run-02_task-t").resolve()
+        )
+        console.write_text("running t: sub-09 ses-001 run-02\n")  # no such folder
+        assert _console_run_folder(console, roots, "test") is None
+        console.write_text("starting\n")  # never got that far
+        assert _console_run_folder(console, roots, "test") is None
 
     def test_history_names_what_it_cannot_read(self, http, workspace):
         call, _ = http

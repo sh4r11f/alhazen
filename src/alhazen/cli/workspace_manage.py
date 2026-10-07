@@ -59,12 +59,14 @@ LAUNCH_TEXTS = (
 )
 LAUNCH_TEXT_BYTES = 256 * 1024
 MAX_RIG_BYTES = 256 * 1024
-# How far into a launch's console the History page looks for the session
-# folder it opened (the session prints it before trial 1).
+# How far into a launch's console the History page looks for the lines that
+# name the session folder it opened.
 CONSOLE_HEAD_BYTES = 64 * 1024
-RUN_FOLDER = re.compile(
-    r"((?:v[^/\\\s'\"]+[/\\])?sub-[^/\\\s'\"]+[/\\]ses-[0-9]+[/\\]run-[^/\\\s'\"]+)"
-)
+# The console lines a session prints before trial 1 (cli/main.py), which
+# name the folder it writes.
+RUNNING_LINE = re.compile(r"^running (\S+): sub-(\S+) ses-([0-9]+) run-([0-9]+)\s*$", re.M)
+FILED_LINE = re.compile(r"filed under (v[^/\s]+)/")
+DATA_LINE = re.compile(r"^session complete — data under (.+)$", re.M)
 
 
 def _text(value: Any, what: str) -> str:
@@ -349,7 +351,7 @@ class Management:
         runs.sort(key=lambda r: r["started"], reverse=True)
         for run in runs:
             directory = self.workspace.directory / "runs" / run["id"]
-            folder = _console_run_folder(directory / "console.log", existing)
+            folder = _console_run_folder(directory / "console.log", existing, run["mode"])
             session = by_folder.get(folder) if folder else None
             if session is not None:
                 session["launch"] = run["id"]
@@ -486,24 +488,41 @@ def _session_experimenter(folder: Path) -> dict[str, Any]:
     return {"recorded": True, "id": who.get("id"), "name": who.get("name")}
 
 
-def _console_run_folder(console: Path, roots: list[Any]) -> str | None:
-    """The session folder a launch's console names (resolved), when it names
-    one under one of the experiment's data folders; None otherwise."""
+def _console_run_folder(console: Path, roots: list[Any], mode: str | None) -> str | None:
+    """The session folder a launch's console names (resolved), when it is
+    under one of the experiment's data folders; None otherwise.
+
+    A session prints which run it is before trial 1 (cli/main.py): ``running
+    <task>: sub-<id> ses-<NNN> run-<NN>``, after ``filed under v<version>/``;
+    and ``session complete — data under <folder>`` at the end. The folder is
+    put together from those and must exist: in the folder the console names
+    when it names one, else in the one data folder of the launch's kind (real
+    for run, rehearsal otherwise) that holds it. Two candidates and no
+    folder named is no answer rather than a guess; so is a console from
+    before those lines, or one that never got that far.
+    """
     if not console.is_file():
         return None
     with console.open("rb") as stream:
         head = stream.read(CONSOLE_HEAD_BYTES).decode("utf-8", errors="replace")
-    for root in roots:
-        for spelling in {str(root.path), str(root.path.resolve())}:
-            start = head.find(spelling)
-            while start != -1:
-                rest = head[start + len(spelling) :].lstrip("/\\")
-                match = RUN_FOLDER.match(rest)
-                if match:
-                    run_id = match.group(1).replace("\\", "/").rstrip("/.,;:)")
-                    try:
-                        return str(_run_folder(root.path, run_id).resolve())
-                    except (ValueError, FileNotFoundError):
-                        pass
-                start = head.find(spelling, start + 1)
-    return None
+    running = RUNNING_LINE.search(head)
+    if running is None:
+        return None
+    task, subject, session, run = running.groups()
+    run_id = f"sub-{subject}/ses-{session}/run-{run}_task-{task}"
+    version = FILED_LINE.search(head)
+    if version:
+        run_id = f"{version.group(1)}/{run_id}"
+    named = DATA_LINE.search(head)
+    if named is not None:
+        candidates = [r for r in roots if str(r.path.resolve()) == named.group(1).strip()]
+    else:
+        kind = "real" if mode == "run" else "rehearsal"
+        candidates = [r for r in roots if r.kind == kind]
+    found = []
+    for root in candidates:
+        try:
+            found.append(str(_run_folder(root.path, run_id).resolve()))
+        except (ValueError, FileNotFoundError):
+            continue
+    return found[0] if len(found) == 1 else None
