@@ -383,6 +383,13 @@
   overflow-wrap: anywhere;
 }
 
+/* A code (an ID, a rig's name) stays on one line; the table scrolls
+ * sideways in a narrow pane rather than breaking "sub-007" in two. */
+.m-table td.m-mono:not(.m-cell-path) {
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+
 .m-table tr:last-child td {
   border-bottom: 0;
 }
