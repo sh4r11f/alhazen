@@ -26,8 +26,9 @@
 const $ = (id) => document.getElementById(id);
 
 /* The built-in modes as [button label, help sentence], in menu order. A
- * project's discovered scripts (preview.py, movie.py) join the menu at
- * runtime with labels the server supplies; see chooseProject. */
+ * project's discovered script (its preview.py, or alhazen's preview of the
+ * stimuli it declares) joins the menu at runtime with the label the server
+ * supplies; see chooseProject. */
 const MODES = {
   simulate: ['Simulate', 'Run the complete session with a simulated participant.'],
   demo: ['Demo', 'View the stimulus on the rig’s display. Screenshots you save appear here.'],

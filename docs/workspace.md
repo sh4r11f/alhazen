@@ -352,17 +352,21 @@ get. A declaration that cannot be used keeps the button, and launching it
 says why. The project's own alhazen must have the command; an older one
 stops the run with `invalid choice: 'preview'` in its console.
 
-For an experiment that declares no stimuli, the launcher discovers
-standalone `src/<package>/preview.py` and `movie.py` modules when they
-declare a literal `--out` argparse option and a `__main__` entry point.
-**Preview images** then runs the experiment's own PNG generator; **Movie
-script** runs its standalone recorder, which offers additional sheet options.
+For an experiment that declares no stimuli, the launcher discovers a
+standalone `src/<package>/preview.py` module when it declares a literal
+`--out` argparse option and a `__main__` entry point. **Preview images** then
+runs the experiment's own PNG generator.
 The launcher passes `--rig` and `--params` or `--task-config` when the script
 supports them; those and `--out` are the flags reserved for a script, and
 anything else it declares goes in the same extra-arguments field, whose help
-lists the flags the script offers. Scripts that are only internal viewer
-helpers (such as KDE's preview module) are not presented as runnable image
-generators; use demo or movie instead.
+lists the flags the script offers. A script that is only an internal viewer
+helper (such as KDE's preview module) is not presented as a runnable image
+generator; use demo or movie instead.
+
+A `movie.py` is not looked for. Movies have one entry in the Mode menu,
+**Record movies**, which records the task's `movie_clips`; the workspace used
+to list an experiment's own `movie.py` beside it as **Movie script**, and the
+two wrote the same clips by different routes.
 
 Parameter choices are read from the class passed to `run_experiment(task_class=...)`
 — or, with a task table, from the task of the chosen Task parameters entry —
@@ -393,9 +397,9 @@ usual — trials file, manifest, tracker recording — and has thirty seconds to
 finish, because an EyeLink EDF transfer plus manifest hashing can take that
 long. A run still alive after that is killed: its status becomes **killed**
 rather than **cancelled**, its `run.json` records `"stopped": "forced"`, and its
-console log ends with a line saying the data may be incomplete. Standalone
-preview and movie scripts do not go through `run_experiment`, so a break ends
-them at once. Closing the browser does not stop a run; Ctrl+C in the launcher
+console log ends with a line saying the data may be incomplete. A standalone
+preview script does not go through `run_experiment`, so a break ends
+it at once. Closing the browser does not stop a run; Ctrl+C in the launcher
 terminal does. Runs and their output survive restart. A job left marked
 running after an unexpected server exit is shown as **interrupted**, not
 successful; inspect the OS for surviving processes before restarting hardware
