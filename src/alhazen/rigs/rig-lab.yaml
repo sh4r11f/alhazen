@@ -129,6 +129,12 @@ devices:
     # experiment should — the Host PC keeps one file per name.
     calibration_type: HV9
     calibration_area: 0.6
+    # The calibration target: left out, the standard disc, still. For pictures
+    # and/or a pulsating target (docs/eye-tracker.md, "The calibration
+    # target"), for example:
+    # calibration_target:
+    #   appearance: random_images   # standard · images · random_images
+    #   motion: pulse               # still · pulse
     # No `accuracy_max_deg`: alhazen's 1.0 deg default, judged on the WORST
     # validation target rather than the mean. A design whose dependent
     # measure is a gaze position needs tighter (amodal-averaging uses 0.5)

@@ -18,8 +18,11 @@ import logging
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from alhazen.config.models import EyeTrackerConfig
 from alhazen.core.clock import Clock
+from alhazen.devices.eyetracker.calibration_targets import CalibrationTargets
 from alhazen.devices.eyetracker.guide import GUIDE_TITLE, calibration_guide, target_count
 from alhazen.devices.eyetracker.protocol import (
     CalibrationResult,
@@ -106,8 +109,15 @@ class EyeLinkTracker:
         display: DisplayBackend | None,
         screen: Screen,
         clock: Clock,
+        *,
+        calibration_rng: np.random.Generator | None = None,
     ) -> None:
         self._cfg = cfg
+        # What the calibration target looks like, the pictures it may show
+        # and the record of every target shown (calibration_targets.py).
+        # ``calibration_rng`` is the session seed's calibration_target stream,
+        # read only by a random picture order.
+        self._targets = CalibrationTargets(cfg.calibration_target, calibration_rng)
         # None is legitimate: check-rig constructs this class to exercise the
         # real connect()/shutdown() path without opening a subject window.
         # Only configure() (calibration graphics) reads the window.
@@ -209,6 +219,11 @@ class EyeLinkTracker:
         the tracker's own clock (invariant 2).
         """
         self._clock = clock
+        # The calibration target is checked first — that it fits the screen
+        # at the outermost point, and every picture it may show decoded —
+        # before anything is sent to the Host PC, so a bad choice is refused
+        # here, at session build, and never in front of a subject.
+        self._targets.prepare(screen, self._cfg.calibration_area)
         tracker = self._tracker
         # The Host must not be recording while its configuration changes.
         tracker.setOfflineMode()
@@ -262,8 +277,18 @@ class EyeLinkTracker:
         # psychopy, neither of which may exist off the rig.
         from alhazen.devices.eyetracker.calibration import make_calibration_graphics
 
-        graphics = make_calibration_graphics(tracker, self._display.window, screen)
+        graphics = make_calibration_graphics(
+            tracker, self._display.window, screen, targets=self._targets, now=clock.now
+        )
         self._pylink.openGraphicsEx(graphics)
+        if not self._cfg.calibration_target.is_default:
+            log.info("EyeLink calibration target: %s", self._targets.style)
+
+    def set_calibration_rng(self, rng: np.random.Generator) -> None:
+        """Optional capability (protocol.py): the random generator a random
+        calibration picture order is dealt from — the session seed's
+        ``calibration_target`` stream, handed over by the session builder."""
+        self._targets.use_rng(rng)
 
     def set_progress_hook(self, hook: ProgressHook | None) -> None:
         """Where calibrate() reports its stages; None to stop reporting."""
@@ -293,6 +318,10 @@ class EyeLinkTracker:
         # Local for the same reason as pylink: psychopy may not exist off the rig.
         from psychopy import event
 
+        # The targets this calibration shows are the ones after this mark;
+        # the Host PC's validation and drift check on its setup screen are
+        # drawn through the same graphics, so theirs are recorded too.
+        self._targets.begin_procedure()
         if not self._show_guide(event):
             note = "skipped at the guide; the tracker keeps its previous calibration"
             log.warning("EyeLink calibration %s", note)
@@ -368,6 +397,8 @@ class EyeLinkTracker:
             t=self._clock.now(),
             note=note,
             aborted=aborted,
+            target_style=self._targets.style,
+            shown=self._targets.shown_since_begin(),
         )
 
     def _eye_reported(self) -> str:

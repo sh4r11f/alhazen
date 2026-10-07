@@ -98,6 +98,12 @@ devices:
     # layouts it can construct.
     calibration_type: HV9
     calibration_area: 0.6
+    # The calibration target: left out, the standard disc, still. For pictures
+    # and/or a pulsating target (docs/eye-tracker.md, "The calibration
+    # target"), for example:
+    # calibration_target:
+    #   appearance: random_images   # standard · images · random_images
+    #   motion: pulse               # still · pulse
     # No `accuracy_max_deg`: alhazen's 1.0 deg default. The session validates
     # every calibration that takes (and on V while paused) and holds it to
     # that limit, judged on the WORST target, not the mean. A design whose

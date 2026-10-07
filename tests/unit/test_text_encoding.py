@@ -34,7 +34,9 @@ SOURCE = ROOT / "src" / "alhazen"
 # decision someone wrote down rather than something the check quietly allows.
 # Matched on the last name in the receiver with leading underscores dropped,
 # so `self._display.open()` is the same exception as `display.open()`.
-NOT_FILES = {"display", "webbrowser"}
+# PIL's `Image.open` decodes an image's bytes (the calibration pictures, from
+# an in-memory buffer): binary, with no text encoding to name.
+NOT_FILES = {"display", "webbrowser", "Image"}
 
 
 def _literal_mode(call: ast.Call) -> str | None:

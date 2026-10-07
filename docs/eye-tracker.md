@@ -774,6 +774,82 @@ out, the backend's default is written into the config as it loads, so the
 run's `config_snapshot.yaml` records the number the session ran with. Both
 fields are refused on `mouse_sim`, which streams nothing that could stop.
 
+## The calibration target
+
+What the subject looks at during a calibration is two choices, independent of
+each other and of the layout (`calibration_type`), which they never change:
+
+- **appearance**: the `standard` target (a black disc with a hole, 24 px
+  across, what every calibration drew before the choice existed and still
+  the default); `images`, the pictures named, one per target in the order
+  listed; or `random_images`, a random picture per target from the names
+  given, or from all 38 when none are;
+- **motion**: `still`, or `pulse`, in which the target — disc or picture —
+  swells and shrinks smoothly about a centre that never moves.
+
+```yaml
+devices:
+  eyetracker:
+    backend: eyelink
+    calibration_type: HV9
+    calibration_target:
+      appearance: random_images      # standard · images · random_images
+      images: [monkey_1, monkey_4, food_3]   # images: shown in this order; random: the set drawn from
+      image_size_dva: 2.5            # a picture's longer side when still
+      motion: pulse                  # still · pulse
+      pulse: {rate_hz: 1.0, min_scale: 1.0, max_scale: 1.4}
+```
+
+The pictures are Realtime RDK's (`sh4r11f/realtime-rdk`, `assets/calibration`
+at `0fe02e1`): 10 monkeys (`monkey_1`…`monkey_10`), 24 foods (`food_1`…`food_24`),
+3 other animals (`animal_1`…`animal_3`) and a tree (`tree_1`), RGBA with
+transparent backgrounds. They ship inside alhazen
+(`src/alhazen/calibration_images/`), so an installed rig calibrates with them
+offline; each is checked against its recorded SHA-256, mode and size before
+it is shown. A picture keeps its aspect and transparency.
+
+**The pulse.** A target's size, `t` seconds after it appeared, is its still
+size times `min_scale + (max_scale - min_scale) * (1 - cos(2*pi*rate_hz*t)) / 2`:
+it appears at `min_scale`, reaches `max_scale` half a cycle later and comes
+back without a jump. `t` is read from the session clock on every frame, so the
+rate is the same at 60 Hz as at 240 Hz and a late frame shows the size of its
+own moment. The defaults (1 Hz, 1.0–1.4×) are Realtime RDK's. Bounds: rate
+0.1–2 Hz; scales 0.5–2.0× and at least 0.05 apart.
+
+**One target, one picture.** A target keeps its picture and its pulse while
+it is up. The next point, or a point shown again (BACKSPACE, or the Host PC
+repeating one), is a new target with the next picture. A random order is a
+shuffled deck dealt without replacement and reshuffled when it runs out,
+never the same picture twice in a row (unless the set has one). It comes from
+the session seed's own `calibration_target` stream, so it neither moves nor
+is moved by the trial order, and the CALIBRATION event records every target
+shown: `targets_shown` (ordinal, position, picture, time) beside
+`target_style`.
+
+**What it applies to.** Every calibration of both backends, recalibrations
+included; on an EyeLink, also the Host PC's own validation and drift check on
+its setup screen, which draw through the same graphics. alhazen's own
+validation and drift correction (V and D) keep their small white fixation
+disc. Where targets go, how a target is accepted (keys, `calibration_advance`),
+how gaze is sampled and fitted, the beeps and the validation limits do not
+change.
+
+**Checked before anyone is in the chair.** A name that is not a shipped
+picture, `images` with no names, a `pulse` block on a still target, a picture
+size or pulse out of bounds, or the setting on a tracker that draws no target
+(`mouse_sim`) is refused when the rig loads. A target whose largest size
+would be cut off by the screen edge at the outermost point, or a picture
+whose file is missing or changed, refuses the session when the tracker is
+configured, and `alhazen check-rig` reports it.
+
+**For one run.** `run.py --mode run|test` takes `--calibration-target
+{standard,images,random_images}`, `--calibration-images monkey_1,food_3` and
+`--calibration-motion {still,pulse}` over the rig's setting; the snapshot
+records the result. The workspace's Rig section offers the same choice, with
+a picture grid and a preview, for a rig with an EyeLink or a TRACKPixx3. The
+preview shows the look and motion only; it says nothing about how well a
+calibration will fit.
+
 ## Instruction screens
 
 Every message the session puts on the subject display — the instructions

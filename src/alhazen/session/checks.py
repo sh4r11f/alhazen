@@ -31,6 +31,7 @@ from typing import Any
 from alhazen.config.models import EyeTrackerConfig, RewardPulses, RigConfig
 from alhazen.core.clock import Clock, MonotonicClock
 from alhazen.devices.eyetracker import EyeTracker, make_tracker
+from alhazen.devices.eyetracker.calibration_targets import CalibrationTargets
 from alhazen.devices.eyetracker.procedures import PROCEDURE_TRIAL_INDEX
 from alhazen.devices.recording import make_recording
 from alhazen.devices.reward import make_reward
@@ -255,6 +256,24 @@ def _check_eyetracker(
     clock = clock if clock is not None else MonotonicClock()
     sleep = sleep if sleep is not None else time.sleep
     screen = Screen.from_monitor(rig.monitor)
+    # The calibration target the rig asks for: that it fits the screen at
+    # the outermost point and that every picture it may show is the shipped,
+    # unaltered file and decodes — the checks a session's configure() makes,
+    # made here too so a bad target is found at check-rig, not at a session.
+    # The standard still target needs none of it and is not mentioned.
+    if not cfg.calibration_target.is_default:
+        targets = CalibrationTargets(cfg.calibration_target)
+        try:
+            targets.prepare(screen, cfg.calibration_area)
+        except AlhazenError as e:
+            return CheckResult(
+                "eyetracker",
+                False,
+                f"calibration target: {e}",
+                {**evidence, "calibration_target": cfg.calibration_target.describe()},
+            )
+        evidence["calibration_target"] = cfg.calibration_target.describe()
+        evidence["calibration_pictures_checked"] = len(targets.pool)
     tracker = make_tracker(cfg, None, screen, clock)
     started = time.perf_counter()
     try:

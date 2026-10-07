@@ -352,6 +352,8 @@ EYELINK_CALIBRATION_TYPES = ("H3", "HV3", "HV5", "HV9", "HV13")
 # stop, so either field set on one of them would do nothing — a config error,
 # like every other field the chosen backend ignores.
 STREAMING_ONLY_FIELDS = ("max_sample_gap_ms", "max_consecutive_dropouts")
+# The calibration target: only a backend that draws one reads it.
+TARGET_DRAWING_ONLY_FIELDS = ("calibration_target",)
 
 # How long, in ms, a real tracker may go without delivering a new sample
 # mid-trial before its recording is called dead (the tracker health check's
@@ -389,6 +391,163 @@ MAX_SAMPLE_GAP_MS = 1000.0
 # row is suspicious, and at three the session would otherwise go on serving
 # the same trial into a dead tracker, paying its fault reward every time.
 DEFAULT_MAX_CONSECUTIVE_DROPOUTS = 3
+
+
+# What the calibration target looks like and how it moves: two choices
+# independent of each other and of the target layout (`calibration_type`),
+# which they never change. docs/eye-tracker.md, "The calibration target".
+CALIBRATION_APPEARANCES = ("standard", "images", "random_images")
+CALIBRATION_MOTIONS = ("still", "pulse")
+# The backends that draw a calibration target at all. The stand-ins have no
+# calibration to show one in, so a target configured on one would do nothing.
+TARGET_DRAWING_BACKENDS = ("eyelink", "viewpixx")
+# Bounds on the pulse. The rate stays at or below 2 Hz: a pulse is a slow
+# swell that draws the eye, and anything faster starts to read as flicker
+# (and nears the 3 Hz floor of the photosensitive range). The scale is a
+# multiple of the still size, between half and twice it, and must actually
+# change: a pulse from 1.0 to 1.0 is a still target, said as `motion: still`.
+PULSE_RATE_RANGE_HZ = (0.1, 2.0)
+PULSE_SCALE_RANGE = (0.5, 2.0)
+MIN_PULSE_SWING = 0.05
+# A picture's size, in degrees of visual angle, along its longer side when
+# still. Up to 10 deg: a calibration target is something to fixate.
+IMAGE_SIZE_RANGE_DVA = (0.1, 10.0)
+
+
+class CalibrationPulseConfig(Model):
+    """How a pulsating calibration target swells and shrinks.
+
+    The target's size at time ``t`` after it appears is its still size times
+    ``min_scale + (max_scale - min_scale) * (1 - cos(2*pi*rate_hz*t)) / 2``:
+    it appears at ``min_scale``, reaches ``max_scale`` half a cycle later and
+    returns smoothly, its centre never moving. Time is the session clock, not
+    a frame count, so the rate is the same on a 60 Hz and a 240 Hz display.
+    The defaults are Realtime RDK's (1 Hz, 1.0 to 1.4 times the size).
+    """
+
+    rate_hz: float = 1.0
+    min_scale: float = 1.0
+    max_scale: float = 1.4
+
+    @model_validator(mode="after")
+    def _valid(self) -> CalibrationPulseConfig:
+        low, high = PULSE_RATE_RANGE_HZ
+        if not (math.isfinite(self.rate_hz) and low <= self.rate_hz <= high):
+            raise ValueError(
+                f"calibration_target.pulse.rate_hz {self.rate_hz:g} must be in {low:g}-{high:g} "
+                "Hz: a slow swell, not a flicker"
+            )
+        low, high = PULSE_SCALE_RANGE
+        for name in ("min_scale", "max_scale"):
+            value = getattr(self, name)
+            if not (math.isfinite(value) and low <= value <= high):
+                raise ValueError(
+                    f"calibration_target.pulse.{name} {value:g} must be in {low:g}-{high:g} "
+                    "(a multiple of the target's still size)"
+                )
+        if self.max_scale - self.min_scale < MIN_PULSE_SWING:
+            raise ValueError(
+                f"calibration_target.pulse: max_scale ({self.max_scale:g}) must exceed min_scale "
+                f"({self.min_scale:g}) by at least {MIN_PULSE_SWING:g}; for a target that does "
+                "not change size, set `motion: still`"
+            )
+        return self
+
+
+class CalibrationTargetConfig(Model):
+    """What a calibration target looks like and whether it pulsates.
+
+    ``appearance``:
+
+    - ``standard``: the disc with a hole every calibration has drawn (24 px
+      across); the default, so a rig that says nothing calibrates as before.
+    - ``images``: the pictures named in ``images``, one per target shown, in
+      the order listed (and round again). One name shows that picture every
+      time.
+    - ``random_images``: a random picture per target shown, from ``images``
+      or, when that is empty, from all of alhazen's calibration pictures. The
+      order is a shuffled deck dealt without replacement, re-shuffled when it
+      runs out, never the same picture twice in a row (unless there is only
+      one); it comes from the session seed's own stream (core/rng.py,
+      ``calibration_target``), so it never shifts the trial order, and every
+      target's picture is recorded with the calibration.
+
+    ``image_size_dva`` is a picture's longer side when still; its aspect and
+    transparency are kept. ``motion: pulse`` makes the target, standard or
+    picture, swell and shrink about its centre (``pulse``); ``still`` keeps
+    it the size it is. Neither choice changes where the targets go, how many
+    there are, or how gaze is sampled and fitted.
+    """
+
+    appearance: Literal["standard", "images", "random_images"] = "standard"
+    images: tuple[str, ...] = ()
+    image_size_dva: float = 2.5
+    motion: Literal["still", "pulse"] = "still"
+    pulse: CalibrationPulseConfig = CalibrationPulseConfig()
+
+    @model_validator(mode="after")
+    def _valid(self) -> CalibrationTargetConfig:
+        from alhazen.config.calibration_images import image_names, unknown_names
+
+        given = self.model_fields_set
+        if self.appearance == "standard":
+            ignored = sorted({"images", "image_size_dva"} & given)
+            if ignored:
+                raise ValueError(
+                    f"calibration_target: the standard target ignores {', '.join(ignored)} — "
+                    "remove it, or choose `appearance: images` or `random_images`"
+                )
+        else:
+            low, high = IMAGE_SIZE_RANGE_DVA
+            if not (math.isfinite(self.image_size_dva) and low <= self.image_size_dva <= high):
+                raise ValueError(
+                    f"calibration_target.image_size_dva {self.image_size_dva:g} must be in "
+                    f"{low:g}-{high:g} degrees"
+                )
+            if self.appearance == "images" and not self.images:
+                raise ValueError(
+                    "calibration_target: `appearance: images` needs the pictures to show in "
+                    "`images` (one or more names); for a random picture each time, use "
+                    "`appearance: random_images`"
+                )
+            unknown = unknown_names(self.images)
+            if unknown:
+                raise ValueError(
+                    f"calibration_target.images: {', '.join(map(repr, unknown))} "
+                    f"{'is' if len(unknown) == 1 else 'are'} not among alhazen's calibration "
+                    f"pictures; choose from {', '.join(image_names())}"
+                )
+            repeated = sorted({name for name in self.images if self.images.count(name) > 1})
+            if repeated:
+                raise ValueError(
+                    f"calibration_target.images names {', '.join(repeated)} more than once"
+                )
+        if self.motion == "still" and "pulse" in given:
+            raise ValueError(
+                "calibration_target: a still target ignores `pulse` — remove it, or set "
+                "`motion: pulse`"
+            )
+        return self
+
+    @property
+    def is_default(self) -> bool:
+        """The standard target, still: what every calibration drew before
+        the choice existed."""
+        return self.appearance == "standard" and self.motion == "still"
+
+    def describe(self) -> str:
+        """In words, for a log line, a result and the live monitor."""
+        if self.appearance == "standard":
+            what = "standard target"
+        elif self.appearance == "images":
+            what = f"pictures {', '.join(self.images)} in turn ({self.image_size_dva:g} deg)"
+        else:
+            pool = f"{len(self.images)} chosen" if self.images else "all"
+            what = f"random pictures from {pool} ({self.image_size_dva:g} deg)"
+        if self.motion == "still":
+            return f"{what}, still"
+        p = self.pulse
+        return f"{what}, pulsating {p.min_scale:g}-{p.max_scale:g}x at {p.rate_hz:g} Hz"
 
 
 class EyeTrackerConfig(Model):
@@ -478,6 +637,11 @@ class EyeTrackerConfig(Model):
     # the tracker instead of the session serving the same trial into a dead
     # one again and again. eyelink and viewpixx only.
     max_consecutive_dropouts: int = DEFAULT_MAX_CONSECUTIVE_DROPOUTS
+    # What the calibration target looks like and whether it pulsates
+    # (CalibrationTargetConfig). Left out, it is the standard target, still:
+    # exactly what calibration drew before the setting existed. eyelink and
+    # viewpixx only, the backends that draw a target.
+    calibration_target: CalibrationTargetConfig = CalibrationTargetConfig()
 
     @model_validator(mode="before")
     @classmethod
@@ -588,8 +752,13 @@ class EyeTrackerConfig(Model):
         # The simulated backends have no hardware fields at all, so every
         # backend-specific key is wrong on them — and they stream nothing that
         # could drop out, so the dropout-detection fields are wrong too.
+        # They draw no calibration target either (TARGET_DRAWING_BACKENDS).
         wrong = wrong_for.get(
-            self.backend, EYELINK_ONLY_FIELDS + VIEWPIXX_ONLY_FIELDS + STREAMING_ONLY_FIELDS
+            self.backend,
+            EYELINK_ONLY_FIELDS
+            + VIEWPIXX_ONLY_FIELDS
+            + STREAMING_ONLY_FIELDS
+            + TARGET_DRAWING_ONLY_FIELDS,
         )
         named = sorted(set(wrong) & self.model_fields_set)
         if named:
@@ -937,6 +1106,61 @@ class RigConfig(Model):
                 f"and alhazen 2.0 no longer reads the old name; {fix}"
             )
         return data
+
+
+def with_calibration_target(
+    rig: RigConfig,
+    *,
+    appearance: str | None = None,
+    images: list[str] | tuple[str, ...] | None = None,
+    motion: str | None = None,
+) -> RigConfig:
+    """``rig`` with its calibration target chosen for one run, as the command
+    line's ``--calibration-target``, ``--calibration-images`` and
+    ``--calibration-motion`` (and the workspace's calibration controls) ask.
+
+    Nothing asked: the rig, unchanged. Otherwise the rig's own setting with
+    what was asked laid over it and validated again, so the snapshot records
+    the target the session drew and a bad choice is refused before anything
+    opens. A setting that the choice makes irrelevant is dropped with it
+    (``standard`` drops the pictures and their size, ``still`` the pulse), and
+    a changed appearance without ``images`` starts from no names: the rig's
+    list was chosen for its own appearance. Raises ConfigError, in the
+    command line's words, for a rig with no tracker that draws a target.
+    """
+    if appearance is None and images is None and motion is None:
+        return rig
+    tracker = rig.devices.eyetracker
+    if tracker is None or tracker.backend not in TARGET_DRAWING_BACKENDS:
+        what = "no eye tracker" if tracker is None else f"the {tracker.backend} stand-in"
+        raise ConfigError(
+            f"--calibration-target/--calibration-images/--calibration-motion choose what an "
+            f"eye-tracker calibration draws, and this rig has {what}, which draws no "
+            f"calibration target; use a rig with an eyelink or viewpixx tracker"
+        )
+    current = tracker.calibration_target
+    values: dict[str, Any] = current.model_dump(mode="json", include=current.model_fields_set)
+    if appearance is not None:
+        if appearance != current.appearance:
+            values.pop("images", None)
+        values["appearance"] = appearance
+        if appearance == "standard":
+            values.pop("images", None)
+            values.pop("image_size_dva", None)
+    if images is not None:
+        values["images"] = list(images)
+    if motion is not None:
+        values["motion"] = motion
+        if motion == "still":
+            values.pop("pulse", None)
+    settings = tracker.model_dump(mode="json", include=tracker.model_fields_set)
+    settings["calibration_target"] = values
+    try:
+        chosen = EyeTrackerConfig.model_validate(settings)
+    except ValueError as e:
+        raise ConfigError(f"invalid calibration target for this run:\n{e}") from e
+    devices = rig.devices.model_copy(update={"eyetracker": chosen})
+    return rig.model_copy(update={"devices": devices})
 
 
 # The rule a subject's initials are held to, in the words every entry point

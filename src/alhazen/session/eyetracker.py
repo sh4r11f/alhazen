@@ -229,6 +229,24 @@ class EyeTrackerMonitor:
             self.correction.reset(result.t)
             self.validation = None
             self.drift = None
+        # What the target looked like, and each one shown, in order: where,
+        # which picture, when — with the session seed, enough to recover a
+        # random picture order. Only from a tracker that draws a target; a
+        # stand-in's event is what it always was.
+        target_record: dict[str, Any] = {}
+        if result.target_style:
+            target_record = {
+                "target_style": result.target_style,
+                "targets_shown": [
+                    {
+                        "ordinal": shown.ordinal,
+                        "target_px": list(shown.target_px),
+                        "image": shown.image,
+                        "t": shown.t,
+                    }
+                    for shown in result.shown
+                ],
+            }
         self._emit(
             "CALIBRATION",
             {
@@ -251,6 +269,7 @@ class EyeTrackerMonitor:
                     }
                     for target in result.targets
                 ],
+                **target_record,
             },
         )
         # No validation of a calibration that did not happen (aborted) or

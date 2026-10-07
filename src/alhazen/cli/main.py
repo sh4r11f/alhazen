@@ -31,7 +31,12 @@ from pydantic import ValidationError
 from alhazen.cli.console_break import interrupt_on_console_break
 from alhazen.config.experiment import experiment_title
 from alhazen.config.loader import load_rig
-from alhazen.config.models import normalize_initials
+from alhazen.config.models import (
+    CALIBRATION_APPEARANCES,
+    CALIBRATION_MOTIONS,
+    normalize_initials,
+    with_calibration_target,
+)
 from alhazen.config.rigs import (
     collecting_rigs,
     list_rigs,
@@ -517,6 +522,31 @@ def add_mode_arguments(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="test mode: the mouse cursor as gaze, even on a rig with an eye tracker",
     )
+    # The calibration target for this run, over the rig's own setting
+    # (eyetracker.calibration_target; docs/eye-tracker.md). Run and test only:
+    # the modes that calibrate the rig's tracker (alhazen.modes.flag_refusal).
+    parser.add_argument(
+        "--calibration-target",
+        default=None,
+        choices=list(CALIBRATION_APPEARANCES),
+        help="run and test: what calibration targets look like — the standard target, "
+        "the pictures named by --calibration-images in turn, or random pictures "
+        "(default: the rig's setting)",
+    )
+    parser.add_argument(
+        "--calibration-images",
+        default=None,
+        metavar="NAMES",
+        help="run and test: comma-separated calibration picture names (e.g. monkey_1,food_3) — "
+        "the pictures to show, or the set a random picture is drawn from",
+    )
+    parser.add_argument(
+        "--calibration-motion",
+        default=None,
+        choices=list(CALIBRATION_MOTIONS),
+        help="run and test: still targets, or targets that pulsate (swell and shrink "
+        "smoothly) (default: the rig's setting)",
+    )
     live_monitor_group = parser.add_mutually_exclusive_group()
     live_monitor_group.add_argument(
         "--live-monitor", action="store_true", default=None, help="enable the live monitor"
@@ -631,7 +661,9 @@ def _run_session(
     # Refused before anything loads: a flag the mode cannot honour is a
     # usage error, and finding that out after the rig opened a window is
     # the wrong moment.
-    refusal = flag_refusal(mode, headless=args.headless, mouse=args.mouse)
+    refusal = flag_refusal(
+        mode, headless=args.headless, mouse=args.mouse, calibration=_calibration_flags(args)
+    )
     if refusal is not None:
         print(f"CANNOT RUN: {refusal}", file=sys.stderr)
         return 2
@@ -673,6 +705,14 @@ def _run_session(
         root = _experiment_root(task_class)
         args.rig_ref = resolve_rig(args.rig, root)
         rig = load_rig(args.rig_ref.path)
+        # The calibration target this run asked for, laid over the rig's own
+        # and validated with it, so the snapshot records what was drawn.
+        rig = with_calibration_target(
+            rig,
+            appearance=args.calibration_target,
+            images=_calibration_images(args.calibration_images),
+            motion=args.calibration_motion,
+        )
     except ConfigError as e:
         print(f"INVALID: {e}", file=sys.stderr)
         return 1
@@ -733,6 +773,29 @@ def _run_session(
     if mode is Mode.MOVIE:
         return _movie_task(args, rig, task_class(params), params)
     return _trial_session(args, rig, task_class(params), params, mode)
+
+
+def _calibration_flags(args: argparse.Namespace) -> bool:
+    """Whether any calibration-target flag was given. A namespace built
+    without them (an older caller's) has none."""
+    return any(
+        getattr(args, name, None) is not None
+        for name in ("calibration_target", "calibration_images", "calibration_motion")
+    )
+
+
+def _calibration_images(text: str | None) -> list[str] | None:
+    """``--calibration-images`` as a list of names; None when not given. An
+    empty name (``a,,b``, a trailing comma) is refused rather than dropped."""
+    if text is None:
+        return None
+    names = [name.strip() for name in text.split(",")]
+    if not all(names):
+        raise ConfigError(
+            f"--calibration-images {text!r}: give picture names separated by commas, "
+            "with no empty entries"
+        )
+    return names
 
 
 def _real_data_instead(args: argparse.Namespace, root: Callable[[], Path]) -> list[str]:

@@ -21,7 +21,7 @@ import numpy as np
 # seed depends on this list being stable. New subsystems APPEND here — never
 # insert, reorder, or remove — so existing (seed -> stream) mappings survive
 # framework upgrades.
-STREAMS = ("scheduler", "session", "task")
+STREAMS = ("scheduler", "session", "task", "calibration_target")
 
 
 def resolve_seed(seed: int | None) -> int:
@@ -32,5 +32,19 @@ def resolve_seed(seed: int | None) -> int:
 
 
 def spawn_streams(seed: int) -> dict[str, np.random.Generator]:
+    """One generator per name in STREAMS, each from its own child of the seed.
+
+    A child depends only on the seed and its position in STREAMS (numpy's
+    spawn keys), never on how many there are, so appending a name leaves
+    every existing stream's draws exactly as they were."""
     children = np.random.SeedSequence(seed).spawn(len(STREAMS))
     return {name: np.random.default_rng(seq) for name, seq in zip(STREAMS, children, strict=True)}
+
+
+def named_stream(seed: int, name: str) -> np.random.Generator:
+    """The one stream ``name`` of ``spawn_streams(seed)``, alone: identical
+    draws, for a part of the session built before the others (the eye
+    tracker's calibration targets)."""
+    index = STREAMS.index(name)
+    child = np.random.SeedSequence(seed).spawn(index + 1)[index]
+    return np.random.default_rng(child)

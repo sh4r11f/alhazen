@@ -43,7 +43,7 @@ from alhazen.core.clock import Clock, MonotonicClock
 from alhazen.core.commands import CommandSource, KeyboardCommands, NullCommands
 from alhazen.core.engine import TrialEngine
 from alhazen.core.events import EventBus, EventSchema
-from alhazen.core.rng import resolve_seed, spawn_streams
+from alhazen.core.rng import named_stream, resolve_seed, spawn_streams
 from alhazen.core.trial import FAULT_TRACKER_STOPPED, HealthFault, InputFrame, TrialContext
 from alhazen.data import naming
 from alhazen.data.participants import check_participant
@@ -721,6 +721,13 @@ def build_session(
         devices = rig_cfg.devices
         if tracker is None and devices.eyetracker is not None:
             tracker = make_tracker(devices.eyetracker, display, screen, clock)
+        # A random calibration picture order comes from the session seed's own
+        # stream: recoverable from the seed, and never a draw taken from the
+        # trial order (core/rng.py). An optional capability (protocol.py): a
+        # tracker that draws no target — or one handed in — may not take it.
+        set_calibration_rng = getattr(tracker, "set_calibration_rng", None)
+        if set_calibration_rng is not None:
+            set_calibration_rng(named_stream(resolved_seed, "calibration_target"))
         if reward is None and devices.reward is not None:
             reward = make_reward(devices.reward)
         if reward is not None:

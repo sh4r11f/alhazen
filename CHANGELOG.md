@@ -29,6 +29,22 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Added
 
+- **Calibration targets can be pictures, and can pulsate.** The eye
+  tracker's `calibration_target` chooses the target's appearance — the
+  `standard` disc (the default, drawn exactly as before), the named
+  `images`, or `random_images` — and its `motion`, `still` or `pulse` (a
+  smooth swell and shrink about a fixed centre, timed by the session clock;
+  1 Hz, 1.0–1.4× by default). The 38 pictures from Realtime RDK ship as
+  package data with a manifest of their SHA-256s. Both backends draw through
+  one presenter; the layout, acceptance, sampling and fit are unchanged. A
+  random order comes from the new, appended `calibration_target` seed stream
+  and every target shown is recorded on the CALIBRATION event
+  (`target_style`, `targets_shown`). `run.py` takes
+  `--calibration-target/--calibration-images/--calibration-motion` for run
+  and test; the workspace's Rig section offers the choice with a preview;
+  `check-rig` verifies the pictures and the fit. docs/eye-tracker.md, "The
+  calibration target"; design: docs/design/calibration-targets.md.
+
 - **The live monitor's camera view marks each eye the TRACKPixx3 has
   found.** A green circle of the expected iris size, centred on the pupil
   the device fitted, with a cross on the centre and L or R beside it. An eye
