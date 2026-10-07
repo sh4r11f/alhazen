@@ -24,6 +24,7 @@
   <link rel="stylesheet" href="/workspace.css">
   <!-- The schema helpers load first: workspace.js reads ParameterChoices. -->
   <script src="/workspace_parameters.js" defer></script>
+  <script src="/workspace_calibration.js" defer></script>
   <script src="/workspace.js" defer></script>
   <!-- The Data view: its stylesheet, then the view itself.
        workspace_data.js defines window.WorkspaceData = {show, hide};
@@ -294,6 +295,44 @@
                    experiment's own, and all of them when the project's
                    registration predates shared rigs; hidden otherwise. -->
               <p id="rig-note" class="help" hidden></p>
+              <!-- The calibration target, for a rig whose tracker draws one
+                   (an EyeLink or a TRACKPixx3): what it looks like and
+                   whether it pulsates, over the rig's own setting, for this
+                   run (renderCalibration() in workspace.js). The switches
+                   and the picture grid are built by the script. -->
+              <div id="calibration" class="calibration" hidden>
+                <div class="calibration-head">
+                  <h4 class="calibration-title">Calibration target</h4>
+                  <span id="calibration-origin" class="calibration-origin"></span>
+                </div>
+                <div id="calibration-controls" class="calibration-body">
+                  <div class="calibration-choices">
+                    <div class="calibration-row">
+                      <span class="calibration-label" id="calibration-appearance-label">Looks like</span>
+                      <div id="calibration-appearance" class="segmented" role="group"
+                           aria-labelledby="calibration-appearance-label"></div>
+                    </div>
+                    <div class="calibration-row">
+                      <span class="calibration-label" id="calibration-motion-label">Motion</span>
+                      <div id="calibration-motion" class="segmented" role="group"
+                           aria-labelledby="calibration-motion-label"></div>
+                    </div>
+                    <div id="calibration-pictures-block" class="calibration-pictures" hidden>
+                      <div class="calibration-pictures-head">
+                        <span id="calibration-pictures-label"></span>
+                        <button type="button" id="calibration-clear" class="quiet" hidden>Clear</button>
+                      </div>
+                      <div id="calibration-pictures" class="picture-grid" role="group"
+                           aria-labelledby="calibration-pictures-label"></div>
+                    </div>
+                  </div>
+                  <figure class="calibration-preview">
+                    <div id="calibration-stage" class="calibration-stage" aria-hidden="true"></div>
+                    <figcaption id="calibration-caption"></figcaption>
+                  </figure>
+                </div>
+                <p id="calibration-help" class="help" aria-live="polite"></p>
+              </div>
             </section>
 
             <!-- Task parameters: the parameter set to start from (its menu

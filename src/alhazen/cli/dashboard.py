@@ -26,6 +26,7 @@ from alhazen.cli.workspace import (
     MEDIA_TYPES,
     Launch,
     Workspace,
+    calibration_picture,
     now,
     parse_parameters,
     path_inside,
@@ -43,6 +44,7 @@ PAGE_ASSETS = {
     "/": ("workspace.html", "text/html; charset=utf-8"),
     "/workspace.js": ("workspace.js", "text/javascript; charset=utf-8"),
     "/workspace_parameters.js": ("workspace_parameters.js", "text/javascript; charset=utf-8"),
+    "/workspace_calibration.js": ("workspace_calibration.js", "text/javascript; charset=utf-8"),
     "/workspace.css": ("workspace.css", "text/css; charset=utf-8"),
     "/favicon.svg": ("favicon.svg", "image/svg+xml"),
     "/fonts/Nunito-latin.woff2": ("fonts/Nunito-latin.woff2", "font/woff2"),
@@ -239,7 +241,7 @@ class Handler(BaseHTTPRequestHandler):
         # /data/ is the Data view's figures, fetched with the token in the
         # URL like /media/. /data-page/<ticket> is not here on purpose: its
         # ticket is the secret (DataView.page_ticket).
-        if path.startswith(("/api/", "/media/", "/data/")):
+        if path.startswith(("/api/", "/media/", "/data/", "/calibration-picture")):
             token = self.headers.get("X-Alhazen-Token", query.get("token", [""])[0])
             if not hmac.compare_digest(token.encode(), self.server.token.encode()):
                 raise PermissionError(
@@ -279,6 +281,13 @@ class Handler(BaseHTTPRequestHandler):
                 if target.suffix.lower() not in MEDIA_TYPES:
                     raise ValueError("Only images and movies are served as media")
                 self._file(target, MEDIA_TYPES[target.suffix.lower()], ranges=True)
+            elif path == "/calibration-picture":
+                # One of a project's calibration pictures, for the Rig
+                # section's target preview: by name, only one its alhazen
+                # listed at registration (workspace.calibration_picture).
+                project = workspace.project(query.get("project", [""])[0])
+                target = calibration_picture(project, query.get("name", [""])[0])
+                self._file(target, "image/png")
             elif path.startswith("/api/data/"):
                 self._json(self.server.data.get(path.removeprefix("/api/data/"), query))
             elif path == "/data/file":

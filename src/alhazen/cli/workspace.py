@@ -22,15 +22,16 @@ import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
 from alhazen.cli.workspace_schema import TASK_NAME_KEY
+from alhazen.config.calibration_images import NAME_PATTERN
 from alhazen.config.experiment import experiment_stimuli, experiment_title
 from alhazen.config.loader import validate_rig
-from alhazen.config.models import normalize_initials
+from alhazen.config.models import RigConfig, normalize_initials, with_calibration_target
 from alhazen.config.rigs import (
     SHARED_PREFIX,
     MergedRig,
@@ -107,8 +108,14 @@ if importlib.util.find_spec("psychopy") is not None:
         psychopy = version("psychopy")
     except PackageNotFoundError:
         psychopy = "unknown"
+calibration = None
+if importlib.util.find_spec("alhazen.config.calibration_images") is not None:
+    from alhazen.config.calibration_images import IMAGE_DIR, image_names
+    from alhazen.config.models import CalibrationTargetConfig
+    calibration = {"dir": str(IMAGE_DIR.resolve()), "images": list(image_names()),
+                   "defaults": CalibrationTargetConfig().model_dump(mode="json")}
 print(json.dumps({"alhazen": alhazen.__version__, "python": sys.version, "shared_rigs": shared,
-                  "psychopy": psychopy}))
+                  "psychopy": psychopy, "calibration_targets": calibration}))
 """
 # Said wherever a project registered before the probe asked for shared rigs
 # is missing them: its record has no list, which is not the same as an empty
@@ -220,9 +227,74 @@ def probe_interpreter(python: str, project_path: str) -> dict[str, Any]:
             # registered before the probe asked, which is "unknown" there, not
             # "not installed".
             "psychopy_version": None if report["psychopy"] is None else str(report["psychopy"]),
+            # The calibration-target choice the project's alhazen offers: its
+            # pictures' folder and names, and the setting's defaults; None for
+            # an alhazen from before the choice (and for a record registered
+            # before the probe asked), which the page then does not offer.
+            "calibration_targets": _calibration_offer(report.get("calibration_targets")),
         }
     except (IndexError, ValueError, KeyError, TypeError) as exc:
         raise ValueError(unexpected) from exc
+
+
+def _calibration_offer(reported: Any) -> dict[str, Any] | None:
+    """The probe's calibration-target answer, checked: a folder, picture
+    names that can never be paths, and the defaults; None when the project's
+    alhazen has no such choice. Anything else is an unexpected reply."""
+    if reported is None:
+        return None
+    names = [str(name) for name in reported["images"]]
+    if not all(NAME_PATTERN.fullmatch(name) for name in names):
+        raise ValueError(f"unexpected calibration picture names {names!r}")
+    return {
+        "dir": str(reported["dir"]),
+        "images": names,
+        "defaults": dict(reported["defaults"]),
+    }
+
+
+def calibration_picture(project: dict[str, Any], name: str) -> Path:
+    """The file of one of a project's calibration pictures, for the page's
+    preview: only a name the project's alhazen listed when it was registered,
+    from the folder it named — never a path the request spells out."""
+    offer = project.get("calibration_targets")
+    if not offer:
+        raise FileNotFoundError(f"{project['name']}'s alhazen ships no calibration pictures")
+    if not NAME_PATTERN.fullmatch(name) or name not in offer["images"]:
+        raise FileNotFoundError(f"{name!r} is not one of the calibration pictures")
+    folder = Path(offer["dir"])
+    target = path_inside(folder, f"{name}.png")
+    if not target.is_file():
+        raise FileNotFoundError(
+            f"calibration picture {name!r} is missing from {folder}; the project's alhazen "
+            "has been reinstalled or moved — open Project settings and save, to register it again"
+        )
+    return target
+
+
+class CalibrationChoice(BaseModel):
+    """The calibration target a launch asks for, over the rig's own setting:
+    run.py's --calibration-target, --calibration-images, --calibration-motion.
+    Each None leaves the rig's choice."""
+
+    model_config = ConfigDict(extra="forbid")
+    appearance: Literal["standard", "images", "random_images"] | None = None
+    images: list[str] | None = None
+    motion: Literal["still", "pulse"] | None = None
+
+
+def _calibration_arguments(choice: CalibrationChoice | None) -> list[str]:
+    """The run.py flags for a launch's calibration-target choice."""
+    if choice is None:
+        return []
+    args: list[str] = []
+    if choice.appearance is not None:
+        args += ["--calibration-target", choice.appearance]
+    if choice.images is not None:
+        args += ["--calibration-images", ",".join(choice.images)]
+    if choice.motion is not None:
+        args += ["--calibration-motion", choice.motion]
+    return args
 
 
 def _shared_rigs(project: dict[str, Any]) -> dict[str, Path] | None:
@@ -754,6 +826,9 @@ class Launch(BaseModel):
     # renames anything already recorded. None from a client that sends no
     # label, and for a launch that takes no parameters.
     parameter_set: str | None = None
+    # The calibration target for this run, when the page's choice differs
+    # from the rig's (CalibrationChoice); None runs the rig's own.
+    calibration_target: CalibrationChoice | None = None
 
 
 # Every flag `_mode_command` can emit, whichever mode. An extra argument
@@ -791,6 +866,9 @@ MODE_FLAGS = frozenset(
         "--columns",
         "--clip",
         "--screenshots",
+        "--calibration-target",
+        "--calibration-images",
+        "--calibration-motion",
     }
 )
 # The same for a standalone preview module: the flags `_script_command`
@@ -985,7 +1063,12 @@ def _mode_command(
     flag renamed there fails here rather than in a child's console; the
     extras ride behind it, untouched, for the experiment's run.py to read.
     """
-    refusal = flag_refusal(mode, headless=request.headless, mouse=request.mouse)
+    refusal = flag_refusal(
+        mode,
+        headless=request.headless,
+        mouse=request.mouse,
+        calibration=bool(_calibration_arguments(request.calibration_target)),
+    )
     if refusal:
         raise ValueError(refusal)
     has_parameters = request.parameters is not None or request.parameters_yaml is not None
@@ -1032,6 +1115,7 @@ def _mode_command(
             command += ["--clip", clip]
     if mode is Mode.DEMO:
         command += ["--screenshots", str(output)]
+    command += _calibration_arguments(request.calibration_target)
     # Last, after every flag of the launcher's own, where a typed command
     # puts them: run.py takes what is its own (a run.py that reads its own
     # `--task` before run_experiment does) and hands the rest on.
@@ -1403,6 +1487,7 @@ class Workspace:
             )
             if refusal is not None:
                 raise ValueError(refusal)
+        self._check_calibration_choice(project, request, checked)
         task = self._task_for(project, request)
         base = [project["python"], "-u"]
         if request.mode in {m.value for m in Mode}:
@@ -1434,6 +1519,46 @@ class Workspace:
         # to load_rig, which takes a file: a shared rig goes as the file the
         # probe recorded.
         return base + _script_command(request, root, ref.path, run_dir)
+
+    def _check_calibration_choice(
+        self, project: dict[str, Any], request: Launch, rig: RigConfig
+    ) -> None:
+        """Refuse a calibration-target choice the launch cannot honour, before
+        anything is written: a project whose alhazen has no such choice (its
+        run.py would refuse the flags), a picture its alhazen does not ship,
+        or a choice the rig itself refuses (no tracker that draws a target, a
+        bad combination) — checked with the same rule run.py applies
+        (with_calibration_target). The mode's own refusal (run and test only,
+        not with Mouse as gaze) is _mode_command's."""
+        choice = request.calibration_target
+        if not _calibration_arguments(choice):
+            return
+        assert choice is not None
+        offer = project.get("calibration_targets")
+        if not offer:
+            raise ValueError(
+                f"{project['name']}'s alhazen ({project.get('alhazen_version')}) has no "
+                "calibration-target choice, or was registered before the workspace asked: "
+                "update its alhazen, then open Project settings and save, to register it again"
+            )
+        unknown = [name for name in choice.images or [] if name not in offer["images"]]
+        if unknown:
+            raise ValueError(
+                f"{', '.join(unknown)}: not among {project['name']}'s calibration pictures"
+            )
+        if request.mode not in {m.value for m in Mode}:
+            raise ValueError(
+                "A calibration-target choice is for run and test, which calibrate the rig's eye "
+                "tracker; a script never calibrates"
+            )
+        if request.mode not in {Mode.RUN.value, Mode.TEST.value}:
+            return  # refused by _mode_command, in the mode's own words
+        try:
+            with_calibration_target(
+                rig, appearance=choice.appearance, images=choice.images, motion=choice.motion
+            )
+        except ConfigError as exc:
+            raise ValueError(str(exc)) from exc
 
     def _launch_rig(
         self, project: dict[str, Any], spec: str

@@ -33,6 +33,7 @@ from alhazen.cli.workspace import (
     path_inside,
     script_actions,
 )
+from alhazen.config.calibration_images import IMAGE_DIR, image_names, image_path
 from alhazen.config.models import INITIALS_RULE
 from alhazen.modes import Mode
 
@@ -87,6 +88,29 @@ def request_for(workspace, **overrides):
             **overrides,
         }
     )
+
+
+def calibration_offer() -> dict:
+    """What the probe records for a project whose alhazen offers the
+    calibration-target choice: this alhazen's own pictures and defaults."""
+    from alhazen.config.calibration_images import IMAGE_DIR, image_names
+    from alhazen.config.models import CalibrationTargetConfig
+
+    return {
+        "dir": str(IMAGE_DIR.resolve()),
+        "images": list(image_names()),
+        "defaults": CalibrationTargetConfig().model_dump(mode="json"),
+    }
+
+
+def eyelink_rig(root: Path) -> Path:
+    """configs/rig-eyelink.yaml: the example rig with an EyeLink, a tracker
+    that draws a calibration target (never connected here)."""
+    text = RIG.read_text(encoding="utf-8")
+    assert "devices:" not in text
+    path = root / "configs/rig-eyelink.yaml"
+    path.write_text(text + "\ndevices:\n  eyetracker:\n    backend: eyelink\n", encoding="utf-8")
+    return path
 
 
 def finish(workspace, run):
@@ -649,6 +673,25 @@ class TestCommandContract:
                 monkeypatch.setitem(workspace.project(request.project), "alhazen_version", version)
                 command = workspace._command(request, workspace.directory / "job")
                 emitted.update(token for token in command if token.startswith("--"))
+        # The calibration-target flags: emitted for run and test on a rig whose
+        # tracker draws a target, by a project whose alhazen offers the choice.
+        project = workspace.project(workspace.projects[0]["id"])
+        monkeypatch.setitem(project, "calibration_targets", calibration_offer())
+        eyelink_rig(Path(project["path"]))
+        request = request_for(
+            workspace,
+            mode="test",
+            subject="s01",
+            initials="HD",
+            rig="configs/rig-eyelink.yaml",
+            calibration_target={
+                "appearance": "images",
+                "images": ["monkey_1", "food_3"],
+                "motion": "pulse",
+            },
+        )
+        command = workspace._command(request, workspace.directory / "job")
+        emitted.update(token for token in command if token.startswith("--"))
         assert emitted == MODE_FLAGS
 
 
@@ -1465,3 +1508,159 @@ class TestRecovery:
         record.write_text('{"id": "broken"}')
         with pytest.raises(ValueError, match=re.escape(str(record))):
             Workspace(workspace.directory)
+
+
+class TestCalibrationTargetChoice:
+    """The Rig section's calibration-target choice, as the launcher takes it:
+    flags for run.py only when the project's alhazen offers the choice, for a
+    rig whose tracker draws a target, in run or test; the pictures served to
+    the page by manifest name only, never by a path the request spells."""
+
+    @staticmethod
+    def offered(workspace, monkeypatch):
+        project = workspace.project(workspace.projects[0]["id"])
+        monkeypatch.setitem(project, "calibration_targets", calibration_offer())
+        eyelink_rig(Path(project["path"]))
+        return project
+
+    @staticmethod
+    def launch(workspace, mode="test", **choice):
+        return request_for(
+            workspace,
+            mode=mode,
+            subject="s01",
+            initials="HD",
+            rig="configs/rig-eyelink.yaml",
+            calibration_target=choice,
+        )
+
+    def test_the_choice_becomes_run_py_flags_after_the_launchers_own(self, workspace, monkeypatch):
+        self.offered(workspace, monkeypatch)
+        request = self.launch(
+            workspace, appearance="random_images", images=["food_1", "food_2"], motion="pulse"
+        )
+        command = workspace._command(request, workspace.directory / "job")
+        assert command[-6:] == [
+            "--calibration-target",
+            "random_images",
+            "--calibration-images",
+            "food_1,food_2",
+            "--calibration-motion",
+            "pulse",
+        ]
+        parser = argparse.ArgumentParser()
+        add_mode_arguments(parser)
+        args = parser.parse_args(command[3:])
+        assert (args.calibration_target, args.calibration_images, args.calibration_motion) == (
+            "random_images",
+            "food_1,food_2",
+            "pulse",
+        )
+
+    def test_no_choice_sends_no_flag(self, workspace, monkeypatch):
+        self.offered(workspace, monkeypatch)
+        request = request_for(
+            workspace, mode="test", subject="s01", initials="HD", rig="configs/rig-eyelink.yaml"
+        )
+        command = workspace._command(request, workspace.directory / "job")
+        assert not any(token.startswith("--calibration") for token in command)
+
+    def test_a_project_on_an_alhazen_without_the_choice_is_told_to_update(self, workspace):
+        eyelink_rig(Path(workspace.projects[0]["path"]))
+        with pytest.raises(ValueError, match="has no calibration-target choice"):
+            workspace._command(self.launch(workspace, motion="pulse"), workspace.directory)
+
+    @pytest.mark.parametrize(
+        "mode, choice, words",
+        [
+            ("simulate", {"motion": "pulse"}, "only run and test calibrate"),
+            ("demo", {"motion": "pulse"}, "only run and test calibrate"),
+            ("test", {"appearance": "images"}, "needs the pictures to show"),
+            ("test", {"appearance": "images", "images": ["giraffe_9"]}, "giraffe_9: not among"),
+        ],
+    )
+    def test_a_choice_the_launch_cannot_honour_is_refused_first(
+        self, workspace, monkeypatch, mode, choice, words
+    ):
+        self.offered(workspace, monkeypatch)
+        with pytest.raises(ValueError, match=words):
+            workspace._command(self.launch(workspace, mode=mode, **choice), workspace.directory)
+
+    def test_not_with_the_mouse_as_gaze(self, workspace, monkeypatch):
+        self.offered(workspace, monkeypatch)
+        request = self.launch(workspace, motion="pulse").model_copy(update={"mouse": True})
+        with pytest.raises(ValueError, match="replaces the rig's eye tracker"):
+            workspace._command(request, workspace.directory)
+
+    def test_a_rig_whose_tracker_draws_no_target_refuses_it(self, workspace, monkeypatch):
+        project = self.offered(workspace, monkeypatch)
+        request = request_for(
+            workspace,
+            mode="test",
+            subject="s01",
+            initials="HD",
+            calibration_target={"motion": "pulse"},
+        )
+        assert project["calibration_targets"]
+        with pytest.raises(ValueError, match="this rig has no eye tracker"):
+            workspace._command(request, workspace.directory)
+
+    def test_a_script_never_takes_it(self, workspace, monkeypatch):
+        self.offered(workspace, monkeypatch)
+        request = self.launch(workspace, mode="preview-stimuli", motion="pulse")
+        with pytest.raises(ValueError, match="a script never calibrates"):
+            workspace._command(request, workspace.directory)
+
+    def test_the_flags_cannot_be_typed_in_the_extra_arguments(self, workspace, monkeypatch):
+        self.offered(workspace, monkeypatch)
+        request = request_for(
+            workspace,
+            mode="test",
+            subject="s01",
+            initials="HD",
+            rig="configs/rig-eyelink.yaml",
+            extra_args="--calibration-motion=pulse",
+        )
+        with pytest.raises(ValueError, match="--calibration-motion is set from the dashboard"):
+            workspace._command(request, workspace.directory)
+
+    def test_pictures_are_served_by_listed_name_only(self, http, workspace, monkeypatch):
+        call, server = http
+        self.offered(workspace, monkeypatch)
+        key = workspace.projects[0]["id"]
+        status, headers, body = call(f"/calibration-picture?project={key}&name=monkey_1")
+        assert status == 200 and headers["Content-Type"] == "image/png"
+        assert body == image_path("monkey_1").read_bytes()
+        for bad in ("../manifest", "monkey_1.png", "README", "giraffe_9", "%2e%2e%2fREADME"):
+            assert call(f"/calibration-picture?project={key}&name={bad}")[0] == 404, bad
+        # Like every other request, it needs the token.
+        assert (
+            call(
+                f"/calibration-picture?project={key}&name=monkey_1",
+                headers={"X-Alhazen-Token": "x"},
+            )[0]
+            == 403
+        )
+        assert call("/workspace_calibration.js")[0] == 200
+
+    def test_a_project_without_the_offer_serves_no_pictures(self, http, workspace):
+        call, _ = http
+        key = workspace.projects[0]["id"]
+        assert call(f"/calibration-picture?project={key}&name=monkey_1")[0] == 404
+
+    def test_the_real_probe_reports_the_offer_of_the_projects_alhazen(self, tmp_path):
+        root = tmp_path / "experiment"
+        root.mkdir()
+        report = REAL_PROBE(sys.executable, str(root))
+        offer = report["calibration_targets"]
+        assert offer["images"] == list(image_names())
+        assert Path(offer["dir"]) == IMAGE_DIR.resolve()
+        assert offer["defaults"]["appearance"] == "standard"
+        assert offer["defaults"]["pulse"] == {"rate_hz": 1.0, "min_scale": 1.0, "max_scale": 1.4}
+
+    def test_an_older_probe_answer_records_no_offer(self):
+        from alhazen.cli.workspace import _calibration_offer
+
+        assert _calibration_offer(None) is None
+        with pytest.raises(ValueError, match="unexpected calibration picture names"):
+            _calibration_offer({"dir": "/x", "images": ["../etc"], "defaults": {}})

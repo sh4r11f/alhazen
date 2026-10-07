@@ -16,6 +16,7 @@ function load() {
   const sandbox = {document, URLSearchParams, location:{hash:''}, sessionStorage:{getItem:()=>null}, localStorage:{getItem:()=>null, setItem(){}}, window:{addEventListener(){}}, console};
   const context = vm.createContext(sandbox);
   vm.runInContext(readFileSync(new URL('workspace_parameters.js', assets),'utf8'),context);
+  vm.runInContext(readFileSync(new URL('workspace_calibration.js', assets),'utf8'),context);
   vm.runInContext(readFileSync(new URL('workspace.js', assets),'utf8').replace(/\npoll\(\);\s*$/, ''),context);
   const run = (code) => vm.runInContext(code,context);
   run(`state.projects = [{id:'p', scripts:[], rigs:['rig.yaml'], available:true}]; selected='p';`);

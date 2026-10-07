@@ -1995,3 +1995,183 @@ footer {
   border-radius: 8px;
   padding: 8px 12px;
 }
+
+
+/* ---- Calibration target (Rig section; renderCalibration in workspace.js) ----
+ * Under the rig's readout: the target's look and motion for this run, a grid
+ * of the shipped pictures when they are chosen, and a preview on a mid-grey
+ * patch (the colour a calibration screen usually is), so a picture's
+ * transparency reads as it will on the rig. Laid out for the form's own
+ * column (360-450 px): each switch takes the column's width under its
+ * label, and the preview sits beside its caption. The choice is the run's;
+ * the rig file is never changed. */
+.calibration {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--line);
+}
+
+.calibration-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.calibration-title {
+  margin: 0;
+  font: 600 11px/1.6 var(--mono);
+  letter-spacing: .6px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.calibration-origin {
+  font: 12px/1.6 var(--mono);
+  color: var(--muted);
+  text-align: right;
+}
+
+.calibration-body,
+.calibration-choices {
+  display: grid;
+  gap: 12px;
+}
+
+.calibration-row {
+  display: grid;
+  gap: 5px;
+}
+
+.calibration-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+/* The switch spans the column, its choices in equal parts; a label that
+ * cannot fit wraps inside its own button rather than pushing the next one
+ * onto a second row. */
+.calibration .segmented {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+}
+
+.calibration .segmented button {
+  padding: 6px 8px;
+  line-height: 1.25;
+}
+
+.calibration .segmented button:disabled,
+.calibration .picture:disabled,
+.calibration .quiet:disabled {
+  cursor: not-allowed;
+}
+
+.calibration-pictures-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  font-size: 13px;
+  color: var(--ink);
+  margin-bottom: 6px;
+}
+
+.calibration-pictures-head .quiet {
+  padding: 2px 4px;
+}
+
+.picture-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(40px, 1fr));
+  gap: 4px;
+  max-height: 188px;
+  overflow-y: auto;
+  padding: 5px;
+  border-radius: 8px;
+  background: #808080;
+}
+
+.picture-grid .picture {
+  position: relative;
+  aspect-ratio: 1;
+  padding: 2px;
+  border: 2px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+}
+
+.picture-grid .picture:hover {
+  border-color: #ffffffa6;
+  background: transparent;
+}
+
+.picture-grid .picture[aria-pressed=true] {
+  border-color: var(--selected-ink);
+  background: #00000033;
+}
+
+.picture-grid img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.picture-order {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  min-width: 16px;
+  padding: 0 3px;
+  border-radius: 8px;
+  background: var(--selected-bg);
+  color: var(--selected-ink);
+  font: 700 10px/16px var(--mono);
+  text-align: center;
+}
+
+/* The preview beside what it shows: size on the rig, motion, and that it
+ * is a look, not a measurement. */
+.calibration-preview {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 0;
+}
+
+.calibration-stage {
+  flex: none;
+  width: 132px;
+  height: 132px;
+  border-radius: 8px;
+  background: #808080;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+
+/* The standard target: a black disc with a hole a third of its width. */
+.standard-target {
+  display: block;
+  border-radius: 50%;
+  background: radial-gradient(circle closest-side, #808080 0 33.3%, #000000 34% 100%);
+}
+
+.picture-target {
+  display: block;
+  object-fit: contain;
+}
+
+.calibration-preview figcaption {
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+#calibration-help {
+  margin: 12px 0 0;
+}
