@@ -90,6 +90,7 @@ from alhazen.session.pause import PauseMenu
 from alhazen.session.pause_control import PauseController
 from alhazen.session.recorder import DataRecorder
 from alhazen.session.reward_payer import RewardPayer
+from alhazen.session.startup_calibration import StartupCalibration
 from alhazen.session.streaks import DropoutStreak, FailureStreak, StreakMonitor
 from alhazen.task.live import LiveAnalysis
 
@@ -209,6 +210,7 @@ class SessionRunner:
         experiment_dir: Path | None = None,
         identity: RunIdentity | None = None,
         recording: RecordingSystem | None = None,
+        startup_calibration: StartupCalibration | None = None,
     ) -> None:
         # What the run records about how it was set up: the experiment and
         # version its data is filed under, the mode, the files it started
@@ -289,6 +291,12 @@ class SessionRunner:
         if eyetracker is not None:
             eyetracker.publisher = self._publish_live_monitor
             eyetracker.emit = self._emit_session_event
+        # The calibration request before trial 1 (session/startup_calibration.py),
+        # for the rig's own real tracker; None for every other session, which
+        # keeps the older check below (_require_tracker_calibration).
+        self._startup_calibration = startup_calibration
+        if startup_calibration is not None:
+            startup_calibration.emit = self._emit_session_event
         # Whether every break between blocks ends with a validation of the eye
         # tracker's calibration (BlockConfig.validate_after_break, carried by
         # the scheduler: paradigms/blocks.py). Read once, here, where it is
@@ -499,7 +507,12 @@ class SessionRunner:
                     log.info("session cancelled from instructions screen")
                     self._cancelled = True
                     return
-            if not self._require_tracker_calibration():
+            if self._startup_calibration is not None:
+                if not self._startup_calibration.request():
+                    log.info("session cancelled at the calibration request")
+                    self._cancelled = True
+                    return
+            elif not self._require_tracker_calibration():
                 return
             while True:
                 condition = self._source.next()

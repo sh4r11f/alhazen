@@ -198,6 +198,11 @@ class EyeTrackerMonitor:
         # The expected iris size the device holds, as last read or set; None
         # until it has been read (the device is only asked between trials).
         self.iris_size_px: int | None = None
+        # Called with every calibration the tracker reports as taken, from
+        # whichever procedure ran it (the request before trial 1, the pause
+        # menu, the live monitor): the builder records it in the rig's
+        # calibration ledger (session/startup_calibration.py).
+        self.on_calibrated: Callable[[CalibrationResult], None] | None = None
 
     # ------------------------------------------------------------------
     # Procedures
@@ -229,6 +234,15 @@ class EyeTrackerMonitor:
             self.correction.reset(result.t)
             self.validation = None
             self.drift = None
+        if result.ok is True and self.on_calibrated is not None:
+            try:
+                self.on_calibrated(result)
+            except OSError:
+                # The ledger is what lets a LATER session offer this
+                # calibration for reuse; failing to write it changes nothing
+                # about this one, which is calibrated. Said loudly, and the
+                # next session simply will not offer reuse.
+                log.exception("could not record this calibration in the rig's calibration ledger")
         # What the target looked like, and each one shown, in order: where,
         # which picture, when — with the session seed, enough to recover a
         # random picture order. Only from a tracker that draws a target; a
