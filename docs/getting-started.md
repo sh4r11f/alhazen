@@ -32,6 +32,21 @@ pip install "C:\Program Files\VPixx Technologies\Software Tools\pypixxlib\pypixx
 numpy and pypng). alhazen will tell you which SDK is missing, and where it
 comes from, if you try to use a tracker without it.
 
+**In a uv project** (a `.venv` built from a `uv.lock`, like the experiments
+that pin alhazen from a tag) that `pip` is the wrong one: the `.venv` has no
+pip of its own, so a bare `pip` installs into whichever other environment is
+first on PATH. Install with uv instead, from the project folder, naming
+`.venv` so that an activated conda environment cannot take it instead:
+
+```bash
+uv pip install --python .venv "C:\Program Files\VPixx Technologies\Software Tools\pypixxlib\pypixxlib-1.9.2.tar.gz"
+```
+
+The SDK is not in `uv.lock` (it cannot be: the archive exists only on
+machines with Software Tools), so a plain `uv sync` removes it again. Sync
+with `uv sync --inexact`, or run the install again after each sync. `uv run`
+leaves it alone.
+
 ## Scaffold an experiment
 
 ```bash

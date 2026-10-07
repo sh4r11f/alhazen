@@ -40,6 +40,7 @@ from alhazen.devices.eyetracker.viewpixx import (
     HOST_DEVICE,
     STATUS_REFRESH_S,
     TRACKING_LOST_PX,
+    VPIXX_ARCHIVE_PATTERN,
     GazeReader,
     calibration_targets,
     evaluate_calibration,
@@ -49,9 +50,11 @@ from alhazen.devices.eyetracker.viewpixx import (
     image_from_pointer,
     is_tracking_lost,
     parse_eye_used,
+    pypixxlib_missing,
     quietly,
     select_eye,
     shrink_image,
+    vpixx_archive,
 )
 from alhazen.display.palette import TERMINAL_GREEN
 from alhazen.errors import TrackerError
@@ -280,9 +283,46 @@ class TestConnect:
         message = str(excinfo.value)
         assert "Software Tools" in message
         assert "NOT on PyPI" in message
-        assert "pypixxlib-<version>.tar.gz" in message
         assert "pip install" in message
         assert "mouse_sim" in message
+
+    def test_the_install_commands_run_through_this_interpreter(self, tmp_path):
+        # The bug this exists for: the message said "pip install into this
+        # environment". In a uv-made .venv there is no pip, so a bare `pip`
+        # was another environment's, the SDK went there, and the session
+        # failed again with the same words. Both commands now name the
+        # interpreter that failed the import.
+        archive = tmp_path / "pypixxlib-1.9.2.tar.gz"
+        archive.write_bytes(b"")
+        message = str(pypixxlib_missing(tmp_path))
+        python = sys.executable
+        assert f"this runs in ({python})" in message
+        assert f'"{python}" -m pip install "{archive}"' in message
+        assert f'uv pip install --python "{python}" "{archive}"' in message
+        # ...and what undoes the uv install, with the way round it.
+        assert "uv sync --inexact" in message
+
+    def test_the_message_names_the_newest_archive_on_the_machine(self, tmp_path):
+        # 1.10.0 is newer than 1.9.2, though it sorts before it as text. A
+        # file that is not an archive of this name is not offered.
+        for name in ("pypixxlib-1.9.2.tar.gz", "pypixxlib-1.10.0.tar.gz", "README.txt"):
+            (tmp_path / name).write_bytes(b"")
+        assert vpixx_archive(tmp_path) == tmp_path / "pypixxlib-1.10.0.tar.gz"
+        assert f'"{tmp_path / "pypixxlib-1.10.0.tar.gz"}"' in str(pypixxlib_missing(tmp_path))
+
+    @pytest.mark.parametrize("present", [False, True])
+    def test_with_no_archive_the_message_gives_the_pattern_and_says_so(self, tmp_path, present):
+        # No Software Tools on this machine (the folder is absent), or a
+        # folder with no archive in it: the commands still read as commands,
+        # with the pattern where the file would be.
+        directory = tmp_path / "pypixxlib"
+        if present:
+            directory.mkdir()
+        assert vpixx_archive(directory) is None
+        message = str(pypixxlib_missing(directory))
+        assert "No such file was found on this machine" in message
+        assert f'-m pip install "{VPIXX_ARCHIVE_PATTERN}"' in message
+        assert VPIXX_ARCHIVE_PATTERN.endswith(r"\pypixxlib\pypixxlib-<version>.tar.gz")
 
     def test_a_device_fault_becomes_a_tracker_error(self, fake_pypixxlib, monkeypatch):
         # pypixxlib raises its own exception type, which cannot be named in

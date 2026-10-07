@@ -85,7 +85,9 @@ devices:
     # Needs pypixxlib in the session's Python environment. It is not on PyPI:
     # VPixx's Software Tools installer (1.9.2 on this rig) leaves the archive at
     # C:\Program Files\VPixx Technologies\Software Tools\pypixxlib\pypixxlib-1.9.2.tar.gz
-    # and that file is what to pip install (alhazen check-rig says so if it is missing).
+    # and that file is what to install: `pip install <file>`, or in a uv project
+    # `uv pip install --python .venv <file>` (and again after a plain `uv sync`,
+    # which removes it). alhazen check-rig gives the exact command if it is missing.
     # Monocular is sufficient for most designs, but the TRACKPixx3 always
     # reports both eyes, so which one a sample carries has to be stated rather
     # than guessed. An experiment that wants the other eye, or the average of
