@@ -13,7 +13,7 @@ function load() {
     document.body.appendChild(el);
   }
   // localStorage: the page reads the remembered colour theme when it loads.
-  const sandbox = {document, URLSearchParams, location:{hash:''}, sessionStorage:{getItem:()=>null}, localStorage:{getItem:()=>null, setItem(){}}, window:{addEventListener(){}}, console};
+  const sandbox = {document, URLSearchParams, location:{hash:''}, sessionStorage:{getItem:()=>null, setItem(){}}, localStorage:{getItem:()=>null, setItem(){}}, window:{addEventListener(){}}, console};
   const context = vm.createContext(sandbox);
   vm.runInContext(readFileSync(new URL('workspace_parameters.js', assets),'utf8'),context);
   vm.runInContext(readFileSync(new URL('workspace_calibration.js', assets),'utf8'),context);

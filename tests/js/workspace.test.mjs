@@ -87,13 +87,16 @@ const ACTIVE = ['running', 'stopping'];
  * `configs` adds presets beyond task.yaml (by path, as /api/config answers),
  * `rigs` rigs beyond the project's mac (by menu value, as /api/rig answers)
  * and `schemas` the per-task schemas of a project with a task table.
- * `storage` is localStorage as the page finds it when it loads.
+ * `storage` is localStorage as the page finds it when it loads, `search` the
+ * address's query (default: the Run page of the experiment used last) and
+ * `people` the experiment's registered subjects and experimenters.
  */
 async function pageWith({
   run = null, dashboardEnabled = true, oldKey = false, hash, project = PROJECT,
-  configs = {}, rigs = {}, schemas = {}, storage,
+  configs = {}, rigs = {}, schemas = {}, storage, search, people,
 } = {}) {
-  const app = loadWorkspace({ hash: hash, storage: storage });
+  const app = loadWorkspace({ hash: hash, storage: storage, search: search });
+  if (people) app.server.people = people;
   app.server.state = {
     projects: [project],
     runs: run ? [summary(run)] : [],
@@ -1280,11 +1283,12 @@ describe('the experiment’s name', () => {
   it('shows the title in the sidebar, the heading, the breadcrumb and the browser tab',
     async () => {
       const app = await pageWith();
-      const entry = app.byId('projects').children[0];
-      assert.match(entry.querySelector('button').textContent, /Demo task$/);
+      /* The sidebar names the open experiment above its pages. */
+      assert.equal(app.byId('nav-experiment-title').textContent, 'Demo task');
       assert.equal(app.byId('project-name').textContent, 'Demo task');
       assert.equal(app.byId('breadcrumb').textContent, 'Demo task');
-      assert.equal(app.document.title, 'Demo task · Alhazen');
+      /* The tab names the page too, so Back's list tells pages apart. */
+      assert.equal(app.document.title, 'Run · Demo task · Alhazen');
       /* The slug stays visible in small print, beside the folder. */
       assert.equal(app.byId('project-slug').textContent, 'demo');
       assert.equal(app.byId('project-path').textContent, 'C:/projects/demo');
@@ -1309,7 +1313,7 @@ describe('the experiment’s name', () => {
     assert.ok(title && slug && error === null);
     const app = await pageWith({ project: old });
     assert.equal(app.byId('project-name').textContent, 'demo-folder');
-    assert.equal(app.document.title, 'demo-folder · Alhazen');
+    assert.equal(app.document.title, 'Run · demo-folder · Alhazen');
     assert.equal(app.byId('rig').children[0].children[0].textContent, 'demo-folder/mac');
   });
 
@@ -1319,8 +1323,8 @@ describe('the experiment’s name', () => {
     await app.run('refresh()');
     await settle();
     assert.equal(app.byId('breadcrumb').textContent, 'Renamed');
-    assert.equal(app.document.title, 'Renamed · Alhazen');
-    assert.match(app.byId('projects').textContent, /Renamed/);
+    assert.equal(app.document.title, 'Run · Renamed · Alhazen');
+    assert.match(app.byId('nav-experiment-title').textContent, /Renamed/);
   });
 });
 
@@ -1507,7 +1511,7 @@ describe('the Task parameters menu', () => {
     });
 });
 
-describe('the sidebar’s Run experiment and Data views', () => {
+describe('the sidebar: Experiments, and the open experiment’s pages', () => {
   const OTHER = Object.freeze({ ...PROJECT, id: 'q', title: 'Other task', slug: 'other' });
 
   /** A fake workspace_data.js: records every call it gets. */
@@ -1522,101 +1526,309 @@ describe('the sidebar’s Run experiment and Data views', () => {
     return () => plain(app.run('window.WorkspaceData.calls'));
   }
 
-  /** The selected entry's submenu buttons as [view, text, current]. */
-  function submenu(app) {
-    const views = app.byId('projects').children
-      .find((entry) => entry.querySelector('.project-views'))
-      .querySelector('.project-views');
-    return views.children.map((b) => [
-      b.dataset.view, b.textContent, b.getAttribute('aria-current'),
+  /** The open experiment's pages in the sidebar as [view, text, current]. */
+  function pages(app) {
+    return app.byId('experiment-nav').children.map((a) => [
+      a.dataset.view, a.querySelector('.nav-label').textContent, a.getAttribute('aria-current'),
     ]);
   }
 
-  /** Click the submenu button for `name`. */
-  function clickView(app, name) {
-    app.byId('projects').querySelector(`button[data-view="${name}"]`).fire('click');
-  }
-
-  it('gives the selected experiment a submenu, opening on Run experiment', async () => {
-    const app = await pageWith();
-    app.server.state.projects = [PROJECT, OTHER];
-    await app.run('refresh()');
+  /** Click the sidebar link for page `name`, as a plain left click. */
+  async function clickView(app, name) {
+    app.byId('experiment-nav').querySelector(`a[data-view="${name}"]`)
+      .fire('click', { preventDefault() {}, button: 0 });
     await settle();
-    assert.deepEqual(plain(submenu(app)), [
-      ['run', 'Run experiment', 'page'], ['data', 'Data', 'false'],
+    await settle();
+  }
+
+  it('lists the open experiment’s four pages, Run shown, each a real address', async () => {
+    const app = await pageWith();
+    assert.deepEqual(plain(pages(app)), [
+      ['general', 'General', 'false'], ['run', 'Run', 'page'], ['data', 'Data', 'false'],
+      ['history', 'History', 'false'],
     ]);
-    /* Only the selected one has it. */
-    const entries = app.byId('projects').children;
-    assert.equal(entries.length, 2);
-    assert.equal(entries[1].querySelector('.project-views'), null);
+    const links = app.byId('experiment-nav').children.map((a) => a.href);
+    assert.deepEqual(plain(links), [
+      '/?project=p&view=general', '/?project=p&view=run', '/?project=p&view=data',
+      '/?project=p&view=history',
+    ]);
+    assert.equal(app.byId('nav-experiment').hidden, false);
+    assert.equal(app.byId('nav-experiments').getAttribute('aria-current'), 'false');
     assert.equal(app.byId('workspace').hidden, false);
-    assert.equal(app.byId('data-view').hidden, true);
-    assert.equal(app.byId('breadcrumb-view').textContent, '/ Run experiment');
+    assert.equal(app.byId('breadcrumb-view').textContent, '/ Run');
   });
 
-  it('switches to Data and back, telling workspace_data.js each time', async () => {
+  it('goes to Data and Back again, telling workspace_data.js each time', async () => {
     const app = await pageWith();
     const calls = fakeData(app);
-    clickView(app, 'data');
+    await clickView(app, 'data');
+    assert.equal(app.location.search, '?project=p&view=data');
     assert.equal(app.byId('workspace').hidden, true);
     assert.equal(app.byId('data-view').hidden, false);
     assert.equal(app.byId('project-heading').hidden, false);
-    assert.equal(app.byId('breadcrumb').textContent, 'Demo task');
     assert.equal(app.byId('breadcrumb-view').textContent, '/ Data');
     assert.equal(app.byId('view-eyebrow').textContent, 'DATA');
-    assert.deepEqual(plain(submenu(app)).map(([, , current]) => current), ['false', 'page']);
-    /* The experiment's record and the page's helpers, as the contract says. */
+    assert.deepEqual(plain(pages(app)).map(([, , current]) => current),
+      ['false', 'false', 'page', 'false']);
     assert.deepEqual(calls(), [['show', 'p', 'api,error,node,token']]);
     /* A poll keeps the view as it is and does not show it again. */
     await app.run('refresh()');
     await settle();
-    assert.equal(app.byId('data-view').hidden, false);
     assert.equal(calls().length, 1);
-    clickView(app, 'run');
+    /* The browser's Back: the address changes, then the page follows it. */
+    app.back();
+    await settle();
+    await settle();
     assert.equal(app.byId('workspace').hidden, false);
     assert.equal(app.byId('data-view').hidden, true);
-    assert.equal(app.byId('view-eyebrow').textContent, 'RUN EXPERIMENT');
+    assert.equal(app.byId('view-eyebrow').textContent, 'RUN');
     assert.deepEqual(calls(), [['show', 'p', 'api,error,node,token'], ['hide']]);
   });
 
   it('says plainly when the data view’s script is not loaded', async () => {
     const app = await pageWith();
-    clickView(app, 'data');
+    await clickView(app, 'data');
     assert.equal(app.byId('data-view').hidden, false);
     assert.equal(app.byId('data-view').textContent, 'Data inspection is not available');
   });
 
-  it('remembers the view per experiment, across experiments and reloads', async () => {
+  it('hands General and History to workspace_manage.js', async () => {
+    const app = await pageWith();
+    app.run(`window.WorkspaceManage = {
+      calls: [],
+      showGeneral(target, project) { this.calls.push(['general', target.id, project.id]); },
+      showHistory(target, project) { this.calls.push(['history', target.id, project.id]); },
+      hide() { this.calls.push(['hide']); },
+      leave: async () => true,
+    }`);
+    await clickView(app, 'general');
+    assert.equal(app.byId('general-view').hidden, false);
+    assert.equal(app.byId('workspace').hidden, true);
+    await clickView(app, 'history');
+    assert.equal(app.byId('history-view').hidden, false);
+    assert.equal(app.byId('general-view').hidden, true);
+    assert.deepEqual(plain(app.run('window.WorkspaceManage.calls')), [
+      ['general', 'general-view', 'p'], ['hide'], ['history', 'history-view', 'p'],
+    ]);
+  });
+
+  it('stays put when unsaved edits are kept', async () => {
+    const app = await pageWith();
+    app.run('window.WorkspaceManage = { leave: async () => false, hide() {} }');
+    await clickView(app, 'data');
+    assert.equal(app.location.search, '?view=run');
+    assert.equal(app.byId('workspace').hidden, false);
+  });
+
+  it('opens the page an address names, and the remembered one when it names none',
+    async () => {
+      const data = await pageWith({ search: '?project=p&view=data' });
+      assert.equal(data.byId('data-view').hidden, false);
+      assert.equal(data.byId('workspace').hidden, true);
+      const remembered = await pageWith({
+        search: '?project=p', storage: { 'alhazen-workspace-view:p': 'data' },
+      });
+      assert.equal(remembered.byId('data-view').hidden, false);
+      const unknown = await pageWith({
+        search: '?project=p', storage: { 'alhazen-workspace-view:p': 'charts' },
+      });
+      assert.equal(unknown.byId('workspace').hidden, false);
+    });
+
+  it('keeps each experiment’s page when switching experiments', async () => {
     const app = await pageWith();
     app.server.state.projects = [PROJECT, OTHER];
     await app.run('refresh()');
     await settle();
     const calls = fakeData(app);
-    clickView(app, 'data');
+    await clickView(app, 'data');
     assert.equal(app.run("localStorage.getItem('alhazen-workspace-view:p')"), 'data');
-    /* The other experiment was never switched: it opens on Run experiment,
-     * and the data view is left (and told so). */
-    await app.run("chooseProject('q')");
+    await app.run("navigate('q', 'run')");
     await settle();
+    assert.equal(app.byId('nav-experiment-title').textContent, 'Other task');
     assert.equal(app.byId('workspace').hidden, false);
     assert.deepEqual(calls(), [['show', 'p', 'api,error,node,token'], ['hide']]);
-    /* Back to the first: its Data view again, for its own record. */
-    await app.run("chooseProject('p')");
+    app.back();
     await settle();
+    await settle();
+    assert.equal(app.byId('nav-experiment-title').textContent, 'Demo task');
     assert.equal(app.byId('data-view').hidden, false);
-    assert.deepEqual(calls().at(-1), ['show', 'p', 'api,error,node,token']);
-    /* A reload lands on the remembered experiment and its remembered view. */
-    const reloaded = await pageWith({
-      storage: { 'alhazen-workspace-project': 'p', 'alhazen-workspace-view:p': 'data' },
-    });
-    assert.equal(reloaded.byId('data-view').hidden, false);
-    assert.equal(reloaded.byId('workspace').hidden, true);
+  });
+});
+
+describe('who: the Run page’s Subject and Experimenter', () => {
+  const SUBJECT = { id: 's_1', experiment_id: 'p', code: '007', initials: 'HD', notes: null,
+    extra: [], status: 'active', position: 1, revision: 1, sources: [], used: false };
+  const ARCHIVED = { ...SUBJECT, id: 's_2', code: '008', status: 'archived' };
+  const PERSON = { id: 'e_1a2b', name: '<img src=x onerror=alert(1)>', initials: 'ZL',
+    notes: null, status: 'active', revision: 1 };
+  const PEOPLE = {
+    error: null, subjects: [SUBJECT, ARCHIVED], experimenters: [PERSON],
+    assigned: [{ ...PERSON, assignment_status: 'active', assigned: '2026-10-07' }],
+    export: null, files: null,
+  };
+
+  const texts = (select) => select.children.map((o) => o.textContent);
+
+  it('offers the active registered subjects and assigned experimenters, as text', async () => {
+    const app = await pageWith({ people: PEOPLE });
+    chooseMode(app, 'run');
+    assert.deepEqual(plain(texts(app.byId('subject-record'))),
+      ['Choose a subject…', 'sub-007 · HD']);
+    assert.deepEqual(plain(texts(app.byId('experimenter'))),
+      ['Choose who runs it…', '<img src=x onerror=alert(1)> (ZL)']);
+    /* A name is text: no element was made from it (the one <img> is the
+     * page's own image dialog). */
+    assert.deepEqual(plain(app.document.querySelectorAll('img').map((i) => i.id)),
+      ['large-image']);
+    assert.equal(app.byId('typed-identity').open, false);
   });
 
-  it('ignores a remembered view it does not know, and opens on Run experiment', async () => {
-    const app = await pageWith({ storage: { 'alhazen-workspace-view:p': 'charts' } });
+  it('asks for the subject, then the experimenter, before a run can start', async () => {
+    const app = await pageWith({ people: PEOPLE });
+    chooseMode(app, 'run');
+    assert.equal(app.byId('launch').disabled, true);
+    assert.match(app.byId('launch-note').textContent, /Choose the subject/);
+    app.byId('subject-record').value = 's_1';
+    app.byId('subject-record').fire('change');
+    assert.equal(app.byId('launch').disabled, true);
+    assert.match(app.byId('launch-note').textContent, /Choose the experimenter/);
+    assert.equal(app.byId('subject').disabled, true);
+    app.byId('experimenter').value = 'e_1a2b';
+    app.byId('experimenter').fire('change');
+    assert.equal(app.byId('launch').disabled, false);
+    assert.match(app.byId('launch-summary').textContent, /sub-007 · ses 1 · by <img/);
+    await launch(app);
+    const body = launched(app);
+    assert.equal(body.subject_record, 's_1');
+    assert.equal(body.experimenter, 'e_1a2b');
+    assert.equal(body.subject, '');
+    assert.equal(body.initials, '');
+  });
+
+  it('still takes a typed subject, with an optional experimenter', async () => {
+    const app = await pageWith({ people: PEOPLE });
+    chooseMode(app, 'test');
+    app.byId('typed-identity').open = true;
+    app.byId('typed-identity').fire('toggle');
+    app.byId('subject').value = 's99';
+    app.byId('initials').value = 'ab';
+    await launch(app);
+    const body = launched(app);
+    assert.equal(body.subject, 's99');
+    assert.equal(body.initials, 'AB');
+    assert.equal('subject_record' in body, false);
+    assert.equal('experimenter' in body, false);
+  });
+
+  it('sends no one for a mode that names no one', async () => {
+    const app = await pageWith({ people: PEOPLE });
+    chooseMode(app, 'run');
+    app.byId('subject-record').value = 's_1';
+    app.byId('subject-record').fire('change');
+    app.byId('experimenter').value = 'e_1a2b';
+    app.byId('experimenter').fire('change');
+    chooseMode(app, 'movie');
+    assert.equal(app.byId('experimenter-field').hidden, true);
+    await launch(app);
+    const body = launched(app);
+    assert.equal('subject_record' in body, false);
+    assert.equal('experimenter' in body, false);
+  });
+
+  it('keeps each experiment’s choice apart', async () => {
+    const OTHER = { ...PROJECT, id: 'q', title: 'Other task' };
+    const app = await pageWith({ people: PEOPLE });
+    app.server.state.projects = [PROJECT, OTHER];
+    await app.run('refresh()');
+    await settle();
+    chooseMode(app, 'run');
+    app.byId('subject-record').value = 's_1';
+    app.byId('subject-record').fire('change');
+    app.server.people = { ...PEOPLE, subjects: [], assigned: [] };
+    await app.run("navigate('q', 'run')");
+    await settle();
+    await settle();
+    assert.equal(app.byId('subject-record').value, '');
+    app.server.people = PEOPLE;
+    await app.run("navigate('p', 'run')");
+    await settle();
+    await settle();
+    assert.equal(app.byId('subject-record').value, 's_1');
+  });
+
+  it('says when the experiment’s alhazen will not record the experimenter', async () => {
+    const app = await pageWith({
+      people: PEOPLE,
+      project: { ...PROJECT, records_experimenter: false, alhazen_version: '2.10.0' },
+    });
+    chooseMode(app, 'test');
+    app.byId('experimenter').value = 'e_1a2b';
+    app.byId('experimenter').fire('change');
+    assert.match(app.byId('identity-help').textContent,
+      /\(2\.10\.0\) does not record the experimenter/);
+  });
+});
+
+describe('the Experiments page', () => {
+  const OTHER = Object.freeze({
+    ...PROJECT, id: 'q', title: 'Other task', slug: 'other', path: 'C:/projects/other',
+    archived: true,
+  });
+
+  it('is where an address without an experiment lands', async () => {
+    const app = await pageWith({ search: '' });
+    assert.equal(app.byId('home-view').hidden, false);
+    assert.equal(app.byId('project-heading').hidden, true);
+    assert.equal(app.byId('workspace').hidden, true);
+    assert.equal(app.byId('nav-experiment').hidden, true);
+    assert.equal(app.byId('nav-experiments').getAttribute('aria-current'), 'page');
+    assert.equal(app.document.title, 'Experiments · Alhazen');
+    /* Drawn by workspace_manage.js: one row per registered experiment. */
+    const rows = app.byId('home-list').querySelectorAll('.m-exp');
+    assert.equal(rows.length, 1);
+    assert.match(rows[0].textContent, /Demo task/);
+    assert.match(rows[0].textContent, /C:\/projects\/demo/);
+  });
+
+  it('lists archived experiments apart and leaves them out of the count', async () => {
+    const app = await pageWith({ search: '' });
+    app.server.state.projects = [PROJECT, OTHER];
+    await app.run('refresh()');
+    await settle();
+    const archive = app.byId('home-list').querySelector('.m-archive');
+    assert.equal(archive.hidden, false);
+    assert.match(archive.textContent, /Other task/);
+    assert.equal(app.byId('project-count').textContent, '1');
+  });
+
+  it('opens an experiment from its row, as a new address', async () => {
+    const app = await pageWith({ search: '' });
+    const run = app.byId('home-list').querySelector('a.m-action-primary');
+    assert.equal(run.href, '/?project=p&view=run');
+    run.fire('click', { preventDefault() {}, button: 0 });
+    await settle();
+    await settle();
+    assert.equal(app.location.search, '?project=p&view=run');
     assert.equal(app.byId('workspace').hidden, false);
-    assert.equal(app.byId('data-view').hidden, true);
+    assert.equal(app.byId('home-view').hidden, true);
+  });
+
+  it('says so when an address names an experiment that is not registered', async () => {
+    const app = await pageWith({ search: '?project=gone&view=run' });
+    assert.equal(app.byId('home-view').hidden, false);
+    assert.match(app.byId('error').textContent, /not registered/);
+    assert.equal(app.location.search, '?view=experiments');
+  });
+
+  it('shows a run in progress from every page, with a way back to it', async () => {
+    const run = runDetail({ status: 'running' });
+    const app = await pageWith({ run: run, search: '' });
+    assert.equal(app.byId('nav-running').hidden, false);
+    assert.match(app.byId('nav-running').textContent, /Running · Demo task/);
+    assert.equal(app.byId('nav-running').href, '/?project=p&view=run');
+    /* Leaving the Run page stopped nothing: no POST was made. */
+    assert.equal(app.server.posted.length, 0);
   });
 });
 
