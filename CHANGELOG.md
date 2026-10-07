@@ -29,6 +29,29 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Added
 
+- **Measure rig: selectable measurements** (`--mode measure --measure KEY`,
+  `--list-measurements`, `--measure-input`, `--measure-status`). Chosen
+  measurements run back to back, in a fixed order, into one report that keeps
+  the schema-1 fields and adds per-measurement states, provenance and raw
+  evidence: refresh and frame timing, viewing distance and size (tape),
+  luminance and gamma (photometer readings, fitted, never applied), colour
+  (unavailable), key timing, mouse pointer gain, reward connection (read only)
+  and juice per pulse (armed at the rig, from a balance reading), a read-only
+  look at the neural acquisition, tracker calibration and accuracy, precision
+  and gain. Packages add measurements through the `alhazen.measurements`
+  entry-point group. Without `--measure`, measure mode is unchanged.
+  docs/measure-rig.md, docs/design/rig-measurements.md.
+- **Workspace: Measure rig shows a checklist** of the measurements the
+  project's alhazen offers instead of Task parameters, refuses an empty or
+  inconsistent selection on the server, and shows the run's queue
+  (workspace_measure.js).
+- **A calibration request before trial 1** on the rig's own EyeLink or
+  TRACKPixx3: calibrate now is the default; reusing the previous calibration is
+  an explicit choice offered only for a recorded, compatible, same-subject one;
+  the choice is a new reserved `CALIBRATION_CHOICE` event, and calibrations are
+  recorded in `<data_root>/calibrations/<rig>.jsonl`.
+
+
 - **Calibration targets can be pictures, and can pulsate.** The eye
   tracker's `calibration_target` chooses the target's appearance — the
   `standard` disc (the default, drawn exactly as before), the named
@@ -58,6 +81,13 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   **Not yet checked on a rig:** that the device reports each pupil's centre
   in camera px from the image's top-left corner. docs/eye-tracker.md has
   the check, which is to look at whether the circles sit on the pupils.
+
+### Changed
+
+- **No "Attempting to measure frame rate of screen" banner.** The window no
+  longer runs PsychoPy's own frame-rate check (its result was unused); the one
+  measurement a session uses runs quietly and still refuses an unstable or
+  wrong rate.
 
 ### Removed
 
