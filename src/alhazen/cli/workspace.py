@@ -114,8 +114,16 @@ if importlib.util.find_spec("alhazen.config.calibration_images") is not None:
     from alhazen.config.models import CalibrationTargetConfig
     calibration = {"dir": str(IMAGE_DIR.resolve()), "images": list(image_names()),
                    "defaults": CalibrationTargetConfig().model_dump(mode="json")}
+measurements = None
+if importlib.util.find_spec("alhazen.modes.measure_jobs") is not None:
+    try:
+        from alhazen.modes.measure_jobs import catalog, installed_jobs
+        measurements = {"jobs": catalog(installed_jobs())}
+    except Exception as error:
+        measurements = {"error": f"{type(error).__name__}: {error}"}
 print(json.dumps({"alhazen": alhazen.__version__, "python": sys.version, "shared_rigs": shared,
-                  "psychopy": psychopy, "calibration_targets": calibration}))
+                  "psychopy": psychopy, "calibration_targets": calibration,
+                  "measurements": measurements}))
 """
 # Said wherever a project registered before the probe asked for shared rigs
 # is missing them: its record has no list, which is not the same as an empty
@@ -232,6 +240,12 @@ def probe_interpreter(python: str, project_path: str) -> dict[str, Any]:
             # an alhazen from before the choice (and for a record registered
             # before the probe asked), which the page then does not offer.
             "calibration_targets": _calibration_offer(report.get("calibration_targets")),
+            # The measurements its alhazen and installed packages offer for
+            # Measure rig, in run order; None for an alhazen from before they
+            # were selectable (the page then shows the fixed list it runs).
+            # A provider that failed to load is recorded, not fatal: the
+            # project can still run everything else.
+            **_measurement_offer(report.get("measurements")),
         }
     except (IndexError, ValueError, KeyError, TypeError) as exc:
         raise ValueError(unexpected) from exc
@@ -251,6 +265,130 @@ def _calibration_offer(reported: Any) -> dict[str, Any] | None:
         "images": names,
         "defaults": dict(reported["defaults"]),
     }
+
+
+# What a measurement key may be (alhazen.modes.measure_jobs.KEY_CHARS): it
+# becomes a command-line value, so nothing else from a reply gets through.
+MEASUREMENT_KEY = re.compile(r"[a-z0-9-]+(\.[a-z0-9-]+)+")
+# A selection longer than this is not a selection anyone made by hand.
+MAX_MEASUREMENTS = 64
+
+
+def _measurement_offer(reported: Any) -> dict[str, Any]:
+    """The probe's measurement catalog, checked: plain keys, groups and
+    titles as text, prerequisites that name listed keys. ``measurements`` is
+    None for an alhazen without selectable measurements; a provider that
+    could not load is kept as ``measurements_error`` beside an empty list."""
+    if reported is None:
+        return {"measurements": None, "measurements_error": None}
+    if "error" in reported:
+        return {"measurements": [], "measurements_error": str(reported["error"])}
+    jobs: list[dict[str, Any]] = []
+    for entry in reported["jobs"]:
+        key = str(entry["key"])
+        if not MEASUREMENT_KEY.fullmatch(key):
+            raise ValueError(f"unexpected measurement key {key!r}")
+        jobs.append(
+            {
+                "key": key,
+                "group": str(entry["group"]),
+                "title": str(entry["title"]),
+                "description": str(entry.get("description", "")),
+                "order": int(entry["order"]),
+                "needs": [str(n) for n in entry.get("needs", [])],
+                "requires": [str(r) for r in entry.get("requires", [])],
+                "provider": str(entry.get("provider", "alhazen")),
+                "inputs": [str(i) for i in entry.get("inputs", [])],
+                # "required" / "optional" / "none": whether the measurement is
+                # of a person or animal in the chair (an older catalog: none).
+                "subject": str(entry.get("subject", "none")),
+            }
+        )
+    keys = {job["key"] for job in jobs}
+    for job in jobs:
+        if set(job["requires"]) - keys:
+            raise ValueError(f"measurement {job['key']} requires one that is not listed")
+    return {"measurements": jobs, "measurements_error": None}
+
+
+def check_measurements(project: dict[str, Any], mode: str, selected: list[str] | None) -> None:
+    """Refuse a measurement selection the project's run.py would refuse,
+    before a run record exists — the server's check, whatever the page sent.
+
+    Only Measure rig takes measurements. A project whose alhazen offers them
+    must name at least one: an empty selection is not "everything". Each
+    must be one its alhazen listed, once, with its prerequisites selected
+    too. A project whose alhazen predates them takes none.
+    """
+    offered = project.get("measurements")
+    if mode != Mode.MEASURE.value:
+        if selected:
+            raise ValueError("Only Measure rig takes a selection of measurements")
+        return
+    if offered is None:
+        if selected:
+            raise ValueError(
+                f"{project['name']}'s alhazen runs Measure rig's fixed list and cannot choose "
+                "measurements; update its alhazen, then open Project settings and save"
+            )
+        return
+    if not selected:
+        raise ValueError("Choose at least one measurement for Measure rig")
+    if len(selected) > MAX_MEASUREMENTS:
+        raise ValueError("Too many measurements selected")
+    by_key = {job["key"]: job for job in offered}
+    seen: set[str] = set()
+    for key in selected:
+        if key in seen:
+            raise ValueError(f"The measurement {key} is selected twice")
+        if key not in by_key:
+            raise ValueError(f"{key} is not a measurement {project['name']}'s alhazen offers")
+        seen.add(key)
+    for key in selected:
+        missing = [need for need in by_key[key]["requires"] if need not in seen]
+        if missing:
+            titles = ", ".join(by_key[need]["title"] for need in missing)
+            raise ValueError(f"{by_key[key]['title']} needs {titles} in the same run")
+
+
+def measurement_subject(project: dict[str, Any], request: Launch) -> str | None:
+    """The subject ID a Measure rig launch passes on (--sub), or None.
+
+    Only measurements of the person or animal in the chair take one (the
+    tracker's calibration and accuracy, a vergence check): those are refused
+    without it, since a gaze measurement nobody can attribute is not one.
+    Every other measurement is of the machine and takes no subject, even
+    when the form holds one."""
+    if request.mode != Mode.MEASURE.value or not request.measurements:
+        return None
+    by_key = {job["key"]: job for job in project.get("measurements") or []}
+    needs = [
+        by_key[k]["title"]
+        for k in request.measurements
+        if by_key.get(k, {}).get("subject") == "required"
+    ]
+    wants = needs or [
+        by_key[k]["title"]
+        for k in request.measurements
+        if by_key.get(k, {}).get("subject") == "optional"
+    ]
+    subject = request.subject.strip()
+    if needs and not subject:
+        raise ValueError(f"{', '.join(needs)} measure the subject in the chair: give a subject ID")
+    return subject if wants and subject else None
+
+
+def measurement_status(run_dir: Path) -> dict[str, Any] | None:
+    """A Measure rig run's queue, as its child last wrote it; None when there
+    is none (yet), or the file is not one this can read."""
+    path = run_dir / "measure-status.json"
+    try:
+        if not path.is_file() or path.stat().st_size > 1_000_000:
+            return None
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
 
 
 def calibration_picture(project: dict[str, Any], name: str) -> Path:
@@ -829,6 +967,9 @@ class Launch(BaseModel):
     # The calibration target for this run, when the page's choice differs
     # from the rig's (CalibrationChoice); None runs the rig's own.
     calibration_target: CalibrationChoice | None = None
+    # The measurements Measure rig runs, by key (check_measurements); None
+    # for every other mode, and for a project whose alhazen predates them.
+    measurements: list[str] | None = None
 
 
 # Every flag `_mode_command` can emit, whichever mode. An extra argument
@@ -869,6 +1010,8 @@ MODE_FLAGS = frozenset(
         "--calibration-target",
         "--calibration-images",
         "--calibration-motion",
+        "--measure",
+        "--measure-status",
     }
 )
 # The same for a standalone preview module: the flags `_script_command`
@@ -1054,6 +1197,7 @@ def _mode_command(
     no_browser: str = "--no-live-monitor-browser",
     task: str | None = None,
     reserved: frozenset[str] = MODE_FLAGS,
+    measure_subject: str | None = None,
 ) -> list[str]:
     """run.py's arguments for one of the six modes: the launcher's flags, then the extras.
 
@@ -1115,6 +1259,12 @@ def _mode_command(
             command += ["--clip", clip]
     if mode is Mode.DEMO:
         command += ["--screenshots", str(output)]
+    if mode is Mode.MEASURE and request.measurements:
+        for key in request.measurements:
+            command += ["--measure", key]
+        command += ["--measure-status", str(run_dir / "measure-status.json")]
+        if measure_subject is not None:
+            command += ["--sub", measure_subject]
     command += _calibration_arguments(request.calibration_target)
     # Last, after every flag of the launcher's own, where a typed command
     # puts them: run.py takes what is its own (a run.py that reads its own
@@ -1488,6 +1638,7 @@ class Workspace:
             if refusal is not None:
                 raise ValueError(refusal)
         self._check_calibration_choice(project, request, checked)
+        check_measurements(project, request.mode, request.measurements)
         task = self._task_for(project, request)
         base = [project["python"], "-u"]
         if request.mode in {m.value for m in Mode}:
@@ -1514,6 +1665,7 @@ class Workspace:
                 no_browser_flag(project.get("alhazen_version")),
                 task=task,
                 reserved=reserved,
+                measure_subject=measurement_subject(project, request),
             )
         # A standalone script reads --rig with its own argparse and hands it
         # to load_rig, which takes a file: a shared rig goes as the file the
@@ -1797,6 +1949,9 @@ class Workspace:
                 # from the console. Read off the command, which is what the
                 # child was actually told.
                 "seed": seed_argument(command),
+                # The measurements a Measure rig run was asked for, in run
+                # order as the page listed them; None for any other launch.
+                "measurements": list(request.measurements) if request.measurements else None,
             }
             self.runs[key] = run
             self._save_run(run)
@@ -1957,4 +2112,10 @@ class Workspace:
         # The existing session monitor retains its own authentication and pause
         # policy; offer its URL rather than reimplementing those controls.
         urls = re.findall(r"http://127\.0\.0\.1:\d+/\?token=[A-Za-z0-9_-]+", tail)
-        return {**run, "log": tail, "artifacts": artifacts, "monitor": urls[-1] if urls else None}
+        return {
+            **run,
+            "log": tail,
+            "artifacts": artifacts,
+            "monitor": urls[-1] if urls else None,
+            "measurement": measurement_status(directory),
+        }
