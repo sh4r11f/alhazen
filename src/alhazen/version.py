@@ -47,4 +47,14 @@ def experiment_distribution_version(name: str) -> str:
     return metadata.version(name)
 
 
+def dependency_version(name: str) -> str | None:
+    """The installed version of a library a run used (PsychoPy), for a
+    report's provenance; None when it is not installed. Here with every other
+    version lookup (tests/unit/test_distribution_identity.py)."""
+    try:
+        return metadata.version(name)
+    except metadata.PackageNotFoundError:
+        return None
+
+
 __version__ = get_version()

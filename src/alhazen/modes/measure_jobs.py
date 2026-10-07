@@ -534,15 +534,11 @@ def provenance(
     """Who measured what, with which code, against which rig file."""
     rig_file = Path(rig_path)
     digest = hashlib.sha256(rig_file.read_bytes()).hexdigest() if rig_file.is_file() else None
-    from alhazen.version import get_version
+    from alhazen.version import dependency_version, get_version
 
-    try:
-        psychopy_version: str | None = metadata.version("psychopy")
-    except metadata.PackageNotFoundError:
-        psychopy_version = None
     return {
         "alhazen": get_version(),
-        "psychopy": psychopy_version,
+        "psychopy": dependency_version("psychopy"),
         "python": sys.version.split()[0],
         "platform": platform.platform(),
         "host": socket.gethostname(),
