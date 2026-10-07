@@ -27,10 +27,14 @@ that conversion, exactly as it does for gaze.
 from __future__ import annotations
 
 import logging
+import time
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
 
+from alhazen.config.models import CalibrationTargetConfig
+from alhazen.devices.eyetracker.calibration_targets import TARGET_FOREGROUND, CalibrationTargets
 from alhazen.display.screen import Screen
 
 log = logging.getLogger(__name__)
@@ -245,17 +249,29 @@ def make_calibration_graphics(
     tracker: Any,
     window: Any,
     screen: Screen,
-    target_size_px: int = 24,
-    foreground: tuple[float, float, float] = (-1.0, -1.0, -1.0),
+    targets: CalibrationTargets | None = None,
+    now: Callable[[], float] = time.monotonic,
+    foreground: tuple[float, float, float] = TARGET_FOREGROUND,
 ) -> Any:
     """Build the object pylink calibrates through, for this window.
 
     Returns an instance of a ``pylink.EyeLinkCustomDisplay`` subclass defined
     here (the class body needs pylink, so it cannot exist at import time).
     Register it with ``pylink.openGraphicsEx(...)`` before calibrating.
+
+    ``targets`` is what the calibration target looks like and how it moves
+    (calibration_targets.py); None draws the standard target, still. ``now``
+    is the clock a pulsating target's size is read from — the session's.
+    The Host PC decides where and when each target appears, through
+    ``draw_cal_target`` and ``erase_cal_target``; between those, pylink polls
+    ``get_input_key`` continuously, and a pulsating target is redrawn there,
+    as SR Research's own animated-target example does. A still target is
+    drawn once per ``draw_cal_target``, exactly as before the choice existed.
     """
     import pylink
     from psychopy import event, visual
+
+    drawn = targets if targets is not None else CalibrationTargets(CalibrationTargetConfig())
 
     class AlhazenCalibrationGraphics(pylink.EyeLinkCustomDisplay):
         """Adapter: pylink's callbacks in, this window's drawing out."""
@@ -265,23 +281,9 @@ def make_calibration_graphics(
             self._window = window
             self._screen = screen
             self._tracker = tracker
-            background = window.color
-            # The standard EyeLink target: a disc with a hole, so the subject
-            # has an unambiguous point to look at rather than a blob's centre.
-            self._target_outer = visual.Circle(
-                window,
-                radius=target_size_px / 2.0,
-                units="pix",
-                fillColor=foreground,
-                lineColor=foreground,
-            )
-            self._target_inner = visual.Circle(
-                window,
-                radius=target_size_px / 6.0,
-                units="pix",
-                fillColor=background,
-                lineColor=background,
-            )
+            # The target (standard disc with a hole, or a picture; still or
+            # pulsating), every stimulus made now, before any target is up.
+            self._target = drawn.presenter(visual, window, screen, now)
             self._title = visual.TextStim(
                 window, text="", units="pix", height=20, color=foreground, pos=(0, 0)
             )
@@ -295,28 +297,34 @@ def make_calibration_graphics(
 
         # -- calibration display -------------------------------------------
 
+        # Every call that clears the screen takes the target down too, so a
+        # pulsating one is never redrawn over what comes next (the camera
+        # image, the next target, the session).
         def setup_cal_display(self) -> None:
+            self._target.hide()
             self._window.flip()
 
         def clear_cal_display(self) -> None:
+            self._target.hide()
             self._window.flip()
 
         def exit_cal_display(self) -> None:
+            self._target.hide()
             self._window.flip()
 
         def record_abort_hide(self) -> None:
             return  # nothing of ours stays on screen between trials
 
         def erase_cal_target(self) -> None:
+            self._target.hide()
             self._window.flip()
 
         def draw_cal_target(self, x: float, y: float) -> None:
             # pylink gives the target in screen px; the window draws centered.
-            pos = self._screen.screen_to_centered(x, y)
-            self._target_outer.pos = pos
-            self._target_inner.pos = pos
-            self._target_outer.draw()
-            self._target_inner.draw()
+            # A new position is a new target (the next picture, a fresh pulse);
+            # the same one again while it is up stays the same target.
+            self._target.show(self._screen.screen_to_centered(x, y))
+            self._target.draw()
             self._window.flip()
 
         def alert_printf(self, msg: str) -> None:
@@ -327,6 +335,7 @@ def make_calibration_graphics(
         # -- camera image ---------------------------------------------------
 
         def setup_image_display(self, width: int, height: int) -> int:
+            self._target.hide()  # the camera image replaces any target
             self._image_size = (width, height)
             return 1
 
@@ -392,6 +401,12 @@ def make_calibration_graphics(
         # -- operator input --------------------------------------------------
 
         def get_input_key(self) -> Any:
+            # pylink polls this continuously while a target is up, so this is
+            # where a pulsating target gets its next frame; the flip paces the
+            # poll to the display. A still target is not redrawn here.
+            if self._target.animated:
+                self._target.draw()
+                self._window.flip()
             keys = []
             for key_name, modifiers in event.getKeys(modifiers=True):
                 code, modifier = resolve_key(key_name, modifiers, pylink)

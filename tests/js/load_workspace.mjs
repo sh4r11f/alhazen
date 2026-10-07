@@ -1,7 +1,8 @@
 /* Load the real experiment-workspace scripts into a fake browser page and
  * hand their top-level bindings to a test.
  *
- * workspace_parameters.js and then workspace.js run unmodified — the order
+ * workspace_parameters.js, workspace_calibration.js and then workspace.js
+ * run unmodified — the order
  * workspace.html loads them — in one node:vm context, except that the
  * trailing `poll();` is cut so the page does not start its 1.5 s polling
  * loop on its own. A test drives refresh(), refreshRun() and the form's
@@ -27,8 +28,10 @@ import { FakeDocument } from './fake_dom.mjs';
 const ASSETS = new URL('../../src/alhazen/cli/assets/', import.meta.url);
 const PAGE_HTML = readFileSync(new URL('workspace.html', ASSETS), 'utf8');
 const PARAMETERS_JS = fileURLToPath(new URL('workspace_parameters.js', ASSETS));
+const CALIBRATION_JS = fileURLToPath(new URL('workspace_calibration.js', ASSETS));
 const WORKSPACE_JS = fileURLToPath(new URL('workspace.js', ASSETS));
 const PARAMETERS_SOURCE = readFileSync(PARAMETERS_JS, 'utf8');
+const CALIBRATION_SOURCE = readFileSync(CALIBRATION_JS, 'utf8');
 const WORKSPACE_SOURCE = readFileSync(WORKSPACE_JS, 'utf8');
 
 /* The script must end by starting its poll loop; the tests cut exactly that
@@ -234,6 +237,7 @@ export function loadWorkspace(options = {}) {
   /* Any error at load propagates: a script that cannot start fails every
    * test, with the asset's own line numbers in the stack. */
   vm.runInContext(PARAMETERS_SOURCE, context, { filename: PARAMETERS_JS });
+  vm.runInContext(CALIBRATION_SOURCE, context, { filename: CALIBRATION_JS });
   vm.runInContext(WORKSPACE_WITHOUT_POLL, context, { filename: WORKSPACE_JS });
   return {
     document: document,

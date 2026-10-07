@@ -40,6 +40,11 @@ today, and must go on doing so without growing methods it has no use for.
   calls from inside its blocking ``calibrate()`` with ``(stage, detail)`` —
   ``("calibrating", "target 3 of 9 · eyes: both tracked")`` — so the
   live monitor can follow a procedure the render thread is busy running.
+- ``set_calibration_rng(rng: numpy.random.Generator)``: the generator a
+  random calibration picture order is dealt from — the session seed's
+  ``calibration_target`` stream, handed over by the session builder before
+  the tracker connects (calibration_targets.py). The EyeLink and TRACKPixx3
+  backends offer it; a tracker that draws no target need not.
 
 Three more serve dropout detection (docs/eye-tracker.md, "When the tracker
 drops out"), offered by the backends that stream real samples — the EyeLink
@@ -106,6 +111,23 @@ class CalibrationTarget:
 
 
 @dataclass(frozen=True)
+class TargetShown:
+    """One calibration target as it was shown: where, which picture, when.
+
+    ``ordinal`` counts every target shown by this tracker in the session,
+    from 1, across calibrations — with the session seed it is what makes a
+    random picture's choice recoverable (the ``calibration_target`` stream is
+    drawn once per picture shown). ``image`` is None for the standard target.
+    ``target_px`` is centered px, y up, the frame the target was drawn in.
+    """
+
+    ordinal: int
+    target_px: tuple[float, float]
+    image: str | None
+    t: float  # session clock, when it appeared
+
+
+@dataclass(frozen=True)
 class CalibrationResult:
     """What a backend can say about the calibration it just ran.
 
@@ -130,6 +152,11 @@ class CalibrationResult:
     # Each target's fitted gaze per eye, for a backend that can compute it
     # (the TRACKPixx3); empty otherwise, and the panel is then a stat tile.
     targets: tuple[CalibrationTarget, ...] = ()
+    # What the target looked like (CalibrationTargetConfig.describe()), and
+    # every target shown during the procedure, in order. Empty for a backend
+    # that draws none (the stand-ins).
+    target_style: str = ""
+    shown: tuple[TargetShown, ...] = ()
 
     @property
     def verdict(self) -> str:

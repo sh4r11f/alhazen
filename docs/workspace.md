@@ -134,6 +134,24 @@ the light theme; the dark theme is unchanged.
    error banner. Every other mode launches on a development rig as before.
    A project registered before shared rigs were listed shows none, and says
    so: save its **Project settings** to register it again.
+
+   For a rig with an EyeLink or a TRACKPixx3, the section ends with the
+   **Calibration target** ([Eye tracker](eye-tracker.md#the-calibration-target)):
+   *Looks like* Standard, Chosen pictures or Random pictures, *Motion* Still
+   or Pulsating, a grid of the pictures the project's alhazen ships (the
+   chosen ones numbered in the order they will be shown; for random ones,
+   none picked means all), and a preview on a mid-grey patch at the rig's
+   pixel size, pulsing at the configured rate (still when the browser asks
+   for reduced motion). It starts from the rig's own setting and says when
+   it has been changed for this run; a launch sends only what differs, as
+   `--calibration-target`, `--calibration-images` and
+   `--calibration-motion`, in run and test (not with Mouse as gaze: the
+   other modes do not calibrate the rig's tracker, and the controls say so).
+   Chosen pictures with none picked holds the launch back. A project whose
+   alhazen predates the choice is told to update it and register again.
+   The preview shows the look and the motion, nothing about calibration
+   accuracy.
+
 3. **Task parameters**, below the rig, starts with one menu that chooses the
    parameter file **and the task it runs**; there is no separate Task menu, so
    the two can never be paired wrongly (the owner's request, 2026-10-06).

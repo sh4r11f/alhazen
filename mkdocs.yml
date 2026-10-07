@@ -58,4 +58,5 @@ nav:
   - Versioning and releases: versioning.md
   - Design proposals:
       - Precomputed sessions: design/precomputed-sessions.md
+      - Calibration targets: design/calibration-targets.md
   - API reference: reference.md

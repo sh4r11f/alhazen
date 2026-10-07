@@ -111,10 +111,25 @@ _NOT_MOUSE = {
 }
 
 
-def flag_refusal(mode: Mode, *, headless: bool = False, mouse: bool = False) -> str | None:
+# Why each of the other four modes cannot take a calibration-target choice.
+_NOT_CALIBRATING = {
+    Mode.MEASURE: "measure mode never calibrates",
+    Mode.DEMO: "demo mode never calibrates",
+    Mode.MOVIE: "movie mode never calibrates",
+    Mode.SIMULATE: "simulate mode stands the tracker down, so nothing is calibrated",
+}
+CALIBRATION_FLAGS = "--calibration-target/--calibration-images/--calibration-motion"
+
+
+def flag_refusal(
+    mode: Mode, *, headless: bool = False, mouse: bool = False, calibration: bool = False
+) -> str | None:
     """Why ``mode`` cannot honour the flags asked for — or None when it can.
 
     ``--headless`` belongs to simulate alone and ``--mouse`` to test alone.
+    ``calibration`` is any of the calibration-target flags, which choose what
+    the rig's own tracker draws when it calibrates: run and test only, and
+    not with ``--mouse``, which takes that tracker away.
     The check is one function, called by the command line before anything
     loads and by ``build_mode_session`` before anything is wired, so a flag
     a mode cannot honour is refused with the reason and never silently
@@ -125,6 +140,16 @@ def flag_refusal(mode: Mode, *, headless: bool = False, mouse: bool = False) -> 
         return f"--headless: only simulate mode runs without a window — {_NOT_HEADLESS[mode]}"
     if mouse and mode is not Mode.TEST:
         return f"--mouse: only test mode takes the mouse cursor as gaze — {_NOT_MOUSE[mode]}"
+    if calibration and mode in _NOT_CALIBRATING:
+        return (
+            f"{CALIBRATION_FLAGS}: only run and test calibrate the rig's eye tracker — "
+            f"{_NOT_CALIBRATING[mode]}"
+        )
+    if calibration and mouse:
+        return (
+            f"{CALIBRATION_FLAGS}: --mouse replaces the rig's eye tracker with the mouse, which "
+            f"has no calibration to draw a target in"
+        )
     return None
 
 

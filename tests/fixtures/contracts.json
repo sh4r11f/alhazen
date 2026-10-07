@@ -13,7 +13,8 @@
   "rng_streams": [
     "scheduler",
     "session",
-    "task"
+    "task",
+    "calibration_target"
   ],
   "reserved_events": [
     "CALIBRATION",

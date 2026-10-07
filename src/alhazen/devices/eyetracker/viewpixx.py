@@ -77,6 +77,7 @@ import numpy as np
 from alhazen.config.models import IRIS_SIZE_RANGE_PX, EyeTrackerConfig
 from alhazen.core.clock import Clock
 from alhazen.core.commands import DEFAULT_KEYMAP, Command
+from alhazen.devices.eyetracker.calibration_targets import CalibrationTargets, TargetPresenter
 from alhazen.devices.eyetracker.guide import GUIDE_TITLE, calibration_guide
 from alhazen.devices.eyetracker.procedures import ABORT_KEY, ACCEPT_KEYS, REDO_KEY
 from alhazen.devices.eyetracker.protocol import (
@@ -638,6 +639,16 @@ def read_keys(event: Any, key_list: Sequence[str], wait_s: float) -> list[str] |
     return event.waitKeys(maxWait=wait_s, keyList=list(key_list), clearEvents=False)
 
 
+def poll_keys(event: Any, key_list: Sequence[str]) -> list[str] | None:
+    """Keys from ``key_list`` pressed since the last read, without waiting;
+    None when none were. Like :func:`read_keys`, it leaves every other key in
+    PsychoPy's buffer. Not ``read_keys(..., 0)``: PsychoPy's waitKeys checks
+    its timer before it reads the keyboard, so with no time to wait it never
+    reads it at all."""
+    keys = event.getKeys(keyList=list(key_list))
+    return [str(key) for key in keys] or None
+
+
 # How old the newest gaze report may be before get_gaze() calls it "no
 # verifiable position". A reader thread that has fallen this far behind is a
 # stalled USB call, and a position from before the stall is not this frame's.
@@ -1064,8 +1075,14 @@ class ViewPixxTracker:
         clock: Clock,
         *,
         background_gaze: bool = True,
+        calibration_rng: np.random.Generator | None = None,
     ) -> None:
         self._cfg = cfg
+        # What the calibration target looks like, the pictures it may show
+        # and the record of every target shown (calibration_targets.py).
+        # ``calibration_rng`` is the session seed's calibration_target stream,
+        # read only by a random picture order.
+        self._targets = CalibrationTargets(cfg.calibration_target, calibration_rng)
         # None is legitimate: check-rig constructs this class to exercise the
         # real open()/close() path without opening a subject window. Only
         # calibrate() needs the window.
@@ -1166,6 +1183,13 @@ class ViewPixxTracker:
         """
         self._screen = screen
         self._clock = clock
+        # The calibration target is checked first — that it fits the screen
+        # at the outermost point, and every picture it may show decoded —
+        # before the device is touched, so a bad choice is refused at session
+        # build and never in front of a subject.
+        self._targets.prepare(screen, self._cfg.calibration_area)
+        if not self._cfg.calibration_target.is_default:
+            log.info("TRACKPixx3 calibration target: %s", self._targets.style)
         if self._cfg.led_intensity is not None:
             # Only when the rig asked. Left alone, the illuminator keeps
             # whatever VPixx's own camera-setup tool left on the device —
@@ -1237,6 +1261,12 @@ class ViewPixxTracker:
             self._warned_uncalibrated = False
         return self._calibrated
 
+    def set_calibration_rng(self, rng: np.random.Generator) -> None:
+        """Optional capability (protocol.py): the random generator a random
+        calibration picture order is dealt from — the session seed's
+        ``calibration_target`` stream, handed over by the session builder."""
+        self._targets.use_rng(rng)
+
     def set_progress_hook(self, hook: ProgressHook | None) -> None:
         """Optional capability (protocol.py): where the calibration walk says
         which target it is on. None switches the reports off."""
@@ -1273,6 +1303,7 @@ class ViewPixxTracker:
         # Everything buffered so far is saved BEFORE the device's calibration
         # routine re-points the ring (recording_armed): it is the only copy.
         self._drain_buffer()
+        self._targets.begin_procedure()
         reader = self._reader
         if reader is not None:
             reader.pause()
@@ -1435,6 +1466,32 @@ class ViewPixxTracker:
             if getattr(window, "_closed", False):
                 return False
 
+    def _wait_for_keys(
+        self, event: Any, window: Any, target: TargetPresenter, status_line: Any
+    ) -> list[str] | None:
+        """One refresh's wait for the experimenter's keys, between two reads
+        of the eye status.
+
+        A still target waits as it always has: one ``read_keys`` of
+        ``STATUS_REFRESH_S``, the target left as drawn. A pulsating one is
+        redrawn every frame meanwhile — keys polled without waiting, then the
+        target and status line drawn at the current size and flipped, the
+        flip pacing the loop — until the same refresh interval has passed on
+        the session clock or a key arrives. Either way the eye status, the
+        auto-advance count and the live-monitor report keep their one-per-
+        refresh rhythm, so what decides when a target is accepted is unchanged.
+        """
+        if not target.animated:
+            return read_keys(event, WALK_KEYS, STATUS_REFRESH_S)
+        deadline = self._clock.now() + STATUS_REFRESH_S
+        while True:
+            keys = poll_keys(event, WALK_KEYS)
+            if keys or getattr(window, "_closed", False) or self._clock.now() >= deadline:
+                return keys
+            target.draw()
+            status_line.draw()
+            window.flip()
+
     def _walk_targets(self, event: Any, visual: Any) -> CalibrationResult:
         """The guide and the target walk; calibrate() owns the recording around it."""
         assert self._display is not None  # calibrate() checked
@@ -1442,15 +1499,10 @@ class ViewPixxTracker:
         window = self._display.window
         targets = calibration_targets(cfg.calibration_type, self._screen, cfg.calibration_area)
         n = len(targets)
-        # The standard eye-tracking target: a disc with a hole, so the subject
-        # has an unambiguous point to look at rather than a blob's centre.
-        foreground = (-1.0, -1.0, -1.0)
-        outer = visual.Circle(
-            window, radius=12, units="pix", fillColor=foreground, lineColor=foreground
-        )
-        inner = visual.Circle(
-            window, radius=4, units="pix", fillColor=window.color, lineColor=window.color
-        )
+        # The target: the standard disc with a hole, or a picture; still or
+        # pulsating (calibration_targets.py). Every stimulus is made here,
+        # before the guide, so the walk only moves and resizes them.
+        target = self._targets.presenter(visual, window, self._screen, self._clock.now)
         # The experimenter's only view of the camera: the TRACKPixx3 has no
         # Host PC, and VPixx's own viewer (LabMaestro) must not run alongside
         # a session — it shares the device server, and did hang with one.
@@ -1480,6 +1532,8 @@ class ViewPixxTracker:
                 note=note,
                 aborted=aborted,
                 targets=fitted,
+                target_style=self._targets.style,
+                shown=self._targets.shown_since_begin(),
             )
 
         if not self._show_guide(event, n):
@@ -1495,7 +1549,11 @@ class ViewPixxTracker:
         raw_by_target: dict[int, list[float] | None] = {}
         while index < n:
             x, y = targets[index]
-            outer.pos = inner.pos = (x, y)
+            # A new target only when the walk moved to another point (on, or
+            # back with BACKSPACE). Staying on this one — a target refused
+            # with no eye in view, a redo at the first — keeps the target on
+            # screen as it is: the same picture, its pulse uninterrupted.
+            target.show((x, y))
             shown_at = self._clock.now()
             steady = 0  # auto mode: consecutive refreshes with the configured eye in view
             pressed: str | None = None
@@ -1504,8 +1562,7 @@ class ViewPixxTracker:
             while pressed is None:
                 eyes, status = self._eye_status()
                 status_line.text = status
-                outer.draw()
-                inner.draw()
+                target.draw()
                 status_line.draw()
                 window.flip()
                 if not shown:
@@ -1518,7 +1575,7 @@ class ViewPixxTracker:
                     event.clearEvents("keyboard")
                     shown = True
                 self._report("calibrating", f"target {index + 1} of {n} · {status}")
-                keys = read_keys(event, WALK_KEYS, STATUS_REFRESH_S)
+                keys = self._wait_for_keys(event, window, target, status_line)
                 if keys:
                     pressed = keys[0]
                 elif getattr(window, "_closed", False):
@@ -1563,6 +1620,7 @@ class ViewPixxTracker:
             raw_by_target[index] = self._sample_calibration_target(x, y)
             index += 1
 
+        target.hide()
         with self._device_lock:
             self._tracker.finishCalibration()
         calibrated = self._read_calibration_state()

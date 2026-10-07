@@ -140,6 +140,11 @@ alhazen = [
   # The workspace's own font (Nunito, SIL OFL) and its licence.
   "cli/assets/fonts/*",
   "rigs/*",
+  # The calibration pictures (PNGs, their manifest and its README), read at
+  # runtime by alhazen.config.calibration_images: an installed rig calibrates
+  # with them offline. tests/unit/test_calibration_targets.py checks a built
+  # wheel carries every file the manifest names.
+  "calibration_images/*",
 ]
 
 [project.urls]

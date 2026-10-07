@@ -140,6 +140,13 @@ const rigDevelopment = {};
 /* The run most recently started from this page, and the run whose monitor
  * tab has already been brought up on its own: the tab is switched once, for
  * the reader who is waiting on the run they launched, and never again. */
+/* The Rig section's calibration-target choice (renderCalibration): the
+ * rig's own setting, the page's choice over it, the project's offer (its
+ * pictures and the setting's defaults) and the monitor, for the preview's
+ * size. Null while the selected rig has no tracker that draws a target. */
+let calibration = null;
+/* The preview's animation frame, while one is scheduled. */
+let calibrationFrame = null;
 let launchedRun = null;
 let monitorShown = null;
 /* The URL loaded in the monitor frame, '' when it shows about:blank. The
@@ -640,7 +647,8 @@ function updateLaunch() {
     || launching
     || waitingForParameters
     || !p?.available
-    || !!p?.tasks_error;
+    || !!p?.tasks_error
+    || !!calibrationProblem();
   if (launching) $('launch').textContent = 'Starting…';
   else if (state.active) $('launch').textContent = 'A run is in progress';
   else $('launch').textContent = `▶ ${label($('mode').value) || 'Start run'}`;
@@ -659,6 +667,8 @@ function updateLaunch() {
       + p.tasks_error;
   } else if (state.active) {
     note = 'One run at a time keeps the rig available to its active experiment.';
+  } else if (calibrationProblem()) {
+    note = calibrationProblem();
   } else if (development) {
     // Before the PsychoPy warning: a launch refused for its rig never opens
     // a window, so the rig is the thing to change first.
@@ -676,7 +686,10 @@ function updateLaunch() {
   // Styled as a warning (workspace.css .launch-warning) only while the note
   // is the development-rig or the PsychoPy one; every other note is plain
   // help text.
-  $('launch-note').classList.toggle('launch-warning', note === development || note === psychopy);
+  $('launch-note').classList.toggle(
+    'launch-warning',
+    note === development || note === psychopy || note === calibrationProblem(),
+  );
 }
 
 /**
@@ -729,6 +742,8 @@ function modeChanged() {
   $('mouse-field').hidden = mode !== 'test';
   $('windowed-field').hidden = !['test', 'run', 'demo', 'measure', 'simulate'].includes(mode);
   $('movie-options').hidden = mode !== 'movie';
+  // The calibration target applies to run and test only (renderCalibration).
+  if (calibration) renderCalibration();
   // Extra arguments are offered for every mode and script; only the words
   // change. A script's help lists the flags it declares, less the ones the
   // launcher sets itself, which are not offered for retyping. A mode's says
@@ -945,6 +960,7 @@ async function loadRig() {
   const development = rig.real_data === false;
   rigDevelopment[`${p.id}:${value}`] = development ? name : null;
   // '?' rather than 'undefined' for a field the YAML leaves to its default.
+  setCalibrationRig(p, rig);
   rigFacts([
     ['Screen', [`${m.width_px ?? '?'} × ${m.height_px ?? '?'} px`, `${m.refresh_rate_hz ?? '?'} Hz`]],
     ['Size', [`${m.width_cm ?? '?'} cm wide`, `${m.distance_cm ?? '?'} cm away`]],
@@ -958,6 +974,263 @@ async function loadRig() {
   ]);
   // The footer's warning depends on the backend just learned.
   updateLaunch();
+}
+
+/* ------------------------------------------------------------------ */
+/* Calibration target                                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Take the selected rig's calibration target as the starting choice. Only a
+ * rig whose tracker draws a target (an EyeLink or a TRACKPixx3) gets the
+ * controls, and only for a project whose alhazen offers the choice — one
+ * from before it is told so instead of being offered flags its run.py would
+ * refuse (workspace.py _check_calibration_choice says the same).
+ */
+function setCalibrationRig(p, rig) {
+  if (!CalibrationChoice.drawsTarget(rig)) {
+    calibration = null;
+  } else {
+    const offer = p.calibration_targets || null;
+    const setting = offer ? CalibrationChoice.fromRig(rig, offer.defaults) : null;
+    calibration = {
+      offer,
+      monitor: rig.monitor || {},
+      backend: rig.devices.eyetracker.backend,
+      rig: setting,
+      current: setting ? structuredCloneOf(setting) : null,
+    };
+  }
+  renderCalibration();
+}
+
+function structuredCloneOf(setting) {
+  return {...setting, images: [...setting.images], pulse: {...setting.pulse}};
+}
+
+/** The page clock, in seconds, for the preview's pulse. */
+function pageSeconds() {
+  return (typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000;
+}
+
+/** Whether the calibration choice applies to the launch the form describes:
+ *  run or test, on the rig's own tracker (not Mouse as gaze). */
+function calibrationApplies() {
+  const mode = $('mode').value;
+  return CalibrationChoice.CALIBRATING_MODES.includes(mode)
+    && !(mode === 'test' && $('mouse').checked);
+}
+
+/** The launch's `calibration_target`: what differs from the rig, or null. */
+function calibrationToSend() {
+  if (!calibration?.current || !calibrationApplies()) return null;
+  return CalibrationChoice.toSend(calibration.current, calibration.rig);
+}
+
+/** Why the calibration choice blocks a launch, or ''. */
+function calibrationProblem() {
+  if (!calibration?.current || !calibrationApplies()) return '';
+  return CalibrationChoice.problem(calibration.current) || '';
+}
+
+/** Two- or three-way switch: buttons with aria-pressed, as the editor's. */
+function segmented(container, options, chosen, onChoose, disabled) {
+  container.replaceChildren(...options.map(([value, text]) => {
+    const button = node('button', '', text);
+    button.type = 'button';
+    button.dataset.value = value;
+    button.setAttribute('aria-pressed', String(value === chosen));
+    button.disabled = disabled;
+    button.addEventListener('click', () => onChoose(value));
+    return button;
+  }));
+}
+
+function pictureUrl(p, name) {
+  return `/calibration-picture?project=${encodeURIComponent(p.id)}`
+    + `&name=${encodeURIComponent(name)}&token=${encodeURIComponent(token)}`;
+}
+
+/**
+ * Draw the calibration-target controls from `calibration`: appearance and
+ * motion switches, the picture grid when pictures are chosen, a preview of
+ * the target, and what the choice means. Shown only for a rig whose tracker
+ * draws a target; disabled, and said why, for a launch that does not
+ * calibrate it.
+ */
+function renderCalibration() {
+  const section = $('calibration');
+  const p = project();
+  stopCalibrationPreview();
+  if (!calibration || !p) {
+    section.hidden = true;
+    updateLaunch();
+    return;
+  }
+  section.hidden = false;
+  const help = $('calibration-help');
+  if (!calibration.current) {
+    $('calibration-controls').hidden = true;
+    $('calibration-origin').textContent = '';
+    help.textContent = `${titleOf(p)}’s alhazen (${p.alhazen_version}) has no calibration-target `
+      + 'choice, or was registered before the workspace asked: update its alhazen, then open '
+      + 'Project settings and save.';
+    updateLaunch();
+    return;
+  }
+  $('calibration-controls').hidden = false;
+  const current = calibration.current;
+  const applies = calibrationApplies();
+  const changed = CalibrationChoice.toSend(current, calibration.rig) !== null;
+  $('calibration-origin').textContent = changed ? 'changed for this run' : 'the rig’s setting';
+  segmented($('calibration-appearance'), CalibrationChoice.APPEARANCES, current.appearance,
+    (value) => {
+      if (value === current.appearance) return;
+      current.appearance = value;
+      // Each appearance starts from its own pictures: the rig's when it is
+      // the rig's appearance, else none (every picture, for random ones).
+      current.images = value === calibration.rig.appearance ? [...calibration.rig.images] : [];
+      renderCalibration();
+    }, !applies);
+  segmented($('calibration-motion'), CalibrationChoice.MOTIONS, current.motion, (value) => {
+    current.motion = value;
+    renderCalibration();
+  }, !applies);
+  renderPictureGrid(p, current, applies);
+  renderCalibrationPreview(p, current);
+  const problem = applies ? CalibrationChoice.problem(current) : null;
+  let text;
+  if (!applies) {
+    text = $('mode').value === 'test'
+      ? 'Mouse as gaze replaces the eye tracker, so nothing is calibrated: the rig’s setting '
+        + 'stands and nothing is sent.'
+      : 'Applies to run and test, the modes that calibrate the rig’s eye tracker; this launch '
+        + 'sends nothing.';
+  } else if (problem) {
+    text = problem;
+  } else {
+    text = `Every calibration in this run: ${CalibrationChoice.describe(current)}. The target `
+      + 'layout, timing, sampling and fit are the rig’s, unchanged.';
+  }
+  help.textContent = text;
+  help.classList.toggle('launch-warning', !!problem);
+  updateLaunch();
+}
+
+/** The picture grid: every picture the project's alhazen ships, each a
+ *  toggle. Chosen pictures show in the order picked (their number says
+ *  which); a random set has no order, and none picked means all of them. */
+function renderPictureGrid(p, current, applies) {
+  const block = $('calibration-pictures-block');
+  block.hidden = current.appearance === 'standard';
+  if (block.hidden) return;
+  const random = current.appearance === 'random_images';
+  const count = current.images.length;
+  $('calibration-pictures-label').textContent = random
+    ? (count ? `${count} picture${count === 1 ? '' : 's'} to draw from` : 'Drawn from all pictures')
+    : (count ? `${count} picture${count === 1 ? '' : 's'}, shown in this order` : 'Pick pictures');
+  $('calibration-clear').hidden = !count;
+  $('calibration-clear').disabled = !applies;
+  const grid = $('calibration-pictures');
+  grid.replaceChildren(...calibration.offer.images.map((name) => {
+    const index = current.images.indexOf(name);
+    const button = node('button', 'picture');
+    button.type = 'button';
+    button.disabled = !applies;
+    button.title = name;
+    button.setAttribute('aria-label', name);
+    button.setAttribute('aria-pressed', String(index >= 0));
+    const img = node('img');
+    img.src = pictureUrl(p, name);
+    img.alt = '';
+    img.loading = 'lazy';
+    button.append(img);
+    if (index >= 0 && !random) button.append(node('span', 'picture-order', String(index + 1)));
+    button.addEventListener('click', () => {
+      const at = current.images.indexOf(name);
+      if (at >= 0) current.images.splice(at, 1);
+      else current.images.push(name);
+      renderCalibration();
+    });
+    return button;
+  }));
+}
+
+/** Whether the browser asks for less motion: the preview then stands still
+ *  (the run itself pulses as configured; it is the experiment's choice). */
+function reducedMotion() {
+  return typeof matchMedia === 'function'
+    && matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+/**
+ * The preview: the target on a mid-grey patch, at the rig's own pixel size
+ * where it fits (scaled down, and said so, where it does not), pulsing at
+ * the configured rate with the same formula the rig uses. A random choice
+ * shows its pictures in turn. It shows the look and the motion, nothing
+ * about how well a calibration will fit.
+ */
+function renderCalibrationPreview(p, current) {
+  const stage = $('calibration-stage');
+  const STAGE_PX = 132;
+  const still = CalibrationChoice.stillPx(current, calibration.monitor);
+  const largest = still === null ? null
+    : still * (current.motion === 'pulse' ? current.pulse.max_scale : 1);
+  const fit = largest ? Math.min(1, STAGE_PX / largest) : 1;
+  const pool = current.appearance === 'standard' ? []
+    : (current.images.length ? current.images : calibration.offer.images);
+  const target = current.appearance === 'standard'
+    ? node('span', 'standard-target')
+    : node('img', 'picture-target');
+  if (current.appearance !== 'standard') {
+    target.alt = '';
+    if (pool.length) target.src = pictureUrl(p, pool[0]);
+  }
+  stage.replaceChildren(target);
+  const base = (still ?? 24) * fit;
+  const size = (scale) => {
+    target.style.width = `${base * scale}px`;
+    target.style.height = `${base * scale}px`;
+  };
+  const motionNote = current.motion === 'pulse'
+    ? ` · pulses ${current.pulse.min_scale}–${current.pulse.max_scale}× at ${current.pulse.rate_hz} Hz`
+    : ' · still';
+  const sizeNote = still === null
+    ? 'size unknown: the rig gives no monitor geometry'
+    : current.appearance === 'standard'
+      ? '24 px across on the rig'
+      : `${current.image_size_dva}° ≈ ${Math.round(still)} px on this rig`;
+  const reduced = current.motion === 'pulse' && reducedMotion();
+  $('calibration-caption').textContent = `${sizeNote}${motionNote}`
+    + (fit < 1 ? ` · shown at ${Math.round(fit * 100)}%` : '')
+    + (reduced ? ' · preview still (reduced motion)' : '')
+    + '. A preview of the look only, not of calibration accuracy.';
+  size(current.motion === 'pulse' ? current.pulse.min_scale : 1);
+  const animate = !reducedMotion() && typeof requestAnimationFrame === 'function'
+    && (current.motion === 'pulse' || pool.length > 1);
+  if (!animate) return;
+  const started = pageSeconds();
+  const step = () => {
+    const elapsed = pageSeconds() - started;
+    if (current.motion === 'pulse') size(CalibrationChoice.pulseScale(elapsed, current.pulse));
+    if (pool.length > 1) {
+      // A new picture each pulse cycle (or each second and a half when
+      // still), as a calibration shows a new one at each target.
+      const period = current.motion === 'pulse' ? 1 / current.pulse.rate_hz : 1.5;
+      const name = pool[Math.floor(elapsed / period) % pool.length];
+      const url = pictureUrl(p, name);
+      if (target.getAttribute('src') !== url) target.src = url;
+    }
+    calibrationFrame = requestAnimationFrame(step);
+  };
+  calibrationFrame = requestAnimationFrame(step);
+}
+
+function stopCalibrationPreview() {
+  if (calibrationFrame !== null && typeof cancelAnimationFrame === 'function') {
+    cancelAnimationFrame(calibrationFrame);
+  }
+  calibrationFrame = null;
 }
 
 /**
@@ -1677,6 +1950,13 @@ $('mode').addEventListener('change', modeChanged);
 $('rig').addEventListener('change', guard(loadRig));
 // Headless simulate opens no window, so the PsychoPy warning follows it.
 $('headless').addEventListener('change', updateLaunch);
+// Mouse as gaze takes the tracker away, and with it the calibration choice.
+$('mouse').addEventListener('change', () => (calibration ? renderCalibration() : updateLaunch()));
+$('calibration-clear').addEventListener('click', () => {
+  if (!calibration?.current) return;
+  calibration.current.images = [];
+  renderCalibration();
+});
 $('params-config').addEventListener('change', guard(parameterSetChanged));
 // Typing a subject or session changes the launch summary, nothing else.
 $('subject').addEventListener('input', () => updateLaunch());
@@ -1786,6 +2066,11 @@ $('launch-form').addEventListener('submit', guard(async (event) => {
       // For every mode and script alike; the server splits and checks them.
       extra_args: $('extra-args').value,
     };
+    // What differs from the rig's calibration target, for run and test;
+    // sent only when something does — without it the run uses the rig's
+    // own (renderCalibration).
+    const calibrationTarget = calibrationToSend();
+    if (calibrationTarget) request.calibration_target = calibrationTarget;
     // Parameters travel as the editor shows them: the raw text from the text
     // editor (the server parses and validates it) or the edited values from
     // the fields. Modes that take no parameters send neither.
