@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from tests.unit.test_workspace import REAL_PROBE, request_for, workspace  # noqa: F401
+from tests.unit.test_workspace import REAL_PROBE, http, request_for, workspace  # noqa: F401
 
 from alhazen.cli import workspace as workspace_module
 from alhazen.cli.workspace import (
@@ -185,3 +185,10 @@ class TestTheProbe:
 
 def test_the_module_is_wired_into_the_probe():
     assert "measurements" in workspace_module.INTERPRETER_PROBE
+
+
+def test_the_module_is_served(http):  # noqa: F811
+    call, _ = http
+    status, headers, body = call("/workspace_measure.js")
+    assert status == 200 and b"MeasureChoice" in body
+    assert call("/workspace_measure.css")[0] == 200
