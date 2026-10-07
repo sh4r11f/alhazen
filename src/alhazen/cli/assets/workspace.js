@@ -715,12 +715,9 @@ function renderMeasurements() {
   const p = project();
   if (!p || !usesMeasurements()) return;
   if (!measureState || measureState.project !== p.id) {
-    let saved = [];
-    try {
-      saved = JSON.parse(localStorage.getItem(MEASURE_KEY + p.id) || '[]');
-    } catch {
-      saved = [];
-    }
+    // Kept as the keys joined by commas (a key never holds one); keys the
+    // project no longer lists are dropped by create().
+    const saved = (localStorage.getItem(MEASURE_KEY + p.id) || '').split(',').filter(Boolean);
     measureState = {project: p.id, ...MeasureChoice.create(p.measurements, saved)};
   }
   const help = p.measurements_error
@@ -735,7 +732,7 @@ function renderMeasurements() {
       const {state: next, note} = MeasureChoice.toggle(measureState, key, on);
       measureState = {project: p.id, ...next};
       measureNote = note;
-      localStorage.setItem(MEASURE_KEY + p.id, JSON.stringify(MeasureChoice.selection(measureState)));
+      localStorage.setItem(MEASURE_KEY + p.id, MeasureChoice.selection(measureState).join(','));
       modeChanged();
     },
   });

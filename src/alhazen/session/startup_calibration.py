@@ -104,20 +104,29 @@ class CalibrationLedger:
             handle.write(json.dumps(entry, sort_keys=True, default=str) + "\n")
 
     def last(self) -> dict[str, Any] | None:
+        """The most recent record, or None when there is none — or when the
+        newest line cannot be read: the record before it is then not the
+        latest calibration, and must not be offered as if it were."""
         if not self.path.is_file():
             return None
-        last = None
-        for number, line in enumerate(self.path.read_text(encoding="utf-8").splitlines(), 1):
-            if not line.strip():
-                continue
-            try:
-                value = json.loads(line)
-            except ValueError:
-                log.warning("skipping unreadable line %d of %s", number, self.path)
-                continue
-            if isinstance(value, dict):
-                last = value
-        return last
+        lines = [
+            line for line in self.path.read_text(encoding="utf-8").splitlines() if line.strip()
+        ]
+        if not lines:
+            return None
+        try:
+            value = json.loads(lines[-1])
+        except ValueError as error:
+            raise LedgerUnreadable(
+                f"the newest line of {self.path} cannot be read ({error})"
+            ) from error
+        if not isinstance(value, dict):
+            raise LedgerUnreadable(f"the newest line of {self.path} is not a record")
+        return value
+
+
+class LedgerUnreadable(ValueError):
+    """The calibration ledger's newest line is not a record."""
 
 
 def setup_of(cfg: EyeTrackerConfig, monitor: MonitorConfig) -> dict[str, Any]:
@@ -224,7 +233,15 @@ def previous_calibration(
     that it still holds one."""
     state = getattr(tracker, "calibration_state", None)
     held = bool(state()) if state is not None else None
-    record = ledger.last()
+    try:
+        record = ledger.last()
+    except LedgerUnreadable as error:
+        return PreviousCalibration(
+            held,
+            None,
+            False,
+            f"Reuse is not offered: {error}, so the latest calibration is unknown.",
+        )
     if held is False:
         return PreviousCalibration(
             held, record, False, "Reuse is not offered: the device holds none."

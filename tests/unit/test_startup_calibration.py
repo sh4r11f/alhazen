@@ -285,10 +285,13 @@ class TestWhatIsSaidAboutThePrevious:
         previous = previous_calibration(Device(holds=False), VIEWPIXX, MONITOR, ledger, "s01")
         assert previous.reusable is False and "holds none" in previous.reason
 
-    def test_an_unreadable_ledger_line_is_skipped(self, tmp_path):
+    def test_an_unreadable_newest_line_withdraws_reuse(self, tmp_path):
+        """The record before a cut-off line is not the latest calibration:
+        offering it would offer the wrong one."""
         path = tmp_path / "x.jsonl"
         path.write_text(json.dumps(good_record()) + "\n{cut off", encoding="utf-8")
-        assert CalibrationLedger(path).last()["run_dir"] == "old-run"
+        previous = previous_calibration(Device(), VIEWPIXX, MONITOR, CalibrationLedger(path), "s01")
+        assert previous.reusable is False and "cannot be read" in previous.reason
 
 
 class TestWhoIsAsked:
@@ -439,5 +442,8 @@ class TestEveryCalibrationIsRecorded:
             raise OSError("No space left on device")
 
         monitor.on_calibrated = full_disk
+        events = []
+        monitor.emit = lambda name, payload: events.append((name, payload))
         assert monitor.calibrate().ok is True
-        assert "could not record this calibration" in caplog.text
+        assert "not recorded in the rig's calibration ledger" in events[0][1]["ledger"]
+        assert "No space left" in caplog.text

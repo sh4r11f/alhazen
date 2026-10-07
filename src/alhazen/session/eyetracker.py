@@ -234,15 +234,19 @@ class EyeTrackerMonitor:
             self.correction.reset(result.t)
             self.validation = None
             self.drift = None
+        ledger: str | None = None
         if result.ok is True and self.on_calibrated is not None:
             try:
                 self.on_calibrated(result)
-            except OSError:
+                ledger = "recorded"
+            except OSError as error:
                 # The ledger is what lets a LATER session offer this
                 # calibration for reuse; failing to write it changes nothing
-                # about this one, which is calibrated. Said loudly, and the
-                # next session simply will not offer reuse.
-                log.exception("could not record this calibration in the rig's calibration ledger")
+                # about this one, which is calibrated. It goes on the
+                # CALIBRATION event below, so the run's own record says so,
+                # and the next session will not offer this one for reuse.
+                ledger = f"not recorded in the rig's calibration ledger: {error}"
+                log.error("calibration %s", ledger)
         # What the target looked like, and each one shown, in order: where,
         # which picture, when — with the session seed, enough to recover a
         # random picture order. Only from a tracker that draws a target; a
@@ -271,6 +275,10 @@ class EyeTrackerMonitor:
                 "eye": result.eye,
                 "advance": result.advance,
                 "note": result.note,
+                # Whether the rig's calibration ledger holds it; absent for a
+                # session that keeps no ledger or a calibration that did not
+                # take, so those events are what they always were.
+                **({"ledger": ledger} if ledger is not None else {}),
                 # Each target's fitted gaze and error per eye, when the tracker
                 # can compute them (the TRACKPixx3); empty otherwise.
                 "targets": [
