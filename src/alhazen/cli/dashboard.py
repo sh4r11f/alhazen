@@ -47,6 +47,10 @@ PAGE_ASSETS = {
     "/workspace.js": ("workspace.js", "text/javascript; charset=utf-8"),
     "/workspace_parameters.js": ("workspace_parameters.js", "text/javascript; charset=utf-8"),
     "/workspace_calibration.js": ("workspace_calibration.js", "text/javascript; charset=utf-8"),
+    # Measure rig's checklist and progress (workspace_measure.js, a module
+    # any shell mounts into containers it owns).
+    "/workspace_measure.js": ("workspace_measure.js", "text/javascript; charset=utf-8"),
+    "/workspace_measure.css": ("workspace_measure.css", "text/css; charset=utf-8"),
     "/workspace.css": ("workspace.css", "text/css; charset=utf-8"),
     "/favicon.svg": ("favicon.svg", "image/svg+xml"),
     "/fonts/Nunito-latin.woff2": ("fonts/Nunito-latin.woff2", "font/woff2"),

@@ -692,6 +692,25 @@ class TestCommandContract:
         )
         command = workspace._command(request, workspace.directory / "job")
         emitted.update(token for token in command if token.startswith("--"))
+        # The measurement flags: emitted for Measure rig by a project whose
+        # alhazen lists its measurements.
+        monkeypatch.setitem(
+            project,
+            "measurements",
+            [
+                {
+                    "key": "monitor.refresh",
+                    "group": "Monitor",
+                    "title": "Refresh",
+                    "order": 1,
+                    "requires": [],
+                    "subject": "none",
+                }
+            ],
+        )
+        request = request_for(workspace, mode="measure", measurements=["monitor.refresh"])
+        command = workspace._command(request, workspace.directory / "job")
+        emitted.update(token for token in command if token.startswith("--"))
         # The experimenter: emitted for a session whose project's alhazen
         # records one, from the people registry's record.
         request = request_for(workspace, mode="test", subject="s01", initials="HD")

@@ -20,6 +20,7 @@ whose OK means nothing.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from collections.abc import Callable
 from datetime import datetime
@@ -640,6 +641,35 @@ def add_mode_arguments(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="measure mode: how many keypresses to time (default: the mode's own)",
     )
+    # The selectable measurements (alhazen.modes.measure_jobs). Without
+    # --measure, measure mode runs its original fixed list exactly as before.
+    parser.add_argument(
+        "--measure",
+        action="append",
+        default=[],
+        metavar="KEY",
+        help="measure mode: run this measurement (e.g. monitor.refresh); repeatable. They run "
+        "in their own fixed order. --list-measurements shows them",
+    )
+    parser.add_argument(
+        "--list-measurements",
+        action="store_true",
+        help="measure mode: list the measurements this installation offers, as JSON, and exit",
+    )
+    parser.add_argument(
+        "--measure-input",
+        action="append",
+        default=[],
+        metavar="KEY.NAME=VALUE",
+        help="measure mode: a value an operator would otherwise type at the rig, e.g. "
+        "monitor.geometry.distance_cm=57.2 or monitor.luminance.readings=meter.csv; repeatable",
+    )
+    parser.add_argument(
+        "--measure-status",
+        default=None,
+        metavar="PATH",
+        help="measure mode: keep the progress of the selected measurements in this JSON file",
+    )
 
 
 def _run_session(
@@ -697,6 +727,9 @@ def _run_session(
     except ValueError as exc:
         print(f"INVALID: {exc}", file=sys.stderr)
         return 2
+
+    if mode is Mode.MEASURE and getattr(args, "list_measurements", False):
+        return _list_measurements()
 
     if getattr(args, "list", False):
         tasks = installed_tasks()
@@ -1073,6 +1106,74 @@ def _seed_line(seed: int, *, drawn: bool) -> str:
     return f"seed: {seed} (as given with --seed)"
 
 
+def _list_measurements() -> int:
+    """Print the measurements this installation offers, in run order, as
+    JSON: alhazen's own and every installed experiment package's."""
+    from alhazen.modes.measure_jobs import catalog, installed_jobs
+
+    try:
+        jobs = installed_jobs()
+    except ValueError as e:
+        print(f"CANNOT LIST MEASUREMENTS: {e}", file=sys.stderr)
+        return 1
+    print(json.dumps(catalog(jobs), indent=2))
+    return 0
+
+
+def _measure_selected(args: argparse.Namespace, rig: Any, beside: Path) -> int:
+    """Run the measurements named with --measure, in their own order, into
+    one report beside the rig config (alhazen.modes.measure_jobs)."""
+    from alhazen.modes.measure_builtin import WindowOperator, rig_devices
+    from alhazen.modes.measure_jobs import (
+        StatusFile,
+        installed_jobs,
+        parse_inputs,
+        plan,
+        run_jobs,
+    )
+
+    try:
+        jobs = installed_jobs()
+        ordered = plan(jobs, args.measure)
+        inputs = parse_inputs(args.measure_input)
+        needing = [job.key for job in ordered if job.subject == "required"]
+        if needing and not args.sub:
+            raise ValueError(f"{', '.join(needing)} measure the subject in the chair: give --sub")
+    except ValueError as e:
+        print(f"CANNOT MEASURE: {e}", file=sys.stderr)
+        return 2
+    unknown = sorted({name.rsplit(".", 1)[0] for name in inputs} - {job.key for job in ordered})
+    if unknown:
+        print(
+            f"CANNOT MEASURE: --measure-input names {', '.join(unknown)}, which is not selected",
+            file=sys.stderr,
+        )
+        return 2
+    destination = _measurement_path(beside)
+    devices = rig_devices(rig, windowed=args.windowed)
+    status = StatusFile(Path(args.measure_status) if args.measure_status else None)
+    print("measuring, in this order: " + ", ".join(job.key for job in ordered))
+    saved: list[Path] = []
+    report = run_jobs(
+        rig,
+        str(args.rig),
+        ordered,
+        devices=devices,
+        operator=WindowOperator(devices),
+        inputs=inputs,
+        output_dir=destination.with_suffix(""),
+        status=status,
+        argv=sys.argv,
+        on_finish=lambda r: saved.append(r.save(destination)),
+        subject=args.sub,
+    )
+    print(report.render())
+    print(f"written: {saved[0]}")
+    # Non-zero unless every selected measurement produced a result and none
+    # failed: an unavailable or cancelled one is not a clean bill of health.
+    return 0 if report.ok else 1
+
+
 def _measure_rig(args: argparse.Namespace, rig: Any, root: Callable[[], Path]) -> int:
     """Measure the rig and write the report beside its config."""
     from alhazen.modes.measure import run_measurements
@@ -1086,6 +1187,22 @@ def _measure_rig(args: argparse.Namespace, rig: Any, root: Callable[[], Path]) -
     except ConfigError as e:
         print(f"CANNOT MEASURE: {e}", file=sys.stderr)
         return 1
+    if getattr(args, "measure", None):
+        if args.skip or args.presses is not None:
+            print(
+                "CANNOT MEASURE: --skip and --presses belong to the original fixed list; with "
+                "--measure, choose the measurements to run (and give input.keys.presses with "
+                "--measure-input)",
+                file=sys.stderr,
+            )
+            return 2
+        return _measure_selected(args, rig, beside)
+    if getattr(args, "measure_input", None) or getattr(args, "measure_status", None):
+        print(
+            "CANNOT MEASURE: --measure-input and --measure-status go with --measure",
+            file=sys.stderr,
+        )
+        return 2
     extra = {} if args.presses is None else {"n_presses": args.presses}
     try:
         report = run_measurements(

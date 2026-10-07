@@ -657,6 +657,12 @@ def _check_spikes(rig: RigConfig) -> CheckResult:
     return CheckResult("spikes", True, f"{detail}{simulated}", evidence)
 
 
+def check_spikes(rig: RigConfig) -> CheckResult:
+    """check-rig's spike-stream check on its own, for measure mode's neural
+    job: the same connect-and-listen, the same evidence."""
+    return _check_spikes(rig)
+
+
 def _listen_for_units(source: Any, cfg: Any, evidence: dict[str, Any]) -> str:
     """Wait for the sorter to announce ``units``, then report the lag.
 

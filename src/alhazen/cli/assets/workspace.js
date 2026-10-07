@@ -166,6 +166,13 @@ let calibration = null;
 let calibrationFrame = null;
 let launchedRun = null;
 let monitorShown = null;
+/* Measure rig's checklist (workspace_measure.js): its state, the line saying
+ * what a tick also changed, and the selected rig's merged settings for the
+ * module's hints. */
+let measureState = null;
+let measureNote = '';
+let measureRig = null;
+const MEASURE_KEY = 'alhazen-workspace-measurements:';
 /* The URL loaded in the monitor frame, '' when it shows about:blank. The
  * frame is (re)loaded only when this changes, never on a poll. */
 let framedMonitor = '';
@@ -689,11 +696,22 @@ function experimenterLabel(e, among) {
   return text;
 }
 
-/** Why a run or test launch cannot go yet for want of who, or ''. A subject
+/** What Measure rig's ticked measurements need of the subject: 'required',
+ *  'optional' or 'none' (MeasureChoice.subjectNeed); 'none' in other modes. */
+function measureNeed() {
+  if ($('mode').value !== 'measure' || !usesMeasurements()) return 'none';
+  return MeasureChoice.subjectNeed(measureState);
+}
+
+/** Why a launch cannot go yet for want of who, or ''. A run or test subject
  *  chosen from the register needs the experimenter who runs it (the server
- *  asks the same); with none chosen, the typed fields must be open. */
+ *  asks the same); with none chosen, the typed fields must be open. A
+ *  measurement of the subject in the chair needs the subject. */
 function identityProblem() {
   const mode = $('mode').value;
+  if (measureNeed() === 'required' && !chosenSubject() && !$('subject').value.trim()) {
+    return 'A ticked measurement is of the subject in the chair: choose the subject.';
+  }
   if (!['run', 'test'].includes(mode) || people?.error) return '';
   if (chosenSubject() && !chosenExperimenter()) {
     return 'Choose the experimenter who runs this session.';
@@ -755,7 +773,7 @@ function identityChanged() {
   $('initials').disabled = !!record;
   const named = ['run', 'test'].includes(mode);
   const typedOpen = !!$('typed-identity').open;
-  $('subject').required = named && !record && typedOpen;
+  $('subject').required = (named || measureNeed() === 'required') && !record && typedOpen;
   $('initials').required = named && !record && typedOpen;
   $('experimenter').required = named && !!record;
   let help = '';
@@ -807,7 +825,8 @@ function updateLaunch() {
     || !p?.available
     || !!p?.tasks_error
     || !!calibrationProblem()
-    || !!identityProblem();
+    || !!identityProblem()
+    || (usesMeasurements() && !!MeasureChoice.problem(measureState));
   if (launching) $('launch').textContent = 'Starting…';
   else if (state.active) $('launch').textContent = 'A run is in progress';
   else $('launch').textContent = `▶ ${label($('mode').value) || 'Start run'}`;
@@ -830,6 +849,8 @@ function updateLaunch() {
     note = calibrationProblem();
   } else if (identityProblem()) {
     note = identityProblem();
+  } else if (usesMeasurements() && MeasureChoice.problem(measureState)) {
+    note = MeasureChoice.problem(measureState);
   } else if (development) {
     // Before the PsychoPy warning: a launch refused for its rig never opens
     // a window, so the rig is the thing to change first.
@@ -854,6 +875,42 @@ function updateLaunch() {
   );
 }
 
+/** Whether this launch picks its measurements from a list: Measure rig, on
+ *  a project whose alhazen lists them (an older one runs its fixed list). */
+function usesMeasurements() {
+  return $('mode').value === 'measure' && Array.isArray(project()?.measurements)
+    && !!window.MeasureChoice;
+}
+
+/** Draw the measurement list for the selected project, remembering the
+ *  ticks per project (localStorage) so a reload keeps them. */
+function renderMeasurements() {
+  const p = project();
+  if (!p || !usesMeasurements()) return;
+  if (!measureState || measureState.project !== p.id) {
+    // Kept as the keys joined by commas (a key never holds one); keys the
+    // project no longer lists are dropped by create().
+    const saved = (localStorage.getItem(MEASURE_KEY + p.id) || '').split(',').filter(Boolean);
+    measureState = {project: p.id, ...MeasureChoice.create(p.measurements, saved)};
+  }
+  const help = p.measurements_error
+    ? `A measurement provider failed to load, so its measurements are missing: ${p.measurements_error}`
+    : '';
+  $('measurements-help').classList.toggle('launch-warning', !!help);
+  if (help) $('measurements-help').textContent = help;
+  MeasureChoice.renderChecklist($('measurement-list'), measureState, {
+    rig: measureRig,
+    note: measureNote,
+    onToggle: (key, on) => {
+      const {state: next, note} = MeasureChoice.toggle(measureState, key, on);
+      measureState = {project: p.id, ...next};
+      measureNote = note;
+      localStorage.setItem(MEASURE_KEY + p.id, MeasureChoice.selection(measureState).join(','));
+      modeChanged();
+    },
+  });
+}
+
 /**
  * Show the controls that apply to the selected mode and hide the rest. A
  * hidden control is also disabled where the browser would otherwise still
@@ -872,6 +929,10 @@ function modeChanged() {
   $('params-config').disabled = !usesParameters();
   $('task-parameters').hidden = !usesParameters();
   $('task-parameters').disabled = !usesParameters();
+  // Measure rig's measurements, in Task parameters' place.
+  $('measurements').hidden = !usesMeasurements();
+  $('measurements').disabled = !usesMeasurements();
+  renderMeasurements();
   // Measuring the rig draws nothing random, so it takes no seed; nor does an
   // experiment's own script, which the launcher passes no seed to — a field
   // shown for either would promise something the launch does not do.
@@ -893,11 +954,20 @@ function modeChanged() {
   }
   // Subject and session name the recorded data. A real or rehearsal session
   // must name its subject; a simulation may fall back to its own default.
-  $('identity').hidden = !['run', 'test', 'simulate'].includes(mode);
+  // Measure rig asks for a subject ID only when a ticked measurement is of
+  // the subject in the chair (MeasureChoice.subjectNeed), and never for
+  // initials or a session.
+  const measureSubject = usesMeasurements() ? MeasureChoice.subjectNeed(measureState) : 'none';
+  $('identity').hidden = !['run', 'test', 'simulate'].includes(mode) && measureSubject === 'none';
+  for (const id of ['initials', 'session']) {
+    const field = $(id).parentElement;
+    if (field) field.hidden = mode === 'measure';
+  }
   // Who runs it: for every session, and for Measure rig (who measured).
   $('experimenter-field').hidden = !['run', 'test', 'simulate', 'measure'].includes(mode);
   // What is required follows the mode and the choice (identityChanged): a
-  // typed subject and its initials for run and test, an experimenter with a
+  // typed subject and its initials for run and test, a subject ID for a
+  // measurement of the subject in the chair, an experimenter with a
   // registered subject. The initials are checked again on submit, with the
   // command line's words, by checkInitials.
   identityChanged();
@@ -1134,6 +1204,8 @@ async function loadRig() {
   rigDevelopment[`${p.id}:${value}`] = development ? name : null;
   // '?' rather than 'undefined' for a field the YAML leaves to its default.
   setCalibrationRig(p, rig);
+  measureRig = rig;
+  renderMeasurements();
   rigFacts([
     ['Screen', [`${m.width_px ?? '?'} × ${m.height_px ?? '?'} px`, `${m.refresh_rate_hz ?? '?'} Hz`]],
     ['Size', [`${m.width_cm ?? '?'} cm wide`, `${m.distance_cm ?? '?'} cm away`]],
@@ -2090,6 +2162,8 @@ async function refreshRun() {
   $('stop').hidden = !run || run.id !== state.active;
   $('stop').disabled = run?.status === 'stopping';
   $('stop').textContent = run?.status === 'stopping' ? 'Stopping…' : 'Stop run';
+  // A Measure rig run's queue, above the tabs.
+  if (window.MeasureChoice) MeasureChoice.renderProgress($('measure-progress'), run?.measurement || null);
   // The Live monitor tab and its open-in-new-tab link.
   renderMonitor(run, active);
   // Console: follow the tail only if the reader was already at the bottom,
@@ -2418,7 +2492,9 @@ $('launch-form').addEventListener('submit', guard(async (event) => {
   // the command line's own words before anything is sent (the server checks
   // again).
   const identity = ['run', 'test', 'simulate'].includes(mode);
-  const record = identity ? chosenSubject() : null;
+  // A measurement of the subject in the chair names its subject too.
+  const named = identity || measureNeed() !== 'none';
+  const record = named ? chosenSubject() : null;
   const runner = ['run', 'test', 'simulate', 'measure'].includes(mode)
     ? chosenExperimenter()
     : null;
@@ -2482,6 +2558,8 @@ $('launch-form').addEventListener('submit', guard(async (event) => {
     // What differs from the rig's calibration target, for run and test;
     // sent only when something does — without it the run uses the rig's
     // own (renderCalibration).
+    // Measure rig's ticked measurements, in run order; the server checks them.
+    if (usesMeasurements()) request.measurements = MeasureChoice.selection(measureState);
     const calibrationTarget = calibrationToSend();
     if (calibrationTarget) request.calibration_target = calibrationTarget;
     // The records chosen, sent only when chosen: a launch without them is

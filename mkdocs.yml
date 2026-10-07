@@ -45,6 +45,7 @@ nav:
   - Getting started: getting-started.md
   - Concepts: architecture.md
   - The six modes: modes.md
+  - Measure rig: measure-rig.md
   - Rigs: rigs.md
   - Data on disk: data.md
   - Live spikes and live analysis: live-spikes.md
@@ -60,4 +61,5 @@ nav:
       - Precomputed sessions: design/precomputed-sessions.md
       - Calibration targets: design/calibration-targets.md
       - Experiment management: design/experiment-management.md
+      - Rig measurements: design/rig-measurements.md
   - API reference: reference.md

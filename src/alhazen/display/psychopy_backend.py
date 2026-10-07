@@ -372,7 +372,18 @@ class PsychoPyDisplay:
             units="pix",
             color=(0, 0, 0),
             allowGUI=self._windowed,
+            # No measurement here. PsychoPy's own check (getActualFrameRate,
+            # behind "Attempting to measure frame rate of screen, please
+            # wait ...") ran a second, separate measurement at every start,
+            # whose result alhazen never used: a session measures once,
+            # quietly, in measure_refresh_rate, and frame math runs on that.
+            # checkTiming and infoMsg exist from PsychoPy 2024.1.0 (this
+            # extra's floor) to 2026.2.4, read in their window.py.
+            checkTiming=False,
         )
+        # Until the rate is measured, PsychoPy's frame bookkeeping holds the
+        # rig's nominal rate rather than its own 60 Hz guess.
+        self._adopt_frame_rate(self._monitor.refresh_rate_hz)
         self._check_pixels_are_what_the_config_says()
 
     def _register_fonts(self) -> None:
@@ -511,18 +522,45 @@ class PsychoPyDisplay:
         self.window.flip(clearBuffer=clear)
 
     def measure_refresh_rate(self, n_flips: int) -> float:
+        """The panel's refresh rate, measured once on this window.
+
+        PsychoPy's own frame-interval machinery, over freshly recorded
+        intervals only (nIdentical <= what we record), no smoothing, and
+        bounded: 10 warm-up flips plus at most ``n_flips`` (40 flips, two
+        thirds of a second at 60 Hz, with the rig default of 30). Quiet: an
+        empty ``infoMsg`` replaces PsychoPy's "Attempting to measure frame
+        rate of screen" banner, which a subject used to read at every start;
+        the operator's line goes to the log instead. The rate is then the
+        window's own frame period (``_adopt_frame_rate``) as well as the one
+        the session's frame math is built on.
+        """
         self._require_open()
-        # PsychoPy's own frame-interval machinery, over freshly-recorded
-        # intervals only (nIdentical <= what we record), no smoothing.
+        log.info("measuring the display's refresh rate over up to %d flips", n_flips + 10)
+        started = time.perf_counter()
         rate = self.window.getActualFrameRate(
-            nIdentical=min(10, n_flips), nMaxFrames=n_flips, nWarmUpFrames=10
+            nIdentical=min(10, n_flips), nMaxFrames=n_flips, nWarmUpFrames=10, infoMsg=""
         )
         if rate is None:
             raise DisplayError(
                 "could not measure a stable refresh rate — the display is dropping frames "
                 "at rest; close other applications / check the video mode before running"
             )
+        self._adopt_frame_rate(float(rate))
+        log.info(
+            "refresh rate measured at %.3f Hz in %.2f s", float(rate), time.perf_counter() - started
+        )
         return float(rate)
+
+    def _adopt_frame_rate(self, rate_hz: float) -> None:
+        """Set the window's frame bookkeeping from ``rate_hz``, as PsychoPy's
+        Window does itself when it measures at construction
+        (``monitorFramePeriod``, the late-frame ``refreshThreshold`` at 1.2
+        periods, ``_monitorFrameRate``): with that check turned off, the
+        fields are alhazen's to keep right."""
+        period = 1.0 / rate_hz
+        self.window._monitorFrameRate = rate_hz
+        self.window.monitorFramePeriod = period
+        self.window.refreshThreshold = period * 1.2
 
     def show_message(self, text: str, *, reflow: bool = True) -> None:
         """Draw the message in a terminal-style box over the session, and flip.
