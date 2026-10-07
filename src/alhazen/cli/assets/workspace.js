@@ -71,7 +71,9 @@ let token = new URLSearchParams(location.hash.slice(1)).get('token')
   || sessionStorage.getItem('alhazen-workspace-token')
   || '';
 if (token) sessionStorage.setItem('alhazen-workspace-token', token);
-if (location.hash) history.replaceState(null, '', location.pathname);
+/* The address keeps its query — which screen this is (route()) — and loses
+ * only the fragment that carried the token. */
+if (location.hash) history.replaceState(null, '', location.pathname + (location.search || ''));
 
 /* The server's last /api/state answer: the registered projects, every run
  * (newest first) and the id of the one active run, or null. */
@@ -84,12 +86,17 @@ let runId = null;
  * defaults in its code — and which editor shows them, 'fields' or 'yaml'. */
 let values = null;
 let editor = 'fields';
-/* Which of the selected experiment's two views is shown: 'run' (the launch
- * form, run output and history: #workspace) or 'data' (#data-view, whose
- * content workspace_data.js draws). Remembered per experiment in
- * localStorage (VIEW_KEY). */
+/* Which of the open experiment's pages is shown: 'general' (its notes,
+ * people and rigs: #general-view), 'run' (the launch form, run output and
+ * recent runs: #workspace), 'data' (#data-view, drawn by workspace_data.js)
+ * or 'history' (#history-view). With no experiment open, the Experiments
+ * page (#home-view). Each is an address (route()); the last page used for an
+ * experiment is remembered in localStorage (VIEW_KEY) for a link that names
+ * none. */
 let view = 'run';
-const VIEWS = {run: 'Run experiment', data: 'Data'};
+const VIEWS = {general: 'General', run: 'Run', data: 'Data', history: 'History'};
+/* The sidebar's glyph for each page, drawn with the page's name. */
+const VIEW_GLYPHS = {general: '◇', run: '▶', data: '▦', history: '↺'};
 const VIEW_KEY = 'alhazen-workspace-view:';
 /* The colour theme the reader chose: 'system' (follow the operating
  * system's light or dark setting; the default), 'light' or 'dark'. */
@@ -104,6 +111,16 @@ let editProject = null;
 let configEpoch = 0;
 let rigEpoch = 0;
 let schemaEpoch = 0;
+/* The open experiment's people (GET /api/manage/people): its subjects,
+ * its experimenters and the CSV copies' state; null until loaded. The Run
+ * page's Subject and Experimenter menus are drawn from it, and each
+ * experiment's choice in them is kept apart (identityChoice), so opening
+ * another experiment never carries a subject over. */
+let people = null;
+let peopleEpoch = 0;
+const identityChoice = {};
+/* Whether the first poll has placed the page on the address's screen. */
+let routed = false;
 /* JSON signatures of what each list last drew (see the file comment). */
 let gallerySignature = '';
 let historySignature = '';
@@ -160,7 +177,7 @@ window.addEventListener('hashchange', () => {
   if (!fresh) return;
   token = fresh;
   sessionStorage.setItem('alhazen-workspace-token', token);
-  history.replaceState(null, '', location.pathname);
+  history.replaceState(null, '', location.pathname + (location.search || ''));
   // Media URLs carry the token, so the gallery must be rebuilt.
   gallerySignature = '';
   guard(refresh)();
@@ -631,11 +648,148 @@ function launchSummary() {
     .find((o) => o.value === $('rig').value)?.textContent;
   if (rig) parts.push(rig);
   if (['run', 'test', 'simulate'].includes(mode)) {
-    const subject = $('subject').value.trim();
+    const subject = chosenSubject()?.code || $('subject').value.trim();
     if (subject) parts.push(`sub-${subject}`);
     parts.push(`ses ${$('session').value || 1}`);
   }
+  if (['run', 'test', 'simulate', 'measure'].includes(mode) && chosenExperimenter()) {
+    parts.push(`by ${chosenExperimenter().name}`);
+  }
   return parts.join(' · ');
+}
+
+/* ------------------------------------------------------------------ */
+/* Who: the Run page's Subject and Experimenter menus                  */
+/* ------------------------------------------------------------------ */
+
+/** The registered subject chosen in the Subject menu, or null. */
+function chosenSubject() {
+  const id = $('subject-record').value;
+  return id ? (people?.subjects || []).find((s) => s.id === id) || null : null;
+}
+
+/** The experimenter chosen in the Experimenter menu, or null. */
+function chosenExperimenter() {
+  const id = $('experimenter').value;
+  return id ? (people?.experimenters || []).find((e) => e.id === id) || null : null;
+}
+
+/** "sub-007 · HD", or "sub-007 · no initials" for a record without them. */
+function subjectLabel(s) {
+  return `sub-${s.code} · ${s.initials || 'no initials'}`;
+}
+
+/** An experimenter as the menus name them: their name, their initials when
+ *  recorded, and the end of their id when two share a name, so two records
+ *  are never shown as one person. */
+function experimenterLabel(e, among) {
+  const twin = among.some((o) => o.id !== e.id && o.name === e.name);
+  let text = e.initials ? `${e.name} (${e.initials})` : e.name;
+  if (twin) text += ` · ${e.id.slice(-4)}`;
+  return text;
+}
+
+/** Why a run or test launch cannot go yet for want of who, or ''. A subject
+ *  chosen from the register needs the experimenter who runs it (the server
+ *  asks the same); with none chosen, the typed fields must be open. */
+function identityProblem() {
+  const mode = $('mode').value;
+  if (!['run', 'test'].includes(mode) || people?.error) return '';
+  if (chosenSubject() && !chosenExperimenter()) {
+    return 'Choose the experimenter who runs this session.';
+  }
+  if (!chosenSubject() && !$('typed-identity').open) {
+    return 'Choose the subject for this session, or type an unregistered one.';
+  }
+  return '';
+}
+
+/** Fill one menu, opening on `chosen` when it is still on offer and on its
+ *  prompt otherwise — never on a value left from another experiment. */
+function fillMenu(select, items, chosen) {
+  options(select, items, chosen || '');
+  if (!items.some(([value]) => value === chosen)) select.value = '';
+}
+
+/** Fill the Subject and Experimenter menus from the open experiment's
+ *  people: its active subjects in their registry order, and the active
+ *  experimenters assigned to it, keeping this experiment's own earlier
+ *  choice. With no subject registered there is nothing to choose, and the
+ *  typed fields open. */
+function renderIdentity() {
+  const p = project();
+  if (!p) return;
+  const choice = identityChoice[p.id] || {};
+  const subjects = (people?.subjects || []).filter((s) => s.status === 'active');
+  fillMenu($('subject-record'), [
+    ['', subjects.length ? 'Choose a subject…' : 'No subjects registered yet'],
+    ...subjects.map((s) => [s.id, subjectLabel(s)]),
+  ], choice.subject);
+  const assigned = (people?.assigned || [])
+    .filter((e) => e.status === 'active' && e.assignment_status === 'active');
+  fillMenu($('experimenter'), [
+    ['', assigned.length ? 'Choose who runs it…' : 'No experimenters assigned yet'],
+    ...assigned.map((e) => [e.id, experimenterLabel(e, assigned)]),
+  ], choice.experimenter);
+  if (!subjects.length) $('typed-identity').open = true;
+  identityChanged();
+}
+
+/** After a change of who: remember it for this experiment, lock the typed
+ *  fields while a record is chosen, set what is required, and say what the
+ *  session will record. */
+function identityChanged() {
+  const p = project();
+  if (!p) return;
+  const mode = $('mode').value;
+  const record = chosenSubject();
+  const person = chosenExperimenter();
+  identityChoice[p.id] = {subject: record?.id || '', experimenter: person?.id || ''};
+  sessionStorage.setItem('alhazen-workspace-identity', JSON.stringify(identityChoice));
+  if (record) $('typed-identity').open = false;
+  $('subject').disabled = !!record;
+  $('initials').disabled = !!record;
+  const named = ['run', 'test'].includes(mode);
+  const typedOpen = !!$('typed-identity').open;
+  $('subject').required = named && !record && typedOpen;
+  $('initials').required = named && !record && typedOpen;
+  $('experimenter').required = named && !!record;
+  let help = '';
+  if (people?.error) {
+    help = `${people.error}. Type the subject below; no experimenter can be recorded.`;
+  } else if (person && p.records_experimenter === false) {
+    help = `${titleOf(p)}’s alhazen (${p.alhazen_version}) does not record the experimenter in `
+      + 'its session folders: the workspace keeps it with the launch only. Update its alhazen '
+      + 'to record it in session.json.';
+  } else if (person && p.records_experimenter == null) {
+    help = 'Whether this experiment’s alhazen records the experimenter is not known: open '
+      + 'Project settings and save to ask it. Until then it is kept with the launch only.';
+  } else if (!(people?.subjects || []).length) {
+    help = 'Register subjects and experimenters on the General page to choose them here.';
+  }
+  $('identity-help').textContent = help;
+  updateLaunch();
+}
+
+/** Load the open experiment's people for the Run page's menus. A registry
+ *  that cannot be read leaves the typed fields to use, and says why. */
+async function loadPeople(id) {
+  const epoch = ++peopleEpoch;
+  let answer;
+  try {
+    answer = await api(`/api/manage/people?project=${encodeURIComponent(id)}`);
+  } catch (e) {
+    answer = {error: e.message, subjects: [], experimenters: [], assigned: []};
+  }
+  if (epoch !== peopleEpoch || selected !== id) return;
+  people = answer;
+  renderIdentity();
+}
+
+/** The General page changed the people: redraw the menus from its answer. */
+function peopleChanged(answer) {
+  people = answer;
+  renderIdentity();
 }
 
 function updateLaunch() {
@@ -648,7 +802,8 @@ function updateLaunch() {
     || waitingForParameters
     || !p?.available
     || !!p?.tasks_error
-    || !!calibrationProblem();
+    || !!calibrationProblem()
+    || !!identityProblem();
   if (launching) $('launch').textContent = 'Starting…';
   else if (state.active) $('launch').textContent = 'A run is in progress';
   else $('launch').textContent = `▶ ${label($('mode').value) || 'Start run'}`;
@@ -669,6 +824,8 @@ function updateLaunch() {
     note = 'One run at a time keeps the rig available to its active experiment.';
   } else if (calibrationProblem()) {
     note = calibrationProblem();
+  } else if (identityProblem()) {
+    note = identityProblem();
   } else if (development) {
     // Before the PsychoPy warning: a launch refused for its rig never opens
     // a window, so the rig is the thing to change first.
@@ -688,7 +845,8 @@ function updateLaunch() {
   // help text.
   $('launch-note').classList.toggle(
     'launch-warning',
-    note === development || note === psychopy || note === calibrationProblem(),
+    note === development || note === psychopy || note === calibrationProblem()
+      || note === identityProblem(),
   );
 }
 
@@ -732,10 +890,13 @@ function modeChanged() {
   // Subject and session name the recorded data. A real or rehearsal session
   // must name its subject; a simulation may fall back to its own default.
   $('identity').hidden = !['run', 'test', 'simulate'].includes(mode);
-  $('subject').required = ['run', 'test'].includes(mode);
-  // The initials go with the subject: required where it is (checked again
-  // on submit, with the command line's words, by checkInitials).
-  $('initials').required = ['run', 'test'].includes(mode);
+  // Who runs it: for every session, and for Measure rig (who measured).
+  $('experimenter-field').hidden = !['run', 'test', 'simulate', 'measure'].includes(mode);
+  // What is required follows the mode and the choice (identityChanged): a
+  // typed subject and its initials for run and test, an experimenter with a
+  // registered subject. The initials are checked again on submit, with the
+  // command line's words, by checkInitials.
+  identityChanged();
   $('trials-field').hidden = !['test', 'simulate'].includes(mode);
   // Each option is shown for exactly the modes whose CLI accepts the flag.
   $('headless-field').hidden = mode !== 'simulate';
@@ -780,7 +941,12 @@ function modeChanged() {
  * its most recent run, then load its schema, parameter file and rig in
  * parallel. Remembered in localStorage so a reload lands on the same one.
  */
-async function chooseProject(id) {
+async function chooseProject(id, nextView = null) {
+  if (selected !== id) {
+    // The people belong to the experiment being left.
+    people = null;
+    peopleEpoch += 1;
+  }
   selected = id;
   localStorage.setItem('alhazen-workspace-project', id || '');
   // Every list belongs to the previous project: force each to redraw.
@@ -796,7 +962,7 @@ async function chooseProject(id) {
   $('project-path').textContent = p.path;
   $('title-error').textContent = p.title_error || '';
   $('title-error').hidden = !p.title_error;
-  showView(rememberedView(id));
+  showView(nextView || rememberedView(id));
   // The modes and the experiment's scripts, sorted by name (byName), at the
   // owner's request (2026-10-06). The menu still opens where it did before
   // it was sorted: on the project's "Preview images" (the quickest look at
@@ -824,7 +990,7 @@ async function chooseProject(id) {
   renderState();
   // Each of these checks that the project is still selected before it
   // writes; the reader may click another project while they load.
-  await Promise.all([loadSchema(id), loadConfig(), loadRig()]);
+  await Promise.all([loadSchema(id), loadConfig(), loadRig(), loadPeople(id)]);
   await refreshRun();
 }
 
