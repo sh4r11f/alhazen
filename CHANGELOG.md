@@ -68,6 +68,13 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   nothing. The control sits straight under the picture, above the alert and
   the line that says whether the image is live.
 
+- **The camera panel's − and + take every press.** The page rebuilds its
+  panels on every state the session publishes, and a press whose release
+  came after a rebuild landed on a button that was gone, so the browser
+  reported no click and the step was lost. The buttons now act on the press,
+  and each press steps on from the value just sent, not from the one the
+  session last published.
+
 - **The missing-pypixxlib error gives commands that install it into the
   environment that failed.** It said to "pip install" VPixx's archive "into
   this environment". A uv-made `.venv` has no pip, so a bare `pip` was

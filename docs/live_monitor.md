@@ -690,6 +690,14 @@ flowchart TB
   S --> I --> C --> A --> L
 ```
 
+**The − and + act on the press, not on the release.** The page rebuilds
+every panel on each state the session publishes: about once a second while
+paused, and at once after a setting changes. A press whose release came after
+a rebuild landed on a button that was no longer on the page, and the browser
+then reports no click, so steps went missing under repeated presses. Each
+press also steps on from the value just sent rather than the one last
+published. `click` is kept for the keyboard, which reports no press.
+
 ## Frame-timing panel
 
 Every session gets a **Frame intervals** panel in the *Session* group, built

@@ -464,6 +464,37 @@ describe('tracker settings', () => {
     assert.equal(live_monitor.byId('notice').textContent, 'Iris size: 21 px sent to the tracker…');
   });
 
+  it('step when a button is pressed, each press on from the last, and once per press', async () => {
+    // The bug this exists for: the page rebuilds every panel on each state,
+    // and a press whose release came after a rebuild produced no click, so
+    // steps went missing. A step is taken on the press itself.
+    const sent = [];
+    const live_monitor = await livePage({
+      states: [paused],
+      tracker: (url, init) => {
+        sent.push(JSON.parse(init.body).value);
+        return response({});
+      },
+    });
+    const plus = button(live_monitor, '+');
+    const input = grid(live_monitor).querySelector('input[data-setting="iris"]');
+
+    plus.onpointerdown({ button: 0 });
+    // The value shows at once, so the second press steps on from it rather
+    // than from the 20 the session last published.
+    assert.equal(input.value, 21);
+    plus.onpointerdown({ button: 0 });
+    // The click a mouse press ends with (detail: the number of presses) adds
+    // nothing; one from the keyboard (detail 0) is a step of its own.
+    plus.onclick({ detail: 1 });
+    plus.onclick({ detail: 0 });
+    // Not the right mouse button.
+    plus.onpointerdown({ button: 2 });
+    await settle();
+
+    assert.deepEqual(sent, [21, 22, 23]);
+  });
+
   it('say a refusal in the notice', async () => {
     const live_monitor = await livePage({
       states: [paused],
