@@ -17,11 +17,12 @@ from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from pydantic import ValidationError
 
 from alhazen.cli.console_break import interrupt_on_console_break
+from alhazen.cli.people import Conflict
 from alhazen.cli.workspace import (
     MEDIA_TYPES,
     Launch,
@@ -32,6 +33,7 @@ from alhazen.cli.workspace import (
     path_inside,
 )
 from alhazen.cli.workspace_data import DataView
+from alhazen.cli.workspace_manage import Management
 from alhazen.errors import AlhazenError
 
 ASSETS = Path(__file__).with_name("assets")
@@ -51,6 +53,10 @@ PAGE_ASSETS = {
     # The Data view (workspace_data.py serves its reads).
     "/workspace_data.js": ("workspace_data.js", "text/javascript; charset=utf-8"),
     "/workspace_data.css": ("workspace_data.css", "text/css; charset=utf-8"),
+    # The management pages: Experiments (home), General and History
+    # (workspace_manage.py serves their reads and writes).
+    "/workspace_manage.js": ("workspace_manage.js", "text/javascript; charset=utf-8"),
+    "/workspace_manage.css": ("workspace_manage.css", "text/css; charset=utf-8"),
 }
 # Written beside the lock by the server that holds it: its process id, when it
 # took the workspace and, once bound, the address of its page. The lock alone
@@ -162,6 +168,8 @@ class DashboardServer(ThreadingHTTPServer):
         self.token = secrets.token_urlsafe(32)
         # The Data view's reads of saved sessions (workspace_data.py).
         self.data = DataView(workspace)
+        # The management pages' reads and writes (workspace_manage.py).
+        self.manage = Management(workspace, self.data)
         super().__init__(("127.0.0.1", port), Handler)
 
     @property
@@ -295,6 +303,17 @@ class Handler(BaseHTTPRequestHandler):
                     *(query.get(name, [""])[0] for name in ("project", "root", "run", "name"))
                 )
                 self._file(target, kind, csp=DATA_FILE_CSP)
+            elif path.startswith("/api/manage/"):
+                self._json(self.server.manage.get(path.removeprefix("/api/manage/"), query))
+            elif path == "/data/download":
+                # Any file of a session folder, as a download: never shown
+                # in the page's origin (attachment, sandboxing CSP).
+                target = self.server.manage.session_file(
+                    *(query.get(name, [""])[0] for name in ("project", "root", "run", "name"))
+                )
+                self._file(
+                    target, "application/octet-stream", csp=DATA_FILE_CSP, download=target.name
+                )
             elif path.startswith("/data-page/"):
                 target = self.server.data.page(path.removeprefix("/data-page/"))
                 self._file(target, "text/html; charset=utf-8", csp=SAVED_PAGE_CSP)
@@ -362,6 +381,8 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/stop":
                 workspace.stop(body.get("id", ""))
                 self._json({"ok": True})
+            elif path.startswith("/api/manage/"):
+                self._json(self.server.manage.post(path.removeprefix("/api/manage/"), body))
             else:
                 self._json({"error": "Not found"}, 404)
         except ConnectionError:
@@ -381,10 +402,23 @@ class Handler(BaseHTTPRequestHandler):
             self._refuse(408, f"The request body did not arrive within {self.timeout} s")
         except PermissionError as exc:
             self._refuse(403, exc)
+        except FileNotFoundError as exc:
+            self._refuse(404, exc)
+        except Conflict as exc:
+            # A write made against a record or file that changed meanwhile:
+            # nothing was saved, and the client is told to reload.
+            self._refuse(409, exc)
         except (ValueError, OSError, AlhazenError, ValidationError) as exc:
             self._refuse(400, exc)
 
-    def _file(self, path: Path, kind: str, ranges: bool = False, csp: str = PAGE_CSP) -> None:
+    def _file(
+        self,
+        path: Path,
+        kind: str,
+        ranges: bool = False,
+        csp: str = PAGE_CSP,
+        download: str | None = None,
+    ) -> None:
         # An open descriptor pins the file whose size and range we send.
         with path.open("rb") as stream:
             stream.seek(0, 2)
@@ -407,6 +441,11 @@ class Handler(BaseHTTPRequestHandler):
                 status = 206
             remaining = end - start + 1
             self._headers(status, kind, remaining, csp)
+            if download is not None:
+                # The name as RFC 6266 spells a UTF-8 one; never the path.
+                self.send_header(
+                    "Content-Disposition", f"attachment; filename*=UTF-8''{quote(download)}"
+                )
             if ranges:
                 self.send_header("Accept-Ranges", "bytes")
             if status == 206:
