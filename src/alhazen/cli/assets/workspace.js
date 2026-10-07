@@ -744,8 +744,12 @@ function identityChanged() {
   const mode = $('mode').value;
   const record = chosenSubject();
   const person = chosenExperimenter();
-  identityChoice[p.id] = {subject: record?.id || '', experimenter: person?.id || ''};
-  sessionStorage.setItem('alhazen-workspace-identity', JSON.stringify(identityChoice));
+  // Kept only once this experiment's people are loaded: before that the
+  // menus are empty, and an empty choice must not replace its real one.
+  if (people) {
+    identityChoice[p.id] = {subject: record?.id || '', experimenter: person?.id || ''};
+    sessionStorage.setItem('alhazen-workspace-identity', JSON.stringify(identityChoice));
+  }
   if (record) $('typed-identity').open = false;
   $('subject').disabled = !!record;
   $('initials').disabled = !!record;
@@ -943,9 +947,12 @@ function modeChanged() {
  */
 async function chooseProject(id, nextView = null) {
   if (selected !== id) {
-    // The people belong to the experiment being left.
+    // The people belong to the experiment being left: its menus go with
+    // them until this one's are loaded (loadPeople).
     people = null;
     peopleEpoch += 1;
+    fillMenu($('subject-record'), [['', 'Loading…']], '');
+    fillMenu($('experimenter'), [['', 'Loading…']], '');
   }
   selected = id;
   localStorage.setItem('alhazen-workspace-project', id || '');
