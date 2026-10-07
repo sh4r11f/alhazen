@@ -658,6 +658,9 @@ function launchSummary() {
     const subject = chosenSubject()?.code || $('subject').value.trim();
     if (subject) parts.push(`sub-${subject}`);
     parts.push(`ses ${$('session').value || 1}`);
+  } else if (measureNeed() !== 'none') {
+    const subject = chosenSubject()?.code || $('subject').value.trim();
+    if (subject) parts.push(`sub-${subject}`);
   }
   if (['run', 'test', 'simulate', 'measure'].includes(mode) && chosenExperimenter()) {
     parts.push(`by ${chosenExperimenter().name}`);
