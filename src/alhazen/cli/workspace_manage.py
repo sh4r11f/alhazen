@@ -521,8 +521,8 @@ def _console_run_folder(console: Path, roots: list[Any], mode: str | None) -> st
         candidates = [r for r in roots if r.kind == kind]
     found = []
     for root in candidates:
-        try:
-            found.append(str(_run_folder(root.path, run_id).resolve()))
-        except (ValueError, FileNotFoundError):
-            continue
+        # Kept inside its data folder: the ID comes from a console's text.
+        folder = (root.path / run_id).resolve()
+        if folder.is_dir() and folder.is_relative_to(root.path.resolve()):
+            found.append(str(folder))
     return found[0] if len(found) == 1 else None

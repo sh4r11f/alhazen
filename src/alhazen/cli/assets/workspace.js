@@ -2480,6 +2480,9 @@ try {
   Object.assign(identityChoice,
     JSON.parse(sessionStorage.getItem('alhazen-workspace-identity') || '{}'));
 } catch (e) {
+  // Only an unreadable saved value is passed over (it is a convenience, kept
+  // for this tab); anything else is a bug and is thrown.
+  if (!(e instanceof SyntaxError)) throw e;
   console.warn('Ignoring an unreadable saved choice of subject and experimenter', e);
 }
 
