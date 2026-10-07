@@ -331,6 +331,20 @@ def _import_sglx() -> Any:
         ) from error
 
 
+def parse_stream(stream: str) -> tuple[int, int]:
+    """A stream name as the SpikeGLX remote API addresses it, (js, ip):
+    ``imec0`` is (2, 0), ``nidq`` (0, 0), ``obx1`` (1, 1)."""
+    return _parse_stream(stream)
+
+
+def spikeglx_connection(cfg: SpikeSourceConfig) -> _SglxConnection:
+    """A connection to SpikeGLX's command server, for a caller that only
+    reads: version, whether a run is acquiring, a stream's rate, channel
+    counts and samples (measure mode's neural check). Opening it neither
+    starts nor stops an acquisition. Close it with ``close()``."""
+    return _SglxConnection(cfg.host, cfg.port)
+
+
 # ----------------------------------------------------------------------
 # The real backend
 # ----------------------------------------------------------------------
