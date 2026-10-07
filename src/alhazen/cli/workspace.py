@@ -1791,7 +1791,14 @@ class Workspace:
                     f"The initials typed ({typed_initials}) are not sub-{subject['id']}'s"
                 )
             update = {"subject": subject["id"], "initials": subject["initials"] or ""}
-        elif named_subject and not request.subject.strip():
+        elif request.subject.strip():
+            # A typed subject beside a registry experimenter: kept as typed.
+            snapshot["subject"] = {
+                "record_id": None,
+                "id": request.subject.strip(),
+                "initials": request.initials.strip().upper() or None,
+            }
+        elif named_subject:
             raise ValueError("Choose the subject for this session")
         return request.model_copy(update=update), snapshot
 
