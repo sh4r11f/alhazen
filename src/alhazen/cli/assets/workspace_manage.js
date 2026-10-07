@@ -164,7 +164,7 @@
     const main = el('div', 'm-exp-main');
     const name = h.link('m-exp-name', h.titleOf(p), p.id, 'general');
     const facts = el('p', 'm-exp-path');
-    facts.box.append(el('span', 'm-mono', h.slugOf(p)), el('span', '', p.path));
+    facts.append(el('span', 'm-mono', h.slugOf(p)), el('span', '', p.path));
     main.append(name, facts);
     if (p.meta?.description) main.append(el('p', 'm-exp-description', p.meta.description));
     const env = el('dl', 'm-exp-facts');
@@ -320,7 +320,7 @@
     actions.append(button(p.archived ? 'Restore' : 'Archive…', 'quiet', confirmArchive));
     const box = panel('EXPERIMENT', 'About this experiment', actions);
     const facts = el('dl', 'm-facts');
-    const add = (term, value) => facts.box.append(el('dt', '', term), el('dd', '', value));
+    const add = (term, value) => facts.append(el('dt', '', term), el('dd', '', value));
     add('Folder', p.path);
     add('Short name', h.slugOf(p));
     add('Protocol version', p.version ? `v${p.version}` : `unknown — ${p.version_error}`);
@@ -1051,7 +1051,7 @@
     const box = panel('SESSION', `sub-${s.subject} · ses ${s.session} · run ${s.run}`,
       button('Close', 'quiet', () => detail.replaceChildren()));
     const facts = el('dl', 'm-facts');
-    const add = (term, value) => facts.box.append(el('dt', '', term), el('dd', '', value ?? '—'));
+    const add = (term, value) => facts.append(el('dt', '', term), el('dd', '', value ?? '—'));
     add('Folder', run.path);
     add('Date', s.date);
     add('Task', s.task);
@@ -1111,7 +1111,7 @@
     const box = panel('LAUNCH', `${h.label(l.mode)} · ${when(l.started)}`,
       button('Close', 'quiet', () => detail.replaceChildren()));
     const facts = el('dl', 'm-facts');
-    const add = (term, value) => facts.box.append(el('dt', '', term), el('dd', '', value ?? '—'));
+    const add = (term, value) => facts.append(el('dt', '', term), el('dd', '', value ?? '—'));
     add('Status', l.status + (l.active ? ' (in progress)' : ''));
     add('Task', l.parameter_set ? `${l.parameter_set}${l.task ? ` (${l.task})` : ''}` : l.task);
     add('Rig', l.rig);
