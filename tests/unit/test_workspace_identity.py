@@ -151,6 +151,53 @@ class TestRegistryLaunch:
         assert flag(argv_of(run), "--experimenter") == "Zoë Lee"
 
 
+class TestMeasureRig:
+    CATALOG = [
+        {
+            "key": "tracker.calibration",
+            "group": "Eye tracker",
+            "title": "Calibration",
+            "order": 1,
+            "requires": [],
+            "subject": "required",
+        },
+        {
+            "key": "monitor.refresh",
+            "group": "Monitor",
+            "title": "Refresh",
+            "order": 2,
+            "requires": [],
+            "subject": "none",
+        },
+    ]
+
+    def test_a_registered_subject_reaches_a_measurement_of_the_subject(self, workspace, people):
+        people["project"]["measurements"] = self.CATALOG
+        request = request_for(
+            workspace,
+            mode="measure",
+            measurements=["tracker.calibration"],
+            subject_record=people["subject"]["id"],
+            experimenter=people["experimenter"]["id"],
+        )
+        resolved, identity = workspace._identity(people["project"], request)
+        command = workspace._command(resolved, workspace.directory / "job")
+        assert command[command.index("--sub") + 1] == "007"
+        assert "--initials" not in command and "--experimenter" not in command
+        assert identity["experimenter"]["record_id"] == people["experimenter"]["id"]
+
+    def test_a_machine_measurement_sends_no_subject(self, workspace, people):
+        people["project"]["measurements"] = self.CATALOG
+        request = request_for(
+            workspace,
+            mode="measure",
+            measurements=["monitor.refresh"],
+            subject_record=people["subject"]["id"],
+        )
+        resolved, _ = workspace._identity(people["project"], request)
+        assert "--sub" not in workspace._command(resolved, workspace.directory / "job")
+
+
 class TestRefusals:
     def refused(self, workspace, words, **overrides):
         before = set(workspace.runs)
