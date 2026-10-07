@@ -17,21 +17,18 @@ with a meter, in a CSV.
 
 from __future__ import annotations
 
-import csv
 import logging
-from pathlib import Path
-
-import numpy as np
 
 from alhazen.config.gamma import (
     GAMMA_FILENAME_SUFFIX,
+    fit_gamma,
     gamma_path,
     load_gamma,
+    read_measurements,
     write_gamma,
 )
 from alhazen.config.models import RigConfig
 from alhazen.display.ruler import draw_ruler_on, ruler_report
-from alhazen.errors import ConfigError
 
 log = logging.getLogger(__name__)
 
@@ -78,69 +75,3 @@ def draw_ruler(rig: RigConfig, size_dva: float = 10.0, windowed: bool = False) -
     finally:
         display.close()
     return report
-
-
-def read_measurements(path: Path | str) -> tuple[np.ndarray, np.ndarray]:
-    """Read a photometer CSV: ``level,luminance`` per row.
-
-    ``level`` is what was displayed (0–1 or 0–255) and ``luminance`` what the
-    meter read (any unit — only the shape of the curve matters).
-    """
-    path = Path(path)
-    if not path.exists():
-        raise ConfigError(f"measurements file not found: {path}")
-    levels: list[float] = []
-    luminances: list[float] = []
-    with path.open(encoding="utf-8-sig") as handle:
-        reader = csv.DictReader(handle)
-        if reader.fieldnames is None or not {"level", "luminance"} <= set(reader.fieldnames):
-            raise ConfigError(
-                f"{path} needs 'level' and 'luminance' columns; found {reader.fieldnames}"
-            )
-        for row in reader:
-            levels.append(float(row["level"]))
-            luminances.append(float(row["luminance"]))
-    if len(levels) < 3:
-        raise ConfigError(
-            f"{path} has {len(levels)} measurements; a gamma fit needs at least 3 "
-            f"(and is worth doing with 10 or more)"
-        )
-    values = np.asarray(levels, dtype=float)
-    # Levels given in 0-255 are normalised, so either convention works.
-    if values.max() > 1.0:
-        values = values / 255.0
-    return values, np.asarray(luminances, dtype=float)
-
-
-def fit_gamma(levels: np.ndarray, luminances: np.ndarray) -> dict[str, float]:
-    """Fit ``luminance = min + (max - min) · level**gamma``.
-
-    Fitted in log space, which turns the power law into a straight line and
-    makes the fit a least-squares problem rather than an optimisation that
-    could fail to converge on a rig with an experimenter waiting.
-    """
-    minimum = float(luminances.min())
-    maximum = float(luminances.max())
-    if maximum <= minimum:
-        raise ConfigError(
-            "the measured luminances do not increase — check that the meter was "
-            "reading the patch and that the levels were displayed in order"
-        )
-    normalized = (luminances - minimum) / (maximum - minimum)
-    # Endpoints carry no information about the exponent (they are 0 and 1 by
-    # construction) and log(0) is undefined, so they are excluded.
-    usable = (levels > 0) & (normalized > 0) & (levels < 1) & (normalized < 1)
-    if usable.sum() < 2:
-        raise ConfigError(
-            "not enough intermediate measurements to fit a gamma: measure some levels "
-            "between black and white"
-        )
-    gamma, _intercept = np.polyfit(np.log(levels[usable]), np.log(normalized[usable]), 1)
-    residuals = normalized[usable] - levels[usable] ** gamma
-    return {
-        "gamma": float(gamma),
-        "min_luminance": minimum,
-        "max_luminance": maximum,
-        "n_measurements": int(len(levels)),
-        "residual_rms": float(np.sqrt(np.mean(residuals**2))),
-    }
