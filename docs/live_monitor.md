@@ -673,6 +673,23 @@ flowchart LR
   C --> P["page: cameraLoop()<br/>redraws the canvas<br/>and the circles only"]
 ```
 
+**Nothing above the camera's controls changes height.** The *eyes* value in
+the strip above the image is one word. Under the image come the tracker's
+controls, and only then the panel's alert (`alert` in its data: no eye in the
+image) and the line that says whether the image is live. So the − and + of
+the iris size stay under the pointer while an eye drops in and out, and the
+alert never covers the picture.
+
+```mermaid
+flowchart TB
+  S["stats strip: read at · eyes · iris size<br/>one line, with or without an eye"]
+  I["camera image, with the eye circles drawn over it<br/>height fixed by the image's shape"]
+  C["Iris size − value +"]
+  A["alert: NO EYE IN THE CAMERA IMAGE<br/>only while no eye is found"]
+  L["live line, key to the circle, note"]
+  S --> I --> C --> A --> L
+```
+
 ## Frame-timing panel
 
 Every session gets a **Frame intervals** panel in the *Session* group, built

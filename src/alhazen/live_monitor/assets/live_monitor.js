@@ -1875,6 +1875,21 @@ function drawImage(legendHost, host, data) {
   context.putImageData(image, 0, 0);
   /* The eyes the tracker found in this picture came with it in the state. */
   drawCameraEyes(canvas, data.eyes);
+  drawCameraAlert(host, data);
+}
+
+/**
+ * The panel's alert, when it has one: the tracker's sentence that no eye is
+ * in the image, in the critical colour.
+ *
+ * Always drawn BELOW the picture and the controls, never above or over them.
+ * Above, it pushed both down each time the eye was lost and back up when it
+ * was found, and the iris size control moved out from under the pointer.
+ * Over the picture, it hid the part of the image the experimenter was
+ * searching for the eye in. Below, it moves only the lines under it.
+ */
+function drawCameraAlert(host, data) {
+  if (data.alert) htmlEl('div', 'camera-alert', data.alert, host);
 }
 
 /**
@@ -1956,13 +1971,20 @@ const cameraArrivals = [];
 let cameraProblem = '';
 let cameraPaintQueued = false;
 
-/** The canvas a streamed camera panel draws into, the line under it, and
- *  the tracker settings it offers. */
+/** The canvas a streamed camera panel draws into, the tracker settings it
+ *  offers, its alert, and the line that says whether the image is live.
+ *
+ *  In that order, on purpose: the controls come straight after the picture,
+ *  whose height is fixed by its shape, so nothing above them changes height
+ *  while somebody is pressing them. The alert comes and goes, and the line's
+ *  text changes (in a narrow card a longer text takes a second line), so
+ *  both are under the controls. */
 function drawCameraStream(legendHost, host, data) {
   const canvas = cameraBox(legendHost, host, data);
   canvas.dataset.stream = '1';
-  htmlEl('div', 'camera-live', null, host);
   drawTrackerControls(host, data);
+  drawCameraAlert(host, data);
+  htmlEl('div', 'camera-live', null, host);
   paintCamera();
 }
 

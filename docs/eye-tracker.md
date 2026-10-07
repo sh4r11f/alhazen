@@ -201,7 +201,10 @@ The **Eye tracker** section of the panels holds:
   and **L** or **R** beside it, and its diameter is the expected iris size,
   so it should sit on the edge of the iris. An eye with no circle is an eye
   the device is not tracking. The circles come with each frame, so they
-  follow the picture.
+  follow the picture. When the device finds no eye at all, the *eyes* value
+  reads **none** in red and the sentence saying so appears in a red bar
+  under the iris size control. It is under the image and the control, not
+  above them, so both stay where they are while an eye drops in and out.
 
   ```mermaid
   flowchart LR
