@@ -16,6 +16,7 @@ import os
 import re
 import shlex
 import signal
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -24,9 +25,15 @@ from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 from typing import Any, Literal
 
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # pragma: no cover - Python 3.10
+    import tomli as tomllib
+
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
+from alhazen.cli.people import PeopleError, PeopleRegistry
 from alhazen.cli.workspace_schema import TASK_NAME_KEY
 from alhazen.config.calibration_images import NAME_PATTERN
 from alhazen.config.experiment import experiment_stimuli, experiment_title
@@ -43,8 +50,10 @@ from alhazen.config.rigs import (
     rig_mapping,
 )
 from alhazen.data.atomic import replace_atomically
-from alhazen.errors import ConfigError
+from alhazen.data.participants import check_participant
+from alhazen.errors import AlhazenError, ConfigError
 from alhazen.modes import Mode, flag_refusal, real_data_refusal
+from alhazen.modes.rehearsal import rehearsal_root
 
 log = logging.getLogger(__name__)
 
@@ -114,8 +123,20 @@ if importlib.util.find_spec("alhazen.config.calibration_images") is not None:
     from alhazen.config.models import CalibrationTargetConfig
     calibration = {"dir": str(IMAGE_DIR.resolve()), "images": list(image_names()),
                    "defaults": CalibrationTargetConfig().model_dump(mode="json")}
+capabilities = None
+if importlib.util.find_spec("alhazen.cli.capabilities") is not None:
+    from alhazen.cli.capabilities import CAPABILITIES
+    capabilities = sorted(CAPABILITIES)
+measurements = None
+if importlib.util.find_spec("alhazen.modes.measure_jobs") is not None:
+    try:
+        from alhazen.modes.measure_jobs import catalog, installed_jobs
+        measurements = {"jobs": catalog(installed_jobs())}
+    except Exception as error:
+        measurements = {"error": f"{type(error).__name__}: {error}"}
 print(json.dumps({"alhazen": alhazen.__version__, "python": sys.version, "shared_rigs": shared,
-                  "psychopy": psychopy, "calibration_targets": calibration}))
+                  "psychopy": psychopy, "calibration_targets": calibration,
+                  "measurements": measurements, "capabilities": capabilities}))
 """
 # Said wherever a project registered before the probe asked for shared rigs
 # is missing them: its record has no list, which is not the same as an empty
@@ -232,9 +253,40 @@ def probe_interpreter(python: str, project_path: str) -> dict[str, Any]:
             # an alhazen from before the choice (and for a record registered
             # before the probe asked), which the page then does not offer.
             "calibration_targets": _calibration_offer(report.get("calibration_targets")),
+            # What the project's command line can be asked to record
+            # (alhazen.cli.capabilities): [] for an alhazen from before the
+            # list, which records no experimenter in its session folders.
+            "capabilities": _capabilities(report.get("capabilities")),
+            # The measurements its alhazen and installed packages offer for
+            # Measure rig, in run order; None for an alhazen from before they
+            # were selectable (the page then shows the fixed list it runs).
+            # A provider that failed to load is recorded, not fatal: the
+            # project can still run everything else.
+            **_measurement_offer(report.get("measurements")),
         }
     except (IndexError, ValueError, KeyError, TypeError) as exc:
         raise ValueError(unexpected) from exc
+
+
+def _capabilities(reported: Any) -> list[str]:
+    """The probe's capability names, checked to be plain names."""
+    if reported is None:
+        return []
+    if not isinstance(reported, list) or not all(
+        isinstance(name, str) and re.fullmatch(r"[a-z][a-z0-9-]{0,40}", name) for name in reported
+    ):
+        raise ValueError(f"unexpected capabilities {reported!r}")
+    return sorted(reported)
+
+
+def records_experimenter(project: dict[str, Any]) -> bool | None:
+    """Whether the project's alhazen records an experimenter in its session
+    folders: True, False, or None when its registration predates the
+    question (Project settings → save asks again)."""
+    capabilities = project.get("capabilities")
+    if capabilities is None:
+        return None
+    return "experimenter" in capabilities
 
 
 def _calibration_offer(reported: Any) -> dict[str, Any] | None:
@@ -251,6 +303,130 @@ def _calibration_offer(reported: Any) -> dict[str, Any] | None:
         "images": names,
         "defaults": dict(reported["defaults"]),
     }
+
+
+# What a measurement key may be (alhazen.modes.measure_jobs.KEY_CHARS): it
+# becomes a command-line value, so nothing else from a reply gets through.
+MEASUREMENT_KEY = re.compile(r"[a-z0-9-]+(\.[a-z0-9-]+)+")
+# A selection longer than this is not a selection anyone made by hand.
+MAX_MEASUREMENTS = 64
+
+
+def _measurement_offer(reported: Any) -> dict[str, Any]:
+    """The probe's measurement catalog, checked: plain keys, groups and
+    titles as text, prerequisites that name listed keys. ``measurements`` is
+    None for an alhazen without selectable measurements; a provider that
+    could not load is kept as ``measurements_error`` beside an empty list."""
+    if reported is None:
+        return {"measurements": None, "measurements_error": None}
+    if "error" in reported:
+        return {"measurements": [], "measurements_error": str(reported["error"])}
+    jobs: list[dict[str, Any]] = []
+    for entry in reported["jobs"]:
+        key = str(entry["key"])
+        if not MEASUREMENT_KEY.fullmatch(key):
+            raise ValueError(f"unexpected measurement key {key!r}")
+        jobs.append(
+            {
+                "key": key,
+                "group": str(entry["group"]),
+                "title": str(entry["title"]),
+                "description": str(entry.get("description", "")),
+                "order": int(entry["order"]),
+                "needs": [str(n) for n in entry.get("needs", [])],
+                "requires": [str(r) for r in entry.get("requires", [])],
+                "provider": str(entry.get("provider", "alhazen")),
+                "inputs": [str(i) for i in entry.get("inputs", [])],
+                # "required" / "optional" / "none": whether the measurement is
+                # of a person or animal in the chair (an older catalog: none).
+                "subject": str(entry.get("subject", "none")),
+            }
+        )
+    keys = {job["key"] for job in jobs}
+    for job in jobs:
+        if set(job["requires"]) - keys:
+            raise ValueError(f"measurement {job['key']} requires one that is not listed")
+    return {"measurements": jobs, "measurements_error": None}
+
+
+def check_measurements(project: dict[str, Any], mode: str, selected: list[str] | None) -> None:
+    """Refuse a measurement selection the project's run.py would refuse,
+    before a run record exists — the server's check, whatever the page sent.
+
+    Only Measure rig takes measurements. A project whose alhazen offers them
+    must name at least one: an empty selection is not "everything". Each
+    must be one its alhazen listed, once, with its prerequisites selected
+    too. A project whose alhazen predates them takes none.
+    """
+    offered = project.get("measurements")
+    if mode != Mode.MEASURE.value:
+        if selected:
+            raise ValueError("Only Measure rig takes a selection of measurements")
+        return
+    if offered is None:
+        if selected:
+            raise ValueError(
+                f"{project['name']}'s alhazen runs Measure rig's fixed list and cannot choose "
+                "measurements; update its alhazen, then open Project settings and save"
+            )
+        return
+    if not selected:
+        raise ValueError("Choose at least one measurement for Measure rig")
+    if len(selected) > MAX_MEASUREMENTS:
+        raise ValueError("Too many measurements selected")
+    by_key = {job["key"]: job for job in offered}
+    seen: set[str] = set()
+    for key in selected:
+        if key in seen:
+            raise ValueError(f"The measurement {key} is selected twice")
+        if key not in by_key:
+            raise ValueError(f"{key} is not a measurement {project['name']}'s alhazen offers")
+        seen.add(key)
+    for key in selected:
+        missing = [need for need in by_key[key]["requires"] if need not in seen]
+        if missing:
+            titles = ", ".join(by_key[need]["title"] for need in missing)
+            raise ValueError(f"{by_key[key]['title']} needs {titles} in the same run")
+
+
+def measurement_subject(project: dict[str, Any], request: Launch) -> str | None:
+    """The subject ID a Measure rig launch passes on (--sub), or None.
+
+    Only measurements of the person or animal in the chair take one (the
+    tracker's calibration and accuracy, a vergence check): those are refused
+    without it, since a gaze measurement nobody can attribute is not one.
+    Every other measurement is of the machine and takes no subject, even
+    when the form holds one."""
+    if request.mode != Mode.MEASURE.value or not request.measurements:
+        return None
+    by_key = {job["key"]: job for job in project.get("measurements") or []}
+    needs = [
+        by_key[k]["title"]
+        for k in request.measurements
+        if by_key.get(k, {}).get("subject") == "required"
+    ]
+    wants = needs or [
+        by_key[k]["title"]
+        for k in request.measurements
+        if by_key.get(k, {}).get("subject") == "optional"
+    ]
+    subject = request.subject.strip()
+    if needs and not subject:
+        raise ValueError(f"{', '.join(needs)} measure the subject in the chair: give a subject ID")
+    return subject if wants and subject else None
+
+
+def measurement_status(run_dir: Path) -> dict[str, Any] | None:
+    """A Measure rig run's queue, as its child last wrote it; None when there
+    is none (yet), or the file is not one this can read."""
+    path = run_dir / "measure-status.json"
+    try:
+        if not path.is_file() or path.stat().st_size > 1_000_000:
+            return None
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
 
 
 def calibration_picture(project: dict[str, Any], name: str) -> Path:
@@ -829,6 +1005,18 @@ class Launch(BaseModel):
     # The calibration target for this run, when the page's choice differs
     # from the rig's (CalibrationChoice); None runs the rig's own.
     calibration_target: CalibrationChoice | None = None
+    # The measurements Measure rig runs, by key (check_measurements); None
+    # for every other mode, and for a project whose alhazen predates them.
+    measurements: list[str] | None = None
+    # The subject and the experimenter by their people-registry record ids
+    # (cli/people.py), as the Run page selects them. The server resolves the
+    # subject's ID and initials from the record — `subject` and `initials`
+    # above must then be empty or the same — and records a snapshot of both
+    # records with the run (`Workspace._identity`). None: a launch that
+    # names no record, as every client before the registry did (typed
+    # subject and initials, no experimenter).
+    subject_record: str | None = None
+    experimenter: str | None = None
 
 
 # Every flag `_mode_command` can emit, whichever mode. An extra argument
@@ -869,6 +1057,12 @@ MODE_FLAGS = frozenset(
         "--calibration-target",
         "--calibration-images",
         "--calibration-motion",
+        # Sent for a registry experimenter, to a project whose alhazen
+        # records one (records_experimenter).
+        "--experimenter",
+        "--experimenter-id",
+        "--measure",
+        "--measure-status",
     }
 )
 # The same for a standalone preview module: the flags `_script_command`
@@ -1054,6 +1248,8 @@ def _mode_command(
     no_browser: str = "--no-live-monitor-browser",
     task: str | None = None,
     reserved: frozenset[str] = MODE_FLAGS,
+    measure_subject: str | None = None,
+    experimenter: dict[str, Any] | None = None,
 ) -> list[str]:
     """run.py's arguments for one of the six modes: the launcher's flags, then the extras.
 
@@ -1100,6 +1296,11 @@ def _mode_command(
             command += ["--sub", request.subject.strip()]
         if initials is not None:
             command += ["--initials", initials]
+        # Who runs it — the registry record's name and id — for a session
+        # that records it in session.json; None for any other launch.
+        if experimenter is not None:
+            command += ["--experimenter", experimenter["name"]]
+            command += ["--experimenter-id", experimenter["record_id"]]
     if mode in {Mode.TEST, Mode.SIMULATE}:
         command += ["--trials-per-condition", str(request.trials)]
     for flag in ("headless", "mouse", "windowed"):
@@ -1115,6 +1316,12 @@ def _mode_command(
             command += ["--clip", clip]
     if mode is Mode.DEMO:
         command += ["--screenshots", str(output)]
+    if mode is Mode.MEASURE and request.measurements:
+        for key in request.measurements:
+            command += ["--measure", key]
+        command += ["--measure-status", str(run_dir / "measure-status.json")]
+        if measure_subject is not None:
+            command += ["--sub", measure_subject]
     command += _calibration_arguments(request.calibration_target)
     # Last, after every flag of the launcher's own, where a typed command
     # puts them: run.py takes what is its own (a run.py that reads its own
@@ -1242,6 +1449,41 @@ def _real_data_instead(root: Path, shared: dict[str, Path] | None) -> list[str]:
     return [line, "To try the session on this machine, choose Test session or Simulate."]
 
 
+# launch.json's shape (Workspace.start); bumped only on an incompatible change.
+LAUNCH_SCHEMA_VERSION = 1
+
+
+def _experimenter_destination(
+    project: dict[str, Any], request: Launch, identity: dict[str, Any]
+) -> str | None:
+    """Where a launch's experimenter is recorded: in the session folder's
+    session.json when the session records one (a mode that runs trials, on
+    an alhazen that takes --experimenter), else only in the workspace's own
+    run records ("workspace"); None when no experimenter was chosen."""
+    if identity.get("experimenter") is None:
+        return None
+    is_session = request.mode in {m.value for m in Mode} and Mode(request.mode).runs_trials
+    if is_session and records_experimenter(project):
+        return "session.json"
+    return "workspace"
+
+
+def _experiment_version(root: Path) -> dict[str, Any]:
+    """``{version, version_error}`` from the experiment's pyproject.toml, read
+    as text (never by importing the experiment)."""
+    path = root / "pyproject.toml"
+    if not path.is_file():
+        return {"version": None, "version_error": "no pyproject.toml"}
+    try:
+        document = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        return {"version": None, "version_error": f"cannot read {path}: {exc}"}
+    version = (document.get("project") or {}).get("version")
+    if not isinstance(version, str) or not version:
+        return {"version": None, "version_error": "pyproject.toml gives no [project] version"}
+    return {"version": version, "version_error": None}
+
+
 def _merged_rig_text(launched: str, merged: MergedRig) -> str:
     """A run folder's rig.yaml for a rig that extends a shared one: the merged
     settings as YAML, headed by where each half came from. What ran is then
@@ -1253,6 +1495,11 @@ def _merged_rig_text(launched: str, merged: MergedRig) -> str:
         "# The experiment's file as written is rig-source.yaml, beside this one.\n"
     )
     return header + yaml.safe_dump(merged.values, sort_keys=False, allow_unicode=True)
+
+
+# Fields of a project record that are the workspace's own, not the probe's:
+# kept when the experiment is registered again (`Workspace.add`).
+MANAGED_FIELDS = ("meta", "archived", "registered")
 
 
 class Workspace:
@@ -1292,6 +1539,21 @@ class Workspace:
         # either invalidates. The lock makes concurrent requests read once.
         self._schemas: dict[tuple[str, str | None], tuple[tuple[int, str], dict[str, Any]]] = {}
         self._schema_lock = threading.Lock()
+        # The people registry (cli/people.py): the subjects and experimenters
+        # the General page manages and the Run page selects. A registry this
+        # alhazen cannot read leaves the rest of the workspace working and
+        # says why wherever a record would be used (`people_error`); the
+        # file is never moved or replaced to make it readable.
+        self.people: PeopleRegistry | None = None
+        self.people_error: str | None = None
+        try:
+            self.people = PeopleRegistry(self.directory)
+        except (PeopleError, sqlite3.Error, OSError) as exc:
+            self.people_error = f"The people registry cannot be opened: {exc}"
+            log.error("%s", self.people_error)
+        else:
+            # CSV copies a crash or a full disk left behind the database.
+            self.people.export_csv(raise_errors=False)
 
     def _save_projects(self) -> None:
         replace_atomically(self.directory / "projects.json", json.dumps(self.projects, indent=2))
@@ -1328,9 +1590,64 @@ class Workspace:
                 raise ValueError(
                     "Wait for this experiment's run to finish before changing its interpreter"
                 )
+            # What the workspace keeps about the experiment beyond its
+            # registration (its General page's notes, whether it is
+            # archived) survives registering it again.
+            previous = next((p for p in self.projects if p["id"] == project["id"]), None)
+            for kept in MANAGED_FIELDS:
+                if previous is not None and kept in previous:
+                    project[kept] = previous[kept]
+            if previous is None:
+                project["registered"] = now()
             self.projects = [p for p in self.projects if p["id"] != project["id"]] + [project]
             self._save_projects()
         return self.describe(project["id"])
+
+    def register(self, path: str, python: str = "") -> dict[str, Any]:
+        """Register a new experiment from the Experiments page. A folder that
+        is registered already is refused, naming it, rather than silently
+        re-registered: its settings are where its interpreter changes."""
+        root = Path(path).expanduser().resolve()
+        key = hashlib.sha256(str(root).encode()).hexdigest()[:16]
+        existing = next((p for p in self.projects if p["id"] == key), None)
+        if existing is not None:
+            raise ValueError(
+                f"{root} is already registered as {existing['name']}; open it to change its "
+                "interpreter"
+            )
+        return self.add(path, python)
+
+    def update_meta(self, key: str, fields: Any) -> dict[str, Any]:
+        """The experiment's own notes on the General page: a description and
+        free notes, plain text. Written to projects.json (atomically); the
+        experiment's folder is never touched."""
+        if not isinstance(fields, dict) or set(fields) - {"description", "notes"}:
+            raise ValueError("Only the description and notes can be changed here")
+        clean: dict[str, str] = {}
+        for name, value in fields.items():
+            if not isinstance(value, str) or len(value) > 4000:
+                raise ValueError(f"The {name} must be text of at most 4000 characters")
+            if any(ord(ch) < 32 and ch not in "\n\t" for ch in value):
+                raise ValueError(f"The {name} may not contain control characters")
+            clean[name] = value.strip()
+        with self.lock:
+            project = self.project(key)
+            project["meta"] = {**project.get("meta", {}), **clean}
+            self._save_projects()
+        return self.describe(key)
+
+    def set_archived(self, key: str, archived: Any) -> dict[str, Any]:
+        """Archive an experiment: kept registered, with its records and runs,
+        but listed apart on the Experiments page and left out of the sidebar."""
+        if not isinstance(archived, bool):
+            raise ValueError("archived must be true or false")
+        with self.lock:
+            project = self.project(key)
+            if archived and self.active and self.runs[self.active]["project"] == key:
+                raise ValueError("Wait for this experiment's run to finish before archiving it")
+            project["archived"] = archived
+            self._save_projects()
+        return self.describe(key)
 
     def remove(self, key: str) -> None:
         with self.lock:
@@ -1389,6 +1706,14 @@ class Workspace:
             "default_parameter_set": menu["default"],
             "parameter_sets_error": menu["error"],
             "available": (root / "run.py").is_file(),
+            # The experiment's version, the protocol its data is filed under
+            # (pyproject.toml's [project] version), or None with the reason.
+            **_experiment_version(root),
+            # Whether its alhazen records the experimenter in session.json
+            # (records_experimenter): True, False, or None when unknown.
+            "records_experimenter": records_experimenter(project),
+            "meta": project.get("meta", {}),
+            "archived": bool(project.get("archived", False)),
         }
 
     def config(self, key: str, path: str) -> dict[str, Any]:
@@ -1457,7 +1782,9 @@ class Workspace:
             self._keep_drawn_seed(shown)
         return shown
 
-    def _command(self, request: Launch, run_dir: Path) -> list[str]:
+    def _command(
+        self, request: Launch, run_dir: Path, experimenter: dict[str, Any] | None = None
+    ) -> list[str]:
         """The child's argv: run.py in one of the six modes, or a standalone script.
 
         What both share — the project's interpreter, the rig checked for
@@ -1487,7 +1814,9 @@ class Workspace:
             )
             if refusal is not None:
                 raise ValueError(refusal)
+        self._check_registered_initials(root, request, checked)
         self._check_calibration_choice(project, request, checked)
+        check_measurements(project, request.mode, request.measurements)
         task = self._task_for(project, request)
         base = [project["python"], "-u"]
         if request.mode in {m.value for m in Mode}:
@@ -1514,11 +1843,115 @@ class Workspace:
                 no_browser_flag(project.get("alhazen_version")),
                 task=task,
                 reserved=reserved,
+                measure_subject=measurement_subject(project, request),
+                experimenter=experimenter,
             )
         # A standalone script reads --rig with its own argparse and hands it
         # to load_rig, which takes a file: a shared rig goes as the file the
         # probe recorded.
         return base + _script_command(request, root, ref.path, run_dir)
+
+    @staticmethod
+    def _check_registered_initials(root: Path, request: Launch, rig: RigConfig) -> None:
+        """Refuse a run or test launch whose subject the data folder's
+        participants.tsv records with other initials — the session's own
+        check (data.participants.check_participant), made here first so the
+        refusal comes before a run record exists. The folder is the one the
+        session will write to: the rig's data_root for run, its rehearsal
+        sibling for test, relative to the experiment's folder (where a launch
+        runs). Reads only."""
+        if request.mode not in {Mode.RUN.value, Mode.TEST.value}:
+            return
+        subject, initials = request.subject.strip(), request.initials.strip()
+        if not subject or not initials:
+            return
+        data_root = Path(rig.data_root).expanduser()
+        if not data_root.is_absolute():
+            data_root = root / data_root
+        if request.mode != Mode.RUN.value:
+            data_root = rehearsal_root(data_root)
+        try:
+            check_participant(data_root, subject, normalize_initials(initials))
+        except AlhazenError as exc:
+            raise ValueError(str(exc)) from exc
+
+    def used_subjects(self, project_id: str) -> set[str]:
+        """The people-registry subject records a launch of this experiment
+        has named: their ID and recorded initials are then fixed."""
+        with self.lock:
+            return {
+                run["identity"]["subject"]["record_id"]
+                for run in self.runs.values()
+                if run.get("project") == project_id
+                and isinstance(run.get("identity"), dict)
+                and isinstance(run["identity"].get("subject"), dict)
+                and run["identity"]["subject"].get("record_id")
+            }
+
+    def _identity(self, project: dict[str, Any], request: Launch) -> tuple[Launch, dict[str, Any]]:
+        """Who a launch is for and who runs it: the request with the
+        subject's ID and initials taken from its registry record, and the
+        snapshot the run keeps (launch.json, run.json ``identity``).
+
+        A request that names no record is a typed one (every client before
+        the registry, and the command line's equivalent): its snapshot
+        records the typed subject with no record, and no experimenter —
+        "not recorded", never a guess. Refusals say what to choose.
+        """
+        is_mode = request.mode in {m.value for m in Mode}
+        mode = Mode(request.mode) if is_mode else None
+        names_people = mode is not None and (mode.runs_trials or mode is Mode.MEASURE)
+        snapshot: dict[str, Any] = {"subject": None, "experimenter": None, "source": "typed"}
+        if request.subject_record is None and request.experimenter is None:
+            if names_people and request.subject.strip():
+                snapshot["subject"] = {
+                    "record_id": None,
+                    "id": request.subject.strip(),
+                    "initials": request.initials.strip().upper() or None,
+                }
+            return request, snapshot
+        if not names_people:
+            raise ValueError(
+                "Only a session (run, test, simulate) or Measure rig takes a subject or an "
+                "experimenter; clear them for this launch"
+            )
+        assert mode is not None
+        if self.people is None:
+            raise ValueError(self.people_error or "The people registry is not available")
+        named_subject = mode in {Mode.RUN, Mode.TEST}
+        if named_subject and request.subject_record is not None and request.experimenter is None:
+            raise ValueError("Choose the experimenter who runs this session")
+        taken = self.people.launch_identity(
+            project["id"],
+            request.subject_record,
+            request.experimenter,
+            need_initials=named_subject,
+        )
+        snapshot.update(taken, source="registry")
+        update: dict[str, Any] = {}
+        subject = taken["subject"]
+        if subject is not None:
+            typed, typed_initials = request.subject.strip(), request.initials.strip().upper()
+            if typed and typed != subject["id"]:
+                raise ValueError(
+                    f"The subject ID typed ({typed}) is not the selected subject's "
+                    f"(sub-{subject['id']}); choose one or the other"
+                )
+            if typed_initials and subject["initials"] and typed_initials != subject["initials"]:
+                raise ValueError(
+                    f"The initials typed ({typed_initials}) are not sub-{subject['id']}'s"
+                )
+            update = {"subject": subject["id"], "initials": subject["initials"] or ""}
+        elif request.subject.strip():
+            # A typed subject beside a registry experimenter: kept as typed.
+            snapshot["subject"] = {
+                "record_id": None,
+                "id": request.subject.strip(),
+                "initials": request.initials.strip().upper() or None,
+            }
+        elif named_subject:
+            raise ValueError("Choose the subject for this session")
+        return request.model_copy(update=update), snapshot
 
     def _check_calibration_choice(
         self, project: dict[str, Any], request: Launch, rig: RigConfig
@@ -1731,7 +2164,18 @@ class Workspace:
                 )
             key = uuid.uuid4().hex
             run_dir = self.directory / "runs" / key
-            command = self._command(request, run_dir)
+            # Who it is for and who runs it, from the people registry when the
+            # page selected records: resolved first, so every check after
+            # this one sees the subject the record names.
+            request, identity = self._identity(self.project(request.project), request)
+            recorded_in = _experimenter_destination(
+                self.project(request.project), request, identity
+            )
+            command = self._command(
+                request,
+                run_dir,
+                experimenter=identity["experimenter"] if recorded_in == "session.json" else None,
+            )
             if request.parameters is not None and request.parameters_yaml is not None:
                 raise ValueError("Supply either parameter fields or YAML, not both")
             values = (
@@ -1748,6 +2192,29 @@ class Workspace:
             ref, shared = self._launch_rig(project, request.rig)
             merged = rig_mapping(ref.path, shared=shared)
             (run_dir / "media").mkdir(parents=True)
+            started = now()
+            # The launch as it was decided, written once and never again
+            # (mode "x"): run.json changes as the run goes on, this does not,
+            # so a record renamed on the General page later never rewrites
+            # who a past session was for or who ran it.
+            launch = {
+                "schema_version": LAUNCH_SCHEMA_VERSION,
+                "run": key,
+                "project": {"id": project["id"], "name": project["name"], "path": project["path"]},
+                "mode": request.mode,
+                "task": task,
+                "parameter_set": request.parameter_set,
+                "rig": Path(request.rig).as_posix(),
+                "rig_name": ref.name,
+                "started": started,
+                "command": command,
+                "identity": identity,
+                "experimenter_recorded_in": recorded_in,
+            }
+            with (run_dir / "launch.json").open("x", encoding="utf-8") as stream:
+                json.dump(launch, stream, indent=2, ensure_ascii=False)
+                stream.flush()
+                os.fsync(stream.fileno())
             if text is not None:
                 (run_dir / "params.yaml").write_text(text, encoding="utf-8")
             # A copy of the rig, for the record; the run itself reads the rig
@@ -1783,7 +2250,7 @@ class Workspace:
                 # not the file) and for anyone reading run.json.
                 "rig_name": ref.name,
                 "rig_source": ref.source,
-                "started": now(),
+                "started": started,
                 "finished": None,
                 "status": "running",
                 "returncode": None,
@@ -1792,11 +2259,21 @@ class Workspace:
                 "directory": str(run_dir),
                 # subject, session and initials, for a mode that runs trials.
                 **_run_identity(request),
+                # The launch's snapshot of the subject and experimenter records
+                # (launch.json holds the same, never rewritten), and where the
+                # session itself records the experimenter: "session.json", or
+                # "workspace" when its alhazen predates the flag (only here
+                # and in launch.json), None when no experimenter was chosen.
+                "identity": identity,
+                "experimenter_recorded_in": recorded_in,
                 # The seed the launch passed, None when it passed none: the
                 # session then draws its own, and _keep_drawn_seed fills it in
                 # from the console. Read off the command, which is what the
                 # child was actually told.
                 "seed": seed_argument(command),
+                # The measurements a Measure rig run was asked for, in run
+                # order as the page listed them; None for any other launch.
+                "measurements": list(request.measurements) if request.measurements else None,
             }
             self.runs[key] = run
             self._save_run(run)
@@ -1957,4 +2434,10 @@ class Workspace:
         # The existing session monitor retains its own authentication and pause
         # policy; offer its URL rather than reimplementing those controls.
         urls = re.findall(r"http://127\.0\.0\.1:\d+/\?token=[A-Za-z0-9_-]+", tail)
-        return {**run, "log": tail, "artifacts": artifacts, "monitor": urls[-1] if urls else None}
+        return {
+            **run,
+            "log": tail,
+            "artifacts": artifacts,
+            "monitor": urls[-1] if urls else None,
+            "measurement": measurement_status(directory),
+        }

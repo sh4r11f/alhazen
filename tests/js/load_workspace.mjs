@@ -30,6 +30,8 @@ const PAGE_HTML = readFileSync(new URL('workspace.html', ASSETS), 'utf8');
 const PARAMETERS_JS = fileURLToPath(new URL('workspace_parameters.js', ASSETS));
 const CALIBRATION_JS = fileURLToPath(new URL('workspace_calibration.js', ASSETS));
 const WORKSPACE_JS = fileURLToPath(new URL('workspace.js', ASSETS));
+const MANAGE_JS = fileURLToPath(new URL('workspace_manage.js', ASSETS));
+const MANAGE_SOURCE = readFileSync(MANAGE_JS, 'utf8');
 const PARAMETERS_SOURCE = readFileSync(PARAMETERS_JS, 'utf8');
 const CALIBRATION_SOURCE = readFileSync(CALIBRATION_JS, 'utf8');
 const WORKSPACE_SOURCE = readFileSync(WORKSPACE_JS, 'utf8');
@@ -146,6 +148,10 @@ function fakeServer() {
     schema: {},
     schemas: {},
     launch: () => ({ id: 'launched' }),
+    /* /api/manage/people's answer for every project: none registered, as
+     * for an experiment whose General page was never used. */
+    people: { error: null, subjects: [], experimenters: [], assigned: [], export: null,
+      files: null },
     posted: [],
     reject: () => undefined,
   };
@@ -166,6 +172,7 @@ function fakeServer() {
       throw new Error('the fake launcher has no POST route for ' + url);
     }
     if (path === '/api/state') return response(server.state);
+    if (path === '/api/manage/people') return response(server.people);
     if (path.startsWith('/api/runs/')) {
       const run = server.details[path.slice('/api/runs/'.length)];
       return run ? response(run) : response({ error: 'Unknown run' }, 404);
@@ -199,6 +206,11 @@ function fakeServer() {
  *
  * options.hash     location.hash at load, e.g. '#token=abc' (the token is
  *                  read from there; default '#token=test-token').
+ * options.search   location.search at load: the screen the address names
+ *                  (workspace.js route()). Default '?view=run', the Run page
+ *                  of the experiment used last (or the first), which is
+ *                  where the tests written before the Experiments page
+ *                  start; '' is the Experiments page.
  * options.storage  localStorage contents before the script runs.
  *
  * The handle: `server` (the fake launcher, see fakeServer), `fetches`
@@ -207,6 +219,32 @@ function fakeServer() {
  * page's scope, `byId(id)`, and `document`.
  */
 export function loadWorkspace(options = {}) {
+  /* The address, which pushState and replaceState change as a browser's
+   * do; `entries` is the session history, for a test of Back and Forward. */
+  const location = {
+    hash: options.hash === undefined ? '#token=test-token' : options.hash,
+    pathname: '/',
+    search: options.search === undefined ? '?view=run' : options.search,
+  };
+  const entries = [location.pathname + location.search];
+  const setAddress = (url) => {
+    const [path, query = ''] = String(url).split('?');
+    location.pathname = path || '/';
+    location.search = query ? '?' + query : '';
+  };
+  const history = {
+    entries: entries,
+    replaceState(state, title, url) {
+      if (url === undefined) return;
+      setAddress(url);
+      entries[entries.length - 1] = url;
+    },
+    pushState(state, title, url) {
+      setAddress(url);
+      entries.push(url);
+    },
+  };
+  const listeners = {};
   const document = new FakeDocument();
   buildPage(document);
   const server = fakeServer();
@@ -215,14 +253,16 @@ export function loadWorkspace(options = {}) {
   const sandbox = {
     document: document,
     URLSearchParams: URLSearchParams,
-    location: {
-      hash: options.hash === undefined ? '#token=test-token' : options.hash,
-      pathname: '/',
-    },
-    history: { replaceState() {} },
+    location: location,
+    history: history,
     sessionStorage: fakeStorage({}),
     localStorage: fakeStorage(options.storage || {}),
-    window: { addEventListener() {} },
+    window: {
+      addEventListener(type, listener) {
+        (listeners[type] = listeners[type] || []).push(listener);
+      },
+      open: () => null,
+    },
     console: console,
     setTimeout: (callback, ms) => {
       timers.push({ callback: callback, ms: ms });
@@ -239,12 +279,24 @@ export function loadWorkspace(options = {}) {
   vm.runInContext(PARAMETERS_SOURCE, context, { filename: PARAMETERS_JS });
   vm.runInContext(CALIBRATION_SOURCE, context, { filename: CALIBRATION_JS });
   vm.runInContext(WORKSPACE_WITHOUT_POLL, context, { filename: WORKSPACE_JS });
+  /* workspace.html loads the management script after workspace.js; it only
+   * defines window.WorkspaceManage, which workspace.js looks up when used. */
+  vm.runInContext(MANAGE_SOURCE, context, { filename: MANAGE_JS });
   return {
     document: document,
     server: server,
     fetches: fetches,
     timers: timers,
     run: (code) => vm.runInContext(code, context),
+    location: location,
+    history: history,
+    /* Back to an earlier address, as the browser's Back button: the
+     * address changes, then the page hears popstate. */
+    back: () => {
+      entries.pop();
+      setAddress(entries[entries.length - 1]);
+      for (const listener of listeners.popstate || []) listener({});
+    },
     byId: (id) => document.getElementById(id),
   };
 }

@@ -198,6 +198,11 @@ class EyeTrackerMonitor:
         # The expected iris size the device holds, as last read or set; None
         # until it has been read (the device is only asked between trials).
         self.iris_size_px: int | None = None
+        # Called with every calibration the tracker reports as taken, from
+        # whichever procedure ran it (the request before trial 1, the pause
+        # menu, the live monitor): the builder records it in the rig's
+        # calibration ledger (session/startup_calibration.py).
+        self.on_calibrated: Callable[[CalibrationResult], None] | None = None
 
     # ------------------------------------------------------------------
     # Procedures
@@ -229,6 +234,19 @@ class EyeTrackerMonitor:
             self.correction.reset(result.t)
             self.validation = None
             self.drift = None
+        ledger: str | None = None
+        if result.ok is True and self.on_calibrated is not None:
+            try:
+                self.on_calibrated(result)
+                ledger = "recorded"
+            except OSError as error:
+                # The ledger is what lets a LATER session offer this
+                # calibration for reuse; failing to write it changes nothing
+                # about this one, which is calibrated. It goes on the
+                # CALIBRATION event below, so the run's own record says so,
+                # and the next session will not offer this one for reuse.
+                ledger = f"not recorded in the rig's calibration ledger: {error}"
+                log.error("calibration %s", ledger)
         # What the target looked like, and each one shown, in order: where,
         # which picture, when — with the session seed, enough to recover a
         # random picture order. Only from a tracker that draws a target; a
@@ -257,6 +275,10 @@ class EyeTrackerMonitor:
                 "eye": result.eye,
                 "advance": result.advance,
                 "note": result.note,
+                # Whether the rig's calibration ledger holds it; absent for a
+                # session that keeps no ledger or a calibration that did not
+                # take, so those events are what they always were.
+                **({"ledger": ledger} if ledger is not None else {}),
                 # Each target's fitted gaze and error per eye, when the tracker
                 # can compute them (the TRACKPixx3); empty otherwise.
                 "targets": [

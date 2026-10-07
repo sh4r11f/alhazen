@@ -5,14 +5,17 @@
   Served by alhazen/cli/dashboard.py from this directory. The ids here are
   the contract with workspace.js, which finds every control by id and never
   walks the page's nesting; rename an id in both places or the script fails
-  at load. Structure: a sidebar (the logo, the registered experiments, each
-  with its Run experiment / Data views, and the colour theme switch), then
-  the main column holding either the welcome screen (no project yet) or the
-  selected experiment's heading and one of its two views: the workspace
-  grid (#workspace: the configuration form on the left, the run output and
-  history cards on the right) or the data view (#data-view, filled by
-  workspace_data.js). Two dialogs follow: project settings and the enlarged
-  image.
+  at load. Structure: a sidebar (the logo; Experiments, the workspace's home;
+  the open experiment's pages General / Run / Data / History; the colour
+  theme switch), then the main column holding one screen at a time, each a
+  real address (?view=experiments, ?project=<id>&view=general|run|data|history;
+  route() in workspace.js): the Experiments page (#home-view, drawn by
+  workspace_manage.js), or the open experiment's heading and one of its
+  pages: General (#general-view, workspace_manage.js), Run (#workspace: the
+  configuration form on the left, the run output and recent runs on the
+  right), Data (#data-view, workspace_data.js) or History (#history-view,
+  workspace_manage.js). Two dialogs follow: project settings and the
+  enlarged image.
 -->
 <html lang="en">
 <head>
@@ -25,6 +28,10 @@
   <!-- The schema helpers load first: workspace.js reads ParameterChoices. -->
   <script src="/workspace_parameters.js" defer></script>
   <script src="/workspace_calibration.js" defer></script>
+  <!-- Measure rig's checklist and progress: window.MeasureChoice, a module
+       workspace.js mounts into #measurement-list and #measure-progress. -->
+  <link rel="stylesheet" href="/workspace_measure.css">
+  <script src="/workspace_measure.js" defer></script>
   <script src="/workspace.js" defer></script>
   <!-- The Data view: its stylesheet, then the view itself.
        workspace_data.js defines window.WorkspaceData = {show, hide};
@@ -33,6 +40,11 @@
        "Data inspection is not available" when the script is missing. -->
   <link rel="stylesheet" href="/workspace_data.css">
   <script src="/workspace_data.js" defer></script>
+  <!-- The management pages: Experiments, General and History.
+       workspace_manage.js defines window.WorkspaceManage; workspace.js
+       calls it to draw those pages and says so plainly when it is missing. -->
+  <link rel="stylesheet" href="/workspace_manage.css">
+  <script src="/workspace_manage.js" defer></script>
 </head>
 <body>
   <!-- Sidebar: logo, the registered experiments (renderState() in
@@ -97,9 +109,24 @@
         </svg>
         <span>alhazen<small>Experiment workspace</small></span>
       </a>
-      <div class="sidebar-label">YOUR EXPERIMENTS <span id="project-count">0</span></div>
-      <nav id="projects" aria-label="Experiments"></nav>
-      <button class="add-project" id="add-project">＋ Add experiment</button>
+      <!-- The workspace's home, then the open experiment's pages
+           (renderNav() in workspace.js). Each is a link to its address, so
+           Back, Forward, reload and a new tab all land on the same screen. -->
+      <nav class="nav-global" aria-label="Workspace">
+        <a id="nav-experiments" class="nav-item" href="/?view=experiments">
+          <span class="nav-glyph" aria-hidden="true">▤</span>
+          <span class="nav-label">Experiments</span>
+          <span id="project-count" class="nav-count">0</span>
+        </a>
+      </nav>
+      <!-- A run in progress, wherever the reader is: its experiment and a
+           way back to its Run page. Navigating never stops it. -->
+      <a id="nav-running" class="nav-running" hidden></a>
+      <section id="nav-experiment" class="nav-experiment" aria-labelledby="nav-experiment-title" hidden>
+        <div class="sidebar-label">EXPERIMENT</div>
+        <p id="nav-experiment-title" class="nav-experiment-title"></p>
+        <nav id="experiment-nav" class="experiment-nav" aria-label="Experiment pages"></nav>
+      </section>
       <div class="sidebar-bottom">
         <!-- Colour theme: follow the system (the default), or always light
              or dark; remembered in localStorage (setTheme() in
@@ -131,16 +158,30 @@
     <!-- Every failed request lands here (see error() in workspace.js). -->
     <div id="error" role="alert" hidden></div>
 
-    <!-- Welcome screen, shown while no experiment is registered. -->
-    <section id="empty" class="welcome" hidden>
-      <div class="welcome-art" aria-hidden="true">◎</div>
-      <p class="eyebrow">FROM CONFIGURATION TO OBSERVATION</p>
-      <h1>Your experiments,<br>in one place.</h1>
-      <p>
-        Add an Alhazen project to choose a rig, tune parameters,<br>
-        and preview, record or run your experiment.
-      </p>
-      <button class="primary" id="empty-add">＋ Add your first experiment</button>
+    <!-- The Experiments page: every registered experiment, registration,
+         and the archive (drawn by workspace_manage.js into #home-list). The
+         welcome text shows while none is registered. -->
+    <section id="home-view" class="home" hidden>
+      <div class="home-heading">
+        <div>
+          <p class="eyebrow">EXPERIMENTS</p>
+          <h1>Your experiments</h1>
+          <p class="home-sub">Register an Alhazen project, then open it to set up its people and
+            rigs, run it, and look back at its sessions.</p>
+        </div>
+        <button class="primary" type="button" id="add-project">＋ Register experiment</button>
+      </div>
+      <section id="empty" class="welcome" hidden>
+        <div class="welcome-art" aria-hidden="true">◎</div>
+        <p class="eyebrow">FROM CONFIGURATION TO OBSERVATION</p>
+        <h2>Your experiments,<br>in one place.</h2>
+        <p>
+          Register an Alhazen project to choose a rig, tune parameters,<br>
+          and preview, record or run your experiment.
+        </p>
+        <button class="primary" id="empty-add">＋ Register your first experiment</button>
+      </section>
+      <div id="home-list" class="home-list"></div>
     </section>
 
     <!-- The selected experiment's heading, above both of its views: its
@@ -161,7 +202,11 @@
       <button class="quiet" id="project-settings">Project settings ↗</button>
     </section>
 
-    <!-- The Run experiment view of the selected experiment. -->
+    <!-- The General page of the open experiment: its notes and
+         registration, subjects, experimenters and rigs (workspace_manage.js). -->
+    <div id="general-view" class="manage-page" hidden></div>
+
+    <!-- The Run page of the open experiment. -->
     <div id="workspace" hidden>
 
       <div class="workspace-grid">
@@ -188,22 +233,43 @@
             <section class="stage" id="options-stage" aria-labelledby="options-title">
               <h3 class="stage-title" id="options-title">Run options</h3>
 
-              <!-- Subject ID and initials side by side: the initials are the
-                   check on the number, recorded and never put in a file name. -->
-              <div id="identity" class="field-pair">
-                <div>
-                  <label for="subject">Subject ID</label>
-                  <input id="subject" placeholder="e.g. s01">
+              <!-- Who the session is for and who runs it: records from the
+                   experiment's General page, by their ids; the server takes
+                   the subject's ID and initials from the record. The session
+                   number beside them. A subject not registered yet can still
+                   be typed, folded away under the selectors. -->
+              <div id="identity" class="identity">
+                <div class="field-pair">
+                  <div id="subject-record-field">
+                    <label for="subject-record">Subject</label>
+                    <select id="subject-record"></select>
+                  </div>
+                  <div>
+                    <label for="session">Session</label>
+                    <input id="session" type="number" min="1" value="1" required>
+                  </div>
                 </div>
-                <div>
-                  <label for="initials">Initials</label>
-                  <input id="initials" placeholder="e.g. HD" maxlength="5" autocomplete="off">
-                </div>
-                <div>
-                  <label for="session">Session</label>
-                  <input id="session" type="number" min="1" value="1" required>
-                </div>
+                <details id="typed-identity" class="typed-identity">
+                  <summary>Type an unregistered subject instead</summary>
+                  <!-- Subject ID and initials side by side: the initials are the
+                       check on the number, recorded and never put in a file name. -->
+                  <div class="field-pair">
+                    <div>
+                      <label for="subject">Subject ID</label>
+                      <input id="subject" placeholder="e.g. s01">
+                    </div>
+                    <div>
+                      <label for="initials">Initials</label>
+                      <input id="initials" placeholder="e.g. HD" maxlength="5" autocomplete="off">
+                    </div>
+                  </div>
+                </details>
               </div>
+              <div id="experimenter-field" class="experimenter-field">
+                <label for="experimenter">Experimenter</label>
+                <select id="experimenter"></select>
+              </div>
+              <p id="identity-help" class="help"></p>
 
               <!-- The seed starts empty: an empty field sends no --seed, and the
                    session draws a new one and records it, as the command line
@@ -376,6 +442,19 @@
                         aria-label="Parameter text (YAML or JSON)" hidden></textarea>
             </fieldset>
 
+            <!-- Measure rig: the measurements to run instead of Task
+                 parameters (workspace_measure.js draws the list; shown only
+                 for a project whose alhazen lists them). -->
+            <fieldset id="measurements" class="form-section stage" hidden disabled>
+              <h3 class="section-title">Measurements</h3>
+              <p id="measurements-help" class="help">
+                Tick what to measure. They run one after another, in a fixed order, into one
+                report beside the rig file; a measurement that needs a person at the rig
+                pauses and asks there.
+              </p>
+              <div id="measurement-list"></div>
+            </fieldset>
+
             <div class="launch-footer">
               <!-- What the button will start, in one line: mode, Task
                    parameters entry, rig and subject (launchSummary()). -->
@@ -394,6 +473,8 @@
               <span id="run-status" class="status">READY</span>
             </div>
             <div id="run-info" class="run-info"></div>
+            <!-- A Measure rig run's queue (workspace_measure.js renderProgress). -->
+            <div id="measure-progress" aria-live="polite" hidden></div>
             <div class="output-toolbar">
               <div class="output-tabs">
                 <button id="media-tab" class="selected">
@@ -451,7 +532,7 @@
 
           <section class="card history-card">
             <div class="card-heading">
-              <h2>Run history</h2>
+              <h2>Recent runs</h2>
               <span id="history-count" class="step">0 RUNS</span>
             </div>
             <div id="history"></div>
@@ -466,6 +547,10 @@
          not loaded. -->
     <div id="data-view" hidden></div>
 
+    <!-- The History page of the open experiment: its launches and the
+         session folders in its data folders (workspace_manage.js). -->
+    <div id="history-view" class="manage-page" hidden></div>
+
     <footer>ALHAZEN <span>Vision science, from stimulus to session.</span></footer>
   </main>
 
@@ -477,7 +562,8 @@
         <h2 id="dialog-title">Add an experiment</h2>
         <button type="button" id="close-dialog" aria-label="Close">×</button>
       </div>
-      <p class="help">Choose a local project containing an Alhazen <code>run.py</code>.</p>
+      <p class="help">Choose a local project containing an Alhazen <code>run.py</code>.
+        Registering never changes the folder.</p>
       <label for="project-folder">Project folder</label>
       <input id="project-folder" placeholder="~/projects/amodal-averaging" required>
       <label for="project-python">Python interpreter <span class="optional">optional</span></label>
@@ -487,10 +573,20 @@
         installed.
       </p>
       <p id="project-runtime" class="path"></p>
+      <!-- Unregistering, confirmed in place: what it does and does not do. -->
+      <div id="remove-confirm" class="inline-confirm" hidden>
+        <p>Unregistering removes this experiment from the workspace list only. Its folder,
+          data, saved sessions, launch records and people records are not touched, and
+          registering the same folder again brings it all back.</p>
+        <div class="inline-confirm-actions">
+          <button type="button" id="remove-cancel" class="quiet">Keep it</button>
+          <button type="button" id="remove-confirmed" class="danger">Unregister</button>
+        </div>
+      </div>
       <p id="dialog-error" role="alert"></p>
       <div class="dialog-footer">
         <button type="button" id="remove-project" class="danger" hidden>
-          Remove from workspace
+          Unregister…
         </button>
         <button type="submit" class="primary">Save experiment</button>
       </div>

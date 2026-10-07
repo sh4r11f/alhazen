@@ -71,7 +71,9 @@ let token = new URLSearchParams(location.hash.slice(1)).get('token')
   || sessionStorage.getItem('alhazen-workspace-token')
   || '';
 if (token) sessionStorage.setItem('alhazen-workspace-token', token);
-if (location.hash) history.replaceState(null, '', location.pathname);
+/* The address keeps its query — which screen this is (route()) — and loses
+ * only the fragment that carried the token. */
+if (location.hash) history.replaceState(null, '', location.pathname + (location.search || ''));
 
 /* The server's last /api/state answer: the registered projects, every run
  * (newest first) and the id of the one active run, or null. */
@@ -84,12 +86,17 @@ let runId = null;
  * defaults in its code — and which editor shows them, 'fields' or 'yaml'. */
 let values = null;
 let editor = 'fields';
-/* Which of the selected experiment's two views is shown: 'run' (the launch
- * form, run output and history: #workspace) or 'data' (#data-view, whose
- * content workspace_data.js draws). Remembered per experiment in
- * localStorage (VIEW_KEY). */
+/* Which of the open experiment's pages is shown: 'general' (its notes,
+ * people and rigs: #general-view), 'run' (the launch form, run output and
+ * recent runs: #workspace), 'data' (#data-view, drawn by workspace_data.js)
+ * or 'history' (#history-view). With no experiment open, the Experiments
+ * page (#home-view). Each is an address (route()); the last page used for an
+ * experiment is remembered in localStorage (VIEW_KEY) for a link that names
+ * none. */
 let view = 'run';
-const VIEWS = {run: 'Run experiment', data: 'Data'};
+const VIEWS = {general: 'General', run: 'Run', data: 'Data', history: 'History'};
+/* The sidebar's glyph for each page, drawn with the page's name. */
+const VIEW_GLYPHS = {general: '◇', run: '▶', data: '▦', history: '↺'};
 const VIEW_KEY = 'alhazen-workspace-view:';
 /* The colour theme the reader chose: 'system' (follow the operating
  * system's light or dark setting; the default), 'light' or 'dark'. */
@@ -104,6 +111,16 @@ let editProject = null;
 let configEpoch = 0;
 let rigEpoch = 0;
 let schemaEpoch = 0;
+/* The open experiment's people (GET /api/manage/people): its subjects,
+ * its experimenters and the CSV copies' state; null until loaded. The Run
+ * page's Subject and Experimenter menus are drawn from it, and each
+ * experiment's choice in them is kept apart (identityChoice), so opening
+ * another experiment never carries a subject over. */
+let people = null;
+let peopleEpoch = 0;
+const identityChoice = {};
+/* Whether the first poll has placed the page on the address's screen. */
+let routed = false;
 /* JSON signatures of what each list last drew (see the file comment). */
 let gallerySignature = '';
 let historySignature = '';
@@ -149,6 +166,13 @@ let calibration = null;
 let calibrationFrame = null;
 let launchedRun = null;
 let monitorShown = null;
+/* Measure rig's checklist (workspace_measure.js): its state, the line saying
+ * what a tick also changed, and the selected rig's merged settings for the
+ * module's hints. */
+let measureState = null;
+let measureNote = '';
+let measureRig = null;
+const MEASURE_KEY = 'alhazen-workspace-measurements:';
 /* The URL loaded in the monitor frame, '' when it shows about:blank. The
  * frame is (re)loaded only when this changes, never on a poll. */
 let framedMonitor = '';
@@ -160,7 +184,7 @@ window.addEventListener('hashchange', () => {
   if (!fresh) return;
   token = fresh;
   sessionStorage.setItem('alhazen-workspace-token', token);
-  history.replaceState(null, '', location.pathname);
+  history.replaceState(null, '', location.pathname + (location.search || ''));
   // Media URLs carry the token, so the gallery must be rebuilt.
   gallerySignature = '';
   guard(refresh)();
@@ -631,11 +655,166 @@ function launchSummary() {
     .find((o) => o.value === $('rig').value)?.textContent;
   if (rig) parts.push(rig);
   if (['run', 'test', 'simulate'].includes(mode)) {
-    const subject = $('subject').value.trim();
+    const subject = chosenSubject()?.code || $('subject').value.trim();
     if (subject) parts.push(`sub-${subject}`);
     parts.push(`ses ${$('session').value || 1}`);
+  } else if (measureNeed() !== 'none') {
+    const subject = chosenSubject()?.code || $('subject').value.trim();
+    if (subject) parts.push(`sub-${subject}`);
+  }
+  if (['run', 'test', 'simulate', 'measure'].includes(mode) && chosenExperimenter()) {
+    parts.push(`by ${chosenExperimenter().name}`);
   }
   return parts.join(' · ');
+}
+
+/* ------------------------------------------------------------------ */
+/* Who: the Run page's Subject and Experimenter menus                  */
+/* ------------------------------------------------------------------ */
+
+/** The registered subject chosen in the Subject menu, or null. */
+function chosenSubject() {
+  const id = $('subject-record').value;
+  return id ? (people?.subjects || []).find((s) => s.id === id) || null : null;
+}
+
+/** The experimenter chosen in the Experimenter menu, or null. */
+function chosenExperimenter() {
+  const id = $('experimenter').value;
+  return id ? (people?.experimenters || []).find((e) => e.id === id) || null : null;
+}
+
+/** "sub-007 · HD", or "sub-007 · no initials" for a record without them. */
+function subjectLabel(s) {
+  return `sub-${s.code} · ${s.initials || 'no initials'}`;
+}
+
+/** An experimenter as the menus name them: their name, their initials when
+ *  recorded, and the end of their id when two share a name, so two records
+ *  are never shown as one person. */
+function experimenterLabel(e, among) {
+  const twin = among.some((o) => o.id !== e.id && o.name === e.name);
+  let text = e.initials ? `${e.name} (${e.initials})` : e.name;
+  if (twin) text += ` · ${e.id.slice(-4)}`;
+  return text;
+}
+
+/** What Measure rig's ticked measurements need of the subject: 'required',
+ *  'optional' or 'none' (MeasureChoice.subjectNeed); 'none' in other modes. */
+function measureNeed() {
+  if ($('mode').value !== 'measure' || !usesMeasurements()) return 'none';
+  return MeasureChoice.subjectNeed(measureState);
+}
+
+/** Why a launch cannot go yet for want of who, or ''. A run or test subject
+ *  chosen from the register needs the experimenter who runs it (the server
+ *  asks the same); with none chosen, the typed fields must be open. A
+ *  measurement of the subject in the chair needs the subject. */
+function identityProblem() {
+  const mode = $('mode').value;
+  if (measureNeed() === 'required' && !chosenSubject() && !$('subject').value.trim()) {
+    return 'A ticked measurement is of the subject in the chair: choose the subject.';
+  }
+  if (!['run', 'test'].includes(mode) || people?.error) return '';
+  if (chosenSubject() && !chosenExperimenter()) {
+    return 'Choose the experimenter who runs this session.';
+  }
+  if (!chosenSubject() && !$('typed-identity').open) {
+    return 'Choose the subject for this session, or type an unregistered one.';
+  }
+  return '';
+}
+
+/** Fill one menu, opening on `chosen` when it is still on offer and on its
+ *  prompt otherwise — never on a value left from another experiment. */
+function fillMenu(select, items, chosen) {
+  options(select, items, chosen || '');
+  if (!items.some(([value]) => value === chosen)) select.value = '';
+}
+
+/** Fill the Subject and Experimenter menus from the open experiment's
+ *  people: its active subjects in their registry order, and the active
+ *  experimenters assigned to it, keeping this experiment's own earlier
+ *  choice. With no subject registered there is nothing to choose, and the
+ *  typed fields open. */
+function renderIdentity() {
+  const p = project();
+  if (!p) return;
+  const choice = identityChoice[p.id] || {};
+  const subjects = (people?.subjects || []).filter((s) => s.status === 'active');
+  fillMenu($('subject-record'), [
+    ['', subjects.length ? 'Choose a subject…' : 'No subjects registered yet'],
+    ...subjects.map((s) => [s.id, subjectLabel(s)]),
+  ], choice.subject);
+  const assigned = (people?.assigned || [])
+    .filter((e) => e.status === 'active' && e.assignment_status === 'active');
+  fillMenu($('experimenter'), [
+    ['', assigned.length ? 'Choose who runs it…' : 'No experimenters assigned yet'],
+    ...assigned.map((e) => [e.id, experimenterLabel(e, assigned)]),
+  ], choice.experimenter);
+  if (!subjects.length) $('typed-identity').open = true;
+  identityChanged();
+}
+
+/** After a change of who: remember it for this experiment, lock the typed
+ *  fields while a record is chosen, set what is required, and say what the
+ *  session will record. */
+function identityChanged() {
+  const p = project();
+  if (!p) return;
+  const mode = $('mode').value;
+  const record = chosenSubject();
+  const person = chosenExperimenter();
+  // Kept only once this experiment's people are loaded: before that the
+  // menus are empty, and an empty choice must not replace its real one.
+  if (people) {
+    identityChoice[p.id] = {subject: record?.id || '', experimenter: person?.id || ''};
+    sessionStorage.setItem('alhazen-workspace-identity', JSON.stringify(identityChoice));
+  }
+  if (record) $('typed-identity').open = false;
+  $('subject').disabled = !!record;
+  $('initials').disabled = !!record;
+  const named = ['run', 'test'].includes(mode);
+  const typedOpen = !!$('typed-identity').open;
+  $('subject').required = (named || measureNeed() === 'required') && !record && typedOpen;
+  $('initials').required = named && !record && typedOpen;
+  $('experimenter').required = named && !!record;
+  let help = '';
+  if (people?.error) {
+    help = `${people.error}. Type the subject below; no experimenter can be recorded.`;
+  } else if (person && p.records_experimenter === false) {
+    help = `${titleOf(p)}’s alhazen (${p.alhazen_version}) does not record the experimenter in `
+      + 'its session folders: the workspace keeps it with the launch only. Update its alhazen '
+      + 'to record it in session.json.';
+  } else if (person && p.records_experimenter == null) {
+    help = 'Whether this experiment’s alhazen records the experimenter is not known: open '
+      + 'Project settings and save to ask it. Until then it is kept with the launch only.';
+  } else if (!(people?.subjects || []).length) {
+    help = 'Register subjects and experimenters on the General page to choose them here.';
+  }
+  $('identity-help').textContent = help;
+  updateLaunch();
+}
+
+/** Load the open experiment's people for the Run page's menus. A registry
+ *  that cannot be read leaves the typed fields to use, and says why. */
+async function loadPeople(id) {
+  const epoch = ++peopleEpoch;
+  let answer;
+  try {
+    answer = await api(`/api/manage/people?project=${encodeURIComponent(id)}`);
+  } catch (e) {
+    answer = {error: e.message, subjects: [], experimenters: [], assigned: []};
+  }
+  if (epoch !== peopleEpoch || selected !== id) return;
+  people = answer;
+  renderIdentity();
+}
+
+/** The General page changed the people: redraw the menus from its answer. */
+function peopleChanged(answer) {
+  people = answer;
+  renderIdentity();
 }
 
 function updateLaunch() {
@@ -648,7 +827,9 @@ function updateLaunch() {
     || waitingForParameters
     || !p?.available
     || !!p?.tasks_error
-    || !!calibrationProblem();
+    || !!calibrationProblem()
+    || !!identityProblem()
+    || (usesMeasurements() && !!MeasureChoice.problem(measureState));
   if (launching) $('launch').textContent = 'Starting…';
   else if (state.active) $('launch').textContent = 'A run is in progress';
   else $('launch').textContent = `▶ ${label($('mode').value) || 'Start run'}`;
@@ -669,6 +850,10 @@ function updateLaunch() {
     note = 'One run at a time keeps the rig available to its active experiment.';
   } else if (calibrationProblem()) {
     note = calibrationProblem();
+  } else if (identityProblem()) {
+    note = identityProblem();
+  } else if (usesMeasurements() && MeasureChoice.problem(measureState)) {
+    note = MeasureChoice.problem(measureState);
   } else if (development) {
     // Before the PsychoPy warning: a launch refused for its rig never opens
     // a window, so the rig is the thing to change first.
@@ -688,8 +873,45 @@ function updateLaunch() {
   // help text.
   $('launch-note').classList.toggle(
     'launch-warning',
-    note === development || note === psychopy || note === calibrationProblem(),
+    note === development || note === psychopy || note === calibrationProblem()
+      || note === identityProblem(),
   );
+}
+
+/** Whether this launch picks its measurements from a list: Measure rig, on
+ *  a project whose alhazen lists them (an older one runs its fixed list). */
+function usesMeasurements() {
+  return $('mode').value === 'measure' && Array.isArray(project()?.measurements)
+    && !!window.MeasureChoice;
+}
+
+/** Draw the measurement list for the selected project, remembering the
+ *  ticks per project (localStorage) so a reload keeps them. */
+function renderMeasurements() {
+  const p = project();
+  if (!p || !usesMeasurements()) return;
+  if (!measureState || measureState.project !== p.id) {
+    // Kept as the keys joined by commas (a key never holds one); keys the
+    // project no longer lists are dropped by create().
+    const saved = (localStorage.getItem(MEASURE_KEY + p.id) || '').split(',').filter(Boolean);
+    measureState = {project: p.id, ...MeasureChoice.create(p.measurements, saved)};
+  }
+  const help = p.measurements_error
+    ? `A measurement provider failed to load, so its measurements are missing: ${p.measurements_error}`
+    : '';
+  $('measurements-help').classList.toggle('launch-warning', !!help);
+  if (help) $('measurements-help').textContent = help;
+  MeasureChoice.renderChecklist($('measurement-list'), measureState, {
+    rig: measureRig,
+    note: measureNote,
+    onToggle: (key, on) => {
+      const {state: next, note} = MeasureChoice.toggle(measureState, key, on);
+      measureState = {project: p.id, ...next};
+      measureNote = note;
+      localStorage.setItem(MEASURE_KEY + p.id, MeasureChoice.selection(measureState).join(','));
+      modeChanged();
+    },
+  });
 }
 
 /**
@@ -710,6 +932,10 @@ function modeChanged() {
   $('params-config').disabled = !usesParameters();
   $('task-parameters').hidden = !usesParameters();
   $('task-parameters').disabled = !usesParameters();
+  // Measure rig's measurements, in Task parameters' place.
+  $('measurements').hidden = !usesMeasurements();
+  $('measurements').disabled = !usesMeasurements();
+  renderMeasurements();
   // Measuring the rig draws nothing random, so it takes no seed; nor does an
   // experiment's own script, which the launcher passes no seed to — a field
   // shown for either would promise something the launch does not do.
@@ -731,11 +957,23 @@ function modeChanged() {
   }
   // Subject and session name the recorded data. A real or rehearsal session
   // must name its subject; a simulation may fall back to its own default.
-  $('identity').hidden = !['run', 'test', 'simulate'].includes(mode);
-  $('subject').required = ['run', 'test'].includes(mode);
-  // The initials go with the subject: required where it is (checked again
-  // on submit, with the command line's words, by checkInitials).
-  $('initials').required = ['run', 'test'].includes(mode);
+  // Measure rig asks for a subject ID only when a ticked measurement is of
+  // the subject in the chair (MeasureChoice.subjectNeed), and never for
+  // initials or a session.
+  const measureSubject = usesMeasurements() ? MeasureChoice.subjectNeed(measureState) : 'none';
+  $('identity').hidden = !['run', 'test', 'simulate'].includes(mode) && measureSubject === 'none';
+  for (const id of ['initials', 'session']) {
+    const field = $(id).parentElement;
+    if (field) field.hidden = mode === 'measure';
+  }
+  // Who runs it: for every session, and for Measure rig (who measured).
+  $('experimenter-field').hidden = !['run', 'test', 'simulate', 'measure'].includes(mode);
+  // What is required follows the mode and the choice (identityChanged): a
+  // typed subject and its initials for run and test, a subject ID for a
+  // measurement of the subject in the chair, an experimenter with a
+  // registered subject. The initials are checked again on submit, with the
+  // command line's words, by checkInitials.
+  identityChanged();
   $('trials-field').hidden = !['test', 'simulate'].includes(mode);
   // Each option is shown for exactly the modes whose CLI accepts the flag.
   $('headless-field').hidden = mode !== 'simulate';
@@ -780,7 +1018,15 @@ function modeChanged() {
  * its most recent run, then load its schema, parameter file and rig in
  * parallel. Remembered in localStorage so a reload lands on the same one.
  */
-async function chooseProject(id) {
+async function chooseProject(id, nextView = null) {
+  if (selected !== id) {
+    // The people belong to the experiment being left: its menus go with
+    // them until this one's are loaded (loadPeople).
+    people = null;
+    peopleEpoch += 1;
+    fillMenu($('subject-record'), [['', 'Loading…']], '');
+    fillMenu($('experimenter'), [['', 'Loading…']], '');
+  }
   selected = id;
   localStorage.setItem('alhazen-workspace-project', id || '');
   // Every list belongs to the previous project: force each to redraw.
@@ -796,7 +1042,7 @@ async function chooseProject(id) {
   $('project-path').textContent = p.path;
   $('title-error').textContent = p.title_error || '';
   $('title-error').hidden = !p.title_error;
-  showView(rememberedView(id));
+  showView(nextView || rememberedView(id));
   // The modes and the experiment's scripts, sorted by name (byName), at the
   // owner's request (2026-10-06). The menu still opens where it did before
   // it was sorted: on the project's "Preview images" (the quickest look at
@@ -824,7 +1070,7 @@ async function chooseProject(id) {
   renderState();
   // Each of these checks that the project is still selected before it
   // writes; the reader may click another project while they load.
-  await Promise.all([loadSchema(id), loadConfig(), loadRig()]);
+  await Promise.all([loadSchema(id), loadConfig(), loadRig(), loadPeople(id)]);
   await refreshRun();
 }
 
@@ -961,6 +1207,8 @@ async function loadRig() {
   rigDevelopment[`${p.id}:${value}`] = development ? name : null;
   // '?' rather than 'undefined' for a field the YAML leaves to its default.
   setCalibrationRig(p, rig);
+  measureRig = rig;
+  renderMeasurements();
   rigFacts([
     ['Screen', [`${m.width_px ?? '?'} × ${m.height_px ?? '?'} px`, `${m.refresh_rate_hz ?? '?'} Hz`]],
     ['Size', [`${m.width_cm ?? '?'} cm wide`, `${m.distance_cm ?? '?'} cm away`]],
@@ -1476,52 +1724,203 @@ async function switchEditor(next) {
  */
 function renderState() {
   const p = project();
-  $('empty').hidden = !!p;
-  $('project-heading').hidden = !p;
-  $('workspace').hidden = !p || view !== 'run';
-  $('data-view').hidden = !p || view !== 'data';
-  $('project-count').textContent = state.projects.length;
+  const home = !p;
+  $('home-view').hidden = !home;
+  $('empty').hidden = !home || state.projects.length > 0;
+  $('project-heading').hidden = home;
+  $('general-view').hidden = home || view !== 'general';
+  $('workspace').hidden = home || view !== 'run';
+  $('data-view').hidden = home || view !== 'data';
+  $('history-view').hidden = home || view !== 'history';
+  $('project-count').textContent = state.projects.filter((x) => !x.archived).length;
   // The title can change under a registered experiment (its pyproject is
   // re-read on every poll), so the heading and tab follow it here too.
   if (p) nameView(p);
-  const signature = JSON.stringify([state.projects, selected, view]);
+  else nameHome();
+  const signature = JSON.stringify([state.projects, selected, view, state.active]);
   if (signature !== projectSignature) {
     projectSignature = signature;
-    $('projects').replaceChildren(...state.projects.map(projectEntry));
+    renderNav();
+    if (home) renderHome();
   }
   updateLaunch();
   renderHistory();
 }
 
-/**
- * One experiment in the sidebar: a button with its title, which opens it on
- * the view last used for it; and, for the selected experiment, its submenu —
- * "Run experiment" and "Data" — with the view shown marked as current.
- */
-function projectEntry(p) {
-  const chosen = p.id === selected;
-  const entry = node('div', 'project-entry');
-  const button = node('button', 'project-button' + (chosen ? ' selected' : ''));
-  button.type = 'button';
-  button.append(node('span', 'project-icon', '◈'), node('span', '', titleOf(p)));
-  button.setAttribute('aria-current', chosen ? 'true' : 'false');
-  button.addEventListener('click', guard(() => chooseProject(p.id)));
-  entry.append(button);
-  if (chosen) {
-    const views = node('div', 'project-views');
-    views.setAttribute('role', 'group');
-    views.setAttribute('aria-label', `${titleOf(p)} views`);
-    for (const [name, text] of Object.entries(VIEWS)) {
-      const item = node('button', 'view-button' + (name === view ? ' selected' : ''), text);
-      item.type = 'button';
-      item.dataset.view = name;
-      item.setAttribute('aria-current', name === view ? 'page' : 'false');
-      item.addEventListener('click', () => showView(name));
-      views.append(item);
-    }
-    entry.append(views);
+/** The address of a screen: the Experiments page, or one page of one
+ *  experiment. Other query parameters are kept as they are. */
+function addressOf(id, page) {
+  const query = new URLSearchParams(location.search || '');
+  query.delete('project');
+  query.delete('view');
+  if (id) {
+    query.set('project', id);
+    query.set('view', page);
+  } else {
+    query.set('view', 'experiments');
   }
-  return entry;
+  return `${location.pathname}?${query}`;
+}
+
+/** The screen the address names: {project, view}. `?view=<page>` without a
+ *  project opens the experiment used last (or the first) on that page; no
+ *  view at all, or `experiments`, is the Experiments page. */
+function route() {
+  const query = new URLSearchParams(location.search || '');
+  const page = query.get('view');
+  const id = query.get('project');
+  if (id) return {project: id, view: Object.hasOwn(VIEWS, page) ? page : null};
+  if (page && Object.hasOwn(VIEWS, page)) {
+    const remembered = localStorage.getItem('alhazen-workspace-project');
+    const usable = state.projects.filter((x) => !x.archived);
+    const found = usable.find((x) => x.id === remembered) || usable[0];
+    return {project: found?.id || null, view: page};
+  }
+  return {project: null, view: null};
+}
+
+/** Show the screen `target` names: an experiment's page (opening the
+ *  experiment if another was open) or the Experiments page. An address
+ *  naming an experiment that is not registered lands on the Experiments
+ *  page and says so. Leaving a page never stops a run. */
+async function applyRoute(target) {
+  if (target.project && !state.projects.some((x) => x.id === target.project)) {
+    leaveExperiment();
+    error('That experiment is not registered in this workspace (it may have been '
+      + 'unregistered). Choose one below.');
+    history.replaceState(null, '', addressOf(null));
+    return;
+  }
+  if (!target.project) {
+    leaveExperiment();
+    return;
+  }
+  if (target.project !== selected) {
+    await chooseProject(target.project, target.view);
+  } else {
+    showView(target.view || rememberedView(target.project));
+  }
+}
+
+/** Close the open experiment's pages and show the Experiments page. */
+function leaveExperiment() {
+  for (const script of [window.WorkspaceData, window.WorkspaceManage]) script?.hide?.();
+  selected = null;
+  people = null;
+  peopleEpoch += 1;
+  projectSignature = '';
+  renderState();
+}
+
+/** Go to a screen: a new history entry (or the current one replaced), then
+ *  the screen. Unsaved edits on a management page are asked about first
+ *  (WorkspaceManage.leave), so a link never silently drops them. */
+async function navigate(id, page, {replace = false} = {}) {
+  const leaving = window.WorkspaceManage?.leave;
+  if (typeof leaving === 'function' && !(await leaving())) return;
+  const url = addressOf(id, page);
+  const here = location.pathname + (location.search || '');
+  if (url !== here) {
+    if (replace || typeof history.pushState !== 'function') history.replaceState(null, '', url);
+    else history.pushState(null, '', url);
+  }
+  error('');
+  await applyRoute(id ? {project: id, view: page} : {project: null, view: null});
+}
+
+/** A plain left click, as opposed to one that opens a new tab or window. */
+function plainClick(event) {
+  return !(event.metaKey || event.ctrlKey || event.shiftKey || event.button);
+}
+
+/** A sidebar or page link: an <a> with its real address (so a middle click
+ *  opens it in a new tab), whose plain click navigates in place. */
+function link(className, text, id, page) {
+  const a = node('a', className, text);
+  a.href = addressOf(id, page);
+  a.addEventListener('click', (event) => {
+    if (!plainClick(event)) return;
+    event.preventDefault();
+    guard(() => navigate(id, page))();
+  });
+  return a;
+}
+
+/**
+ * The sidebar: Experiments (the workspace's home), marked when shown; the
+ * run in progress, whichever page is open; and the open experiment's pages
+ * — General, Run, Data, History — with the shown one marked.
+ */
+function renderNav() {
+  const p = project();
+  const home = $('nav-experiments');
+  home.classList.toggle('selected', !p);
+  home.setAttribute('aria-current', !p ? 'page' : 'false');
+  const running = state.active ? state.runs.find((r) => r.id === state.active) : null;
+  const owner = running ? state.projects.find((x) => x.id === running.project) : null;
+  const pill = $('nav-running');
+  pill.hidden = !owner;
+  if (owner) {
+    pill.href = addressOf(owner.id, 'run');
+    pill.replaceChildren(
+      node('span', 'nav-running-lamp'),
+      node('span', 'nav-running-text', `Running · ${titleOf(owner)}`),
+    );
+  }
+  $('nav-experiment').hidden = !p;
+  if (!p) {
+    $('experiment-nav').replaceChildren();
+    return;
+  }
+  $('nav-experiment-title').textContent = titleOf(p);
+  const activeHere = !!running && running.project === p.id;
+  const items = Object.entries(VIEWS).map(([name, text]) => {
+    const item = link('nav-item view-button' + (name === view ? ' selected' : ''), '', p.id, name);
+    item.dataset.view = name;
+    item.setAttribute('aria-current', name === view ? 'page' : 'false');
+    item.append(node('span', 'nav-glyph', VIEW_GLYPHS[name]), node('span', 'nav-label', text));
+    if (name === 'run' && activeHere) item.append(node('span', 'nav-lamp', ''));
+    return item;
+  });
+  $('experiment-nav').replaceChildren(...items);
+}
+
+/** The Experiments page, drawn by workspace_manage.js; a plain message when
+ *  that script is missing, so the page is never blank. */
+function renderHome() {
+  const manage = window.WorkspaceManage;
+  if (typeof manage?.renderHome === 'function') {
+    try {
+      manage.renderHome($('home-list'), state, pageHelpers());
+    } catch (e) {
+      console.error(e);
+      $('home-list').replaceChildren(node('p', 'data-unavailable',
+        `The experiments could not be listed: ${e.message}`));
+    }
+  } else {
+    $('home-list').replaceChildren(node('p', 'data-unavailable',
+      'Experiment management is not available'));
+  }
+}
+
+/** What the management script is handed: the page's request helper and
+ *  token, its element helper and error banner, navigation, and callbacks
+ *  for what it changes. */
+function pageHelpers() {
+  return {
+    api, token, node, error, navigate, link, addressOf,
+    titleOf, slugOf, date, label,
+    state: () => state,
+    openSettings: () => openProject(true),
+    register: () => openProject(false),
+    peopleChanged,
+    refresh: () => guard(refresh)(),
+    viewRun: (id) => {
+      runId = id;
+      gallerySignature = '';
+      return navigate(selected, 'run');
+    },
+  };
 }
 
 /** The view last shown for experiment `id`, 'run' when none was; a stored
@@ -1535,35 +1934,47 @@ function rememberedView(id) {
   return 'run';
 }
 
-/** Name the selected experiment and its view in the breadcrumb, the
- *  heading's eyebrow and the browser tab ("<title> · Alhazen"). */
+/** Name the open experiment and its page in the breadcrumb, the heading's
+ *  eyebrow and the browser tab ("Run · <title> · Alhazen"), so the
+ *  browser's history list tells the pages apart. */
 function nameView(p) {
   $('breadcrumb').textContent = titleOf(p);
   $('breadcrumb-view').textContent = `/ ${VIEWS[view]}`;
   $('view-eyebrow').textContent = VIEWS[view].toUpperCase();
-  document.title = `${titleOf(p)} · Alhazen`;
+  document.title = `${VIEWS[view]} · ${titleOf(p)} · Alhazen`;
+}
+
+/** The same for the Experiments page. */
+function nameHome() {
+  $('breadcrumb').textContent = 'Experiments';
+  $('breadcrumb-view').textContent = '';
+  document.title = 'Experiments · Alhazen';
 }
 
 /**
- * Show view `next` ('run' or 'data') of the selected experiment and
- * remember it for that experiment. Leaving the Data view tells
- * workspace_data.js (WorkspaceData.hide) so it can stop what it is doing;
- * entering it hands that script the experiment and the page's helpers
- * (WorkspaceData.show) — every time, so switching experiments while on the
- * Data view shows the new one's data. Without workspace_data.js the view
- * says so plainly instead of staying blank.
+ * Show page `next` of the open experiment and remember it for that
+ * experiment. Leaving the Data, General or History page tells its script
+ * (hide) so it can stop what it is doing; entering one hands it the
+ * experiment and the page's helpers (show) — every time, so switching
+ * experiments while on it shows the new one's. Without the script the page
+ * says so plainly instead of staying blank. Leaving the Run page stops
+ * nothing: a run goes on, and its page shows it again on return.
  */
 function showView(next) {
   const p = project();
   if (!p) return;
   if (!Object.hasOwn(VIEWS, next)) throw new Error(`Unknown workspace view: ${next}`);
   const data = window.WorkspaceData;
-  if (view === 'data') data?.hide?.();
+  const manage = window.WorkspaceManage;
+  if (view === 'data' && next !== 'data') data?.hide?.();
+  if (['general', 'history'].includes(view)) manage?.hide?.();
   view = next;
   localStorage.setItem(VIEW_KEY + p.id, next);
   nameView(p);
+  $('general-view').hidden = next !== 'general';
   $('workspace').hidden = next !== 'run';
   $('data-view').hidden = next !== 'data';
+  $('history-view').hidden = next !== 'history';
   if (next === 'data') {
     if (typeof data?.show === 'function') {
       data.show(p, {api, token, node, error});
@@ -1571,6 +1982,23 @@ function showView(next) {
       $('data-view').replaceChildren(
         node('p', 'data-unavailable', 'Data inspection is not available'),
       );
+    }
+  }
+  if (next === 'general' || next === 'history') {
+    const target = $(`${next}-view`);
+    const method = next === 'general' ? 'showGeneral' : 'showHistory';
+    if (typeof manage?.[method] === 'function') {
+      // A page that fails to draw says so, rather than staying on "Loading…".
+      Promise.resolve()
+        .then(() => manage[method](target, p, pageHelpers()))
+        .catch((e) => {
+          console.error(e);
+          target.replaceChildren(node('p', 'data-unavailable',
+            `This page could not be drawn: ${e.message}`));
+        });
+    } else {
+      target.replaceChildren(node('p', 'data-unavailable',
+        'Experiment management is not available'));
     }
   }
   // The sidebar marks the view shown: redraw it.
@@ -1737,6 +2165,8 @@ async function refreshRun() {
   $('stop').hidden = !run || run.id !== state.active;
   $('stop').disabled = run?.status === 'stopping';
   $('stop').textContent = run?.status === 'stopping' ? 'Stopping…' : 'Stop run';
+  // A Measure rig run's queue, above the tabs.
+  if (window.MeasureChoice) MeasureChoice.renderProgress($('measure-progress'), run?.measurement || null);
   // The Live monitor tab and its open-in-new-tab link.
   renderMonitor(run, active);
   // Console: follow the tail only if the reader was already at the bottom,
@@ -1857,14 +2287,21 @@ async function refresh() {
     error('');
     connectionError = false;
   }
-  if (!project() && state.projects.length) {
-    const remembered = localStorage.getItem('alhazen-workspace-project');
-    const found = state.projects.find((p) => p.id === remembered);
-    await chooseProject(found?.id || state.projects[0].id);
-  } else {
-    renderState();
-    await refreshRun();
+  if (!routed) {
+    // The first answer: show the screen the address names (route()).
+    routed = true;
+    await applyRoute(route());
+    return;
   }
+  if (selected && !project()) {
+    // The open experiment was unregistered (in another tab, say).
+    leaveExperiment();
+    error('This experiment is no longer registered in the workspace.');
+    history.replaceState(null, '', addressOf(null));
+    return;
+  }
+  renderState();
+  if (selected) await refreshRun();
 }
 
 /** The 1.5 s polling loop. A failed poll shows the error and keeps trying:
@@ -1880,9 +2317,9 @@ async function poll() {
   setTimeout(poll, 1500);
 }
 
-/** Open the project dialog: for a new experiment, or (edit) the current
- *  one's settings. The folder is fixed once registered; the interpreter is
- *  what changes. */
+/** Open the project dialog: to register a new experiment, or (edit) the
+ *  current one's settings. The folder is fixed once registered; the
+ *  interpreter is what changes. */
 function openProject(edit = false) {
   editProject = edit ? project() : null;
   $('dialog-title').textContent = edit ? 'Project settings' : 'Add an experiment';
@@ -1893,6 +2330,7 @@ function openProject(edit = false) {
     ? `Current interpreter: ${editProject.python}`
     : '';
   $('remove-project').hidden = !edit;
+  $('remove-confirm').hidden = true;
   $('dialog-error').textContent = '';
   $('project-dialog').showModal();
 }
@@ -1978,14 +2416,19 @@ $('project-form').addEventListener('submit', async (event) => {
   const button = event.submitter;
   button.disabled = true;
   try {
-    const p = await api('/api/projects', {
-      path: $('project-folder').value,
-      python: $('project-python').value,
-    });
+    // A new experiment is registered (a folder already registered is
+    // refused, by name); an existing one's settings save registers it again
+    // over the same record, keeping its notes.
+    const body = {path: $('project-folder').value, python: $('project-python').value};
+    const p = editProject
+      ? await api('/api/projects', body)
+      : await api('/api/manage/register', body);
     state = await api('/api/state');
     $('project-dialog').close();
     error('');
-    await chooseProject(p.id);
+    projectSignature = '';
+    if (editProject) await chooseProject(p.id, view);
+    else await navigate(p.id, 'general');
   } catch (e) {
     $('dialog-error').textContent = e.message;
   } finally {
@@ -1993,16 +2436,55 @@ $('project-form').addEventListener('submit', async (event) => {
   }
 });
 
-$('remove-project').addEventListener('click', guard(async () => {
+/* Unregistering is confirmed in place, saying what it does not do. */
+$('remove-project').addEventListener('click', () => {
+  $('remove-confirm').hidden = false;
+});
+$('remove-cancel').addEventListener('click', () => {
+  $('remove-confirm').hidden = true;
+});
+$('remove-confirmed').addEventListener('click', guard(async () => {
   await api('/api/projects/remove', {id: selected});
   $('project-dialog').close();
-  // The removed experiment's Data view is left: say so to its script.
-  if (view === 'data') window.WorkspaceData?.hide?.();
-  view = 'run';
-  selected = null;
   runId = null;
-  await refresh();
+  state = await api('/api/state');
+  await navigate(null, null);
 }));
+
+/* Who: the Run page's menus and the typed fields' fold. */
+$('subject-record').addEventListener('change', () => identityChanged());
+$('experimenter').addEventListener('change', () => identityChanged());
+$('typed-identity').addEventListener('toggle', () => identityChanged());
+$('initials').addEventListener('input', () => updateLaunch());
+
+/* Back and Forward: show the screen the address now names. */
+window.addEventListener('popstate', () => guard(() => applyRoute(route()))());
+for (const id of ['nav-experiments', 'nav-running']) {
+  $(id).addEventListener('click', (event) => {
+    if (!plainClick(event)) return;
+    event.preventDefault();
+    const target = new URLSearchParams($(id).href.split('?')[1] || '');
+    guard(() => navigate(target.get('project'), target.get('view')))();
+  });
+}
+/* Unsaved edits on a management page: the browser asks before a reload or
+ * a closed tab drops them. */
+window.addEventListener('beforeunload', (event) => {
+  if (window.WorkspaceManage?.dirty?.()) {
+    event.preventDefault();
+    event.returnValue = '';
+  }
+});
+/* Each experiment's earlier choice of who, for this tab. */
+try {
+  Object.assign(identityChoice,
+    JSON.parse(sessionStorage.getItem('alhazen-workspace-identity') || '{}'));
+} catch (e) {
+  // Only an unreadable saved value is passed over (it is a convenience, kept
+  // for this tab); anything else is a bug and is thrown.
+  if (!(e instanceof SyntaxError)) throw e;
+  console.warn('Ignoring an unreadable saved choice of subject and experimenter', e);
+}
 
 $('launch-form').addEventListener('submit', guard(async (event) => {
   event.preventDefault();
@@ -2010,10 +2492,23 @@ $('launch-form').addEventListener('submit', guard(async (event) => {
   if (launching || (usesParameters() && (loadingConfig || loadingSchema)) || state.active) return;
   if (project().tasks_error) return;
   const mode = $('mode').value;
-  // The initials, for the modes that show them: refused here in the command
-  // line's own words before anything is sent (the server checks again).
+  // Who: a registered subject and experimenter, by their record ids (the
+  // server takes the subject's ID and initials from the record), or a typed
+  // subject. The initials, for the modes that show them: refused here in
+  // the command line's own words before anything is sent (the server checks
+  // again).
   const identity = ['run', 'test', 'simulate'].includes(mode);
-  const initials = identity
+  // A measurement of the subject in the chair names its subject too.
+  const named = identity || measureNeed() !== 'none';
+  const record = named ? chosenSubject() : null;
+  const runner = ['run', 'test', 'simulate', 'measure'].includes(mode)
+    ? chosenExperimenter()
+    : null;
+  if (identityProblem()) {
+    error(identityProblem());
+    return;
+  }
+  const initials = identity && !record
     ? checkInitials($('initials').value, ['run', 'test'].includes(mode))
     : {value: '', problem: ''};
   if (initials.problem) {
@@ -2047,7 +2542,7 @@ $('launch-form').addEventListener('submit', guard(async (event) => {
       // takes no parameters.
       parameter_set: !isScript && usesParameters() ? (selectedSet()?.label ?? null) : null,
       rig: $('rig').value,
-      subject: $('subject').value,
+      subject: record ? '' : $('subject').value,
       initials: initials.value,
       session: Number($('session').value),
       // null for an empty field (Number('') was 0, so every launch used to
@@ -2069,8 +2564,14 @@ $('launch-form').addEventListener('submit', guard(async (event) => {
     // What differs from the rig's calibration target, for run and test;
     // sent only when something does — without it the run uses the rig's
     // own (renderCalibration).
+    // Measure rig's ticked measurements, in run order; the server checks them.
+    if (usesMeasurements()) request.measurements = MeasureChoice.selection(measureState);
     const calibrationTarget = calibrationToSend();
     if (calibrationTarget) request.calibration_target = calibrationTarget;
+    // The records chosen, sent only when chosen: a launch without them is
+    // the typed one every earlier client sent.
+    if (record) request.subject_record = record.id;
+    if (runner) request.experimenter = runner.id;
     // Parameters travel as the editor shows them: the raw text from the text
     // editor (the server parses and validates it) or the edited values from
     // the fields. Modes that take no parameters send neither.

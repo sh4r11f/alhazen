@@ -277,6 +277,9 @@ def measure_display(
                 )
 
     timing = frame_timing(intervals, rig.monitor.refresh_rate_hz)
+    # The raw intervals ride along (to the microsecond), so the report's
+    # statistics can be recomputed from the report alone.
+    timing["intervals_s"] = [round(interval, 6) for interval in intervals]
     ok, summary = judge_refresh(timing)
     notes = []
     if timing["n_dropped"]:

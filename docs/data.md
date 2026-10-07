@@ -166,6 +166,7 @@ schema versions in [versioning](versioning.md) §3); a reader gates on it.
   "task": "saccade-bias",
   "mode": "run",
   "subject": {"id": "01", "initials": "HD"},
+  "experimenter": {"id": "e_3f9a1c2b7d40", "name": "Sam Lee"},
   "session": 1,
   "run": 1,
   "seed": 2718281828,
@@ -195,6 +196,7 @@ schema versions in [versioning](versioning.md) §3); a reader gates on it.
 | `experiment.git` | `git describe --always --dirty` of the experiment's repository — the snapshot's `experiment_git_sha`. `-dirty` means the commit alone does not reproduce what ran. |
 | `mode` | `run`, `test` or `simulate`; null for a session built with `build_session` directly. |
 | `subject.initials` | The subject's initials, uppercase; null when the session was not given them (`simulate`, a session started from code). |
+| `experimenter` | Who ran the session: `--experimenter NAME` and, from the [experiment workspace](workspace.md), `--experimenter-id` (its people-registry record). `null` when nobody said — "not recorded", never a guess; recorded, never in a path. Also a line of `session.log`. Added after 2.10.0 without a schema bump; a card without the key is older. |
 | `rig.name`, `rig.source` | For a rig chosen by name, the name and where it was found; null for a rig given as a path. |
 | `rig.file`, `params_file` | Where the originals were, on the machine that ran the session; null when that layer came from no file. |
 | `command` | The command line the session was started with, as a list: the program, then the arguments exactly as the parser received them. A `run.py` inside the experiment's folder is written relative to it (`run.py`); `alhazen run` is written as `alhazen`, `run`, …; a program outside the experiment is kept as it was started. The arguments are never rewritten, so a `--params` path is the one that was passed — for a launch from the [experiment workspace](workspace.md), the edited parameters it saved for that launch. Null for a session built in code (`build_session` directly). The snapshot's top-level `command` holds the same list. Added in 2.1.0; a card without it is older. |

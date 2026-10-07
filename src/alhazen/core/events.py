@@ -61,6 +61,11 @@ RESERVED_EVENTS = frozenset(
         # can tell which trials sit between which calibration and how good it
         # was — the error figures are otherwise only in the log.
         "CALIBRATION",
+        # What was decided at the calibration request before trial 1
+        # (session/startup_calibration.py): calibrated, reused previous,
+        # accepted with unknown outcome, or cancelled — with what was known
+        # about the previous calibration when the choice was made.
+        "CALIBRATION_CHOICE",
         "VALIDATION",
         "DRIFT_CORRECTION",
         # Trial feedback was shown (task/phases TrialFeedback): the flip that
