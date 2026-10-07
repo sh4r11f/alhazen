@@ -27,6 +27,9 @@ today, and must go on doing so without growing methods it has no use for.
 
 - ``camera_frame() -> CameraFrame``: the tracker's current eye image, for
   the live monitor. Raises ``TrackerError`` when the device cannot supply one.
+  A backend whose device says where it found each eye in that image fills
+  the frame's ``eyes`` (``CameraEye``), and the live monitor draws a circle
+  on each.
 - ``eye_status() -> str``: one line saying which eyes the camera sees now.
 - ``iris_size() -> int`` and ``set_iris_size(px: int) -> int``: the expected
   iris size, in camera px, that a camera tracker searches its image for (the
@@ -144,12 +147,37 @@ class CalibrationResult:
 
 
 @dataclass(frozen=True)
+class CameraEye:
+    """Where the tracker found one eye in a ``CameraFrame``, for the circle
+    the live monitor draws on it.
+
+    Everything is in the px of that frame's own ``pixels``: ``x`` to the
+    right from the left edge, ``y`` down from the top edge (so the pupil is
+    at ``pixels[round(y), round(x)]``), and ``iris_px`` the diameter of the
+    iris the tracker is looking for. A backend that shrinks its image for
+    the live monitor shrinks these with it.
+    """
+
+    eye: str  # "left" or "right", as the backend names eyes
+    x: float
+    y: float
+    iris_px: float
+
+
+@dataclass(frozen=True)
 class CameraFrame:
     """The tracker's eye image: 8-bit grey, ``pixels[row, column]`` with row
-    0 at the top, stamped on the session clock when it was read."""
+    0 at the top, stamped on the session clock when it was read.
+
+    ``eyes`` is where the tracker found each eye in this image, read with it.
+    An empty tuple means it looked and found none; None means this backend
+    cannot say where the eyes are, and the live monitor then draws the image
+    with no markers and no word about them.
+    """
 
     pixels: Any  # numpy uint8 array of shape (height, width)
     t: float
+    eyes: tuple[CameraEye, ...] | None = None
 
 
 # What a backend calls, from inside a blocking procedure, to say how far it

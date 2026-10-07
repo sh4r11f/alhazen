@@ -196,11 +196,37 @@ The **Eye tracker** section of the panels holds:
   pixels out: a photograph of the subject does not belong in the run
   directory.
 
+  **A green circle is drawn on each eye the tracker has found.** It is
+  centred on the pupil the device fitted, with a small cross on that centre
+  and **L** or **R** beside it, and its diameter is the expected iris size,
+  so it should sit on the edge of the iris. An eye with no circle is an eye
+  the device is not tracking. The circles come with each frame, so they
+  follow the picture.
+
+  ```mermaid
+  flowchart LR
+    I["TPxGetImagePtr<br/>the camera image"] --> F
+    P["TPxGetPupilCoordinatesInPixels<br/>each pupil's centre"] --> F
+    S["TPxGetPupilSize<br/>which eyes have a pupil"] --> F
+    R["TPxGetIrisExpectedSize<br/>the circle's diameter"] --> F
+    F["one CameraFrame:<br/>pixels + eyes"] --> D["camera panel:<br/>picture, a circle per found eye"]
+  ```
+
+  Where the circle is drawn rests on one thing **not yet checked on a rig**:
+  that the device gives each pupil's centre in camera px from the image's
+  top-left corner. VPixx's documentation does not say. The check is to look:
+  with a subject in the camera, each circle should sit on its pupil and
+  follow it. If the circles are mirrored, upside down or off to one side,
+  report it. A centre the device puts outside its own image gets no circle
+  and one warning in `session.log`, which names the place.
+
   Under the image, **Iris size** sets the diameter, in camera px, that the
   TRACKPixx3 searches its image for when it fits each pupil: the setting
   LabMaestro adjusts from its camera view. When an eye keeps dropping out of
   tracking, step it with − and + (2 px at a time) or type a value, while
-  paused or during a calibration, and watch the *eyes:* line. The session
+  paused or during a calibration, and watch the circle and the *eyes* value:
+  the circle changes size with the setting, and is there only while the eye
+  is found. The session
   reads the device back and shows what it holds. Every change is logged and
   recorded as a TRACKER_SETTING event with the value and the one before it.
   Set `eyetracker.iris_size_px` to start every session from a known size;
@@ -412,6 +438,12 @@ a subject, a card to hold in front of one eye, and a rig config with
       the subject's **left** eye. Expect `right only`, and write down what it
       says. Take the card away; ESC leaves the guide and keeps the
       calibration.
+- [ ] **Camera circles.** While paused, open the live monitor's Camera
+      panel. Expect a green circle on each pupil, following it as the subject
+      looks around, with the iris just inside it. Hold the card in front of
+      the subject's **left** eye: expect the circle marked **L** to go.
+      Write down where the circles are if they are not on the pupils
+      (mirrored, upside down, shifted), and which letter went.
 - [ ] **Live gaze.** With the card in front of the subject's **left** eye,
       press **V**. Expect the validation to end
       `validation FAILED: no target measured`, since the session reads the

@@ -457,7 +457,7 @@ class FakeLiveMonitor:
     def publish(self, state) -> None:
         self.published.append((state.get("status"), state.get("message")))
 
-    def publish_camera(self, pixels, t) -> None:
+    def publish_camera(self, pixels, t, eyes=None) -> None:
         self.frames += 1
 
     def poll_settings(self):

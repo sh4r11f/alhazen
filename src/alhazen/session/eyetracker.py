@@ -111,6 +111,27 @@ def eye_stat(status: str) -> dict[str, Any]:
     return {"label": "eyes", "value": status, "status": "critical"}
 
 
+def eye_markers(frame: CameraFrame) -> list[dict[str, Any]] | None:
+    """A frame's eyes as the page draws them: one ``{eye, x, y, iris_px}`` per
+    eye the tracker found, in the frame's own px, or None when the tracker
+    cannot say where the eyes are (``CameraFrame.eyes``).
+
+    Rounded to a hundredth of a px: these travel with every streamed frame,
+    and nothing on the page is drawn finer than that.
+    """
+    if frame.eyes is None:
+        return None
+    return [
+        {
+            "eye": eye.eye,
+            "x": round(float(eye.x), 2),
+            "y": round(float(eye.y), 2),
+            "iris_px": round(float(eye.iris_px), 2),
+        }
+        for eye in frame.eyes
+    ]
+
+
 def encode_image(pixels: Any) -> str:
     """A grayscale frame as base64 of its row-major bytes — what the page's
     ``image`` form decodes straight into a canvas."""
@@ -387,6 +408,15 @@ class EyeTrackerMonitor:
             height, width = frame.pixels.shape[:2]
             data["width"], data["height"] = int(width), int(height)
             data["stats"].append({"label": "read at", "value": f"{frame.t:.1f} s"})
+            markers = eye_markers(frame) if image else None
+            if markers is not None:
+                # The page explains the circles only on a panel that can have
+                # them. A streamed frame brings its own markers with it
+                # (runner._send_camera_frame); a frame sent in the state
+                # carries them here, beside its pixels.
+                data["marks_eyes"] = True
+                if not streaming:
+                    data["eyes"] = markers
             if image and not streaming:
                 data["pixels"] = encode_image(frame.pixels)
         if streaming:

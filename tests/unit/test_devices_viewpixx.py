@@ -33,6 +33,7 @@ from alhazen.config.models import EyeTrackerConfig
 from alhazen.devices.eyetracker import EyeTracker, ViewPixxTracker, make_tracker
 from alhazen.devices.eyetracker import viewpixx as viewpixx_module
 from alhazen.devices.eyetracker.guide import GUIDE_TITLE
+from alhazen.devices.eyetracker.protocol import CameraEye
 from alhazen.devices.eyetracker.viewpixx import (
     AUTO_SETTLE_S,
     AUTO_STEADY_REFRESHES,
@@ -43,6 +44,7 @@ from alhazen.devices.eyetracker.viewpixx import (
     VPIXX_ARCHIVE_PATTERN,
     GazeReader,
     calibration_targets,
+    camera_eyes,
     evaluate_calibration,
     eye_in_raw,
     eye_in_view,
@@ -1874,6 +1876,150 @@ class TestCameraImage:
             pytest.fail("not locked") if tracker._device_lock.acquire(blocking=False) else None
         )
         tracker.camera_frame()
+
+
+class TestCameraEyes:
+    """Where the device found each eye in its camera image: what the live
+    monitor draws its circles from. The fake's image is 32 px wide and 24
+    high, with the right pupil at (20, 12) and the left at (8, 10)."""
+
+    WARNINGS = "alhazen.devices.eyetracker.viewpixx"
+
+    def test_each_found_eye_is_marked_at_its_pupil_with_the_iris_size(self, fake_pypixxlib):
+        tracker = connected()
+        fake_pypixxlib.libdpx.iris_size = 6
+        # Left then right, whatever order the device answers in (right first).
+        assert tracker.camera_frame().eyes == (
+            CameraEye(eye="left", x=8.0, y=10.0, iris_px=6.0),
+            CameraEye(eye="right", x=20.0, y=12.0, iris_px=6.0),
+        )
+
+    def test_the_markers_shrink_with_the_image(self, fake_pypixxlib):
+        # The TRACKPixx3's own image, 1280 x 512, is sent as 320 x 128: every
+        # 4th pixel. A pupil at camera px (900, 300) is at (225, 75) in that
+        # picture, and a 96 px iris is 24 px across in it.
+        tracker = connected()
+        libdpx = fake_pypixxlib.libdpx
+        libdpx.image = np.zeros((512, 1280), dtype=np.uint8)
+        libdpx.pupil_centres = per_eye(right=(900.0, 300.0), left=(400.0, 260.0))
+        libdpx.iris_size = 96
+        frame = tracker.camera_frame()
+        assert frame.pixels.shape == (128, 320)
+        assert frame.eyes == (
+            CameraEye(eye="left", x=100.0, y=65.0, iris_px=24.0),
+            CameraEye(eye="right", x=225.0, y=75.0, iris_px=24.0),
+        )
+
+    def test_an_eye_the_device_does_not_find_has_no_marker(self, fake_pypixxlib):
+        tracker = connected()
+        libdpx = fake_pypixxlib.libdpx
+        libdpx.pupils = per_eye(right=(3.0, 2.0), left=(0.0, 0.0))
+        assert [eye.eye for eye in tracker.camera_frame().eyes] == ["right"]
+        # The same test the "eyes:" line uses, so the two cannot disagree.
+        assert tracker.eye_status() == "eyes: right only"
+
+    def test_no_eye_found_is_an_empty_tuple_not_none(self, fake_pypixxlib):
+        # Empty says "looked, and found no eye", which clears the circles;
+        # None would say this tracker cannot place the eyes at all.
+        tracker = connected()
+        fake_pypixxlib.libdpx.pupils = [0.0, 0.0, 0.0, 0.0]
+        assert tracker.camera_frame().eyes == ()
+
+    def test_a_centre_outside_the_image_gets_no_marker_and_one_warning(
+        self, fake_pypixxlib, caplog
+    ):
+        """A circle at a place the image does not have would be a circle on
+        the wrong thing. If the device's centres were ever in another frame
+        than the one this backend takes them to be in, this is where it
+        would show: every frame, in the log, once."""
+        tracker = connected()
+        libdpx = fake_pypixxlib.libdpx
+        with caplog.at_level(logging.WARNING, logger=self.WARNINGS):
+            libdpx.pupil_centres = per_eye(right=(20.0, 12.0), left=(-300.0, 40.0))
+            first = tracker.camera_frame()
+            # The reported place moves from frame to frame; the warning does
+            # not come again for that.
+            libdpx.pupil_centres = per_eye(right=(20.0, 12.0), left=(-310.0, 41.0))
+            second = tracker.camera_frame()
+        assert [eye.eye for eye in first.eyes] == ["right"]
+        assert [eye.eye for eye in second.eyes] == ["right"]
+        said = [r.getMessage() for r in caplog.records if "outside its own" in r.getMessage()]
+        assert len(said) == 1
+        assert "left eye at (-300, 40)" in said[0] and "32x24" in said[0]
+
+        # Back inside and out again is news, and is said again.
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger=self.WARNINGS):
+            libdpx.pupil_centres = per_eye(right=(20.0, 12.0), left=(8.0, 10.0))
+            assert len(tracker.camera_frame().eyes) == 2
+            libdpx.pupil_centres = per_eye(right=(20.0, 12.0), left=(8.0, 24.0))
+            assert len(tracker.camera_frame().eyes) == 1
+        assert sum("outside its own" in r.getMessage() for r in caplog.records) == 1
+
+    @pytest.mark.parametrize(
+        "centre", [(32.0, 10.0), (8.0, 24.0), (-0.5, 10.0), (math.nan, 10.0), (8.0, math.inf)]
+    )
+    def test_the_edges_of_the_image_and_a_centre_that_is_not_a_number(self, centre):
+        # The image has columns 0..31 and rows 0..23: 32 and 24 are outside.
+        libdpx = FakeLibdpx()
+        libdpx.pupil_centres = per_eye(right=(31.5, 23.5), left=centre)
+        eyes, outside = camera_eyes(libdpx, 24, 32, 1)
+        assert [eye.eye for eye in eyes] == ["right"]
+        assert list(outside) == ["left"]
+
+    def test_an_old_pypixxlib_without_the_call_sends_the_image_with_no_markers(
+        self, fake_pypixxlib, caplog, monkeypatch
+    ):
+        tracker = connected()
+        monkeypatch.delattr(FakeLibdpx, "TPxGetPupilCoordinatesInPixels")
+        with caplog.at_level(logging.WARNING, logger=self.WARNINGS):
+            frames = [tracker.camera_frame(), tracker.camera_frame()]
+        assert all(frame.eyes is None for frame in frames)
+        assert frames[0].pixels.shape == (24, 32)
+        said = [r for r in caplog.records if "TPxGetPupilCoordinatesInPixels" in r.getMessage()]
+        assert len(said) == 1
+
+    def test_a_fault_reading_the_pupils_keeps_the_image_and_clears_the_fault(
+        self, fake_pypixxlib, caplog, monkeypatch
+    ):
+        tracker = connected()
+        libdpx = fake_pypixxlib.libdpx
+
+        def fail() -> list[float]:
+            libdpx.error = "DPX_ERR_USB_RAW_EZREAD"
+            libdpx.error_string = "USB read failed"
+            return [0.0, 0.0, 0.0, 0.0]
+
+        monkeypatch.setattr(libdpx, "TPxGetPupilCoordinatesInPixels", fail)
+        with caplog.at_level(logging.WARNING, logger=self.WARNINGS):
+            frame = tracker.camera_frame()
+        assert frame.eyes is None
+        assert int(frame.pixels[0, 0]) == 200
+        assert "DPX_ERR_USB_RAW_EZREAD" in caplog.text
+        # Cleared, so the next unrelated check does not report it again.
+        assert libdpx.error == "DPX_SUCCESS"
+
+    def test_an_answer_missing_an_eye_keeps_the_image(self, fake_pypixxlib, caplog):
+        tracker = connected()
+        fake_pypixxlib.libdpx.pupil_centres = [20.0, 12.0]
+        with caplog.at_level(logging.WARNING, logger=self.WARNINGS):
+            frame = tracker.camera_frame()
+        assert frame.eyes is None and frame.pixels.shape == (24, 32)
+        assert "2 pupil centre values" in caplog.text
+
+    def test_the_pupils_are_read_under_the_device_lock(self, fake_pypixxlib, monkeypatch):
+        # With the image, so the circles belong to the picture they are on.
+        tracker = connected()
+        libdpx = fake_pypixxlib.libdpx
+        centres = libdpx.TPxGetPupilCoordinatesInPixels
+
+        def locked() -> list[float]:
+            if tracker._device_lock.acquire(blocking=False):
+                pytest.fail("not locked")
+            return centres()
+
+        monkeypatch.setattr(libdpx, "TPxGetPupilCoordinatesInPixels", locked)
+        assert len(tracker.camera_frame().eyes) == 2
 
 
 class TestEyeStatus:

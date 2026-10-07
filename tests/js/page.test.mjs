@@ -151,6 +151,52 @@ describe('the eye-tracker panels', () => {
     assert.equal(card.querySelector('div.empty').textContent, 'Malformed image: 3 bytes for 2×2 pixels');
   });
 
+  it('draw a circle of the expected iris size on each eye the tracker found', () => {
+    const pixels = Buffer.from(new Array(8 * 4).fill(90)).toString('base64');
+    const live_monitor = loadLiveMonitor({
+      staticState: stateWith([{
+        title: 'camera',
+        data: {
+          form: 'image',
+          pixels: pixels,
+          width: 8,
+          height: 4,
+          marks_eyes: true,
+          eyes: [
+            { eye: 'left', x: 2, y: 1.5, iris_px: 3 },
+            { eye: 'right', x: 6, y: 2, iris_px: 3 },
+          ],
+        },
+      }]),
+    });
+    const card = cards(live_monitor)[0];
+    const svg = card.querySelector('svg.camera-eyes');
+    // The drawing's units are the picture's px, so a position lands on its pixel.
+    assert.equal(svg.getAttribute('viewBox'), '0 0 8 4');
+    const circles = svg.querySelectorAll('circle.camera-eye');
+    assert.deepEqual(
+      circles.map((c) => [c.getAttribute('cx'), c.getAttribute('cy'), c.getAttribute('r')]),
+      [['2', '1.5', '1.5'], ['6', '2', '1.5']],
+    );
+    // A cross on each centre (two lines), and which eye it is.
+    assert.equal(svg.querySelectorAll('line.camera-eye').length, 4);
+    assert.deepEqual(svg.querySelectorAll('text').map((t) => t.textContent), ['L', 'R']);
+    // ...and the panel says what the circle is.
+    assert.match(card.querySelector('.legend-slot').textContent, /Expected iris size/);
+  });
+
+  it('draw no marker and no key on a picture whose tracker does not say where the eyes are', () => {
+    const pixels = Buffer.from([0, 128, 255, 64]).toString('base64');
+    const live_monitor = loadLiveMonitor({
+      staticState: stateWith([
+        { title: 'camera', data: { form: 'image', pixels: pixels, width: 2, height: 2 } },
+      ]),
+    });
+    const card = cards(live_monitor)[0];
+    assert.equal(card.querySelector('svg.camera-eyes').children.length, 0);
+    assert.equal(card.querySelector('.legend-slot').textContent, '');
+  });
+
   it('colour a verdict tile by its status', () => {
     const live_monitor = loadLiveMonitor({
       staticState: stateWith([{
@@ -255,9 +301,58 @@ describe('the live page', () => {
 });
 
 describe('the live camera stream', () => {
-  const frame = (bytes, seq) => response({
-    headers: { 'X-Frame-Width': '2', 'X-Frame-Height': '1', 'X-Frame-Seq': String(seq) },
+  /* `eyes` is the X-Frame-Eyes header as the server sends it (JSON text);
+   * left out, the frame has no such header. */
+  const frame = (bytes, seq, eyes) => response({
+    headers: {
+      'X-Frame-Width': '2',
+      'X-Frame-Height': '1',
+      'X-Frame-Seq': String(seq),
+      ...(eyes === undefined ? {} : { 'X-Frame-Eyes': eyes }),
+    },
     bytes: bytes,
+  });
+
+  it('draws each frame\'s eye markers with it, and clears them when the eye is gone', async () => {
+    // Three frames, each held back until the one before is drawn: an eye
+    // found, then none found, then a tracker that says nothing about eyes.
+    const gates = [0, 1, 2].map(() => {
+      let deliver;
+      const held = new Promise((resolve) => { deliver = resolve; });
+      return { held: held, deliver: deliver };
+    });
+    const live_monitor = await livePage({
+      states: [stateWith([CAMERA_PANEL], { status: 'paused' })],
+      camera: gates.map((gate) => gate.held),
+    });
+    const svg = cards(live_monitor)[0].querySelector('svg.camera-eyes');
+    const show = async (index, eyes) => {
+      gates[index].deliver(frame([10, 200], index + 1, eyes));
+      await settle();
+      live_monitor.runFrames();
+      return svg.querySelectorAll('circle.camera-eye');
+    };
+
+    const found = await show(0, '[{"eye":"right","x":1.25,"y":0.5,"iris_px":1}]');
+    assert.deepEqual(
+      found.map((c) => [c.getAttribute('cx'), c.getAttribute('cy'), c.getAttribute('r')]),
+      [['1.25', '0.5', '0.5']],
+    );
+    assert.equal(svg.getAttribute('viewBox'), '0 0 2 1');
+    assert.equal((await show(1, '[]')).length, 0, 'a circle outlived its eye');
+    assert.equal((await show(2)).length, 0);
+    assert.equal(svg.children.length, 0);
+  });
+
+  it('says under the image that a frame\'s eye markers could not be read', async () => {
+    const live_monitor = await livePage({
+      states: [stateWith([CAMERA_PANEL], { status: 'paused' })],
+      camera: [frame([1, 2], 1, '{"eye":"left"}')],
+    });
+    live_monitor.runFrames();
+    const line = cards(live_monitor)[0].querySelector('.camera-live');
+    assert.equal(line.textContent, 'Camera stream failed: eye markers that are not a list: {"eye":"left"}');
+    assert.match(String(live_monitor.consoleErrors[0][0]), /camera stream failed/);
   });
 
   it('paints a new frame into the canvas without rebuilding any panel', async () => {

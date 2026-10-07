@@ -84,7 +84,7 @@ from alhazen.live_monitor.runtime import LiveMonitorController, live_monitor_sta
 from alhazen.live_monitor.spec import LiveMonitorSpec
 from alhazen.paradigms.base import Condition, TrialSource
 from alhazen.session.database import ExperimentDatabase, FrameInputBuffer
-from alhazen.session.eyetracker import PROCEDURE_STATUS, EyeTrackerMonitor
+from alhazen.session.eyetracker import PROCEDURE_STATUS, EyeTrackerMonitor, eye_markers
 from alhazen.session.identity import RunIdentity, write_run_identity
 from alhazen.session.pause import PauseMenu
 from alhazen.session.pause_control import PauseController
@@ -1092,7 +1092,8 @@ class SessionRunner:
     def _send_camera_frame(self, frame: CameraFrame) -> None:
         """The monitor's streamed camera frames, onto the live monitor's camera channel."""
         if self._live_monitor is not None:
-            self._live_monitor.publish_camera(frame.pixels, frame.t)
+            # The eye markers go with the frame they were read with.
+            self._live_monitor.publish_camera(frame.pixels, frame.t, eyes=eye_markers(frame))
 
     def _frame_timing_panel(self) -> dict[str, Any]:
         """The frame-interval histogram, from the monitor's own record: the

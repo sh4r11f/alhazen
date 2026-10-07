@@ -15,7 +15,7 @@ import socketserver
 import threading
 import time
 import webbrowser
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from functools import lru_cache
@@ -194,7 +194,9 @@ class LiveMonitorController:
         except queue.Full:
             log.warning("live monitor update queue remained full; dropping revision")
 
-    def publish_camera(self, pixels: Any, t: float) -> None:
+    def publish_camera(
+        self, pixels: Any, t: float, eyes: Sequence[Mapping[str, Any]] | None = None
+    ) -> None:
         """Replace any unread camera frame with this one.
 
         The camera travels on its own channel so the page can redraw the image
@@ -208,6 +210,14 @@ class LiveMonitorController:
         width). Anything else is refused: the page draws one byte per pixel,
         and a frame laid out otherwise would come out as noise, not as an
         error.
+
+        ``eyes`` is where the tracker found each eye in this frame, as the
+        page draws them (session/eyetracker.py ``eye_markers``): an empty
+        list when it found none, None when the tracker cannot say. They
+        travel with the frame, never in a state publish, so a circle is
+        always drawn on the picture it was read with. Markers that cannot be
+        written as JSON (a NaN position) are refused for the same reason a
+        mis-shaped frame is.
         """
         if self._process is not None and not self._process.is_alive():
             if not self._camera_down_reported:
@@ -221,7 +231,14 @@ class LiveMonitorController:
                 f"{getattr(pixels, 'dtype', type(pixels).__name__)} and shape {shape}"
             )
         height, width = int(shape[0]), int(shape[1])
-        frame = (width, height, float(t), pixels.tobytes())
+        markers: str | None = None
+        if eyes is not None:
+            try:
+                # Compact and ASCII, because it is sent as an HTTP header.
+                markers = json.dumps(list(eyes), allow_nan=False, separators=(",", ":"))
+            except (TypeError, ValueError) as e:
+                raise ValueError(f"a camera frame's eye markers must be finite JSON: {e}") from e
+        frame: _CameraFrame = (width, height, float(t), pixels.tobytes(), markers)
         try:
             self._camera.put_nowait(frame)
             return
@@ -317,28 +334,29 @@ class _State:
             return self.payload
 
 
-class _CameraState:
-    """The child's newest camera frame, numbered so a page can ask for the
-    frame after the one it already drew.
+# A camera frame as it crosses to the server child: ``(width, height, t,
+# pixels, eyes)``. Its size, the session time it was read at, one grey byte
+# per pixel (row-major, top row first), and the eye markers as JSON text, or
+# None when the tracker cannot say where the eyes are.
+_CameraFrame = tuple[int, int, float, bytes, "str | None"]
 
-    A frame is ``(width, height, t, pixels)``: its size, the session time it
-    was read at, and one grey byte per pixel, row-major, top row first.
-    """
+
+class _CameraState:
+    """The child's newest camera frame (``_CameraFrame``), numbered so a page
+    can ask for the frame after the one it already drew."""
 
     def __init__(self) -> None:
         self.seq = 0
-        self.frame: tuple[int, int, float, bytes] | None = None
+        self.frame: _CameraFrame | None = None
         self.condition = threading.Condition()
 
-    def set(self, frame: tuple[int, int, float, bytes]) -> None:
+    def set(self, frame: _CameraFrame) -> None:
         with self.condition:
             self.seq += 1
             self.frame = frame
             self.condition.notify_all()
 
-    def wait_after(
-        self, seq: int, timeout: float
-    ) -> tuple[int, tuple[int, int, float, bytes]] | None:
+    def wait_after(self, seq: int, timeout: float) -> tuple[int, _CameraFrame] | None:
         """The newest frame and its number if it is newer than ``seq``,
         waiting up to ``timeout`` seconds for one; None when none came."""
         with self.condition:
@@ -510,18 +528,21 @@ def _serve(
                     # or none has arrived yet. The page asks again.
                     self._send_bytes(HTTPStatus.NO_CONTENT, b"", "application/octet-stream")
                     return
-                seq, (width, height, t, pixels) = newest
-                self._send_bytes(
-                    HTTPStatus.OK,
-                    pixels,
-                    "application/octet-stream",
-                    {
-                        "X-Frame-Seq": str(seq),
-                        "X-Frame-Width": str(width),
-                        "X-Frame-Height": str(height),
-                        "X-Frame-Time": f"{t:.3f}",
-                    },
-                )
+                seq, (width, height, t, pixels, eyes) = newest
+                frame_headers = {
+                    "X-Frame-Seq": str(seq),
+                    "X-Frame-Width": str(width),
+                    "X-Frame-Height": str(height),
+                    "X-Frame-Time": f"{t:.3f}",
+                }
+                # Where the tracker found each eye in THIS frame, so the page
+                # draws its circles on the picture they were read with. Left
+                # out altogether when the tracker cannot say: the page then
+                # draws no markers, which is not the same as "no eye found"
+                # (an empty list).
+                if eyes is not None:
+                    frame_headers["X-Frame-Eyes"] = eyes
+                self._send_bytes(HTTPStatus.OK, pixels, "application/octet-stream", frame_headers)
                 return
             self._send(HTTPStatus.NOT_FOUND, "not found", "text/plain")
 
