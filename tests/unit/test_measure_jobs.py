@@ -392,6 +392,7 @@ class TestRun:
             "duration_s": pytest.approx(0, abs=1),
         }
         assert saved["schema"] == 2 and saved["selected"] == ["a.ok"]
+        assert saved["provenance"]["rig_config"]["monitor"]["distance_cm"] == 57.0
         assert len(saved["provenance"]["rig_sha256"]) == 64
 
     def test_a_report_never_replaces_an_earlier_one(self, tmp_path):
@@ -1073,3 +1074,23 @@ class TestKeepingTheTrackersRecording:
         )
         assert report.records[0].state == ERROR and "later measurement" in report.records[0].summary
         assert tracker.shutdowns == [None]  # released once, by the run, keeping nothing
+
+
+def test_the_ruler_pause_is_shown_as_waiting(tmp_path, monkeypatch):
+    seen = []
+    status_path = tmp_path / "status.json"
+
+    def ruler(display, rig, dva):
+        seen.append(json.loads(status_path.read_text())["jobs"][0]["state"])
+
+    monkeypatch.setattr(builtin, "draw_ruler_on", ruler)
+    bar_cm = SCREEN.deg2px(10.0) * 52.0 / 1920
+    report = run(
+        [builtin_job("monitor.geometry")],
+        tmp_path,
+        operator=Operator([57.0, bar_cm]),
+        devices=Devices({"display": lambda stack: "window"}),
+        status=StatusFile(status_path),
+    )
+    assert seen == [WAITING]
+    assert report.records[0].state == PASSED

@@ -160,10 +160,12 @@ def _geometry(ctx: JobContext) -> Measurement:
         high=400.0,
     )
     if ctx.input("bar_cm") is None:
-        ctx.operator.tell(
-            f"A {RULER_DVA:g}° bar is drawn next. Hold the tape against it, then press any key."
-        )
-        draw_ruler_on(ctx.devices.get("display"), ctx.rig, RULER_DVA)
+        # The bar waits for a key at the rig, so the dashboard says so too.
+        ctx.set_waiting(f"hold a tape to the {RULER_DVA:g}° bar, then press any key")
+        try:
+            draw_ruler_on(ctx.devices.get("display"), ctx.rig, RULER_DVA)
+        finally:
+            ctx.set_waiting(None)
     bar_cm = ctx.number(
         "bar_cm",
         f"Length of the {RULER_DVA:g}° bar between its ticks",

@@ -624,6 +624,10 @@ def run_jobs(
         records=list(records.values()),
         provenance=provenance(rig_path, selected, inputs, argv),
     )
+    # The rig as it was resolved (a file that `extends` a shared rig is only
+    # half of it), so every geometry and device setting a number rests on is
+    # in the report itself.
+    report.provenance["rig_config"] = rig.model_dump(mode="json")
     # Who was in the chair, for the measurements of a subject; the report is
     # the only place it goes (no participant record is written or read).
     report.provenance["subject"] = subject
