@@ -2012,8 +2012,31 @@ function drawTrackerControls(host, data) {
     input.step = control.step;
     input.value = control.value === null || control.value === undefined ? '' : control.value;
     input.dataset.setting = control.setting;
-    down.onclick = () => sendTrackerSetting(control, Number(input.value) - control.step);
-    up.onclick = () => sendTrackerSetting(control, Number(input.value) + control.step);
+    const step = (delta) => {
+      if (!live) return;
+      const value = Number(input.value) + delta;
+      /* Shown at once, so a second press steps on from this value and not
+       * from the one the session last published. The next state says what
+       * the device really holds, and replaces it. */
+      if (Number.isInteger(value) && value >= control.min && value <= control.max) {
+        input.value = value;
+      }
+      sendTrackerSetting(control, value);
+    };
+    /* A button acts when it is pressed, not when it is released. The page
+     * rebuilds every panel on each state the session publishes, about once a
+     * second while paused and at once after a setting changes. A press whose
+     * release came after such a rebuild landed on a button that was no longer
+     * on the page, and the browser then reports no click at all: steps went
+     * missing while the button was being pressed repeatedly. `click` is kept
+     * for the keyboard (Enter or Space on a focused button), which reports
+     * no press; its `detail` is 0 there and the count of presses for a mouse. */
+    const wire = (button, delta) => {
+      button.onpointerdown = (event) => { if (event.button === 0) step(delta); };
+      button.onclick = (event) => { if (!event.detail) step(delta); };
+    };
+    wire(down, -control.step);
+    wire(up, control.step);
     input.onchange = () => sendTrackerSetting(control, Number(input.value));
     [down, input, up].forEach((element) => { element.disabled = !live; });
   });
