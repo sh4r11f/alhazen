@@ -861,13 +861,13 @@ def rig_devices(rig: RigConfig, *, windowed: bool = False) -> Devices:
     """Factories for a real measurement run. Each registers its release on
     the run's stack as soon as it holds the device."""
 
-    def display(stack: ExitStack) -> Any:
+    def open_display(stack: ExitStack) -> Any:
         from alhazen.display.psychopy_backend import PsychoPyDisplay
 
-        window = PsychoPyDisplay(rig.monitor, windowed=windowed)
-        stack.callback(window.close)
-        window.open()
-        return window
+        display = PsychoPyDisplay(rig.monitor, windowed=windowed)
+        stack.callback(display.close)
+        display.open()
+        return display
 
     def tracker(stack: ExitStack) -> Any:
         from alhazen.core.clock import MonotonicClock
@@ -909,7 +909,7 @@ def rig_devices(rig: RigConfig, *, windowed: bool = False) -> Devices:
 
     devices = Devices(
         {
-            "display": display,
+            "display": open_display,
             "tracker": tracker,
             "reward": reward,
             "spikes": spikes,
