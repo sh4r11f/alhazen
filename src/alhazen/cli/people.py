@@ -537,7 +537,7 @@ class PeopleRegistry:
 
     # -- experimenters -------------------------------------------------------------
 
-    def add_experimenter(self, fields: dict[str, Any]) -> dict[str, Any]:
+    def add_experimenter(self, fields: Any) -> dict[str, Any]:
         _only(fields, {"name", "initials", "notes"})
         name = _single_line(fields.get("name"), "Name", MAX_NAME, required=True)
         initials = _initials(fields.get("initials"))
@@ -555,7 +555,7 @@ class PeopleRegistry:
         return self.experimenter(record_id)
 
     def update_experimenter(
-        self, experimenter_id: str, revision: Any, fields: dict[str, Any]
+        self, experimenter_id: str, revision: Any, fields: Any
     ) -> dict[str, Any]:
         _only(fields, {"name", "initials", "notes"})
         expected = _revision(revision)
@@ -611,7 +611,7 @@ class PeopleRegistry:
 
     # -- subjects ---------------------------------------------------------------------
 
-    def add_subject(self, experiment_id: str, fields: dict[str, Any]) -> dict[str, Any]:
+    def add_subject(self, experiment_id: str, fields: Any) -> dict[str, Any]:
         _experiment_key(experiment_id)
         _only(fields, {"code", "initials", "notes", "extra"})
         code = check_subject_code(fields.get("code"))
@@ -648,7 +648,7 @@ class PeopleRegistry:
         experiment_id: str,
         subject_id: str,
         revision: Any,
-        fields: dict[str, Any],
+        fields: Any,
         *,
         used: bool = False,
     ) -> dict[str, Any]:
