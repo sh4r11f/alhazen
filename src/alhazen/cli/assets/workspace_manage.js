@@ -117,6 +117,15 @@
     unsaved.delete(name);
   }
 
+  /** A table cell for a row's buttons, which go in its `box`: a flex box
+   *  inside the cell, since a flex cell would leave the table's layout. */
+  function actionCell() {
+    const cell = el('td', 'm-actions-cell');
+    cell.box = el('div', 'm-row-actions');
+    cell.append(cell.box);
+    return cell;
+  }
+
   function lamp(kind, text) {
     const box = el('span', `m-lamp m-lamp-${kind}`);
     box.append(el('span', 'm-lamp-dot'), el('span', '', text));
@@ -155,7 +164,7 @@
     const main = el('div', 'm-exp-main');
     const name = h.link('m-exp-name', h.titleOf(p), p.id, 'general');
     const facts = el('p', 'm-exp-path');
-    facts.append(el('span', 'm-mono', h.slugOf(p)), el('span', '', p.path));
+    facts.box.append(el('span', 'm-mono', h.slugOf(p)), el('span', '', p.path));
     main.append(name, facts);
     if (p.meta?.description) main.append(el('p', 'm-exp-description', p.meta.description));
     const env = el('dl', 'm-exp-facts');
@@ -308,13 +317,10 @@
         row,
       );
     }
-    actions.append(
-      button('Project settings', 'quiet', () => h.openSettings()),
-      button(p.archived ? 'Restore' : 'Archive…', 'quiet', confirmArchive),
-    );
-    const box = panel('EXPERIMENT', h.titleOf(p), actions);
+    actions.append(button(p.archived ? 'Restore' : 'Archive…', 'quiet', confirmArchive));
+    const box = panel('EXPERIMENT', 'About this experiment', actions);
     const facts = el('dl', 'm-facts');
-    const add = (term, value) => facts.append(el('dt', '', term), el('dd', '', value));
+    const add = (term, value) => facts.box.append(el('dt', '', term), el('dd', '', value));
     add('Folder', p.path);
     add('Short name', h.slugOf(p));
     add('Protocol version', p.version ? `v${p.version}` : `unknown — ${p.version_error}`);
@@ -502,9 +508,9 @@
         const state = el('td');
         state.append(lamp(s.status === 'active' ? 'ok' : 'off', s.status));
         if (s.used) state.append(el('span', 'm-tag', 'has sessions'));
-        const acts = el('td', 'm-row-actions');
+        const acts = actionCell();
         const where = el('div');
-        acts.append(
+        acts.box.append(
           button('Edit', 'quiet m-small', () => {
             slot.replaceChildren(subjectForm(container, p, s, (saved) => {
               slot.replaceChildren();
@@ -728,8 +734,8 @@
       for (const e of rows) {
         const tr = el('tr');
         const cellWhere = el('div');
-        const acts = el('td', 'm-row-actions');
-        acts.append(
+        const acts = actionCell();
+        acts.box.append(
           button('Edit', 'quiet m-small', () => {
             slot.replaceChildren(experimenterForm(container, p, e, (saved) => {
               slot.replaceChildren();
@@ -787,12 +793,12 @@
     t.append(head);
     for (const r of p.rigs) {
       const tr = el('tr', r.shadowed ? 'm-archived' : '');
-      const acts = el('td', 'm-row-actions');
+      const acts = actionCell();
       const path = r.source === 'alhazen' ? `alhazen/${r.name}` : r.path;
-      acts.append(button(r.source === 'alhazen' ? 'View' : 'Edit', 'quiet m-small',
+      acts.box.append(button(r.source === 'alhazen' ? 'View' : 'Edit', 'quiet m-small',
         () => rigEditor(editor, p, path)));
       if (r.source === 'alhazen' && !r.shadowed) {
-        acts.append(button('Make local', 'quiet m-small', () => rigEditor(editor, p, null,
+        acts.box.append(button('Make local', 'quiet m-small', () => rigEditor(editor, p, null,
           r.name)));
       }
       tr.append(
@@ -960,8 +966,8 @@
     t.append(head);
     for (const s of sessions) {
       const tr = el('tr');
-      const acts = el('td', 'm-row-actions');
-      acts.append(button('Open', 'quiet m-small', () => sessionDetail(detail, s, history, p)));
+      const acts = actionCell();
+      acts.box.append(button('Open', 'quiet m-small', () => sessionDetail(detail, s, history, p)));
       const known = s.experimenter.recorded && s.experimenter.name;
       tr.append(
         el('td', 'm-mono', s.date || '—'),
@@ -999,8 +1005,8 @@
       else if (l.status === 'completed') kind = 'ok';
       else if (['failed', 'killed', 'interrupted'].includes(l.status)) kind = 'bad';
       status.append(lamp(kind, l.status));
-      const acts = el('td', 'm-row-actions');
-      acts.append(button('Open', 'quiet m-small', () => launchDetail(detail, l, history, p)));
+      const acts = actionCell();
+      acts.box.append(button('Open', 'quiet m-small', () => launchDetail(detail, l, history, p)));
       tr.append(el('td', 'm-mono', when(l.started)), el('td', '', what),
         el('td', 'm-mono', subject),
         el('td', l.experimenter ? '' : 'm-unknown', experimenterText(l.experimenter)),
@@ -1045,7 +1051,7 @@
     const box = panel('SESSION', `sub-${s.subject} · ses ${s.session} · run ${s.run}`,
       button('Close', 'quiet', () => detail.replaceChildren()));
     const facts = el('dl', 'm-facts');
-    const add = (term, value) => facts.append(el('dt', '', term), el('dd', '', value ?? '—'));
+    const add = (term, value) => facts.box.append(el('dt', '', term), el('dd', '', value ?? '—'));
     add('Folder', run.path);
     add('Date', s.date);
     add('Task', s.task);
@@ -1105,7 +1111,7 @@
     const box = panel('LAUNCH', `${h.label(l.mode)} · ${when(l.started)}`,
       button('Close', 'quiet', () => detail.replaceChildren()));
     const facts = el('dl', 'm-facts');
-    const add = (term, value) => facts.append(el('dt', '', term), el('dd', '', value ?? '—'));
+    const add = (term, value) => facts.box.append(el('dt', '', term), el('dd', '', value ?? '—'));
     add('Status', l.status + (l.active ? ' (in progress)' : ''));
     add('Task', l.parameter_set ? `${l.parameter_set}${l.task ? ` (${l.task})` : ''}` : l.task);
     add('Rig', l.rig);
