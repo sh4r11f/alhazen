@@ -42,6 +42,19 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Fixed
 
+- **The missing-pypixxlib error gives commands that install it into the
+  environment that failed.** It said to "pip install" VPixx's archive "into
+  this environment". A uv-made `.venv` has no pip, so a bare `pip` was
+  another environment's, the SDK went there, and the session failed again
+  with the same words. The error now names the interpreter, names the
+  archive it finds under VPixx's Software Tools (the newest, or the pattern
+  when there is none), and gives two commands through that interpreter:
+  `"<python>" -m pip install "<archive>"` and `uv pip install --python
+  "<python>" "<archive>"`. It also says that a plain `uv sync` removes the
+  SDK, which is in no lockfile, and that `uv sync --inexact` keeps it.
+  `devices.eyetracker.viewpixx` gains `pypixxlib_missing` and
+  `vpixx_archive`; docs/getting-started.md has the uv install.
+
 - **The scaffold acceptance test passes in CI on every OS and Python.** It
   installs with `pip install --no-build-isolation`, so it needs setuptools in
   the test environment, but only uv's `dev` group carried it and CI installs

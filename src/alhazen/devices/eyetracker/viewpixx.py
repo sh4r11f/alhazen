@@ -61,6 +61,7 @@ import csv
 import io
 import logging
 import math
+import re
 import shutil
 import sys
 import tempfile
@@ -260,6 +261,80 @@ _OPEN_FAILED = (
 # error to anyone watching the terminal, and stopped an operator cold on the
 # rig. It is captured and logged as what it is.
 VENDOR_CHATTER = ("Recording data is not yet directly implemented in the TRACKPixx3",)
+
+# Where VPixx's Software Tools installer leaves pypixxlib on Windows: a source
+# archive named pypixxlib-<version>.tar.gz, on no Python path.
+VPIXX_ARCHIVE_DIR = Path(r"C:\Program Files\VPixx Technologies\Software Tools\pypixxlib")
+# What the missing-pypixxlib error names when no archive is found there (not
+# Windows, or Software Tools not installed). Spelled with backslashes whatever
+# machine builds the message, because it is a Windows path.
+VPIXX_ARCHIVE_PATTERN = (
+    r"C:\Program Files\VPixx Technologies\Software Tools\pypixxlib\pypixxlib-<version>.tar.gz"
+)
+_ARCHIVE_NAME = re.compile(r"pypixxlib-(\d+(?:\.\d+)*)\.tar\.gz")
+
+
+def vpixx_archive(directory: Path = VPIXX_ARCHIVE_DIR) -> Path | None:
+    """The pypixxlib archive Software Tools left in ``directory``, or None.
+
+    The newest version when an update has left more than one. None when the
+    directory is absent or holds no such archive: Software Tools is not
+    installed on this machine, or this is not Windows.
+    """
+    if not directory.is_dir():
+        return None
+    found: list[tuple[tuple[int, ...], Path]] = []
+    for path in directory.iterdir():
+        match = _ARCHIVE_NAME.fullmatch(path.name)
+        if match:
+            # Compared as numbers, part by part: 1.10.0 is newer than 1.9.2,
+            # which the names sorted as text would get backwards.
+            found.append((tuple(int(part) for part in match.group(1).split(".")), path))
+    if not found:
+        return None
+    return max(found)[1]
+
+
+def pypixxlib_missing(directory: Path = VPIXX_ARCHIVE_DIR) -> TrackerError:
+    """The error for pypixxlib failing to import, with commands that install it.
+
+    It names the interpreter and runs both commands through it, for the same
+    reason ``psychopy_missing`` does (display.psychopy_backend): on a machine
+    with several environments "pip install it" does not say WHERE. A bare
+    ``pip`` is whichever one is first on PATH, and an environment made by uv
+    has no pip of its own at all, so the instruction as this error used to
+    give it put the SDK into some other environment and the session failed
+    again with the same words.
+
+    Both commands are given because the error cannot tell a pip-made
+    environment from a uv-made one. The uv one comes with a warning: the SDK
+    is in no lockfile, so the next plain ``uv sync`` removes it.
+
+    The file to install is looked for in ``directory``, where Software Tools
+    puts it; when it is not there the message gives the pattern and says so.
+    """
+    python = sys.executable
+    archive = vpixx_archive(directory)
+    if archive is None:
+        where = f"on Windows, {VPIXX_ARCHIVE_PATTERN}. No such file was found on this machine"
+        target = VPIXX_ARCHIVE_PATTERN
+    else:
+        where = f"on this machine, {archive}"
+        target = str(archive)
+    return TrackerError(
+        f"pypixxlib is not installed in the Python environment this runs in ({python}). "
+        "It is NOT on PyPI: VPixx's Software Tools installer (vpixx.com/software-tools) "
+        f"leaves it on the rig as a source archive — {where}. Install that file into "
+        "this environment with\n"
+        f'  "{python}" -m pip install "{target}"\n'
+        "or, if the environment was made by uv (a project's .venv, which has no pip), "
+        "with\n"
+        f'  uv pip install --python "{python}" "{target}"\n'
+        "A plain `uv sync` removes it again, because it is not in uv.lock: sync with "
+        "`uv sync --inexact`, or install it again after each sync. "
+        "Or use eyetracker backend 'mouse_sim' for development."
+    )
+
 
 T = TypeVar("T")
 
@@ -995,14 +1070,7 @@ class ViewPixxTracker:
             from pypixxlib import _libdpx as libdpx
             from pypixxlib.tracker import TRACKPixx3
         except ImportError as e:
-            raise TrackerError(
-                "pypixxlib is not installed in this Python environment. It is NOT on PyPI: "
-                "VPixx's Software Tools installer (vpixx.com/software-tools) leaves it on "
-                "the rig as a source archive — on Windows, "
-                "C:\\Program Files\\VPixx Technologies\\Software Tools\\pypixxlib\\"
-                "pypixxlib-<version>.tar.gz — and that file is what to pip install into "
-                "this environment. Or use eyetracker backend 'mouse_sim' for development."
-            ) from e
+            raise pypixxlib_missing() from e
 
         try:
             self._tracker = TRACKPixx3()
