@@ -21,7 +21,12 @@ import pytest
 from alhazen.config.models import EyeTrackerConfig
 from alhazen.devices.eyetracker import procedures
 from alhazen.devices.eyetracker.procedures import DriftResult, TargetError, ValidationResult
-from alhazen.devices.eyetracker.protocol import CalibrationResult, CameraFrame, GazeSample
+from alhazen.devices.eyetracker.protocol import (
+    CalibrationResult,
+    CameraEye,
+    CameraFrame,
+    GazeSample,
+)
 from alhazen.devices.eyetracker.scripted import ScriptedTracker
 from alhazen.devices.eyetracker.viewpixx import eye_status_text
 from alhazen.errors import TrackerError
@@ -32,6 +37,7 @@ from alhazen.session.eyetracker import (
     SECTION,
     EyeTrackerMonitor,
     encode_image,
+    eye_markers,
     eye_stat,
 )
 from alhazen.testing import FakeClock, FakeDisplay, FakeStimulus
@@ -89,13 +95,16 @@ class CameraTracker(FollowingTracker):
         self.camera_error: TrackerError | None = None
         self.eye_error: TrackerError | None = None
         self.eyes = (True, True)
+        # Where the tracker found each eye in its image (CameraFrame.eyes):
+        # None is a tracker that cannot say, the default for any backend.
+        self.found: tuple[CameraEye, ...] | None = None
         self.reads = 0
 
     def camera_frame(self) -> CameraFrame:
         self.reads += 1
         if self.camera_error is not None:
             raise self.camera_error
-        return CameraFrame(self.pixels, t=self._clock.now())
+        return CameraFrame(self.pixels, t=self._clock.now(), eyes=self.found)
 
     def eye_status(self) -> str:
         if self.eye_error is not None:
@@ -519,6 +528,34 @@ class TestCameraPanel:
         assert eyes["status"] == "critical"
         assert "NO EYE" in eyes["value"]
 
+    def test_a_frames_eyes_reach_the_panel_as_markers(self, session) -> None:
+        s = session(CameraTracker)
+        s.tracker.found = (CameraEye(eye="left", x=1.234, y=2.0, iris_px=1.5),)
+        data = s.panel("Camera", camera=True)["data"]
+        assert data["marks_eyes"] is True
+        assert data["eyes"] == [{"eye": "left", "x": 1.23, "y": 2.0, "iris_px": 1.5}]
+
+    def test_no_eye_found_is_an_empty_list_which_clears_the_circles(self, session) -> None:
+        s = session(CameraTracker)
+        s.tracker.found = ()
+        data = s.panel("Camera", camera=True)["data"]
+        assert data["marks_eyes"] is True and data["eyes"] == []
+
+    def test_a_tracker_that_cannot_place_the_eyes_sends_no_markers(self, session) -> None:
+        # The panel then says nothing about circles: the page draws no key.
+        s = session(CameraTracker)
+        data = s.panel("Camera", camera=True)["data"]
+        assert "eyes" not in data and "marks_eyes" not in data
+
+    def test_the_saved_copy_has_no_markers_either(self, session) -> None:
+        # It has no picture to draw them on.
+        s = session(CameraTracker)
+        s.tracker.found = (CameraEye(eye="left", x=1.0, y=2.0, iris_px=1.5),)
+        s.panel("Camera", camera=True)
+        data = s.panel("Camera", camera=False, image=False)["data"]
+        assert data["pixels"] == ""
+        assert "eyes" not in data and "marks_eyes" not in data
+
     def test_one_eye_only(self, session) -> None:
         s = session(CameraTracker)
         s.tracker.eyes = (False, True)
@@ -651,6 +688,17 @@ class TestCameraStream:
             s.clock.advance(0.1)
         assert len(frames) == 10
         assert len(s.published) == 2
+
+    def test_a_streaming_panel_leaves_the_markers_to_the_frames(self, session) -> None:
+        """Each streamed frame brings its own markers, so a circle is drawn
+        on the picture it was read with. The state says only that this
+        panel has them."""
+        s, frames = self.streaming(session)
+        s.tracker.found = (CameraEye(eye="right", x=3.0, y=1.0, iris_px=2.0),)
+        s.monitor.stream_camera()
+        data = s.panel("Camera", camera=True)["data"]
+        assert data["marks_eyes"] is True and "eyes" not in data
+        assert eye_markers(frames[0]) == [{"eye": "right", "x": 3.0, "y": 1.0, "iris_px": 2.0}]
 
     def test_a_streaming_panel_carries_no_pixels_and_reads_no_frame(self, session) -> None:
         s, _frames = self.streaming(session)

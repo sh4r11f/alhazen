@@ -42,6 +42,9 @@
 
   --critical:    #d03b3b;   /* status: a delivery the hardware refused */
   --good:        #0ca30c;   /* status: running */
+  /* The circle on a found eye. It is drawn over the camera image, which is
+   * grey in both themes, so it is the same colour in both. */
+  --eye-marker:  #3ee06c;
 
   --radius: 4px;
   --font: "Helvetica Neue", Helvetica, Arial, "Liberation Sans", system-ui, sans-serif;
@@ -287,6 +290,28 @@ main { flex: 1 1 auto; min-width: 0; padding: 22px 28px 56px; }
   border-radius: 6px;
   image-rendering: pixelated;
 }
+/* The box the camera image sits in. The image alone gives it its size; the
+ * eye markers are laid over the image and take up no room, so they move
+ * nothing under the box as they come and go. */
+.camera-box { position: relative; }
+/* The eye markers: an SVG stretched over the image, in the image's own px. */
+.plot svg.camera-eyes {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  pointer-events: none;
+}
+/* The circle on a found eye and the cross on its centre. The stroke keeps
+ * its width on screen however far the image is scaled up. */
+.camera-eye {
+  fill: none;
+  stroke: var(--eye-marker);
+  stroke-width: 2px;
+  vector-effect: non-scaling-stroke;
+}
+.camera-eye-label { fill: var(--eye-marker); font-weight: 600; }
 /* Under a streamed image: its frame rate while it is live, or why it is not. */
 .camera-live {
   margin-top: 6px;

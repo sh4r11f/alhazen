@@ -19,7 +19,7 @@ from alhazen import LiveMonitorPanel, LiveMonitorSpec, RewardPulses
 from alhazen.config.models import LiveMonitorConfig
 from alhazen.core.commands import Command
 from alhazen.devices.eyetracker import GazeSample
-from alhazen.devices.eyetracker.protocol import CameraFrame
+from alhazen.devices.eyetracker.protocol import CameraEye, CameraFrame
 from alhazen.devices.eyetracker.scripted import ScriptedTracker
 from alhazen.devices.reward import SimulatedReward
 from alhazen.errors import SessionError
@@ -299,6 +299,42 @@ class TestRuntime:
         with urllib.request.urlopen(request, timeout=2) as response:
             return response.status
 
+    def test_a_frames_eye_markers_travel_with_it(self):
+        """In a header of the same answer as the pixels, so the page draws a
+        circle on the picture it was read with."""
+        controller = LiveMonitorController(auto_open=False)
+        url = controller.start()
+        token = url.partition("token=")[2]
+        root = url.partition("/?")[0]
+        pixels = np.zeros((3, 4), dtype=np.uint8)
+        left = {"eye": "left", "x": 1.5, "y": 2.0, "iris_px": 1.25}
+        try:
+            controller.publish_camera(pixels, 1.0, eyes=[left])
+            _status, headers, _body = self._camera(root, token, after=0, wait_ms=3000)
+            assert json.loads(headers["X-Frame-Eyes"]) == [left]
+            seq = int(headers["X-Frame-Seq"])
+
+            # Found none: an empty list, which is not the same as no header.
+            controller.publish_camera(pixels, 2.0, eyes=[])
+            _status, headers, _body = self._camera(root, token, after=seq, wait_ms=3000)
+            assert headers["X-Frame-Eyes"] == "[]"
+            seq = int(headers["X-Frame-Seq"])
+
+            # A tracker that cannot place the eyes: no header at all.
+            controller.publish_camera(pixels, 3.0)
+            _status, headers, _body = self._camera(root, token, after=seq, wait_ms=3000)
+            assert "X-Frame-Eyes" not in headers
+        finally:
+            controller.stop()
+
+    def test_eye_markers_that_cannot_be_sent_are_refused(self):
+        controller = LiveMonitorController(auto_open=False)
+        pixels = np.zeros((3, 4), dtype=np.uint8)
+        with pytest.raises(ValueError, match="finite JSON"):
+            controller.publish_camera(pixels, 0.0, eyes=[{"eye": "left", "x": float("nan")}])
+        with pytest.raises(ValueError, match="finite JSON"):
+            controller.publish_camera(pixels, 0.0, eyes=[{"eye": object()}])
+
     def test_a_camera_frame_must_be_8_bit_grey(self):
         controller = LiveMonitorController(auto_open=False)
         with pytest.raises(ValueError, match="8-bit grey"):
@@ -563,6 +599,8 @@ class FakeLiveMonitor:
         self.batches = list(batches)
         self.states: list[dict] = []
         self.frames: list[tuple] = []
+        # Each frame's eye markers, as the runner handed them over.
+        self.frame_eyes: list = []
         self.setting_batches: list[list[tuple[str, object]]] = []
         self.stopped = False
         self.url = "http://127.0.0.1:0/"
@@ -570,8 +608,9 @@ class FakeLiveMonitor:
     def publish(self, state: dict) -> None:
         self.states.append(state)
 
-    def publish_camera(self, pixels, t: float) -> None:
+    def publish_camera(self, pixels, t: float, eyes=None) -> None:
         self.frames.append((pixels.copy(), t))
+        self.frame_eyes.append(eyes)
 
     def poll_settings(self) -> list[tuple[str, object]]:
         return self.setting_batches.pop(0) if self.setting_batches else []
@@ -1088,6 +1127,35 @@ class TestCameraThroughThePause:
         assert all(c["stream"] is True and c["pixels"] == "" for c in cameras)
         assert {s["message"] for s in paused} == {"Paused — browser controls are enabled."}
         assert live_monitor.states[-1]["status"] == "complete"
+
+    def test_each_streamed_frame_goes_out_with_its_own_eye_markers(self, tmp_path: Path):
+        harness, tracker, live_monitor = self._run(tmp_path, [[]] * 30 + [["resume"]])
+        # This tracker cannot place the eyes, and the runner says exactly that.
+        assert live_monitor.frame_eyes and set(map(repr, live_monitor.frame_eyes)) == {"None"}
+
+        class Marking(CameraScriptedTracker):
+            def camera_frame(self) -> CameraFrame:
+                frame = super().camera_frame()
+                # A different place in every frame, so a marker sent with the
+                # wrong frame would show.
+                eye = CameraEye(eye="left", x=float(self.reads), y=1.0, iris_px=2.0)
+                return CameraFrame(frame.pixels, t=frame.t, eyes=(eye,))
+
+        clock = FakeClock()
+        gaze = GazeSample(gx=SCREEN.width_px / 2, gy=SCREEN.height_px / 2, t=0.0)
+        marking = FakeLiveMonitor([[]] * 30 + [["resume"]])
+        SessionHarness(
+            tmp_path / "marking",
+            n_trials=1,
+            commands=ScriptedCommands([[Command.PAUSE]]),
+            tracker=Marking([(0.0, gaze)], clock),
+            clock=clock,
+            **wired(marking),
+        ).runner.run()
+        assert len(marking.frames) >= 2
+        for (pixels, _t), eyes in zip(marking.frames, marking.frame_eyes, strict=True):
+            # The fake's pixels are its read count, and so is the marker's x.
+            assert eyes == [{"eye": "left", "x": float(pixels[0, 0]), "y": 1.0, "iris_px": 2.0}]
 
     def test_a_rig_without_a_camera_is_not_republished(self, tmp_path: Path):
         clock = FakeClock()

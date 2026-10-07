@@ -27,6 +27,22 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ## Unreleased
 
+### Added
+
+- **The live monitor's camera view marks each eye the TRACKPixx3 has
+  found.** A green circle of the expected iris size, centred on the pupil
+  the device fitted, with a cross on the centre and L or R beside it. An eye
+  with no circle is not being tracked, and stepping the iris size changes
+  the circle as it changes the setting. The markers are read with the image
+  and travel with it (`CameraFrame.eyes`, a tuple of the new `CameraEye`;
+  the `X-Frame-Eyes` header of `/api/camera`), so a circle is never drawn on
+  an older picture. `LiveMonitorController.publish_camera` takes them as an
+  optional third argument, `eyes`, which the runner now passes: a stand-in
+  that overrides `publish_camera(pixels, t)` has to accept it.
+  **Not yet checked on a rig:** that the device reports each pupil's centre
+  in camera px from the image's top-left corner. docs/eye-tracker.md has
+  the check, which is to look at whether the circles sit on the pupils.
+
 ### Removed
 
 - **The workspace no longer lists an experiment's `movie.py` as a "Movie

@@ -82,6 +82,7 @@ from alhazen.devices.eyetracker.procedures import ABORT_KEY, ACCEPT_KEYS, REDO_K
 from alhazen.devices.eyetracker.protocol import (
     CalibrationResult,
     CalibrationTarget,
+    CameraEye,
     CameraFrame,
     GazeSample,
     HostShape,
@@ -524,6 +525,13 @@ def image_from_pointer(pointer: Any, height: int, width: int) -> np.ndarray:
     return flat.view(np.uint8).reshape(height, width).copy()
 
 
+def shrink_step(pixels: np.ndarray, max_px: int = CAMERA_MAX_PX) -> int:
+    """The k of ``shrink_image``: how many camera px one px of the shrunk
+    image stands for, along each side. 1 for an image that already fits."""
+    longer = max(pixels.shape[:2])
+    return max(1, math.ceil(longer / max_px))
+
+
 def shrink_image(pixels: np.ndarray, max_px: int = CAMERA_MAX_PX) -> np.ndarray:
     """Every k-th pixel in each direction, so the longer side fits ``max_px``.
 
@@ -531,9 +539,62 @@ def shrink_image(pixels: np.ndarray, max_px: int = CAMERA_MAX_PX) -> np.ndarray:
     somebody judges a pupil edge and a corneal reflection from, and blurring
     it would smooth away exactly the thing they are looking for.
     """
-    longer = max(pixels.shape[:2])
-    step = max(1, math.ceil(longer / max_px))
+    step = shrink_step(pixels, max_px)
     return np.ascontiguousarray(pixels[::step, ::step])
+
+
+def camera_eyes(
+    libdpx: Any, height: int, width: int, step: int
+) -> tuple[tuple[CameraEye, ...] | None, dict[str, tuple[float, float]]]:
+    """Where the device found each eye in its camera image: (eyes, outside).
+
+    ``eyes`` is one ``CameraEye`` per eye the device is fitting a pupil in
+    (``eyes_detected``, the same test the "eyes:" line uses, so the circles
+    and that line cannot disagree), in the px of the image as ``shrink_image``
+    hands it on: the device's camera px divided by ``step``. It is None when
+    this pypixxlib has no call for the pupil's place in the image.
+
+    ``outside`` is each found eye whose centre the device put off its own
+    ``width`` x ``height`` image, with that centre in camera px. Such an eye
+    gets no marker, and the caller says so: a circle drawn at a place the
+    image does not have would be a circle on the wrong thing.
+
+    Three device answers are combined, all read from the register cache the
+    caller has just refreshed:
+
+    - ``TPxGetPupilCoordinatesInPixels``: each pupil's centre. Taken to be in
+      camera px from the image's top-left corner, x to the right and y down,
+      the frame ``TPxGetImagePtr``'s image is in. VPixx's docstring does not
+      say (it calls them screen coordinates, which they are not). This is
+      NOT yet checked against an eye on the rig; docs/eye-tracker.md has the
+      check, which is to look at whether the circle sits on the pupil.
+    - ``TPxGetPupilSize``: which eyes have a pupil at all.
+    - ``TPxGetIrisExpectedSize``: the diameter the device searches for, which
+      is the circle's diameter. It is the setting the camera panel adjusts,
+      so the circle shows what a change to it did.
+
+    Both per-eye arrays are read right eye first (NATIVE_EYE_ORDER). For the
+    pupil centres that is inferred from the other arrays, not measured.
+    """
+    read_centres = getattr(libdpx, "TPxGetPupilCoordinatesInPixels", None)
+    if read_centres is None:
+        return None, {}
+    left, right = eyes_detected(libdpx)
+    centres = split_by_eye(read_centres(), 2, "pupil centre")
+    iris_px = float(libdpx.TPxGetIrisExpectedSize())
+    eyes: list[CameraEye] = []
+    outside: dict[str, tuple[float, float]] = {}
+    for eye, found in (("left", left), ("right", right)):
+        if not found:
+            continue
+        x, y = centres[eye]
+        # Written so that a NaN centre fails it too: no comparison with NaN
+        # is true.
+        if not (0.0 <= x < width and 0.0 <= y < height):
+            outside[eye] = (x, y)
+            continue
+        eyes.append(CameraEye(eye=eye, x=x / step, y=y / step, iris_px=iris_px / step))
+    return tuple(eyes), outside
 
 
 def evaluate_calibration(
@@ -1046,6 +1107,10 @@ class ViewPixxTracker:
         # The "no calibration" warning is said once per uncalibrated stretch,
         # not once per frame.
         self._warned_uncalibrated = False
+        # Why the camera image's eye markers are missing, when they are
+        # (_camera_eyes). Kept so the reason is warned about once, not at
+        # every one of the fifteen frames a second it stays true.
+        self._marker_problem: str | None = None
         # Dropout detection (recording_fault). How long the gaze reader may
         # go without a new report mid-trial (eyetracker.max_sample_gap_ms);
         # the age at which get_gaze() stops calling a report a position, which
@@ -1608,6 +1673,11 @@ class ViewPixxTracker:
             if fault is not None:
                 raise TrackerError(f"the TRACKPixx3 camera image could not be read: {fault}")
             pixels = image_from_pointer(pointer, int(height), int(width))
+            # Where the device found each eye, read under the same lock and
+            # from the same register cache as the image, so the circles the
+            # live monitor draws belong to this picture. Read before the
+            # ring check below, which then covers these reads too.
+            eyes = self._camera_eyes(int(height), int(width), shrink_step(pixels))
             # A register-level read on this device has re-pointed the sample
             # ring before (recording_armed); if this one did, the ring is put
             # back now rather than at the next drain, so fewer samples are
@@ -1628,7 +1698,60 @@ class ViewPixxTracker:
                     "reading the TRACKPixx3 camera image re-pointed the sample ring; re-arming"
                 )
                 arm_recording(self._libdpx, self._tracker)
-        return CameraFrame(pixels=shrink_image(pixels), t=self._clock.now())
+        return CameraFrame(pixels=shrink_image(pixels), t=self._clock.now(), eyes=eyes)
+
+    def _camera_eyes(self, height: int, width: int, step: int) -> tuple[CameraEye, ...] | None:
+        """The eye markers for one camera frame (``camera_eyes``), or None.
+
+        Called with the device lock held. The markers are an aid on top of the
+        image, so nothing that goes wrong with them takes the image away: the
+        frame is sent without them, or without the one that is wrong, and the
+        reason is logged as a warning. It is logged once for as long as it
+        stays the same, because this runs for every frame.
+        """
+        try:
+            eyes, outside = camera_eyes(self._libdpx, height, width, step)
+        except TrackerError as e:
+            # A per-eye array shorter than two eyes' worth (split_by_eye).
+            self._marker_warning(f"read: {e}", f"eye markers left off the camera image: {e}")
+            return None
+        fault = dpx_fault(self._libdpx)
+        if fault is not None:
+            self._marker_warning(
+                f"fault: {fault}",
+                f"eye markers left off the camera image: the TRACKPixx3 could not say where "
+                f"the pupils are ({fault})",
+            )
+            return None
+        if eyes is None:
+            self._marker_warning(
+                "no call",
+                "eye markers left off the camera image: this pypixxlib has no "
+                "TPxGetPupilCoordinatesInPixels()",
+            )
+            return None
+        if outside:
+            places = ", ".join(
+                f"{eye} eye at ({x:.0f}, {y:.0f})" for eye, (x, y) in outside.items()
+            )
+            self._marker_warning(
+                # Keyed on which eyes, not on where: the place changes with
+                # every frame, and that would repeat the warning every frame.
+                "outside: " + ",".join(sorted(outside)),
+                f"the TRACKPixx3 fits a pupil but puts its centre outside its own "
+                f"{width}x{height} camera image ({places}, camera px); no marker is drawn "
+                f"for it. If this is every frame, the centres are not in the frame this "
+                f"backend takes them to be in (camera_eyes).",
+            )
+        else:
+            self._marker_problem = None
+        return eyes
+
+    def _marker_warning(self, key: str, message: str) -> None:
+        """Warn about the eye markers, unless the last warning had this ``key``."""
+        if key != self._marker_problem:
+            log.warning("%s", message)
+        self._marker_problem = key
 
     def iris_size(self) -> int:
         """The expected iris size the device holds now, in camera px.

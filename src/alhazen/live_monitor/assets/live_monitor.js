@@ -1843,7 +1843,7 @@ function drawImage(legendHost, host, data) {
   /* A live camera sends its frames on their own channel (cameraLoop), and the
    * state says only that it streams: the picture is the newest frame that
    * came, drawn at once so a rebuilt panel never blanks. */
-  if (data.stream) return drawCameraStream(host, data);
+  if (data.stream) return drawCameraStream(legendHost, host, data);
   /* The reason there is no picture is the panel's note, which buildPanel
    * already prints under the plot; the placeholder does not repeat it. */
   if (!data.pixels) return drawEmpty(host, 'No image');
@@ -1859,7 +1859,7 @@ function drawImage(legendHost, host, data) {
     return drawEmpty(host, 'Malformed image: ' + bytes.length + ' bytes for ' +
       width + '\u00d7' + height + ' pixels');
   }
-  const canvas = htmlEl('canvas', 'camera', null, host);
+  const canvas = cameraBox(legendHost, host, data);
   canvas.width = width;
   canvas.height = height;
   const context = canvas.getContext('2d');
@@ -1873,6 +1873,72 @@ function drawImage(legendHost, host, data) {
     image.data[4 * i + 3] = 255;
   }
   context.putImageData(image, 0, 0);
+  /* The eyes the tracker found in this picture came with it in the state. */
+  drawCameraEyes(canvas, data.eyes);
+}
+
+/**
+ * The box a camera picture sits in, and the canvas inside it.
+ *
+ * Two things share the box: the canvas, and an SVG the same size laid over
+ * it for the eye markers. Only the canvas takes up room, so markers that
+ * come and go as an eye is lost and found change the height of nothing.
+ *
+ * A panel whose tracker marks the eyes (`marks_eyes`) also says, in its
+ * legend slot, what the circle is.
+ */
+function cameraBox(legendHost, host, data) {
+  const box = htmlEl('div', 'camera-box', null, host);
+  const canvas = htmlEl('canvas', 'camera', null, box);
+  /* Stretched with the canvas (preserveAspectRatio none), so a position in
+   * image px lands on that pixel of the picture whatever the card's width. */
+  svgEl('svg', { class: 'camera-eyes', preserveAspectRatio: 'none', 'aria-hidden': 'true' }, box);
+  if (data.marks_eyes) {
+    const legend = htmlEl('div', 'legend', null, legendHost);
+    const item = htmlEl('span', null, null, legend);
+    htmlEl('i', 'ring', null, item).style.borderColor = 'var(--eye-marker)';
+    htmlEl('span', null, 'Expected iris size, on each pupil the tracker found', item);
+  }
+  return canvas;
+}
+
+/**
+ * Draw the eyes the tracker found over a camera picture: for each, a circle
+ * of the iris size it is looking for, centred on the pupil it found, a small
+ * cross on that centre, and L or R beside it.
+ *
+ * `eyes` is a list of {eye, x, y, iris_px} in the picture's own px. An empty
+ * list clears the markers (the tracker looked and found no eye). So does a
+ * missing one (this tracker does not say where the eyes are): the picture is
+ * then drawn alone.
+ */
+function drawCameraEyes(canvas, eyes) {
+  const svg = canvas.parentElement.querySelector('svg.camera-eyes');
+  if (!svg) return;
+  svg.replaceChildren();
+  /* The picture's px are the drawing's units. */
+  svg.setAttribute('viewBox', '0 0 ' + canvas.width + ' ' + canvas.height);
+  /* Sized from the picture so they read the same on a small frame and a
+   * large one: the cross's arm and the letter's height, in picture px. */
+  const arm = Math.max(2, canvas.height / 40);
+  const letter = Math.max(6, canvas.height / 12);
+  (eyes || []).forEach((eye) => {
+    const radius = eye.iris_px / 2;
+    svgEl('circle', { class: 'camera-eye', cx: eye.x, cy: eye.y, r: radius }, svg);
+    svgEl('line', { class: 'camera-eye', x1: eye.x - arm, y1: eye.y, x2: eye.x + arm, y2: eye.y }, svg);
+    svgEl('line', { class: 'camera-eye', x1: eye.x, y1: eye.y - arm, x2: eye.x, y2: eye.y + arm }, svg);
+    /* Above the circle, or below it when the circle reaches the top edge
+     * and a letter above would be cut off. */
+    const above = eye.y - radius - letter * 0.3;
+    const label = svgEl('text', {
+      class: 'camera-eye-label',
+      x: eye.x,
+      y: above - letter > 0 ? above : eye.y + radius + letter,
+      'font-size': letter,
+      'text-anchor': 'middle',
+    }, svg);
+    label.textContent = eye.eye === 'left' ? 'L' : eye.eye === 'right' ? 'R' : String(eye.eye);
+  });
 }
 
 /* ------------------------------------------------------------------ */
@@ -1892,8 +1958,8 @@ let cameraPaintQueued = false;
 
 /** The canvas a streamed camera panel draws into, the line under it, and
  *  the tracker settings it offers. */
-function drawCameraStream(host, data) {
-  const canvas = htmlEl('canvas', 'camera', null, host);
+function drawCameraStream(legendHost, host, data) {
+  const canvas = cameraBox(legendHost, host, data);
   canvas.dataset.stream = '1';
   htmlEl('div', 'camera-live', null, host);
   drawTrackerControls(host, data);
@@ -1971,10 +2037,11 @@ function paintCamera() {
   cameraPaintQueued = false;
   const canvas = document.querySelector('canvas.camera[data-stream]');
   if (!canvas) return;
-  const line = canvas.parentElement.querySelector('.camera-live');
+  /* The line is beside the picture's box, not in it (drawCameraStream). */
+  const line = canvas.parentElement.parentElement.querySelector('.camera-live');
   if (line) line.textContent = cameraRateText();
   if (!cameraFrame) return;
-  const { width, height, bytes } = cameraFrame;
+  const { width, height, bytes, eyes } = cameraFrame;
   if (canvas.width !== width) canvas.width = width;
   if (canvas.height !== height) canvas.height = height;
   const context = canvas.getContext('2d');
@@ -1988,6 +2055,9 @@ function paintCamera() {
     rgba[j + 3] = 255;
   }
   context.putImageData(image, 0, 0);
+  /* The eyes found in this frame, which came with it: the circles are
+   * redrawn with every picture, so they never sit on an older one. */
+  drawCameraEyes(canvas, eyes);
 }
 
 /** At most one paint per display frame, however fast frames arrive. */
@@ -2019,8 +2089,17 @@ async function cameraLoop() {
           throw new Error('a frame of ' + bytes.length + ' bytes for ' +
             width + '×' + height + ' pixels');
         }
+        /* Where the tracker found each eye in this frame, as JSON in a
+         * header; absent when the tracker does not say. Markers that do not
+         * parse fail the frame like a mis-sized one, and are said under the
+         * image: a picture with silently missing circles reads as "no eye". */
+        const eyesHeader = response.headers.get('X-Frame-Eyes');
+        const eyes = eyesHeader ? JSON.parse(eyesHeader) : null;
+        if (eyes !== null && !Array.isArray(eyes)) {
+          throw new Error('eye markers that are not a list: ' + eyesHeader);
+        }
         cameraSeq = seq;
-        cameraFrame = { width: width, height: height, bytes: bytes };
+        cameraFrame = { width: width, height: height, bytes: bytes, eyes: eyes };
         cameraArrivals.push(performance.now());
         cameraProblem = '';
       } else if (response.status !== 204) {

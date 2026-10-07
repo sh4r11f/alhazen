@@ -285,6 +285,10 @@ class FakeLibdpx:
         # first (per_eye). Pupil ellipse semi-axes (right major/minor, left
         # major/minor); all zero is the device's "no eye in the image".
         self.pupils: list[float] = per_eye(right=(3.0, 2.0), left=(3.0, 2.0))
+        # Each pupil's centre in the camera image: camera px from the image's
+        # top-left corner, x to the right and y down. Inside the default
+        # 32 x 24 image below.
+        self.pupil_centres: list[float] = per_eye(right=(20.0, 12.0), left=(8.0, 10.0))
         # The gaze report TPxBestPolyGetEyePosition writes: calibrated
         # positions and raw eye vectors, [x_right, y_right, x_left, y_left].
         # Raw vectors of a tracked eye are plain numbers; the device's own
@@ -387,6 +391,9 @@ class FakeLibdpx:
 
     def TPxGetPupilSize(self) -> list[float]:  # noqa: N802 - vendor's name
         return list(self.pupils)
+
+    def TPxGetPupilCoordinatesInPixels(self) -> list[float]:  # noqa: N802 - vendor's name
+        return list(self.pupil_centres)
 
     def TPxBestPolyGetEyePosition(self, packed, raw) -> float:  # noqa: N802 - vendor's name
         """The gaze report, both forms, written into the caller's buffers

@@ -311,8 +311,8 @@ listed here are public because tests and the rehearsal modes construct them.
 
 ::: alhazen.devices.eyetracker.protocol
     options:
-      members: [GazeSample, CalibrationTarget, CalibrationResult, CameraFrame,
-        HostShape, EyeTracker]
+      members: [GazeSample, CalibrationTarget, CalibrationResult, CameraEye,
+        CameraFrame, HostShape, EyeTracker]
 
 ::: alhazen.devices.eyetracker.messages
     options:

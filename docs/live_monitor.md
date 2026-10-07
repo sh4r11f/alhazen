@@ -653,13 +653,24 @@ the raw bytes with the size and time in headers, and redraws only the canvas.
 The line under the image gives the frame rate, or says why no frame is
 arriving.
 
+**Eye markers travel with their frame.** A tracker that knows where it found
+each eye fills `CameraFrame.eyes` (the TRACKPixx3 does), and the page draws a
+circle of the expected iris size on each. On the stream they ride in one more
+header of the same answer, `X-Frame-Eyes`: JSON, a list of `{eye, x, y,
+iris_px}` in the frame's own px. An empty list means no eye was found, and
+clears the circles. No header means the tracker cannot say, and the page
+draws the picture alone. A frame sent in the state instead (no live page, so
+no stream) carries the same list as the panel's `eyes`. The circles are an
+SVG laid over the canvas, in the image's px, so they are redrawn with every
+frame and never sit on an older one.
+
 ```mermaid
 flowchart LR
   L["pause loop pass /<br/>procedure progress report"] --> M["EyeTrackerMonitor.stream_camera()<br/>at most every 1/15 s"]
-  M -->|"tracker.camera_frame()"| F["CameraFrame<br/>8-bit grey"]
+  M -->|"tracker.camera_frame()"| F["CameraFrame<br/>8-bit grey + eyes"]
   F --> Q["LiveMonitorController.publish_camera()<br/>one-slot queue"]
-  Q --> C["server child: /api/camera<br/>long poll, raw bytes"]
-  C --> P["page: cameraLoop()<br/>redraws the canvas only"]
+  Q --> C["server child: /api/camera<br/>long poll: raw bytes,<br/>X-Frame-Eyes header"]
+  C --> P["page: cameraLoop()<br/>redraws the canvas<br/>and the circles only"]
 ```
 
 ## Frame-timing panel

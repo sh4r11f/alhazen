@@ -275,7 +275,7 @@ class StoppableLiveMonitor:
             raise RuntimeError(f"the live monitor could not publish the {state['status']!r} state")
         self.states.append(state)
 
-    def publish_camera(self, pixels, t: float) -> None:
+    def publish_camera(self, pixels, t: float, eyes=None) -> None:
         return
 
     def poll_settings(self) -> list:

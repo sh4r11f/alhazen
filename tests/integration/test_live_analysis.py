@@ -94,7 +94,7 @@ class InProcessLiveMonitor(LiveMonitorController):
     def publish(self, state: dict[str, Any]) -> None:
         self.published.append(state)
 
-    def publish_camera(self, pixels: Any, t: float) -> None:
+    def publish_camera(self, pixels: Any, t: float, eyes: Any = None) -> None:
         # No tracker in these sessions streams a camera; one that started to
         # should be noticed here, not silently dropped.
         raise AssertionError("these sessions have no camera to publish")
