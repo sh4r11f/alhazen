@@ -53,6 +53,14 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   200 ms pulses 200 ms apart), which a new fake-driver test now pins sample
   by sample.
 
+### Fixed
+
+- **Workspace: the Task parameters menu no longer cuts off the end of an
+  entry's name.** On a narrow run column (a phone, or the 1440 px layout's
+  form column) the menu beside the heading shrank to about 110 px, hiding
+  the part of a name such as "Pilot (monkey)" that tells two entries apart.
+  Below 15rem beside the heading it now takes its own full-width line.
+
 ## 2.11.0 - 2026-10-07
 
 ### Added
