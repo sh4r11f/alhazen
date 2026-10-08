@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import math
 import re
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Literal
 
@@ -834,17 +835,26 @@ class SyncHwConfig(Model):
 class RewardPulses(Model):
     """One reward delivery: a train of ``n_pulses`` pulses of ``pulse_ms``
     separated by ``inter_pulse_ms``. Pulse width is what sets the volume
-    delivered, so it is configuration, never a hard-coded constant."""
+    delivered, so it is configuration, never a hard-coded constant.
+
+    ``volume_ul`` asks for an amount instead of a count: the session turns it
+    into ``n_pulses`` of ``pulse_ms`` from the rig's measured µL per pulse of
+    that width (config/reward_calibration.py), and refuses to start when that
+    width was never measured on the rig's line. Left None, ``n_pulses`` is
+    the delivery, as before."""
 
     n_pulses: int = 2
     pulse_ms: int = 200
     inter_pulse_ms: int = 200
+    volume_ul: float | None = None
 
     @model_validator(mode="after")
     def _valid(self) -> RewardPulses:
         for name in ("n_pulses", "pulse_ms", "inter_pulse_ms"):
             if getattr(self, name) < 0:
                 raise ValueError(f"{name} must be >= 0")
+        if self.volume_ul is not None and not self.volume_ul > 0:
+            raise ValueError("volume_ul must be > 0 (leave it out to give n_pulses instead)")
         return self
 
 
@@ -1184,6 +1194,67 @@ def normalize_initials(text: str) -> str:
     if not (1 <= len(initials) <= 5 and initials.isalpha()):
         raise ValueError(f"{INITIALS_RULE}; got {text!r}")
     return initials
+
+
+# What a subject's sex is recorded as: one of these codes, or nothing (not
+# recorded). ``prefer_not_to_say`` is an answer — the subject was asked and
+# declined — and so is kept apart from "not recorded". The workspace page
+# offers the same codes, with labels, in its JavaScript (SUBJECT_SEXES in
+# workspace.js); tests/unit/test_subject_demographics.py holds the two together.
+SUBJECT_SEXES: tuple[str, ...] = ("female", "male", "other", "prefer_not_to_say")
+SEX_RULE = "sex must be one of " + ", ".join(SUBJECT_SEXES)
+# A subject's age in years, as recorded: 0 to MAX_AGE_YEARS, whole or with one
+# decimal (an animal of 7.5 years). Kept as text in the registry (the CSV
+# copies' cells are its text) and written to session.json as a number.
+MAX_AGE_YEARS = 120
+AGE_RULE = f"age must be a number of years from 0 to {MAX_AGE_YEARS}, with at most one decimal"
+
+
+def normalize_age(value: object) -> str:
+    """A subject's age as it is recorded: the canonical text of a number of
+    years from 0 to `MAX_AGE_YEARS` with at most one decimal — ``"27"``,
+    ``"7.5"`` (``" 27.0 "`` and ``27`` are ``"27"``).
+
+    Anything else — a word, a negative or too large number, two decimals, a
+    boolean, not-a-number — is a ValueError in `AGE_RULE`'s words, naming
+    what was given. "Not recorded" is the caller's None, never a value here.
+    """
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise ValueError(f"{AGE_RULE}; got {value!r}")
+    text = str(value).strip()
+    try:
+        number = Decimal(text)
+    except InvalidOperation:
+        raise ValueError(f"{AGE_RULE}; got {value!r}") from None
+    if not number.is_finite() or not (0 <= number <= MAX_AGE_YEARS):
+        raise ValueError(f"{AGE_RULE}; got {value!r}")
+    tenths = number * 10
+    if tenths != tenths.to_integral_value():
+        raise ValueError(f"{AGE_RULE}; got {value!r}")
+    whole = number.to_integral_value()
+    if number == whole:
+        return str(int(whole))
+    return f"{number.quantize(Decimal('0.1'))}"
+
+
+def age_number(text: str) -> int | float:
+    """A recorded age (`normalize_age`'s text) as the number session.json
+    writes: an int for whole years, else a float with its one decimal."""
+    canonical = normalize_age(text)
+    return float(canonical) if "." in canonical else int(canonical)
+
+
+def normalize_sex(value: object) -> str:
+    """A subject's sex as it is recorded: one of `SUBJECT_SEXES`. Case and
+    the spaces of the spoken form are forgiven (``"Prefer not to say"`` is
+    ``prefer_not_to_say``); anything else is a ValueError in `SEX_RULE`'s
+    words. "Not recorded" is the caller's None, never a value here."""
+    if not isinstance(value, str):
+        raise ValueError(f"{SEX_RULE}; got {value!r}")
+    code = "_".join(value.strip().lower().split())
+    if code not in SUBJECT_SEXES:
+        raise ValueError(f"{SEX_RULE}; got {value!r}")
+    return code
 
 
 class SessionInfo(Model):

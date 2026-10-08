@@ -252,3 +252,12 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* Upload to the archive under the run table (workspace_upload.js). */
+.data-upload {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}

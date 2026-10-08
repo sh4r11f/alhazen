@@ -98,6 +98,7 @@ from alhazen.task.live import LiveAnalysis
 # tests written before the task layer existed import them from here.
 from alhazen.task.plan import BuildTrial, TrialSetup
 from alhazen.task.reward_policy import RewardPolicy
+from alhazen.task.subject_kind import subject_kind_of
 from alhazen.training.supervisor import TrainingSupervisor
 
 log = logging.getLogger(__name__)
@@ -226,6 +227,8 @@ class SessionRunner:
             )
         self._identity = identity
         self._cfg = cfg
+        kind = subject_kind_of(cfg.task_params)
+        self._subject_kind = kind.value if kind is not None else None
         # The external recorder this run belongs to (devices.recording), or
         # None. Its pointer file is written once the snapshot is, in run():
         # a run directory says which recording it pairs with even if the
@@ -460,9 +463,16 @@ class SessionRunner:
             # Records the subject's initials with a new subject, fills them in
             # on a row from before 2.0, and refuses ones that disagree — the
             # builder already checked, before anything was written; this is
-            # the same check against the file as it is now.
+            # the same check against the file as it is now. A subject this
+            # session registers gets its age and sex columns too, when given;
+            # an existing row is never rewritten (age is the age at its first
+            # session there; session.json has each session's own).
+            demographics = self._identity.demographics
             ensure_participant(
-                self._cfg.rig.data_root, self._cfg.info.subject, initials=self._cfg.info.initials
+                self._cfg.rig.data_root,
+                self._cfg.info.subject,
+                demographics.as_participant_columns() if demographics is not None else None,
+                initials=self._cfg.info.initials,
             )
 
             log.info(
@@ -487,6 +497,17 @@ class SessionRunner:
             if self._identity.experimenter is not None:
                 who = self._identity.experimenter
                 log.info("experimenter: %s%s", who.name, f" ({who.id})" if who.id else "")
+            # The subject's age and sex likewise, when given ("not recorded"
+            # for the one that was not).
+            if self._identity.demographics is not None:
+                given = self._identity.demographics
+                log.info(
+                    "subject: age %s, sex %s",
+                    given.age if given.age is not None else "not recorded",
+                    given.sex if given.sex is not None else "not recorded",
+                )
+            if self._subject_kind is not None:
+                log.info("subject kind: %s", self._subject_kind)
             log.info("devices: %s", self._devices_line())
             for note in self.setup_notes:
                 log.info("setup: %s", note)
@@ -710,6 +731,9 @@ class SessionRunner:
         for name in ("eyetracker", "reward", "sync", "recording", "spikes"):
             device = getattr(devices, name, None)
             backend = getattr(device, "backend", None) if device is not None else None
+            if name == "reward" and backend is not None and self._subject_kind == "human":
+                # The rig has a line, and a human session never opens it.
+                backend = f"{backend} (closed: human subject)"
             parts.append(f"{name} {backend if backend is not None else 'none'}")
         return ", ".join(parts)
 
@@ -782,6 +806,10 @@ class SessionRunner:
             # On the row, not only in the folder name, because rows travel:
             # into the database, into a table concatenated across runs.
             "experiment_version": self._identity.experiment.version,
+            # Who the subject was (core/trial.py TRIAL_RECORD_COLUMNS); only
+            # when the params say, so a run of undeclared params writes the
+            # same columns it always did.
+            **({"subject_kind": self._subject_kind} if self._subject_kind is not None else {}),
             # Stage and ramp values first, so a task that records a column of
             # the same name wins — the task's own measurement is never
             # shadowed by bookkeeping.

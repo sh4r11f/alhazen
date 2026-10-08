@@ -57,11 +57,13 @@ from typing import Any
 import yaml
 
 from alhazen.config.experiment import Experiment
-from alhazen.config.models import SessionConfig
+from alhazen.config.models import SessionConfig, age_number, normalize_age, normalize_sex
+from alhazen.config.reward_calibration import load_reward_calibration, ul_per_pulse
 from alhazen.config.rigs import rig_mapping
 from alhazen.config.snapshot import build_provenance, write_snapshot
 from alhazen.data.paths import SessionPaths
 from alhazen.errors import ConfigError
+from alhazen.task.subject_kind import SubjectKind, subject_kind_of
 
 log = logging.getLogger(__name__)
 
@@ -144,6 +146,42 @@ class Experimenter:
 
 
 @dataclass(frozen=True)
+class SubjectDemographics:
+    """The subject's age and sex, as session.json records them beside the id
+    and initials. ``age`` is `normalize_age`'s text (years), ``sex`` one of
+    `SUBJECT_SEXES`; each None when not recorded. Recorded, never put in a
+    path."""
+
+    age: str | None = None
+    sex: str | None = None
+
+    @classmethod
+    def parse(cls, age: str | None, sex: str | None) -> SubjectDemographics | None:
+        """``--age`` / ``--sex`` as recorded, None when neither is given; a
+        ValueError in the rules' own words (config.models) otherwise."""
+        if age is None and sex is None:
+            return None
+        return cls(
+            age=None if age is None else normalize_age(age),
+            sex=None if sex is None else normalize_sex(sex),
+        )
+
+    def as_json(self) -> dict[str, Any]:
+        """``{age, sex}`` for session.json: the age as a number of years."""
+        return {"age": None if self.age is None else age_number(self.age), "sex": self.sex}
+
+    def as_participant_columns(self) -> dict[str, str]:
+        """The participants.tsv columns a new subject's row gets: only the
+        values given, as text, so a row never claims an empty answer."""
+        columns = {}
+        if self.age is not None:
+            columns["age"] = self.age
+        if self.sex is not None:
+            columns["sex"] = self.sex
+        return columns
+
+
+@dataclass(frozen=True)
 class RunIdentity:
     """What a run records about how it was set up, beyond its config.
 
@@ -166,6 +204,8 @@ class RunIdentity:
     - ``experimenter`` — who ran the session (``--experimenter``), or None
       when nobody said: the card then records null, "not recorded", never a
       guess.
+    - ``demographics`` — the subject's age and sex (``--age``, ``--sex``),
+      or None when neither was given: the card then records both as null.
     """
 
     experiment: Experiment
@@ -175,6 +215,7 @@ class RunIdentity:
     rig_merged: bytes | None = None
     command: tuple[str, ...] | None = None
     experimenter: Experimenter | None = None
+    demographics: SubjectDemographics | None = None
 
 
 # How the alhazen console command is recorded: by its name, which is what a
@@ -257,6 +298,67 @@ def merged_rig(rig_file: SourceFile | None) -> bytes | None:
     return (header + body).encode("utf-8")
 
 
+def reward_record(
+    cfg: SessionConfig, subject_kind: SubjectKind | None, rig_path: Path | None = None
+) -> dict[str, Any]:
+    """session.json's ``reward``: was the reward line open, which line, and
+    what the params said pays on it.
+
+    ``volumes`` is, for each entry of a monkey session's policy, the pulses
+    it delivers and what the rig's reward calibration (the file beside
+    ``rig_path``) says they come to in µL: ``ul_per_pulse`` and ``ul`` are
+    null for a width never measured on this line at this voltage. An entry
+    given in µL shows the count it became.
+
+    ``line_open`` is False for a human session (no dispenser is opened,
+    whatever the rig has) and for a rig with no reward line. ``backend`` is
+    the rig's as the session ran it: ``simulated`` in test and simulate
+    modes, which stand a real pump down. ``policy`` is the params file's
+    ``reward`` block (a monkey session's), or null; a task with undeclared
+    params pays its class policy, which the snapshot's task code records.
+    """
+    hardware = cfg.rig.devices.reward
+    line_open = hardware is not None and subject_kind is not SubjectKind.HUMAN
+    policy = cfg.task_params.get("reward") if subject_kind is SubjectKind.MONKEY else None
+    volumes: dict[str, Any] | None = None
+    if line_open and hardware is not None and isinstance(policy, dict):
+        calibration = load_reward_calibration(rig_path) if rig_path is not None else None
+        line = f"{hardware.device}/{hardware.channel}"
+        entries = dict(policy.get("by_outcome") or {})
+        if policy.get("on_fault"):
+            entries["on_fault"] = policy["on_fault"]
+        volumes = {}
+        for name, pulses in entries.items():
+            width = int(pulses.get("pulse_ms", 200))
+            measured = ul_per_pulse(
+                calibration, pulse_ms=width, line=line, voltage=hardware.voltage
+            )
+            per = float(measured["ul_per_pulse"]) if measured else None
+            asked = pulses.get("volume_ul")
+            if asked is not None and per:
+                count = max(1, round(float(asked) / per))
+            else:
+                count = int(pulses.get("n_pulses", 2))
+            volumes[name] = {
+                "n_pulses": count,
+                "pulse_ms": width,
+                "volume_ul_asked": asked,
+                "ul_per_pulse": per,
+                "ul": round(count * per, 1) if per else None,
+                "measured_at": measured.get("measured_at") if measured else None,
+            }
+    return {
+        "line_open": line_open,
+        "backend": hardware.backend if line_open and hardware is not None else None,
+        "line": (
+            f"{hardware.device}/{hardware.channel}" if line_open and hardware is not None else None
+        ),
+        "voltage": hardware.voltage if line_open and hardware is not None else None,
+        "policy": policy,
+        "volumes": volumes,
+    }
+
+
 def session_card(
     cfg: SessionConfig,
     paths: SessionPaths,
@@ -280,6 +382,7 @@ def session_card(
     experiment = identity.experiment
     info = cfg.info
     sources = cfg.sources
+    subject_kind = subject_kind_of(cfg.task_params)
 
     def relative(path: Path) -> str:
         return path.relative_to(paths.run_dir).as_posix()
@@ -297,12 +400,31 @@ def session_card(
         "task": info.task_name,
         "mode": identity.mode,
         # Initials are recorded here and in the registry, never in a path.
-        "subject": {"id": info.subject, "initials": info.initials},
+        # Age (years, a number) and sex (a SUBJECT_SEXES code) beside them,
+        # null when not recorded; added after 2.11.0 without a schema bump,
+        # like ``experimenter``: new keys, which a reader of schema 1
+        # ignores. A card without them was written before.
+        "subject": {
+            "id": info.subject,
+            "initials": info.initials,
+            **(identity.demographics or SubjectDemographics()).as_json(),
+        },
         # Who ran it ({id, name}), or null: not recorded. Added after
         # 2.10.0 without a schema bump, like ``command``: a new key, which a reader
         # of schema 1 ignores; a card without it was written before.
         "experimenter": (
             identity.experimenter.as_json() if identity.experimenter is not None else None
+        ),
+        # Who the subject is, as the params declare it (task/subject_kind.py):
+        # "human", "monkey", or null for params that do not say. With
+        # ``reward``: whether the reward line was open this run, the line,
+        # and what paid on it. Added in 2.12.0 without a schema bump, like
+        # ``command``: new keys, which a reader of schema 1 ignores.
+        "subject_kind": subject_kind.value if subject_kind is not None else None,
+        "reward": reward_record(
+            cfg,
+            subject_kind,
+            identity.rig_file.path if identity.rig_file is not None else None,
         ),
         "session": info.session,
         "run": info.run,

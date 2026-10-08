@@ -206,6 +206,30 @@ def reward_volume(
     }
 
 
+def reward_volume_read(*, volume_ml: float, n_pulses: int, pulse_ms: float) -> dict[str, Any]:
+    """Volume per pulse from the volume the operator read off a beaker.
+
+    The reading is the only number here that says what came out of the
+    spout; the pulse count and width are what was commanded. A beaker's
+    graduations limit it, so collect enough pulses to read well.
+    """
+    volume_ml = _finite_positive("volume read", volume_ml)
+    if not isinstance(n_pulses, int) or n_pulses < 1:
+        raise ValueError(f"n_pulses must be a whole number of 1 or more, not {n_pulses!r}")
+    pulse_ms = _finite_positive("pulse width", pulse_ms)
+    volume_ul = volume_ml * 1000.0
+    per_pulse = volume_ul / n_pulses
+    return {
+        "volume_ml": volume_ml,
+        "volume_ul": volume_ul,
+        "n_pulses": n_pulses,
+        "pulse_ms": pulse_ms,
+        "ul_per_pulse": per_pulse,
+        "ul_per_ms_open": per_pulse / pulse_ms,
+        "source": "read off a beaker by the operator",
+    }
+
+
 # ----------------------------------------------------------------------
 # Mouse: pointer travel per physical centimetre
 # ----------------------------------------------------------------------

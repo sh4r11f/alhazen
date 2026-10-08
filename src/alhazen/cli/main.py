@@ -48,7 +48,7 @@ from alhazen.config.rigs import (
 from alhazen.errors import AlhazenError, ConfigError, DataError, DisplayError
 from alhazen.modes import Mode, flag_refusal, real_data_refusal
 from alhazen.session.checks import check_rig, format_result
-from alhazen.session.identity import Experimenter
+from alhazen.session.identity import Experimenter, SubjectDemographics
 from alhazen.testing.sorter import FAULTS
 from alhazen.version import get_version
 
@@ -523,6 +523,21 @@ def add_mode_arguments(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="the experimenter's record id (with --experimenter), recorded beside the name",
     )
+    # The subject's age and sex: recorded in session.json and session.log
+    # (and in participants.tsv with a new subject), never in a path. Optional
+    # everywhere; the experiment workspace sends a registered subject's.
+    parser.add_argument(
+        "--age",
+        default=None,
+        help="the subject's age in years (0-120, at most one decimal), recorded in "
+        "session.json (optional)",
+    )
+    parser.add_argument(
+        "--sex",
+        default=None,
+        help="the subject's sex: female, male, other or prefer_not_to_say, recorded in "
+        "session.json (optional)",
+    )
     parser.add_argument("--seed", type=int, default=None, help="session seed")
     parser.add_argument("--windowed", action="store_true", help="bordered window, for dev")
     # The two flags that override the machine rather than the experiment.
@@ -738,6 +753,14 @@ def _run_session(
     try:
         args.experimenter_record = Experimenter.parse(
             getattr(args, "experimenter", None), getattr(args, "experimenter_id", None)
+        )
+    except ValueError as exc:
+        print(f"INVALID: {exc}", file=sys.stderr)
+        return 2
+    # The subject's age and sex likewise: held to their rules in every mode.
+    try:
+        args.demographics = SubjectDemographics.parse(
+            getattr(args, "age", None), getattr(args, "sex", None)
         )
     except ValueError as exc:
         print(f"INVALID: {exc}", file=sys.stderr)
@@ -1397,6 +1420,13 @@ def _trial_session(args: argparse.Namespace, rig: Any, task: Any, params: Any, m
             **(
                 {"experimenter": args.experimenter_record}
                 if getattr(args, "experimenter_record", None) is not None
+                else {}
+            ),
+            # The subject's age and sex, when the command line gave them
+            # (--age, --sex): recorded in session.json and session.log.
+            **(
+                {"demographics": args.demographics}
+                if getattr(args, "demographics", None) is not None
                 else {}
             ),
             # How this session was started, for session.json and the

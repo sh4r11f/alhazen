@@ -133,7 +133,13 @@ class TestRegistryLaunch:
             workspace.start(request_for(workspace, mode="test", subject="s01", initials="hd")),
         )
         assert run["identity"] == {
-            "subject": {"record_id": None, "id": "s01", "initials": "HD"},
+            "subject": {
+                "record_id": None,
+                "id": "s01",
+                "initials": "HD",
+                "age": None,
+                "sex": None,
+            },
             "experimenter": None,
             "source": "typed",
         }

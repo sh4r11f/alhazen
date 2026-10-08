@@ -31,6 +31,7 @@ from typing import Any
 import yaml
 
 from alhazen.cli.people import Conflict, PeopleRegistry
+from alhazen.cli.upload_receipts import latest as latest_upload
 from alhazen.cli.workspace import (
     Workspace,
     _as_the_project_reads_it,
@@ -337,14 +338,18 @@ class Management:
             problems.extend(listed["problems"])
             for row in listed["runs"]:
                 folder = root.path / row["id"]
+                card = _session_card(folder)
                 entry = {
                     **row,
                     "root": root.id,
                     "root_path": str(root.path),
                     "root_kind": root.kind,
-                    "experimenter": _session_experimenter(folder),
+                    "experimenter": _session_experimenter(card),
+                    "demographics": _session_demographics(card),
                     "page": next((n for n in SAVED_PAGES if (folder / n).is_file()), None),
                     "has_log": any(folder.glob("*session.log")),
+                    # The newest upload receipt, summed up; None: never uploaded.
+                    "upload": latest_upload(root.path, row["id"]),
                     "launch": None,
                 }
                 sessions.append(entry)
@@ -377,6 +382,7 @@ class Management:
                     "identity": identity,
                     "experimenter": (identity or {}).get("experimenter"),
                     "experimenter_recorded_in": run.get("experimenter_recorded_in"),
+                    "demographics_recorded_in": run.get("demographics_recorded_in"),
                     "files": [name for name in LAUNCH_TEXTS if (directory / name).is_file()],
                     "session_folder": (
                         {"root": session["root"], "run": session["id"]} if session else None
@@ -476,15 +482,30 @@ class Management:
         raise FileNotFoundError(f"No management route {route!r}")
 
 
-def _session_experimenter(folder: Path) -> dict[str, Any]:
-    """Who ran a session, as its session.json says: ``{recorded, id, name}``
-    — recorded False for a card from before the field (or no card)."""
-    card = folder / "session.json"
+def _session_card(folder: Path) -> dict[str, Any] | None:
+    """A session folder's session.json, or None when it has none that reads
+    as a card (a folder from before 2.0, an unreadable file)."""
     try:
-        value = json.loads(card.read_text(encoding="utf-8"))
+        value = json.loads((folder / "session.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return {"recorded": False, "id": None, "name": None}
-    if not isinstance(value, dict) or "experimenter" not in value:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _session_demographics(value: dict[str, Any] | None) -> dict[str, Any]:
+    """The subject's age and sex as a session.json card says:
+    ``{recorded, age, sex}`` — recorded False for a card from before the
+    fields (or no card); each value None when that session did not record it."""
+    subject = value.get("subject") if value is not None else None
+    if not isinstance(subject, dict) or not ({"age", "sex"} & subject.keys()):
+        return {"recorded": False, "age": None, "sex": None}
+    return {"recorded": True, "age": subject.get("age"), "sex": subject.get("sex")}
+
+
+def _session_experimenter(value: dict[str, Any] | None) -> dict[str, Any]:
+    """Who ran a session, as its session.json card says: ``{recorded, id,
+    name}`` — recorded False for a card from before the field (or no card)."""
+    if value is None or "experimenter" not in value:
         return {"recorded": False, "id": None, "name": None}
     who = value.get("experimenter")
     if not isinstance(who, dict):

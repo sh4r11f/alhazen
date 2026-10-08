@@ -9,6 +9,7 @@ device, or the bus.
 
 from alhazen.task.plan import BuildTrial, TrialPlan, TrialSetup
 from alhazen.task.reward_policy import RewardPolicy
+from alhazen.task.subject_kind import SubjectKind, SubjectParams
 from alhazen.task.subject_mode import SubjectMode as SubjectMode
 from alhazen.task.subject_mode import response_phases as response_phases
 from alhazen.task.task import Task
@@ -20,6 +21,8 @@ from alhazen.task.task import Task
 __all__ = [
     "BuildTrial",
     "RewardPolicy",
+    "SubjectKind",
+    "SubjectParams",
     "Task",
     "TrialPlan",
     "TrialSetup",

@@ -165,7 +165,7 @@ schema versions in [versioning](versioning.md) §3); a reader gates on it.
   },
   "task": "saccade-bias",
   "mode": "run",
-  "subject": {"id": "01", "initials": "HD"},
+  "subject": {"id": "01", "initials": "HD", "age": 27, "sex": "female"},
   "experimenter": {"id": "e_3f9a1c2b7d40", "name": "Sam Lee"},
   "session": 1,
   "run": 1,
@@ -196,6 +196,7 @@ schema versions in [versioning](versioning.md) §3); a reader gates on it.
 | `experiment.git` | `git describe --always --dirty` of the experiment's repository — the snapshot's `experiment_git_sha`. `-dirty` means the commit alone does not reproduce what ran. |
 | `mode` | `run`, `test` or `simulate`; null for a session built with `build_session` directly. |
 | `subject.initials` | The subject's initials, uppercase; null when the session was not given them (`simulate`, a session started from code). |
+| `subject.age`, `subject.sex` | The subject's age in years (a number, at most one decimal) and sex (`female`, `male`, `other` or `prefer_not_to_say`), from `--age` and `--sex` — sent by the [experiment workspace](workspace.md) from a registered subject's record. `null` when not given: "not recorded". Also a line of `session.log`, and the `age`/`sex` columns of `participants.tsv` for a subject this session registers (an existing row is not rewritten, so its age is the age at its first session; `session.json` has each session's). Added after 2.11.0 without a schema bump; a card without the keys is older. |
 | `experimenter` | Who ran the session: `--experimenter NAME` and, from the [experiment workspace](workspace.md), `--experimenter-id` (its people-registry record). `null` when nobody said — "not recorded", never a guess; recorded, never in a path. Also a line of `session.log`. Added after 2.10.0 without a schema bump; a card without the key is older. |
 | `rig.name`, `rig.source` | For a rig chosen by name, the name and where it was found; null for a rig given as a path. |
 | `rig.file`, `params_file` | Where the originals were, on the machine that ran the session; null when that layer came from no file. |

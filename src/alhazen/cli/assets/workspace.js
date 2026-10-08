@@ -48,6 +48,20 @@ const MODES = {
 const INITIALS_RULE = 'initials must be 1 to 5 letters, such as HD';
 const INITIALS_REQUIRED = 'Subject initials are required for run and test modes';
 
+/* A subject's sex, as recorded (alhazen.config.models.SUBJECT_SEXES; a Python
+ * test holds the codes together), with the words the page shows for each.
+ * Not recorded is no code at all. The General page's form and lists, and the
+ * Run page, take them from here (pageHelpers). */
+const SUBJECT_SEXES = [
+  ['female', 'Female'],
+  ['male', 'Male'],
+  ['other', 'Other'],
+  ['prefer_not_to_say', 'Prefer not to say'],
+];
+/* An age older than this many days is shown as worth checking before a run:
+ * the registry keeps an age with the date it was entered, not a birthday. */
+const AGE_CHECK_DAYS = 365;
+
 /* The modes whose session draws a new seed when it is given none, records
  * it, and prints it on its console, where the launcher reads it for the
  * history (workspace.py SEED_DRAWING_MODES). Demo and movie use seed 0 when
@@ -408,6 +422,32 @@ function checkInitials(text, required) {
   return {value, problem: ''};
 }
 
+/** A sex code as the page says it ('' for none); an unknown code as it is. */
+function sexLabel(code) {
+  if (!code) return '';
+  return SUBJECT_SEXES.find(([value]) => value === code)?.[1] ?? code;
+}
+
+/** A subject's age and sex in a few words — "27 y · Female", "age not
+ *  recorded · Male" — or '' when neither is recorded. */
+function demographicsText(s) {
+  if (s?.age == null && !s?.sex) return '';
+  const age = s.age == null ? 'age not recorded' : `${s.age} y`;
+  return `${age} · ${s.sex ? sexLabel(s.sex) : 'sex not recorded'}`;
+}
+
+/** The age a session would record, read from a typed field: '' for none,
+ *  else the same rule as the command line (config.models.normalize_age:
+ *  0 to 120 years, at most one decimal), the server checking again. */
+function checkAge(text) {
+  const value = text.trim();
+  if (!value) return {value: '', problem: ''};
+  const ok = /^\d{1,3}(\.\d)?$/.test(value) && Number(value) <= 120;
+  return ok ? {value, problem: ''}
+    : {value, problem: `Age must be a number of years from 0 to 120, with at most one decimal; `
+      + `got '${text}'`};
+}
+
 /** A short local timestamp for history rows and the run summary. */
 function date(value) {
   return new Date(value).toLocaleString([], {
@@ -544,6 +584,30 @@ function rigFacts(facts) {
     list.append(node('dt', '', label), value);
   }
   $('rig-summary').replaceChildren(list);
+}
+
+/**
+ * The Rig summary's Reward line: the line the juice goes out on, then what
+ * the Measure rig recorded for each pulse width ("118.5 µL per 200 ms
+ * pulse"), or that no volume was measured. Nothing for a rig with no reward
+ * line. Only widths measured on the rig's current line and voltage count,
+ * as a session counts them (config/reward_calibration.py).
+ */
+function rewardFact(reward, calibration) {
+  if (!reward) return [];
+  const line = `${reward.device || 'Dev1'}/${reward.channel || 'ao0'}`;
+  const voltage = reward.voltage ?? 5.0;
+  const parts = [reward.backend === 'simulated' ? 'simulated' : `${line} at ${voltage} V`];
+  if (typeof calibration === 'string') {
+    parts.push(`calibration ${calibration}`);
+  } else {
+    const measured = Object.entries(calibration || {})
+      .filter(([, entry]) => entry.line === line && Number(entry.voltage) === Number(voltage))
+      .map(([width, entry]) => `${Number(entry.ul_per_pulse).toFixed(1)} µL per ${width} ms pulse`
+        + (entry.measured_at ? ` (${String(entry.measured_at).slice(0, 10)})` : ''));
+    parts.push(...(measured.length ? measured : ['volume not measured (Measure rig, Reward)']));
+  }
+  return [['Reward', parts]];
 }
 
 /** A run's rig as the history shows it: its qualified name, not its file —
@@ -684,9 +748,55 @@ function chosenExperimenter() {
   return id ? (people?.experimenters || []).find((e) => e.id === id) || null : null;
 }
 
-/** "sub-007 · HD", or "sub-007 · no initials" for a record without them. */
+/** "sub-007 · HD", or "sub-007 · no initials" for a record without them;
+ *  its age and sex after them when the record has either ("sub-007 · HD ·
+ *  27 y · Female"). */
 function subjectLabel(s) {
-  return `sub-${s.code} · ${s.initials || 'no initials'}`;
+  const facts = demographicsText(s);
+  return `sub-${s.code} · ${s.initials || 'no initials'}${facts ? ` · ${facts}` : ''}`;
+}
+
+/** What the session will record of the chosen subject's age and sex, under
+ *  the Subject menu: the values and the date the age was entered, a nudge
+ *  when either is missing or the age is old, and where they go when the
+ *  experiment's alhazen cannot write them into its session folders. */
+function subjectFacts(p, record) {
+  const box = $('subject-facts');
+  box.replaceChildren();
+  box.hidden = !record;
+  if (!record) return;
+  const add = (cls, text) => box.append(node('span', cls, text));
+  // One group per fact: the value in the instrument's mono voice, then its
+  // provenance in words.
+  const fact = (value, note, warn) => {
+    const group = node('span', 'facts-group');
+    group.append(node('span', 'facts-value', value));
+    if (note) group.append(node('span', warn ? 'facts-warn' : 'facts-note', note));
+    box.append(group);
+  };
+  if (record.age == null) {
+    fact('Age —', 'not recorded', true);
+  } else if (record.age_recorded) {
+    const days = (Date.now() - Date.parse(record.age_recorded)) / 86400000;
+    fact(`Age ${record.age}`, days > AGE_CHECK_DAYS
+      ? `entered ${record.age_recorded}, over a year ago: check it`
+      : `entered ${record.age_recorded}`, days > AGE_CHECK_DAYS);
+  } else {
+    fact(`Age ${record.age}`, 'date entered not known');
+  }
+  fact(record.sex ? `Sex ${sexLabel(record.sex)}` : 'Sex —', record.sex ? '' : 'not recorded',
+    !record.sex);
+  if (record.age == null || !record.sex) {
+    const both = record.age == null && !record.sex;
+    add('facts-line', `Add ${both ? 'them' : 'it'} on the General page, or the session records `
+      + `${both ? 'them' : 'it'} as not recorded.`);
+  } else if (p.records_demographics === false) {
+    add('facts-line', `${titleOf(p)}’s alhazen (${p.alhazen_version}) does not write age and `
+      + 'sex into its session folders: they are kept with the launch only.');
+  } else if (p.records_demographics == null) {
+    add('facts-line', 'Whether this experiment’s alhazen records age and sex is not known: '
+      + 'open Project settings and save to ask it.');
+  }
 }
 
 /** An experimenter as the menus name them: their name, their initials when
@@ -774,6 +884,9 @@ function identityChanged() {
   if (record) $('typed-identity').open = false;
   $('subject').disabled = !!record;
   $('initials').disabled = !!record;
+  $('age').disabled = !!record;
+  $('sex').disabled = !!record;
+  subjectFacts(p, record);
   const named = ['run', 'test'].includes(mode);
   const typedOpen = !!$('typed-identity').open;
   $('subject').required = (named || measureNeed() === 'required') && !record && typedOpen;
@@ -1032,6 +1145,9 @@ function modeChanged() {
   }
   // Who runs it: for every session, and for Measure rig (who measured).
   $('experimenter-field').hidden = !['run', 'test', 'simulate', 'measure'].includes(mode);
+  // The Subject & session stage goes with its fields: a mode that names
+  // nobody (a preview, a movie) has no such stage, and the path renumbers.
+  $('who-stage').hidden = $('identity').hidden && $('experimenter-field').hidden;
   // What is required follows the mode and the choice (identityChanged): a
   // typed subject and its initials for run and test, a subject ID for a
   // measurement of the subject in the chair, an experimenter with a
@@ -1282,6 +1398,7 @@ async function loadRig() {
     // rig did before the setting existed, and a line saying so on each
     // would be noise.
     ...(development ? [['Real data', ['refused', 'a development rig (real_data: false)']]] : []),
+    ...rewardFact(rig.devices?.reward, data.reward_calibration),
     ['Rig', origin],
   ]);
   // The footer's warning depends on the backend just learned.
@@ -2062,7 +2179,8 @@ function renderHome() {
 function pageHelpers() {
   return {
     api, token, node, error, navigate, link, addressOf,
-    titleOf, slugOf, date, label,
+    titleOf, slugOf, date, label, sexLabel, demographicsText,
+    sexes: SUBJECT_SEXES,
     state: () => state,
     openSettings: () => openProject(true),
     register: () => openProject(false),
@@ -2170,6 +2288,7 @@ function renderHistory() {
   if (signature === historySignature) return;
   historySignature = signature;
   $('history-count').textContent = `${runs.length} RUN${runs.length === 1 ? '' : 'S'}`;
+  $('history-all').href = addressOf(selected, 'history');
   const rows = runs.map((run) => {
     const button = node('button', 'history-row' + (run.id === runId ? ' selected' : ''));
     const text = node('span', 'history-text');
@@ -2287,6 +2406,31 @@ function renderMonitor(run, active) {
   }
 }
 
+/** The launch whose session the upload card shows; null when hidden. */
+let uploadShown = null;
+/* The modes whose launch saves a session folder (to the rig's data folder,
+ * or its rehearsal sibling). */
+const SAVES_SESSION = ['run', 'test', 'simulate'];
+
+/**
+ * The Run page's Upload to the archive card (workspace_upload.js): mounted once per
+ * finished launch that saves a session, which then finds the session folder
+ * its console names and hides itself when there is none. Hidden while the
+ * run is active — a session still being written is not uploaded.
+ */
+function renderUpload(run, active) {
+  const card = $('upload-card');
+  const eligible = run && !active && SAVES_SESSION.includes(run.mode) && window.ArchiveUpload;
+  if (!eligible) {
+    card.hidden = true;
+    uploadShown = null;
+    return;
+  }
+  if (uploadShown === run.id) return;
+  uploadShown = run.id;
+  ArchiveUpload.mountSession(card, {api, node, project: run.project}, run.id);
+}
+
 /**
  * Fetch the selected run and draw it: status badge, summary line, stop
  * button, live-monitor link, console tail, the command that started it and
@@ -2322,6 +2466,8 @@ async function refreshRun() {
   if (window.MeasureChoice) MeasureChoice.renderProgress($('measure-progress'), run?.measurement || null);
   // The Live monitor tab and its open-in-new-tab link.
   renderMonitor(run, active);
+  // Upload to the archive, once the session this launch saved is finished.
+  renderUpload(run, active);
   // Console: follow the tail only if the reader was already at the bottom,
   // so scrolling up to read an earlier line is not undone by the next poll.
   const consoleEl = $('console');
@@ -2609,6 +2755,7 @@ $('subject-record').addEventListener('change', () => identityChanged());
 $('experimenter').addEventListener('change', () => identityChanged());
 $('typed-identity').addEventListener('toggle', () => identityChanged());
 $('initials').addEventListener('input', () => updateLaunch());
+options($('sex'), [['', 'Not recorded'], ...SUBJECT_SEXES], '');
 
 /* Back and Forward: show the screen the address now names. */
 window.addEventListener('popstate', () => guard(() => applyRoute(route()))());
@@ -2668,6 +2815,13 @@ $('launch-form').addEventListener('submit', guard(async (event) => {
     error(initials.problem);
     return;
   }
+  // A typed subject's age and sex, both optional; a registered subject's
+  // come from its record on the server.
+  const age = named && !record ? checkAge($('age').value) : {value: '', problem: ''};
+  if (age.problem) {
+    error(age.problem);
+    return;
+  }
   // The seed, for the modes that take one: empty is null, and the session
   // draws its own. Measure and the experiment's scripts take none, so they
   // send none, whatever the hidden or unused field holds.
@@ -2703,6 +2857,10 @@ $('launch-form').addEventListener('submit', guard(async (event) => {
     // the typed one every earlier client sent.
     if (record) request.subject_record = record.id;
     if (runner) request.experimenter = runner.id;
+    // A typed subject's age and sex, sent only when given (a registered
+    // subject's come from its record on the server).
+    if (age.value) request.age = age.value;
+    if (named && !record && $('sex').value) request.sex = $('sex').value;
     const run = await api('/api/runs', request);
     runId = run.id;
     // Remembered so the Live monitor tab comes up on its own when this run's
@@ -2716,6 +2874,14 @@ $('launch-form').addEventListener('submit', guard(async (event) => {
     updateLaunch();
   }
 }));
+
+// "All in History →" in the Recent runs heading: its address opens in a new
+// tab as usual; a plain click goes there in place.
+$('history-all').addEventListener('click', (event) => {
+  if (!plainClick(event) || !selected) return;
+  event.preventDefault();
+  guard(() => navigate(selected, 'history'))();
+});
 
 // The duration estimate beside the Start button: asked of the project's own
 // alhazen (POST /api/estimate) whenever the form changes what would run.

@@ -94,10 +94,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from alhazen.config.models import normalize_initials
+from alhazen.config.models import SUBJECT_SEXES, normalize_age, normalize_initials, normalize_sex
 from alhazen.data.atomic import replace_atomically
 
-SCHEMA_VERSION = 1
+# 1: alhazen 2.11. 2: subjects gain age, sex and age_recorded (_MIGRATIONS).
+SCHEMA_VERSION = 2
 DATABASE_NAME = "people.sqlite3"
 # How long a writer waits for another connection's transaction (another
 # request thread of the same server) before giving up with an error.
@@ -110,6 +111,8 @@ MAX_EXTRA_COLUMNS = 64
 MAX_COLUMN_NAME = 64
 MAX_EXTRA_VALUE = 1000
 STATUSES = ("active", "archived")
+# The fields a subject record is added or edited with.
+SUBJECT_FIELDS = frozenset({"code", "initials", "age", "sex", "notes", "extra"})
 # participants.tsv's own columns (alhazen.data.participants): the id and the
 # initials. Every other column of a row is carried as the record's extra
 # columns, in order.
@@ -122,6 +125,9 @@ RESERVED_COLUMNS = frozenset(
         "experiment_id",
         "subject_id",
         "initials",
+        "age",
+        "sex",
+        "age_recorded",
         "status",
         "notes",
         "revision",
@@ -132,6 +138,16 @@ RESERVED_COLUMNS = frozenset(
         TSV_ID,
     }
 )
+# participants.tsv's columns for the subject's age and sex (BIDS names them
+# so), read into the record's own fields by an import; matched without
+# regard to case. A value that breaks the rule stays an extra column.
+TSV_AGE = "age"
+TSV_SEX = "sex"
+# BIDS's one-letter codes for sex, and its "n/a", as a participants.tsv may
+# carry them: read by the import only (an import reads files written by other
+# tools; the registry's own forms and CSV copies take the full codes).
+TSV_SEX_CODES = {"f": "female", "m": "male", "o": "other"}
+TSV_MISSING = frozenset({"", "n/a"})
 # What spreadsheet programs treat as the start of a formula, plus the quote
 # this module uses to defuse one (so a value that itself begins with a quote
 # survives the round trip).
@@ -142,6 +158,9 @@ SUBJECT_COLUMNS = (
     "experiment_id",
     "subject_id",
     "initials",
+    "age",
+    "sex",
+    "age_recorded",
     "status",
     "notes",
     "revision",
@@ -223,6 +242,23 @@ CREATE TABLE changes (
 );
 """
 _TABLES = ("assignments", "changes", "experimenters", "meta", "subject_sources", "subjects")
+# What takes a registry from one schema to the next, by the version it
+# reaches. _SCHEMA is version 1; a new registry runs every step after it in
+# the transaction that creates it, so a new file and an upgraded one are the
+# same tables, column for column.
+#
+# 2 — a subject's age (years, `normalize_age`'s text), sex (a SUBJECT_SEXES
+# code) and age_recorded (the UTC date the age was entered here; NULL when
+# unknown — an imported or upgraded age). An upgrade also moves extra columns
+# named age or sex into these fields (`_promote_demographics`).
+_SEX_CHECK = ", ".join(f"'{code}'" for code in SUBJECT_SEXES)
+_MIGRATIONS: dict[int, tuple[str, ...]] = {
+    2: (
+        "ALTER TABLE subjects ADD COLUMN age TEXT",
+        f"ALTER TABLE subjects ADD COLUMN sex TEXT CHECK (sex IS NULL OR sex IN ({_SEX_CHECK}))",
+        "ALTER TABLE subjects ADD COLUMN age_recorded TEXT",
+    ),
+}
 
 
 class PeopleError(ValueError):
@@ -286,6 +322,39 @@ def _initials(value: Any, *, required: bool = False) -> str | None:
         return normalize_initials(text)
     except ValueError as exc:
         raise PeopleError(str(exc)) from exc
+
+
+def _age(value: Any) -> str | None:
+    """A subject's age as recorded (config.models.normalize_age), or None
+    for "not recorded": None or blank text."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    try:
+        return normalize_age(value)
+    except ValueError as exc:
+        raise PeopleError(_sentence(str(exc))) from exc
+
+
+def _sex(value: Any) -> str | None:
+    """A subject's sex as recorded (config.models.normalize_sex), or None
+    for "not recorded": None or blank text."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    try:
+        return normalize_sex(value)
+    except ValueError as exc:
+        raise PeopleError(_sentence(str(exc))) from exc
+
+
+def _sentence(text: str) -> str:
+    """A rule's words as the start of a sentence (the rest left as it is, so
+    a quoted value keeps its case)."""
+    return text[:1].upper() + text[1:]
+
+
+def _today() -> str:
+    """The UTC date an age is recorded on (``age_recorded``)."""
+    return datetime.now(timezone.utc).date().isoformat()
 
 
 def check_subject_code(value: Any) -> str:
@@ -407,6 +476,9 @@ class PeopleRegistry:
         # locked" with 40 concurrent adds). The busy timeout still covers
         # another process. Order: _export_lock, then this; never the reverse.
         self._write_lock = threading.RLock()
+        # Set when opening upgraded the file to this schema: from, to and the
+        # backup taken first. None when it was already current (or new).
+        self.upgraded: dict[str, Any] | None = None
         self.directory.mkdir(parents=True, exist_ok=True)
         self._open()
 
@@ -437,6 +509,9 @@ class PeopleRegistry:
                 for statement in _SCHEMA.split(";"):
                     if statement.strip():
                         db.execute(statement)
+                for step in range(2, SCHEMA_VERSION + 1):
+                    for statement in _MIGRATIONS[step]:
+                        db.execute(statement)
                 db.execute("INSERT INTO meta(key, value) VALUES ('revision', '0')")
                 db.execute("INSERT INTO meta(key, value) VALUES ('exported_revision', '0')")
                 db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -448,12 +523,67 @@ class PeopleRegistry:
                     f"one reads {SCHEMA_VERSION}). Nothing was changed; use that alhazen, or "
                     "another --state-dir."
                 )
-            if version != SCHEMA_VERSION or set(_TABLES) - tables:
+            if version < 1 or set(_TABLES) - tables:
                 raise PeopleError(
                     f"{self.path} is not a people registry this alhazen can read (schema "
                     f"{version}, tables {', '.join(sorted(tables)) or 'none'}). Nothing was "
                     "changed; move the file aside to start a new registry."
                 )
+        if version < SCHEMA_VERSION:
+            self._upgrade(version)
+
+    def _upgrade(self, version: int) -> None:
+        """Bring a registry an older alhazen wrote up to this schema: a
+        backup first (refused, with nothing changed, if it cannot be taken),
+        then every step in one transaction — the new columns, the extra
+        columns named age or sex moved into them, one database revision and a
+        ``changes`` entry naming the backup. Ids, codes, initials, notes,
+        statuses, positions and sources are not touched. The CSV copies are
+        rewritten after the commit, as after any write."""
+        try:
+            backup = self.backup(f"before-people-schema-{SCHEMA_VERSION}")
+        except (OSError, sqlite3.Error) as exc:
+            raise PeopleError(
+                f"{self.path} is people schema {version} and must be upgraded to "
+                f"{SCHEMA_VERSION}, but no backup could be written first ({exc}). Nothing was "
+                "changed; free space or fix permissions in "
+                f"{self.backup_dir}, then start again."
+            ) from exc
+        with self._write_lock, self._connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                # Asked again under the write lock: another process may have
+                # upgraded the file since it was first read.
+                current = db.execute("PRAGMA user_version").fetchone()[0]
+                if current >= SCHEMA_VERSION:
+                    db.execute("ROLLBACK")
+                    return
+                for step in range(current + 1, SCHEMA_VERSION + 1):
+                    for statement in _MIGRATIONS[step]:
+                        db.execute(statement)
+                revision = int(_meta(db, "revision")) + 1
+                db.execute("UPDATE meta SET value = ? WHERE key = 'revision'", (str(revision),))
+                promoted = _promote_demographics(db, revision)
+                self._log(
+                    db,
+                    revision,
+                    "registry",
+                    DATABASE_NAME,
+                    "upgrade",
+                    {
+                        "from": current,
+                        "to": SCHEMA_VERSION,
+                        "backup": str(backup),
+                        "subjects_changed": promoted,
+                    },
+                )
+                db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            except BaseException:
+                db.execute("ROLLBACK")
+                raise
+            db.execute("COMMIT")
+        self.upgraded = {"from": current, "to": SCHEMA_VERSION, "backup": str(backup)}
+        self._changed()
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
@@ -620,9 +750,11 @@ class PeopleRegistry:
 
     def add_subject(self, experiment_id: str, fields: Any) -> dict[str, Any]:
         _experiment_key(experiment_id)
-        _only(fields, {"code", "initials", "notes", "extra"})
+        _only(fields, SUBJECT_FIELDS)
         code = check_subject_code(fields.get("code"))
         initials = _initials(fields.get("initials"))
+        age = _age(fields.get("age"))
+        sex = _sex(fields.get("sex"))
         notes = _notes(fields.get("notes"))
         extra = _extra(fields.get("extra"))
         record_id = _new_id("s")
@@ -631,14 +763,17 @@ class PeopleRegistry:
             _refuse_taken_code(db, experiment_id, code, None)
             position = _next_position(db, experiment_id)
             db.execute(
-                "INSERT INTO subjects(id, experiment_id, code, initials, notes, extra_json, "
-                "status, position, revision, created, updated) "
-                "VALUES (?, ?, ?, ?, ?, ?, 'active', ?, 1, ?, ?)",
+                "INSERT INTO subjects(id, experiment_id, code, initials, age, sex, age_recorded, "
+                "notes, extra_json, status, position, revision, created, updated) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, 1, ?, ?)",
                 (
                     record_id,
                     experiment_id,
                     code,
                     initials,
+                    age,
+                    sex,
+                    _today() if age is not None else None,
                     notes,
                     _dump(extra),
                     position,
@@ -661,8 +796,10 @@ class PeopleRegistry:
     ) -> dict[str, Any]:
         """Edit a subject. ``used``: a launch has named this record, so its
         code is fixed, and so are initials already recorded (a session wrote
-        them into participants.tsv; a correction there is a human's)."""
-        _only(fields, {"code", "initials", "notes", "extra"})
+        them into participants.tsv; a correction there is a human's). Age and
+        sex stay editable: each launch keeps the values it ran with. A new
+        age is recorded as of today (``age_recorded``)."""
+        _only(fields, SUBJECT_FIELDS)
         expected = _revision(revision)
         current = self.subject(subject_id)
         if current["experiment_id"] != experiment_id:
@@ -686,6 +823,13 @@ class PeopleRegistry:
                         "are part of its sessions' records and cannot change here."
                     )
                 changes["initials"] = initials
+        if "age" in fields:
+            age = _age(fields["age"])
+            if age != current["age"]:
+                changes["age"] = age
+                changes["age_recorded"] = _today() if age is not None else None
+        if "sex" in fields:
+            changes["sex"] = _sex(fields["sex"])
         if "notes" in fields:
             changes["notes"] = _notes(fields["notes"])
         if "extra" in fields:
@@ -711,7 +855,17 @@ class PeopleRegistry:
         if table not in {"subjects", "experimenters"}:
             raise AssertionError(table)
         columns = set(changes)
-        allowed = {"name", "initials", "notes", "status", "code", "extra_json"}
+        allowed = {
+            "name",
+            "initials",
+            "notes",
+            "status",
+            "code",
+            "extra_json",
+            "age",
+            "sex",
+            "age_recorded",
+        }
         if columns - allowed:
             raise AssertionError(columns - allowed)
         with self._write() as (db, revision):
@@ -767,6 +921,11 @@ class PeopleRegistry:
                     "record_id": row["id"],
                     "id": row["code"],
                     "initials": row["initials"],
+                    # As recorded now (None: not recorded); age_recorded is
+                    # the date that age was entered, None when unknown.
+                    "age": row["age"],
+                    "sex": row["sex"],
+                    "age_recorded": row["age_recorded"],
                     "revision": row["revision"],
                 }
             if experimenter_id is not None:
@@ -932,14 +1091,16 @@ class PeopleRegistry:
                     record_id = _new_id("s")
                     _refuse_taken_code(db, experiment_id, row["code"], None)
                     db.execute(
-                        "INSERT INTO subjects(id, experiment_id, code, initials, notes, "
-                        "extra_json, status, position, revision, created, updated) "
-                        "VALUES (?, ?, ?, ?, NULL, ?, 'active', ?, 1, ?, ?)",
+                        "INSERT INTO subjects(id, experiment_id, code, initials, age, sex, "
+                        "notes, extra_json, status, position, revision, created, updated) "
+                        "VALUES (?, ?, ?, ?, ?, ?, NULL, ?, 'active', ?, 1, ?, ?)",
                         (
                             record_id,
                             experiment_id,
                             row["code"],
                             row["initials"],
+                            row["age"],
+                            row["sex"],
                             _dump(row["extra"]),
                             _next_position(db, experiment_id),
                             stamp,
@@ -948,10 +1109,19 @@ class PeopleRegistry:
                     )
                     row["record_id"] = record_id
                 elif action == "fill":
+                    # Only what the record lacks (COALESCE keeps what it
+                    # has); an imported age's date is not known.
                     db.execute(
-                        "UPDATE subjects SET initials = ?, revision = revision + 1, updated = ? "
-                        "WHERE id = ? AND initials IS NULL",
-                        (row["initials"], stamp, row["record_id"]),
+                        "UPDATE subjects SET initials = COALESCE(initials, ?), "
+                        "age = COALESCE(age, ?), sex = COALESCE(sex, ?), "
+                        "revision = revision + 1, updated = ? WHERE id = ?",
+                        (
+                            row["initials"] if "initials" in row["fills"] else None,
+                            row["age"] if "age" in row["fills"] else None,
+                            row["sex"] if "sex" in row["fills"] else None,
+                            stamp,
+                            row["record_id"],
+                        ),
                     )
                 if action in {"link", "fill"} and row["record_id"] is None:
                     found = db.execute(
@@ -1125,7 +1295,7 @@ def _set_meta(db: sqlite3.Connection, values: dict[str, str]) -> None:
     db.execute("COMMIT")
 
 
-def _only(fields: Any, allowed: set[str]) -> None:
+def _only(fields: Any, allowed: set[str] | frozenset[str]) -> None:
     if not isinstance(fields, dict):
         raise PeopleError("Expected the record's fields as an object")
     unknown = set(fields) - allowed
@@ -1212,6 +1382,9 @@ def _subject(row: sqlite3.Row, sources: list[dict[str, Any]]) -> dict[str, Any]:
         "experiment_id": row["experiment_id"],
         "code": row["code"],
         "initials": row["initials"],
+        "age": row["age"],
+        "sex": row["sex"],
+        "age_recorded": row["age_recorded"],
         "notes": row["notes"],
         "extra": json.loads(row["extra_json"]),
         "status": row["status"],
@@ -1340,21 +1513,123 @@ def _read_tsv(data: bytes, path: Path) -> tuple[list[str], list[tuple[int, dict[
     return header, rows
 
 
-def _tsv_extra(cells: dict[str, str | None]) -> tuple[list[list[Any]], list[str]]:
-    """A participants.tsv row's other columns, in order, as extra columns;
-    a column whose name is one of the record's own fields is kept under
-    ``<name> (participants.tsv)`` and said so."""
+def _read_demographic(field: str, value: str | None) -> str | None:
+    """An age or sex cell written by another tool (participants.tsv, or an
+    extra column that came from one) as the record's field: None for an
+    empty cell or ``n/a``, BIDS's ``F``/``M``/``O`` for female/male/other,
+    else the rule's value; a ValueError for a value the rule refuses."""
+    text = (value or "").strip()
+    if text.lower() in TSV_MISSING:
+        return None
+    if field == TSV_AGE:
+        return normalize_age(text)
+    return normalize_sex(TSV_SEX_CODES.get(text.lower(), text))
+
+
+def _tsv_extra(
+    cells: dict[str, str | None],
+) -> tuple[list[list[Any]], list[str], dict[str, str | None], list[str]]:
+    """A participants.tsv row's other columns, in order, as extra columns,
+    and its age and sex as the record's fields.
+
+    The first column named age (any case), and the first named sex, are read
+    into the fields: an empty cell or ``n/a`` is "not recorded", BIDS's
+    ``F``/``M``/``O`` are female/male/other. A value that breaks the rule is
+    not dropped: it stays an extra column, and is named in ``unread``. Any
+    other column whose name is one of the record's own fields is kept under
+    ``<name> (participants.tsv)`` and named in ``renamed``."""
     extra: list[list[Any]] = []
     renamed: list[str] = []
+    unread: list[str] = []
+    fields: dict[str, str | None] = {"age": None, "sex": None}
+    claimed: set[str] = set()
     for name, value in cells.items():
         if name in (TSV_ID, TSV_INITIALS):
             continue
+        field = name.strip().lower()
+        refused = False
+        if field in (TSV_AGE, TSV_SEX) and field not in claimed:
+            claimed.add(field)
+            try:
+                fields[field] = _read_demographic(field, value)
+                continue
+            except ValueError:
+                refused = True
         key = name
         if name in RESERVED_COLUMNS or not name.strip():
             key = f"{name or 'unnamed'} (participants.tsv)"
-            renamed.append(name)
+            if not refused:
+                renamed.append(name)
+        if refused:
+            unread.append(f"{name} {(value or '').strip()!r} (kept as {key!r})")
         extra.append([key, value])
-    return extra, renamed
+    return extra, renamed, fields, unread
+
+
+def _promote_demographics(db: sqlite3.Connection, revision: int) -> int:
+    """Upgrading to schema 2: move each subject's extra columns named age or
+    sex (any case; the first of each) into its new fields, inside the
+    upgrade's transaction. Returns how many records changed.
+
+    Read as an import reads participants.tsv (`_read_demographic`: BIDS's
+    letters, ``n/a``), since that is where such columns came from. A value
+    the rule accepts becomes the field; an empty, ``n/a`` or missing one is
+    "not recorded" and its column goes (the change log keeps the before). A
+    value it refuses stays an extra column, renamed ``<name> (kept as
+    text)`` when its name would now be one of the record's own (age, sex,
+    age_recorded), so nothing anyone typed is lost and every record stays
+    editable. A changed record's revision goes up, as after any edit; the
+    rest are untouched. age_recorded stays NULL: when an upgraded age was
+    taken is not known."""
+    changed = 0
+    rows = db.execute("SELECT id, extra_json FROM subjects ORDER BY experiment_id, position, id")
+    for row in rows.fetchall():
+        before = json.loads(row["extra_json"])
+        kept: list[list[Any]] = []
+        fields: dict[str, str] = {}
+        claimed: set[str] = set()
+        names = {str(pair[0]) for pair in before}
+        for name, value in before:
+            field = str(name).strip().lower()
+            if field in (TSV_AGE, TSV_SEX) and field not in claimed:
+                claimed.add(field)
+                try:
+                    found = _read_demographic(field, value)
+                except ValueError:
+                    found = None
+                else:
+                    if found is not None:
+                        fields[field] = found
+                    continue
+            key = str(name)
+            if key in RESERVED_COLUMNS:
+                key = f"{key} (kept as text)"
+                while key in names:
+                    key += "'"
+                names.add(key)
+            kept.append([key, value])
+        if kept == before and not fields:
+            continue
+        db.execute(
+            "UPDATE subjects SET age = ?, sex = ?, extra_json = ?, revision = revision + 1, "
+            "updated = ? WHERE id = ?",
+            (fields.get("age"), fields.get("sex"), _dump(kept), _now(), row["id"]),
+        )
+        db.execute(
+            "INSERT INTO changes(at, revision, entity, entity_id, action, detail_json) "
+            "VALUES (?, ?, 'subject', ?, 'upgrade', ?)",
+            (
+                _now(),
+                revision,
+                row["id"],
+                json.dumps(
+                    {"before": {"extra": before}, "after": {**fields, "extra": kept}},
+                    ensure_ascii=False,
+                ),
+            ),
+        )
+        changed += 1
+    return changed
 
 
 def _plan_row(
@@ -1371,24 +1646,32 @@ def _plan_row(
         "line": line,
         "code": None,
         "initials": None,
+        "age": None,
+        "sex": None,
         "extra": [],
         "action": "error",
         "reason": None,
         "record_id": None,
         "differences": [],
+        "fills": [],
     }
     participant = (cells.get(TSV_ID) or "").strip()
     try:
         row["code"] = check_subject_code(participant.removeprefix("sub-"))
         raw = cells.get(TSV_INITIALS)
         row["initials"] = _initials(raw) if raw is not None and raw.strip() else None
-        row["extra"], renamed = _tsv_extra(cells)
+        row["extra"], renamed, demographics, unread = _tsv_extra(cells)
+        row.update(demographics)
         _extra(row["extra"])
     except PeopleError as exc:
         row["reason"] = f"{participant or '(no id)'}: {exc}"
         return row
+    notes = []
     if renamed:
-        row["reason"] = "column(s) kept under a new name: " + ", ".join(renamed)
+        notes.append("column(s) kept under a new name: " + ", ".join(renamed))
+    if unread:
+        notes.append("not a valid age/sex: " + ", ".join(unread))
+    row["reason"] = "; ".join(notes) or None
     code, initials = row["code"], row["initials"]
     record = existing.get(code)
     if record is not None:
@@ -1396,6 +1679,16 @@ def _plan_row(
         recorded = dict(record["extra"])
         row["differences"] = [
             name for name, value in row["extra"] if name in recorded and recorded[name] != value
+        ] + [
+            field
+            for field in ("age", "sex")
+            if row[field] is not None and record[field] is not None and row[field] != record[field]
+        ]
+        # What the record lacks and this row has: filled in, never replaced.
+        row["fills"] = [
+            field
+            for field in ("initials", "age", "sex")
+            if row[field] is not None and not record[field]
         ]
         if record["initials"] and initials and record["initials"] != initials:
             row["action"] = "conflict"
@@ -1405,7 +1698,7 @@ def _plan_row(
             )
         elif any(s["source"] == str(path) for s in record["sources"]):
             row["action"] = "same"
-        elif not record["initials"] and initials:
+        elif row["fills"]:
             row["action"] = "fill"
         else:
             row["action"] = "link"
@@ -1456,6 +1749,13 @@ def _csv_change(
                     ]
                 ),
             }
+            # Read only from a copy that has the columns: a copy written
+            # before schema 2 says nothing about age or sex, which must not
+            # read as "clear them". age_recorded is the registry's own, set
+            # when an age changes, and is not read back.
+            for name, check in (("age", _age), ("sex", _sex)):
+                if name in header:
+                    fields[name] = check(values.get(name))
         else:
             fields = {
                 "name": _single_line(values.get("name"), "Name", MAX_NAME, required=True),
@@ -1493,6 +1793,8 @@ def _csv_change(
         existing = {
             "code": record["code"],
             "initials": record["initials"],
+            "age": record["age"],
+            "sex": record["sex"],
             "notes": record["notes"],
             "extra": record["extra"],
         }

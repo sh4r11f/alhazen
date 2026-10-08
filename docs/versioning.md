@@ -120,6 +120,11 @@ make new files claim to be an older format and sail past the readers' checks.
 | Recording pointer | `devices/recording.py` (`POINTER_SCHEMA_VERSION`) | 1 |
 | Training state | `training/state.py` (`SCHEMA_VERSION`) | 1 |
 | Scene format | `scenes/model.py` (`SUPPORTED_VERSION`) | 1 |
+| Workspace people registry (`people/people.sqlite3`) | `cli/people.py` (`SCHEMA_VERSION`, SQLite `user_version`) | 2 |
+
+The people registry is upgraded in place, after a backup, by the alhazen that
+reads an older one (1 → 2 adds a subject's age and sex); an older alhazen
+refuses a newer file without touching it.
 
 ## 4. Deprecating something
 

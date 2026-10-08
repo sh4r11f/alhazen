@@ -38,6 +38,7 @@ from pathlib import Path
 import pytest
 
 from alhazen.analysis import results
+from alhazen.cli import people
 from alhazen.config.models import FrameQAConfig, RewardPulses
 from alhazen.core.commands import Command
 from alhazen.core.events import RESERVED_EVENTS
@@ -84,6 +85,7 @@ SCHEMA_VERSIONS = {
     "training_state": state.SCHEMA_VERSION,
     "scene_format": model.SUPPORTED_VERSION,
     "session_json": identity.SESSION_JSON_SCHEMA_VERSION,
+    "people_registry": people.SCHEMA_VERSION,
 }
 
 
@@ -258,12 +260,25 @@ class TestTrialRecordColumns:
         harness.runner.run()
         return harness.recorder.trials[0]
 
+    def subject_record(self, tmp_path) -> dict:
+        """A row from a session whose params declare who the subject is: its
+        `subject_kind` (task/subject_kind.py)."""
+        harness = SessionHarness(
+            tmp_path / "subject",
+            n_trials=1,
+            task_params={"subject_kind": "human"},
+            build_trial=lambda setup: TrialPlan(phases=[RunForFrames(1, COMPLETED)]),
+        )
+        harness.runner.run()
+        return harness.recorder.trials[0]
+
     def written(self, tmp_path) -> set[str]:
         written: set[str] = set()
         for record in self.engine_records():
             written |= self.produced(record)
         written |= self.produced(self.session_record(tmp_path))
         written |= self.produced(self.mid_trial_record(tmp_path))
+        written |= self.produced(self.subject_record(tmp_path))
         return written
 
     def test_every_declared_column_is_actually_written(self, tmp_path):

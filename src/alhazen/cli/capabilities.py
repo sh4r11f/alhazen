@@ -9,6 +9,8 @@ before a launch, what an older one will not record.
 
 - ``experimenter``: ``--experimenter`` and ``--experimenter-id``, recorded
   in session.json and session.log.
+- ``subject-demographics``: ``--age`` and ``--sex``, recorded in
+  session.json and session.log (and participants.tsv for a new subject).
 - ``duration-estimate``: ``--estimate-duration``, which prints how long the
   launch would take as JSON instead of running it (alhazen.cli.duration).
 
@@ -18,4 +20,6 @@ before any of them.
 
 from __future__ import annotations
 
-CAPABILITIES: frozenset[str] = frozenset({"duration-estimate", "experimenter"})
+CAPABILITIES: frozenset[str] = frozenset(
+    {"duration-estimate", "experimenter", "subject-demographics"}
+)

@@ -91,6 +91,24 @@ class TestPeople:
         status, people = call(f"/api/manage/people?project={key}")
         assert people["subjects"][0]["notes"] == "a"
 
+    def test_age_and_sex_over_http(self, http, workspace):
+        call, _ = http
+        key = pid(workspace)
+        status, out = call(
+            "/api/manage/people/subject-add",
+            {"project": key, "fields": {"code": "01", "age": "27", "sex": "female"}},
+        )
+        assert status == 200
+        record = out["record"]
+        assert (record["age"], record["sex"]) == ("27", "female") and record["age_recorded"]
+        status, out = call(
+            "/api/manage/people/subject-update",
+            {"project": key, "id": record["id"], "revision": 1, "fields": {"age": "200"}},
+        )
+        assert status == 400 and "Age must be a number of years" in out["error"]
+        status, people = call(f"/api/manage/people?project={key}")
+        assert people["subjects"][0]["age"] == "27"
+
     def test_hostile_text_is_data(self, http, workspace):
         call, _ = http
         key = pid(workspace)

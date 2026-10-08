@@ -25,6 +25,105 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+### Added
+
+- **A subject's age and sex.** The workspace's people registry records both
+  for every subject: age in years (0 to 120, whole or one decimal, with the
+  date it was entered) and sex from a fixed list (female, male, other, prefer
+  not to say), each optional. The General page's form, subject list,
+  `participants.tsv` import preview and CSV copies carry them; the Run page
+  shows them under the Subject menu (and takes them for a typed subject), and
+  History shows what each launch and session recorded. A launch sends them as
+  the new `--age` and `--sex` flags to an alhazen that records them
+  (capability `subject-demographics`), and keeps them in its `launch.json`
+  snapshot either way. A session records them in `session.json`
+  (`subject.age`, `subject.sex`, null when not given), in `session.log`, and
+  in `participants.tsv` for a subject it registers; an existing row is not
+  rewritten. No `session.json` schema bump: new keys.
+- Workspace: **upload an experiment's data to an archive.** A finished
+  session's Run page shows an upload card; History and Data upload ticked
+  sessions or whole data folders. Everything in the data folder goes, with
+  the people registry: SQLite files as consistent snapshots, rehearsal data
+  to its own `<experiment>-rehearsal` folder. The default transport is
+  SSH/SFTP in pure Python (works on Windows, macOS and Linux; the login,
+  host key and any second factor are answered on the page once per
+  dashboard); rsync over an SSH master connection and a local folder are
+  options. Dry-run preview, resume, SHA-256 verification at the destination;
+  nothing there is ever deleted or replaced: a changed file outside the
+  sessions is kept as a new version, a different file inside a session is a
+  reported conflict. Each attempt leaves receipts (`uploads/` in the data
+  folder) and History shows each session's state. The destination is a
+  setting of the computer (`upload.json`); nothing is preset. See
+  docs/workspace.md §Upload to an archive.
+- New dependency: `paramiko>=3.4` (the SFTP transport).
+- **Human and monkey sessions: `subject_kind` decides whether the reward
+  line opens.** A task's params model mixes in `alhazen.SubjectParams`, and
+  each params file declares `subject_kind: human` or `subject_kind: monkey`
+  (`alhazen.task.subject_kind`). A human session never opens the rig's
+  reward line, whatever the rig has or the task class pays: no dispenser is
+  built, no trial pays, the manual `r` key has nothing behind it, and
+  `build_session` refuses a dispenser handed in. A monkey session pays its
+  file's `reward` block (a `RewardPolicy`), which is required, may only name
+  outcomes the task declares, and must come to at least one pulse; run mode
+  refuses a monkey session on a rig with no `devices.reward`, and test and
+  simulate stand a simulated line in, with a setup note. A monkey session
+  shows no instruction screen. The kind is recorded on every trial row (new
+  column `subject_kind`, in `TRIAL_RECORD_COLUMNS`), in session.log
+  (`subject kind:`, and the devices line says `reward nidaq (closed: human
+  subject)`), and in session.json (`subject_kind`, and `reward`: whether the
+  line was open, its backend, the `Dev1/ao0`-style line, voltage and the
+  policy), so data from the two can never be confused. Params that declare
+  no kind keep the old rule (the class `reward` pays on any rig with a line)
+  and write no new column. The NI-DAQ backend itself is unchanged: it
+  already matched the lab's last working reward code (realtime-rdk's
+  `give_reward`: Dev1/ao0, 5 V, a 1 kHz finite analog-output train, 2 ×
+  200 ms pulses 200 ms apart), which a new fake-driver test now pins sample
+  by sample.
+- **Reward calibration in µL.** The Measure rig's "Juice per pulse"
+  (`reward.volume`) now asks how many trains to run, the pulses in each, the
+  width and the gap (line and voltage from the rig), delivers them once
+  after arming at the rig (a failed train stops the run, records nothing and
+  is never retried), and asks for the volume read off the beaker. The µL per
+  pulse is in the report and stored, per pulse width, as the rig's reward
+  calibration beside the rig file (`alhazen.config.reward_calibration`;
+  `rig-lab.yaml` → `rig-lab.reward.yaml`, earlier measurements kept). A
+  reward entry can then ask for `volume_ul` instead of `n_pulses`
+  (`RewardPulses.volume_ul`): the session converts it to pulses of that
+  width from the measurement, and refuses to start when the width was never
+  measured on the rig's line at its voltage. The Run page's Rig summary has
+  a Reward line ("118.5 µL per 200 ms pulse", or "volume not measured"), and
+  session.json's `reward.volumes` gives each entry's pulses and µL (null
+  where nothing was measured). The balance-and-density reading the job asked
+  for before is replaced by the beaker reading.
+
+### Changed
+
+- **People registry schema 2.** A registry from 2.11 is upgraded when the
+  workspace opens it: a backup first, then one transaction that adds the
+  fields and moves each subject's extra columns named age or sex into them
+  (BIDS letters and `n/a` read as an import reads them; a value the rule
+  refuses stays a column, renamed `… (kept as text)` when its name is now a
+  field's). IDs, codes, initials, notes, statuses, order and sources are not
+  touched. An older alhazen refuses the upgraded file untouched, so run the
+  workspace from this alhazen or newer. `age`, `sex` and `age_recorded` are
+  no longer allowed as extra column names, and `participants.tsv` columns of
+  those names fill the fields on import instead of being renamed.
+- Workspace Run page: the results column (upload, output, recent runs) sticks
+  beside the configuration and fills the window, so the run history has real
+  height instead of a fixed box; the form's first stage is now *Subject &
+  session*, apart from *Run options*; Recent runs links to History. On one
+  column, the upload card comes first.
+
+### Fixed
+
+- **Workspace: the Task parameters menu no longer cuts off the end of an
+  entry's name.** On a narrow run column (a phone, or the 1440 px layout's
+  form column) the menu beside the heading shrank to about 110 px, hiding
+  the part of a name such as "Pilot (monkey)" that tells two entries apart.
+  Below 15rem beside the heading it now takes its own full-width line.
+
 ## 2.11.0 - 2026-10-07
 
 ### Added

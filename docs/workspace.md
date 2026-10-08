@@ -69,7 +69,12 @@ A **subject** belongs to one experiment: its ID (the `sub-<ID>` of its
 folders, letters and digits, kept as text so `007` stays `007`) is unique in
 that experiment only, and its initials follow the command line's rule. Other
 columns (handedness, group, …) are kept in order, a missing value apart from
-an empty one. An **experimenter** is shared: one record, assigned to the
+an empty one. Its **age** (years, 0 to 120, whole or one decimal) and **sex**
+(Female, Male, Other or Prefer not to say — an answer, kept apart from *Not
+recorded*) are optional fields of their own; the record keeps the date an age
+was entered, and the Run page says when that is over a year ago. Both stay
+editable after sessions: each launch keeps the values it ran with. An
+**experimenter** is shared: one record, assigned to the
 experiments they run; two people with one name stay two records. Records are
 archived, never deleted. A subject's ID, and initials once recorded, are fixed
 after its first launch.
@@ -83,8 +88,12 @@ which is written once and never changed. The session itself records the
 experimenter in `session.json` and `session.log` (`--experimenter`,
 `--experimenter-id`; [data](data.md)) when the experiment's alhazen has that
 flag; the Run page says beforehand when it does not, and the launch keeps it
-in the workspace's records only. Run and test with a registered subject need
-an experimenter; a typed subject launches as before.
+in the workspace's records only. The subject's age and sex go the same way:
+`--age` and `--sex` to an alhazen that records them in `session.json`
+(capability `subject-demographics`), in the launch snapshot only otherwise,
+and the Run page shows them under the Subject menu with a nudge when either
+is missing. A typed subject can be given them too. Run and test with a
+registered subject need an experimenter; a typed subject launches as before.
 
 Where they are kept:
 
@@ -93,7 +102,16 @@ Where they are kept:
 | `people/people.sqlite3` | the records: the system of record, one SQLite file per workspace |
 | `people/csv/experimenters.csv` | every experimenter (a copy) |
 | `people/csv/<experiment id>/subjects.csv`, `…/experimenters.csv` | the experiment's subjects and assigned experimenters (copies) |
-| `people/backups/` | a copy of the database before every import |
+| `people/backups/` | a copy of the database before every import, and before an upgrade of its schema |
+
+A registry an older alhazen wrote (people schema 1, alhazen 2.11) is upgraded
+when the workspace opens it: a backup first, then, in one transaction, the age
+and sex columns, and each subject's extra columns named age or sex (any case)
+moved into them, read as an import reads them (BIDS's `F`/`M`/`O`, `n/a`). A
+value the rule refuses stays a column, renamed `… (kept as text)` if its name
+is now a field's. IDs, codes, initials, notes, statuses, order and sources are
+untouched. An older alhazen then refuses the upgraded file, untouched, as it
+refuses any newer one: run the workspace from this alhazen or newer.
 
 The CSV copies are rewritten after every change, each file replaced whole.
 If they cannot be written (a full disk, a file open in another program), the
@@ -111,7 +129,10 @@ sessions in the order subjects first ran (which some experiments
 counterbalance by). The workspace only reads it. **Import participants.tsv…**
 previews every row of every data folder's file — new, already imported, or a
 conflict (the same ID with other initials, never merged) — then imports with
-a backup first; importing again changes nothing.
+a backup first; importing again changes nothing. Its `age` and `sex` columns
+fill the fields (a subject's own values are never replaced, only missing ones
+filled), and a session started with an age and sex adds them to the row of a
+subject it registers.
 
 ## The page
 
@@ -695,6 +716,102 @@ project's own interpreter, the way the parameter schema is read today
 view only lists and shows the images they produce, as the Run card shows a
 run's `figures/` today. The places to extend are marked in both files'
 header comments.
+
+## Upload to an archive
+
+Data is collected on the rig; the archive is somewhere else. The dashboard
+copies an experiment's data there — a session just finished, chosen
+sessions, or the whole data folder — and keeps a receipt of what it copied.
+It works the same on Windows, macOS and Linux with nothing to install:
+the default transport is SSH/SFTP in pure Python (paramiko, a dependency of
+alhazen).
+
+**What goes.** Everything in the experiment's data folder: its session
+folders and every other file saved there (`participants.tsv`,
+`experiment.sqlite3`, calibrations, logs, the receipts of earlier uploads),
+and the workspace's people registry — a snapshot of `people.sqlite3` and the
+experiment's CSV copies. Choosing sessions (the Run page's card, ticked rows
+on History or Data) uploads those sessions *and* every non-session file of
+their data folder; *Upload the whole data folder* uploads all of it. A
+SQLite database is uploaded as a consistent snapshot, made from a copy so
+the original is never opened; its `-wal`/`-shm` files are folded into it.
+
+**Where.** `<remote base path>/<experiment>/<path inside the data folder>`,
+the experiment's `[project]` name as its folder, so the session folders keep
+their `v<version>/sub-<ID>/ses-<NNN>/run-<NN>_task-<task>` layout. Rehearsal
+data (test, simulate) goes to `<experiment>-rehearsal`, never among the real
+sessions; the registry goes to `<experiment>/people/`.
+
+**Settings.** Open *Settings* beside any Upload button. They are this
+computer's, kept only in the workspace's state directory (`upload.json`,
+and `upload_known_hosts` for trusted host keys), never in an experiment or
+in alhazen; nothing points anywhere until they are filled in:
+
+| Setting | Meaning |
+|---|---|
+| Name on this page | What the buttons call the archive ("Upload to <name>"). |
+| SFTP / rsync over SSH / a folder here | How files travel (SFTP is the default). |
+| Login user, remote host, port | The SSH account, e.g. `alice` at `archive.example.org`, port 22. |
+| Remote base path | The folder each experiment's folder is made in, e.g. `/path/to/remote/data`. |
+| Connection socket, ssh program | rsync only (see below). |
+| Folder | A local copy's destination: a mounted share or a backup disk. |
+
+**Logging in (SFTP).** Press *Connect*. On the first connection to a host the
+page shows its key's fingerprint (`SHA256:…`, as `ssh-keygen -l` prints it);
+check it, then *Trust this host*. A key that later differs from the trusted
+one refuses the connection. Then the page relays whatever the host asks — a
+password, a second-factor code or a choice of push — one question at a time.
+Keys from an SSH agent or `~/.ssh` are tried first, silently. The dashboard
+holds the connection, with keepalives, until it stops, so the login is asked
+once per dashboard; nothing typed is stored.
+
+**What an upload does.**
+
+1. *Preview* (a dry run; nothing is copied): per session, and for the other
+   files and the registry, the files to copy, those already there, changed
+   files that will be kept as new versions, and session files that differ
+   there.
+2. *Copy*: each file is written to `.alhazen-partial/<name>` beside its final
+   name, resumed from its size after an interruption, checked by SHA-256 on
+   the host, and only then renamed to the final name — with SFTP's plain
+   rename, which never replaces an existing file. The only thing the
+   upload ever removes at the destination is its own partial copy.
+3. *Verify*: every file must be at the destination with the local SHA-256.
+   The host computes it (`sha256sum`, else `shasum -a 256`); an account that
+   runs no commands (SFTP only) is verified by reading the files back.
+
+**Changed files.** Nothing at the destination is deleted or replaced. A file
+there with the same content is left. Outside the session folders, a file
+that changed here (`participants.tsv` after a new subject) is uploaded
+beside the old one as `participants.<UTC time>.tsv` — unless an earlier
+version already holds the same content. Inside a session folder a different
+file there is a *conflict*: reported and left alone, and nothing is added,
+because the session folder must stay exactly what its manifest lists.
+
+**Receipts.** Every upload leaves receipts in the data folder:
+`uploads/<run id>/<UTC time>.json` for each session (beside it, never inside
+it), `uploads/_shared/…` for the other files, and the registry's in the
+workspace's `uploads/_people/`. Each records the destination, every file
+with its size, SHA-256 and the name it is stored under, what was copied,
+already there, kept as a version or in conflict, the local manifest check
+and the outcome: `verified`, `conflict`, `incomplete`, `failed` or
+`cancelled`. Receipts are only added; the newest is the session's state.
+
+**Where it shows.** *Run*: once a launch that saved a session has finished,
+an upload card above its output names the destination and the state, with
+*Upload to <name>* and the connection. *History*: an *Archive* column with
+each session's state; tick sessions, or upload every data folder whole.
+*Data*: the same bar under the run table. A session without a manifest
+(still being written, or killed before teardown) goes only when the preview's
+box is ticked; the one the active run is writing never does. One upload runs
+at a time; *Stop* keeps what was copied, and the next upload resumes it.
+
+**rsync (optional).** Where rsync 3.1+ and OpenSSH master connections exist
+(Linux, macOS), choose *rsync over SSH*: you open the connection once in a
+terminal (Settings shows the exact `ssh -fN -o ControlMaster=yes …` line)
+and the dashboard rides it. Copies are `rsync -rt --ignore-existing
+--partial-dir .alhazen-partial`, never `--delete`; the rules above are the
+same.
 
 ## Storage and local access
 
