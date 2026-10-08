@@ -39,6 +39,7 @@ from alhazen.config.models import (
     SessionInfo,
     resolve_refresh,
 )
+from alhazen.config.reward_calibration import load_reward_calibration, ul_per_pulse
 from alhazen.core.clock import Clock, MonotonicClock
 from alhazen.core.commands import CommandSource, KeyboardCommands, NullCommands
 from alhazen.core.engine import TrialEngine
@@ -91,6 +92,8 @@ from alhazen.session.startup_calibration import (
 from alhazen.stimuli.photodiode import make_photodiode
 from alhazen.task.live import LiveAnalysis, LiveWiring
 from alhazen.task.plan import BuildTrial
+from alhazen.task.reward_policy import RewardPolicy
+from alhazen.task.subject_kind import SubjectKind, opens_reward_line, subject_kind_of
 from alhazen.task.task import Task, task_instructions
 from alhazen.training.stages import Curriculum
 from alhazen.training.state import TrainingState
@@ -200,6 +203,39 @@ def make_tracker_health_check(tracker: EyeTracker) -> Callable[[], HealthFault |
         return None if detail is None else HealthFault(FAULT_TRACKER_STOPPED, detail)
 
     return check
+
+
+def reward_in_pulses(
+    policy: RewardPolicy,
+    rig: RigConfig | str | Path,
+    rig_cfg: RigConfig,
+    rig_source: str | None,
+    task_name: str,
+) -> RewardPolicy:
+    """``policy`` with its µL entries turned into pulse counts from the rig's
+    reward calibration, the file beside the rig config. Refused, with the
+    entry named, when a width was never measured on this rig's reward line
+    at its voltage, or when the rig came as settings with no file to find a
+    calibration beside: a volume nobody measured is never assumed."""
+    hardware = rig_cfg.devices.reward
+    rig_path = rig if not isinstance(rig, RigConfig) else rig_source
+    calibration = load_reward_calibration(rig_path) if rig_path else None
+
+    def measured(width: int) -> float | None:
+        if hardware is None:
+            return None
+        entry = ul_per_pulse(
+            calibration,
+            pulse_ms=width,
+            line=f"{hardware.device}/{hardware.channel}",
+            voltage=hardware.voltage,
+        )
+        return None if entry is None else float(entry["ul_per_pulse"])
+
+    try:
+        return policy.in_pulses(measured)
+    except ValueError as error:
+        raise ConfigError(f"task {task_name!r}: {error}") from error
 
 
 def make_manual_reward(
@@ -423,6 +459,15 @@ def build_session(
         score = score if score is not None else task.score
         reward_policy = task.reward
         live_monitor_spec = task.live_monitor or LiveMonitorSpec()
+        # Reward asked for in µL becomes a pulse count here, from the rig's
+        # measured µL per pulse (config/reward_calibration.py), before the
+        # training supervisor reads the policy it rescales. Bound back on the
+        # task, which is what the supervisor and the estimate read.
+        if reward_policy is not None and reward_policy.asks_for_volume():
+            reward_policy = reward_in_pulses(
+                reward_policy, rig, rig_cfg, (sources or {}).get("rig"), task.name
+            )
+            task.reward = reward_policy  # type: ignore[misc]
     mid_trial_reward = task.mid_trial_reward if task is not None else False
     missing = [
         name
@@ -512,12 +557,35 @@ def build_session(
     # leaving an empty run behind.
     if instructions is None and task is not None:
         instructions = task_instructions(task)
+    # A monkey reads nothing: its session opens on no instruction screen,
+    # whatever the task or the caller would show a human (task/subject_kind.py).
+    if subject_kind_of(task_params) is SubjectKind.MONKEY:
+        instructions = None
 
     # Refused here, before a run directory exists or a window opens, rather
     # than at the first drop: a task that pays during the trial on a rig with
     # nothing to pay with would run a subject through trials it believes are
     # rewarded. Simulate and test modes substitute a simulated dispenser
     # (modes/session.py), so a rehearsal on a laptop still builds.
+    # Who the subject is decides whether the reward line opens at all
+    # (task/subject_kind.py). A human session takes no dispenser, whatever
+    # the rig has: refused when one is handed in, and the rig's own is never
+    # opened below. A monkey session must have one to be paid through; test
+    # and simulate modes stand a simulated one in (modes/session.py).
+    subject_kind = subject_kind_of(task_params)
+    if subject_kind is SubjectKind.HUMAN and reward is not None:
+        raise ConfigError(
+            f"task {task_name!r} runs with subject_kind: human, which never opens a reward "
+            f"line, but build_session was handed a reward dispenser"
+        )
+    if subject_kind is SubjectKind.MONKEY and reward is None and rig_cfg.devices.reward is None:
+        raise ConfigError(
+            f"task {task_name!r} runs with subject_kind: monkey, which is paid through the "
+            f"rig's reward line, but the rig has none (devices.reward). Run it on a rig with "
+            f"a reward line (lab), or rehearse with --mode simulate or --mode test, which "
+            f"stand in a simulated one."
+        )
+
     if mid_trial_reward and reward is None and rig_cfg.devices.reward is None:
         raise ConfigError(
             f"task {task_name!r} declares mid_trial_reward = True, but the rig has no "
@@ -759,7 +827,7 @@ def build_session(
         set_calibration_rng = getattr(tracker, "set_calibration_rng", None)
         if set_calibration_rng is not None:
             set_calibration_rng(named_stream(resolved_seed, "calibration_target"))
-        if reward is None and devices.reward is not None:
+        if reward is None and devices.reward is not None and opens_reward_line(task_params):
             reward = make_reward(devices.reward)
         if reward is not None:
 

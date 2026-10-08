@@ -98,6 +98,7 @@ from alhazen.task.live import LiveAnalysis
 # tests written before the task layer existed import them from here.
 from alhazen.task.plan import BuildTrial, TrialSetup
 from alhazen.task.reward_policy import RewardPolicy
+from alhazen.task.subject_kind import subject_kind_of
 from alhazen.training.supervisor import TrainingSupervisor
 
 log = logging.getLogger(__name__)
@@ -226,6 +227,8 @@ class SessionRunner:
             )
         self._identity = identity
         self._cfg = cfg
+        kind = subject_kind_of(cfg.task_params)
+        self._subject_kind = kind.value if kind is not None else None
         # The external recorder this run belongs to (devices.recording), or
         # None. Its pointer file is written once the snapshot is, in run():
         # a run directory says which recording it pairs with even if the
@@ -503,6 +506,8 @@ class SessionRunner:
                     given.age if given.age is not None else "not recorded",
                     given.sex if given.sex is not None else "not recorded",
                 )
+            if self._subject_kind is not None:
+                log.info("subject kind: %s", self._subject_kind)
             log.info("devices: %s", self._devices_line())
             for note in self.setup_notes:
                 log.info("setup: %s", note)
@@ -726,6 +731,9 @@ class SessionRunner:
         for name in ("eyetracker", "reward", "sync", "recording", "spikes"):
             device = getattr(devices, name, None)
             backend = getattr(device, "backend", None) if device is not None else None
+            if name == "reward" and backend is not None and self._subject_kind == "human":
+                # The rig has a line, and a human session never opens it.
+                backend = f"{backend} (closed: human subject)"
             parts.append(f"{name} {backend if backend is not None else 'none'}")
         return ", ".join(parts)
 
@@ -798,6 +806,10 @@ class SessionRunner:
             # On the row, not only in the folder name, because rows travel:
             # into the database, into a table concatenated across runs.
             "experiment_version": self._identity.experiment.version,
+            # Who the subject was (core/trial.py TRIAL_RECORD_COLUMNS); only
+            # when the params say, so a run of undeclared params writes the
+            # same columns it always did.
+            **({"subject_kind": self._subject_kind} if self._subject_kind is not None else {}),
             # Stage and ramp values first, so a task that records a column of
             # the same name wins — the task's own measurement is never
             # shadowed by bookkeeping.

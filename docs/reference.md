@@ -47,7 +47,8 @@ The names an experiment imports directly.
         Phase, PhaseAction, PhotodiodeConfig, QuitRequested, Ramp, RewardError,
         RewardHwConfig, RewardPolicy, RewardPulses, RewardRequestError, RigConfig,
         SchedulerConfig, Screen, SessionConfig, SessionError, SessionInfo,
-        SessionRunner, SimpleSequence, Stage, StageCriteria, SyncError, SyncHwConfig,
+        SessionRunner, SimpleSequence, Stage, StageCriteria, SubjectKind, SubjectParams,
+        SyncError, SyncHwConfig,
         Task, TrackerError, TrialContext, TrialEngine, TrialPlan, TrialResult,
         TrialSetup, TrialSource, __version__]
       show_root_heading: false
@@ -142,6 +143,10 @@ explains each.
 ::: alhazen.task.reward_policy
     options:
       members: [RewardPolicy]
+
+::: alhazen.task.subject_kind
+    options:
+      members: [SubjectKind, SubjectParams, subject_kind_of, reward_for, opens_reward_line]
 
 ::: alhazen.task.phases
     options:

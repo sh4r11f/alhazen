@@ -281,6 +281,7 @@ class SessionHarness:
         eyetracker_config: EyeTrackerConfig | None = None,
         display: FakeDisplay | None = None,
         live: Any = None,
+        task_params: dict[str, Any] | None = None,
     ) -> None:
         """``on_pause`` is the pause strategy, and wins over ``use_pause_menu``.
         ``eyetracker`` replaces the monitor the harness builds from ``tracker``
@@ -312,7 +313,9 @@ class SessionHarness:
         # against the same simulated time the session runs on.
         self.clock = clock if clock is not None else FakeClock()
         self.display = display if display is not None else FakeDisplay(self.clock, FRAME_S)
-        self.cfg = make_session_config(tmp_path)
+        # ``task_params``: the session config's task params, plain data (a
+        # declared subject_kind, say), for a runner that reads them.
+        self.cfg = make_session_config(tmp_path, task_params)
         self.paths = SessionPaths.create(
             tmp_path,
             "t01",

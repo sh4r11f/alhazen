@@ -2702,3 +2702,23 @@ describe('a development rig in the launch form', () => {
     assert.equal(app.run('launching'), false);
   });
 });
+
+describe('the Rig summary\'s Reward line', () => {
+  const line = { backend: 'nidaq', device: 'Dev1', channel: 'ao0', voltage: 5 };
+
+  it('shows each width measured on the rig\'s own line and voltage, in µL', () => {
+    const app = loadWorkspace();
+    const fact = plain(app.run(`rewardFact(${JSON.stringify(line)}, ${JSON.stringify({
+      200: { ul_per_pulse: 118.46, line: 'Dev1/ao0', voltage: 5, measured_at: '2026-10-08T12:00:00+00:00' },
+      100: { ul_per_pulse: 40, line: 'Dev2/ao0', voltage: 5, measured_at: null },
+    })})`));
+    assert.deepEqual(fact, [['Reward', ['Dev1/ao0 at 5 V', '118.5 µL per 200 ms pulse (2026-10-08)']]]);
+  });
+
+  it('claims no volume when nothing was measured, and says nothing without a line', () => {
+    const app = loadWorkspace();
+    assert.deepEqual(plain(app.run(`rewardFact(${JSON.stringify(line)}, null)`)),
+      [['Reward', ['Dev1/ao0 at 5 V', 'volume not measured (Measure rig, Reward)']]]);
+    assert.deepEqual(plain(app.run('rewardFact(undefined, null)')), []);
+  });
+});

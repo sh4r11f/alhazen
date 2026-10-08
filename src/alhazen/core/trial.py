@@ -222,6 +222,12 @@ TRIAL_RECORD_COLUMNS: tuple[str, ...] = (
     # out of the database, still say which protocol each row came from once
     # the folder is out of sight. Stamped by the runner, not the engine.
     "experiment_version",
+    # Who the subject was, as the session's params declare it: "human" or
+    # "monkey" (task/subject_kind.py). Stamped by the runner on every row of
+    # a session whose params declare it, beside the version and for the same
+    # reason: a human run and a monkey run of one task must stay apart once
+    # their rows are pooled. Absent for params that declare neither.
+    "subject_kind",
 )
 
 

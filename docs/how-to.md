@@ -216,6 +216,64 @@ A backend with no screen records the flag rather than dropping it. A backend
 that predates the argument still works — alhazen never passes `reflow` to a
 `show_message` that does not take it — but its messages are drawn unreflowed.
 
+## Run a task for humans and for monkeys
+
+The lab rig has a juice line whoever is in the chair, so who the subject is
+is declared where a session is chosen: in its params file. Mix
+`alhazen.SubjectParams` into the task's params model and give every file a
+`subject_kind`:
+
+```python
+from alhazen import SubjectParams
+
+
+class MyParams(SubjectParams):
+    eccentricity_dva: float = 10.0
+```
+
+```yaml
+# configs/task.yaml: a human session. The reward line is never opened.
+subject_kind: human
+```
+
+```yaml
+# configs/task-monkey.yaml: the same session for a monkey.
+subject_kind: monkey
+reward:
+  by_outcome:
+    CORRECT: {n_pulses: 2, pulse_ms: 200, inter_pulse_ms: 200}
+  on_fault: {n_pulses: 1, pulse_ms: 200, inter_pulse_ms: 200}   # optional
+```
+
+The rig file says which line the juice goes out on (`devices.reward`:
+`device`, `channel`, `voltage`); the params file says what pays and how much
+(pulse width sets the volume per pulse). A human file with a `reward` block,
+a monkey file without one, or a block naming an outcome the task does not
+declare are refused when the session is built. A monkey session shows no
+instruction screen and is refused in run mode on a rig with no reward line.
+Name the Task parameters entries so the kind is visible (`"Main (human)"`,
+`"Main (monkey)"`); session.json, session.log and every trial row record it.
+
+`on_fault` is what a trial a device cut short (the eye tracker stopped
+mid-trial) pays; `{n_pulses: 0}` pays nothing for it.
+
+To give a reward in µL, measure the valve first: Measure rig, Reward, Juice
+per pulse delivers armed trains into a beaker and records the µL per pulse of
+that width beside the rig file (`rig-lab.yaml` → `rig-lab.reward.yaml`). Then
+an entry can ask for a volume instead of a count:
+
+```yaml
+reward:
+  by_outcome:
+    CORRECT: {volume_ul: 250, pulse_ms: 200, inter_pulse_ms: 200}
+```
+
+The session turns it into pulses of that width from the measurement, and
+refuses to start when that width was never measured on the rig's line at its
+voltage. The Run page's Rig summary shows what was measured; session.json's
+`reward.volumes` says what each entry came to in µL, or null where nothing
+was measured.
+
 ## Say what the subject reads before trial one
 
 Override `Task.instructions`. Every way of starting a session shows what it

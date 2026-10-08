@@ -58,6 +58,45 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   setting of the computer (`upload.json`); nothing is preset. See
   docs/workspace.md §Upload to an archive.
 - New dependency: `paramiko>=3.4` (the SFTP transport).
+- **Human and monkey sessions: `subject_kind` decides whether the reward
+  line opens.** A task's params model mixes in `alhazen.SubjectParams`, and
+  each params file declares `subject_kind: human` or `subject_kind: monkey`
+  (`alhazen.task.subject_kind`). A human session never opens the rig's
+  reward line, whatever the rig has or the task class pays: no dispenser is
+  built, no trial pays, the manual `r` key has nothing behind it, and
+  `build_session` refuses a dispenser handed in. A monkey session pays its
+  file's `reward` block (a `RewardPolicy`), which is required, may only name
+  outcomes the task declares, and must come to at least one pulse; run mode
+  refuses a monkey session on a rig with no `devices.reward`, and test and
+  simulate stand a simulated line in, with a setup note. A monkey session
+  shows no instruction screen. The kind is recorded on every trial row (new
+  column `subject_kind`, in `TRIAL_RECORD_COLUMNS`), in session.log
+  (`subject kind:`, and the devices line says `reward nidaq (closed: human
+  subject)`), and in session.json (`subject_kind`, and `reward`: whether the
+  line was open, its backend, the `Dev1/ao0`-style line, voltage and the
+  policy), so data from the two can never be confused. Params that declare
+  no kind keep the old rule (the class `reward` pays on any rig with a line)
+  and write no new column. The NI-DAQ backend itself is unchanged: it
+  already matched the lab's last working reward code (realtime-rdk's
+  `give_reward`: Dev1/ao0, 5 V, a 1 kHz finite analog-output train, 2 ×
+  200 ms pulses 200 ms apart), which a new fake-driver test now pins sample
+  by sample.
+- **Reward calibration in µL.** The Measure rig's "Juice per pulse"
+  (`reward.volume`) now asks how many trains to run, the pulses in each, the
+  width and the gap (line and voltage from the rig), delivers them once
+  after arming at the rig (a failed train stops the run, records nothing and
+  is never retried), and asks for the volume read off the beaker. The µL per
+  pulse is in the report and stored, per pulse width, as the rig's reward
+  calibration beside the rig file (`alhazen.config.reward_calibration`;
+  `rig-lab.yaml` → `rig-lab.reward.yaml`, earlier measurements kept). A
+  reward entry can then ask for `volume_ul` instead of `n_pulses`
+  (`RewardPulses.volume_ul`): the session converts it to pulses of that
+  width from the measurement, and refuses to start when the width was never
+  measured on the rig's line at its voltage. The Run page's Rig summary has
+  a Reward line ("118.5 µL per 200 ms pulse", or "volume not measured"), and
+  session.json's `reward.volumes` gives each entry's pulses and µL (null
+  where nothing was measured). The balance-and-density reading the job asked
+  for before is replaced by the beaker reading.
 
 ### Changed
 
@@ -76,6 +115,14 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   height instead of a fixed box; the form's first stage is now *Subject &
   session*, apart from *Run options*; Recent runs links to History. On one
   column, the upload card comes first.
+
+### Fixed
+
+- **Workspace: the Task parameters menu no longer cuts off the end of an
+  entry's name.** On a narrow run column (a phone, or the 1440 px layout's
+  form column) the menu beside the heading shrank to about 110 px, hiding
+  the part of a name such as "Pilot (monkey)" that tells two entries apart.
+  Below 15rem beside the heading it now takes its own full-width line.
 
 ## 2.11.0 - 2026-10-07
 

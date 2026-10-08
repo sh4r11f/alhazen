@@ -65,6 +65,7 @@ from alhazen.session.database import DeviceSample, ExperimentDatabase
 from alhazen.session.runner import SessionRunner
 from alhazen.task.plan import BuildTrial, TrialPlan, TrialSetup
 from alhazen.task.reward_policy import RewardPolicy
+from alhazen.task.subject_kind import SubjectKind, SubjectParams
 from alhazen.task.task import Task
 from alhazen.training.stages import Curriculum, Ramp, Stage, StageCriteria
 from alhazen.version import get_version
@@ -126,6 +127,8 @@ __all__ = [
     "SimpleSequence",
     "Stage",
     "StageCriteria",
+    "SubjectKind",
+    "SubjectParams",
     "SyncError",
     "SyncHwConfig",
     "Task",

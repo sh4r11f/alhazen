@@ -586,6 +586,30 @@ function rigFacts(facts) {
   $('rig-summary').replaceChildren(list);
 }
 
+/**
+ * The Rig summary's Reward line: the line the juice goes out on, then what
+ * the Measure rig recorded for each pulse width ("118.5 µL per 200 ms
+ * pulse"), or that no volume was measured. Nothing for a rig with no reward
+ * line. Only widths measured on the rig's current line and voltage count,
+ * as a session counts them (config/reward_calibration.py).
+ */
+function rewardFact(reward, calibration) {
+  if (!reward) return [];
+  const line = `${reward.device || 'Dev1'}/${reward.channel || 'ao0'}`;
+  const voltage = reward.voltage ?? 5.0;
+  const parts = [reward.backend === 'simulated' ? 'simulated' : `${line} at ${voltage} V`];
+  if (typeof calibration === 'string') {
+    parts.push(`calibration ${calibration}`);
+  } else {
+    const measured = Object.entries(calibration || {})
+      .filter(([, entry]) => entry.line === line && Number(entry.voltage) === Number(voltage))
+      .map(([width, entry]) => `${Number(entry.ul_per_pulse).toFixed(1)} µL per ${width} ms pulse`
+        + (entry.measured_at ? ` (${String(entry.measured_at).slice(0, 10)})` : ''));
+    parts.push(...(measured.length ? measured : ['volume not measured (Measure rig, Reward)']));
+  }
+  return [['Reward', parts]];
+}
+
 /** A run's rig as the history shows it: its qualified name, not its file —
  *  alhazen/<name> for a shared rig, <slug>/<name> for one of experiment
  *  `slug`'s own. A run recorded before runs kept the name gets it back from
@@ -1374,6 +1398,7 @@ async function loadRig() {
     // rig did before the setting existed, and a line saying so on each
     // would be noise.
     ...(development ? [['Real data', ['refused', 'a development rig (real_data: false)']]] : []),
+    ...rewardFact(rig.devices?.reward, data.reward_calibration),
     ['Rig', origin],
   ]);
   // The footer's warning depends on the backend just learned.

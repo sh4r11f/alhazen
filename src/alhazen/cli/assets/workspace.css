@@ -824,8 +824,9 @@ input[type=checkbox] {
 /* The heading and the parameter-file menu it labels, side by side. */
 .parameters-heading {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 14px;
+  gap: 8px 14px;
 }
 
 .parameters-heading .section-title {
@@ -836,8 +837,12 @@ input[type=checkbox] {
   margin: 0;
 }
 
+/* The entry's name ends in what matters most (who the file is for:
+   "Main (human)" / "Main (monkey)"), so the menu never shrinks to cut it
+   off: below about 15rem beside the heading it takes a line of its own. */
 .parameters-heading select {
-  flex: 1;
+  flex: 1 1 15rem;
+  min-width: 0;
 }
 
 /* The Fields / Text switch, and the theme switch in the sidebar. */

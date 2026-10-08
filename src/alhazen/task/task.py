@@ -36,6 +36,7 @@ from alhazen.paradigms.config import SchedulerConfig, make_scheduler
 from alhazen.task.duration import Schedule, TrialTiming, default_schedule
 from alhazen.task.plan import TrialPlan, TrialSetup
 from alhazen.task.reward_policy import RewardPolicy
+from alhazen.task.subject_kind import SubjectKind, reward_for, subject_kind_of
 
 if TYPE_CHECKING:  # annotations only: the task layer never parses a command line
     import argparse
@@ -149,6 +150,21 @@ class Task:
                 f"{type(params).__name__}"
             )
         self.params = params
+        # Who the params are for decides what pays (task/subject_kind.py):
+        # a human session pays nothing, a monkey session pays its params
+        # file's reward block, and undeclared params keep the class's own
+        # policy. Bound on the instance, which is what the session builder,
+        # the training supervisor and the duration estimate all read (the
+        # supervisor already rebinds it per instance at each stage, which is
+        # why the ClassVar is assigned through self here).
+        kind = subject_kind_of(params)
+        if kind is SubjectKind.HUMAN and self.mid_trial_reward:
+            raise ConfigError(
+                f"task {type(self).__name__} asks for reward mid-trial "
+                f"(mid_trial_reward = True), and its params declare subject_kind: human, "
+                f"which never pays. Run it with a monkey params file"
+            )
+        self.reward = reward_for(type(self).reward, params, self.outcomes.names)  # type: ignore[misc]
 
     # ------------------------------------------------------------------
     # What an entry point asks a task for before the task exists: where its
