@@ -57,7 +57,7 @@ from typing import Any
 import yaml
 
 from alhazen.config.experiment import Experiment
-from alhazen.config.models import SessionConfig
+from alhazen.config.models import SessionConfig, age_number, normalize_age, normalize_sex
 from alhazen.config.rigs import rig_mapping
 from alhazen.config.snapshot import build_provenance, write_snapshot
 from alhazen.data.paths import SessionPaths
@@ -144,6 +144,42 @@ class Experimenter:
 
 
 @dataclass(frozen=True)
+class SubjectDemographics:
+    """The subject's age and sex, as session.json records them beside the id
+    and initials. ``age`` is `normalize_age`'s text (years), ``sex`` one of
+    `SUBJECT_SEXES`; each None when not recorded. Recorded, never put in a
+    path."""
+
+    age: str | None = None
+    sex: str | None = None
+
+    @classmethod
+    def parse(cls, age: str | None, sex: str | None) -> SubjectDemographics | None:
+        """``--age`` / ``--sex`` as recorded, None when neither is given; a
+        ValueError in the rules' own words (config.models) otherwise."""
+        if age is None and sex is None:
+            return None
+        return cls(
+            age=None if age is None else normalize_age(age),
+            sex=None if sex is None else normalize_sex(sex),
+        )
+
+    def as_json(self) -> dict[str, Any]:
+        """``{age, sex}`` for session.json: the age as a number of years."""
+        return {"age": None if self.age is None else age_number(self.age), "sex": self.sex}
+
+    def as_participant_columns(self) -> dict[str, str]:
+        """The participants.tsv columns a new subject's row gets: only the
+        values given, as text, so a row never claims an empty answer."""
+        columns = {}
+        if self.age is not None:
+            columns["age"] = self.age
+        if self.sex is not None:
+            columns["sex"] = self.sex
+        return columns
+
+
+@dataclass(frozen=True)
 class RunIdentity:
     """What a run records about how it was set up, beyond its config.
 
@@ -166,6 +202,8 @@ class RunIdentity:
     - ``experimenter`` — who ran the session (``--experimenter``), or None
       when nobody said: the card then records null, "not recorded", never a
       guess.
+    - ``demographics`` — the subject's age and sex (``--age``, ``--sex``),
+      or None when neither was given: the card then records both as null.
     """
 
     experiment: Experiment
@@ -175,6 +213,7 @@ class RunIdentity:
     rig_merged: bytes | None = None
     command: tuple[str, ...] | None = None
     experimenter: Experimenter | None = None
+    demographics: SubjectDemographics | None = None
 
 
 # How the alhazen console command is recorded: by its name, which is what a
@@ -297,7 +336,15 @@ def session_card(
         "task": info.task_name,
         "mode": identity.mode,
         # Initials are recorded here and in the registry, never in a path.
-        "subject": {"id": info.subject, "initials": info.initials},
+        # Age (years, a number) and sex (a SUBJECT_SEXES code) beside them,
+        # null when not recorded; added after 2.11.0 without a schema bump,
+        # like ``experimenter``: new keys, which a reader of schema 1
+        # ignores. A card without them was written before.
+        "subject": {
+            "id": info.subject,
+            "initials": info.initials,
+            **(identity.demographics or SubjectDemographics()).as_json(),
+        },
         # Who ran it ({id, name}), or null: not recorded. Added after
         # 2.10.0 without a schema bump, like ``command``: a new key, which a reader
         # of schema 1 ignores; a card without it was written before.

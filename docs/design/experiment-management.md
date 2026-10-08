@@ -143,3 +143,35 @@ the shell, addresses, Back/Forward, the Experiments page and the selectors.
 - JSON file as the "database": not a database; no transactions.
 - Sandboxing saved monitor pages in an opaque origin: the existing pages read
   `sessionStorage` unguarded and would break; the ticket + CSP boundary is kept.
+
+## 10. Subject age and sex (people schema 2)
+
+Requested 2026-10-08: every subject records age and sex wherever it is
+created, edited, listed, selected or written into a session.
+
+- **One convention: age in years**, not a date of birth (nothing in alhazen
+  stored either before; BIDS `participants.tsv` uses `age`, and a birthday is
+  more identifying than the study needs). 0–120, whole or one decimal (an
+  animal of 7.5 years), kept as canonical text (`config.models.normalize_age`)
+  and written to `session.json` as a number. Because an age goes stale, the
+  record keeps `age_recorded`, the UTC date it was entered here (NULL when
+  imported or upgraded: unknown), and the Run page flags one over a year old.
+- **Sex** is one of `female`, `male`, `other`, `prefer_not_to_say`
+  (`SUBJECT_SEXES`); "prefer not to say" is an answer, NULL is "not
+  recorded". The page's labels sit in `workspace.js` (`SUBJECT_SEXES`), held
+  to the Python codes by a test.
+- **Schema 2** adds three nullable columns. A new file runs schema 1's DDL and
+  then every migration step, so new and upgraded files are the same tables.
+  An upgrade backs up first, runs in one transaction (columns, promotion of
+  extra columns named age/sex, one revision, a `changes` entry naming the
+  backup) and rewrites the CSV copies after. A failed backup or step leaves
+  the file at schema 1.
+- **Sessions** get `--age`/`--sex` (capability `subject-demographics`) and
+  record them in `session.json` `subject`, `session.log`, and a new
+  `participants.tsv` row. They live in `RunIdentity`, not `SessionInfo`, so
+  `config_snapshot.yaml` keeps its shape (`SessionInfo` forbids unknown keys,
+  and an older alhazen reading a newer snapshot would refuse it).
+- **Not required to launch.** A subject without them launches, and its
+  session records nulls; the Run page says so. Making them required for run
+  and test is the user's decision (it would block existing subjects until
+  someone fills them in).

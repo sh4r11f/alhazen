@@ -252,6 +252,9 @@
                     <input id="session" type="number" min="1" value="1" required>
                   </div>
                 </div>
+                <!-- What the chosen subject's record says of its age and sex,
+                     which the session records (subjectFacts). -->
+                <p id="subject-facts" class="subject-facts" hidden></p>
                 <details id="typed-identity" class="typed-identity">
                   <summary>Type an unregistered subject instead</summary>
                   <!-- Subject ID and initials side by side: the initials are the
@@ -264,6 +267,20 @@
                     <div>
                       <label for="initials">Initials</label>
                       <input id="initials" placeholder="e.g. HD" maxlength="5" autocomplete="off">
+                    </div>
+                  </div>
+                  <!-- Age and sex, optional: recorded in session.json by an
+                       alhazen that takes --age/--sex, never in a file name.
+                       The sex menu is filled from SUBJECT_SEXES. -->
+                  <div class="field-pair">
+                    <div>
+                      <label for="age">Age (years)</label>
+                      <input id="age" type="text" inputmode="decimal" placeholder="optional"
+                             maxlength="5" autocomplete="off">
+                    </div>
+                    <div>
+                      <label for="sex">Sex</label>
+                      <select id="sex"></select>
                     </div>
                   </div>
                 </details>

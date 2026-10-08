@@ -73,6 +73,7 @@ from alhazen.session.feedback import FeedbackSounder
 from alhazen.session.identity import (
     Experimenter,
     RunIdentity,
+    SubjectDemographics,
     merged_rig,
     recorded_command,
     source_file,
@@ -307,6 +308,7 @@ def build_session(
     initials: str | None = None,
     command: Sequence[str] | None = None,
     experimenter: Experimenter | None = None,
+    demographics: SubjectDemographics | None = None,
 ) -> SessionRunner:
     """Wire one runnable session.
 
@@ -334,6 +336,11 @@ def build_session(
 
     ``experimenter`` is who ran the session, recorded in session.json and
     session.log (`session.identity.Experimenter`); None records null.
+
+    ``demographics`` are the subject's age and sex
+    (`session.identity.SubjectDemographics`), recorded in session.json and
+    session.log, and in participants.tsv with a subject registered by this
+    session; None records both as null.
 
     ``command`` is the command line the session was started with — the
     program, then the arguments exactly as its parser received them — which
@@ -561,6 +568,7 @@ def build_session(
         rig_merged=merged_rig(rig_file),
         command=recorded_command(command, experiment.root) if command is not None else None,
         experimenter=experimenter,
+        demographics=demographics,
     )
 
     # A database from before 2.0's schema is moved aside now (kept, renamed

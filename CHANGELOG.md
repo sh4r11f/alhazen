@@ -25,6 +25,37 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+### Added
+
+- **A subject's age and sex.** The workspace's people registry records both
+  for every subject: age in years (0 to 120, whole or one decimal, with the
+  date it was entered) and sex from a fixed list (female, male, other, prefer
+  not to say), each optional. The General page's form, subject list,
+  `participants.tsv` import preview and CSV copies carry them; the Run page
+  shows them under the Subject menu (and takes them for a typed subject), and
+  History shows what each launch and session recorded. A launch sends them as
+  the new `--age` and `--sex` flags to an alhazen that records them
+  (capability `subject-demographics`), and keeps them in its `launch.json`
+  snapshot either way. A session records them in `session.json`
+  (`subject.age`, `subject.sex`, null when not given), in `session.log`, and
+  in `participants.tsv` for a subject it registers; an existing row is not
+  rewritten. No `session.json` schema bump: new keys.
+
+### Changed
+
+- **People registry schema 2.** A registry from 2.11 is upgraded when the
+  workspace opens it: a backup first, then one transaction that adds the
+  fields and moves each subject's extra columns named age or sex into them
+  (BIDS letters and `n/a` read as an import reads them; a value the rule
+  refuses stays a column, renamed `… (kept as text)` when its name is now a
+  field's). IDs, codes, initials, notes, statuses, order and sources are not
+  touched. An older alhazen refuses the upgraded file untouched, so run the
+  workspace from this alhazen or newer. `age`, `sex` and `age_recorded` are
+  no longer allowed as extra column names, and `participants.tsv` columns of
+  those names fill the fields on import instead of being renamed.
+
 ## 2.11.0 - 2026-10-07
 
 ### Added

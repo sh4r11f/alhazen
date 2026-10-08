@@ -38,6 +38,7 @@ from pathlib import Path
 import pytest
 
 from alhazen.analysis import results
+from alhazen.cli import people
 from alhazen.config.models import FrameQAConfig, RewardPulses
 from alhazen.core.commands import Command
 from alhazen.core.events import RESERVED_EVENTS
@@ -84,6 +85,7 @@ SCHEMA_VERSIONS = {
     "training_state": state.SCHEMA_VERSION,
     "scene_format": model.SUPPORTED_VERSION,
     "session_json": identity.SESSION_JSON_SCHEMA_VERSION,
+    "people_registry": people.SCHEMA_VERSION,
 }
 
 

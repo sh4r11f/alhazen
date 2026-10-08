@@ -69,7 +69,12 @@ A **subject** belongs to one experiment: its ID (the `sub-<ID>` of its
 folders, letters and digits, kept as text so `007` stays `007`) is unique in
 that experiment only, and its initials follow the command line's rule. Other
 columns (handedness, group, …) are kept in order, a missing value apart from
-an empty one. An **experimenter** is shared: one record, assigned to the
+an empty one. Its **age** (years, 0 to 120, whole or one decimal) and **sex**
+(Female, Male, Other or Prefer not to say — an answer, kept apart from *Not
+recorded*) are optional fields of their own; the record keeps the date an age
+was entered, and the Run page says when that is over a year ago. Both stay
+editable after sessions: each launch keeps the values it ran with. An
+**experimenter** is shared: one record, assigned to the
 experiments they run; two people with one name stay two records. Records are
 archived, never deleted. A subject's ID, and initials once recorded, are fixed
 after its first launch.
@@ -83,8 +88,12 @@ which is written once and never changed. The session itself records the
 experimenter in `session.json` and `session.log` (`--experimenter`,
 `--experimenter-id`; [data](data.md)) when the experiment's alhazen has that
 flag; the Run page says beforehand when it does not, and the launch keeps it
-in the workspace's records only. Run and test with a registered subject need
-an experimenter; a typed subject launches as before.
+in the workspace's records only. The subject's age and sex go the same way:
+`--age` and `--sex` to an alhazen that records them in `session.json`
+(capability `subject-demographics`), in the launch snapshot only otherwise,
+and the Run page shows them under the Subject menu with a nudge when either
+is missing. A typed subject can be given them too. Run and test with a
+registered subject need an experimenter; a typed subject launches as before.
 
 Where they are kept:
 
@@ -93,7 +102,16 @@ Where they are kept:
 | `people/people.sqlite3` | the records: the system of record, one SQLite file per workspace |
 | `people/csv/experimenters.csv` | every experimenter (a copy) |
 | `people/csv/<experiment id>/subjects.csv`, `…/experimenters.csv` | the experiment's subjects and assigned experimenters (copies) |
-| `people/backups/` | a copy of the database before every import |
+| `people/backups/` | a copy of the database before every import, and before an upgrade of its schema |
+
+A registry an older alhazen wrote (people schema 1, alhazen 2.11) is upgraded
+when the workspace opens it: a backup first, then, in one transaction, the age
+and sex columns, and each subject's extra columns named age or sex (any case)
+moved into them, read as an import reads them (BIDS's `F`/`M`/`O`, `n/a`). A
+value the rule refuses stays a column, renamed `… (kept as text)` if its name
+is now a field's. IDs, codes, initials, notes, statuses, order and sources are
+untouched. An older alhazen then refuses the upgraded file, untouched, as it
+refuses any newer one: run the workspace from this alhazen or newer.
 
 The CSV copies are rewritten after every change, each file replaced whole.
 If they cannot be written (a full disk, a file open in another program), the
@@ -111,7 +129,10 @@ sessions in the order subjects first ran (which some experiments
 counterbalance by). The workspace only reads it. **Import participants.tsv…**
 previews every row of every data folder's file — new, already imported, or a
 conflict (the same ID with other initials, never merged) — then imports with
-a backup first; importing again changes nothing.
+a backup first; importing again changes nothing. Its `age` and `sex` columns
+fill the fields (a subject's own values are never replaced, only missing ones
+filled), and a session started with an age and sex adds them to the row of a
+subject it registers.
 
 ## The page
 
