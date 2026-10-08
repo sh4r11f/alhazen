@@ -471,7 +471,7 @@ class SftpTransport:
 
     def _sha_by_reading(self, sftp: paramiko.SFTPClient, path: str) -> str:
         digest = hashlib.sha256()
-        with sftp.open(path, "rb") as stream:
+        with sftp.open(path, mode="rb") as stream:
             stream.prefetch()
             while block := stream.read(1 << 20):
                 digest.update(block)
@@ -571,8 +571,9 @@ class SftpTransport:
         progress: Callable[[Progress], None],
         cancelled: threading.Event,
     ) -> None:
-        mode = "r+b" if offset else "wb"
-        with item.local.open("rb") as source, sftp.open(partial, mode) as sink:
+        # Resume into the partial copy, or start it empty. Binary both ways.
+        opened = sftp.open(partial, mode="r+b") if offset else sftp.open(partial, mode="wb")
+        with item.local.open("rb") as source, opened as sink:
             sink.set_pipelined(True)
             if offset:  # "wb" already started an empty file
                 sink.seek(offset)
