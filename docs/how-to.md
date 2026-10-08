@@ -216,6 +216,44 @@ A backend with no screen records the flag rather than dropping it. A backend
 that predates the argument still works — alhazen never passes `reflow` to a
 `show_message` that does not take it — but its messages are drawn unreflowed.
 
+## Run a task for humans and for monkeys
+
+The lab rig has a juice line whoever is in the chair, so who the subject is
+is declared where a session is chosen: in its params file. Mix
+`alhazen.SubjectParams` into the task's params model and give every file a
+`subject_kind`:
+
+```python
+from alhazen import SubjectParams
+
+
+class MyParams(SubjectParams):
+    eccentricity_dva: float = 10.0
+```
+
+```yaml
+# configs/task.yaml: a human session. The reward line is never opened.
+subject_kind: human
+```
+
+```yaml
+# configs/task-monkey.yaml: the same session for a monkey.
+subject_kind: monkey
+reward:
+  by_outcome:
+    CORRECT: {n_pulses: 2, pulse_ms: 200, inter_pulse_ms: 200}
+  on_fault: {n_pulses: 1, pulse_ms: 200, inter_pulse_ms: 200}   # optional
+```
+
+The rig file says which line the juice goes out on (`devices.reward`:
+`device`, `channel`, `voltage`); the params file says what pays and how much
+(pulse width sets the volume per pulse). A human file with a `reward` block,
+a monkey file without one, or a block naming an outcome the task does not
+declare are refused when the session is built. A monkey session shows no
+instruction screen and is refused in run mode on a rig with no reward line.
+Name the Task parameters entries so the kind is visible (`"Main (human)"`,
+`"Main (monkey)"`); session.json, session.log and every trial row record it.
+
 ## Say what the subject reads before trial one
 
 Override `Task.instructions`. Every way of starting a session shows what it

@@ -90,6 +90,7 @@ from alhazen.session.startup_calibration import (
 from alhazen.stimuli.photodiode import make_photodiode
 from alhazen.task.live import LiveAnalysis, LiveWiring
 from alhazen.task.plan import BuildTrial
+from alhazen.task.subject_kind import SubjectKind, opens_reward_line, subject_kind_of
 from alhazen.task.task import Task, task_instructions
 from alhazen.training.stages import Curriculum
 from alhazen.training.state import TrainingState
@@ -505,12 +506,35 @@ def build_session(
     # leaving an empty run behind.
     if instructions is None and task is not None:
         instructions = task_instructions(task)
+    # A monkey reads nothing: its session opens on no instruction screen,
+    # whatever the task or the caller would show a human (task/subject_kind.py).
+    if subject_kind_of(task_params) is SubjectKind.MONKEY:
+        instructions = None
 
     # Refused here, before a run directory exists or a window opens, rather
     # than at the first drop: a task that pays during the trial on a rig with
     # nothing to pay with would run a subject through trials it believes are
     # rewarded. Simulate and test modes substitute a simulated dispenser
     # (modes/session.py), so a rehearsal on a laptop still builds.
+    # Who the subject is decides whether the reward line opens at all
+    # (task/subject_kind.py). A human session takes no dispenser, whatever
+    # the rig has: refused when one is handed in, and the rig's own is never
+    # opened below. A monkey session must have one to be paid through; test
+    # and simulate modes stand a simulated one in (modes/session.py).
+    subject_kind = subject_kind_of(task_params)
+    if subject_kind is SubjectKind.HUMAN and reward is not None:
+        raise ConfigError(
+            f"task {task_name!r} runs with subject_kind: human, which never opens a reward "
+            f"line, but build_session was handed a reward dispenser"
+        )
+    if subject_kind is SubjectKind.MONKEY and reward is None and rig_cfg.devices.reward is None:
+        raise ConfigError(
+            f"task {task_name!r} runs with subject_kind: monkey, which is paid through the "
+            f"rig's reward line, but the rig has none (devices.reward). Run it on a rig with "
+            f"a reward line (lab), or rehearse with --mode simulate or --mode test, which "
+            f"stand in a simulated one."
+        )
+
     if mid_trial_reward and reward is None and rig_cfg.devices.reward is None:
         raise ConfigError(
             f"task {task_name!r} declares mid_trial_reward = True, but the rig has no "
@@ -751,7 +775,7 @@ def build_session(
         set_calibration_rng = getattr(tracker, "set_calibration_rng", None)
         if set_calibration_rng is not None:
             set_calibration_rng(named_stream(resolved_seed, "calibration_target"))
-        if reward is None and devices.reward is not None:
+        if reward is None and devices.reward is not None and opens_reward_line(task_params):
             reward = make_reward(devices.reward)
         if reward is not None:
 

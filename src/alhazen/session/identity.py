@@ -62,6 +62,7 @@ from alhazen.config.rigs import rig_mapping
 from alhazen.config.snapshot import build_provenance, write_snapshot
 from alhazen.data.paths import SessionPaths
 from alhazen.errors import ConfigError
+from alhazen.task.subject_kind import SubjectKind, subject_kind_of
 
 log = logging.getLogger(__name__)
 
@@ -257,6 +258,31 @@ def merged_rig(rig_file: SourceFile | None) -> bytes | None:
     return (header + body).encode("utf-8")
 
 
+def reward_record(cfg: SessionConfig, subject_kind: SubjectKind | None) -> dict[str, Any]:
+    """session.json's ``reward``: was the reward line open, which line, and
+    what the params said pays on it.
+
+    ``line_open`` is False for a human session (no dispenser is opened,
+    whatever the rig has) and for a rig with no reward line. ``backend`` is
+    the rig's as the session ran it: ``simulated`` in test and simulate
+    modes, which stand a real pump down. ``policy`` is the params file's
+    ``reward`` block (a monkey session's), or null; a task with undeclared
+    params pays its class policy, which the snapshot's task code records.
+    """
+    hardware = cfg.rig.devices.reward
+    line_open = hardware is not None and subject_kind is not SubjectKind.HUMAN
+    policy = cfg.task_params.get("reward") if subject_kind is SubjectKind.MONKEY else None
+    return {
+        "line_open": line_open,
+        "backend": hardware.backend if line_open and hardware is not None else None,
+        "line": (
+            f"{hardware.device}/{hardware.channel}" if line_open and hardware is not None else None
+        ),
+        "voltage": hardware.voltage if line_open and hardware is not None else None,
+        "policy": policy,
+    }
+
+
 def session_card(
     cfg: SessionConfig,
     paths: SessionPaths,
@@ -280,6 +306,7 @@ def session_card(
     experiment = identity.experiment
     info = cfg.info
     sources = cfg.sources
+    subject_kind = subject_kind_of(cfg.task_params)
 
     def relative(path: Path) -> str:
         return path.relative_to(paths.run_dir).as_posix()
@@ -304,6 +331,13 @@ def session_card(
         "experimenter": (
             identity.experimenter.as_json() if identity.experimenter is not None else None
         ),
+        # Who the subject is, as the params declare it (task/subject_kind.py):
+        # "human", "monkey", or null for params that do not say. With
+        # ``reward``: whether the reward line was open this run, the line,
+        # and what paid on it. Added in 2.12.0 without a schema bump, like
+        # ``command``: new keys, which a reader of schema 1 ignores.
+        "subject_kind": subject_kind.value if subject_kind is not None else None,
+        "reward": reward_record(cfg, subject_kind),
         "session": info.session,
         "run": info.run,
         "seed": info.seed,

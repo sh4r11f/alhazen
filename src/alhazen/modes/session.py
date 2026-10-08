@@ -58,6 +58,7 @@ from alhazen.modes import Mode, flag_refusal, real_data_refusal
 from alhazen.modes.rehearsal import Reduction, rehearsal_root, shrink_params
 from alhazen.modes.simulation import Simulation
 from alhazen.session.runner import SessionRunner
+from alhazen.task.subject_kind import SubjectKind, subject_kind_of
 from alhazen.task.task import Task, declares_instructions
 
 log = logging.getLogger(__name__)
@@ -282,22 +283,40 @@ def _named_rig(sources: dict[str, str] | None) -> RigRef | None:
 
 
 def _stand_in_reward(mode: Mode, rig: RigConfig, task: Task, notes: list[str]) -> RigConfig:
-    """A simulated dispenser for a mid-trial-reward task rehearsed on a rig
-    that has none.
+    """What this mode does with the reward line, said as a note.
 
-    ``build_session`` refuses such a task on a rig with no dispenser, because
-    a real session would run a subject through trials it believes are paid.
-    A rehearsal pays nobody, so test and simulate modes stand a simulated
-    dispenser in — every drop is still requested, queued, logged and
+    A human session never opens it (task/subject_kind.py): said here, so the
+    session's setup lines show it on every rig that has one. A task that pays
+    through the line — one that asks for reward mid-trial, or a monkey
+    session — is refused by ``build_session`` on a rig with no dispenser,
+    because a real session would run a subject through trials it believes
+    are paid. A rehearsal pays nobody, so test and simulate modes stand a
+    simulated dispenser in — every delivery is still decided, logged and
     recorded — and say so with a note, like every other substitution. Run
     mode is left alone: there the refusal is the point.
     """
-    if mode is Mode.RUN or not task.mid_trial_reward or rig.devices.reward is not None:
+    kind = subject_kind_of(task.params)
+    if kind is SubjectKind.HUMAN:
+        if rig.devices.reward is not None:
+            notes.append(
+                "reward: closed — subject_kind is human, so the rig's reward line is never "
+                "opened and no trial or key pays"
+            )
         return rig
-    notes.append(
-        "reward: simulated — this task asks for reward mid-trial and the rig has no "
-        "dispenser, so drops are logged, not pumped"
-    )
+    if mode is Mode.RUN or rig.devices.reward is not None:
+        return rig
+    if task.mid_trial_reward:
+        notes.append(
+            "reward: simulated — this task asks for reward mid-trial and the rig has no "
+            "dispenser, so drops are logged, not pumped"
+        )
+    elif kind is SubjectKind.MONKEY:
+        notes.append(
+            "reward: simulated — subject_kind is monkey and the rig has no dispenser, so "
+            "deliveries are logged, not pumped"
+        )
+    else:
+        return rig
     devices = rig.devices.model_copy(update={"reward": RewardHwConfig(backend="simulated")})
     return rig.model_copy(update={"devices": devices})
 
