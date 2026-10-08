@@ -104,8 +104,10 @@ class _Server(paramiko.ServerInterface):
         self.round = 0
 
     def check_channel_request(self, kind, chanid):
-        return paramiko.OPEN_SUCCEEDED if kind == "session" else (
-            paramiko.OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
+        return (
+            paramiko.OPEN_SUCCEEDED
+            if kind == "session"
+            else (paramiko.OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED)
         )
 
     def get_allowed_auths(self, username):
@@ -121,7 +123,8 @@ class _Server(paramiko.ServerInterface):
         if self.round == 1 and list(responses) == [self.standin.password]:
             self.round = 2
             return paramiko.InteractiveQuery(
-                "Second factor", "Enter a passcode or 1 for a push.",
+                "Second factor",
+                "Enter a passcode or 1 for a push.",
                 ("Passcode or option (1-1): ", True),
             )
         if self.round == 2 and list(responses) == [self.standin.code]:
@@ -146,8 +149,9 @@ class _Server(paramiko.ServerInterface):
 class StandIn:
     """The server: ``with StandIn() as server:`` listens on ``server.port``."""
 
-    def __init__(self, *, user="alice", password="correct horse", code="246810",
-                 exec_ok=True, host_key=None):
+    def __init__(
+        self, *, user="alice", password="correct horse", code="246810", exec_ok=True, host_key=None
+    ):
         self.user, self.password, self.code, self.exec_ok = user, password, code, exec_ok
         self.host_key = host_key or paramiko.ECDSAKey.generate()
         self.commands: list[str] = []

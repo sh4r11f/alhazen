@@ -48,8 +48,7 @@ from alhazen.data.manifest import verify_manifest, write_manifest
 SLUG = "demo-experiment"
 RUN = "v0.1.0/sub-01/ses-001/run-01_task-demo"
 RUN2 = "v0.1.0/sub-02/ses-001/run-01_task-demo"
-FILES = {"session.json", "sub-01_ses-001_run-01_trials.csv", "figures/summary.png",
-         "manifest.yaml"}
+FILES = {"session.json", "sub-01_ses-001_run-01_trials.csv", "figures/summary.png", "manifest.yaml"}
 
 
 @pytest.fixture
@@ -462,9 +461,11 @@ class TestLaunchSession:
         registry.assign(key, who["id"])
         run = base.finish(
             workspace,
-            workspace.start(base.request_for(workspace, mode="test",
-                                             subject_record=subject["id"],
-                                             experimenter=who["id"])),
+            workspace.start(
+                base.request_for(
+                    workspace, mode="test", subject_record=subject["id"], experimenter=who["id"]
+                )
+            ),
         )
         assert run["status"] == "completed", run["log"]
         status, out = call(f"/api/upload/launch-session?project={key}&launch={run['id']}")
@@ -479,13 +480,15 @@ class TestLaunchSession:
 
 
 def settings_for(server, base_path):
-    return UploadSettings(user="alice", host="127.0.0.1", port=server.port,
-                          base_path=str(base_path))
+    return UploadSettings(
+        user="alice", host="127.0.0.1", port=server.port, base_path=str(base_path)
+    )
 
 
 def logged_in(tmp_path, server, base_path):
-    session = SftpSession(tmp_path / "ws", user_known_hosts=tmp_path / "no-known-hosts",
-                          key_files=[], use_agent=False)
+    session = SftpSession(
+        tmp_path / "ws", user_known_hosts=tmp_path / "no-known-hosts", key_files=[], use_agent=False
+    )
     (tmp_path / "ws").mkdir(exist_ok=True)
     state = session.connect(settings_for(server, base_path))
     if state["state"] == "hostkey":
@@ -505,8 +508,9 @@ class TestSftpLogin:
         remote = tmp_path / "remote"
         remote.mkdir()
         with StandIn() as server:
-            session = SftpSession(tmp_path, user_known_hosts=tmp_path / "none", key_files=[],
-                                  use_agent=False)
+            session = SftpSession(
+                tmp_path, user_known_hosts=tmp_path / "none", key_files=[], use_agent=False
+            )
             state = session.connect(settings_for(server, remote))
             assert state["state"] == "hostkey" and state["fingerprint"].startswith("SHA256:")
             with pytest.raises(UploadError, match="not the fingerprint"):
@@ -519,15 +523,17 @@ class TestSftpLogin:
             assert SftpTransport(session, settings_for(server, remote)).check()["ok"] is True
             session.close()
             # Known now: the next login goes straight to the questions.
-            again = SftpSession(tmp_path, user_known_hosts=tmp_path / "none", key_files=[],
-                                use_agent=False)
+            again = SftpSession(
+                tmp_path, user_known_hosts=tmp_path / "none", key_files=[], use_agent=False
+            )
             assert again.connect(settings_for(server, remote))["state"] == "prompt"
             again.close()
 
     def test_a_wrong_answer_is_refused(self, tmp_path):
         with StandIn() as server:
-            session = SftpSession(tmp_path, user_known_hosts=tmp_path / "none", key_files=[],
-                                  use_agent=False)
+            session = SftpSession(
+                tmp_path, user_known_hosts=tmp_path / "none", key_files=[], use_agent=False
+            )
             state = session.connect(settings_for(server, tmp_path))
             session.trust(state["fingerprint"])
             state = session.answer(["wrong"])
@@ -547,8 +553,9 @@ class TestSftpLogin:
             (tmp_path / "ws" / KNOWN_HOSTS_FILE).write_text(
                 known.replace(f"[127.0.0.1]:{port}", f"[127.0.0.1]:{second.port}")
             )
-            session = SftpSession(tmp_path / "ws", user_known_hosts=tmp_path / "none",
-                                  key_files=[], use_agent=False)
+            session = SftpSession(
+                tmp_path / "ws", user_known_hosts=tmp_path / "none", key_files=[], use_agent=False
+            )
             state = session.connect(settings_for(second, tmp_path))
             assert state["state"] == "failed" and "CHANGED" in state["message"]
 
@@ -584,7 +591,9 @@ class TestSftpTransport:
             # made again after the first one removed it.
             two = [Put(local, f"a/b/{n}", 700_000, sha256_file(local)) for n in ("c", "d")]
             assert set(transport.put("exp", two, lambda p: None, threading.Event())) == {
-                "a/b/c", "a/b/d"}
+                "a/b/c",
+                "a/b/d",
+            }
             assert transport.checksums("exp", ["a/b/file.bin", "missing"]) == {
                 "a/b/file.bin": sha256_file(local)
             }
@@ -664,23 +673,32 @@ class TestSftpThroughTheDashboard:
         server_.uploads.sftp.key_files = []
         server_.uploads.sftp.use_agent = False
         with StandIn() as server:
-            status, _ = call("/api/upload/settings", {"settings": {
-                "user": "alice", "host": "127.0.0.1", "port": server.port,
-                "base_path": str(remote), "label": "Vault"}})
+            status, _ = call(
+                "/api/upload/settings",
+                {
+                    "settings": {
+                        "user": "alice",
+                        "host": "127.0.0.1",
+                        "port": server.port,
+                        "base_path": str(remote),
+                        "label": "Vault",
+                    }
+                },
+            )
             assert status == 200
             assert call("/api/upload/check")[1]["login"] is True
             status, state = call("/api/upload/login", {"action": "connect"})
             assert state["state"] == "hostkey"
-            state = call("/api/upload/login", {"action": "trust",
-                                                "fingerprint": state["fingerprint"]})[1]
-            state = call("/api/upload/login", {"action": "answer",
-                                                "answers": [server.password]})[1]
+            state = call(
+                "/api/upload/login", {"action": "trust", "fingerprint": state["fingerprint"]}
+            )[1]
+            state = call("/api/upload/login", {"action": "answer", "answers": [server.password]})[1]
             state = call("/api/upload/login", {"action": "answer", "answers": [server.code]})[1]
             assert state["state"] == "connected"
             assert call("/api/upload/check")[1]["ok"] is True
             job = upload(call, key, [{"root": roots(call, key)["real"], "all": True}])
             assert job["phase"] == "done", (job["error"], job["results"])
-            assert set(r["status"] for r in job["results"].values()) == {"verified"}
+            assert {r["status"] for r in job["results"].values()} == {"verified"}
             assert (remote / SLUG / RUN / "session.json").is_file()
             assert (remote / SLUG / "people" / "people.sqlite3").is_file()
             status, state = call("/api/upload/login", {"action": "disconnect"})
@@ -732,9 +750,15 @@ def fake_ssh(tmp_path, monkeypatch):
 class TestRsyncSsh:
     def transport(self, fake_ssh, base_path):
         script, _, _ = fake_ssh
-        return RsyncSsh(UploadSettings(user="alice", host="archive.example.org",
-                                       base_path=str(base_path), ssh_command=str(script),
-                                       transport="rsync"))
+        return RsyncSsh(
+            UploadSettings(
+                user="alice",
+                host="archive.example.org",
+                base_path=str(base_path),
+                ssh_command=str(script),
+                transport="rsync",
+            )
+        )
 
     def test_check_asks_for_the_connection_first(self, fake_ssh, tmp_path):
         _, master, _ = fake_ssh
@@ -755,11 +779,14 @@ class TestRsyncSsh:
         folder = session(tmp_path / "exp")
         transport = self.transport(fake_ssh, remote)
         assert transport.listing("exp") == {}
-        puts = [Put(folder / n, f"{RUN}/{n}", (folder / n).stat().st_size,
-                    sha256_file(folder / n)) for n in sorted(FILES)]
+        puts = [
+            Put(folder / n, f"{RUN}/{n}", (folder / n).stat().st_size, sha256_file(folder / n))
+            for n in sorted(FILES)
+        ]
         tsv = tmp_path / "exp" / "data" / "participants.tsv"
-        puts.append(Put(tsv, "participants.20261008T000000Z.tsv", tsv.stat().st_size,
-                        sha256_file(tsv)))  # uploaded under another name
+        puts.append(
+            Put(tsv, "participants.20261008T000000Z.tsv", tsv.stat().st_size, sha256_file(tsv))
+        )  # uploaded under another name
         seen: list[Progress] = []
         transport.put("exp", puts, seen.append, threading.Event())
         assert seen[-1].bytes_done == seen[-1].bytes_total
