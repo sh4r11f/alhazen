@@ -519,5 +519,6 @@ def _serve(args: argparse.Namespace, directory: Path) -> int:
         pass
     finally:
         server.server_close()
+        server.uploads.close()
         workspace.close()
     return 0

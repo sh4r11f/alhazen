@@ -35,6 +35,12 @@ dependencies = [
   # version, which names the data folder. tomllib is stdlib from 3.11; this
   # is the backport for 3.10.
   "tomli>=2.0; python_version < '3.11'",
+  # The workspace's upload to an archive (alhazen.cli.upload_sftp): SSH and
+  # SFTP in pure Python, so it works the same on Windows, macOS and Linux
+  # with nothing else installed. A core dependency, not an extra, because
+  # the rig that collects the data is the one that must upload it. 3.4 is
+  # the first with the Terrapin (CVE-2023-48795) mitigation.
+  "paramiko>=3.4",
 ]
 
 [project.optional-dependencies]
@@ -242,6 +248,9 @@ module = [
   # PyPI, and carry no stubs; both import spellings the backend tries.
   "sglx_pkg.*",
   "sglx",
+  # The workspace's SFTP upload (alhazen.cli.upload_sftp): paramiko ships no
+  # stubs, and types-paramiko trails its releases.
+  "paramiko.*",
 ]
 ignore_missing_imports = true
 
