@@ -33,6 +33,7 @@ from alhazen.errors import ConfigError
 from alhazen.live_monitor.spec import LiveMonitorSpec
 from alhazen.paradigms.base import Condition, TrialSource
 from alhazen.paradigms.config import SchedulerConfig, make_scheduler
+from alhazen.task.duration import Schedule, TrialTiming, default_schedule
 from alhazen.task.plan import TrialPlan, TrialSetup
 from alhazen.task.reward_policy import RewardPolicy
 
@@ -408,6 +409,49 @@ class Task:
         that forgets its ``return`` gives None, which would otherwise count
         as a failure on every trial."""
         return bool(result.outcome.success)
+
+    # ------------------------------------------------------------------
+    # What the experiment workspace asks before a launch: how long the
+    # session will take (alhazen.modes.estimate). Both optional, and neither
+    # is ever asked during a session.
+    # ------------------------------------------------------------------
+
+    def trial_timing(self, condition: Condition, refresh_rate_hz: float) -> TrialTiming | None:
+        """What one completed trial of ``condition`` lasts, phase by phase.
+
+        Returns a ``task.duration.TrialTiming`` of spans built with the
+        helpers there — ``fixed`` for a set duration, ``jittered`` for one
+        drawn around a centre, ``wait`` for one that waits on the subject up
+        to a timeout, ``bounded`` for one the design bounds without deciding
+        — from the same params fields ``build_trial`` reads, converted the
+        way it converts them (``Duration.seconds(refresh_rate_hz)``). The
+        inter-trial interval is not the trial's: the estimate adds the
+        params' ``iti`` itself, as the runner waits it.
+
+        ``refresh_rate_hz`` is the rig file's configured rate, the one a
+        launch is planned on (a session runs on the measured rate, which it
+        refuses to start with when it differs). The default, None, is "not
+        declared": the estimate then counts trials and says it cannot time
+        them, rather than inventing a trial length. Called without a window,
+        a device or the session's generators, so it must not build stimuli.
+        """
+        return None
+
+    def duration_schedule(self, params: BaseModel, rng: np.random.Generator) -> Schedule:
+        """Which trials a session of these params serves, for its estimate.
+
+        The default asks the scheduler ``make_source`` builds, on ``rng`` (a
+        generator made for the estimate, never the session's): a fixed plan
+        is served to its end, every trial completing, and an adaptive one
+        gives the bounds of its stopping rule (``task.duration``). A task
+        that overrides ``make_source`` is not built by the default — its
+        scheduler may load or move saved state — and should override this
+        too, returning a ``PlannedSchedule`` or ``AdaptiveSchedule`` built
+        without side effects, or an ``UnknownSchedule`` saying why it cannot.
+        ``params`` are the session's after any rehearsal reduction, before
+        the params hook (which may read or write a subject's state).
+        """
+        return default_schedule(self, params, rng)
 
 
 # ----------------------------------------------------------------------

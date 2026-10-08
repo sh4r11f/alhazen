@@ -817,8 +817,72 @@ function peopleChanged(answer) {
   renderIdentity();
 }
 
+/**
+ * What a launch of the form as it stands would run: the project, mode, task,
+ * Task parameters entry, rig, trial count, mode options, extra arguments,
+ * measurements, calibration target and parameters. The Start button sends it
+ * with who, the seed and the movie options added; the duration estimate
+ * (workspace_duration.js) is asked about exactly it.
+ */
+function launchDraft() {
+  const mode = $('mode').value;
+  const isScript = project().scripts.some((s) => s.id === mode);
+  const draft = {
+    project: selected,
+    mode,
+    // The task the run is for, when the experiment declares several: the
+    // one its Task parameters entry runs. A script takes none — the
+    // server refuses one — so it is null there.
+    task: isScript ? null : selectedTask(),
+    // The Task parameters entry, by its label, for the history: the run's
+    // task and folder keep the task's own name. None for a launch that
+    // takes no parameters.
+    parameter_set: !isScript && usesParameters() ? (selectedSet()?.label ?? null) : null,
+    rig: $('rig').value,
+    trials: Number($('trials').value),
+    // Options are sent only for the mode that shows them: a hidden checkbox
+    // keeps its state across mode changes and must not leak into a launch.
+    headless: mode === 'simulate' && $('headless').checked,
+    mouse: mode === 'test' && $('mouse').checked,
+    // For every mode and script alike; the server splits and checks them.
+    extra_args: $('extra-args').value,
+  };
+  // Measure rig's ticked measurements, in run order; the server checks them.
+  if (usesMeasurements()) draft.measurements = MeasureChoice.selection(measureState);
+  // What differs from the rig's calibration target, for run and test;
+  // sent only when something does — without it the run uses the rig's
+  // own (renderCalibration).
+  const calibrationTarget = calibrationToSend();
+  if (calibrationTarget) draft.calibration_target = calibrationTarget;
+  // Parameters travel as the editor shows them: the raw text from the text
+  // editor (the server parses and validates it) or the edited values from
+  // the fields. Modes that take no parameters send neither.
+  if (usesParameters() && editor === 'yaml' && $('parameter-yaml').value.trim()) {
+    draft.parameters_yaml = $('parameter-yaml').value;
+  } else if (usesParameters() && editor === 'fields' && values !== null) {
+    draft.parameters = values;
+  }
+  return draft;
+}
+
+/* The duration estimate's view of the form (workspace_duration.js): the
+ * launch draft, or why there is none to ask about yet. */
+function estimateDraft() {
+  const p = project();
+  if (!p || !p.available || !p.rigs.length || p.tasks_error) return null;
+  if (usesParameters() && (loadingConfig || loadingSchema)) {
+    return {waiting: 'Waiting for the task parameters…'};
+  }
+  return launchDraft();
+}
+
+/* Mounted once the page is up; null when its script did not load, and the
+ * page then works as it did without it. */
+let durationEstimate = null;
+
 function updateLaunch() {
   $('launch-summary').textContent = launchSummary();
+  if (durationEstimate) durationEstimate.update();
   const p = project();
   const waitingForParameters = usesParameters() && (loadingConfig || loadingSchema);
   $('launch').disabled = !!state.active
@@ -2620,55 +2684,25 @@ $('launch-form').addEventListener('submit', guard(async (event) => {
   error('');
   try {
     const request = {
-      project: selected,
-      mode,
-      // The task the run is for, when the experiment declares several: the
-      // one its Task parameters entry runs. A script takes none — the
-      // server refuses one — so it is null there.
-      task: isScript ? null : selectedTask(),
-      // The Task parameters entry, by its label, for the history: the run's
-      // task and folder keep the task's own name. None for a launch that
-      // takes no parameters.
-      parameter_set: !isScript && usesParameters() ? (selectedSet()?.label ?? null) : null,
-      rig: $('rig').value,
+      // What the launch runs, the part the duration estimate is asked about
+      // too (launchDraft).
+      ...launchDraft(),
       subject: record ? '' : $('subject').value,
       initials: initials.value,
       session: Number($('session').value),
       // null for an empty field (Number('') was 0, so every launch used to
       // send seed 0); see readSeed.
       seed: seed.value,
-      trials: Number($('trials').value),
-      // Options are sent only for the mode that shows them: a hidden checkbox
-      // keeps its state across mode changes and must not leak into a launch.
-      headless: mode === 'simulate' && $('headless').checked,
-      mouse: mode === 'test' && $('mouse').checked,
       windowed: !['movie'].includes(mode) && !isScript && $('windowed').checked,
       scale: Number($('scale').value),
       sheet: $('sheet').checked,
       columns: $('columns').value ? Number($('columns').value) : null,
       clips: $('clips').value.split(',').map((s) => s.trim()).filter(Boolean),
-      // For every mode and script alike; the server splits and checks them.
-      extra_args: $('extra-args').value,
     };
-    // What differs from the rig's calibration target, for run and test;
-    // sent only when something does — without it the run uses the rig's
-    // own (renderCalibration).
-    // Measure rig's ticked measurements, in run order; the server checks them.
-    if (usesMeasurements()) request.measurements = MeasureChoice.selection(measureState);
-    const calibrationTarget = calibrationToSend();
-    if (calibrationTarget) request.calibration_target = calibrationTarget;
     // The records chosen, sent only when chosen: a launch without them is
     // the typed one every earlier client sent.
     if (record) request.subject_record = record.id;
     if (runner) request.experimenter = runner.id;
-    // Parameters travel as the editor shows them: the raw text from the text
-    // editor (the server parses and validates it) or the edited values from
-    // the fields. Modes that take no parameters send neither.
-    if (usesParameters() && editor === 'yaml' && $('parameter-yaml').value.trim()) {
-      request.parameters_yaml = $('parameter-yaml').value;
-    } else if (usesParameters() && editor === 'fields' && values !== null) {
-      request.parameters = values;
-    }
     const run = await api('/api/runs', request);
     runId = run.id;
     // Remembered so the Live monitor tab comes up on its own when this run's
@@ -2682,5 +2716,29 @@ $('launch-form').addEventListener('submit', guard(async (event) => {
     updateLaunch();
   }
 }));
+
+// The duration estimate beside the Start button: asked of the project's own
+// alhazen (POST /api/estimate) whenever the form changes what would run.
+// Field edits do not all pass through updateLaunch, so the form's own input
+// and change events ask too; the module asks nothing while the draft is the
+// one it already answered.
+if (window.DurationEstimate) {
+  durationEstimate = DurationEstimate.mount($('duration-estimate'), {
+    read: estimateDraft,
+    ask: async (draft, signal) => {
+      const response = await fetch('/api/estimate', {
+        method: 'POST',
+        headers: {'X-Alhazen-Token': token, 'Content-Type': 'application/json'},
+        body: JSON.stringify(draft),
+        signal,
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
+      return data;
+    },
+  });
+  $('launch-form').addEventListener('input', () => durationEstimate.update());
+  $('launch-form').addEventListener('change', () => durationEstimate.update());
+}
 
 poll();
