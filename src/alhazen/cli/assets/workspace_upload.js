@@ -42,6 +42,7 @@
   /* The archive's name from the settings (`label`), once read. */
   let label = 'archive';
   let labelRead = null;
+  let settingsProblem = null;
   const views = new Set();
 
   function el(ctx, tag, className, text) {
@@ -87,8 +88,13 @@
     if (!labelRead || again) {
       labelRead = ctx.api('/api/upload/settings').then((answer) => {
         label = answer.settings.label || 'archive';
+        settingsProblem = null;
         redraw();
-      }).catch(() => {});
+      }).catch((e) => {
+        // The buttons keep the plain name; every view says why.
+        settingsProblem = `The upload settings cannot be read: ${e.message}`;
+        redraw();
+      });
     }
     return labelRead;
   }
@@ -200,11 +206,13 @@
           await navigator.clipboard.writeText(answer.command);
         } catch (e) {
           // Clipboard refused (an http page in some browsers): select the
-          // text instead so the operator can copy it by hand.
+          // text instead, and say so, so the operator copies it by hand.
           const range = document.createRange();
           range.selectNodeContents(code);
           window.getSelection().removeAllRanges();
           window.getSelection().addRange(range);
+          row.append(message(ctx, 'note', `The browser refused to copy (${e.message}); `
+            + 'the line is selected: copy it with the keyboard.'));
         }
       }), button(ctx, 'Check again', 'quiet', () => connection(ctx, where)));
       where.append(row);
@@ -433,6 +441,7 @@
       actions.append(upload,
         button(ctx, 'Settings', 'quiet', () => settings(view.box, ctx, () => refresh())));
       const notes = el(ctx, 'div');
+      if (settingsProblem) notes.append(message(ctx, 'error', settingsProblem));
       if (!s.complete) {
         notes.append(message(ctx, 'note', 'This session has no manifest yet: it did not finish '
           + 'teardown. You can still upload it; the preview asks.'));
@@ -490,6 +499,7 @@
       all.disabled = busy || !chosen.all?.length;
       bar.append(some, all, button(ctx, 'Settings', 'quiet', () => settings(box, ctx)));
       const parts = [bar];
+      if (settingsProblem) parts.push(message(ctx, 'error', settingsProblem));
       const progress = progressBlock(ctx, null);
       if (progress) parts.push(progress);
       parts.push(box);
