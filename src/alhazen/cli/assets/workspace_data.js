@@ -154,7 +154,8 @@ const WorkspaceData = (() => {
     // names the experiment and says "Data" (workspace.js), and a second one
     // here repeated it. One line says what this view is.
     root.appendChild(node('p', 'help data-intro',
-      'Saved sessions from this experiment’s data folders. Read only: nothing here changes a file.'));
+      'Saved sessions from this experiment’s data folders. Read only: nothing here changes a '
+      + 'session. Upload copies sessions to the archive and keeps a receipt beside them.'));
     for (const [name, title] of [['roots', 'Data folder'], ['runs', 'Runs'], ['run', 'Run'],
       ['table', 'Table']]) {
       const section = card(name, title);
@@ -323,6 +324,7 @@ const WorkspaceData = (() => {
       tick.onchange = () => {
         if (tick.checked) state.checked.add(run.id); else state.checked.delete(run.id);
         drawPoolBar();
+        state.upload?.draw();
       };
       const box = node('td', 'data-check');
       box.appendChild(tick);
@@ -352,6 +354,19 @@ const WorkspaceData = (() => {
     }
     holder.appendChild(node('div', 'data-toolbar data-pool'));
     drawPoolBar();
+    // Upload to the archive: the checked runs, or every run the filters show
+    // (workspace_upload.js draws the bar and runs the upload).
+    if (window.ArchiveUpload) {
+      const bar = node('div', 'data-upload');
+      holder.appendChild(bar);
+      const rootId = state.root.id;
+      state.upload = ArchiveUpload.mountBatch(bar, {api: ctx.api, node, project: project.id}, () => ({
+        count: state.checked.size,
+        groups: state.checked.size ? [{root: rootId, runs: [...state.checked]}] : [],
+        all: visibleRuns().length ? [{root: rootId, runs: visibleRuns().map((r) => r.id)}] : [],
+        allLabel: `${visibleRuns().length} shown`,
+      }));
+    }
   }
 
   /** The bar under the run table: which table to load for the checked runs. */

@@ -1,0 +1,196 @@
+/* Alhazen experiment workspace — Upload to the archive (workspace_upload.js).
+ * The Instrument system's own tokens only (workspace.css): a hairline panel,
+ * mono eyebrows and readouts, status as lamp + word, the signal blue for
+ * the one action. Light and dark follow the theme through the variables. */
+
+.up-panel { display: grid; gap: 12px; }
+
+.up-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.up-eyebrow {
+  margin: 0 0 4px;
+  font: 700 11px/1.4 var(--mono);
+  letter-spacing: 1.2px;
+  color: var(--muted);
+}
+
+.up-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -.2px;
+}
+
+.up-dest {
+  margin: 0;
+  font: 13px/1.6 var(--mono);
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.up-run { color: var(--ink); font-weight: 600; }
+.up-arrow { color: var(--accent); }
+
+.up-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.up-go { min-height: 46px; padding-left: 22px; padding-right: 22px; }
+
+.up-lamp {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font: 700 11px/1 var(--mono);
+  letter-spacing: 1.1px;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.up-lamp-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+
+.up-lamp-ok { color: var(--ok-ink); }
+.up-lamp-bad { color: var(--bad-ink); }
+.up-lamp-run { color: var(--run-ink); }
+
+.up-note, .up-hint {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.up-message {
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 14px;
+  line-height: 1.5;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  overflow-wrap: anywhere;
+}
+
+.up-error { color: var(--bad-ink); background: var(--bad-bg); border-color: var(--bad-line); }
+.up-ok { color: var(--ok-ink); background: var(--ok-bg); border-color: var(--ok-line); }
+
+.up-command {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.up-command code {
+  flex: 1 1 280px;
+  font: 12px/1.5 var(--mono);
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.up-progress { display: grid; gap: 8px; }
+
+.up-progress-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  font: 600 13px var(--mono);
+}
+
+.up-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+
+.up-bar-fill {
+  height: 100%;
+  background: var(--accent);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .up-bar-fill { transition: width 300ms linear; }
+}
+
+.up-box:empty { display: none; }
+
+.up-box {
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+.up-confirm, .up-preview, .up-settings { display: grid; gap: 12px; }
+
+.up-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.up-table th {
+  text-align: left;
+  font: 700 10px var(--mono);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.up-table td {
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+.up-preview { overflow-x: auto; }
+.up-mono { font-family: var(--mono); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.up-bad { color: var(--bad-ink); }
+
+.up-summary { margin: 0; font-weight: 650; }
+
+.up-check {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-weight: 400;
+  font-size: 14px;
+}
+
+.up-fields { display: grid; gap: 12px; }
+.up-fields[hidden] { display: none; }
+.up-field label { margin-bottom: 5px; }
+.up-field .up-hint { margin-top: 5px; }
+.up-kind { justify-self: start; }
+
+/* The bar under a list of sessions (History, Data). */
+.up-batch {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
+}
+
+.up-batch .up-eyebrow { margin: 0 6px 0 0; }
+
+.up-stop { padding: 2px 8px; }

@@ -33,6 +33,8 @@
   let homeQuery = '';
   /* History's filter text. */
   let historyQuery = '';
+  /* The sessions checked for upload on the History page, "<root>:<run>". */
+  const uploadChecked = new Set();
   /* Which Open on the History page is the latest: a session's details
    * arrive after a request, so one opened earlier but answered later must
    * not replace the details opened since. */
@@ -980,13 +982,45 @@
     for (const problem of history.problems) notes.append(message('note', problem));
     const sessionTable = el('div', 'm-table-wrap');
     const launchTable = el('div', 'm-table-wrap');
+    // Upload to the archive: the checked sessions, or every session listed
+    // (workspace_upload.js draws the bar and runs the upload).
+    const uploadBar = el('div', 'm-upload');
+    let shownSessions = history.sessions;
+    const grouped = (sessions) => {
+      const byRoot = new Map();
+      for (const s of sessions) {
+        if (!byRoot.has(s.root)) byRoot.set(s.root, []);
+        byRoot.get(s.root).push(s.id);
+      }
+      return [...byRoot].map(([root, runs]) => ({root, runs}));
+    };
+    let batch = null;
+    const selection = () => {
+      const known = new Set(history.sessions.map((s) => `${s.root}:${s.id}`));
+      for (const key of [...uploadChecked]) if (!known.has(key)) uploadChecked.delete(key);
+      const checked = history.sessions.filter((s) => uploadChecked.has(`${s.root}:${s.id}`));
+      return {
+        count: checked.length,
+        groups: grouped(checked),
+        all: grouped(shownSessions),
+        allLabel: shownSessions.length === history.sessions.length
+          ? `${shownSessions.length} sessions` : `${shownSessions.length} shown`,
+        // When an upload ends, read the history again: the Archive column
+        // shows the receipts it wrote.
+        after: () => showHistory(container, p, h),
+      };
+    };
+    const changed = () => batch?.draw();
     const draw = () => {
       const q = historyQuery.trim().toLowerCase();
       const hit = (...texts) => !q || texts.some((t) => String(t ?? '').toLowerCase()
         .includes(q));
       const sessions = history.sessions.filter((s) => hit(s.subject, s.initials, s.task, s.rig,
         s.date, s.mode, experimenterText(s.experimenter), s.id));
-      sessionTable.replaceChildren(sessions.length ? sessionRows(sessions, history, p, detail)
+      shownSessions = sessions;
+      changed();
+      sessionTable.replaceChildren(sessions.length ? sessionRows(sessions, history, p, detail,
+        changed)
         : el('p', 'm-empty', history.sessions.length ? 'No session matches the filter.'
           : 'No session folders in this experiment’s data folders yet.'));
       const launches = history.launches.filter((l) => hit(l.subject, l.initials, l.task,
@@ -997,21 +1031,58 @@
     };
     search.addEventListener('input', () => { historyQuery = search.value; draw(); });
     draw();
+    if (window.ArchiveUpload && history.sessions.length) {
+      batch = ArchiveUpload.mountBatch(uploadBar, {api: h.api, node: h.node, project: p.id},
+        selection);
+      sessionsBox.append(uploadBar);
+    }
     sessionsBox.append(sessionTable);
     launchesBox.append(launchTable);
     container.replaceChildren(toolbar, notes, detail, sessionsBox, launchesBox);
   }
 
-  function sessionRows(sessions, history, p, detail) {
+  function sessionRows(sessions, history, p, detail, changed) {
     const t = el('table', 'm-table m-history');
     const head = el('tr');
+    // The first column checks every listed session at once.
+    const all = el('input');
+    all.type = 'checkbox';
+    all.setAttribute('aria-label', 'Select every listed session for upload');
+    const keyOf = (s) => `${s.root}:${s.id}`;
+    all.checked = sessions.every((s) => uploadChecked.has(keyOf(s)));
+    const ticks = [];
+    all.addEventListener('change', () => {
+      for (const s of sessions) {
+        if (all.checked) uploadChecked.add(keyOf(s)); else uploadChecked.delete(keyOf(s));
+      }
+      for (const tick of ticks) tick.checked = all.checked;
+      changed();
+    });
+    const allCell = el('th', 'm-check');
+    allCell.append(all);
+    head.append(allCell);
     for (const c of ['Date', 'Subject', 'Experimenter', 'Task', 'Rig', 'Mode', 'Trials',
-      'Folder', '']) {
+      'Folder', 'Archive', '']) {
       head.append(el('th', '', c));
     }
     t.append(head);
     for (const s of sessions) {
       const tr = el('tr');
+      const tick = el('input');
+      tick.type = 'checkbox';
+      tick.checked = uploadChecked.has(keyOf(s));
+      tick.setAttribute('aria-label', `Select ${s.id} for upload`);
+      tick.addEventListener('change', () => {
+        if (tick.checked) uploadChecked.add(keyOf(s)); else uploadChecked.delete(keyOf(s));
+        all.checked = sessions.every((x) => uploadChecked.has(keyOf(x)));
+        changed();
+      });
+      ticks.push(tick);
+      const tickCell = el('td', 'm-check');
+      tickCell.append(tick);
+      const archive = el('td');
+      if (window.ArchiveUpload) archive.append(ArchiveUpload.stateCell({node: h.node}, s.upload));
+      tr.append(tickCell);
       const acts = actionCell();
       acts.box.append(button('Open', 'quiet m-small', () => sessionDetail(detail, s, history, p)));
       const known = s.experimenter.recorded && s.experimenter.name;
@@ -1026,6 +1097,7 @@
         el('td', 'm-mono', s.trials === null ? '—'
           : `${s.trials_counted === 'lines' ? '≈' : ''}${s.trials}`),
         el('td', 'm-mono m-cell-path', `${s.root_kind} · ${s.id}`),
+        archive,
         acts,
       );
       t.append(tr);

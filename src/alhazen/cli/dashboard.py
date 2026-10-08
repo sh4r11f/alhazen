@@ -35,6 +35,7 @@ from alhazen.cli.workspace import (
 from alhazen.cli.workspace_data import DataView
 from alhazen.cli.workspace_estimate import DurationEstimator, EstimateRequest
 from alhazen.cli.workspace_manage import Management
+from alhazen.cli.workspace_upload import Uploads
 from alhazen.errors import AlhazenError
 
 ASSETS = Path(__file__).with_name("assets")
@@ -66,6 +67,10 @@ PAGE_ASSETS = {
     # (workspace_manage.py serves their reads and writes).
     "/workspace_manage.js": ("workspace_manage.js", "text/javascript; charset=utf-8"),
     "/workspace_manage.css": ("workspace_manage.css", "text/css; charset=utf-8"),
+    # Upload to the archive: the Run page's action after a session and
+    # the batch on Data and History (workspace_upload.py serves the routes).
+    "/workspace_upload.js": ("workspace_upload.js", "text/javascript; charset=utf-8"),
+    "/workspace_upload.css": ("workspace_upload.css", "text/css; charset=utf-8"),
 }
 # Written beside the lock by the server that holds it: its process id, when it
 # took the workspace and, once bound, the address of its page. The lock alone
@@ -181,6 +186,8 @@ class DashboardServer(ThreadingHTTPServer):
         self.manage = Management(workspace, self.data)
         # The Run page's duration estimate (workspace_estimate.py).
         self.estimates = DurationEstimator(workspace)
+        # Uploads of saved sessions to the archive (workspace_upload.py).
+        self.uploads = Uploads(workspace, self.data)
         super().__init__(("127.0.0.1", port), Handler)
 
     @property
@@ -316,6 +323,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._file(target, kind, csp=DATA_FILE_CSP)
             elif path.startswith("/api/manage/"):
                 self._json(self.server.manage.get(path.removeprefix("/api/manage/"), query))
+            elif path.startswith("/api/upload/"):
+                self._json(self.server.uploads.get(path.removeprefix("/api/upload/"), query))
             elif path == "/data/download":
                 # Any file of a session folder, as a download: never shown
                 # in the page's origin (attachment, sandboxing CSP).
@@ -396,6 +405,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True})
             elif path.startswith("/api/manage/"):
                 self._json(self.server.manage.post(path.removeprefix("/api/manage/"), body))
+            elif path.startswith("/api/upload/"):
+                self._json(self.server.uploads.post(path.removeprefix("/api/upload/"), body))
             else:
                 self._json({"error": "Not found"}, 404)
         except ConnectionError:

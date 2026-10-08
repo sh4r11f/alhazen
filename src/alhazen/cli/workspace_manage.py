@@ -31,6 +31,7 @@ from typing import Any
 import yaml
 
 from alhazen.cli.people import Conflict, PeopleRegistry
+from alhazen.cli.upload_receipts import latest as latest_upload
 from alhazen.cli.workspace import (
     Workspace,
     _as_the_project_reads_it,
@@ -345,6 +346,8 @@ class Management:
                     "experimenter": _session_experimenter(folder),
                     "page": next((n for n in SAVED_PAGES if (folder / n).is_file()), None),
                     "has_log": any(folder.glob("*session.log")),
+                    # The newest upload receipt, summed up; None: never uploaded.
+                    "upload": latest_upload(root.path, row["id"]),
                     "launch": None,
                 }
                 sessions.append(entry)
