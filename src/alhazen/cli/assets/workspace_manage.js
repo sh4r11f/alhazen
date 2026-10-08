@@ -985,7 +985,6 @@
     // Upload to the archive: the checked sessions, or every session listed
     // (workspace_upload.js draws the bar and runs the upload).
     const uploadBar = el('div', 'm-upload');
-    let shownSessions = history.sessions;
     const grouped = (sessions) => {
       const byRoot = new Map();
       for (const s of sessions) {
@@ -1002,9 +1001,10 @@
       return {
         count: checked.length,
         groups: grouped(checked),
-        all: grouped(shownSessions),
-        allLabel: shownSessions.length === history.sessions.length
-          ? `${shownSessions.length} sessions` : `${shownSessions.length} shown`,
+        // Everything in every data folder of the experiment, sessions or not.
+        all: history.roots.map((r) => ({root: r.id, all: true})),
+        allLabel: history.roots.length === 1 ? 'the whole data folder'
+          : `all ${history.roots.length} data folders`,
         // When an upload ends, read the history again: the Archive column
         // shows the receipts it wrote.
         after: () => showHistory(container, p, h),
@@ -1017,7 +1017,6 @@
         .includes(q));
       const sessions = history.sessions.filter((s) => hit(s.subject, s.initials, s.task, s.rig,
         s.date, s.mode, experimenterText(s.experimenter), s.id));
-      shownSessions = sessions;
       changed();
       sessionTable.replaceChildren(sessions.length ? sessionRows(sessions, history, p, detail,
         changed)

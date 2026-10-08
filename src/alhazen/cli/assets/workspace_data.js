@@ -363,8 +363,9 @@ const WorkspaceData = (() => {
       state.upload = ArchiveUpload.mountBatch(bar, {api: ctx.api, node, project: project.id}, () => ({
         count: state.checked.size,
         groups: state.checked.size ? [{root: rootId, runs: [...state.checked]}] : [],
-        all: visibleRuns().length ? [{root: rootId, runs: visibleRuns().map((r) => r.id)}] : [],
-        allLabel: `${visibleRuns().length} shown`,
+        // The whole folder: every session and every other file in it.
+        all: [{root: rootId, all: true}],
+        allLabel: `all of ${state.root.name}`,
       }));
     }
   }

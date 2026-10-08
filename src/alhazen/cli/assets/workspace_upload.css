@@ -194,3 +194,21 @@
 .up-batch .up-eyebrow { margin: 0 6px 0 0; }
 
 .up-stop { padding: 2px 8px; }
+
+/* The SFTP login and the connection line (drawLogin, connectionLine). */
+.up-login { display: grid; gap: 10px; }
+.up-connection { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.up-fingerprint {
+  font: 12px/1.5 var(--mono);
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+.up-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 96px;
+  gap: 12px;
+}
