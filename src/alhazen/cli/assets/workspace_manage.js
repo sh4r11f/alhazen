@@ -33,6 +33,10 @@
   let homeQuery = '';
   /* History's filter text. */
   let historyQuery = '';
+  /* Which Open on the History page is the latest: a session's details
+   * arrive after a request, so one opened earlier but answered later must
+   * not replace the details opened since. */
+  let opened = 0;
 
   /** An element with a class and text, as workspace.js's node(). */
   function el(tag, className, text) {
@@ -924,6 +928,38 @@
     return x.name;
   }
 
+  /**
+   * Begin showing something in the History page's detail box (#history-detail,
+   * above the two lists): put `first` there (the details, or a loading line)
+   * and bring the box to the top of the window, because Open is pressed far
+   * down a list and the details appear out of sight. Called once per Open
+   * (and per link inside the details that opens another), never by a poll or
+   * the filter, so the page moves only when the reader asked. The page
+   * scrolls as a whole and the sidebar in its own column, which is not an
+   * ancestor of the box, so scrollIntoView moves the page and leaves the
+   * sidebar where it was. Returns a ticket for finish().
+   */
+  function begin(detail, first) {
+    opened += 1;
+    detail.replaceChildren(first);
+    const still = typeof window.matchMedia === 'function'
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    detail.scrollIntoView({block: 'start', behavior: still ? 'auto' : 'smooth'});
+    return {ticket: opened, epoch: current.epoch};
+  }
+
+  /** Finish what begin() started, unless another Open (or leaving the page)
+   *  came since: put `content` in the box (null when begin() already put the
+   *  details there) and give the box keyboard focus without scrolling again,
+   *  so Tab continues from the details. False when it was stale. */
+  function finish(detail, started, content) {
+    if (started.ticket !== opened || started.epoch !== current.epoch) return false;
+    if (content !== null) detail.replaceChildren(content);
+    detail.tabIndex = -1;
+    detail.focus({preventScroll: true});
+    return true;
+  }
+
   function drawHistory(container, p, history) {
     const toolbar = el('div', 'm-toolbar');
     const search = input(historyQuery, {type: 'search', placeholder: 'Filter by subject, '
@@ -1048,14 +1084,14 @@
   }
 
   async function sessionDetail(detail, s, history, p) {
-    detail.replaceChildren(el('p', 'm-loading', 'Opening the session…'));
+    const started = begin(detail, el('p', 'm-loading', 'Opening the session…'));
     const where = `project=${encodeURIComponent(p.id)}&root=${s.root}`
       + `&run=${encodeURIComponent(s.id)}`;
     let run;
     try {
       run = await h.api(`/api/data/run?${where}`);
     } catch (e) {
-      detail.replaceChildren(message('error', e.message));
+      finish(detail, started, message('error', e.message));
       return;
     }
     const box = panel('SESSION', `sub-${s.subject} · ses ${s.session} · run ${s.run}`,
@@ -1114,7 +1150,7 @@
     }
     files.append(list);
     box.append(actions, viewer, files);
-    detail.replaceChildren(box);
+    finish(detail, started, box);
   }
 
   function launchDetail(detail, l, history, p) {
@@ -1164,7 +1200,7 @@
       actions.append(el('span', 'm-unknown', 'No session folder identified for this launch.'));
     }
     box.append(actions, viewer);
-    detail.replaceChildren(box);
+    finish(detail, begin(detail, box), null);
   }
 
   /* ---------------------------------------------------------------- */

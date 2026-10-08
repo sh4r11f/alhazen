@@ -109,9 +109,10 @@
         </svg>
         <span>alhazen<small>Experiment workspace</small></span>
       </a>
-      <!-- The workspace's home, then the open experiment's pages
-           (renderNav() in workspace.js). Each is a link to its address, so
-           Back, Forward, reload and a new tab all land on the same screen. -->
+      <!-- The workspace's home, then every registered experiment, each
+           expanding to its pages (renderNav() in workspace.js). Each page is
+           a link to its address, so Back, Forward, reload and a new tab all
+           land on the same screen. -->
       <nav class="nav-global" aria-label="Workspace">
         <a id="nav-experiments" class="nav-item" href="/?view=experiments">
           <span class="nav-glyph" aria-hidden="true">▤</span>
@@ -122,10 +123,8 @@
       <!-- A run in progress, wherever the reader is: its experiment and a
            way back to its Run page. Navigating never stops it. -->
       <a id="nav-running" class="nav-running" hidden></a>
-      <section id="nav-experiment" class="nav-experiment" aria-labelledby="nav-experiment-title" hidden>
-        <div class="sidebar-label">EXPERIMENT</div>
-        <p id="nav-experiment-title" class="nav-experiment-title"></p>
-        <nav id="experiment-nav" class="experiment-nav" aria-label="Experiment pages"></nav>
+      <section id="nav-experiment" class="nav-experiment" aria-label="Experiments" hidden>
+        <div id="experiment-nav" class="nav-groups"></div>
       </section>
       <div class="sidebar-bottom">
         <!-- Colour theme: follow the system (the default), or always light

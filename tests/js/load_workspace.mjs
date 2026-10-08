@@ -227,6 +227,8 @@ export function loadWorkspace(options = {}) {
     search: options.search === undefined ? '?view=run' : options.search,
   };
   const entries = [location.pathname + location.search];
+  /* Addresses left by Back, for Forward; a new address clears them. */
+  const forward = [];
   const setAddress = (url) => {
     const [path, query = ''] = String(url).split('?');
     location.pathname = path || '/';
@@ -242,6 +244,7 @@ export function loadWorkspace(options = {}) {
     pushState(state, title, url) {
       setAddress(url);
       entries.push(url);
+      forward.length = 0;
     },
   };
   const listeners = {};
@@ -293,7 +296,13 @@ export function loadWorkspace(options = {}) {
     /* Back to an earlier address, as the browser's Back button: the
      * address changes, then the page hears popstate. */
     back: () => {
-      entries.pop();
+      forward.push(entries.pop());
+      setAddress(entries[entries.length - 1]);
+      for (const listener of listeners.popstate || []) listener({});
+    },
+    /* Forward again after back(), as the browser's Forward button. */
+    forward: () => {
+      entries.push(forward.pop());
       setAddress(entries[entries.length - 1]);
       for (const listener of listeners.popstate || []) listener({});
     },

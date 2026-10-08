@@ -1279,12 +1279,29 @@ describe('the Rig menu', () => {
   });
 });
 
+/** The sidebar's group for experiment `id`: its disclosure button and its
+ *  pages (renderNav in workspace.js). */
+function navGroup(app, id) {
+  return app.byId('experiment-nav').children.find((g) => g.dataset.project === id);
+}
+
+/** Experiment `id`'s four page links in the sidebar. */
+function pageLinks(app, id) {
+  return navGroup(app, id).querySelector('.experiment-nav').children;
+}
+
+/** The title of the sidebar group marked as the open experiment's. */
+function sidebarTitle(app) {
+  return app.byId('experiment-nav').querySelector('.current')
+    .querySelector('.nav-group-title').textContent;
+}
+
 describe('the experiment’s name', () => {
   it('shows the title in the sidebar, the heading, the breadcrumb and the browser tab',
     async () => {
       const app = await pageWith();
       /* The sidebar names the open experiment above its pages. */
-      assert.equal(app.byId('nav-experiment-title').textContent, 'Demo task');
+      assert.equal(sidebarTitle(app), 'Demo task');
       assert.equal(app.byId('project-name').textContent, 'Demo task');
       assert.equal(app.byId('breadcrumb').textContent, 'Demo task');
       /* The tab names the page too, so Back's list tells pages apart. */
@@ -1324,7 +1341,7 @@ describe('the experiment’s name', () => {
     await settle();
     assert.equal(app.byId('breadcrumb').textContent, 'Renamed');
     assert.equal(app.document.title, 'Run · Renamed · Alhazen');
-    assert.match(app.byId('nav-experiment-title').textContent, /Renamed/);
+    assert.match(sidebarTitle(app), /Renamed/);
   });
 });
 
@@ -1526,16 +1543,17 @@ describe('the sidebar: Experiments, and the open experiment’s pages', () => {
     return () => plain(app.run('window.WorkspaceData.calls'));
   }
 
-  /** The open experiment's pages in the sidebar as [view, text, current]. */
-  function pages(app) {
-    return app.byId('experiment-nav').children.map((a) => [
+  /** Experiment `id`'s pages in the sidebar as [view, text, current]. */
+  function pages(app, id = 'p') {
+    return pageLinks(app, id).map((a) => [
       a.dataset.view, a.querySelector('.nav-label').textContent, a.getAttribute('aria-current'),
     ]);
   }
 
-  /** Click the sidebar link for page `name`, as a plain left click. */
-  async function clickView(app, name) {
-    app.byId('experiment-nav').querySelector(`a[data-view="${name}"]`)
+  /** Click experiment `id`'s sidebar link for page `name`, as a plain left
+   *  click. */
+  async function clickView(app, name, id = 'p') {
+    pageLinks(app, id).find((a) => a.dataset.view === name)
       .fire('click', { preventDefault() {}, button: 0 });
     await settle();
     await settle();
@@ -1547,7 +1565,7 @@ describe('the sidebar: Experiments, and the open experiment’s pages', () => {
       ['general', 'General', 'false'], ['run', 'Run', 'page'], ['data', 'Data', 'false'],
       ['history', 'History', 'false'],
     ]);
-    const links = app.byId('experiment-nav').children.map((a) => a.href);
+    const links = pageLinks(app, 'p').map((a) => a.href);
     assert.deepEqual(plain(links), [
       '/?project=p&view=general', '/?project=p&view=run', '/?project=p&view=data',
       '/?project=p&view=history',
@@ -1645,14 +1663,256 @@ describe('the sidebar: Experiments, and the open experiment’s pages', () => {
     assert.equal(app.run("localStorage.getItem('alhazen-workspace-view:p')"), 'data');
     await app.run("navigate('q', 'run')");
     await settle();
-    assert.equal(app.byId('nav-experiment-title').textContent, 'Other task');
+    assert.equal(sidebarTitle(app), 'Other task');
     assert.equal(app.byId('workspace').hidden, false);
     assert.deepEqual(calls(), [['show', 'p', 'api,error,node,token'], ['hide']]);
     app.back();
     await settle();
     await settle();
-    assert.equal(app.byId('nav-experiment-title').textContent, 'Demo task');
+    assert.equal(sidebarTitle(app), 'Demo task');
     assert.equal(app.byId('data-view').hidden, false);
+  });
+});
+
+describe('the sidebar: every experiment, each expanding to its pages', () => {
+  const OTHER = Object.freeze({ ...PROJECT, id: 'q', title: 'Other task', slug: 'other' });
+  const SHELVED = Object.freeze({ ...PROJECT, id: 'r', title: 'Shelved', archived: true });
+  const NAV_OPEN = 'alhazen-workspace-nav-open';
+
+  /** A page on `search` with PROJECT, OTHER and SHELVED registered. */
+  async function threeExperiments(options = {}) {
+    const app = await pageWith({ search: '?project=p&view=run', ...options });
+    app.server.state.projects = [PROJECT, OTHER, SHELVED];
+    await app.run('refresh()');
+    await settle();
+    return app;
+  }
+
+  /** Experiment `id`'s disclosure button. */
+  const toggle = (app, id) => navGroup(app, id).querySelector('.nav-group-toggle');
+  /** Whether experiment `id`'s pages show: [aria-expanded, pages hidden]. */
+  const shown = (app, id) => [
+    toggle(app, id).getAttribute('aria-expanded'),
+    navGroup(app, id).querySelector('.experiment-nav').hidden,
+  ];
+  /** The links marked as the page shown, as [experiment, view]. */
+  const marked = (app) => app.byId('experiment-nav').children.flatMap((g) => pageLinks(
+    app, g.dataset.project).filter((a) => a.getAttribute('aria-current') === 'page')
+    .map((a) => [g.dataset.project, a.dataset.view]));
+  const stored = (app) => JSON.parse(app.run(`localStorage.getItem('${NAV_OPEN}')`));
+
+  it('lists every experiment that is not archived, the open one expanded', async () => {
+    const app = await threeExperiments();
+    const groups = app.byId('experiment-nav').children;
+    assert.deepEqual(plain(groups.map((g) => g.dataset.project)), ['p', 'q']);
+    assert.deepEqual(plain(groups.map((g) => g.querySelector('.nav-group-title').textContent)),
+      ['Demo task', 'Other task']);
+    assert.deepEqual(plain(shown(app, 'p')), ['true', false]);
+    assert.deepEqual(plain(shown(app, 'q')), ['false', true]);
+    assert.equal(navGroup(app, 'p').classList.contains('current'), true);
+    assert.equal(navGroup(app, 'q').classList.contains('current'), false);
+    assert.deepEqual(plain(marked(app)), [['p', 'run']]);
+    /* The button names what it shows; the other experiment's pages are real
+     * addresses even while collapsed. */
+    assert.equal(toggle(app, 'q').getAttribute('aria-controls'),
+      navGroup(app, 'q').querySelector('.experiment-nav').id);
+    assert.deepEqual(plain(pageLinks(app, 'q').map((a) => a.href)), [
+      '/?project=q&view=general', '/?project=q&view=run', '/?project=q&view=data',
+      '/?project=q&view=history',
+    ]);
+  });
+
+  it('expands and collapses another experiment without leaving the page or stopping a run',
+    async () => {
+      const app = await threeExperiments({ run: runDetail({ status: 'running' }) });
+      const before = app.fetches.length;
+      toggle(app, 'q').fire('click');
+      assert.deepEqual(plain(shown(app, 'q')), ['true', false]);
+      assert.equal(app.location.search, '?project=p&view=run');
+      assert.equal(app.history.entries.length, 1);
+      assert.equal(app.byId('workspace').hidden, false);
+      assert.deepEqual(plain(marked(app)), [['p', 'run']]);
+      assert.equal(app.fetches.length, before);
+      assert.equal(app.server.posted.length, 0);
+      assert.deepEqual(stored(app), ['p', 'q']);
+      /* The run's lamp is on its own experiment's Run, not on the other. */
+      assert.ok(toggle(app, 'p').querySelector('.nav-lamp'));
+      assert.equal(toggle(app, 'q').querySelector('.nav-lamp'), null);
+      toggle(app, 'q').fire('click');
+      assert.deepEqual(plain(shown(app, 'q')), ['false', true]);
+      assert.deepEqual(stored(app), ['p']);
+    });
+
+  it('keeps the reader’s expanded groups across a reload, and a collapsed open one',
+    async () => {
+      const app = await threeExperiments({ storage: { [NAV_OPEN]: '["q"]' } });
+      /* The open experiment is expanded on opening; q as remembered. */
+      assert.deepEqual(plain(shown(app, 'p')), ['true', false]);
+      assert.deepEqual(plain(shown(app, 'q')), ['true', false]);
+      /* Collapsing the open experiment holds through redraws. */
+      toggle(app, 'p').fire('click');
+      app.server.state.projects = [PROJECT, { ...OTHER, title: 'Other task 2' }, SHELVED];
+      await app.run('refresh()');
+      await settle();
+      assert.deepEqual(plain(shown(app, 'p')), ['false', true]);
+      assert.deepEqual(stored(app), ['q']);
+    });
+
+  it('opens the experiment a link goes to, and marks pages through Back and Forward',
+    async () => {
+      const app = await threeExperiments();
+      toggle(app, 'q').fire('click');
+      pageLinks(app, 'q').find((a) => a.dataset.view === 'data')
+        .fire('click', { preventDefault() {}, button: 0 });
+      await settle();
+      await settle();
+      assert.equal(app.location.search, '?project=q&view=data');
+      assert.deepEqual(plain(marked(app)), [['q', 'data']]);
+      assert.equal(navGroup(app, 'q').classList.contains('current'), true);
+      /* p stays listed and expanded beside it. */
+      assert.deepEqual(plain(shown(app, 'p')), ['true', false]);
+      app.back();
+      await settle();
+      await settle();
+      assert.deepEqual(plain(marked(app)), [['p', 'run']]);
+      app.forward();
+      await settle();
+      await settle();
+      assert.equal(app.location.search, '?project=q&view=data');
+      assert.deepEqual(plain(marked(app)), [['q', 'data']]);
+    });
+
+  it('adds a newly registered experiment collapsed and leaves out one archived',
+    async () => {
+      const app = await threeExperiments();
+      const NEW = { ...PROJECT, id: 'n', title: 'New task' };
+      app.server.state.projects = [PROJECT, OTHER, SHELVED, NEW];
+      await app.run('refresh()');
+      await settle();
+      assert.deepEqual(plain(app.byId('experiment-nav').children.map((g) => g.dataset.project)),
+        ['p', 'q', 'n']);
+      assert.deepEqual(plain(shown(app, 'n')), ['false', true]);
+      toggle(app, 'q').fire('click');
+      app.server.state.projects = [PROJECT, { ...OTHER, archived: true }, SHELVED, NEW];
+      await app.run('refresh()');
+      await settle();
+      assert.deepEqual(plain(app.byId('experiment-nav').children.map((g) => g.dataset.project)),
+        ['p', 'n']);
+      /* Its expansion is kept, for when it is restored. */
+      assert.deepEqual(stored(app), ['p', 'q']);
+    });
+
+  it('gives keyboard focus back to the sidebar control a redraw replaced', async () => {
+    const app = await threeExperiments();
+    toggle(app, 'q').focus();
+    app.server.state.projects = [PROJECT, { ...OTHER, title: 'Renamed' }, SHELVED];
+    await app.run('refresh()');
+    await settle();
+    assert.equal(app.document.activeElement, toggle(app, 'q'));
+    assert.match(app.document.activeElement.textContent, /Renamed/);
+  });
+
+  it('treats an unreadable stored state as nothing expanded but the open experiment',
+    async () => {
+      const app = await threeExperiments({ storage: { [NAV_OPEN]: '{not json' } });
+      assert.deepEqual(plain(shown(app, 'p')), ['true', false]);
+      assert.deepEqual(plain(shown(app, 'q')), ['false', true]);
+    });
+});
+
+describe('History: Open brings the details into view', () => {
+  const HISTORY = {
+    missing: [], problems: [],
+    sessions: [{
+      id: 'sub-01_ses-01_run-01', root: 'data', root_kind: 'data', subject: '01',
+      initials: 'AB', session: '01', run: '01', date: '2026-10-01', task: 'main',
+      rig: 'mac', mode: 'run', trials: 576, trials_counted: 'rows',
+      experimenter: { recorded: true, name: 'Sharif' }, launch: 'l1',
+    }],
+    launches: [{
+      id: 'l1', mode: 'simulate', parameter_set: 'Main', task: 'main', subject: '01',
+      initials: 'AB', experimenter: null, rig: 'mac', started: '2026-10-01T10:00:00',
+      finished: '2026-10-01T10:30:00', status: 'completed', active: false, seed: 7,
+      files: [], session_folder: { root: 'data', run: 'sub-01_ses-01_run-01' },
+    }],
+  };
+  const RUN = { path: 'data/sub-01_ses-01_run-01', problems: [], page: null, texts: [],
+    files: [], files_capped: false };
+
+  /** The History page of PROJECT, with the session's details answered by
+   *  `runAnswer` (a response, or a promise of one). */
+  async function historyPage(runAnswer = response(RUN)) {
+    const app = await pageWith({ search: '?project=p&view=history' });
+    app.server.reject = (url) => {
+      if (url.startsWith('/api/manage/history')) return response(HISTORY);
+      if (url.startsWith('/api/data/run')) return runAnswer;
+      return undefined;
+    };
+    await app.run("navigate('p', 'history', {replace: true})");
+    await settle();
+    await settle();
+    return app;
+  }
+
+  const detail = (app) => app.byId('history-view').querySelector('.m-detail');
+  /** The Open button of the sessions (0) or launches (1) table. */
+  const open = (app, table) => app.byId('history-view')
+    .querySelectorAll('table')[table].querySelector('button');
+  const scrolls = (app) => app.document.scrolledIntoView;
+
+  it('scrolls the page to a session’s details once, and focuses them', async () => {
+    const app = await historyPage();
+    assert.equal(scrolls(app).length, 0);
+    open(app, 0).fire('click');
+    await settle();
+    assert.equal(scrolls(app).length, 1);
+    assert.equal(scrolls(app)[0].element, detail(app));
+    assert.equal(scrolls(app)[0].options.block, 'start');
+    assert.match(detail(app).textContent, /SESSION/);
+    assert.equal(app.document.activeElement, detail(app));
+    assert.deepEqual(plain(app.document.focused.at(-1).options), { preventScroll: true });
+    /* A poll and the filter redraw nothing that moves the page. */
+    await app.run('refresh()');
+    await settle();
+    const search = app.byId('history-view').querySelector('input');
+    search.value = 'sub';
+    search.fire('input');
+    assert.equal(scrolls(app).length, 1);
+  });
+
+  it('scrolls to a launch’s details once, and again for each Open', async () => {
+    const app = await historyPage();
+    open(app, 1).fire('click');
+    assert.equal(scrolls(app).length, 1);
+    assert.equal(scrolls(app)[0].element, detail(app));
+    assert.match(detail(app).textContent, /LAUNCH/);
+    assert.equal(app.document.activeElement, detail(app));
+    open(app, 1).fire('click');
+    assert.equal(scrolls(app).length, 2);
+  });
+
+  it('shows a session that cannot be read as an error, in view', async () => {
+    const app = await historyPage(response({ error: 'No such folder' }, 404));
+    open(app, 0).fire('click');
+    await settle();
+    assert.equal(scrolls(app).length, 1);
+    assert.match(detail(app).textContent, /No such folder/);
+    assert.equal(app.document.activeElement, detail(app));
+  });
+
+  it('keeps the latest Open when an earlier session answers late', async () => {
+    let answer;
+    const late = new Promise((resolve) => { answer = resolve; });
+    const app = await historyPage(late);
+    open(app, 0).fire('click');
+    await settle();
+    assert.match(detail(app).textContent, /Opening the session/);
+    open(app, 1).fire('click');
+    answer(response(RUN));
+    await settle();
+    await settle();
+    assert.match(detail(app).textContent, /LAUNCH/);
+    assert.equal(scrolls(app).length, 2);
   });
 });
 
@@ -1781,7 +2041,10 @@ describe('the Experiments page', () => {
     assert.equal(app.byId('home-view').hidden, false);
     assert.equal(app.byId('project-heading').hidden, true);
     assert.equal(app.byId('workspace').hidden, true);
-    assert.equal(app.byId('nav-experiment').hidden, true);
+    /* The experiments stay in the sidebar, none of their pages marked. */
+    assert.equal(app.byId('nav-experiment').hidden, false);
+    assert.equal(app.byId('experiment-nav').querySelector('.current'), null);
+    assert.equal(app.byId('experiment-nav').querySelectorAll('a[aria-current="page"]').length, 0);
     assert.equal(app.byId('nav-experiments').getAttribute('aria-current'), 'page');
     assert.equal(app.document.title, 'Experiments · Alhazen');
     /* Drawn by workspace_manage.js: one row per registered experiment. */

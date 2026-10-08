@@ -1,6 +1,6 @@
 /* Alhazen experiment workspace — the management pages and the sidebar's
- * navigation (Experiments; the open experiment's General / Run / Data /
- * History), in the "Instrument" language of workspace.css: graphite rail,
+ * navigation (Experiments; every experiment, expanding to its General /
+ * Run / Data / History), in the "Instrument" language of workspace.css: graphite rail,
  * amber selection, signal-blue action, mono labels, hairlines, lamps.
  *
  * The one deliberate idea: an experiment's pages in the sidebar are nodes on
@@ -100,15 +100,69 @@
 }
 
 .nav-experiment {
-  margin-top: 18px;
+  margin-top: 14px;
 }
 
-.nav-experiment-title {
-  margin: 4px 10px 8px;
-  font-size: 17px;
+/* Every registered experiment, each a group: a disclosure button (chevron,
+ * title, a lamp while it runs) over its pages. The open experiment's title
+ * is set heavier; its shown page is the lit node below. */
+.nav-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nav-group-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 15px;
+  font-weight: 650;
+  text-align: left;
+}
+
+.nav-group-toggle:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+.nav-group-toggle:focus-visible {
+  outline: 2px solid var(--selected-ink);
+  outline-offset: 1px;
+}
+
+.nav-group.current .nav-group-toggle {
+  color: var(--ink);
   font-weight: 800;
-  letter-spacing: -.2px;
+}
+
+.nav-chevron {
+  flex: none;
+  width: 12px;
+  font-size: 11px;
+  line-height: 1;
+  text-align: center;
+}
+
+.nav-group-toggle[aria-expanded="true"] .nav-chevron {
+  transform: rotate(90deg);
+}
+
+.nav-group-title {
+  flex: 1;
+  min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.nav-group .experiment-nav {
+  margin-bottom: 6px;
 }
 
 /* The pages as nodes on one rail (see the file comment). */
@@ -172,6 +226,20 @@
   .experiment-nav .nav-glyph {
     transition: background-color .12s, border-color .12s;
   }
+  .nav-chevron {
+    transition: transform .12s;
+  }
+}
+
+/* The History page's detail box is brought to the top of the window when a
+ * session or launch is opened (workspace_manage.js begin()); a little room
+ * above it, and no ring when it takes focus from a mouse click. */
+#history-detail {
+  scroll-margin-top: 16px;
+}
+
+#history-detail:focus:not(:focus-visible) {
+  outline: none;
 }
 
 /* ---- shared pieces ------------------------------------------------------- */
