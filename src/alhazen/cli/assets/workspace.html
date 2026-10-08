@@ -49,6 +49,11 @@
        calls it to draw those pages and says so plainly when it is missing. -->
   <link rel="stylesheet" href="/workspace_manage.css">
   <script src="/workspace_manage.js" defer></script>
+  <!-- Upload to the archive: window.ArchiveUpload, mounted by workspace.js
+       on the Run page (the session a launch saved) and by the History and
+       Data pages (several sessions). -->
+  <link rel="stylesheet" href="/workspace_upload.css">
+  <script src="/workspace_upload.js" defer></script>
 </head>
 <body>
   <!-- Sidebar: logo, the registered experiments (renderState() in
@@ -233,8 +238,11 @@
               <p id="mode-help" class="help"></p>
             </section>
 
-            <section class="stage" id="options-stage" aria-labelledby="options-title">
-              <h3 class="stage-title" id="options-title">Run options</h3>
+            <!-- Who: the subject, the session number and who runs it — the
+                 records the data is filed under. Hidden as a whole for a
+                 mode that names nobody (modeChanged() in workspace.js). -->
+            <section class="stage" id="who-stage" aria-labelledby="who-title">
+              <h3 class="stage-title" id="who-title">Subject &amp; session</h3>
 
               <!-- Who the session is for and who runs it: records from the
                    experiment's General page, by their ids; the server takes
@@ -290,6 +298,10 @@
                 <select id="experimenter"></select>
               </div>
               <p id="identity-help" class="help"></p>
+            </section>
+
+            <section class="stage" id="options-stage" aria-labelledby="options-title">
+              <h3 class="stage-title" id="options-title">Run options</h3>
 
               <!-- The seed starts empty: an empty field sends no --seed, and the
                    session draws a new one and records it, as the command line
@@ -490,6 +502,10 @@
 
         <!-- Right column: the selected run's output, then the run history. -->
         <div class="results-column">
+          <!-- Upload to the archive, for the session the selected launch saved, once
+               it has finished (workspace_upload.js mountSession; hidden for
+               a launch that saved no session). -->
+          <section id="upload-card" class="card upload-card" aria-label="Upload to the archive" hidden></section>
           <section class="card output-card">
             <div class="card-heading">
               <h2>Run output</h2>
@@ -556,6 +572,9 @@
           <section class="card history-card">
             <div class="card-heading">
               <h2>Recent runs</h2>
+              <!-- Every launch and session, with their records: the
+                   History page (filled by renderHistory()). -->
+              <a id="history-all" href="?view=history">All in History →</a>
               <span id="history-count" class="step">0 RUNS</span>
             </div>
             <div id="history"></div>

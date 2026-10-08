@@ -916,3 +916,17 @@ li.m-plan-add {
 /* A subject's sex in the lists: a short label, never broken mid-word by the
    table's narrow-column wrapping. */
 .m-table td.m-nowrap { white-space: nowrap; word-break: normal; overflow-wrap: normal; }
+
+/* ---- History: choosing sessions to upload to the archive (workspace_upload.js) ---- */
+.m-check {
+  width: 34px;
+  text-align: center;
+}
+
+.m-upload {
+  padding: 12px 0 14px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  gap: 12px;
+}

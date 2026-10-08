@@ -42,6 +42,22 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   (`subject.age`, `subject.sex`, null when not given), in `session.log`, and
   in `participants.tsv` for a subject it registers; an existing row is not
   rewritten. No `session.json` schema bump: new keys.
+- Workspace: **upload an experiment's data to an archive.** A finished
+  session's Run page shows an upload card; History and Data upload ticked
+  sessions or whole data folders. Everything in the data folder goes, with
+  the people registry: SQLite files as consistent snapshots, rehearsal data
+  to its own `<experiment>-rehearsal` folder. The default transport is
+  SSH/SFTP in pure Python (works on Windows, macOS and Linux; the login,
+  host key and any second factor are answered on the page once per
+  dashboard); rsync over an SSH master connection and a local folder are
+  options. Dry-run preview, resume, SHA-256 verification at the destination;
+  nothing there is ever deleted or replaced: a changed file outside the
+  sessions is kept as a new version, a different file inside a session is a
+  reported conflict. Each attempt leaves receipts (`uploads/` in the data
+  folder) and History shows each session's state. The destination is a
+  setting of the computer (`upload.json`); nothing is preset. See
+  docs/workspace.md §Upload to an archive.
+- New dependency: `paramiko>=3.4` (the SFTP transport).
 
 ### Changed
 
@@ -55,6 +71,11 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   workspace from this alhazen or newer. `age`, `sex` and `age_recorded` are
   no longer allowed as extra column names, and `participants.tsv` columns of
   those names fill the fields on import instead of being renamed.
+- Workspace Run page: the results column (upload, output, recent runs) sticks
+  beside the configuration and fills the window, so the run history has real
+  height instead of a fixed box; the form's first stage is now *Subject &
+  session*, apart from *Run options*; Recent runs links to History. On one
+  column, the upload card comes first.
 
 ## 2.11.0 - 2026-10-07
 

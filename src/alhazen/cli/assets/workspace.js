@@ -1121,6 +1121,9 @@ function modeChanged() {
   }
   // Who runs it: for every session, and for Measure rig (who measured).
   $('experimenter-field').hidden = !['run', 'test', 'simulate', 'measure'].includes(mode);
+  // The Subject & session stage goes with its fields: a mode that names
+  // nobody (a preview, a movie) has no such stage, and the path renumbers.
+  $('who-stage').hidden = $('identity').hidden && $('experimenter-field').hidden;
   // What is required follows the mode and the choice (identityChanged): a
   // typed subject and its initials for run and test, a subject ID for a
   // measurement of the subject in the chair, an experimenter with a
@@ -2260,6 +2263,7 @@ function renderHistory() {
   if (signature === historySignature) return;
   historySignature = signature;
   $('history-count').textContent = `${runs.length} RUN${runs.length === 1 ? '' : 'S'}`;
+  $('history-all').href = addressOf(selected, 'history');
   const rows = runs.map((run) => {
     const button = node('button', 'history-row' + (run.id === runId ? ' selected' : ''));
     const text = node('span', 'history-text');
@@ -2377,6 +2381,31 @@ function renderMonitor(run, active) {
   }
 }
 
+/** The launch whose session the upload card shows; null when hidden. */
+let uploadShown = null;
+/* The modes whose launch saves a session folder (to the rig's data folder,
+ * or its rehearsal sibling). */
+const SAVES_SESSION = ['run', 'test', 'simulate'];
+
+/**
+ * The Run page's Upload to the archive card (workspace_upload.js): mounted once per
+ * finished launch that saves a session, which then finds the session folder
+ * its console names and hides itself when there is none. Hidden while the
+ * run is active — a session still being written is not uploaded.
+ */
+function renderUpload(run, active) {
+  const card = $('upload-card');
+  const eligible = run && !active && SAVES_SESSION.includes(run.mode) && window.ArchiveUpload;
+  if (!eligible) {
+    card.hidden = true;
+    uploadShown = null;
+    return;
+  }
+  if (uploadShown === run.id) return;
+  uploadShown = run.id;
+  ArchiveUpload.mountSession(card, {api, node, project: run.project}, run.id);
+}
+
 /**
  * Fetch the selected run and draw it: status badge, summary line, stop
  * button, live-monitor link, console tail, the command that started it and
@@ -2412,6 +2441,8 @@ async function refreshRun() {
   if (window.MeasureChoice) MeasureChoice.renderProgress($('measure-progress'), run?.measurement || null);
   // The Live monitor tab and its open-in-new-tab link.
   renderMonitor(run, active);
+  // Upload to the archive, once the session this launch saved is finished.
+  renderUpload(run, active);
   // Console: follow the tail only if the reader was already at the bottom,
   // so scrolling up to read an earlier line is not undone by the next poll.
   const consoleEl = $('console');
@@ -2818,6 +2849,14 @@ $('launch-form').addEventListener('submit', guard(async (event) => {
     updateLaunch();
   }
 }));
+
+// "All in History →" in the Recent runs heading: its address opens in a new
+// tab as usual; a plain click goes there in place.
+$('history-all').addEventListener('click', (event) => {
+  if (!plainClick(event) || !selected) return;
+  event.preventDefault();
+  guard(() => navigate(selected, 'history'))();
+});
 
 // The duration estimate beside the Start button: asked of the project's own
 // alhazen (POST /api/estimate) whenever the form changes what would run.
