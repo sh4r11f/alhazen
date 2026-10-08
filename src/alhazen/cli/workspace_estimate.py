@@ -114,11 +114,13 @@ def source_stamp(root: Path) -> str:
                 continue
             try:
                 stat = path.stat()
-            except OSError:
-                continue
-            digest.update(
-                f"{path.relative_to(root)}\0{stat.st_size}\0{stat.st_mtime_ns}\n".encode()
-            )
+                entry = f"{stat.st_size}\0{stat.st_mtime_ns}"
+            except OSError as exc:
+                # Gone or unreadable between the listing and the stat: that
+                # is part of the source's state too, so it goes in the stamp
+                # (and the next ask, when the file is back, differs).
+                entry = f"unreadable: {type(exc).__name__}"
+            digest.update(f"{path.relative_to(root)}\0{entry}\n".encode())
     return digest.hexdigest()
 
 
@@ -235,7 +237,12 @@ class DurationEstimator:
                 default=str,
             ).encode()
         ).hexdigest()
-        return self._cached(key, lambda: self._ask(project, command, text))
+        form = (
+            f"the parameters on the form ({request.parameter_set})"
+            if request.parameter_set
+            else "the parameters on the form"
+        )
+        return self._cached(key, lambda: self._ask(project, command, text, form))
 
     def _cached(self, key: str, compute: Any) -> dict[str, Any]:
         while True:
@@ -265,7 +272,13 @@ class DurationEstimator:
                 self._pending.pop(key, None)
             event.set()
 
-    def _ask(self, project: dict[str, Any], command: list[str], text: str | None) -> dict[str, Any]:
+    def _ask(
+        self,
+        project: dict[str, Any],
+        command: list[str],
+        text: str | None,
+        form: str = "the parameters on the form",
+    ) -> dict[str, Any]:
         with self._child, tempfile.TemporaryDirectory(prefix="alhazen-estimate-") as scratch:
             argv = [project["python"], "-u", command[0], *command[1:]]
             if text is not None:
@@ -292,6 +305,7 @@ class DurationEstimator:
                 )
             except OSError as exc:
                 return _answer("error", "No estimate", f"Cannot run {project['python']}: {exc}")
+            params_path = str(Path(scratch) / "params.yaml")
         lines = result.stdout.strip().splitlines()
         try:
             answer = json.loads(lines[-1]) if lines else None
@@ -299,9 +313,22 @@ class DurationEstimator:
             answer = None
         if not isinstance(answer, dict):
             tail = (result.stderr or result.stdout).strip()[-1500:]
-            return _answer(
+            answer = _answer(
                 "error",
                 "No estimate",
                 f"The estimate failed (exit {result.returncode}): {tail or 'no output'}",
             )
-        return answer
+        # The temporary file is gone by now: the page names what it held.
+        return _renamed(answer, params_path, form)
+
+
+def _renamed(value: Any, path: str, name: str) -> Any:
+    """``value`` with every mention of the temporary params file replaced by
+    what the page calls it."""
+    if isinstance(value, str):
+        return value.replace(path, name)
+    if isinstance(value, list):
+        return [_renamed(v, path, name) for v in value]
+    if isinstance(value, dict):
+        return {k: _renamed(v, path, name) for k, v in value.items()}
+    return value

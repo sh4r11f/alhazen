@@ -61,7 +61,11 @@ const DurationEstimate = (() => {
     if (span.expected_s !== null && span.min_s === span.max_s) return `${seconds(span.min_s)} s`;
     const range = `${seconds(span.min_s)}–${span.max_s === null ? 'no limit' : seconds(span.max_s)} s`;
     if (span.expected_s !== null) return `${seconds(span.expected_s)} s (${range})`;
-    return span.kind === 'wait' ? `up to ${seconds(span.max_s)} s` : range;
+    if (span.kind === 'wait') {
+      const from = span.min_s > 0 ? `${seconds(span.min_s)}–` : 'up to ';
+      return `${from}${seconds(span.max_s)} s, waiting on the subject`;
+    }
+    return range;
   }
 
   function countsText(counts) {
@@ -137,7 +141,12 @@ const DurationEstimate = (() => {
 
   function mount(container, options) {
     const doc = options.document || container.ownerDocument;
-    const timers = options.timers || {setTimeout, clearTimeout};
+    // Called through wrappers: the browser's own setTimeout refuses to be
+    // called as a method of another object ("Illegal invocation").
+    const timers = options.timers || {
+      setTimeout: (fn, ms) => setTimeout(fn, ms),
+      clearTimeout: (id) => clearTimeout(id),
+    };
     const debounceMs = options.debounceMs ?? 350;
     let shown = null;      // signature of the answer on screen ('' none)
     let wanted = '';       // signature of the form now
@@ -210,7 +219,23 @@ const DurationEstimate = (() => {
       }
     }
 
+    /* The page's form must keep working whatever happens here: a fault in
+     * the estimate is shown in its own box (and the console), never thrown
+     * into the shell that called. */
     function update(force = false) {
+      try {
+        change(force);
+      } catch (e) {
+        if (timer) timers.clearTimeout(timer);
+        timer = null;
+        wanted = '';
+        if (typeof console !== 'undefined') console.error('duration estimate:', e);
+        paint({state: 'error', value: 'No estimate', counts: '', plus: '',
+          details: [{heading: 'Why', lines: [`The page could not ask: ${e.message || e}`]}]});
+      }
+    }
+
+    function change(force) {
       const draft = options.read();
       if (!draft || draft.waiting) {
         wanted = '';

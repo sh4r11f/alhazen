@@ -91,7 +91,7 @@ test('describe: the line, the counts and every section of the disclosure', () =>
   assert.equal(view.plus, 'plus calibration and 5 manual breaks');
   const headings = Array.from(view.details, (d) => d.heading);
   assert.deepEqual(headings, ['One trial', 'Not included: up to a person', 'Not included', 'Basis']);
-  assert.match(view.details[0].lines[0], /fixation acquired: up to 2 s/);
+  assert.match(view.details[0].lines[0], /fixation acquired: up to 2 s, waiting on the subject/);
   assert.match(view.details[0].lines[1], /landing dwell: 0.25 s/);
 });
 
@@ -191,4 +191,55 @@ test('refresh asks again for the same form', async () => {
   assert.equal(s.container.children[0].dataset.state, 'pending');
   s.timers.fire();
   assert.equal(s.asked.length, 2);
+});
+
+test('a fault while reading the form is shown in the box, never thrown into the page', () => {
+  const DE = load();
+  const doc = new FakeDocument();
+  const container = doc.createElement('div');
+  const ctl = DE.mount(container, {
+    document: doc,
+    timers: fakeTimers(),
+    read: () => { throw new Error('no such element'); },
+    ask: () => Promise.reject(new Error('never asked')),
+  });
+  assert.doesNotThrow(() => ctl.update());
+  const root = container.children[0];
+  assert.equal(root.dataset.state, 'error');
+  assert.match(root.textContent, /no such element/);
+});
+
+test('the default timers are called as plain functions, as browsers require', async () => {
+  // A setTimeout that, like the browser's, refuses to be a method of
+  // another object ("Illegal invocation").
+  function strictSetTimeout(fn, ms) {
+    if (this !== undefined && this !== context) throw new TypeError('Illegal invocation');
+    return setTimeout(fn, ms);
+  }
+  function strictClearTimeout(id) {
+    if (this !== undefined && this !== context) throw new TypeError('Illegal invocation');
+    return clearTimeout(id);
+  }
+  const context = vm.createContext({
+    AbortController, JSON, Math, Promise,
+    setTimeout: strictSetTimeout, clearTimeout: strictClearTimeout,
+  });
+  vm.runInContext(
+    readFileSync(new URL('workspace_duration.js', ASSETS), 'utf8') + '\nthis.DE = DurationEstimate;',
+    context,
+  );
+  const doc = new FakeDocument();
+  const container = doc.createElement('div');
+  let asked = 0;
+  const ctl = context.DE.mount(container, {
+    document: doc,
+    debounceMs: 0,
+    read: () => MAIN,
+    ask: async () => { asked += 1; return ANSWER; },
+  });
+  ctl.update();
+  ctl.update();  // nothing changed: no second timer
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(asked, 1);
+  assert.equal(container.children[0].dataset.state, 'ok');
 });

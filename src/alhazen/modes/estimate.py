@@ -219,9 +219,10 @@ def estimate_trials(
             "breaks_max": schedule.breaks,
             "conditions": schedule.n_cells,
         }
-        breaks_min = breaks_max = schedule.breaks
+        breaks_min = schedule.breaks
+        breaks_max: int | None = schedule.breaks
         validate = schedule.validate_after_break
-        stopping_rule = None
+        stopping_rule: str | None = None
     else:
         assert isinstance(schedule, AdaptiveSchedule)
         conditions = list(schedule.conditions)
@@ -333,11 +334,9 @@ def estimate_trials(
                 "shortest of them for the low end, the longest for the high end."
             )
     expected = low if high is not None and math.isclose(low, high) else None
-    fixed_part = low
 
     if rest_s and (breaks_max is None or breaks_max > 0):
         low += rest_s * breaks_min
-        fixed_part += rest_s * breaks_min
         bound_min += rest_s * breaks_min
         high = None if high is None or breaks_max is None else high + rest_s * breaks_max
         bound_max = (
@@ -529,10 +528,9 @@ def estimate_measure(
         "headline": headline,
         "plus": "plus operator-guided steps" if manual and not operator_only else "",
         "seconds": {
-            "min": timed,
-            "max": None if manual or undeclared else timed,
-            "expected": None,
-            "fixed": timed,
+            "low": timed,
+            "high": None if manual or undeclared else timed,
+            "expected": None if manual or undeclared else timed,
         },
         "jobs": rows,
         "manual": manual,

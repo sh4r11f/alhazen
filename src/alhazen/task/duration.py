@@ -105,7 +105,7 @@ def jittered(label: str, center_s: float, jitter_s: float, basis: str = "") -> S
         center_s - jitter_s,
         center_s + jitter_s,
         center_s,
-        basis or f"uniform {center_s - jitter_s:g}–{center_s + jitter_s:g} s",
+        basis,
     )
 
 
@@ -119,16 +119,14 @@ def uniform(label: str, low_s: float, high_s: float, basis: str = "") -> Span:
         low_s,
         high_s,
         (low_s + high_s) / 2,
-        basis or f"uniform {low_s:g}–{high_s:g} s",
+        basis,
     )
 
 
 def wait(label: str, cap_s: float, minimum_s: float = 0.0, basis: str = "") -> Span:
     """A stretch that waits on the subject, up to ``cap_s``. No expected
     value: the cap is the longest it can last, not how long it usually does."""
-    return Span(
-        label, "wait", minimum_s, cap_s, None, basis or f"waits on the subject, at most {cap_s:g} s"
-    )
+    return Span(label, "wait", minimum_s, cap_s, None, basis)
 
 
 def bounded(label: str, min_s: float, max_s: float | None, basis: str) -> Span:
@@ -335,7 +333,8 @@ def adaptive_bounds(cfg: SchedulerConfig, conditions: list[Condition]) -> Adapti
         rule = f"QUEST+ runs {cfg.quest.n_trials} trials for each of {n_est} level(s)"
     min_trials = low * n_est
     max_trials = None if high is None else high * n_est
-    min_breaks = max_breaks = 0
+    min_breaks = 0
+    max_breaks: int | None = 0
     validate = False
     if cfg.blocks is not None and cfg.blocks.breaks and cfg.blocks.trials_per_block:
         per = cfg.blocks.trials_per_block
