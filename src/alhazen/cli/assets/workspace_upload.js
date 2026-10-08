@@ -203,8 +203,8 @@
       return;
     }
     loginState = state;
+    redraw();  // the views' connection lines first: redrawing moves the box
     drawLogin(ctx, where, state);
-    redraw();
   }
 
   function drawLogin(ctx, where, state) {
@@ -257,6 +257,7 @@
       });
       box.append(el(ctx, 'p', 'up-eyebrow', `LOG IN · ${host.toUpperCase()}`), form);
       where.replaceChildren(box);
+      where.scrollIntoView({block: 'nearest'});
       inputs[0]?.focus({preventScroll: true});
       return;
     } else {
@@ -268,6 +269,7 @@
     }
     box.append(actions);
     where.replaceChildren(box);
+    where.scrollIntoView({block: 'nearest'});
   }
 
   /** Can an upload start? Says why not, and offers what fixes it: the
@@ -584,6 +586,7 @@
     };
     const refresh = async () => {
       const ticket = ++loaded;
+      readLabel(ctx, true);  // the name and the connection's state, fresh
       let answer;
       try {
         answer = await ctx.api(`/api/upload/launch-session?project=${encodeURIComponent(ctx.project)}`

@@ -2213,9 +2213,16 @@ footer {
     max-height: calc(100vh - 32px);
     gap: 16px;
   }
+  /* The upload card keeps its height (its login, preview and progress
+     must never be cut off) up to half the window, then scrolls inside. */
+  #upload-card {
+    flex: 0 0 auto;
+    max-height: 52vh;
+    overflow-y: auto;
+  }
   .output-card {
     flex: 1 1 auto;
-    min-height: 300px;
+    min-height: 240px;
     display: flex;
     flex-direction: column;
   }
@@ -2237,7 +2244,7 @@ footer {
   }
   .history-card {
     flex: 0 1 300px;
-    min-height: 170px;
+    min-height: 120px;
   }
   #history {
     max-height: none;
