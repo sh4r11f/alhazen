@@ -9,6 +9,8 @@ before a launch, what an older one will not record.
 
 - ``experimenter``: ``--experimenter`` and ``--experimenter-id``, recorded
   in session.json and session.log.
+- ``duration-estimate``: ``--estimate-duration``, which prints how long the
+  launch would take as JSON instead of running it (alhazen.cli.duration).
 
 Names are only ever added. A module without the file is an alhazen from
 before any of them.
@@ -16,4 +18,4 @@ before any of them.
 
 from __future__ import annotations
 
-CAPABILITIES: frozenset[str] = frozenset({"experimenter"})
+CAPABILITIES: frozenset[str] = frozenset({"duration-estimate", "experimenter"})

@@ -122,7 +122,8 @@ explains each.
     options:
       members: [DemoSetup, DemoView, DemoControl, DemoState, run_demo, RESERVED_KEYS,
         BUILT_IN_KEYS, CAPTION_Y_FRACTION, KEYS_X_FRACTION, KEYS_Y_FRACTION,
-        KEYS_HEIGHT_SCALE]
+        KEYS_HEIGHT_SCALE, KEYS_TOGGLE_KEY, StimulusExtent, Box, TextPlacement,
+        DemoLayout, demo_layout, furniture_height]
 
 ::: alhazen.modes.movie
     options:

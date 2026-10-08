@@ -108,6 +108,24 @@ def _always_available(_rig: RigConfig, _inputs: Mapping[str, str]) -> str | None
 
 
 @dataclass(frozen=True)
+class JobDuration:
+    """What a measurement's run time is made of, for the estimate a launch
+    shows before it starts (alhazen.modes.estimate).
+
+    ``timed_s`` is the part the machine times — flips to count, a window to
+    listen in — given the rig and the operator's inputs, with ``timed_basis``
+    saying what it is. ``operator`` names the part that goes at a person's
+    pace (a tape measurement typed in, a key pressed per target), which has
+    no duration anyone can promise; None when there is none. A job without a
+    ``JobDuration`` has not said, and the estimate says so.
+    """
+
+    timed_s: Callable[[RigConfig, Mapping[str, str]], float] | None = None
+    timed_basis: str = ""
+    operator: str | None = None
+
+
+@dataclass(frozen=True)
 class MeasurementJob:
     """One measurement the operator can tick. See the module docstring."""
 
@@ -130,6 +148,8 @@ class MeasurementJob:
     # ID, recorded with it), "optional" (a person is needed, but it is the
     # machine's timing being measured: response keys) or "none".
     subject: str = "none"
+    # What its run time is made of, for the launch's estimate; None: not said.
+    duration: JobDuration | None = None
 
     def __post_init__(self) -> None:
         if not self.key or set(self.key) - KEY_CHARS or "." not in self.key:
@@ -534,15 +554,11 @@ def provenance(
     """Who measured what, with which code, against which rig file."""
     rig_file = Path(rig_path)
     digest = hashlib.sha256(rig_file.read_bytes()).hexdigest() if rig_file.is_file() else None
-    from alhazen.version import get_version
+    from alhazen.version import dependency_version, get_version
 
-    try:
-        psychopy_version: str | None = metadata.version("psychopy")
-    except metadata.PackageNotFoundError:
-        psychopy_version = None
     return {
         "alhazen": get_version(),
-        "psychopy": psychopy_version,
+        "psychopy": dependency_version("psychopy"),
         "python": sys.version.split()[0],
         "platform": platform.platform(),
         "host": socket.gethostname(),

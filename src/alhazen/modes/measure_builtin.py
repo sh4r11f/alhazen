@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import math
 import time
 from collections.abc import Callable, Mapping
 from contextlib import ExitStack
@@ -54,6 +55,7 @@ from alhazen.modes.measure import (
 from alhazen.modes.measure_jobs import (
     Devices,
     JobContext,
+    JobDuration,
     JobUnavailable,
     MeasurementJob,
     OperatorCancelled,
@@ -132,6 +134,42 @@ def _neural_unavailable(rig: RigConfig, _inputs: Mapping[str, str]) -> str | Non
     if spikes.backend == "simulated":
         return "the rig's spike source is simulated: there is no acquisition to read"
     return None
+
+
+# ----------------------------------------------------------------------
+# What each job's run time is made of, for the launch estimate
+# (JobDuration; alhazen.modes.estimate). Read from the same defaults and
+# --measure-input values the jobs read; never opens anything.
+# ----------------------------------------------------------------------
+
+
+def _input_number(inputs: Mapping[str, str], key: str, default: float) -> float:
+    """``--measure-input key=value`` as a number, or ``default`` when not given."""
+    text = inputs.get(key)
+    if text is None or not str(text).strip():
+        return default
+    value = float(text)
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"--measure-input {key}={text!r} must be a positive number")
+    return value
+
+
+def _refresh_timed(rig: RigConfig, inputs: Mapping[str, str]) -> float:
+    flips = _input_number(inputs, "monitor.refresh.flips", DEFAULT_FLIPS)
+    return flips / rig.monitor.refresh_rate_hz
+
+
+def _neural_timed(_rig: RigConfig, inputs: Mapping[str, str]) -> float:
+    return _input_number(inputs, "neural.stream.listen_s", DEFAULT_LISTEN_S)
+
+
+def _accuracy_timed(_rig: RigConfig, inputs: Mapping[str, str]) -> float:
+    window_ms = _input_number(inputs, "tracker.accuracy.window_ms", DEFAULT_SAMPLE_MS)
+    return len(DEFAULT_ACCURACY_TARGETS_DVA) * window_ms / 1000.0
+
+
+def _nothing_timed(_rig: RigConfig, _inputs: Mapping[str, str]) -> float:
+    return 0.0
 
 
 # ----------------------------------------------------------------------
@@ -729,6 +767,9 @@ def builtin_jobs() -> list[MeasurementJob]:
             needs=window,
             unavailable=_needs_window,
             inputs=("flips (count)",),
+            duration=JobDuration(
+                _refresh_timed, f"{DEFAULT_FLIPS} flips (or input flips) at the rig's refresh rate"
+            ),
         ),
         MeasurementJob(
             "neural.stream",
@@ -740,6 +781,9 @@ def builtin_jobs() -> list[MeasurementJob]:
             needs=frozenset({"spikes"}),
             unavailable=_neural_unavailable,
             inputs=("listen_s (s)",),
+            duration=JobDuration(
+                _neural_timed, f"a {DEFAULT_LISTEN_S:g} s listening window (or input listen_s)"
+            ),
         ),
         MeasurementJob(
             "reward.connection",
@@ -749,6 +793,7 @@ def builtin_jobs() -> list[MeasurementJob]:
             30,
             _reward_connection,
             unavailable=_needs_real_reward,
+            duration=JobDuration(_nothing_timed, "a read-only driver query; nothing waited for"),
         ),
         MeasurementJob(
             "input.keys",
@@ -761,6 +806,9 @@ def builtin_jobs() -> list[MeasurementJob]:
             unavailable=_needs_window,
             inputs=("presses (count)",),
             subject="optional",
+            duration=JobDuration(
+                operator=f"{DEFAULT_PRESSES} key presses (or input presses), at the person's pace"
+            ),
         ),
         MeasurementJob(
             "input.mouse",
@@ -772,6 +820,7 @@ def builtin_jobs() -> list[MeasurementJob]:
             needs=frozenset({"display", "mouse", "operator"}),
             unavailable=_needs_window,
             inputs=("distance_cm (cm)", "passes (count)"),
+            duration=JobDuration(operator="mouse passes over a measured distance, by the operator"),
         ),
         MeasurementJob(
             "monitor.geometry",
@@ -783,6 +832,7 @@ def builtin_jobs() -> list[MeasurementJob]:
             needs=frozenset({"display", "operator"}),
             unavailable=_needs_window,
             inputs=("distance_cm (cm)", "bar_cm (cm)"),
+            duration=JobDuration(operator="tape and ruler measurements typed at the rig"),
         ),
         MeasurementJob(
             "monitor.luminance",
@@ -794,6 +844,7 @@ def builtin_jobs() -> list[MeasurementJob]:
             needs=frozenset({"display", "operator"}),
             unavailable=_needs_window,
             inputs=("readings (CSV path)", "levels (count)", "instrument (text)"),
+            duration=JobDuration(operator="a photometer reading per grey level, or a CSV import"),
         ),
         MeasurementJob(
             "monitor.colour",
@@ -820,6 +871,9 @@ def builtin_jobs() -> list[MeasurementJob]:
                 "net_mass_g (g)",
                 "density_g_per_ml (g/mL)",
             ),
+            duration=JobDuration(
+                operator="pulses chosen, armed with Y at the rig, delivered and weighed"
+            ),
         ),
         MeasurementJob(
             "tracker.calibration",
@@ -831,6 +885,9 @@ def builtin_jobs() -> list[MeasurementJob]:
             needs=frozenset({"tracker", "display"}),
             unavailable=_needs_real_tracker,
             subject="required",
+            duration=JobDuration(
+                operator="the tracker's own calibration, at the subject's and operator's pace"
+            ),
         ),
         MeasurementJob(
             "tracker.accuracy",
@@ -844,6 +901,12 @@ def builtin_jobs() -> list[MeasurementJob]:
             unavailable=_needs_real_tracker,
             inputs=("window_ms (ms)",),
             subject="required",
+            duration=JobDuration(
+                _accuracy_timed,
+                f"{len(DEFAULT_ACCURACY_TARGETS_DVA)} targets x {DEFAULT_SAMPLE_MS:g} ms of "
+                "samples (or input window_ms)",
+                operator="a key press when the subject is steady on each target",
+            ),
         ),
     ]
 

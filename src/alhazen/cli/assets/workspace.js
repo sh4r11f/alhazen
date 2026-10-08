@@ -817,8 +817,72 @@ function peopleChanged(answer) {
   renderIdentity();
 }
 
+/**
+ * What a launch of the form as it stands would run: the project, mode, task,
+ * Task parameters entry, rig, trial count, mode options, extra arguments,
+ * measurements, calibration target and parameters. The Start button sends it
+ * with who, the seed and the movie options added; the duration estimate
+ * (workspace_duration.js) is asked about exactly it.
+ */
+function launchDraft() {
+  const mode = $('mode').value;
+  const isScript = project().scripts.some((s) => s.id === mode);
+  const draft = {
+    project: selected,
+    mode,
+    // The task the run is for, when the experiment declares several: the
+    // one its Task parameters entry runs. A script takes none — the
+    // server refuses one — so it is null there.
+    task: isScript ? null : selectedTask(),
+    // The Task parameters entry, by its label, for the history: the run's
+    // task and folder keep the task's own name. None for a launch that
+    // takes no parameters.
+    parameter_set: !isScript && usesParameters() ? (selectedSet()?.label ?? null) : null,
+    rig: $('rig').value,
+    trials: Number($('trials').value),
+    // Options are sent only for the mode that shows them: a hidden checkbox
+    // keeps its state across mode changes and must not leak into a launch.
+    headless: mode === 'simulate' && $('headless').checked,
+    mouse: mode === 'test' && $('mouse').checked,
+    // For every mode and script alike; the server splits and checks them.
+    extra_args: $('extra-args').value,
+  };
+  // Measure rig's ticked measurements, in run order; the server checks them.
+  if (usesMeasurements()) draft.measurements = MeasureChoice.selection(measureState);
+  // What differs from the rig's calibration target, for run and test;
+  // sent only when something does — without it the run uses the rig's
+  // own (renderCalibration).
+  const calibrationTarget = calibrationToSend();
+  if (calibrationTarget) draft.calibration_target = calibrationTarget;
+  // Parameters travel as the editor shows them: the raw text from the text
+  // editor (the server parses and validates it) or the edited values from
+  // the fields. Modes that take no parameters send neither.
+  if (usesParameters() && editor === 'yaml' && $('parameter-yaml').value.trim()) {
+    draft.parameters_yaml = $('parameter-yaml').value;
+  } else if (usesParameters() && editor === 'fields' && values !== null) {
+    draft.parameters = values;
+  }
+  return draft;
+}
+
+/* The duration estimate's view of the form (workspace_duration.js): the
+ * launch draft, or why there is none to ask about yet. */
+function estimateDraft() {
+  const p = project();
+  if (!p || !p.available || !p.rigs.length || p.tasks_error) return null;
+  if (usesParameters() && (loadingConfig || loadingSchema)) {
+    return {waiting: 'Waiting for the task parameters…'};
+  }
+  return launchDraft();
+}
+
+/* Mounted once the page is up; null when its script did not load, and the
+ * page then works as it did without it. */
+let durationEstimate = null;
+
 function updateLaunch() {
   $('launch-summary').textContent = launchSummary();
+  if (durationEstimate) durationEstimate.update();
   const p = project();
   const waitingForParameters = usesParameters() && (loadingConfig || loadingSchema);
   $('launch').disabled = !!state.active
@@ -1846,10 +1910,48 @@ function link(className, text, id, page) {
   return a;
 }
 
+/* The experiments whose pages the sidebar shows, by id, in localStorage:
+ * the reader's own choice of which groups are open, kept across pages and
+ * reloads. The open experiment is added when it is opened (so its pages
+ * show), and stays collapsed if the reader then closes it. */
+const NAV_OPEN_KEY = 'alhazen-workspace-nav-open';
+/* The experiment last opened, so it is expanded once on opening, not on
+ * every redraw. */
+let navOpened = null;
+
+/** The ids of the expanded sidebar groups, as stored; anything unreadable
+ *  is reported in the console and treated as none expanded. */
+function navExpanded() {
+  const stored = localStorage.getItem(NAV_OPEN_KEY);
+  if (stored === null) return new Set();
+  let ids;
+  try {
+    ids = JSON.parse(stored);
+  } catch (e) {
+    if (!(e instanceof SyntaxError)) throw e;
+    console.warn(`Ignoring the unreadable sidebar state ${JSON.stringify(stored)}: ${e.message}`);
+    return new Set();
+  }
+  if (Array.isArray(ids)) return new Set(ids.filter((x) => typeof x === 'string'));
+  console.warn(`Ignoring the unreadable sidebar state ${JSON.stringify(stored)}`);
+  return new Set();
+}
+
+/** Store `ids` as the expanded groups. Ids of experiments not listed now
+ *  are kept: a poll may briefly list fewer, and the list stays as small as
+ *  the number of experiments ever registered here. */
+function storeNavExpanded(ids) {
+  localStorage.setItem(NAV_OPEN_KEY, JSON.stringify([...ids]));
+}
+
 /**
  * The sidebar: Experiments (the workspace's home), marked when shown; the
- * run in progress, whichever page is open; and the open experiment's pages
- * — General, Run, Data, History — with the shown one marked.
+ * run in progress, whichever page is open; and every registered experiment
+ * that is not archived, each a group that expands to its pages — General,
+ * Run, Data, History — with the shown page marked. Expanding or collapsing
+ * a group only shows or hides its pages (a button, aria-expanded); going
+ * to a page is always a link, so opening another experiment's group never
+ * changes the page shown or stops a run.
  */
 function renderNav() {
   const p = project();
@@ -1867,22 +1969,73 @@ function renderNav() {
       node('span', 'nav-running-text', `Running · ${titleOf(owner)}`),
     );
   }
-  $('nav-experiment').hidden = !p;
-  if (!p) {
-    $('experiment-nav').replaceChildren();
-    return;
+  const expanded = navExpanded();
+  if (p && p.id !== navOpened && !expanded.has(p.id)) {
+    expanded.add(p.id);
+    storeNavExpanded(expanded);
   }
-  $('nav-experiment-title').textContent = titleOf(p);
-  const activeHere = !!running && running.project === p.id;
-  const items = Object.entries(VIEWS).map(([name, text]) => {
-    const item = link('nav-item view-button' + (name === view ? ' selected' : ''), '', p.id, name);
+  navOpened = p ? p.id : null;
+  const listed = state.projects.filter((x) => !x.archived);
+  $('nav-experiment').hidden = listed.length === 0;
+  // A redraw replaces the sidebar's links and buttons; the one that had
+  // keyboard focus gets it back, so a poll never drops the reader's place.
+  const focused = document.activeElement?.dataset?.navKey;
+  const groups = listed.map((x, index) => navGroup(x, index, expanded.has(x.id), p, owner));
+  $('experiment-nav').replaceChildren(...groups);
+  if (focused) {
+    const again = $('experiment-nav').querySelector(`[data-nav-key="${attributeValue(focused)}"]`);
+    again?.focus();
+  }
+}
+
+/** A value for an attribute selector: quotes and backslashes escaped. */
+function attributeValue(text) {
+  return String(text).replace(/["\\]/g, '\\$&');
+}
+
+/** One experiment in the sidebar: its disclosure button (its title, and a
+ *  lamp while it is running) and its four pages. */
+function navGroup(x, index, open, shown, owner) {
+  const group = node('div', 'nav-group');
+  group.dataset.project = x.id;
+  const here = shown?.id === x.id;
+  group.classList.toggle('current', here);
+  const pagesId = `nav-pages-${index}`;
+  const toggle = node('button', 'nav-group-toggle');
+  toggle.type = 'button';
+  toggle.dataset.navKey = `toggle:${x.id}`;
+  toggle.setAttribute('aria-expanded', String(open));
+  toggle.setAttribute('aria-controls', pagesId);
+  const chevron = node('span', 'nav-chevron', '▸');
+  chevron.setAttribute('aria-hidden', 'true');
+  toggle.append(chevron, node('span', 'nav-group-title', titleOf(x)));
+  if (owner?.id === x.id) toggle.append(node('span', 'nav-lamp', ''));
+  const pages = node('div', 'experiment-nav');
+  pages.id = pagesId;
+  pages.setAttribute('role', 'group');
+  pages.setAttribute('aria-label', `${titleOf(x)}: pages`);
+  pages.hidden = !open;
+  for (const [name, text] of Object.entries(VIEWS)) {
+    const selected = here && name === view;
+    const item = link('nav-item view-button' + (selected ? ' selected' : ''), '', x.id, name);
     item.dataset.view = name;
-    item.setAttribute('aria-current', name === view ? 'page' : 'false');
+    item.dataset.navKey = `${name}:${x.id}`;
+    item.setAttribute('aria-current', selected ? 'page' : 'false');
     item.append(node('span', 'nav-glyph', VIEW_GLYPHS[name]), node('span', 'nav-label', text));
-    if (name === 'run' && activeHere) item.append(node('span', 'nav-lamp', ''));
-    return item;
+    if (name === 'run' && owner?.id === x.id) item.append(node('span', 'nav-lamp', ''));
+    pages.append(item);
+  }
+  toggle.addEventListener('click', () => {
+    const now = navExpanded();
+    const opening = toggle.getAttribute('aria-expanded') !== 'true';
+    if (opening) now.add(x.id);
+    else now.delete(x.id);
+    storeNavExpanded(now);
+    toggle.setAttribute('aria-expanded', String(opening));
+    pages.hidden = !opening;
   });
-  $('experiment-nav').replaceChildren(...items);
+  group.append(toggle, pages);
+  return group;
 }
 
 /** The Experiments page, drawn by workspace_manage.js; a plain message when
@@ -2531,55 +2684,25 @@ $('launch-form').addEventListener('submit', guard(async (event) => {
   error('');
   try {
     const request = {
-      project: selected,
-      mode,
-      // The task the run is for, when the experiment declares several: the
-      // one its Task parameters entry runs. A script takes none — the
-      // server refuses one — so it is null there.
-      task: isScript ? null : selectedTask(),
-      // The Task parameters entry, by its label, for the history: the run's
-      // task and folder keep the task's own name. None for a launch that
-      // takes no parameters.
-      parameter_set: !isScript && usesParameters() ? (selectedSet()?.label ?? null) : null,
-      rig: $('rig').value,
+      // What the launch runs, the part the duration estimate is asked about
+      // too (launchDraft).
+      ...launchDraft(),
       subject: record ? '' : $('subject').value,
       initials: initials.value,
       session: Number($('session').value),
       // null for an empty field (Number('') was 0, so every launch used to
       // send seed 0); see readSeed.
       seed: seed.value,
-      trials: Number($('trials').value),
-      // Options are sent only for the mode that shows them: a hidden checkbox
-      // keeps its state across mode changes and must not leak into a launch.
-      headless: mode === 'simulate' && $('headless').checked,
-      mouse: mode === 'test' && $('mouse').checked,
       windowed: !['movie'].includes(mode) && !isScript && $('windowed').checked,
       scale: Number($('scale').value),
       sheet: $('sheet').checked,
       columns: $('columns').value ? Number($('columns').value) : null,
       clips: $('clips').value.split(',').map((s) => s.trim()).filter(Boolean),
-      // For every mode and script alike; the server splits and checks them.
-      extra_args: $('extra-args').value,
     };
-    // What differs from the rig's calibration target, for run and test;
-    // sent only when something does — without it the run uses the rig's
-    // own (renderCalibration).
-    // Measure rig's ticked measurements, in run order; the server checks them.
-    if (usesMeasurements()) request.measurements = MeasureChoice.selection(measureState);
-    const calibrationTarget = calibrationToSend();
-    if (calibrationTarget) request.calibration_target = calibrationTarget;
     // The records chosen, sent only when chosen: a launch without them is
     // the typed one every earlier client sent.
     if (record) request.subject_record = record.id;
     if (runner) request.experimenter = runner.id;
-    // Parameters travel as the editor shows them: the raw text from the text
-    // editor (the server parses and validates it) or the edited values from
-    // the fields. Modes that take no parameters send neither.
-    if (usesParameters() && editor === 'yaml' && $('parameter-yaml').value.trim()) {
-      request.parameters_yaml = $('parameter-yaml').value;
-    } else if (usesParameters() && editor === 'fields' && values !== null) {
-      request.parameters = values;
-    }
     const run = await api('/api/runs', request);
     runId = run.id;
     // Remembered so the Live monitor tab comes up on its own when this run's
@@ -2593,5 +2716,29 @@ $('launch-form').addEventListener('submit', guard(async (event) => {
     updateLaunch();
   }
 }));
+
+// The duration estimate beside the Start button: asked of the project's own
+// alhazen (POST /api/estimate) whenever the form changes what would run.
+// Field edits do not all pass through updateLaunch, so the form's own input
+// and change events ask too; the module asks nothing while the draft is the
+// one it already answered.
+if (window.DurationEstimate) {
+  durationEstimate = DurationEstimate.mount($('duration-estimate'), {
+    read: estimateDraft,
+    ask: async (draft, signal) => {
+      const response = await fetch('/api/estimate', {
+        method: 'POST',
+        headers: {'X-Alhazen-Token': token, 'Content-Type': 'application/json'},
+        body: JSON.stringify(draft),
+        signal,
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
+      return data;
+    },
+  });
+  $('launch-form').addEventListener('input', () => durationEstimate.update());
+  $('launch-form').addEventListener('change', () => durationEstimate.update());
+}
 
 poll();

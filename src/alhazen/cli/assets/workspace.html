@@ -32,6 +32,10 @@
        workspace.js mounts into #measurement-list and #measure-progress. -->
   <link rel="stylesheet" href="/workspace_measure.css">
   <script src="/workspace_measure.js" defer></script>
+  <!-- The launch's duration estimate: window.DurationEstimate, a module
+       workspace.js mounts into #duration-estimate. -->
+  <link rel="stylesheet" href="/workspace_duration.css">
+  <script src="/workspace_duration.js" defer></script>
   <script src="/workspace.js" defer></script>
   <!-- The Data view: its stylesheet, then the view itself.
        workspace_data.js defines window.WorkspaceData = {show, hide};
@@ -109,9 +113,10 @@
         </svg>
         <span>alhazen<small>Experiment workspace</small></span>
       </a>
-      <!-- The workspace's home, then the open experiment's pages
-           (renderNav() in workspace.js). Each is a link to its address, so
-           Back, Forward, reload and a new tab all land on the same screen. -->
+      <!-- The workspace's home, then every registered experiment, each
+           expanding to its pages (renderNav() in workspace.js). Each page is
+           a link to its address, so Back, Forward, reload and a new tab all
+           land on the same screen. -->
       <nav class="nav-global" aria-label="Workspace">
         <a id="nav-experiments" class="nav-item" href="/?view=experiments">
           <span class="nav-glyph" aria-hidden="true">▤</span>
@@ -122,10 +127,8 @@
       <!-- A run in progress, wherever the reader is: its experiment and a
            way back to its Run page. Navigating never stops it. -->
       <a id="nav-running" class="nav-running" hidden></a>
-      <section id="nav-experiment" class="nav-experiment" aria-labelledby="nav-experiment-title" hidden>
-        <div class="sidebar-label">EXPERIMENT</div>
-        <p id="nav-experiment-title" class="nav-experiment-title"></p>
-        <nav id="experiment-nav" class="experiment-nav" aria-label="Experiment pages"></nav>
+      <section id="nav-experiment" class="nav-experiment" aria-label="Experiments" hidden>
+        <div id="experiment-nav" class="nav-groups"></div>
       </section>
       <div class="sidebar-bottom">
         <!-- Colour theme: follow the system (the default), or always light
@@ -458,6 +461,9 @@
             <div class="launch-footer">
               <!-- What the button will start, in one line: mode, Task
                    parameters entry, rig and subject (launchSummary()). -->
+              <!-- How long that launch would take, asked of the project's own
+                   alhazen as the form changes (workspace_duration.js). -->
+              <div id="duration-estimate"></div>
               <p id="launch-summary" class="launch-summary" aria-live="polite"></p>
               <p id="launch-note" class="help"></p>
               <button class="primary launch" type="submit" id="launch">▶ Start run</button>

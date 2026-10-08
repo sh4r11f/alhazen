@@ -1,0 +1,136 @@
+/* The launch's duration estimate (workspace_duration.js), in the launch
+ * footer above the summary line. Scoped to .duration; colours are the
+ * page's own tokens, so the light and dark themes need nothing here. */
+
+.duration {
+  margin: 2px 0 8px;
+  font-family: var(--sans);
+  color: var(--ink);
+}
+
+.duration[data-state=none] {
+  display: none;
+}
+
+.duration-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 12px;
+  row-gap: 2px;
+}
+
+.duration-eyebrow {
+  font: 700 11px/1 var(--mono);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+/* The lamp: what kind of answer the line is. */
+.duration-eyebrow::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex: none;
+}
+
+.duration[data-state=ok] .duration-eyebrow::before { background: var(--ok-ink); }
+.duration[data-state=partial] .duration-eyebrow::before { background: var(--selected-ink); }
+.duration[data-state=error] .duration-eyebrow::before,
+.duration[data-state=refused] .duration-eyebrow::before { background: var(--bad-ink); }
+.duration[data-state=pending] .duration-eyebrow::before {
+  background: var(--run-ink);
+  animation: duration-lamp 1.2s ease-in-out infinite;
+}
+
+@keyframes duration-lamp {
+  50% { opacity: .25; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .duration[data-state=pending] .duration-eyebrow::before { animation: none; }
+}
+
+.duration-value {
+  font: 800 19px/1.25 var(--sans);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.duration[data-state=pending] .duration-value,
+.duration[data-state=unavailable] .duration-value,
+.duration[data-state=unknown] .duration-value,
+.duration[data-state=open] .duration-value {
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--muted);
+}
+
+.duration[data-state=error] .duration-value,
+.duration[data-state=refused] .duration-value {
+  font-size: 15px;
+  color: var(--bad-ink);
+}
+
+.duration-counts {
+  font: 600 12px/1.4 var(--mono);
+  color: var(--muted);
+}
+
+.duration-plus {
+  margin: 2px 0 0;
+  font: 600 13px/1.4 var(--sans);
+  color: var(--muted);
+}
+
+.duration-details {
+  margin-top: 4px;
+}
+
+.duration-details > summary {
+  cursor: pointer;
+  width: fit-content;
+  font: 600 12px/1.6 var(--mono);
+  color: var(--accent);
+}
+
+.duration-details > summary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.duration-body {
+  margin-top: 6px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  max-height: 320px;
+  overflow: auto;
+}
+
+.duration-section + .duration-section {
+  margin-top: 8px;
+}
+
+.duration-section h4 {
+  margin: 0 0 2px;
+  font: 700 11px/1.4 var(--mono);
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.duration-section ul {
+  margin: 0;
+  padding-left: 18px;
+  font: 500 13px/1.45 var(--sans);
+  overflow-wrap: anywhere;
+}

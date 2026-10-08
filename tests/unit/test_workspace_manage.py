@@ -208,7 +208,9 @@ class TestRigs:
             },
         )
         assert stale[0] == 409
-        assert (root / "configs/rig-sim.yaml").read_text(encoding="utf-8") == edited
+        # Bytes, not read_text: the file must hold exactly the text that was
+        # saved, and universal newlines would hide a CRLF file's \r.
+        assert (root / "configs/rig-sim.yaml").read_bytes().decode("utf-8") == edited
 
     @pytest.mark.parametrize(
         "path",

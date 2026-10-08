@@ -301,8 +301,15 @@ export class FakeElement {
     if (typeof this.onclick === 'function') this.onclick({ target: this });
   }
 
-  focus() {
+  focus(options) {
     this.ownerDocument.activeElement = this;
+    this.ownerDocument.focused.push({ element: this, options: options });
+  }
+
+  /* No layout, so nothing moves: the call is recorded, for a test that a
+   * page brought an element into view, and how often. */
+  scrollIntoView(options) {
+    this.ownerDocument.scrolledIntoView.push({ element: this, options: options });
   }
 
   getBoundingClientRect() {
@@ -350,6 +357,9 @@ export class FakeDocument {
      * happens (see FakeElement.click). */
     this.clicked = [];
     this.onElementClick = null;
+    /* Every focus() and scrollIntoView() call, in order (FakeElement). */
+    this.focused = [];
+    this.scrolledIntoView = [];
     this.documentElement = this.createElement('html');
     this.body = this.documentElement.appendChild(this.createElement('body'));
     this.scrollingElement = this.documentElement;

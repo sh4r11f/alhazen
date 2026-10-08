@@ -29,6 +29,30 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Added
 
+- **Workspace: a session-length estimate before launch.** The Run page's
+  launch footer says how long the selected launch should take, worked out
+  from the effective mode, rig and Task parameters (the test/simulate
+  reduction included): trial, block and break counts from the task's own
+  scheduler, per-trial time from the new optional `Task.trial_timing` hook
+  (`alhazen.task.duration`: `Span`, `TrialTiming`, `Schedule`), a range where
+  timing jitters, and what it leaves out (calibration, breaks the participant
+  extends, retried and aborted trials) said in words. Open-ended or adaptive
+  runs say so instead of a number; a project whose alhazen predates the
+  `duration-estimate` capability says the estimate is unavailable.
+  `run.py --estimate-duration` prints the estimate as JSON without opening a
+  display or device or writing a run folder; the workspace asks it through
+  `POST /api/estimate`. The params hook is not run for an estimate.
+
+- **Demo: the furniture keeps off a large stimulus.** A task can say where
+  its demo stimulus draws (`Task.demo_stimulus_extent(setup)`: a
+  `StimulusExtent` or four numbers, degrees from the window's centre). The
+  viewer then puts the caption under the stimulus when its usual place would
+  overlap it, and when the key table would cover the stimulus it starts
+  hidden behind a one-line `H   show the keys`; `H` shows and hides it. The
+  stimulus is never moved or scaled, nothing is drawn smaller, and whatever
+  still cannot fit is printed as a warning. `alhazen.modes.demo.demo_layout`
+  is the layout, for experiments' tests. A task that declares nothing keeps
+  exactly the old layout and keys (`H` stays free for it).
 - The experiment workspace opens on an **Experiments** page (register,
   search, archive) and gives each experiment four pages — **General**, **Run**,
   **Data**, **History** — each an address that Back, Forward and reload keep.
@@ -99,6 +123,17 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Changed
 
+- **Every experiment stays in the workspace sidebar.** The sidebar lists every
+  registered experiment that is not archived, on every page including the
+  Experiments page, each a group that expands to its **General**, **Run**,
+  **Data** and **History** pages. Expanding a group only shows or hides its
+  pages; going to a page is a link, so expanding another experiment never
+  changes the page shown or stops a run. The open experiment is expanded when
+  it is opened, the groups the reader expanded or collapsed are kept across
+  pages and reloads (localStorage `alhazen-workspace-nav-open`), and keyboard
+  focus stays on a sidebar control when a poll redraws it. Before, only the
+  open experiment appeared.
+
 - **No "Attempting to measure frame rate of screen" banner.** The window no
   longer runs PsychoPy's own frame-rate check (its result was unused); the one
   measurement a session uses runs quietly and still refuses an unstable or
@@ -118,6 +153,25 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   `preview.py` only.
 
 ### Fixed
+
+- **The test suite collects under a plain `pytest` again.** Five test modules
+  added with the experiment-management work import shared helpers as
+  `tests.unit.<module>`, which only `python -m pytest` could find, so CI
+  stopped at collection on every OS. The pytest `pythonpath` now includes the
+  repository root as well as `tests`. The Measure rig report also reads the
+  PsychoPy version through `alhazen.version` (the version-lookup rule).
+  Saving an edited rig on the General page writes the text byte for byte, as
+  creating one already did, so a CRLF rig file no longer gains a stray `\r`
+  per line on Windows. Concurrent writes to the people registry take turns
+  inside the server before asking SQLite for its write lock, so a burst of
+  adds no longer fails with `database is locked` (seen on Windows CI).
+
+- **History's Open shows the details where you are looking.** Opening a
+  session or a launch drew its details above the two lists, out of sight of
+  a row far down a list. The page now jumps so the details are at the top of
+  the window, once per Open (mouse or keyboard), and moves keyboard focus to
+  them; a poll or the filter never moves the page. A session whose details
+  arrive after a later Open no longer replaces the newer details.
 
 - **The camera panel's iris size control stays where it is when the eye
   is lost.** With no eye in the image, the *eyes* value above the picture
