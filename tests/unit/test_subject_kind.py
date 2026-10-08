@@ -220,17 +220,17 @@ def build(tmp_path: Path, task: Task, reward_line: RewardHwConfig | None = LAB_L
 
 
 def rows(tmp_path: Path) -> list[dict[str, str]]:
-    with next(tmp_path.rglob("*_trials.csv")).open() as f:
+    with next(tmp_path.rglob("*_trials.csv")).open(encoding="utf-8", newline="") as f:
         return list(csv.DictReader(f))
 
 
 def events(tmp_path: Path, name: str) -> list[dict[str, str]]:
-    with next(tmp_path.rglob("*_events.csv")).open() as f:
+    with next(tmp_path.rglob("*_events.csv")).open(encoding="utf-8", newline="") as f:
         return [row for row in csv.DictReader(f) if row["event"] == name]
 
 
 def card(tmp_path: Path) -> dict[str, Any]:
-    return json.loads(next(tmp_path.rglob("session.json")).read_text())
+    return json.loads(next(tmp_path.rglob("session.json")).read_text(encoding="utf-8"))
 
 
 # ----------------------------------------------------------------------
@@ -336,7 +336,7 @@ class TestHumanSession:
 
     def test_session_json_and_log_say_the_line_was_closed(self, tmp_path, daq):
         build(tmp_path, OutcomeTask(human())).run()
-        log_text = next(tmp_path.rglob("*session.log")).read_text()
+        log_text = next(tmp_path.rglob("*session.log")).read_text(encoding="utf-8")
         assert "subject kind: human" in log_text
         assert "reward nidaq (closed: human subject)" in log_text
         record = card(tmp_path)
