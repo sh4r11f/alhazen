@@ -491,8 +491,9 @@
       ? `${t.files} file${t.files === 1 ? '' : 's'} (${size(t.bytes)}) to copy.`
       : 'Everything is already there; uploading again checks it by content.';
     if (t.versions) {
-      summary += ` ${t.versions} changed file${t.versions === 1 ? '' : 's'} will be kept as new `
-        + 'versions beside the old ones.';
+      summary += t.versions === 1
+        ? ' 1 changed file will be kept as a new version beside the old one.'
+        : ` ${t.versions} changed files will be kept as new versions beside the old ones.`;
     }
     if (t.conflicts) {
       summary += ` ${t.conflicts} file${t.conflicts === 1 ? '' : 's'} in sessions differ on the `
