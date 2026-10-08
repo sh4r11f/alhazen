@@ -942,9 +942,9 @@
   function begin(detail, first) {
     opened += 1;
     detail.replaceChildren(first);
-    const still = typeof window.matchMedia === 'function'
-      && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    detail.scrollIntoView({block: 'start', behavior: still ? 'auto' : 'smooth'});
+    // A jump, not an animation: from the end of a long list a smooth scroll
+    // takes seconds, and the reader asked to see the details now.
+    detail.scrollIntoView({block: 'start', behavior: 'auto'});
     return {ticket: opened, epoch: current.epoch};
   }
 

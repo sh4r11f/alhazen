@@ -1867,7 +1867,7 @@ describe('History: Open brings the details into view', () => {
     await settle();
     assert.equal(scrolls(app).length, 1);
     assert.equal(scrolls(app)[0].element, detail(app));
-    assert.equal(scrolls(app)[0].options.block, 'start');
+    assert.deepEqual(plain(scrolls(app)[0].options), { block: 'start', behavior: 'auto' });
     assert.match(detail(app).textContent, /SESSION/);
     assert.equal(app.document.activeElement, detail(app));
     assert.deepEqual(plain(app.document.focused.at(-1).options), { preventScroll: true });
