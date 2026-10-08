@@ -135,7 +135,7 @@
       starting: 'Checking what is already on the archive…',
       copying: `Copying ${size(p.bytes_done || 0)} of ${size(p.bytes_total || 0)}`,
       verifying: 'Verifying every file by content…',
-      done: 'Upload finished',
+      done: 'Last upload finished',
       failed: 'Upload failed',
       cancelled: 'Upload stopped — the next upload resumes it',
     }[job.phase] || job.phase;
