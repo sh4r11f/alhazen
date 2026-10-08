@@ -282,7 +282,11 @@ class Management:
                     "Open it again to see the current text."
                 )
             self.check_rig(project_id, text, str(target))
-            replace_atomically(target, text)
+            # Byte for byte, as a new rig is written below: the text is what
+            # the editor opened (line endings included) plus the edits, so
+            # translating its newlines would turn a CRLF file's \r\n into
+            # \r\r\n on Windows.
+            replace_atomically(target, text, newline="")
         else:
             name = _text(body.get("name"), "The rig's name").strip()
             if not NAME_PATTERN.fullmatch(name) or len(name) > 64:

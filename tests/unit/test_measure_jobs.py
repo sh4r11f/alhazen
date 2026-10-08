@@ -660,7 +660,16 @@ SPIKEGLX = SpikeSourceConfig(backend="spikeglx", host="10.0.0.2", stream="imec0"
 
 class TestNeuralStream:
     def _run(self, tmp_path, monkeypatch, connection):
-        monkeypatch.setattr(builtin.time, "sleep", lambda s: None)
+        # A clock that the skipped sleep still advances: with sleep a no-op
+        # the real monotonic clock can read the same value twice (Windows
+        # ticks every ~16 ms), and a zero listening time is refused.
+        clock = [1000.0]
+
+        def sleep(seconds):
+            clock[0] += seconds
+
+        monkeypatch.setattr(builtin.time, "sleep", sleep)
+        monkeypatch.setattr(builtin.time, "monotonic", lambda: clock[0])
         devices = Devices(
             {"spikes": lambda stack: (stack.callback(connection.close), connection)[1]}
         )

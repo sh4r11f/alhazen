@@ -146,6 +146,9 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   stopped at collection on every OS. The pytest `pythonpath` now includes the
   repository root as well as `tests`. The Measure rig report also reads the
   PsychoPy version through `alhazen.version` (the version-lookup rule).
+  Saving an edited rig on the General page writes the text byte for byte, as
+  creating one already did, so a CRLF rig file no longer gains a stray `\r`
+  per line on Windows.
 
 - **History's Open shows the details where you are looking.** Opening a
   session or a launch drew its details above the two lists, out of sight of
