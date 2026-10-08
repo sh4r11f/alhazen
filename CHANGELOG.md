@@ -162,7 +162,9 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   PsychoPy version through `alhazen.version` (the version-lookup rule).
   Saving an edited rig on the General page writes the text byte for byte, as
   creating one already did, so a CRLF rig file no longer gains a stray `\r`
-  per line on Windows.
+  per line on Windows. Concurrent writes to the people registry take turns
+  inside the server before asking SQLite for its write lock, so a burst of
+  adds no longer fails with `database is locked` (seen on Windows CI).
 
 - **History's Open shows the details where you are looking.** Opening a
   session or a launch drew its details above the two lists, out of sight of

@@ -400,6 +400,13 @@ class PeopleRegistry:
         self.csv_dir = self.directory / "csv"
         self.backup_dir = self.directory / "backups"
         self._export_lock = threading.Lock()
+        # This process's writers take turns here before asking SQLite for the
+        # write lock. Left to SQLite alone, each waiter polls the file lock
+        # and can give up after BUSY_TIMEOUT_MS behind a queue of other
+        # writers and their CSV exports (seen on Windows CI: "database is
+        # locked" with 40 concurrent adds). The busy timeout still covers
+        # another process. Order: _export_lock, then this; never the reverse.
+        self._write_lock = threading.RLock()
         self.directory.mkdir(parents=True, exist_ok=True)
         self._open()
 
@@ -459,7 +466,7 @@ class PeopleRegistry:
     @contextmanager
     def _write(self) -> Iterator[tuple[sqlite3.Connection, int]]:
         """One write transaction, with the database revision it creates."""
-        with self._connection() as db:
+        with self._write_lock, self._connection() as db:
             db.execute("BEGIN IMMEDIATE")
             try:
                 revision = int(_meta(db, "revision")) + 1
@@ -813,7 +820,7 @@ class PeopleRegistry:
                     replace_atomically(path, "\ufeff" + text, newline="")
             except (OSError, sqlite3.Error) as exc:
                 message = f"{type(exc).__name__}: {exc}"
-                with self._connection() as db:
+                with self._write_lock, self._connection() as db:
                     _set_meta(db, {"export_error": message, "export_attempted": _now()})
                 if raise_errors:
                     raise PeopleError(
@@ -821,7 +828,7 @@ class PeopleRegistry:
                         f"{message}"
                     ) from exc
                 return self.export_status()
-            with self._connection() as db:
+            with self._write_lock, self._connection() as db:
                 db.execute("BEGIN IMMEDIATE")
                 done = int(_meta(db, "exported_revision"))
                 if revision > done:
