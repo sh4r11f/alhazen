@@ -670,6 +670,14 @@ def add_mode_arguments(parser: argparse.ArgumentParser) -> None:
         metavar="PATH",
         help="measure mode: keep the progress of the selected measurements in this JSON file",
     )
+    # Asked by the experiment workspace before a launch (alhazen.cli.duration):
+    # the same command line, answered with an estimate instead of a session.
+    parser.add_argument(
+        "--estimate-duration",
+        action="store_true",
+        help="print, as JSON, how long this session would take, and exit: opens no window "
+        "or device, asks for no subject, writes nothing",
+    )
 
 
 def _run_session(
@@ -701,6 +709,13 @@ def _run_session(
     from alhazen.cli.tasks import installed_tasks, load_task_class
 
     mode = Mode(args.mode)
+
+    # The workspace's question before a launch: answered from the same
+    # arguments, before anything here prompts, opens or writes.
+    if getattr(args, "estimate_duration", False):
+        from alhazen.cli.duration import estimate_duration
+
+        return estimate_duration(args, task_class)
 
     # Refused before anything loads: a flag the mode cannot honour is a
     # usage error, and finding that out after the rig opened a window is
