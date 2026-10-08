@@ -1864,6 +1864,7 @@ function navExpanded() {
   try {
     ids = JSON.parse(stored);
   } catch (e) {
+    if (!(e instanceof SyntaxError)) throw e;
     console.warn(`Ignoring the unreadable sidebar state ${JSON.stringify(stored)}: ${e.message}`);
     return new Set();
   }
