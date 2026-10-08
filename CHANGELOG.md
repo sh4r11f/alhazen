@@ -99,6 +99,17 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Changed
 
+- **Every experiment stays in the workspace sidebar.** The sidebar lists every
+  registered experiment that is not archived, on every page including the
+  Experiments page, each a group that expands to its **General**, **Run**,
+  **Data** and **History** pages. Expanding a group only shows or hides its
+  pages; going to a page is a link, so expanding another experiment never
+  changes the page shown or stops a run. The open experiment is expanded when
+  it is opened, the groups the reader expanded or collapsed are kept across
+  pages and reloads (localStorage `alhazen-workspace-nav-open`), and keyboard
+  focus stays on a sidebar control when a poll redraws it. Before, only the
+  open experiment appeared.
+
 - **No "Attempting to measure frame rate of screen" banner.** The window no
   longer runs PsychoPy's own frame-rate check (its result was unused); the one
   measurement a session uses runs quietly and still refuses an unstable or
@@ -118,6 +129,13 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   `preview.py` only.
 
 ### Fixed
+
+- **History's Open shows the details where you are looking.** Opening a
+  session or a launch drew its details above the two lists, out of sight of
+  a row far down a list. The page now jumps so the details are at the top of
+  the window, once per Open (mouse or keyboard), and moves keyboard focus to
+  them; a poll or the filter never moves the page. A session whose details
+  arrive after a later Open no longer replaces the newer details.
 
 - **The camera panel's iris size control stays where it is when the eye
   is lost.** With no eye in the image, the *eyes* value above the picture
