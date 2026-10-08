@@ -23,7 +23,7 @@ resolution-markers = [
 
 [[package]]
 name = "alhazen-vision"
-version = "2.10.0"
+version = "2.11.0"
 source = { editable = "." }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
