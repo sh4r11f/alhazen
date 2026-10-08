@@ -33,6 +33,7 @@ from alhazen.cli.workspace import (
     path_inside,
 )
 from alhazen.cli.workspace_data import DataView
+from alhazen.cli.workspace_estimate import DurationEstimator, EstimateRequest
 from alhazen.cli.workspace_manage import Management
 from alhazen.errors import AlhazenError
 
@@ -51,6 +52,10 @@ PAGE_ASSETS = {
     # any shell mounts into containers it owns).
     "/workspace_measure.js": ("workspace_measure.js", "text/javascript; charset=utf-8"),
     "/workspace_measure.css": ("workspace_measure.css", "text/css; charset=utf-8"),
+    # The launch's duration estimate (workspace_duration.js; POST /api/estimate,
+    # workspace_estimate.py, answers it).
+    "/workspace_duration.js": ("workspace_duration.js", "text/javascript; charset=utf-8"),
+    "/workspace_duration.css": ("workspace_duration.css", "text/css; charset=utf-8"),
     "/workspace.css": ("workspace.css", "text/css; charset=utf-8"),
     "/favicon.svg": ("favicon.svg", "image/svg+xml"),
     "/fonts/Nunito-latin.woff2": ("fonts/Nunito-latin.woff2", "font/woff2"),
@@ -174,6 +179,8 @@ class DashboardServer(ThreadingHTTPServer):
         self.data = DataView(workspace)
         # The management pages' reads and writes (workspace_manage.py).
         self.manage = Management(workspace, self.data)
+        # The Run page's duration estimate (workspace_estimate.py).
+        self.estimates = DurationEstimator(workspace)
         super().__init__(("127.0.0.1", port), Handler)
 
     @property
@@ -382,6 +389,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"values": parse_parameters(body["text"])})
             elif path == "/api/runs":
                 self._json(workspace.start(Launch.model_validate(body)), 201)
+            elif path == "/api/estimate":
+                self._json(self.server.estimates.estimate(EstimateRequest.model_validate(body)))
             elif path == "/api/stop":
                 workspace.stop(body.get("id", ""))
                 self._json({"ok": True})
