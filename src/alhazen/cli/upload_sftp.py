@@ -314,19 +314,23 @@ class SftpSession:
         assert answers is not None
         return answers
 
-    def _keys(self) -> list[paramiko.PKey]:
+    def _keys(self, notes: list[str]) -> list[paramiko.PKey]:
+        """Keys to try first: the agent's, then the usual files. One that
+        cannot be used (an encrypted file: there is no one to ask for its
+        passphrase) is named in ``notes``, said if the whole login fails."""
         keys: list[paramiko.PKey] = []
         if self.use_agent:
-            # No agent here is fine: the other ways still follow.
-            with contextlib.suppress(paramiko.SSHException, OSError):
+            try:
                 keys.extend(paramiko.Agent().get_keys())
+            except (paramiko.SSHException, OSError) as exc:
+                notes.append(f"SSH agent: {exc}")
         for path in self.key_files:
             if not path.is_file():
                 continue
             try:
                 keys.append(paramiko.PKey.from_path(path))
-            except (paramiko.SSHException, OSError, ValueError):
-                continue  # an encrypted or unreadable key is skipped; password login follows
+            except (paramiko.SSHException, OSError, ValueError) as exc:
+                notes.append(f"{path.name} not used: {exc}")
         return keys
 
     def _authenticate(self, transport: paramiko.Transport, user: str) -> None:
@@ -335,11 +339,13 @@ class SftpSession:
             return
         except paramiko.BadAuthenticationType as exc:
             methods = list(exc.allowed_types)
+        notes: list[str] = []
         if "publickey" in methods:
-            for key in self._keys():
+            for key in self._keys(notes):
                 try:
                     methods = transport.auth_publickey(user, key) or methods
-                except paramiko.AuthenticationException:
+                except paramiko.AuthenticationException as exc:
+                    notes.append(f"{key.get_name()} key refused: {exc}")
                     continue
                 if transport.is_authenticated():
                     return
@@ -354,6 +360,7 @@ class SftpSession:
         if not transport.is_authenticated():
             raise paramiko.AuthenticationException(
                 f"no login method the host offers ({', '.join(methods)}) succeeded"
+                + (f"; {'; '.join(notes)}" if notes else "")
             )
 
 
@@ -481,13 +488,7 @@ class SftpTransport:
         remote = self._remote(folder)
         absolute = {f"{remote}/{check_relative(p)}": p for p in paths}
         with self._sftp() as sftp:
-            present = []
-            for path in absolute:
-                try:
-                    if stat.S_ISREG(sftp.stat(path).st_mode or 0):
-                        present.append(path)
-                except FileNotFoundError:
-                    continue
+            present = [path for path in absolute if _is_file(sftp, path)]
             return {absolute[a]: digest for a, digest in self._sha(sftp, present).items()}
 
     # -- copying ------------------------------------------------------------------
@@ -544,7 +545,11 @@ class SftpTransport:
                         sftp.rename(partial, target)  # SFTP rename never replaces a file
                         written[item.remote] = item.sha256
                     except OSError:
-                        pass  # a file took the name meanwhile; verification compares it
+                        # Refused because a file took the name meanwhile: it
+                        # stays, and verification compares it. Anything else
+                        # is a failure of the upload.
+                        if not _exists(sftp, target):
+                            raise
                 if _exists(sftp, partial):
                     sftp.remove(partial)
                 # Other partial copies may still be in it; then it stays for them.
@@ -590,3 +595,10 @@ def _size(sftp: paramiko.SFTPClient, path: str) -> int | None:
 
 def _exists(sftp: paramiko.SFTPClient, path: str) -> bool:
     return _size(sftp, path) is not None
+
+
+def _is_file(sftp: paramiko.SFTPClient, path: str) -> bool:
+    try:
+        return stat.S_ISREG(sftp.stat(path).st_mode or 0)
+    except FileNotFoundError:
+        return False
