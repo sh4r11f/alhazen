@@ -37,15 +37,19 @@ The page opens on **Experiments**: every registered experiment with its
 folder, protocol version (its `pyproject.toml` version), environment (Python,
 alhazen, PsychoPy), whether it can run, and its last launch, with a search
 box and the archive below. **Register experiment** adds a folder; a folder
-already registered is refused by name. Opening an experiment shows its four
-pages in the sidebar, as nodes on one rail:
+already registered is refused by name. The sidebar lists every registered
+experiment that is not archived, on every page; each expands (its title is a
+button) to its four pages, as nodes on one rail. Expanding only shows the
+pages; a page is a link, so expanding another experiment leaves the page shown
+and any run alone. The experiment you open is expanded, and the groups you
+expand or collapse are remembered in the browser:
 
 | Page | What it is |
 | --- | --- |
 | **General** | The experiment's notes (description, notes), its registration (folder, interpreter, versions, whether its alhazen records the experimenter), and Project settings / Archive. Its **subjects** and **experimenters**: add, edit, archive, import from the data folders' `participants.tsv`, and read back an edited CSV copy. Its **rigs**: the experiment's own YAML files, editable, and the shared rigs its alhazen ships, read only, with *Make local* to write a `configs/rig-<name>.yaml` that extends one. |
 | **Run** | The launch form as before, with **Subject** and **Experimenter** menus of the records on General (a subject that is not registered can still be typed under *Type an unregistered subject instead*). |
 | **Data** | The Data view ([below](#data)). |
-| **History** | Every session folder in the experiment's data folders — launched from here or from a terminal — and every launch this workspace made, joined where a launch's console names its folder. A session opens to its records, its log, its files (downloads) and its saved live monitor page; a launch to its console, `launch.json` and `run.json`. What a record does not say is "not recorded", not a guess. |
+| **History** | Every session folder in the experiment's data folders — launched from here or from a terminal — and every launch this workspace made, joined where a launch's console names its folder. A session opens to its records, its log, its files (downloads) and its saved live monitor page; a launch to its console, `launch.json` and `run.json`. The details appear above the lists, and Open jumps the page to them. What a record does not say is "not recorded", not a guess. |
 
 Each screen is an address — `/?view=experiments`, `/?project=<id>&view=run`
 (or `general`, `data`, `history`) — so Back, Forward, a reload and a link in
