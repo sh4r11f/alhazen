@@ -44,6 +44,7 @@ the active run is writing never is.
 
 from __future__ import annotations
 
+import shutil
 import sqlite3
 import tempfile
 import threading
@@ -239,6 +240,8 @@ class Uploads:
             wanted = set(runs) if whole else set(chosen)
             sessions += len(wanted)
             for rel, path, size in local_tree(root.path):
+                if _companion(rel):
+                    continue  # part of its database's snapshot
                 run_id = next((r for r in runs if rel.startswith(r + "/")), None)
                 if run_id is None:
                     group.entries.append(_entry(path, rel, size, SHARED, False, stage))
@@ -653,22 +656,68 @@ def _note(group: Group, reason: str) -> None:
         group.skipped.append(reason)
 
 
+SQLITE_SUFFIXES = (".sqlite3", ".sqlite", ".db")
+# A database's companions: folded into its snapshot, never uploaded alone.
+SQLITE_COMPANIONS = ("-wal", "-shm", "-journal")
+
+
+def _companion(rel: str) -> bool:
+    """Is ``rel`` a SQLite database's write-ahead log, shared memory or
+    journal (``experiment.sqlite3-wal``)?"""
+    return any(
+        rel.endswith(c) and rel[: -len(c)].endswith(SQLITE_SUFFIXES) for c in SQLITE_COMPANIONS
+    )
+
+
 def _entry(path: Path, rel: str, size: int, item: str, session: bool, stage: Path) -> Entry:
     """An entry; a SQLite database is replaced by a consistent snapshot."""
-    if PurePosixPath(rel).suffix in (".sqlite3", ".sqlite", ".db"):
-        copy = stage / uuid.uuid4().hex / PurePosixPath(rel).name
-        copy.parent.mkdir(parents=True)
-        source = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
-        try:
-            target = sqlite3.connect(copy)
-            try:
-                source.backup(target)
-            finally:
-                target.close()
-        finally:
-            source.close()
+    if PurePosixPath(rel).suffix in SQLITE_SUFFIXES:
+        copy = _snapshot(path, stage / uuid.uuid4().hex)
         return Entry(copy, rel, copy.stat().st_size, item, session)
     return Entry(path, rel, size, item, session)
+
+
+def _snapshot(path: Path, folder: Path, attempts: int = 3) -> Path:
+    """A self-contained copy of a SQLite database, made without opening the
+    original: opening it — even read-only — can leave ``-wal``/``-shm``
+    files in the data folder. The file and its write-ahead log are copied
+    aside, the copy is opened there and backed up into one file in rollback
+    mode, and checked. A copy torn by a writer fails the check and is made
+    again."""
+    folder.mkdir(parents=True)
+    target = folder / path.name
+    problem = ""
+    for _ in range(attempts):
+        scratch = folder / "scratch"
+        shutil.rmtree(scratch, ignore_errors=True)
+        scratch.mkdir()
+        shutil.copy2(path, scratch / path.name)
+        wal = path.with_name(path.name + "-wal")
+        if wal.is_file():
+            shutil.copy2(wal, scratch / wal.name)
+        target.unlink(missing_ok=True)
+        try:
+            source = sqlite3.connect(scratch / path.name)
+            try:
+                out = sqlite3.connect(target)
+                try:
+                    source.backup(out)
+                    out.execute("PRAGMA journal_mode=DELETE")
+                    (verdict,) = out.execute("PRAGMA integrity_check").fetchone()
+                finally:
+                    out.close()
+            finally:
+                source.close()
+        except sqlite3.DatabaseError as exc:
+            verdict = str(exc)
+        shutil.rmtree(scratch, ignore_errors=True)
+        if verdict == "ok":
+            return target
+        problem = verdict
+    raise UploadError(
+        f"{path.name} could not be copied consistently ({problem}); "
+        "upload again when nothing is writing it"
+    )
 
 
 def _items(group: Group) -> list[dict[str, Any]]:

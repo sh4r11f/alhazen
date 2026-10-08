@@ -212,7 +212,7 @@
     const host = state.host ? `${state.user}@${state.host}` : 'the remote host';
     const actions = el(ctx, 'div', 'up-actions');
     if (state.state === 'connected') {
-      box.append(lamp(ctx, 'ok', `CONNECTED · ${host}`));
+      // The view's connection line already shows the lamp.
       if (state.message) box.append(el(ctx, 'p', 'up-note', state.message));
       actions.append(button(ctx, 'Disconnect', 'quiet', () => login(ctx, where, 'disconnect')));
     } else if (state.state === 'connecting') {

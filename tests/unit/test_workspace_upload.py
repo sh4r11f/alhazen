@@ -228,6 +228,36 @@ class TestLocalUpload:
         (row,) = history["sessions"]  # uploads/ is not mistaken for a run
         assert row["upload"]["status"] == "verified"
 
+    def test_a_database_in_wal_mode_is_snapshot_without_touching_the_folder(
+        self, local, workspace, archive
+    ):
+        call, _ = local
+        key = pid(workspace)
+        root = Path(workspace.project(key)["path"])
+        session(root)
+        live = sqlite3.connect(root / "data" / "experiment.sqlite3")
+        live.execute("PRAGMA journal_mode=WAL")
+        live.execute("PRAGMA wal_autocheckpoint=0")
+        live.execute("insert into runs values ('only-in-the-wal')")
+        live.commit()  # committed, still in experiment.sqlite3-wal
+        try:
+            assert (root / "data" / "experiment.sqlite3-wal").is_file()
+            before = sorted(p.name for p in (root / "data").iterdir())
+            selection = [{"root": roots(call, key)["real"], "runs": [RUN]}]
+            call("/api/upload/preview", {"project": key, "selection": selection})
+            assert upload(call, key, selection)["phase"] == "done"
+            after = sorted(p.name for p in (root / "data").iterdir())
+            assert after == sorted([*before, RECEIPTS_DIR])  # nothing else appeared
+        finally:
+            live.close()
+        names = {p.name for p in (archive / SLUG).iterdir()}
+        assert not {n for n in names if n.endswith(("-wal", "-shm", "-journal"))}
+        copy = sqlite3.connect(archive / SLUG / "experiment.sqlite3")
+        rows = {r for (r,) in copy.execute("select id from runs")}
+        mode = copy.execute("PRAGMA journal_mode").fetchone()[0]
+        copy.close()
+        assert rows == {"r1", "only-in-the-wal"} and mode == "delete"
+
     def test_again_copies_nothing_and_never_deletes(self, local, workspace, archive):
         call, _ = local
         key = pid(workspace)
