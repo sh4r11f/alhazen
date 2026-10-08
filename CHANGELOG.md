@@ -29,6 +29,20 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Added
 
+- **Workspace: a session-length estimate before launch.** The Run page's
+  launch footer says how long the selected launch should take, worked out
+  from the effective mode, rig and Task parameters (the test/simulate
+  reduction included): trial, block and break counts from the task's own
+  scheduler, per-trial time from the new optional `Task.trial_timing` hook
+  (`alhazen.task.duration`: `Span`, `TrialTiming`, `Schedule`), a range where
+  timing jitters, and what it leaves out (calibration, breaks the participant
+  extends, retried and aborted trials) said in words. Open-ended or adaptive
+  runs say so instead of a number; a project whose alhazen predates the
+  `duration-estimate` capability says the estimate is unavailable.
+  `run.py --estimate-duration` prints the estimate as JSON without opening a
+  display or device or writing a run folder; the workspace asks it through
+  `POST /api/estimate`. The params hook is not run for an estimate.
+
 - **Demo: the furniture keeps off a large stimulus.** A task can say where
   its demo stimulus draws (`Task.demo_stimulus_extent(setup)`: a
   `StimulusExtent` or four numbers, degrees from the window's centre). The
