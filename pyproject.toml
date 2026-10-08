@@ -157,7 +157,9 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["tests"]
+# "." lets a test module import a shared one as tests.unit.<name>; "tests"
+# keeps the older `from support import ...` form working.
+pythonpath = [".", "tests"]
 addopts = "-m 'not display'"
 markers = [
   "display: needs a real window (PsychoPy installed and a screen attached); run manually with -m display",

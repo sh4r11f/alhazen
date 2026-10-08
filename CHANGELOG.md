@@ -140,6 +140,13 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Fixed
 
+- **The test suite collects under a plain `pytest` again.** Five test modules
+  added with the experiment-management work import shared helpers as
+  `tests.unit.<module>`, which only `python -m pytest` could find, so CI
+  stopped at collection on every OS. The pytest `pythonpath` now includes the
+  repository root as well as `tests`. The Measure rig report also reads the
+  PsychoPy version through `alhazen.version` (the version-lookup rule).
+
 - **History's Open shows the details where you are looking.** Opening a
   session or a launch drew its details above the two lists, out of sight of
   a row far down a list. The page now jumps so the details are at the top of
