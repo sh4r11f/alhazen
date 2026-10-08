@@ -2181,55 +2181,88 @@ footer {
   padding: 18px 22px;
 }
 
-/* ==== LAYOUT PROTOTYPES (temporary: ?layout=a|b|c; removed after the choice) ==== */
-#workspace[data-layout] .history-card { display: flex; flex-direction: column; }
-/* A: sticky bench — the results column follows the reader down the long
-   form, filling the window; the run history takes the rest of its height. */
-@media (min-width: 861px) {
-  #workspace[data-layout=a] .results-column {
-    position: sticky; top: 16px; max-height: calc(100vh - 32px); gap: 16px;
+/* ---- Run page layout: the bench (chosen 2026-10-08 over a two-column deck
+ * and a run strip; screenshots and reasons on the project page) ----
+ * The form is long and scrolls with the page; the results column — the
+ * upload card, the run output and the recent runs — sticks beside it and
+ * fills the window, so it is in view wherever the reader is in the form,
+ * its bottom lines up with the window's, and the run history gets the
+ * height that is left instead of a fixed 380 px box that cut it off. Each
+ * part scrolls inside itself. A window too short for that (under 720 px)
+ * keeps the plain flow. */
+.history-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.history-card .card-heading a {
+  font-size: 13px;
+  color: var(--muted);
+  text-decoration: none;
+  margin-left: auto;
+}
+
+.history-card .card-heading a:hover {
+  color: var(--ink);
+}
+
+@media (min-width: 861px) and (min-height: 720px) {
+  .results-column {
+    position: sticky;
+    top: 16px;
+    max-height: calc(100vh - 32px);
+    gap: 16px;
   }
-  #workspace[data-layout=a] .output-card { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
-  #workspace[data-layout=a] #media-panel, #workspace[data-layout=a] #console-panel,
-  #workspace[data-layout=a] #monitor-panel { flex: 1 1 auto; min-height: 0; overflow: auto; }
-  #workspace[data-layout=a] .output-empty { min-height: 0; height: 100%; }
-  #workspace[data-layout=a] .history-card { flex: 0 1 300px; min-height: 160px; }
-  #workspace[data-layout=a] #history { max-height: none; flex: 1; overflow: auto; }
-}
-/* B: deck — the form spread over two balanced columns, the launch along the
-   bottom; output and history side by side, the same height. */
-@media (min-width: 1101px) {
-  #workspace[data-layout=b] .workspace-grid { grid-template-columns: minmax(0, 1fr); }
-  #workspace[data-layout=b] #launch-form { columns: 2; column-gap: 48px; }
-  #workspace[data-layout=b] #launch-form > .stage { break-inside: avoid; }
-  #workspace[data-layout=b] .launch-footer { column-span: all; position: relative; }
-  #workspace[data-layout=b] .results-column {
-    display: grid; grid-template-columns: minmax(0, 2fr) minmax(300px, 1fr);
-    grid-template-areas: "upload upload" "output history"; align-items: stretch;
+  .output-card {
+    flex: 1 1 auto;
+    min-height: 300px;
+    display: flex;
+    flex-direction: column;
   }
-  #workspace[data-layout=b] #upload-card { grid-area: upload; }
-  #workspace[data-layout=b] .output-card { grid-area: output; }
-  #workspace[data-layout=b] .history-card { grid-area: history; min-height: 0; }
-  #workspace[data-layout=b] #history { max-height: none; flex: 1 1 0; overflow: auto; }
-}
-/* C: run strip — recent runs as a row of tickets above the bench; the
-   results column (upload, output) sticks beside the form. */
-#workspace[data-layout=c] > .history-card { margin-bottom: 20px; }
-#workspace[data-layout=c] #history {
-  display: flex; gap: 10px; overflow-x: auto; max-height: none; padding: 12px 16px;
-  scroll-snap-type: x proximity;
-}
-#workspace[data-layout=c] .history-row {
-  flex: 0 0 280px; border: 1px solid var(--line); border-radius: 10px; scroll-snap-align: start;
-}
-#workspace[data-layout=c] .history-row:last-child { border-bottom: 1px solid var(--line); }
-@media (min-width: 861px) {
-  #workspace[data-layout=c] .results-column {
-    position: sticky; top: 16px; max-height: calc(100vh - 32px); gap: 16px;
+  #media-panel, #console-panel, #monitor-panel {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
   }
-  #workspace[data-layout=c] .output-card { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
-  #workspace[data-layout=c] #media-panel, #workspace[data-layout=c] #console-panel,
-  #workspace[data-layout=c] #monitor-panel { flex: 1 1 auto; min-height: 0; overflow: auto; }
-  #workspace[data-layout=c] .output-empty { min-height: 0; height: 100%; }
+  .output-empty {
+    min-height: 0;
+    height: 100%;
+  }
+  #console {
+    max-height: none;
+  }
+  #monitor-frame {
+    height: 100%;
+    min-height: 420px;
+  }
+  .history-card {
+    flex: 0 1 300px;
+    min-height: 170px;
+  }
+  #history {
+    max-height: none;
+    flex: 1 1 auto;
+    overflow: auto;
+  }
 }
-/* ==== END LAYOUT PROTOTYPES ==== */
+
+/* One column: what just finished comes first. The upload card leads (it
+ * shows only once a session has ended), then the form, the output and the
+ * history. */
+@media (max-width: 860px) {
+  .results-column {
+    display: contents;
+  }
+  #upload-card {
+    order: -1;
+  }
+  .output-card {
+    order: 1;
+  }
+  .history-card {
+    order: 2;
+  }
+  .workspace-grid {
+    gap: 18px;
+  }
+}

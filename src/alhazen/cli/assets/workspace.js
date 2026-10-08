@@ -2173,6 +2173,7 @@ function renderHistory() {
   if (signature === historySignature) return;
   historySignature = signature;
   $('history-count').textContent = `${runs.length} RUN${runs.length === 1 ? '' : 'S'}`;
+  $('history-all').href = addressOf(selected, 'history');
   const rows = runs.map((run) => {
     const button = node('button', 'history-row' + (run.id === runId ? ' selected' : ''));
     const text = node('span', 'history-text');
@@ -2747,6 +2748,14 @@ $('launch-form').addEventListener('submit', guard(async (event) => {
   }
 }));
 
+// "All in History →" in the Recent runs heading: its address opens in a new
+// tab as usual; a plain click goes there in place.
+$('history-all').addEventListener('click', (event) => {
+  if (!plainClick(event) || !selected) return;
+  event.preventDefault();
+  guard(() => navigate(selected, 'history'))();
+});
+
 // The duration estimate beside the Start button: asked of the project's own
 // alhazen (POST /api/estimate) whenever the form changes what would run.
 // Field edits do not all pass through updateLaunch, so the form's own input
@@ -2770,13 +2779,5 @@ if (window.DurationEstimate) {
   $('launch-form').addEventListener('input', () => durationEstimate.update());
   $('launch-form').addEventListener('change', () => durationEstimate.update());
 }
-
-// [LAYOUT PROTOTYPE — temporary, removed after the choice] ?layout=a|b|c
-(() => {
-  const chosen = new URLSearchParams(location.search).get('layout');
-  if (!chosen) return;
-  $('workspace').dataset.layout = chosen;
-  if (chosen === 'c') $('workspace').prepend(document.querySelector('.history-card'));
-})();
 
 poll();
