@@ -1,8 +1,9 @@
 """A stand-in SSH/SFTP server for the upload tests (paramiko, in-process).
 
 Serves this computer's own filesystem over SFTP, logs a user in with
-keyboard-interactive in two rounds — a password, then a second-factor code — as a host with a second factor does, and runs
-commands (``sha256sum``) unless told not to, like an SFTP-only account.
+keyboard-interactive in two rounds — a password, then a second-factor
+code — as a host with a second factor does, and runs commands
+(``sha256sum``) unless told not to, like an SFTP-only account.
 SFTP rename refuses to replace an existing file, as OpenSSH's does.
 Loopback only; for tests.
 
