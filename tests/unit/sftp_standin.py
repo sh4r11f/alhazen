@@ -1,23 +1,65 @@
 """A stand-in SSH/SFTP server for the upload tests (paramiko, in-process).
 
-Serves this computer's own filesystem over SFTP (remote paths are local
-paths), logs a user in with keyboard-interactive in two rounds — a password,
-then a second-factor code — as a host with a second factor does, and runs
+Serves this computer's own filesystem over SFTP, logs a user in with
+keyboard-interactive in two rounds — a password, then a second-factor code — as a host with a second factor does, and runs
 commands (``sha256sum``) unless told not to, like an SFTP-only account.
 SFTP rename refuses to replace an existing file, as OpenSSH's does.
 Loopback only; for tests.
+
+Remote paths are POSIX, as on a real archive host. They name local paths on
+the drive the temporary folder is on: ``remote_path(p)`` gives the remote
+name of a local path and the server maps it back, so the same tests run on
+Windows (where ``/Users/...`` is ``C:\\Users\\...``) as on Linux and macOS
+(where the two are the same string). ``sha256sum`` is answered in-process,
+in sha256sum's own format, so a host check does not depend on the tools this
+computer happens to have.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
+import posixpath
+import shlex
 import socket
 import subprocess
+import tempfile
 import threading
+from pathlib import Path
 
 import paramiko
 from paramiko import SFTPAttributes, SFTPHandle, SFTPServer, SFTPServerInterface
 from paramiko.sftp import SFTP_FAILURE, SFTP_OK
+
+# The drive the tests' temporary folders are on: "/" on Linux and macOS.
+_ANCHOR = Path(tempfile.gettempdir()).anchor
+
+
+def remote_path(local: os.PathLike[str] | str) -> str:
+    """The stand-in's remote (POSIX) name for a local path on ``_ANCHOR``."""
+    parts = Path(local).resolve().parts
+    return "/" + "/".join(parts[1:])
+
+
+def local_path(remote: str) -> str:
+    """The local path a remote (POSIX) path names."""
+    return os.path.join(_ANCHOR, *[part for part in remote.split("/") if part])
+
+
+def _sha256sum(command: str) -> tuple[bytes, int]:
+    """``sha256sum -- <paths>`` over remote paths, answered here; anything
+    else is run by the shell as before."""
+    words = shlex.split(command)
+    paths = [w for w in words[1:] if w != "--"]
+    out, code = [], 0
+    for path in paths:
+        try:
+            digest = hashlib.sha256(Path(local_path(path)).read_bytes()).hexdigest()
+        except OSError:
+            code = 1
+            continue
+        out.append(f"{digest}  {path}\n")
+    return "".join(out).encode(), code
 
 
 class _Handle(SFTPHandle):
@@ -31,7 +73,11 @@ class _Handle(SFTPHandle):
 class FilesystemSFTP(SFTPServerInterface):
     """SFTP over the real filesystem, paths as given."""
 
+    def canonicalize(self, path):
+        return posixpath.normpath(path if path.startswith("/") else "/" + path)
+
     def list_folder(self, path):
+        path = local_path(path)
         try:
             return [
                 SFTPAttributes.from_stat(os.lstat(os.path.join(path, n)), filename=n)
@@ -42,7 +88,7 @@ class FilesystemSFTP(SFTPServerInterface):
 
     def stat(self, path):
         try:
-            return SFTPAttributes.from_stat(os.stat(path))
+            return SFTPAttributes.from_stat(os.stat(local_path(path)))
         except OSError as e:
             return SFTPServer.convert_errno(e.errno)
 
@@ -50,7 +96,7 @@ class FilesystemSFTP(SFTPServerInterface):
 
     def open(self, path, flags, attr):
         try:
-            fd = os.open(path, flags | getattr(os, "O_BINARY", 0), 0o644)
+            fd = os.open(local_path(path), flags | getattr(os, "O_BINARY", 0), 0o644)
         except OSError as e:
             return SFTPServer.convert_errno(e.errno)
         if flags & os.O_WRONLY:
@@ -66,12 +112,13 @@ class FilesystemSFTP(SFTPServerInterface):
 
     def remove(self, path):
         try:
-            os.remove(path)
+            os.remove(local_path(path))
         except OSError as e:
             return SFTPServer.convert_errno(e.errno)
         return SFTP_OK
 
     def rename(self, oldpath, newpath):
+        oldpath, newpath = local_path(oldpath), local_path(newpath)
         if os.path.exists(newpath):
             return SFTP_FAILURE  # SFTP's rename never replaces a file
         try:
@@ -82,14 +129,14 @@ class FilesystemSFTP(SFTPServerInterface):
 
     def mkdir(self, path, attr):
         try:
-            os.mkdir(path)
+            os.mkdir(local_path(path))
         except OSError as e:
             return SFTPServer.convert_errno(e.errno)
         return SFTP_OK
 
     def rmdir(self, path):
         try:
-            os.rmdir(path)
+            os.rmdir(local_path(path))
         except OSError as e:
             return SFTPServer.convert_errno(e.errno)
         return SFTP_OK
@@ -137,9 +184,14 @@ class _Server(paramiko.ServerInterface):
         self.standin.commands.append(command.decode())
 
         def run():
-            done = subprocess.run(command.decode(), shell=True, capture_output=True)
-            channel.sendall(done.stdout)
-            channel.send_exit_status(done.returncode)
+            text = command.decode()
+            if text.startswith("sha256sum"):
+                stdout, code = _sha256sum(text)
+            else:
+                done = subprocess.run(text, shell=True, capture_output=True)
+                stdout, code = done.stdout, done.returncode
+            channel.sendall(stdout)
+            channel.send_exit_status(code)
             channel.close()
 
         threading.Thread(target=run, daemon=True).start()

@@ -20,13 +20,14 @@ from pathlib import Path
 import paramiko
 import pytest
 from tests.unit import test_workspace as base
-from tests.unit.sftp_standin import StandIn
+from tests.unit.sftp_standin import StandIn, remote_path
 from tests.unit.test_workspace_manage import http, pid  # noqa: F401  (fixtures)
 
 from alhazen.cli.upload_receipts import RECEIPTS_DIR, latest, receipts, write_receipt
 from alhazen.cli.upload_sftp import KNOWN_HOSTS_FILE, SftpSession, SftpTransport
 from alhazen.cli.upload_transport import (
     PARTIAL_DIR,
+    RSYNC_MINIMUM,
     Cancelled,
     LocalCopy,
     Progress,
@@ -34,6 +35,7 @@ from alhazen.cli.upload_transport import (
     RsyncSsh,
     UploadError,
     UploadSettings,
+    _version,
     experiment_folder,
     is_version_of,
     load_settings,
@@ -502,7 +504,10 @@ class TestLaunchSession:
         found = out["session"]
         assert found["run"] == "v0.1.0/sub-007/ses-001/run-01_task-demo"
         assert found["root_kind"] == "rehearsal" and found["upload"] is None
-        assert found["destination"] == f"{archive}/{SLUG}-rehearsal/{found['run']}"
+        assert (
+            Path(found["destination"]).resolve()
+            == (Path(archive) / f"{SLUG}-rehearsal" / found["run"]).resolve()
+        )
         assert call(f"/api/upload/launch-session?project={key}&launch=nope")[0] == 404
 
 
@@ -511,7 +516,7 @@ class TestLaunchSession:
 
 def settings_for(server, base_path):
     return UploadSettings(
-        user="alice", host="127.0.0.1", port=server.port, base_path=str(base_path)
+        user="alice", host="127.0.0.1", port=server.port, base_path=remote_path(base_path)
     )
 
 
@@ -628,7 +633,9 @@ class TestSftpTransport:
                 "a/b/file.bin": sha256_file(local)
             }
             assert any(c.startswith("sha256sum") for c in server.commands)  # on the host
-            assert transport.destination("exp") == f"alice@127.0.0.1:{server.port}:{remote}/exp"
+            assert transport.destination("exp") == (
+                f"alice@127.0.0.1:{server.port}:{remote_path(remote)}/exp"
+            )
             session.close()
 
     def test_resume_from_a_partial_copy_and_restart_a_bad_one(self, tmp_path):
@@ -710,7 +717,7 @@ class TestSftpThroughTheDashboard:
                         "user": "alice",
                         "host": "127.0.0.1",
                         "port": server.port,
-                        "base_path": str(remote),
+                        "base_path": remote_path(remote),
                         "label": "Vault",
                     }
                 },
@@ -757,9 +764,20 @@ while i < len(args):
 sys.exit(subprocess.call(" ".join(rest), shell=True))
 """
 
+
+def _rsync_usable() -> bool:
+    """Whether this computer has an rsync the transport accepts (3.1 or
+    newer; macOS ships 2.6, which the transport refuses by design)."""
+    if shutil.which("rsync") is None or sys.platform == "win32":
+        return False
+    answer = subprocess.run(["rsync", "--version"], capture_output=True, text=True, timeout=10)
+    version = _version(answer.stdout)
+    return version is not None and version >= RSYNC_MINIMUM
+
+
 needs_rsync = pytest.mark.skipif(
-    shutil.which("rsync") is None or sys.platform == "win32",
-    reason="rsync is not installed here (the optional transport; SFTP needs nothing)",
+    not _rsync_usable(),
+    reason="no rsync 3.1 or newer here (the optional transport; SFTP needs nothing)",
 )
 
 
