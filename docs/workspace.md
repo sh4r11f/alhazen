@@ -696,6 +696,87 @@ view only lists and shows the images they produce, as the Run card shows a
 run's `figures/` today. The places to extend are marked in both files'
 header comments.
 
+## Upload to an archive
+
+Sessions are collected on the rig; the archive is somewhere else. The
+dashboard copies a finished session there, or many at once, and keeps a
+receipt of what it copied.
+
+**Where.** A session goes to
+`<remote base path>/<experiment>/<its own path>`: the experiment's
+`[project]` name as its folder, then the run's
+`v<version>/sub-<ID>/ses-<NNN>/run-<NN>_task-<task>` exactly as on the rig.
+Rehearsal data (test, simulate) goes to `<experiment>-rehearsal`, so practice
+runs never land among real ones. Only session folders are copied — not the
+data folder's database, `participants.tsv` or calibration records.
+
+**Settings.** Open *Settings* beside any Upload button. They are this
+computer's and are kept only in the workspace's state directory
+(`upload.json` beside `projects.json`), never in an experiment or in
+alhazen; nothing points anywhere until they are filled in:
+
+| Setting | Meaning |
+|---|---|
+| Name on this page | What the buttons call the archive ("Upload to <name>"). |
+| Remote host over SSH / a folder on this computer | How sessions travel. |
+| Login user, remote host | The SSH account, e.g. `alice` at `archive.example.org`. |
+| Remote base path | The folder each experiment's folder is made in, e.g. `/path/to/remote/data`. |
+| Connection socket | Where the SSH master connection lives (default `~/.ssh/cm-%r@%h:%p`). Empty: SSH keys or Kerberos instead. |
+| Folder | For a local copy: a mounted share or a backup disk. |
+
+**Logging in once.** The dashboard never sees a password or a second
+factor. It runs ssh with `BatchMode=yes` and rides a master connection you
+open yourself; *Settings* and any upload that finds none show the exact line
+to run in a terminal, for example:
+
+```bash
+ssh -fN -o ControlMaster=yes -o ControlPersist=12h \
+    -o 'ControlPath=~/.ssh/cm-%r@%h:%p' alice@archive.example.org
+```
+
+Log in there once; the connection stays up for 12 hours of uploads. The
+copy needs `rsync` 3.1 or newer on this computer and on the host. Windows
+has no rsync and its OpenSSH has no master connections: run the dashboard in
+WSL there, or upload from another computer that holds the data.
+
+**What an upload does.**
+
+1. *Preview* (a dry run, nothing copied): per session, the files to copy,
+   the files already there, and any that differ there.
+2. *Copy*: `rsync -rt --relative --ignore-existing --partial-dir
+   .alhazen-partial`. A file already at the destination is never rewritten,
+   and nothing there is ever deleted (no `--delete`). An interrupted upload
+   resumes from its partial file next time. Permissions and owners are not
+   sent, so files take the destination folder's own.
+3. *Verify*: the same transfer as a dry run with `--checksum`; any file it
+   would still send is missing or different there. A local folder is
+   compared by SHA-256 instead.
+
+A file that already exists at the destination with different content is a
+*conflict*: it is reported and left as it is, never overwritten.
+
+**Receipts.** Every session an upload attempted gets a receipt in its data
+folder, `uploads/<run id>/<UTC time>.json` — beside the session, never
+inside it, since the session folder is append-only by its manifest. It
+records the destination, every file with its size and SHA-256, what was
+copied or already there, conflicts, the local manifest check and the
+outcome: `verified`, `conflict`, `incomplete`, `failed` or `cancelled`.
+Receipts are only added; the newest is the session's state.
+
+**Where it shows.**
+
+- *Run*: once a launch that saved a session has finished, an upload card
+  above its output names the destination and the state, with *Upload to
+  <name>*.
+- *History*: an *Archive* column with each session's state; tick sessions
+  (or all of them) and upload them in one go.
+- *Data*: the same bar under the run table, for the checked runs or every
+  run the filters show.
+
+A session without a manifest (still being written, or killed before
+teardown) is uploaded only when asked for; the one the active run is
+writing never is. One upload runs at a time; *Stop* keeps what was copied.
+
 ## Storage and local access
 
 By default, state is under `~/.alhazen/live_monitor/`:

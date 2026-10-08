@@ -25,6 +25,28 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+### Added
+
+- Workspace: **upload sessions to an archive.** A finished session's Run page
+  shows an upload card; History and Data upload the checked sessions or all
+  of them. rsync over an SSH master connection the operator opens once (or a
+  copy into a local folder): dry-run preview, resume, content verification,
+  never a deleted or overwritten file at the destination. Each attempt leaves
+  a receipt in the data folder (`uploads/<run id>/`), and History shows each
+  session's state. The destination is a setting of the computer
+  (`upload.json` in the workspace's state directory); nothing is preset.
+  See docs/workspace.md §Upload to an archive.
+
+### Changed
+
+- Workspace Run page: the results column (upload, output, recent runs) sticks
+  beside the configuration and fills the window, so the run history has real
+  height instead of a fixed box; the form's first stage is now *Subject &
+  session*, apart from *Run options*; Recent runs links to History. On one
+  column, the upload card comes first.
+
 ## 2.11.0 - 2026-10-07
 
 ### Added
