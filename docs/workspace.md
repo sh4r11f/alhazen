@@ -698,84 +698,99 @@ header comments.
 
 ## Upload to an archive
 
-Sessions are collected on the rig; the archive is somewhere else. The
-dashboard copies a finished session there, or many at once, and keeps a
-receipt of what it copied.
+Data is collected on the rig; the archive is somewhere else. The dashboard
+copies an experiment's data there — a session just finished, chosen
+sessions, or the whole data folder — and keeps a receipt of what it copied.
+It works the same on Windows, macOS and Linux with nothing to install:
+the default transport is SSH/SFTP in pure Python (paramiko, a dependency of
+alhazen).
 
-**Where.** A session goes to
-`<remote base path>/<experiment>/<its own path>`: the experiment's
-`[project]` name as its folder, then the run's
-`v<version>/sub-<ID>/ses-<NNN>/run-<NN>_task-<task>` exactly as on the rig.
-Rehearsal data (test, simulate) goes to `<experiment>-rehearsal`, so practice
-runs never land among real ones. Only session folders are copied — not the
-data folder's database, `participants.tsv` or calibration records.
+**What goes.** Everything in the experiment's data folder: its session
+folders and every other file saved there (`participants.tsv`,
+`experiment.sqlite3`, calibrations, logs, the receipts of earlier uploads),
+and the workspace's people registry — a snapshot of `people.sqlite3` and the
+experiment's CSV copies. Choosing sessions (the Run page's card, ticked rows
+on History or Data) uploads those sessions *and* every non-session file of
+their data folder; *Upload the whole data folder* uploads all of it. A
+SQLite database is uploaded as a consistent snapshot, made from a copy so
+the original is never opened; its `-wal`/`-shm` files are folded into it.
+
+**Where.** `<remote base path>/<experiment>/<path inside the data folder>`,
+the experiment's `[project]` name as its folder, so the session folders keep
+their `v<version>/sub-<ID>/ses-<NNN>/run-<NN>_task-<task>` layout. Rehearsal
+data (test, simulate) goes to `<experiment>-rehearsal`, never among the real
+sessions; the registry goes to `<experiment>/people/`.
 
 **Settings.** Open *Settings* beside any Upload button. They are this
-computer's and are kept only in the workspace's state directory
-(`upload.json` beside `projects.json`), never in an experiment or in
-alhazen; nothing points anywhere until they are filled in:
+computer's, kept only in the workspace's state directory (`upload.json`,
+and `upload_known_hosts` for trusted host keys), never in an experiment or
+in alhazen; nothing points anywhere until they are filled in:
 
 | Setting | Meaning |
 |---|---|
 | Name on this page | What the buttons call the archive ("Upload to <name>"). |
-| Remote host over SSH / a folder on this computer | How sessions travel. |
-| Login user, remote host | The SSH account, e.g. `alice` at `archive.example.org`. |
+| SFTP / rsync over SSH / a folder here | How files travel (SFTP is the default). |
+| Login user, remote host, port | The SSH account, e.g. `alice` at `archive.example.org`, port 22. |
 | Remote base path | The folder each experiment's folder is made in, e.g. `/path/to/remote/data`. |
-| Connection socket | Where the SSH master connection lives (default `~/.ssh/cm-%r@%h:%p`). Empty: SSH keys or Kerberos instead. |
-| Folder | For a local copy: a mounted share or a backup disk. |
+| Connection socket, ssh program | rsync only (see below). |
+| Folder | A local copy's destination: a mounted share or a backup disk. |
 
-**Logging in once.** The dashboard never sees a password or a second
-factor. It runs ssh with `BatchMode=yes` and rides a master connection you
-open yourself; *Settings* and any upload that finds none show the exact line
-to run in a terminal, for example:
-
-```bash
-ssh -fN -o ControlMaster=yes -o ControlPersist=12h \
-    -o 'ControlPath=~/.ssh/cm-%r@%h:%p' alice@archive.example.org
-```
-
-Log in there once; the connection stays up for 12 hours of uploads. The
-copy needs `rsync` 3.1 or newer on this computer and on the host. Windows
-has no rsync and its OpenSSH has no master connections: run the dashboard in
-WSL there, or upload from another computer that holds the data.
+**Logging in (SFTP).** Press *Connect*. On the first connection to a host the
+page shows its key's fingerprint (`SHA256:…`, as `ssh-keygen -l` prints it);
+check it, then *Trust this host*. A key that later differs from the trusted
+one refuses the connection. Then the page relays whatever the host asks — a
+password, a second-factor code or a choice of push — one question at a time.
+Keys from an SSH agent or `~/.ssh` are tried first, silently. The dashboard
+holds the connection, with keepalives, until it stops, so the login is asked
+once per dashboard; nothing typed is stored.
 
 **What an upload does.**
 
-1. *Preview* (a dry run, nothing copied): per session, the files to copy,
-   the files already there, and any that differ there.
-2. *Copy*: `rsync -rt --relative --ignore-existing --partial-dir
-   .alhazen-partial`. A file already at the destination is never rewritten,
-   and nothing there is ever deleted (no `--delete`). An interrupted upload
-   resumes from its partial file next time. Permissions and owners are not
-   sent, so files take the destination folder's own.
-3. *Verify*: the same transfer as a dry run with `--checksum`; any file it
-   would still send is missing or different there. A local folder is
-   compared by SHA-256 instead.
+1. *Preview* (a dry run; nothing is copied): per session, and for the other
+   files and the registry, the files to copy, those already there, changed
+   files that will be kept as new versions, and session files that differ
+   there.
+2. *Copy*: each file is written to `.alhazen-partial/<name>` beside its final
+   name, resumed from its size after an interruption, checked by SHA-256 on
+   the host, and only then renamed to the final name — with SFTP's plain
+   rename, which never replaces an existing file. The only thing the
+   upload ever removes at the destination is its own partial copy.
+3. *Verify*: every file must be at the destination with the local SHA-256.
+   The host computes it (`sha256sum`, else `shasum -a 256`); an account that
+   runs no commands (SFTP only) is verified by reading the files back.
 
-A file that already exists at the destination with different content is a
-*conflict*: it is reported and left as it is, never overwritten.
+**Changed files.** Nothing at the destination is deleted or replaced. A file
+there with the same content is left. Outside the session folders, a file
+that changed here (`participants.tsv` after a new subject) is uploaded
+beside the old one as `participants.<UTC time>.tsv` — unless an earlier
+version already holds the same content. Inside a session folder a different
+file there is a *conflict*: reported and left alone, and nothing is added,
+because the session folder must stay exactly what its manifest lists.
 
-**Receipts.** Every session an upload attempted gets a receipt in its data
-folder, `uploads/<run id>/<UTC time>.json` — beside the session, never
-inside it, since the session folder is append-only by its manifest. It
-records the destination, every file with its size and SHA-256, what was
-copied or already there, conflicts, the local manifest check and the
-outcome: `verified`, `conflict`, `incomplete`, `failed` or `cancelled`.
-Receipts are only added; the newest is the session's state.
+**Receipts.** Every upload leaves receipts in the data folder:
+`uploads/<run id>/<UTC time>.json` for each session (beside it, never inside
+it), `uploads/_shared/…` for the other files, and the registry's in the
+workspace's `uploads/_people/`. Each records the destination, every file
+with its size, SHA-256 and the name it is stored under, what was copied,
+already there, kept as a version or in conflict, the local manifest check
+and the outcome: `verified`, `conflict`, `incomplete`, `failed` or
+`cancelled`. Receipts are only added; the newest is the session's state.
 
-**Where it shows.**
+**Where it shows.** *Run*: once a launch that saved a session has finished,
+an upload card above its output names the destination and the state, with
+*Upload to <name>* and the connection. *History*: an *Archive* column with
+each session's state; tick sessions, or upload every data folder whole.
+*Data*: the same bar under the run table. A session without a manifest
+(still being written, or killed before teardown) goes only when the preview's
+box is ticked; the one the active run is writing never does. One upload runs
+at a time; *Stop* keeps what was copied, and the next upload resumes it.
 
-- *Run*: once a launch that saved a session has finished, an upload card
-  above its output names the destination and the state, with *Upload to
-  <name>*.
-- *History*: an *Archive* column with each session's state; tick sessions
-  (or all of them) and upload them in one go.
-- *Data*: the same bar under the run table, for the checked runs or every
-  run the filters show.
-
-A session without a manifest (still being written, or killed before
-teardown) is uploaded only when asked for; the one the active run is
-writing never is. One upload runs at a time; *Stop* keeps what was copied.
+**rsync (optional).** Where rsync 3.1+ and OpenSSH master connections exist
+(Linux, macOS), choose *rsync over SSH*: you open the connection once in a
+terminal (Settings shows the exact `ssh -fN -o ControlMaster=yes …` line)
+and the dashboard rides it. Copies are `rsync -rt --ignore-existing
+--partial-dir .alhazen-partial`, never `--delete`; the rules above are the
+same.
 
 ## Storage and local access
 

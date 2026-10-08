@@ -29,15 +29,22 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Added
 
-- Workspace: **upload sessions to an archive.** A finished session's Run page
-  shows an upload card; History and Data upload the checked sessions or all
-  of them. rsync over an SSH master connection the operator opens once (or a
-  copy into a local folder): dry-run preview, resume, content verification,
-  never a deleted or overwritten file at the destination. Each attempt leaves
-  a receipt in the data folder (`uploads/<run id>/`), and History shows each
-  session's state. The destination is a setting of the computer
-  (`upload.json` in the workspace's state directory); nothing is preset.
-  See docs/workspace.md §Upload to an archive.
+- Workspace: **upload an experiment's data to an archive.** A finished
+  session's Run page shows an upload card; History and Data upload ticked
+  sessions or whole data folders. Everything in the data folder goes, with
+  the people registry: SQLite files as consistent snapshots, rehearsal data
+  to its own `<experiment>-rehearsal` folder. The default transport is
+  SSH/SFTP in pure Python (works on Windows, macOS and Linux; the login,
+  host key and any second factor are answered on the page once per
+  dashboard); rsync over an SSH master connection and a local folder are
+  options. Dry-run preview, resume, SHA-256 verification at the destination;
+  nothing there is ever deleted or replaced: a changed file outside the
+  sessions is kept as a new version, a different file inside a session is a
+  reported conflict. Each attempt leaves receipts (`uploads/` in the data
+  folder) and History shows each session's state. The destination is a
+  setting of the computer (`upload.json`); nothing is preset. See
+  docs/workspace.md §Upload to an archive.
+- New dependency: `paramiko>=3.4` (the SFTP transport).
 
 ### Changed
 
