@@ -52,6 +52,22 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   `give_reward`: Dev1/ao0, 5 V, a 1 kHz finite analog-output train, 2 ×
   200 ms pulses 200 ms apart), which a new fake-driver test now pins sample
   by sample.
+- **Reward calibration in µL.** The Measure rig's "Juice per pulse"
+  (`reward.volume`) now asks how many trains to run, the pulses in each, the
+  width and the gap (line and voltage from the rig), delivers them once
+  after arming at the rig (a failed train stops the run, records nothing and
+  is never retried), and asks for the volume read off the beaker. The µL per
+  pulse is in the report and stored, per pulse width, as the rig's reward
+  calibration beside the rig file (`alhazen.config.reward_calibration`;
+  `rig-lab.yaml` → `rig-lab.reward.yaml`, earlier measurements kept). A
+  reward entry can then ask for `volume_ul` instead of `n_pulses`
+  (`RewardPulses.volume_ul`): the session converts it to pulses of that
+  width from the measurement, and refuses to start when the width was never
+  measured on the rig's line at its voltage. The Run page's Rig summary has
+  a Reward line ("118.5 µL per 200 ms pulse", or "volume not measured"), and
+  session.json's `reward.volumes` gives each entry's pulses and µL (null
+  where nothing was measured). The balance-and-density reading the job asked
+  for before is replaced by the beaker reading.
 
 ### Fixed
 

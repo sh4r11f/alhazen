@@ -20,8 +20,9 @@ The groups, as the dashboard shows them, and what each can and cannot claim
   with any OS acceleration, not sensor DPI).
 - **Eye tracker** — calibration (the tracker's own procedure and verdict),
   then accuracy, precision and gain on validation samples taken after it.
-- **Reward** — read-only driver/device/channel check; juice per pulse from a
-  balance reading, after explicit arming at the rig.
+- **Reward** — read-only driver/device/channel check; juice per pulse from
+  the volume read off a beaker after armed trains, stored as the rig's reward
+  calibration per pulse width.
 - **Neural** — a bounded read-only look at the configured acquisition: a
   SpikeGLX imec stream's rate, channels and raw noise in ADC counts, or a
   sorted-spike stream's announcements. Never starts, stops or reconfigures it.
@@ -35,10 +36,13 @@ import math
 import time
 from collections.abc import Callable, Mapping
 from contextlib import ExitStack
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from alhazen.config.gamma import fit_gamma, gamma_path, load_gamma, read_measurements
 from alhazen.config.models import RewardPulses, RigConfig
+from alhazen.config.reward_calibration import record_reward_calibration
 from alhazen.display.ruler import draw_ruler_on
 from alhazen.display.screen import Screen
 from alhazen.modes import measure_stats as stats
@@ -63,9 +67,11 @@ from alhazen.modes.measure_jobs import (
 
 log = logging.getLogger(__name__)
 
-# Reward volume limits. A calibration collects enough to weigh well (a few
-# hundred µL at least) without ever holding a valve open long enough to
-# flood a rig: these bound the plan before anything is armed.
+# Reward volume limits. A calibration collects enough to read well (a few
+# mL in a beaker) without ever holding a valve open long enough to flood a
+# rig: these bound the plan, all trains together, before anything is armed.
+MAX_TRAINS = 50
+INTER_TRAIN_S = 1.0
 MAX_PULSES = 500
 MAX_PULSE_MS = 1000
 MAX_TOTAL_OPEN_S = 60.0
@@ -468,79 +474,150 @@ def _reward_connection(ctx: JobContext) -> Measurement:
 
 
 def _reward_volume(ctx: JobContext) -> Measurement:
+    """Juice per pulse: armed trains into a beaker, the volume read off it.
+
+    The operator chooses how many trains, the pulses in each, the pulse
+    width and the gap; the line and voltage are the rig's. Nothing moves
+    until they arm it at the rig; the trains then run once, in a row, and a
+    failure part-way stops the run and is never retried (a second attempt
+    into the same beaker would make the reading wrong). The volume per pulse
+    is the volume the operator READ, over the pulses delivered: no volume is
+    claimed without that reading. A measured result is stored as the rig's
+    reward calibration for that pulse width (config/reward_calibration.py),
+    which sessions use to turn a reward given in µL into pulses.
+    """
+    hardware = ctx.rig.devices.reward
+    assert hardware is not None  # unavailable otherwise (_needs_real_reward)
+    trains = int(
+        ctx.number("trains", "How many trains to deliver", unit="trains", low=1, high=MAX_TRAINS)
+    )
     n_pulses = int(
-        ctx.number("pulses", "How many pulses to deliver", unit="pulses", low=1, high=MAX_PULSES)
+        ctx.number("pulses", "Pulses in each train", unit="pulses", low=1, high=MAX_PULSES)
     )
     pulse_ms = int(ctx.number("pulse_ms", "Pulse width", unit="ms", low=1, high=MAX_PULSE_MS))
     gap_ms = int(ctx.number("inter_pulse_ms", "Gap between pulses", unit="ms", low=50, high=5000))
-    open_s = n_pulses * pulse_ms / 1000.0
+    total_pulses = trains * n_pulses
+    open_s = total_pulses * pulse_ms / 1000.0
+    if total_pulses > MAX_PULSES:
+        raise ValueError(
+            f"{trains} trains × {n_pulses} pulses is {total_pulses} pulses; the limit is "
+            f"{MAX_PULSES} — use fewer trains or pulses"
+        )
     if open_s > MAX_TOTAL_OPEN_S:
         raise ValueError(
-            f"{n_pulses} × {pulse_ms} ms holds the valve open {open_s:g} s in total; the limit is "
-            f"{MAX_TOTAL_OPEN_S:g} s — use fewer or shorter pulses"
+            f"{total_pulses} × {pulse_ms} ms holds the valve open {open_s:g} s in total; the "
+            f"limit is {MAX_TOTAL_OPEN_S:g} s — use fewer or shorter pulses"
         )
     pulses = RewardPulses(n_pulses=n_pulses, pulse_ms=pulse_ms, inter_pulse_ms=gap_ms)
+    line = f"{hardware.device}/{hardware.channel}"
+    train_s = n_pulses * (pulse_ms + gap_ms) / 1000.0
     plan = {
-        "n_pulses": n_pulses,
+        "trains": trains,
+        "pulses_per_train": n_pulses,
+        "n_pulses": total_pulses,
         "pulse_ms": pulse_ms,
         "inter_pulse_ms": gap_ms,
+        "inter_train_s": INTER_TRAIN_S,
+        "line": line,
+        "voltage": hardware.voltage,
         "total_open_s": open_s,
-        "train_s": (n_pulses * (pulse_ms + gap_ms)) / 1000.0,
+        "run_s": trains * train_s + (trains - 1) * INTER_TRAIN_S,
     }
     armed = ctx.confirm(
         "arm",
-        f"ARM THE VALVE? {n_pulses} pulses × {pulse_ms} ms (valve open {open_s:g} s in total, "
-        f"train {plan['train_s']:g} s). A tared collection container must be under the spout. "
-        "Y delivers once; N or ESC cancels.",
+        f"ARM THE VALVE? {trains} train(s) of {n_pulses} pulses × {pulse_ms} ms on {line} at "
+        f"{hardware.voltage:g} V (valve open {open_s:g} s in total, about {plan['run_s']:.0f} s). "
+        "An empty beaker must be under the spout. Y delivers once; N or ESC cancels.",
     )
     if not armed:
         raise OperatorCancelled("not armed: no pulse was sent")
     dispenser = ctx.devices.get("reward")
     started = time.perf_counter()
-    try:
-        dispenser.deliver(pulses)
-    except Exception as error:
-        # Uncertain: some pulses may have run. Never retried here — a second
-        # train into the same container would make both readings wrong.
-        return Measurement(
-            "reward volume",
-            f"delivery did not complete ({type(error).__name__}: {error}); NOT retried — empty "
-            "the container before measuring again",
-            False,
-            {"plan": plan, "delivered": "uncertain", "error": str(error)},
-        )
+    delivered = 0
+    for index in range(trains):
+        if index:
+            time.sleep(INTER_TRAIN_S)
+        try:
+            dispenser.deliver(pulses)
+        except Exception as error:
+            # Uncertain: some pulses of this train may have run. Never
+            # retried, and no volume is asked for or recorded.
+            return Measurement(
+                "reward volume",
+                f"train {index + 1} of {trains} did not complete ({type(error).__name__}: "
+                f"{error}); stopped, NOT retried, nothing recorded — empty the beaker before "
+                "measuring again",
+                False,
+                {
+                    "plan": plan,
+                    "delivered": "uncertain",
+                    "trains_completed": delivered,
+                    "error": str(error),
+                },
+            )
+        delivered += 1
     commanded_s = time.perf_counter() - started
-    net = ctx.number(
-        "net_mass_g", "Net mass collected (tared balance)", unit="g", low=0.0001, high=1000.0
+    volume_ml = ctx.number(
+        "volume_ml", "Volume collected, read off the beaker", unit="mL", low=0.001, high=1000.0
     )
-    density = ctx.number(
-        "density_g_per_ml",
-        "Density of the liquid (declared, e.g. 1.00 for water)",
-        unit="g/mL",
-        low=0.5,
-        high=2.0,
-    )
-    result = stats.reward_volume(
-        net_mass_g=net, density_g_per_ml=density, n_pulses=n_pulses, pulse_ms=pulse_ms
-    )
+    result = stats.reward_volume_read(volume_ml=volume_ml, n_pulses=total_pulses, pulse_ms=pulse_ms)
+    notes = [
+        "The volume is the operator's reading of the beaker, not the command: a returned "
+        "command proves the trains were played out, not that liquid flowed.",
+        "Valid for this pulse width on this line at this voltage only; another width is "
+        "a separate measurement (the valve is not linear near its opening time).",
+    ]
+    stored: str | None = None
+    if _inside_alhazen(ctx.rig_path):
+        notes.append(
+            "Not stored as the rig's calibration: the rig file is one of alhazen's shared rigs. "
+            "Measure on the experiment's own rig file to store it."
+        )
+    else:
+        stored = str(
+            record_reward_calibration(
+                ctx.rig_path,
+                {
+                    "pulse_ms": pulse_ms,
+                    "ul_per_pulse": round(result["ul_per_pulse"], 3),
+                    "line": line,
+                    "voltage": hardware.voltage,
+                    "measured_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    "trains": trains,
+                    "pulses_per_train": n_pulses,
+                    "inter_pulse_ms": gap_ms,
+                    "volume_ml": volume_ml,
+                },
+            )
+        )
+        notes.append(f"Stored as the rig's reward calibration for {pulse_ms} ms pulses: {stored}.")
     return Measurement(
         "reward volume",
         f"{result['ul_per_pulse']:.1f} µL per {pulse_ms} ms pulse "
-        f"({result['volume_ul']:.0f} µL over {n_pulses} pulses)",
+        f"({result['volume_ul']:.0f} µL over {total_pulses} pulses in {trains} train(s))",
         None,
         {
             **result,
             "plan": plan,
-            "delivered": "commanded once",
+            "delivered": f"{delivered} train(s), commanded once each",
             "command_returned_after_s": round(commanded_s, 3),
-            "notes": [
-                "Volume comes from the balance, not from the command: a returned command proves "
-                "the train was played out, not that liquid flowed.",
-                f"Density {density:g} g/mL is the operator's declaration, recorded with "
-                "the result.",
-            ],
+            "calibration_file": stored,
+            "notes": notes,
         },
     )
+
+
+def _inside_alhazen(rig_path: str) -> bool:
+    """Whether the rig file is one of alhazen's own shared rigs, which a
+    measurement must never write beside (it lives in the installed package)."""
+    import alhazen
+
+    package = Path(alhazen.__file__).resolve().parent
+    try:
+        Path(rig_path).resolve().relative_to(package)
+    except ValueError:
+        return False
+    return True
 
 
 def _neural(ctx: JobContext) -> Measurement:
@@ -859,20 +936,21 @@ def builtin_jobs() -> list[MeasurementJob]:
             "reward.volume",
             "Reward",
             "Juice per pulse",
-            "Delivers one armed pulse train into a container; volume from the balance.",
+            "Delivers armed pulse trains into a beaker; µL per pulse from the volume read "
+            "off it, stored as the rig's reward calibration.",
             70,
             _reward_volume,
             needs=frozenset({"reward", "operator", "display"}),
             unavailable=_needs_real_reward,
             inputs=(
-                "pulses (count)",
+                "trains (count)",
+                "pulses (count per train)",
                 "pulse_ms (ms)",
                 "inter_pulse_ms (ms)",
-                "net_mass_g (g)",
-                "density_g_per_ml (g/mL)",
+                "volume_ml (mL)",
             ),
             duration=JobDuration(
-                operator="pulses chosen, armed with Y at the rig, delivered and weighed"
+                operator="trains chosen, armed with Y at the rig, delivered and the beaker read"
             ),
         ),
         MeasurementJob(

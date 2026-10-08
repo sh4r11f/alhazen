@@ -46,6 +46,12 @@ from alhazen import (
     outcomes,
 )
 from alhazen.config.models import DevicesConfig, DisplayConfig, Duration, RewardHwConfig
+from alhazen.config.reward_calibration import (
+    load_reward_calibration,
+    record_reward_calibration,
+    reward_calibration_path,
+    ul_per_pulse,
+)
 from alhazen.core.events import EventSchema
 from alhazen.devices.reward import SAMPLE_RATE_HZ, SimulatedReward, build_reward_waveform
 from alhazen.errors import ConfigError
@@ -347,6 +353,7 @@ class TestHumanSession:
             "line": None,
             "voltage": None,
             "policy": None,
+            "volumes": None,
         }
 
     def test_a_dispenser_handed_in_is_refused(self, tmp_path):
@@ -497,3 +504,140 @@ class TestUndeclared:
         # No new column: a run of undeclared params writes what it always did.
         assert all("subject_kind" not in row for row in rows(tmp_path))
         assert card(tmp_path)["subject_kind"] is None
+
+
+# ----------------------------------------------------------------------
+# A small reward on a device fault, settable to none
+# ----------------------------------------------------------------------
+
+
+class TestFaultReward:
+    def test_on_fault_pays_its_pulses_and_zero_pulses_pays_nothing(self):
+        one = monkey(by_outcome={"HIT": JUICE.model_dump()}, on_fault={"n_pulses": 1})
+        assert one.reward is not None
+        assert one.reward.pulses_for_fault() == RewardPulses(n_pulses=1)
+        none = monkey(by_outcome={"HIT": JUICE.model_dump()}, on_fault={"n_pulses": 0})
+        assert none.reward is not None and none.reward.pulses_for_fault() is None
+
+
+# ----------------------------------------------------------------------
+# Reward in µL, from the rig's measured calibration
+# ----------------------------------------------------------------------
+
+
+def rig_file(tmp_path: Path, reward: RewardHwConfig | None = LAB_LINE) -> Path:
+    path = tmp_path / "rig-lab.yaml"
+    line = (
+        f"  reward: {{backend: {reward.backend}, device: {reward.device}, "
+        f"channel: {reward.channel}, voltage: {reward.voltage}}}\n"
+        if reward is not None
+        else ""
+    )
+    path.write_text(
+        "monitor: {width_px: 1920, height_px: 1080, width_cm: 53.0, distance_cm: 57.0,"
+        " refresh_rate_hz: 60.0}\n"
+        "display: {backend: simulated}\n"
+        f"devices:\n{line}"
+        f"data_root: {tmp_path / 'data'}\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def build_on_file(path: Path, task: Task):
+    return build_session(
+        rig=path,
+        subject="t01",
+        session=1,
+        run=1,
+        task=task,
+        seed=1,
+        iti=Duration(ms=0),
+        simulated_frame_period_s=0.0,
+        date_yyyymmdd="20261008",
+    )
+
+
+def measured(path: Path, *, pulse_ms=200, ul=120.0, line="Dev1/ao0", voltage=5.0):
+    return record_reward_calibration(
+        path,
+        {
+            "pulse_ms": pulse_ms,
+            "ul_per_pulse": ul,
+            "line": line,
+            "voltage": voltage,
+            "measured_at": "2026-10-08T12:00:00+00:00",
+        },
+    )
+
+
+class TestCalibrationFile:
+    def test_a_new_measurement_replaces_a_width_and_keeps_the_old_one(self, tmp_path):
+        path = rig_file(tmp_path)
+        measured(path, ul=100.0)
+        measured(path, ul=120.0)
+        measured(path, pulse_ms=50, ul=20.0)
+        stored = load_reward_calibration(path)
+        assert stored is not None
+        assert stored["widths"][200]["ul_per_pulse"] == 120.0
+        assert stored["widths"][200]["previous"][0]["ul_per_pulse"] == 100.0
+        assert stored["widths"][50]["ul_per_pulse"] == 20.0
+        assert reward_calibration_path(path).name == "rig-lab.reward.yaml"
+
+    def test_only_the_same_width_line_and_voltage_count(self, tmp_path):
+        path = rig_file(tmp_path)
+        measured(path)
+        stored = load_reward_calibration(path)
+        assert ul_per_pulse(stored, pulse_ms=200, line="Dev1/ao0", voltage=5.0)
+        assert ul_per_pulse(stored, pulse_ms=150, line="Dev1/ao0", voltage=5.0) is None
+        assert ul_per_pulse(stored, pulse_ms=200, line="Dev1/ao1", voltage=5.0) is None
+        assert ul_per_pulse(stored, pulse_ms=200, line="Dev1/ao0", voltage=4.0) is None
+        assert load_reward_calibration(tmp_path / "rig-none.yaml") is None
+
+
+class TestRewardInMicrolitres:
+    def asking(self, ul: float = 250.0) -> Params:
+        return monkey(by_outcome={"HIT": {"volume_ul": ul, "pulse_ms": 200}})
+
+    def test_a_volume_becomes_pulses_from_the_measured_width(self, tmp_path, daq):
+        path = rig_file(tmp_path)
+        measured(path, ul=120.0)
+        runner = build_on_file(path, OutcomeTask(self.asking(250.0)))
+        policy = runner._payer.policy
+        assert policy is not None
+        assert policy.by_outcome["HIT"].n_pulses == 2  # 250 / 120, rounded
+        runner.run()
+        assert len(daq.tasks) == PLAN.count("HIT")
+        assert all(sum(np.asarray(ao.written) > 0) == 2 * 200 for ao in daq.tasks)
+        volumes = card(tmp_path)["reward"]["volumes"]["HIT"]
+        assert volumes["n_pulses"] == 2 and volumes["ul_per_pulse"] == 120.0
+        assert volumes["ul"] == 240.0 and volumes["volume_ul_asked"] == 250.0
+
+    def test_a_volume_with_no_measurement_is_refused(self, tmp_path):
+        with pytest.raises(ConfigError, match="no measured µL per 200 ms pulse"):
+            build_on_file(rig_file(tmp_path), OutcomeTask(self.asking()))
+
+    def test_a_measurement_on_another_line_is_not_used(self, tmp_path):
+        path = rig_file(tmp_path)
+        measured(path, line="Dev2/ao0")
+        with pytest.raises(ConfigError, match="no measured"):
+            build_on_file(path, OutcomeTask(self.asking()))
+
+    def test_pulses_given_as_a_count_show_their_measured_volume(self, tmp_path, daq):
+        path = rig_file(tmp_path)
+        measured(path, ul=120.0)
+        build_on_file(path, OutcomeTask(monkey())).run()
+        volumes = card(tmp_path)["reward"]["volumes"]["HIT"]
+        assert volumes == {
+            "n_pulses": 2,
+            "pulse_ms": 200,
+            "volume_ul_asked": None,
+            "ul_per_pulse": 120.0,
+            "ul": 240.0,
+            "measured_at": "2026-10-08T12:00:00+00:00",
+        }
+
+    def test_with_nothing_measured_the_record_claims_no_volume(self, tmp_path, daq):
+        build_on_file(rig_file(tmp_path), OutcomeTask(monkey())).run()
+        volumes = card(tmp_path)["reward"]["volumes"]["HIT"]
+        assert volumes["ul_per_pulse"] is None and volumes["ul"] is None

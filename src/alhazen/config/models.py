@@ -834,17 +834,26 @@ class SyncHwConfig(Model):
 class RewardPulses(Model):
     """One reward delivery: a train of ``n_pulses`` pulses of ``pulse_ms``
     separated by ``inter_pulse_ms``. Pulse width is what sets the volume
-    delivered, so it is configuration, never a hard-coded constant."""
+    delivered, so it is configuration, never a hard-coded constant.
+
+    ``volume_ul`` asks for an amount instead of a count: the session turns it
+    into ``n_pulses`` of ``pulse_ms`` from the rig's measured µL per pulse of
+    that width (config/reward_calibration.py), and refuses to start when that
+    width was never measured on the rig's line. Left None, ``n_pulses`` is
+    the delivery, as before."""
 
     n_pulses: int = 2
     pulse_ms: int = 200
     inter_pulse_ms: int = 200
+    volume_ul: float | None = None
 
     @model_validator(mode="after")
     def _valid(self) -> RewardPulses:
         for name in ("n_pulses", "pulse_ms", "inter_pulse_ms"):
             if getattr(self, name) < 0:
                 raise ValueError(f"{name} must be >= 0")
+        if self.volume_ul is not None and not self.volume_ul > 0:
+            raise ValueError("volume_ul must be > 0 (leave it out to give n_pulses instead)")
         return self
 
 

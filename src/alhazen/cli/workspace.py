@@ -39,6 +39,7 @@ from alhazen.config.calibration_images import NAME_PATTERN
 from alhazen.config.experiment import experiment_stimuli, experiment_title
 from alhazen.config.loader import validate_rig
 from alhazen.config.models import RigConfig, normalize_initials, with_calibration_target
+from alhazen.config.reward_calibration import load_reward_calibration
 from alhazen.config.rigs import (
     SHARED_PREFIX,
     MergedRig,
@@ -1502,6 +1503,23 @@ def _merged_rig_text(launched: str, merged: MergedRig) -> str:
 MANAGED_FIELDS = ("meta", "archived", "registered")
 
 
+def _reward_calibration_summary(rig_path: Path) -> dict[str, Any] | str | None:
+    """The rig's reward calibration for the Rig summary: each measured width
+    with its µL per pulse, line, voltage and date. Read-only."""
+    try:
+        calibration = load_reward_calibration(rig_path)
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        return f"cannot be read: {exc}"
+    if not calibration:
+        return None
+    return {
+        str(width): {
+            key: entry.get(key) for key in ("ul_per_pulse", "line", "voltage", "measured_at")
+        }
+        for width, entry in sorted(calibration["widths"].items())
+    }
+
+
 class Workspace:
     def __init__(self, directory: Path):
         self.directory = directory.expanduser().resolve()
@@ -2044,6 +2062,10 @@ class Workspace:
             "source": ref.source,
             "extends": merged.extends,
             "values": merged.values,
+            # µL per pulse, by width, as the Measure rig recorded it beside
+            # this rig file (config/reward_calibration.py); None when nothing
+            # was measured, and an error string when the file cannot be read.
+            "reward_calibration": _reward_calibration_summary(ref.path),
         }
 
     def _one_task(self, project: dict[str, Any], request: Launch) -> str | None:

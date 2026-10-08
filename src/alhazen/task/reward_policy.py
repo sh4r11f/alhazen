@@ -19,6 +19,8 @@ served again anyway. The session decides which trials those are
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from alhazen.config.models import Model, RewardPulses
 
 
@@ -68,3 +70,42 @@ class RewardPolicy(Model):
         if n_pulses < 1:
             return None
         return pulses.model_copy(update={"n_pulses": n_pulses})
+
+    def asks_for_volume(self) -> bool:
+        """Whether any entry is given in µL (``RewardPulses.volume_ul``)."""
+        entries = [*self.by_outcome.values(), *([self.on_fault] if self.on_fault else [])]
+        return any(pulses.volume_ul is not None for pulses in entries)
+
+    def in_pulses(self, ul_per_pulse: Callable[[int], float | None]) -> RewardPolicy:
+        """This policy with every µL entry turned into a pulse count.
+
+        ``ul_per_pulse(width_ms)`` is the rig's measured µL per pulse of that
+        width, or None when it was never measured. An entry in µL whose width
+        has no measurement raises ValueError, naming it: a session must not
+        guess a volume. The count is the volume over the measured µL per
+        pulse, rounded, and at least one; ``volume_ul`` stays on the entry,
+        so the record says what was asked for and what it became.
+        """
+
+        def convert(name: str, pulses: RewardPulses) -> RewardPulses:
+            if pulses.volume_ul is None:
+                return pulses
+            measured = ul_per_pulse(pulses.pulse_ms)
+            if measured is None or not measured > 0:
+                raise ValueError(
+                    f"reward {name} asks for {pulses.volume_ul:g} µL in {pulses.pulse_ms} ms "
+                    f"pulses, and this rig has no measured µL per {pulses.pulse_ms} ms pulse on "
+                    f"its reward line: measure it (Measure rig, Reward, Juice per pulse) or give "
+                    f"n_pulses instead of volume_ul"
+                )
+            count = max(1, round(pulses.volume_ul / measured))
+            return pulses.model_copy(update={"n_pulses": count})
+
+        return self.model_copy(
+            update={
+                "by_outcome": {
+                    name: convert(name, pulses) for name, pulses in self.by_outcome.items()
+                },
+                "on_fault": convert("on_fault", self.on_fault) if self.on_fault else None,
+            }
+        )

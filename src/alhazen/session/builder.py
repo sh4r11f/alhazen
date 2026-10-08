@@ -39,6 +39,7 @@ from alhazen.config.models import (
     SessionInfo,
     resolve_refresh,
 )
+from alhazen.config.reward_calibration import load_reward_calibration, ul_per_pulse
 from alhazen.core.clock import Clock, MonotonicClock
 from alhazen.core.commands import CommandSource, KeyboardCommands, NullCommands
 from alhazen.core.engine import TrialEngine
@@ -90,6 +91,7 @@ from alhazen.session.startup_calibration import (
 from alhazen.stimuli.photodiode import make_photodiode
 from alhazen.task.live import LiveAnalysis, LiveWiring
 from alhazen.task.plan import BuildTrial
+from alhazen.task.reward_policy import RewardPolicy
 from alhazen.task.subject_kind import SubjectKind, opens_reward_line, subject_kind_of
 from alhazen.task.task import Task, task_instructions
 from alhazen.training.stages import Curriculum
@@ -200,6 +202,39 @@ def make_tracker_health_check(tracker: EyeTracker) -> Callable[[], HealthFault |
         return None if detail is None else HealthFault(FAULT_TRACKER_STOPPED, detail)
 
     return check
+
+
+def reward_in_pulses(
+    policy: RewardPolicy,
+    rig: RigConfig | str | Path,
+    rig_cfg: RigConfig,
+    rig_source: str | None,
+    task_name: str,
+) -> RewardPolicy:
+    """``policy`` with its µL entries turned into pulse counts from the rig's
+    reward calibration, the file beside the rig config. Refused, with the
+    entry named, when a width was never measured on this rig's reward line
+    at its voltage, or when the rig came as settings with no file to find a
+    calibration beside: a volume nobody measured is never assumed."""
+    hardware = rig_cfg.devices.reward
+    rig_path = rig if not isinstance(rig, RigConfig) else rig_source
+    calibration = load_reward_calibration(rig_path) if rig_path else None
+
+    def measured(width: int) -> float | None:
+        if hardware is None:
+            return None
+        entry = ul_per_pulse(
+            calibration,
+            pulse_ms=width,
+            line=f"{hardware.device}/{hardware.channel}",
+            voltage=hardware.voltage,
+        )
+        return None if entry is None else float(entry["ul_per_pulse"])
+
+    try:
+        return policy.in_pulses(measured)
+    except ValueError as error:
+        raise ConfigError(f"task {task_name!r}: {error}") from error
 
 
 def make_manual_reward(
@@ -417,6 +452,15 @@ def build_session(
         score = score if score is not None else task.score
         reward_policy = task.reward
         live_monitor_spec = task.live_monitor or LiveMonitorSpec()
+        # Reward asked for in µL becomes a pulse count here, from the rig's
+        # measured µL per pulse (config/reward_calibration.py), before the
+        # training supervisor reads the policy it rescales. Bound back on the
+        # task, which is what the supervisor and the estimate read.
+        if reward_policy is not None and reward_policy.asks_for_volume():
+            reward_policy = reward_in_pulses(
+                reward_policy, rig, rig_cfg, (sources or {}).get("rig"), task.name
+            )
+            task.reward = reward_policy  # type: ignore[misc]
     mid_trial_reward = task.mid_trial_reward if task is not None else False
     missing = [
         name

@@ -29,6 +29,7 @@ from alhazen.config.models import (
     RigConfig,
     SpikeSourceConfig,
 )
+from alhazen.config.reward_calibration import load_reward_calibration
 from alhazen.display.screen import Screen
 from alhazen.modes import measure_builtin as builtin
 from alhazen.modes import measure_stats as stats
@@ -541,39 +542,61 @@ class TestRewardVolume:
 
     def test_nothing_is_delivered_without_arming(self, tmp_path):
         dispenser = Dispenser()
-        report = self._run(tmp_path, dispenser, Operator([100, 50, 200], [False]))
+        report = self._run(tmp_path, dispenser, Operator([2, 50, 50, 200], [False]))
         assert report.records[0].state == CANCELLED
         assert dispenser.deliveries == []
+        assert not (tmp_path / "rig-test.reward.yaml").exists()
 
-    def test_an_armed_train_is_delivered_once_and_measured_by_the_balance(self, tmp_path):
+    def test_armed_trains_are_delivered_once_and_measured_from_the_beaker(self, tmp_path):
         dispenser = Dispenser()
-        report = self._run(tmp_path, dispenser, Operator([100, 50, 200, 2.5, 1.0], [True]))
+        operator = Operator([4, 25, 50, 200, 2.5], [True])
+        report = self._run(tmp_path, dispenser, operator)
         record = report.records[0]
         assert record.state == MEASURED
-        assert len(dispenser.deliveries) == 1
-        assert dispenser.deliveries[0].n_pulses == 100 and dispenser.deliveries[0].pulse_ms == 50
+        # Four trains of 25 pulses: 100 pulses, 2.5 mL read off the beaker.
+        assert len(dispenser.deliveries) == 4
+        assert all(d.n_pulses == 25 and d.pulse_ms == 50 for d in dispenser.deliveries)
         assert record.detail["ul_per_pulse"] == pytest.approx(25.0)
-        assert record.detail["operator_inputs"]["density_g_per_ml"]["unit"] == "g/mL"
+        assert record.detail["operator_inputs"]["volume_ml"]["unit"] == "mL"
+        assert record.detail["plan"]["line"] == "Dev1/ao0"
         assert dispenser.closed
+        # ...and stored as the rig's calibration for 50 ms pulses on that line.
+        stored = load_reward_calibration(tmp_path / "rig-test.yaml")
+        assert stored is not None
+        entry = stored["widths"][50]
+        assert entry["ul_per_pulse"] == pytest.approx(25.0)
+        assert (entry["line"], entry["voltage"], entry["trains"]) == ("Dev1/ao0", 5.0, 4)
+        assert record.detail["calibration_file"].endswith("rig-test.reward.yaml")
 
-    def test_an_uncertain_delivery_is_never_retried(self, tmp_path):
+    def test_a_failed_train_stops_the_run_and_records_nothing(self, tmp_path):
         dispenser = Dispenser(fail=TimeoutError("no acknowledgement"))
-        report = self._run(tmp_path, dispenser, Operator([100, 50, 200], [True]))
+        report = self._run(tmp_path, dispenser, Operator([3, 25, 50, 200], [True]))
         record = report.records[0]
         assert record.state == FAILED
         assert record.detail["delivered"] == "uncertain"
+        assert record.detail["trains_completed"] == 0
+        # Never retried, never asked for a volume, nothing stored.
         assert len(dispenser.deliveries) == 1
+        assert not (tmp_path / "rig-test.reward.yaml").exists()
 
     def test_a_plan_over_the_limits_is_refused_before_arming(self, tmp_path):
         dispenser = Dispenser()
-        operator = Operator([500, 1000, 200], [True])
+        operator = Operator([1, 500, 1000, 200], [True])
         report = self._run(tmp_path, dispenser, operator)
         assert report.records[0].state == ERROR and "limit" in report.records[0].summary
         assert dispenser.deliveries == [] and "reward.volume.arm" not in operator.asked
 
+    def test_trains_that_add_up_past_the_pulse_limit_are_refused(self, tmp_path):
+        dispenser = Dispenser()
+        operator = Operator([10, 100, 10, 200], [True])
+        report = self._run(tmp_path, dispenser, operator)
+        assert report.records[0].state == ERROR and "1000 pulses" in report.records[0].summary
+        assert dispenser.deliveries == []
+
     def test_arming_cannot_come_from_measure_input(self, tmp_path):
         dispenser = Dispenser()
         inputs = {
+            "reward.volume.trains": "1",
             "reward.volume.pulses": "10",
             "reward.volume.pulse_ms": "50",
             "reward.volume.inter_pulse_ms": "200",
@@ -582,6 +605,14 @@ class TestRewardVolume:
         operator = Operator([], [False])
         report = self._run(tmp_path, dispenser, operator, inputs)
         assert report.records[0].state == CANCELLED and dispenser.deliveries == []
+
+    def test_volume_per_pulse_from_a_beaker_reading(self):
+        r = stats.reward_volume_read(volume_ml=2.5, n_pulses=100, pulse_ms=50)
+        assert r["ul_per_pulse"] == pytest.approx(25.0)
+        assert r["ul_per_ms_open"] == pytest.approx(0.5)
+        for bad in (dict(volume_ml=0), dict(n_pulses=0), dict(pulse_ms=-1)):
+            with pytest.raises(ValueError):
+                stats.reward_volume_read(**(dict(volume_ml=2.5, n_pulses=100, pulse_ms=50) | bad))
 
     def test_a_simulated_reward_is_unavailable_not_measured(self, tmp_path):
         report = run(

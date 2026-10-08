@@ -254,6 +254,26 @@ instruction screen and is refused in run mode on a rig with no reward line.
 Name the Task parameters entries so the kind is visible (`"Main (human)"`,
 `"Main (monkey)"`); session.json, session.log and every trial row record it.
 
+`on_fault` is what a trial a device cut short (the eye tracker stopped
+mid-trial) pays; `{n_pulses: 0}` pays nothing for it.
+
+To give a reward in µL, measure the valve first: Measure rig, Reward, Juice
+per pulse delivers armed trains into a beaker and records the µL per pulse of
+that width beside the rig file (`rig-lab.yaml` → `rig-lab.reward.yaml`). Then
+an entry can ask for a volume instead of a count:
+
+```yaml
+reward:
+  by_outcome:
+    CORRECT: {volume_ul: 250, pulse_ms: 200, inter_pulse_ms: 200}
+```
+
+The session turns it into pulses of that width from the measurement, and
+refuses to start when that width was never measured on the rig's line at its
+voltage. The Run page's Rig summary shows what was measured; session.json's
+`reward.volumes` says what each entry came to in µL, or null where nothing
+was measured.
+
 ## Say what the subject reads before trial one
 
 Override `Task.instructions`. Every way of starting a session shows what it
