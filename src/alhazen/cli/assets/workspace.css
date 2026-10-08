@@ -2175,3 +2175,40 @@ footer {
 #calibration-help {
   margin: 12px 0 0;
 }
+
+/* ---- The chosen subject's age and sex under the Subject menu (workspace.js
+   subjectFacts): mono readouts, the instrument's voice for recorded values,
+   with the date the age was entered and a nudge where something is missing.
+   The nudge uses the warning ink the measure page's tags use. */
+.subject-facts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 14px;
+  margin: -6px 0 16px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.subject-facts[hidden] { display: none; }
+.subject-facts .facts-group {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 6px;
+}
+.subject-facts .facts-value {
+  font-family: var(--mono);
+  color: var(--ink);
+}
+.subject-facts .facts-note { color: var(--muted); }
+.subject-facts .facts-warn { color: var(--bad-ink); }
+/* The sentence after the readouts: its own line, across the field. */
+.subject-facts .facts-line {
+  flex-basis: 100%;
+  color: var(--muted);
+}
+/* The Subject menu now names age and sex too, so it takes two thirds of its
+   pair; the session number needs little room. */
+#identity > .field-pair:first-child {
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+}

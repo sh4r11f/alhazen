@@ -718,6 +718,12 @@ class TestCommandContract:
             request, workspace.directory / "job", experimenter={"name": "Ana", "record_id": "e_1"}
         )
         emitted.update(token for token in command if token.startswith("--"))
+        # The subject's age and sex: emitted for a session whose project's
+        # alhazen records them, from the record or the typed fields.
+        command = workspace._command(
+            request, workspace.directory / "job", demographics={"age": "27", "sex": "female"}
+        )
+        emitted.update(token for token in command if token.startswith("--"))
         assert emitted == MODE_FLAGS
 
 

@@ -912,3 +912,7 @@ li.m-plan-add {
     margin-bottom: 8px;
   }
 }
+
+/* A subject's sex in the lists: a short label, never broken mid-word by the
+   table's narrow-column wrapping. */
+.m-table td.m-nowrap { white-space: nowrap; word-break: normal; overflow-wrap: normal; }

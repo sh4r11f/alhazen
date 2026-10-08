@@ -460,9 +460,16 @@ class SessionRunner:
             # Records the subject's initials with a new subject, fills them in
             # on a row from before 2.0, and refuses ones that disagree — the
             # builder already checked, before anything was written; this is
-            # the same check against the file as it is now.
+            # the same check against the file as it is now. A subject this
+            # session registers gets its age and sex columns too, when given;
+            # an existing row is never rewritten (age is the age at its first
+            # session there; session.json has each session's own).
+            demographics = self._identity.demographics
             ensure_participant(
-                self._cfg.rig.data_root, self._cfg.info.subject, initials=self._cfg.info.initials
+                self._cfg.rig.data_root,
+                self._cfg.info.subject,
+                demographics.as_participant_columns() if demographics is not None else None,
+                initials=self._cfg.info.initials,
             )
 
             log.info(
@@ -487,6 +494,15 @@ class SessionRunner:
             if self._identity.experimenter is not None:
                 who = self._identity.experimenter
                 log.info("experimenter: %s%s", who.name, f" ({who.id})" if who.id else "")
+            # The subject's age and sex likewise, when given ("not recorded"
+            # for the one that was not).
+            if self._identity.demographics is not None:
+                given = self._identity.demographics
+                log.info(
+                    "subject: age %s, sex %s",
+                    given.age if given.age is not None else "not recorded",
+                    given.sex if given.sex is not None else "not recorded",
+                )
             log.info("devices: %s", self._devices_line())
             for note in self.setup_notes:
                 log.info("setup: %s", note)

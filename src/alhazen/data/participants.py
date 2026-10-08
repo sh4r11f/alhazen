@@ -128,9 +128,12 @@ def ensure_participant(
     """
     path = participants_path(data_root)
     participant_id = naming.subject_dirname(subject)
-    row = {_ID_COLUMN: participant_id, **(metadata or {})}
+    # The id, the initials beside it, then the rest (age, sex, …): the order
+    # a new file's columns take.
+    row = {_ID_COLUMN: participant_id}
     if initials is not None:
         row[_INITIALS_COLUMN] = initials
+    row.update(metadata or {})
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("w", newline="", encoding="utf-8") as f:

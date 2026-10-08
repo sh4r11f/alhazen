@@ -62,6 +62,18 @@
     return box;
   }
 
+  /** A <select> of [value, text] pairs, opening on `value`. */
+  function select(items, value) {
+    const box = el('select');
+    for (const [v, text] of items) {
+      const o = el('option', '', text);
+      o.value = v;
+      box.append(o);
+    }
+    box.value = value ?? '';
+    return box;
+  }
+
   function textarea(value, rows = 3) {
     const box = el('textarea');
     box.value = value ?? '';
@@ -393,6 +405,11 @@
       placeholder: 'e.g. 01'});
     const initials = input(s?.initials || '', {maxlength: '5', autocomplete: 'off',
       placeholder: 'e.g. HD'});
+    // Age in years and sex from a fixed list; both optional, both editable
+    // after sessions (each session keeps the values it ran with).
+    const age = input(s?.age ?? '', {inputmode: 'decimal', maxlength: '5', autocomplete: 'off',
+      placeholder: 'e.g. 27'});
+    const sex = select([['', 'Not recorded'], ...h.sexes], s?.sex || '');
     const notes = textarea(s?.notes || '', 2);
     const extra = extraEditor(s?.extra || []);
     if (s?.used) {
@@ -410,6 +427,10 @@
         : 'Letters and digits, kept as typed (007 stays 007).'),
       field('Initials', initials, s?.used && s.initials ? 'Fixed: recorded with its sessions.'
         : 'Checked against participants.tsv at every session.'),
+      field('Age (years)', age, s?.age_recorded ? `Entered ${s.age_recorded}; a new age is `
+        + 'dated today.' : '0 to 120, whole or one decimal. Recorded with each session.'),
+      field('Sex', sex, 'Recorded with each session. Prefer not to say is an answer; '
+        + 'Not recorded is none.'),
       field('Notes', notes),
     );
     form.append(row, extra, where, actions);
@@ -417,6 +438,7 @@
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
       const fields = {code: code.value, initials: initials.value || null,
+        age: age.value.trim() || null, sex: sex.value || null,
         notes: notes.value || null, extra: extra.read()};
       const answer = await attempt(where, () => (s
         ? h.api('/api/manage/people/subject-update', {project: p.id, id: s.id,
@@ -493,7 +515,8 @@
       }
       const t = el('table', 'm-table');
       const head = el('tr');
-      for (const c of ['ID', 'Initials', 'Other columns', 'Notes', 'From', 'Status', '']) {
+      for (const c of ['ID', 'Initials', 'Age', 'Sex', 'Other columns', 'Notes', 'From',
+        'Status', '']) {
         head.append(el('th', '', c));
       }
       t.append(head);
@@ -502,6 +525,8 @@
         tr.append(
           el('td', 'm-mono', `sub-${s.code}`),
           el('td', 'm-mono', s.initials || '—'),
+          el('td', 'm-mono', s.age ?? '—'),
+          el('td', s.sex ? 'm-nowrap' : 'm-mono', s.sex ? h.sexLabel(s.sex) : '—'),
           el('td', 'm-cell-extra', s.extra.map(([k, v]) => `${k}: ${v === null ? '∅' : v}`)
             .join(' · ') || '—'),
           el('td', 'm-cell-notes', s.notes || ''),
@@ -562,12 +587,12 @@
       files.append(el('li', '', 'This experiment’s rigs name no data folder that exists yet.'));
     }
     box.append(files);
-    const names = {new: 'new subject', link: 'link to existing', fill: 'fill missing initials',
+    const names = {new: 'new subject', link: 'link to existing', fill: 'fill missing',
       same: 'already imported', conflict: 'conflict — left alone', error: 'cannot be read'};
     if (plan.rows.length) {
       const t = el('table', 'm-table');
       const head = el('tr');
-      for (const c of ['Line', 'ID', 'Initials', 'Other columns', 'Will']) {
+      for (const c of ['Line', 'ID', 'Initials', 'Age', 'Sex', 'Other columns', 'Will']) {
         head.append(el('th', '', c));
       }
       t.append(head);
@@ -576,9 +601,13 @@
         tr.append(el('td', 'm-mono', `${r.kind}:${r.line}`),
           el('td', 'm-mono', r.code ? `sub-${r.code}` : '?'),
           el('td', 'm-mono', r.initials || '—'),
+          el('td', 'm-mono', r.age ?? '—'),
+          el('td', r.sex ? 'm-nowrap' : 'm-mono', r.sex ? h.sexLabel(r.sex) : '—'),
           el('td', 'm-cell-extra', (r.extra || []).map(([k, v]) => `${k}: ${v ?? '∅'}`)
             .join(' · ')),
-          el('td', '', names[r.action] + (r.reason ? ` — ${r.reason}` : '')));
+          el('td', '', names[r.action]
+            + (r.action === 'fill' && r.fills?.length ? ` ${r.fills.join(', ')}` : '')
+            + (r.reason ? ` — ${r.reason}` : '')));
         t.append(tr);
       }
       const wrap = el('div', 'm-table-wrap');
@@ -1104,6 +1133,9 @@
     add('Mode', s.mode ? h.label(s.mode) : `not recorded (${s.root_kind} folder)`);
     add('Rig', s.rig);
     add('Experimenter', experimenterText(s.experimenter));
+    add('Age, sex', s.demographics?.recorded
+      ? (h.demographicsText(s.demographics) || 'not recorded (session.json says none)')
+      : 'not recorded (session.json from before the fields)');
     add('Launched', s.launch ? 'from this workspace'
       : 'not from this workspace, or before it kept launch records');
     box.append(facts);
@@ -1167,6 +1199,13 @@
         + (l.identity?.subject?.record_id ? ' (registered)' : ' (typed)');
     }
     add('Subject', subject);
+    const ageSex = h.demographicsText(l.identity?.subject);
+    if (l.identity?.subject) {
+      add('Age, sex', ageSex
+        ? ageSex + (l.demographics_recorded_in === 'session.json' ? ' — also in session.json'
+          : ' — kept with the launch only')
+        : 'not recorded');
+    }
     let who = experimenterText(l.experimenter);
     if (l.experimenter) {
       who += l.experimenter_recorded_in === 'session.json' ? ' — also in session.json'

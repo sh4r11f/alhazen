@@ -76,6 +76,7 @@
     "recording_pointer": 1,
     "training_state": 1,
     "scene_format": 1,
-    "session_json": 1
+    "session_json": 1,
+    "people_registry": 2
   }
 }

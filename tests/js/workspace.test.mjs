@@ -2017,6 +2017,77 @@ describe('who: the Run page’s Subject and Experimenter', () => {
     assert.equal(app.byId('subject-record').value, 's_1');
   });
 
+  it('names a subject’s age and sex in the menu and under it', async () => {
+    const OLD = new Date(Date.now() - 400 * 86400000).toISOString().slice(0, 10);
+    const app = await pageWith({
+      people: { ...PEOPLE, subjects: [
+        { ...SUBJECT, age: '27', sex: 'prefer_not_to_say', age_recorded: OLD }, ARCHIVED] },
+      project: { ...PROJECT, records_demographics: true },
+    });
+    chooseMode(app, 'run');
+    assert.deepEqual(plain(texts(app.byId('subject-record'))),
+      ['Choose a subject…', 'sub-007 · HD · 27 y · Prefer not to say']);
+    assert.equal(app.byId('subject-facts').hidden, true);
+    app.byId('subject-record').value = 's_1';
+    app.byId('subject-record').fire('change');
+    const facts = app.byId('subject-facts').textContent;
+    assert.equal(app.byId('subject-facts').hidden, false);
+    assert.match(facts, /Age 27/);
+    assert.match(facts, new RegExp(`entered ${OLD}, over a year ago: check it`));
+    assert.match(facts, /Sex Prefer not to say/);
+    /* A registered subject's come from its record: none are sent. */
+    app.byId('experimenter').value = 'e_1a2b';
+    app.byId('experimenter').fire('change');
+    await launch(app);
+    const body = launched(app);
+    assert.equal('age' in body || 'sex' in body, false);
+  });
+
+  it('says what is missing, and where an older alhazen keeps them', async () => {
+    const app = await pageWith({
+      people: PEOPLE,
+      project: { ...PROJECT, records_demographics: false, alhazen_version: '2.11.0' },
+    });
+    chooseMode(app, 'test');
+    app.byId('subject-record').value = 's_1';
+    app.byId('subject-record').fire('change');
+    assert.match(app.byId('subject-facts').textContent,
+      /Age —\s*not recorded.*Sex —\s*not recorded.*Add them on the General page/);
+    const both = await pageWith({
+      people: { ...PEOPLE, subjects: [{ ...SUBJECT, age: '30', sex: 'male', age_recorded: null }] },
+      project: { ...PROJECT, records_demographics: false, alhazen_version: '2.11.0' },
+    });
+    chooseMode(both, 'test');
+    both.byId('subject-record').value = 's_1';
+    both.byId('subject-record').fire('change');
+    assert.match(both.byId('subject-facts').textContent,
+      /date entered not known.*\(2\.11\.0\) does not write age and sex/);
+  });
+
+  it('sends a typed subject’s age and sex, and refuses a bad age before sending', async () => {
+    const app = await pageWith({ people: PEOPLE });
+    chooseMode(app, 'test');
+    app.byId('typed-identity').open = true;
+    app.byId('typed-identity').fire('toggle');
+    app.byId('subject').value = 's99';
+    app.byId('initials').value = 'ab';
+    app.byId('age').value = '7.5';
+    app.byId('sex').value = 'other';
+    await launch(app);
+    const body = launched(app);
+    assert.equal(body.age, '7.5');
+    assert.equal(body.sex, 'other');
+    const bad = await pageWith({ people: PEOPLE });
+    chooseMode(bad, 'test');
+    bad.byId('typed-identity').open = true;
+    bad.byId('typed-identity').fire('toggle');
+    bad.byId('subject').value = 's99';
+    bad.byId('initials').value = 'ab';
+    bad.byId('age').value = '7.55';
+    await launch(bad);
+    assert.match(bad.byId('error').textContent, /Age must be a number of years/);
+  });
+
   it('says when the experiment’s alhazen will not record the experimenter', async () => {
     const app = await pageWith({
       people: PEOPLE,

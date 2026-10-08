@@ -1331,7 +1331,9 @@ class TestTheSubjectsInitials:
         snapshot = yaml.safe_load((run_dir / "config_snapshot.yaml").read_text(encoding="utf-8"))
         assert snapshot["config"]["info"]["initials"] == "HD"
         card = json.loads((run_dir / "session.json").read_text(encoding="utf-8"))
-        assert card["subject"] == {"id": "t01", "initials": "HD"}
+        # Age and sex beside them (session.identity.SubjectDemographics):
+        # null, "not recorded", when the session was given none.
+        assert card["subject"] == {"id": "t01", "initials": "HD", "age": None, "sex": None}
         registry = (tmp_path / "participants.tsv").read_text(encoding="utf-8").splitlines()
         assert registry == ["participant_id\tinitials", "sub-t01\tHD"]
 

@@ -38,7 +38,13 @@ from alhazen.cli.workspace_schema import TASK_NAME_KEY
 from alhazen.config.calibration_images import NAME_PATTERN
 from alhazen.config.experiment import experiment_stimuli, experiment_title
 from alhazen.config.loader import validate_rig
-from alhazen.config.models import RigConfig, normalize_initials, with_calibration_target
+from alhazen.config.models import (
+    RigConfig,
+    normalize_age,
+    normalize_initials,
+    normalize_sex,
+    with_calibration_target,
+)
 from alhazen.config.rigs import (
     SHARED_PREFIX,
     MergedRig,
@@ -287,6 +293,16 @@ def records_experimenter(project: dict[str, Any]) -> bool | None:
     if capabilities is None:
         return None
     return "experimenter" in capabilities
+
+
+def records_demographics(project: dict[str, Any]) -> bool | None:
+    """Whether the project's alhazen records the subject's age and sex in its
+    session folders (``--age``, ``--sex``): True, False, or None when its
+    registration predates the question (Project settings → save asks again)."""
+    capabilities = project.get("capabilities")
+    if capabilities is None:
+        return None
+    return "subject-demographics" in capabilities
 
 
 def _calibration_offer(reported: Any) -> dict[str, Any] | None:
@@ -966,6 +982,11 @@ class Launch(BaseModel):
     # run and test (`_launch_initials`), and sent to run.py as --initials,
     # which records them and never puts them in a file name.
     initials: str = ""
+    # A typed subject's age (years) and sex (a SUBJECT_SEXES code), both
+    # optional; empty for a registered subject, whose record supplies them.
+    # Sent as --age / --sex to an alhazen that records them.
+    age: str = ""
+    sex: str = ""
     session: int = Field(default=1, ge=1)
     # The session seed to pass as --seed, or None to pass none, so the
     # session draws a fresh one and records it (session.log, the snapshot):
@@ -1061,6 +1082,10 @@ MODE_FLAGS = frozenset(
         # records one (records_experimenter).
         "--experimenter",
         "--experimenter-id",
+        # Sent with a subject's age and sex, to a project whose alhazen
+        # records them (records_demographics).
+        "--age",
+        "--sex",
         "--measure",
         "--measure-status",
     }
@@ -1250,6 +1275,7 @@ def _mode_command(
     reserved: frozenset[str] = MODE_FLAGS,
     measure_subject: str | None = None,
     experimenter: dict[str, Any] | None = None,
+    demographics: dict[str, Any] | None = None,
 ) -> list[str]:
     """run.py's arguments for one of the six modes: the launcher's flags, then the extras.
 
@@ -1301,6 +1327,13 @@ def _mode_command(
         if experimenter is not None:
             command += ["--experimenter", experimenter["name"]]
             command += ["--experimenter-id", experimenter["record_id"]]
+        # The subject's age and sex, each when recorded, for a session that
+        # records them in session.json; None for any other launch.
+        if demographics is not None:
+            if demographics.get("age") is not None:
+                command += ["--age", demographics["age"]]
+            if demographics.get("sex") is not None:
+                command += ["--sex", demographics["sex"]]
     if mode in {Mode.TEST, Mode.SIMULATE}:
         command += ["--trials-per-condition", str(request.trials)]
     for flag in ("headless", "mouse", "windowed"):
@@ -1464,6 +1497,42 @@ def _experimenter_destination(
         return None
     is_session = request.mode in {m.value for m in Mode} and Mode(request.mode).runs_trials
     if is_session and records_experimenter(project):
+        return "session.json"
+    return "workspace"
+
+
+def _typed_demographics(request: Launch) -> dict[str, str | None]:
+    """A typed subject's ``{age, sex}`` as recorded (config.models rules),
+    each None when the field is empty; a ValueError in the rule's words for
+    a value that breaks it."""
+    age, sex = request.age.strip(), request.sex.strip()
+    return {
+        "age": normalize_age(age) if age else None,
+        "sex": normalize_sex(sex) if sex else None,
+    }
+
+
+def _demographics(identity: dict[str, Any]) -> dict[str, Any] | None:
+    """The launch's subject's ``{age, sex}`` from its identity snapshot, or
+    None when it names no subject or records neither."""
+    subject = identity.get("subject")
+    if not isinstance(subject, dict):
+        return None
+    given = {"age": subject.get("age"), "sex": subject.get("sex")}
+    return given if given["age"] is not None or given["sex"] is not None else None
+
+
+def _demographics_destination(
+    project: dict[str, Any], request: Launch, identity: dict[str, Any]
+) -> str | None:
+    """Where a launch's subject age and sex are recorded: in the session
+    folder's session.json when the session records them (a mode that runs
+    trials, on an alhazen that takes --age/--sex), else only in the
+    workspace's own run records ("workspace"); None when neither is known."""
+    if _demographics(identity) is None:
+        return None
+    is_session = request.mode in {m.value for m in Mode} and Mode(request.mode).runs_trials
+    if is_session and records_demographics(project):
         return "session.json"
     return "workspace"
 
@@ -1712,6 +1781,8 @@ class Workspace:
             # Whether its alhazen records the experimenter in session.json
             # (records_experimenter): True, False, or None when unknown.
             "records_experimenter": records_experimenter(project),
+            # And the subject's age and sex (records_demographics), likewise.
+            "records_demographics": records_demographics(project),
             "meta": project.get("meta", {}),
             "archived": bool(project.get("archived", False)),
         }
@@ -1783,7 +1854,11 @@ class Workspace:
         return shown
 
     def _command(
-        self, request: Launch, run_dir: Path, experimenter: dict[str, Any] | None = None
+        self,
+        request: Launch,
+        run_dir: Path,
+        experimenter: dict[str, Any] | None = None,
+        demographics: dict[str, Any] | None = None,
     ) -> list[str]:
         """The child's argv: run.py in one of the six modes, or a standalone script.
 
@@ -1845,6 +1920,7 @@ class Workspace:
                 reserved=reserved,
                 measure_subject=measurement_subject(project, request),
                 experimenter=experimenter,
+                demographics=demographics,
             )
         # A standalone script reads --rig with its own argparse and hands it
         # to load_rig, which takes a file: a shared rig goes as the file the
@@ -1902,12 +1978,20 @@ class Workspace:
         mode = Mode(request.mode) if is_mode else None
         names_people = mode is not None and (mode.runs_trials or mode is Mode.MEASURE)
         snapshot: dict[str, Any] = {"subject": None, "experimenter": None, "source": "typed"}
+        typed_demographics = _typed_demographics(request)
+        if (
+            any(typed_demographics.values())
+            and request.subject_record is None
+            and not request.subject.strip()
+        ):
+            raise ValueError("An age or sex belongs to a subject: type the subject ID too")
         if request.subject_record is None and request.experimenter is None:
             if names_people and request.subject.strip():
                 snapshot["subject"] = {
                     "record_id": None,
                     "id": request.subject.strip(),
                     "initials": request.initials.strip().upper() or None,
+                    **typed_demographics,
                 }
             return request, snapshot
         if not names_people:
@@ -1941,6 +2025,11 @@ class Workspace:
                 raise ValueError(
                     f"The initials typed ({typed_initials}) are not sub-{subject['id']}'s"
                 )
+            if any(typed_demographics.values()):
+                raise ValueError(
+                    f"sub-{subject['id']}'s age and sex come from its record; clear the typed "
+                    "ones (or edit the record on the General page)"
+                )
             update = {"subject": subject["id"], "initials": subject["initials"] or ""}
         elif request.subject.strip():
             # A typed subject beside a registry experimenter: kept as typed.
@@ -1948,6 +2037,7 @@ class Workspace:
                 "record_id": None,
                 "id": request.subject.strip(),
                 "initials": request.initials.strip().upper() or None,
+                **typed_demographics,
             }
         elif named_subject:
             raise ValueError("Choose the subject for this session")
@@ -2171,10 +2261,16 @@ class Workspace:
             recorded_in = _experimenter_destination(
                 self.project(request.project), request, identity
             )
+            demographics_in = _demographics_destination(
+                self.project(request.project), request, identity
+            )
             command = self._command(
                 request,
                 run_dir,
                 experimenter=identity["experimenter"] if recorded_in == "session.json" else None,
+                demographics=(
+                    _demographics(identity) if demographics_in == "session.json" else None
+                ),
             )
             if request.parameters is not None and request.parameters_yaml is not None:
                 raise ValueError("Supply either parameter fields or YAML, not both")
@@ -2210,6 +2306,9 @@ class Workspace:
                 "command": command,
                 "identity": identity,
                 "experimenter_recorded_in": recorded_in,
+                # Where the subject's age and sex are recorded, likewise:
+                # "session.json", "workspace", or None when neither is known.
+                "demographics_recorded_in": demographics_in,
             }
             with (run_dir / "launch.json").open("x", encoding="utf-8") as stream:
                 json.dump(launch, stream, indent=2, ensure_ascii=False)
@@ -2266,6 +2365,7 @@ class Workspace:
                 # and in launch.json), None when no experimenter was chosen.
                 "identity": identity,
                 "experimenter_recorded_in": recorded_in,
+                "demographics_recorded_in": demographics_in,
                 # The seed the launch passed, None when it passed none: the
                 # session then draws its own, and _keep_drawn_seed fills it in
                 # from the console. Read off the command, which is what the

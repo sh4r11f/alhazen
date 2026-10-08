@@ -67,7 +67,7 @@ class TestRecords:
 
     def test_unknown_fields_and_bad_experiments_are_refused(self, registry):
         with pytest.raises(PeopleError, match="Unknown field"):
-            registry.add_subject(EXP_A, {"code": "1", "age": "30"})
+            registry.add_subject(EXP_A, {"code": "1", "height": "180"})
         with pytest.raises(PeopleError, match="Unknown experiment"):
             registry.add_subject("../etc", {"code": "1"})
 
@@ -79,11 +79,11 @@ class TestRecords:
                 "code": "1",
                 "initials": "ØY",
                 "notes": notes,
-                "extra": [["hand", "left"], ["age", None]],
+                "extra": [["hand", "left"], ["weight", None]],
             },
         )
         assert s["notes"] == notes and s["initials"] == "ØY"
-        assert s["extra"] == [["hand", "left"], ["age", None]]
+        assert s["extra"] == [["hand", "left"], ["weight", None]]
 
     def test_a_stale_edit_is_refused_and_changes_nothing(self, registry):
         e = registry.add_experimenter({"name": "Ana"})
@@ -158,6 +158,9 @@ class TestLaunchIdentity:
             "record_id": s["id"],
             "id": "01",
             "initials": "HD",
+            "age": None,
+            "sex": None,
+            "age_recorded": None,
             "revision": 1,
         }
         assert snap["experimenter"]["name"] == "Ana"
@@ -200,7 +203,7 @@ class TestCsvCopies:
                 "code": "007",
                 "initials": "ØY",
                 "notes": 'two\nlines, "q"',
-                "extra": [["hand", "=cmd"], ["age", None], ["x", ""]],
+                "extra": [["hand", "=cmd"], ["weight", None], ["x", ""]],
             },
         )
         e = registry.add_experimenter({"name": "Zoë @lab"})
@@ -209,13 +212,13 @@ class TestCsvCopies:
         assert not status.as_json()["pending"]
         header, rows = read_csv(registry.csv_dir / EXP_A / "subjects.csv")
         assert header[:4] == ["record_id", "experiment_id", "subject_id", "initials"]
-        assert header[-4:] == ["hand", "age", "x", "missing_fields"]
+        assert header[-4:] == ["hand", "weight", "x", "missing_fields"]
         (row,) = rows
         assert row["record_id"] == s["id"] and row["subject_id"] == "007"
         assert row["initials"] == "ØY" and row["notes"] == 'two\nlines, "q"'
         assert row["hand"] == "'=cmd"
-        assert row["age"] == "" and row["x"] == ""
-        assert json.loads(row["missing_fields"]) == ["age"]
+        assert row["weight"] == "" and row["x"] == ""
+        assert json.loads(row["missing_fields"]) == ["age", "sex", "age_recorded", "weight"]
         _, people = read_csv(registry.csv_dir / "experimenters.csv")
         assert people[0]["name"] == "Zoë @lab"  # only a formula start is defused
         _, assigned = read_csv(registry.csv_dir / EXP_A / "experimenters.csv")
