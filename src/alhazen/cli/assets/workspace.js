@@ -1860,12 +1860,14 @@ let navOpened = null;
 function navExpanded() {
   const stored = localStorage.getItem(NAV_OPEN_KEY);
   if (stored === null) return new Set();
+  let ids;
   try {
-    const ids = JSON.parse(stored);
-    if (Array.isArray(ids)) return new Set(ids.filter((x) => typeof x === 'string'));
+    ids = JSON.parse(stored);
   } catch (e) {
-    // Reported just below, with the value that could not be read.
+    console.warn(`Ignoring the unreadable sidebar state ${JSON.stringify(stored)}: ${e.message}`);
+    return new Set();
   }
+  if (Array.isArray(ids)) return new Set(ids.filter((x) => typeof x === 'string'));
   console.warn(`Ignoring the unreadable sidebar state ${JSON.stringify(stored)}`);
   return new Set();
 }
