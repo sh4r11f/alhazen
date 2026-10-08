@@ -332,6 +332,23 @@ class Task:
         """
         return []
 
+    def demo_stimulus_extent(self, setup: Any) -> Any:
+        """Where the demo's stimulus draws, so the viewer keeps off it.
+
+        Takes the same ``modes.demo.DemoSetup`` as ``demo_views`` (called
+        after it and ``demo_controls``) and returns the box every frame of
+        the stimulus stays inside, in degrees from the window's centre, y up:
+        a ``modes.demo.StimulusExtent`` or four numbers (left, bottom, right,
+        top). The viewer then places its caption and key table around that
+        box instead of at fixed fractions of the window, and hides the key
+        table behind a one-line hint (``H`` shows it) when it would cover the
+        stimulus (``modes.demo.demo_layout``).
+
+        The default is None: the fixed layout every demo has always had. A
+        stimulus that leaves the furniture room needs nothing here.
+        """
+        return None
+
     def movie_clips(self, setup: Any) -> list[Any]:
         """The files ``alhazen run --mode movie`` writes.
 

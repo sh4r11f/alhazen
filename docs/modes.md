@@ -385,6 +385,28 @@ The viewer keeps `RIGHT`, `SPACE`, `LEFT`, `S`, `ESC` and `Q` for itself and
 refuses a binding that would shadow one, because it checks its own keys first
 and the on-screen table is the only documentation anybody reads.
 
+**A stimulus that fills the window.** The caption and the key table sit at
+fixed fractions of the window, which a large stimulus can run into. A task
+whose stimulus does says where it draws, and the viewer keeps off it:
+
+```python
+class MyTask(Task):
+    def demo_stimulus_extent(self, setup):
+        # (left, bottom, right, top), degrees from the window's centre, y up
+        return (-13.3, -7.3, 13.3, 7.3)
+```
+
+The stimulus is never moved or scaled. The caption keeps its usual place if
+two lines of it clear the stimulus there, else it goes just under the
+stimulus. The key table stays drawn in its corner if it clears the stimulus;
+if it would cover it, it starts hidden behind a one-line `H   show the keys`,
+and `H` shows and hides the full table (which then lists `H` too). Whatever
+still cannot fit — no room under the stimulus, a stimulus wider than the
+window — is printed as a `WARNING:` when the demo opens, not drawn over in
+silence. A task that declares nothing keeps the fixed layout, its own use of
+`H`, and the reserved keys above. `alhazen.modes.demo.demo_layout` is the
+layout itself, for an experiment's tests to check its stimulus against.
+
 ## `movie` — a demo you can send
 
 A moving stimulus is the one part of an experiment a figure in a paper cannot

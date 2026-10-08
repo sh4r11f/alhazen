@@ -1257,6 +1257,7 @@ def _demo_task(args: argparse.Namespace, rig: Any, task: Any, params: Any) -> in
             rig=rig,
             params=params,
             controls=task.demo_controls,
+            extent=task.demo_stimulus_extent,
             seed=args.seed if args.seed is not None else 0,
             windowed=args.windowed,
             screenshot_dir=args.screenshots,

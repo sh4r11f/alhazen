@@ -29,6 +29,16 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Added
 
+- **Demo: the furniture keeps off a large stimulus.** A task can say where
+  its demo stimulus draws (`Task.demo_stimulus_extent(setup)`: a
+  `StimulusExtent` or four numbers, degrees from the window's centre). The
+  viewer then puts the caption under the stimulus when its usual place would
+  overlap it, and when the key table would cover the stimulus it starts
+  hidden behind a one-line `H   show the keys`; `H` shows and hides it. The
+  stimulus is never moved or scaled, nothing is drawn smaller, and whatever
+  still cannot fit is printed as a warning. `alhazen.modes.demo.demo_layout`
+  is the layout, for experiments' tests. A task that declares nothing keeps
+  exactly the old layout and keys (`H` stays free for it).
 - The experiment workspace opens on an **Experiments** page (register,
   search, archive) and gives each experiment four pages — **General**, **Run**,
   **Data**, **History** — each an address that Back, Forward and reload keep.
