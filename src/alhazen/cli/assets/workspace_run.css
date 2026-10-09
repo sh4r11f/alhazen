@@ -378,7 +378,7 @@
     animation: run-lamp 1.6s ease-in-out infinite;
   }
   @keyframes run-lamp {
-    50% { opacity: .35; }
+    50% { opacity: .55; }
   }
 }
 
@@ -431,11 +431,12 @@
   :root .configuration form { grid-template-columns: minmax(0, 1fr); }
   :root #rig-section { grid-column: auto; }
   :root .launch-footer {
-    grid-template-areas: "estimate button";
+    grid-template-areas: "estimate button" "note note";
     margin: 8px -16px 0;
     padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
   }
-  :root .launch-footer .launch-summary, :root .launch-footer #launch-note { display: none; }
+  :root .launch-footer .launch-summary { display: none; }
+  :root .launch-footer #launch-note { font-size: 12.5px; }
   :root .launch { min-width: 0; padding: 9px 16px; }
   :root .launch-footer .duration-value { font-size: 15px; }
   :root .launch-footer .duration-counts { display: none; }
