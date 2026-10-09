@@ -577,3 +577,21 @@ test('rig sign-out that could not reach the hub says the sign-in stays valid the
   assert.match(p.text(), /could not be reached to revoke/);
   assert.match(p.text(), /1 upload was paused/);
 });
+
+test('focus: a new screen focuses its heading once it has loaded; a pager keeps focus on the pager', async () => {
+  const items = Array.from({length: 20}, (_, i) => ({experiment: experiment({id: 'e' + i, title: 'Exp ' + i}), version: release({id: 'v' + i})}));
+  const p = await mount({search: '?view=catalog', routes: {
+    'GET /config': () => SERVER_CONFIG, 'GET /auth/me': signedOut,
+    'GET /catalog': (req) => ({status: 200, body: {items: req.query.get('offset') === '20' ? items.slice(0, 3) : items, next_offset: req.query.get('offset') === '20' ? null : 20}}),
+    'GET /experiments/e1': () => ({status: 200, body: {experiment: experiment(), versions: [release()]}}),
+  }});
+  await p.click(p.find('a', 'Next'));
+  assert.equal(p.loc.search, '?view=catalog&offset=20');
+  assert.equal(p.document.activeElement.textContent, 'Previous', 'focus stays on the pager');
+  await p.back('/?view=catalog');
+  await p.click(p.find('a', 'Exp 1'));
+  assert.equal(p.loc.search, '?view=experiment&id=e1&version=v1');
+  const active = p.document.activeElement;
+  assert.equal(active.getAttribute('data-heading'), '');
+  assert.equal(active.textContent, 'Fixation demo');
+});

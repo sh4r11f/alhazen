@@ -45,6 +45,9 @@ const HubApp = (() => {
   const PAGE = 20;
   const POLL_MS = 1000;
   const POLL_MAX_MS = 8000;
+  /* The contract's package cap; the server enforces it, the page says it
+   * before sending 256 MiB for nothing. */
+  const MAX_PACKAGE_BYTES = 256 * 1024 * 1024;
 
   function mount(env) {
     const doc = env.document;
@@ -306,11 +309,15 @@ const HubApp = (() => {
       const key = state.pendingFocus;
       if (!key) return;
       if (key !== 'heading') {
-        const el = doc.querySelector(`[data-focus="${key}"]`);
-        if (el && inDocument(el) && !el.disabled) {
-          el.focus({preventScroll: true});
-          state.pendingFocus = null;
-          return;
+        /* 'a|b': the first of these controls that exists (a pager's Next
+         * may be gone on the last page; its Previous then takes focus). */
+        for (const name of key.split('|')) {
+          const el = doc.querySelector(`[data-focus="${name}"]`);
+          if (el && inDocument(el) && !el.disabled) {
+            el.focus({preventScroll: true});
+            state.pendingFocus = null;
+            return;
+          }
         }
         if (!final) return;
       }
@@ -318,6 +325,8 @@ const HubApp = (() => {
       if (heading && inDocument(heading)) {
         heading.focus({preventScroll: true});
         if (env.scrollTo) env.scrollTo(0, 0);
+      } else if (!final) {
+        return;  // the heading arrives with the screen's data; wait for it
       }
       state.pendingFocus = null;
     }
@@ -716,11 +725,11 @@ const HubApp = (() => {
       nav.appendChild(h('span', {class: 'pager-label'}, C.nextOffsetLabel(offset, count)));
       if (prev) {
         nav.appendChild(link(makeRoute(Math.max(0, offset - PAGE) || undefined), 'Previous',
-          {class: 'btn btn-line', 'data-focus': focusKey + '-prev', 'data-focus-next': focusKey + '-prev'}));
+          {class: 'btn btn-line', 'data-focus': focusKey + '-prev', 'data-focus-next': focusKey + '-prev|' + focusKey + '-next'}));
       }
       if (next) {
         nav.appendChild(link(makeRoute(nextOffset), 'Next',
-          {class: 'btn btn-line', 'data-focus': focusKey + '-next', 'data-focus-next': focusKey + '-next'}));
+          {class: 'btn btn-line', 'data-focus': focusKey + '-next', 'data-focus-next': focusKey + '-next|' + focusKey + '-prev'}));
       }
       return nav;
     }
@@ -1631,6 +1640,9 @@ const HubApp = (() => {
         prevent(event);
         const chosen = file.files && file.files[0];
         if (!chosen) return status.show('Choose a .zip file first.', 'err');
+        if (chosen.size > MAX_PACKAGE_BYTES) {
+          return status.show('That archive is ' + C.formatBytes(chosen.size) + '; the hub accepts at most ' + C.formatBytes(MAX_PACKAGE_BYTES) + '.', 'err');
+        }
         button.disabled = true;
         status.show('Uploading ' + C.formatBytes(chosen.size) + '\u2026 keep this page open.', 'info');
         try {
@@ -2350,7 +2362,7 @@ const HubApp = (() => {
           if (ctx.epoch !== state.epoch) return;
           noteFailure(exc);
           if (exc.kind === 'invalid' && !release) {
-            previewArea.replaceChildren(h('p', {class: 'muted'}, 'This project was not installed from the hub. Choose which release the session should be recorded against.'));
+            previewArea.replaceChildren(h('p', {class: 'muted'}, exc.message + ' Choose which release in your library the session should be recorded against.'));
             releaseArea.replaceChildren(releasePicker((picked) => { release = picked; runPreview(); }));
             return;
           }
