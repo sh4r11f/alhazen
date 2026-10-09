@@ -849,7 +849,7 @@ const HubApp = (() => {
           h('span', {class: key === 'display' || o.featured ? 'card-need-word' : 'visually-hidden'}, label)));
       }
       const subjects = item ? C.subjectKeys(item) : [];
-      const meta = [version ? versionLabel(version) : '', experiment.license || manifest.license || ''].filter(Boolean).join(' \u00b7 ');
+      const meta = [version && !o.library ? versionLabel(version) : '', experiment.license || manifest.license || ''].filter(Boolean).join(' \u00b7 ');
       card.appendChild(h('div', {class: 'card-foot'}, needs,
         subjects.length ? h('span', {class: 'card-subject'}, subjects.map((s) => s === 'human' ? 'Human' : 'Monkey').join(' \u00b7 ')) : null,
         h('span', {class: 'card-meta'}, meta)));
@@ -964,14 +964,17 @@ const HubApp = (() => {
         box.appendChild(fix(cx, cy));
       } else {
         box.appendChild(svg('circle', {cx: f(cx), cy: f(cy), r: f(24 * s), class: 'sch-ring sch-dash'}));
-        let x = cx;
-        let y = cy;
-        for (let i = 0; i < 14; i += 1) {
-          x += (rand() - 0.5) * 7 * s;
-          y += (rand() - 0.5) * 7 * s;
-          box.appendChild(svg('circle', {cx: f(x), cy: f(y), r: f(1.3 * s), class: 'sch-mid'}));
+        let x = cx + 9 * s;
+        let y = cy - 6 * s;
+        let d = `M${f(x)} ${f(y)}`;
+        for (let i = 0; i < 22; i += 1) {
+          x += (rand() - 0.5) * 5 * s + (cx - x) * 0.18;
+          y += (rand() - 0.5) * 5 * s + (cy - y) * 0.18;
+          d += `L${f(x)} ${f(y)}`;
         }
-        box.appendChild(fix(cx, cy, 3.2 * s));
+        box.appendChild(svg('path', {d, class: 'sch-trail', 'stroke-width': f(1 * s), 'stroke-linejoin': 'round'}));
+        box.appendChild(svg('circle', {cx: f(cx), cy: f(cy), r: f(10 * s), class: 'sch-ring'}));
+        box.appendChild(fix(cx, cy, 3 * s));
       }
       return box;
     }
@@ -1156,7 +1159,7 @@ const HubApp = (() => {
       const flash = flashNode();
       /* The store's head: title, the search bar, the category chips. */
       const q = input({type: 'search', name: 'q', value: r.q || '', autocomplete: 'off', maxlength: '200',
-        placeholder: 'Search experiments, authors, tags', 'data-focus': 'catalog-q', 'aria-label': 'Search the marketplace'});
+        placeholder: 'Search experiments', 'data-focus': 'catalog-q', 'aria-label': 'Search the marketplace'});
       const form = h('form', {class: 'store-search', role: 'search'},
         h('span', {class: 'store-search-icon', 'aria-hidden': 'true'}, searchGlyph()), q,
         h('button', {type: 'submit', class: 'btn btn-primary', 'data-focus': 'catalog-go'}, 'Search'));
@@ -1618,7 +1621,7 @@ const HubApp = (() => {
           const items = await libraryItems(true);
           if (ctx.epoch !== state.epoch) return;
           paint(items);
-          status.show('Added ' + versionLabel(version) + ' to your library.', 'ok');
+          status.clear();
           const open = box.querySelector('[data-focus="open-library"]');
           if (open && typeof open.focus === 'function') open.focus();
         } catch (exc) {
@@ -2069,7 +2072,7 @@ const HubApp = (() => {
             link({view: 'catalog'}, 'Browse the marketplace', {class: 'btn btn-primary'})));
         }
         area.fill(h('p', {class: 'store-count'}, `${items.length} experiment${items.length === 1 ? '' : 's'}`),
-          h('div', {class: 'card-grid card-grid-library'}, items.map((item) => listing(item, libraryExtra(ctx, item)))));
+          h('div', {class: 'card-grid card-grid-library'}, items.map((item) => listing(item, libraryExtra(ctx, item), {library: true}))));
       })();
       return section;
     }
@@ -2217,7 +2220,8 @@ const HubApp = (() => {
           h('span', null, 'Not connected yet: this version neither saves nor sends a key.')));
       const status = statusLine();
       const generate = h('button', {type: 'submit', class: 'btn btn-primary'}, sparkGlyph(), h('span', null, 'Generate plan'));
-      const form = h('form', {class: 'create-form'}, describe, forkBlock, keyBlock,
+      describe.classList.add('create-main');
+      const form = h('form', {class: 'create-form'}, describe, h('div', {class: 'create-side'}, forkBlock, keyBlock),
         h('div', {class: 'create-actions'}, generate,
           link({view: 'create', step: 'plan', fork: draft.fork || undefined}, 'See an example plan', {class: 'btn btn-line'})),
         status.el);
@@ -2265,6 +2269,16 @@ const HubApp = (() => {
     function screenCreatePlan(ctx) {
       const plan = EXAMPLE_PLAN;
       const draft = state.createDraft;
+      if (ctx.route.fork) draft.fork = ctx.route.fork;
+      const startingPoint = h('span', null, draft.fork ? 'Fork of a published release' : 'New experiment');
+      if (draft.fork) {
+        (async () => {
+          const got = await catalogItems(ctx, '');
+          if (!got || !got.ok) return;
+          const item = got.value.find((i) => i.experiment && i.experiment.id === draft.fork);
+          if (item) startingPoint.textContent = 'Fork of ' + (item.experiment.title || 'Untitled') + ' ' + versionLabel(item.version);
+        })();
+      }
       const section = h('section', {class: 'screen screen-create screen-plan'});
       section.appendChild(h('header', {class: 'create-head'},
         h('h1', {class: 'screen-title', tabindex: '-1', 'data-heading': ''}, 'Review the plan'),
@@ -2281,10 +2295,11 @@ const HubApp = (() => {
           h('p', {class: 'plan-kicker'}, 'Proposed experiment'),
           h('h2', {class: 'plan-title'}, plan.title),
           spec([['Paradigm', plan.paradigm], ['Subjects', plan.subjects], ['Hardware', plan.hardware],
-            ['Starting point', draft.fork ? 'Fork of the release chosen on the previous step' : 'New experiment']]))));
-      stack.appendChild(card('Stimuli', h('ul', {class: 'plan-list'},
-        ...plan.stimuli.map(([name, text]) => h('li', null, h('span', {class: 'plan-term'}, name), h('span', null, text))))));
-      stack.appendChild(card('Measures', h('ul', {class: 'plan-list plan-list-plain'}, ...plan.measures.map((m) => h('li', null, m)))));
+            ['Starting point', startingPoint]]))));
+      stack.appendChild(h('div', {class: 'plan-pair'},
+        card('Stimuli', h('ul', {class: 'plan-list'},
+          ...plan.stimuli.map(([name, text]) => h('li', null, h('span', {class: 'plan-term'}, name), h('span', null, text))))),
+        card('Measures', h('ul', {class: 'plan-list plan-list-plain'}, ...plan.measures.map((m) => h('li', null, m))))));
       const table = h('table', {class: 'table'},
         h('caption', {class: 'visually-hidden'}, 'Parameters'),
         h('thead', null, h('tr', null, ...['Parameter', 'Default', 'Unit', 'Meaning'].map((t) => h('th', {scope: 'col'}, t)))),

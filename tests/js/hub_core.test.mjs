@@ -333,3 +333,64 @@ test('upload states: only a staging upload can be discarded; sealing says why no
   for (const status of ['committed', 'aborted', 'expired', '']) assert.equal(C.uploadState({status}).canDiscard, false, status);
   assert.equal(C.uploadState({status: 'staging'}).received, null);
 });
+
+
+/* ---- marketplace (option "Store") ------------------------------------------ */
+
+function item(id, {tags = [], hw = {}, platforms = ['linux'], license = 'MIT', at = '2026-10-01T00:00:00Z', title = id} = {}) {
+  return {experiment: {id, title, tags, license, published_at: at},
+    version: {id: 'v' + id, manifest: {hardware: Object.assign({display: true}, hw), platforms, license}}};
+}
+
+test('marketplace filters live in the address, checked and in a fixed order', () => {
+  const routes = [
+    {view: 'catalog', q: 'drift', cat: 'motion', hw: 'eye_tracker,reward', who: 'monkey', os: 'linux,win32', lic: 'CC-BY-4.0,MIT', sort: 'name', offset: 20},
+    {view: 'create', fork: 'e1', step: 'plan'},
+    {view: 'create'},
+  ];
+  for (const route of routes) assert.deepEqual({...C.parseRoute(C.formatRoute(route).slice(1))}, route);
+  assert.deepEqual({...C.parseRoute('view=catalog&cat=evil&hw=gpu,reward&who=robot&os=beos&lic=%3Cx%3E&sort=newest')},
+    {view: 'catalog', hw: 'reward'});
+  assert.deepEqual({...C.parseRoute('view=catalog&hw=reward,eye_tracker&lic=MIT,Apache-2.0,MIT')},
+    {view: 'catalog', hw: 'eye_tracker,reward', lic: 'Apache-2.0,MIT'});
+  assert.deepEqual({...C.parseRoute('view=create&step=describe&fork=../x')}, {view: 'create'});
+  assert.ok(C.PRIVATE_VIEWS.includes('create'));
+  assert.equal(C.toggleFacet('reward', 'reward'), undefined);
+  assert.equal(C.toggleFacet('reward', 'display'), 'reward,display');
+});
+
+test('filters: any of the ticked values within a filter, every filter at once; counts ignore their own filter', () => {
+  const items = [
+    item('a', {tags: ['motion', 'human'], hw: {eye_tracker: true}, at: '2026-10-03T00:00:00Z', title: 'Beta'}),
+    item('b', {tags: ['motion', 'monkey'], hw: {eye_tracker: true, reward: true}, platforms: ['linux', 'win32'], at: '2026-10-02T00:00:00Z', title: 'alpha'}),
+    item('c', {tags: ['colour', 'human'], hw: {}, platforms: ['darwin'], license: 'CC0-1.0', at: '2026-10-04T00:00:00Z', title: 'Gamma'}),
+  ];
+  const ids = (list) => list.map((i) => i.experiment.id);
+  assert.deepEqual(ids(C.filterCatalog(items, {})), ['c', 'a', 'b'], 'newest first');
+  assert.deepEqual(ids(C.filterCatalog(items, {sort: 'name'})), ['b', 'a', 'c'], 'by name, ignoring case');
+  assert.deepEqual(ids(C.filterCatalog(items, {cat: 'motion'})), ['a', 'b']);
+  assert.deepEqual(ids(C.filterCatalog(items, {hw: 'reward,display'})), ['c', 'b']);
+  assert.deepEqual(ids(C.filterCatalog(items, {cat: 'motion', who: 'human'})), ['a']);
+  assert.deepEqual(ids(C.filterCatalog(items, {os: 'win32'})), ['b']);
+  assert.deepEqual(ids(C.filterCatalog(items, {lic: 'CC0-1.0'})), ['c']);
+  const facets = C.catalogFacets(items, {cat: 'motion', hw: 'reward'});
+  assert.equal(facets.cat.motion, 1, 'categories counted under the other filters (reward)');
+  assert.equal(facets.cat.colour, 0);
+  assert.equal(facets.hw.eye_tracker, 2, 'hardware counted without its own filter');
+  assert.equal(facets.hw.display, 0);
+  assert.equal(facets.who.monkey, 1);
+  assert.equal(C.activeFilters({hw: 'reward,display', who: 'human', cat: 'motion'}), 3);
+});
+
+test('a card picture follows its tags; the Methods excerpt is plain leading prose', () => {
+  assert.equal(C.schematicKind(['motion', 'gabor']), 'gabor');
+  assert.equal(C.schematicKind(['eye-movements']), 'step');
+  assert.equal(C.schematicKind([]), 'fixation');
+  const a = C.seededRandom('e1');
+  const b = C.seededRandom('e1');
+  assert.equal(a(), b());
+  const md = '# Title\n\nThis uses `alhazen new` and **bold** [a link](https://x.org).\n\n## Purpose\n\nSecond paragraph.\n\n- a list\n\nThird.';
+  assert.equal(C.methodsExcerpt(md), 'This uses alhazen new and bold a link.\n\nSecond paragraph.');
+  assert.ok(C.methodsExcerpt('word '.repeat(200), 60).endsWith('\u2026'));
+  assert.equal(C.methodsExcerpt(''), '');
+});
