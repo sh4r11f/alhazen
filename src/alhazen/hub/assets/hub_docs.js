@@ -1064,6 +1064,7 @@ const HubDocs = (() => {
     }
     canvas.appendChild(graphic);
     node.appendChild(canvas);
+    if (wide) node.appendChild(el(c, 'p', 'hd-scroll-note', 'Swipe or scroll sideways to see the full-size figure.'));
     const figcaption = el(c, 'figcaption', 'hd-figcaption');
     figcaption.appendChild(el(c, 'strong', 'hd-fig-number', 'Figure ' + number + '. ' + title + '. '));
     if (caption) figcaption.appendChild(textNode(c, caption + ' '));

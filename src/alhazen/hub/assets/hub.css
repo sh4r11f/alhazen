@@ -378,7 +378,7 @@ a:hover { color: var(--accent-hover); }
   border-radius: 999px; border: 1px solid var(--line); background: var(--surface);
   font-size: 0.8rem; font-weight: 700; color: var(--muted);
 }
-.chip-version { font-family: var(--mono); color: var(--ink); }
+.chip-version { font-family: var(--mono); color: var(--ink); white-space: nowrap; flex-shrink: 0; }
 .chip-public { color: var(--ok-ink); border-color: var(--ok-line); background: var(--ok-bg); }
 .chip-private { color: var(--muted); background: var(--surface-3); }
 .chip-link { color: var(--accent); text-decoration: none; }

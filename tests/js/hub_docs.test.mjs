@@ -271,4 +271,5 @@ test('stimulus schematics keep their authored label size in a focusable narrow-p
   assert.match(canvas.getAttribute('aria-label'), /Stimulus.*scrolls sideways/);
   const drawing = canvas.querySelector('svg');
   assert.ok(Number(drawing.getAttribute('width')) >= 400);
+  assert.match(figure.querySelector('.hd-scroll-note').textContent, /Swipe or scroll sideways/);
 });

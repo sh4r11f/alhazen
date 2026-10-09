@@ -150,6 +150,7 @@ button.hd-ref-param:hover { border-color: var(--hd-accent); }
 .hd-figure--diagram .hd-figure-canvas { max-width: 34rem; }
 .hd-svg { display: block; max-width: 100%; height: auto; font-family: inherit; }
 .hd-figcaption { font-size: 0.86rem; color: var(--hd-muted); margin-top: 0.6rem; max-width: 46rem; }
+.hd-scroll-note { display: none; margin: 0.4rem 0 0; color: var(--hd-muted); font-size: 0.8rem; }
 .hd-fig-number { color: var(--hd-ink); }
 .hd-fig-note { color: var(--hd-muted); }
 
@@ -258,6 +259,7 @@ button.hd-ref-param:hover { border-color: var(--hd-accent); }
   .hd-doc { padding: 1rem 0.85rem 2.5rem; }
   .hd-h1 { font-size: 1.45rem; }
   .hd-figure-canvas--wide .hd-svg { max-width: none; }
+  .hd-scroll-note { display: block; }
   .hd-phase-text { grid-template-columns: minmax(0, 1fr); gap: 0.75rem; }
   .hd-params thead, .hd-outcomes thead, .hd-events thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
   .hd-params tr, .hd-outcomes tr, .hd-events tr { display: block; border-bottom: 1px solid var(--hd-rule); padding: 0.6rem 0; }
