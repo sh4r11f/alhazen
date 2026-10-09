@@ -201,12 +201,26 @@ class RigState:
             )
             self.epoch += 1
 
-    def clear_credential(self) -> None:
+    def clear_credential(self, expected: Credential | None = None) -> bool:
+        """Forget the stored sign-in; with ``expected``, only if it is still
+        exactly that one (base, user, token): a request refused with an old
+        bearer must never sign out an account that signed in since.
+        True when something was removed."""
         with self._lock:
-            existed = (self.directory / CREDENTIAL_FILE).exists()
-            (self.directory / CREDENTIAL_FILE).unlink(missing_ok=True)
+            path = self.directory / CREDENTIAL_FILE
+            if expected is not None:
+                record = _read(path)
+                if record is None or (
+                    record.get("base"),
+                    str((record.get("user") or {}).get("id", "")),
+                    record.get("token"),
+                ) != (expected.base, expected.user_id, expected.token):
+                    return False
+            existed = path.exists()
+            path.unlink(missing_ok=True)
             if existed:
                 self.epoch += 1
+            return existed
 
     # -- this rig -------------------------------------------------------------------
 

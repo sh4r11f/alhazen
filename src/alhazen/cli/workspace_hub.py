@@ -64,6 +64,7 @@ from alhazen.hub.sync import (
     client_session_id,
     file_sha256,
     job_id_for,
+    portable_problems,
     privacy_fields,
     public_job,
     session_files,
@@ -141,6 +142,11 @@ PROXY_ROUTES = (
     # Rebuild a session's derived trial index (owner only on the hub, 202);
     # the raw files are never touched by it.
     _route("POST", "/data/sessions/{id}/reindex"),
+    # The signed-in user's own unfinished uploads, and discarding one (an
+    # explicit action; the local session folder is never touched). The
+    # rest of the upload protocol is the rig's own (POST /local/upload).
+    _route("GET", "/sessions", PAGE),
+    _route("POST", "/sessions/{id}/abort"),
 )
 SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -182,6 +188,8 @@ class HubAdapter:
         timeout: float = DEFAULT_TIMEOUT_S,
         uploader_wait_s: float = 1.0,
         backoff_s: tuple[float, ...] = (1, 2, 4, 8, 16),
+        seal_wait_s: float | None = None,
+        background: bool = True,
     ) -> None:
         self.workspace = workspace
         self.data = data
@@ -195,7 +203,9 @@ class HubAdapter:
         self.previews = Previews()
         self.scratch = hub / "scratch"
         self._lock = threading.Lock()
-        self.outbox.recover()
+        extra = {"seal_wait_s": seal_wait_s} if seal_wait_s is not None else {}
+        # ``background`` False (alhazen hub install): no upload is recovered,
+        # resumed or sent; only the routes the caller uses run.
         self.uploader = Uploader(
             self.outbox,
             self.state,
@@ -203,10 +213,14 @@ class HubAdapter:
             self.busy,
             wait_s=uploader_wait_s,
             backoff_s=backoff_s,
+            start=background,
+            **extra,
         )
-        credential = self.state.credential()
-        if credential is not None:
-            self.uploader.resume_for(credential.base, credential.user_id)
+        if background:
+            self.outbox.recover()
+            credential = self.state.credential()
+            if credential is not None:
+                self.uploader.resume_for(credential.base, credential.user_id)
 
     def close(self) -> None:
         self.uploader.close()
@@ -256,7 +270,8 @@ class HubAdapter:
             return call(self._client_for(credential))
         except HubError as exc:
             if exc.status == 401:
-                self.state.clear_credential()
+                # Only the bearer this request used; a newer sign-in stays.
+                self.state.clear_credential(expected=credential)
                 raise HubRouteError(401, "unauthenticated", "Sign in to the hub again") from exc
             raise
 
@@ -296,9 +311,13 @@ class HubAdapter:
                 return 200, self.resume_job(match.group(1))
             if method == "POST" and action == "cancel":
                 return 200, self.cancel_job(match.group(1))
-        if route.startswith("/local/") or route.startswith("/sessions"):
+        if route.startswith("/local/"):
             raise HubRouteError(404, "not_found", "No such hub route on this rig")
-        return self._proxy(method, route, args, body, upload)
+        answer = self._proxy(method, route, args, body, upload)
+        aborted = re.fullmatch(r"/sessions/([A-Za-z0-9_-]{1,128})/abort", route)
+        if method == "POST" and aborted:
+            self._aborted_remotely(aborted.group(1))
+        return answer
 
     # -- proxied central routes ----------------------------------------------------------------
 
@@ -327,9 +346,10 @@ class HubAdapter:
         path = api_path(*route.strip("/").split("/"))
         query = {k: args[k] for k in spec.query if k in args} or None
         if spec.kind == "stream":
-            client = self._client_for(self._signed_in())
+            credential = self._signed_in()
             return ProxyStream(
-                connect=lambda: self._open_stream(client, path, query), filename=spec.filename
+                connect=lambda: self._open_stream(credential, path, query),
+                filename=spec.filename,
             )
         if spec.kind == "zip":
             if upload is None:
@@ -352,15 +372,17 @@ class HubAdapter:
 
     @contextmanager
     def _open_stream(
-        self, client: HubClient, path: str, query: dict[str, str] | None
+        self, credential: Credential, path: str, query: dict[str, str] | None
     ) -> Iterator[HTTPResponse]:
-        """The hub's response for a download; a rejected bearer is forgotten."""
+        """The hub's response for a download; the rejected bearer (only that
+        one) is forgotten."""
+        client = self._client_for(credential)
         with ExitStack() as stack:
             try:
                 response = stack.enter_context(client.stream("GET", path, query=query))
             except HubError as exc:
                 if exc.status == 401:
-                    self.state.clear_credential()
+                    self.state.clear_credential(expected=credential)
                     raise HubRouteError(401, "unauthenticated", "Sign in to the hub again") from exc
                 raise
             yield response
@@ -471,12 +493,24 @@ class HubAdapter:
         except ValueError as exc:
             raise HubRouteError(400, "invalid_url", str(exc)) from exc
         probe_hub(base, timeout=CONNECT_TIMEOUT_S, opener=self._opener)
+        previous_revoked: bool | None = None
         with self._lock:
             credential = self.state.credential()
             if credential is not None and credential.base != base:
                 self._pause_jobs(credential)
+                # Revoked at the hub that issued it, with only that bearer;
+                # the new hub never sees it.
+                previous_revoked = self._revoke(credential)
             self.state.save_connection(Connection(base, allow))
-        return self.status(args, body)
+        status, answer = self.status(args, body)
+        return status, {**answer, "previous_revoked": previous_revoked}
+
+    def _revoke(self, credential: Credential) -> bool:
+        try:
+            self._client_for(credential).json("POST", "/auth/logout")
+        except HubError:
+            return False
+        return True
 
     def disconnect(self, args: dict[str, str], body: dict[str, Any]) -> tuple[int, Any]:
         if self.state.credential() is not None:
@@ -753,6 +787,33 @@ class HubAdapter:
             )
         return str(experiment_id), str(version_id), install, source
 
+    def _release_intact(
+        self,
+        project: dict[str, Any],
+        folder: Path,
+        source: str,
+        install: dict[str, Any] | None,
+    ) -> bool | None:
+        """Whether the code that ran is the release the upload names: the
+        run's own launch record (files re-hashed before spawn), else the
+        install's files now. A modified release is refused; None means no
+        record says (an older run, or a project not from the hub)."""
+        if source == "run_record":
+            recorded = self._recorded_release(project["id"], folder) or {}
+            verified = recorded.get("files_verified")
+        elif source == "install_record" and install is not None:
+            verified = not self.installs.verify(install)
+        else:
+            return None
+        if verified is False:
+            raise HubRouteError(
+                409,
+                "release_modified",
+                "The experiment's files differed from the hub release when this session ran (or "
+                "differ now); it cannot be uploaded as that release",
+            )
+        return verified if isinstance(verified, bool) else None
+
     def upload_preview(self, args: dict[str, str], body: dict[str, Any]) -> tuple[int, Any]:
         self._refuse_if_busy()
         credential = self._signed_in()
@@ -761,6 +822,14 @@ class HubAdapter:
             project, folder, body, credential.base
         )
         listing = session_files(folder)
+        unportable = portable_problems(listing)
+        if unportable:
+            raise HubRouteError(
+                409,
+                "unsupported_path",
+                "The hub cannot store these file names: " + "; ".join(unportable[:5]),
+            )
+        files_verified = self._release_intact(project, folder, release_source, install)
         session_key = client_session_id(self.state.rig_id(), folder)
         manifest_sha = file_sha256(folder / "manifest.yaml")
         metadata = session_metadata(folder, run_id)
@@ -791,6 +860,7 @@ class HubAdapter:
             "experiment_id": experiment_id,
             "version_id": version_id,
             "release_source": release_source,
+            "release_verified": files_verified,
             "metadata": metadata,
             "privacy": {"fields": privacy_fields(folder), "warning": PRIVACY_WARNING},
             "install": self._install_public(install) if install else None,
@@ -905,6 +975,17 @@ class HubAdapter:
         self.uploader.submit(job_id)
         return {"job": public_job(job)}
 
+    def _aborted_remotely(self, session_id: str) -> None:
+        """The user discarded a hub upload through the hub routes: a local
+        job for it stops, and records the discard (re-asked on the worker,
+        which the hub answers idempotently)."""
+        credential = self.state.credential()
+        if credential is None:
+            return
+        for job in self.outbox.visible(credential.base, credential.user_id):
+            if job.get("session_id") == session_id and job.get("status") != "completed":
+                self.cancel_job(job["id"])
+
     def cancel_job(self, job_id: str) -> dict[str, Any]:
         job = self._job(job_id)
         if job.get("status") in ACTIVE:
@@ -921,6 +1002,12 @@ class HubAdapter:
                 status="cancelled",
                 error={"code": "cancelled", "message": "Cancelled", "retryable": True},
             )
+        if job.get("status") != "completed" and job.get("session_id"):
+            # The hub's unfinished copy is discarded with this job's own
+            # bound credential, on the worker after it stops this job;
+            # pending until that account is signed in if it is not now.
+            self.uploader.request_abort(job_id)
+            job = self._job(job_id)
         return {"job": public_job(job)}
 
 
@@ -990,7 +1077,8 @@ def cli_install(
     with workspace_lock(directory):
         workspace = Workspace(directory)
         try:
-            adapter = HubAdapter(workspace, DataView(workspace))
+            # No background uploads in an install command (review minor 10).
+            adapter = HubAdapter(workspace, DataView(workspace), background=False)
             try:
                 answer = adapter.handle(
                     "POST",

@@ -204,3 +204,30 @@ class TestUploadBinding:
         )
         assert status == 409 and refused["error"]["code"] == "conflict"
         assert "recorded with this run" in refused["error"]["message"]
+
+
+def test_ma4_an_upload_never_names_a_modified_release(installed, workspace, http):  # noqa: F811
+    """A session with no run record (an older run) is uploaded under the
+    folder's install record only while the installed files still match it."""
+    call, _ = http
+    folder = installed["folder"] / "data" / "v0.1.0/sub-02/ses-001/run-01_task-demo"
+    folder.mkdir(parents=True)
+    (folder / "session.json").write_text('{"task": "demo"}', encoding="utf-8")
+    from alhazen.data.manifest import write_manifest
+
+    write_manifest(folder, folder / "manifest.yaml", experiment_version="1.0.0")
+    status, out = call(f"/api/data/roots?project={installed['project_id']}")
+    root = next(r["id"] for r in out["roots"] if r["kind"] == "real")
+    body = {
+        "project_id": installed["project_id"],
+        "root_id": root,
+        "run_id": "v0.1.0/sub-02/ses-001/run-01_task-demo",
+    }
+    status, out = call(f"{API}/local/upload-preview", body)
+    assert status == 200, out
+    assert out["release_source"] == "install_record" and out["release_verified"] is True
+    target = installed["folder"] / "run.py"
+    os.chmod(target, stat.S_IMODE(target.stat().st_mode) | stat.S_IWUSR)
+    target.write_text("print('edited')\n", encoding="utf-8")
+    status, out = call(f"{API}/local/upload-preview", body)
+    assert status == 409 and out["error"]["code"] == "release_modified"

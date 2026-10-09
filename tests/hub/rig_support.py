@@ -76,6 +76,14 @@ class FakeHub(ThreadingHTTPServer):
         self.receipt_override: dict = {}
         # How many /complete calls answer 409 sealing_in_progress first.
         self.seal_busy = 0
+        # An identical init of a closed (aborted/expired) upload starts a
+        # new attempt (the reviewed server behaviour); False: the old one.
+        self.replay_closed_as_new = True
+        # The next chunk PUT finds its upload closed by the hub (expiry).
+        self.close_next_put = False
+        # Called with each request record before it is answered (races).
+        self.on_request = None
+        self.limits = {"max_chunk_bytes": 8 * 1024 * 1024}
         self._lock = threading.Lock()
         self._counter = 0
         self.thread = threading.Thread(target=self.serve_forever, daemon=True)
@@ -142,8 +150,8 @@ class _HubHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def _error(self, status: int, code: str, message: str = "") -> None:
-        self._send(status, {"error": {"code": code, "message": message or code}})
+    def _error(self, status: int, code: str, message: str = "", extra: dict | None = None) -> None:
+        self._send(status, {"error": {"code": code, "message": message or code}}, extra=extra)
 
     def _who(self) -> str | None:
         auth = self.headers.get("Authorization", "")
@@ -171,6 +179,8 @@ class _HubHandler(BaseHTTPRequestHandler):
                 "headers": dict(self.headers),
             }
         )
+        if hub.on_request is not None:
+            hub.on_request(hub.requests[-1])
         if hub.redirect:
             self.send_response(302)
             self.send_header("Location", "http://127.0.0.1:9/elsewhere")
@@ -180,7 +190,13 @@ class _HubHandler(BaseHTTPRequestHandler):
         who = self._who()
         if method == "GET" and path == "/config":
             return self._send(
-                200, {"role": "server", "api_version": 1, "registration_mode": "invite"}
+                200,
+                {
+                    "role": "server",
+                    "api_version": 1,
+                    "registration_mode": "invite",
+                    "limits": hub.limits,
+                },
             )
         if method == "POST" and path == "/auth/token":
             data = json.loads(body)
@@ -257,12 +273,22 @@ class _HubHandler(BaseHTTPRequestHandler):
                 kind="text/html",
                 extra={"Content-Disposition": "attachment; filename*=UTF-8''trials.csv"},
             )
+        if method == "GET" and path == "/sessions":
+            mine = [
+                self._progress(s)
+                for s in hub.sessions.values()
+                if s["owner"] == who and s["status"] in ("staging", "sealing")
+            ]
+            return self._send(200, {"items": mine, "next_offset": None})
         if method == "POST" and path == "/sessions/init":
             data = json.loads(body)
-            for s in hub.sessions.values():
+            for s in list(hub.sessions.values()):
                 if s["owner"] == who and s["client_session_id"] == data["client_session_id"]:
                     if s["files"] != data["files"]:
                         return self._error(409, "conflict")
+                    if s["status"] in ("aborted", "expired") and hub.replay_closed_as_new:
+                        s["client_session_id"] += "~closed"
+                        break
                     return self._send(200, {"session": self._progress(s)})
             sid = hub.next_id("s")
             hub.sessions[sid] = {
@@ -275,19 +301,34 @@ class _HubHandler(BaseHTTPRequestHandler):
                 "experiment_id": data["experiment_id"],
                 "version_id": data["version_id"],
                 "data": {f["path"]: bytearray() for f in data["files"]},
+                "verified": set(),
             }
             return self._send(201, {"session": self._progress(hub.sessions[sid])})
-        m = re.fullmatch(rf"/sessions/({ID})/(upload|files|complete)", path)
+        m = re.fullmatch(rf"/sessions/({ID})/(upload|files|complete|abort)", path)
         if m:
             s = hub.sessions.get(m.group(1))
             if s is None or s["owner"] != who:
                 return self._error(404, "not_found")
             if m.group(2) == "upload" and method == "GET":
                 return self._send(200, self._progress(s))
+            if m.group(2) == "abort" and method == "POST":
+                if s["status"] not in ("staging", "aborted", "expired"):
+                    return self._error(409, f"session_{s['status']}", "committed sessions are kept")
+                s["status"] = "aborted" if s["status"] == "staging" else s["status"]
+                return self._send(200, self._progress(s))
+            if s["status"] in ("aborted", "expired") and method in ("PUT", "POST"):
+                return self._error(410, f"upload_{s['status']}")
             if m.group(2) == "files" and method == "PUT":
+                if hub.close_next_put:
+                    hub.close_next_put = False
+                    s["status"] = "expired"
+                    return self._error(410, "upload_expired")
                 if hub.fail_puts > 0:
                     hub.fail_puts -= 1
                     return self._error(503, "busy")
+                if len(body) > hub.limits["max_chunk_bytes"]:
+                    return self._error(413, "too_large")
+                hub.chunk_sizes = [*getattr(hub, "chunk_sizes", []), len(body)]
                 buf = s["data"][query["path"]]
                 offset = int(query["offset"])
                 if hashlib.sha256(body).hexdigest() != self.headers.get("X-Chunk-SHA256"):
@@ -301,38 +342,49 @@ class _HubHandler(BaseHTTPRequestHandler):
                     pass
                 else:
                     return self._error(409, "offset_conflict")
+                size = next(f["size"] for f in s["files"] if f["path"] == query["path"])
+                if len(buf) == size:
+                    s["verified"].add(query["path"])
                 return self._send(200, {"path": query["path"], "received": len(buf)})
             if m.group(2) == "complete" and method == "POST":
+                if s["status"] == "committed":
+                    return self._send(200, self._receipt(s))
                 for f in s["files"]:
-                    if hashlib.sha256(bytes(s["data"][f["path"]])).hexdigest() != f["sha256"]:
-                        return self._error(409, "incomplete")
+                    if f["path"] not in s["verified"]:
+                        return self._error(409, "session_incomplete")
                 if hub.seal_busy > 0:
                     hub.seal_busy -= 1
-                    return self._error(409, "sealing_in_progress")
+                    return self._error(409, "sealing_in_progress", extra={"Retry-After": "1"})
                 s["status"] = hub.receipt_status
-                receipt = {
-                    "id": s["id"],
-                    "status": s["status"],
-                    "experiment_id": s["experiment_id"],
-                    "version_id": s["version_id"],
-                    "client_session_id": s["client_session_id"],
-                    "manifest_sha256": protocol.manifest_sha256(
-                        s["experiment_id"], s["version_id"], s["files"], s["metadata"]
-                    ),
-                    "file_count": len(s["files"]),
-                    "total_bytes": sum(f["size"] for f in s["files"]),
-                    "durability": "verified on primary storage; not an independent backup",
-                }
-                receipt.update(hub.receipt_override)
-                return self._send(200, receipt)
+                return self._send(200, self._receipt(s))
         return self._error(404, "not_found")
+
+    def _receipt(self, s: dict) -> dict:
+        receipt = {
+            "id": s["id"],
+            "status": s["status"],
+            "experiment_id": s["experiment_id"],
+            "version_id": s["version_id"],
+            "client_session_id": s["client_session_id"],
+            "manifest_sha256": protocol.manifest_sha256(
+                s["experiment_id"], s["version_id"], s["files"], s["metadata"]
+            ),
+            "file_count": len(s["files"]),
+            "total_bytes": sum(f["size"] for f in s["files"]),
+            "durability": "verified on primary storage; not an independent backup",
+        }
+        receipt.update(self.server.receipt_override)
+        return receipt
 
     def _progress(self, s: dict) -> dict:
         return {
             "id": s["id"],
             "status": s["status"],
             "client_session_id": s["client_session_id"],
-            "files": [{**f, "received": len(s["data"][f["path"]])} for f in s["files"]],
+            "files": [
+                {**f, "received": len(s["data"][f["path"]]), "verified": f["path"] in s["verified"]}
+                for f in s["files"]
+            ],
         }
 
     def do_GET(self) -> None:

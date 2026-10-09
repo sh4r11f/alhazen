@@ -219,6 +219,7 @@ class HubClient:
         content_type: str | None = None,
         headers: Mapping[str, str] | None = None,
         authenticated: bool = True,
+        timeout: float | None = None,
     ) -> Iterator[HTTPResponse]:
         """One request; yields the open response for 2xx, else HubError.
 
@@ -246,7 +247,7 @@ class HubClient:
             self.url(path, query), data=body, headers=sent, method=method
         )
         try:
-            response = self._send(request, timeout=self.timeout)
+            response = self._send(request, timeout=timeout or self.timeout)
         except urllib.error.HTTPError as exc:
             with exc:
                 retry_after = exc.headers.get("Retry-After") if exc.headers else None
