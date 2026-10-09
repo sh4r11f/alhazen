@@ -287,3 +287,26 @@ test('a body that breaks off mid-answer is a failure, never an empty success', a
   const api = C.createApi({fetch, role: 'server'});
   await assert.rejects(() => api.request('POST', '/library', {json: {}}), (e) => e.kind === 'offline');
 });
+
+test('trial index state: nested server shape, older flat fields, and what each allows', () => {
+  let s = C.indexState({index: {status: 'failed', rows: 0, error: 'budget'}});
+  assert.equal(s.failed, true);
+  assert.equal(s.canRebuild, true);
+  assert.equal(s.ready, false);
+  assert.equal(s.error, 'budget');
+  s = C.indexState({index: {status: 'indexed', rows: 12, error: null}});
+  assert.equal(s.ready, true);
+  assert.equal(s.rows, 12);
+  assert.equal(s.canRebuild, false);
+  assert.equal(C.indexState({index: {status: 'pending', rows: 0, error: null}}).busy, true);
+  assert.equal(C.indexState({index: {status: 'indexing'}}).busy, true);
+  assert.equal(C.indexState({index: {status: 'none', rows: 0}}).word, 'No trial table in this session');
+  s = C.indexState({index_status: 'failed', index_error: 'flat', index_rows: 0});
+  assert.equal(s.failed, true);
+  assert.equal(s.error, 'flat');
+  s = C.indexState({});
+  assert.equal(s.status, '');
+  assert.equal(s.ready, false);
+  assert.equal(s.canRebuild, false);
+  assert.equal(s.rows, null);
+});
