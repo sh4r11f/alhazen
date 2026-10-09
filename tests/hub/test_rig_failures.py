@@ -384,3 +384,94 @@ def test_minor13_another_hub_revokes_the_old_bearer_at_the_old_hub(http, hub):
         assert not any(r["auth"] for r in other.requests)
     finally:
         other.close()
+
+
+def test_registration_happens_on_the_hub_page_not_through_the_rig(http, hub):
+    call, _ = http
+    connect(call, hub)
+    before = len(hub.requests)
+    status, out = call(f"{API}/auth/register", {"username": "carol", "password": "x" * 12})
+    assert status == 409 and out["error"]["code"] == "register_on_hub"
+    assert hub.base in out["error"]["message"]
+    assert len(hub.requests) == before  # nothing sent: the rig never forges the hub's Origin
+
+
+class TestInstallRecovery:
+    def setup_release(self, call, hub, tmp_path):
+        from tests.hub.rig_support import release_zip
+
+        connect(call, hub)
+        data, manifest = release_zip(tmp_path)
+        exp, ver, sha = hub.add_release(data, manifest)
+        return {
+            "experiment_id": exp,
+            "version_id": ver,
+            "sha256": sha,
+            "python": __import__("sys").executable,
+            "trust_code": True,
+        }
+
+    def set_status(self, workspace, status, **extra):
+        registry = workspace.directory / "hub" / "installs.json"
+        entries = json.loads(registry.read_text(encoding="utf-8"))
+        for entry in entries:
+            entry.update(status=status, **extra)
+        registry.write_text(json.dumps(entries), encoding="utf-8")
+        return entries[0]
+
+    def test_an_interruption_before_unpacking_is_cleared_and_reinstalled(
+        self, http, hub, workspace, tmp_path
+    ):
+        call, _ = http
+        body = self.setup_release(call, hub, tmp_path)
+        assert call(f"{API}/local/install", body)[0] == 201
+        record = self.set_status(workspace, "installing")
+        # The folder never got there: as if the dashboard died before unpacking.
+        import shutil
+        import stat as st
+
+        folder = Path(record["path"])
+        for p in folder.rglob("*"):
+            if p.is_file():
+                p.chmod(st.S_IMODE(p.stat().st_mode) | st.S_IWUSR)
+        shutil.rmtree(folder)
+        status, out = call(f"{API}/local/install", body)
+        assert status == 409 and out["error"]["code"] == "install_interrupted"
+        status, out = call(f"{API}/local/install-recover", {"sha256": body["sha256"]})
+        assert status == 200 and out["recovery"]["destination_state"] == "absent"
+        assert out["install"] is None
+        status, out = call(f"{API}/local/install", body)
+        assert status == 201 and out["install"]["status"] == "registered"
+
+    def test_a_committed_tree_is_completed_only_when_exact(self, http, hub, workspace, tmp_path):
+        call, _ = http
+        body = self.setup_release(call, hub, tmp_path)
+        assert call(f"{API}/local/install", body)[0] == 201
+        record = self.set_status(workspace, "installing")
+        folder = Path(record["path"])
+        (folder / "notes.txt").write_text("someone else's", encoding="utf-8")
+        status, out = call(f"{API}/local/install-recover", {"sha256": body["sha256"]})
+        assert status == 200 and out["install"]["error"]["code"] == "install_kept"
+        assert (folder / "notes.txt").is_file() and (folder / "run.py").is_file()
+        from tests.unit import test_workspace as base
+
+        from alhazen.cli.workspace import Launch
+
+        (folder / "configs").mkdir(exist_ok=True)
+        (folder / "configs" / "rig-sim.yaml").write_bytes(base.RIG.read_bytes())
+        with pytest.raises(ValueError, match="did not finish"):
+            workspace.start(
+                Launch(
+                    project=record["project_id"],
+                    mode="movie",
+                    rig="configs/rig-sim.yaml",
+                    extra_args="--task demo",
+                )
+            )
+        assert workspace.active is None
+        (folder / "configs" / "rig-sim.yaml").unlink()
+        (folder / "configs").rmdir()
+        (folder / "notes.txt").unlink()
+        status, out = call(f"{API}/local/install-recover", {"sha256": body["sha256"]})
+        assert status == 200 and out["install"]["status"] in ("installed", "registered")
+        assert out["install"]["durable"] is False
