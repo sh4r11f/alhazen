@@ -8,6 +8,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
+import vm from 'node:vm';
 
 import { loadWorkspace, plain, response, settle } from './load_workspace.mjs';
 
@@ -2270,15 +2271,17 @@ describe('the colour theme', () => {
       ['rail-muted', ['rail', 'rail-2']],
       ['node-ink', ['node']],
       ['on-accent', ['accent']],
-      /* The Run page's instrument pane (Split): its text on its grounds,
-       * and the accent, status and selection inks drawn on it. */
+      /* The instrument surface (Split's; in the Composite design the Run
+       * page's session summary sits on it): its text on its grounds, and
+       * the accent, status and selection inks drawn on it. The running
+       * clock and lamp (--run-ink) also sit on the launch bar (--surface). */
       ['instrument-ink', ['instrument', 'instrument-2']],
       ['instrument-muted', ['instrument', 'instrument-2']],
       ['ink', ['instrument', 'instrument-2']],
       ['muted', ['instrument', 'instrument-2']],
       ['accent', ['instrument', 'instrument-2', 'selected-bg', 'rail', 'rail-2']],
       ['selected-ink', ['rail']],
-      ['run-ink', ['instrument']],
+      ['run-ink', ['instrument', 'surface', 'paper']],
       ['ok-ink', ['instrument']],
       ['bad-ink', ['instrument']],
     ];
@@ -2700,5 +2703,63 @@ describe('the Rig summary\'s Reward line', () => {
     assert.deepEqual(plain(app.run(`rewardFact(${JSON.stringify(line)}, null)`)),
       [['Reward', ['Dev1/ao0 at 5 V', 'volume not measured (Measure rig, Reward)']]]);
     assert.deepEqual(plain(app.run('rewardFact(undefined, null)')), []);
+  });
+});
+
+describe('the Composite Run page (Split shell, Bench run, Console clock)', () => {
+  const read = (name) => readFileSync(
+    new URL(`../../src/alhazen/cli/assets/${name}`, import.meta.url), 'utf8',
+  );
+
+  it('has Setup and Output panes, the session clock and the clock in the launch bar', () => {
+    const html = read('workspace.html');
+    const at = (text) => {
+      const index = html.indexOf(text);
+      assert.notEqual(index, -1, text);
+      return index;
+    };
+    // The pane switch comes first on the Run page, then the form, then the output.
+    const order = [
+      'id="run-panes"', 'id="pane-setup"', 'id="pane-output"', 'id="launch-form"',
+      'class="launch-footer"', 'id="bar-session"', 'id="bar-elapsed"', 'id="duration-estimate"',
+      'id="launch"', 'id="session-summary"', 'id="session-elapsed"', 'id="run-status"',
+      'id="session-started"', 'id="run-info"', 'id="monitor-tab"', 'id="monitor-frame"',
+      'id="history"',
+    ].map(at);
+    assert.deepEqual(order, [...order].sort((a, b) => a - b));
+    // Split's two-pane instrument layout is gone from the Run page.
+    assert.doesNotMatch(html, /class="instrument-pane"/);
+    // The Run page's layer loads after Split's, and its script is there.
+    assert.ok(at('href="/workspace_run.css"') > at('href="/workspace_split.css"'));
+    assert.match(html, /<script src="\/workspace_bench.js" defer><\/script>/);
+  });
+
+  it('frames the live monitor full width at 78% of the window', () => {
+    const css = read('workspace_run.css');
+    assert.match(css, /#monitor-frame \{[^}]*height: 78vh;/);
+  });
+
+  it('formats the elapsed clock as mm:ss, then h:mm:ss, and freezes it at the finish', () => {
+    const context = vm.createContext({
+      document: { readyState: 'loading', addEventListener() {}, getElementById: () => null },
+      window: {},
+      Date, Number, String, Math, Event: class {},
+    });
+    context.window = context;
+    vm.runInContext(read('workspace_bench.js'), context);
+    const { clock, startedAt } = context.WorkspaceBench;
+    const start = '2026-10-09T20:00:00Z';
+    const at = (s) => Date.parse(start) + s * 1000;
+    assert.equal(clock(start, '', at(0)), '00:00');
+    assert.equal(clock(start, '', at(65)), '01:05');
+    assert.equal(clock(start, '', at(3600 + 62)), '1:01:02');
+    // A finished run shows how long it took, whatever the time is now.
+    assert.equal(clock(start, '2026-10-09T20:00:09Z', at(500)), '00:09');
+    // No start, or an unreadable one: zero, never NaN.
+    assert.equal(clock('', '', at(5)), '00:00');
+    assert.equal(clock('not a date', '', at(5)), '00:00');
+    // A clock skew never shows negative time.
+    assert.equal(clock(start, '', at(-30)), '00:00');
+    assert.equal(startedAt(''), '–');
   });
 });
