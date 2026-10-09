@@ -28,7 +28,7 @@ from sqlalchemy import Connection, and_, delete, func, insert, or_, select, upda
 from sqlalchemy.exc import IntegrityError
 
 from alhazen.hub import packages
-from alhazen.hub.auth import Principal, audit
+from alhazen.hub.auth import Principal, audit, has_hidden_characters
 from alhazen.hub.context import Hub, new_id
 from alhazen.hub.errors import HubError, conflict, invalid, not_found, too_large
 from alhazen.hub.quota import lock_owner, require_room
@@ -93,8 +93,10 @@ def parse_metadata(body: dict[str, Any], *, partial: bool) -> dict[str, Any]:
 
 
 def _bad_text(value: str, *, multiline: bool) -> bool:
-    allowed = {"\n", "\t"} if multiline else set()
-    return any((ord(ch) < 32 and ch not in allowed) or ord(ch) == 127 for ch in value)
+    # The display-name rule (controls, bidi/format and other invisible
+    # characters, separators, lone surrogates): public metadata is read by
+    # people and must show what it says (auth-review finding 7).
+    return has_hidden_characters(value, multiline=multiline)
 
 
 # -- shapes ------------------------------------------------------------------
