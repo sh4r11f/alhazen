@@ -344,6 +344,9 @@ type = "layers"
 # nothing above config, and stay mutually independent of core.
 layers = [
   "alhazen.cli",
+  # The experiment hub: the central service and the rig client. cli adapts
+  # it (cli/hub.py, the dashboard routes); it never imports cli.
+  "alhazen.hub",
   "alhazen.modes",
   "alhazen.session | alhazen.testing | alhazen.analysis",
   "alhazen.training",
