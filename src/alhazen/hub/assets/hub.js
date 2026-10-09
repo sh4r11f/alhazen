@@ -907,7 +907,7 @@ const HubApp = (() => {
       if (state.user) actions.appendChild(link({view: 'library'}, 'Your library', {class: 'btn btn-line'}));
       else actions.appendChild(link({view: 'signin'}, 'Sign in', {class: 'btn btn-line'}));
       section.appendChild(h('div', {class: 'hero'},
-        h('h1', {class: 'hero-title', tabindex: '-1', 'data-heading': ''}, 'Vision experiments you can rerun, byte for byte.'),
+        h('h1', {class: 'hero-title', tabindex: '-1', 'data-heading': ''}, 'Your experiment hub'),
         h('p', {class: 'lede'}, 'Pinned releases your rigs install and run offline.'),
         actions));
       const flash = flashNode();

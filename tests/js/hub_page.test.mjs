@@ -294,7 +294,7 @@ test('Back and Forward redraw the screen and drop answers for the screen left be
   releaseSlow();
   await settleAll();
   assert.doesNotMatch(p.text(), /STALE/);
-  assert.match(p.text(), /Vision experiments you can rerun/);
+  assert.match(p.text(), /Your experiment hub/);
   assert.equal(p.document.activeElement.getAttribute('data-heading'), '');
   await p.back('/?view=catalog');
   assert.match(p.text(), /Published experiments/);

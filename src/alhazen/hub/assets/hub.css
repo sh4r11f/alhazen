@@ -493,7 +493,7 @@ a:hover { color: var(--accent-ink); text-decoration-thickness: 2px; }
  * three facts with line icons ---- */
 .hero { padding: 32px 0 8px; text-align: center; display: grid; justify-items: center; }
 .hero-title {
-  margin: 0; max-width: 17ch; font-size: clamp(2.6rem, 1.3rem + 3.6vw, 4.25rem); line-height: 1.02;
+  margin: 0; max-width: 20ch; font-size: clamp(2.6rem, 1.3rem + 3.6vw, 4.25rem); line-height: 1.02;
   font-weight: 800; letter-spacing: -0.045em; text-wrap: balance;
 }
 .hero .lede { font-size: 1.25rem; margin-top: 24px; max-width: 52ch; }
