@@ -302,8 +302,11 @@ class HubClient:
         removes the partial file and raises HubError."""
         digest = hashlib.sha256()
         size = 0
+        # Created before the request, exclusively: an existing file is never
+        # opened, so the cleanup below only ever removes this call's own.
+        out = destination.open("xb")
         try:
-            with self.open("GET", path) as response, destination.open("xb") as out:
+            with out, self.open("GET", path) as response:
                 declared = response.headers.get("Content-Length")
                 if declared is not None and declared.isdigit() and int(declared) > max_bytes:
                     raise HubError(413, "too_large", "The release is larger than allowed")
