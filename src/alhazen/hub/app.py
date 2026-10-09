@@ -20,6 +20,16 @@ Write checks (review gate M1):
 - Bearer (rig/CLI) requests carry no cookie; a request carrying both a
   cookie and a bearer is refused, never silently resolved.
 - ``POST /auth/token`` never sets a cookie and refuses a request with one.
+
+Request bodies (auth-review findings 2, 5, 6): every body is read through
+`_parts`, which enforces the route's byte limit, an idle budget (a part must
+arrive within ``limits.body_idle_seconds``) and an overall budget (base +
+expected bytes / floor rate), answering 408 and releasing its slots when a
+client stalls. Uploads take a per-owner slot before a shared transfer slot.
+Numbers in queries and headers are ASCII digits only; JSON is bounded in
+nesting and refuses repeated keys. A client that disconnects mid-body ends
+its request quietly, without an error traceback. A streamed export releases
+its admission permit when the ASGI response call ends, however it ends.
 """
 
 from __future__ import annotations
@@ -28,16 +38,19 @@ import asyncio
 import json
 import logging
 import re
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+import threading
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+import anyio
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.requests import ClientDisconnect
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from alhazen.hub import auth, catalog, data, trials, uploads
@@ -75,7 +88,13 @@ _ID = re.compile(r"^[0-9a-f]{32}$")
 # How long POST .../complete waits for its seal before answering 202 (below
 # the rig client's 20 s request timeout).
 COMPLETE_WAIT_SECONDS = 10.0
+# ASCII digits only: str.isdigit() also accepts superscripts and other
+# scripts' digits, some of which int() then rejects (finding 5).
+_DIGITS = re.compile(r"[0-9]{1,18}")
 _MAX_OFFSET = 10_000_000
+# JSON bodies: deepest nesting accepted. The hub's documents are flat
+# objects with lists of objects; nothing legitimate comes close.
+MAX_JSON_DEPTH = 32
 
 
 def cookie_name(settings: HubSettings) -> str:
@@ -120,6 +139,85 @@ class SecurityHeaders:
         await self.app(scope, receive, send_with_headers)
 
 
+class GuardedStream:
+    """A synchronous body iterator that can be closed safely from any thread.
+
+    Starlette pulls each part with ``next`` in a worker thread. ``close``
+    takes the same lock, so it waits for a ``next`` still running there and
+    never interleaves with one; afterwards ``next`` ends the iteration. The
+    source's own ``close`` (a generator holding a database snapshot, or the
+    export module's primed iterator) runs exactly once, also when no part
+    was ever pulled. A source without ``close`` has nothing to release.
+    """
+
+    def __init__(self, source: Any) -> None:
+        self._source = iter(source)
+        self._closer = getattr(source, "close", None) or getattr(self._source, "close", None)
+        self._lock = threading.Lock()
+        self._closed = False
+
+    def __iter__(self) -> GuardedStream:
+        return self
+
+    def __next__(self) -> Any:
+        with self._lock:
+            if self._closed:
+                raise StopIteration
+            return next(self._source)
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            if self._closer is not None:
+                self._closer()
+
+
+class PermitStreamingResponse(StreamingResponse):
+    """A streamed response that holds an admission permit until its ASGI call
+    ends, however it ends, and then closes its stream (auth-review finding 3).
+
+    Formerly the permit was released in the body generator's ``finally``,
+    which never runs for a generator that never starts: when the client is
+    already gone, Starlette cancels the streaming task before its first step.
+    Now ``__call__``'s ``finally`` (completion, error, disconnect or
+    cancellation alike) first releases the permit, then closes the stream in
+    a worker thread under a shielded cancel scope: the stream may hold a
+    database snapshot whose cleanup is I/O, which must neither run on the
+    event loop nor be skipped by cancellation nor be left to the garbage
+    collector. `GuardedStream` makes that close wait for a part still being
+    produced in a worker thread. ``release`` and ``close`` are idempotent.
+    """
+
+    def __init__(self, content: Any, *, release: Callable[[], None], **kwargs: Any) -> None:
+        self.stream = GuardedStream(content)
+        super().__init__(self.stream, **kwargs)
+        self._release = release
+        self._released = False
+
+    def release(self) -> None:
+        if not self._released:
+            self._released = True
+            self._release()
+
+    async def aclose(self) -> None:
+        """Release the permit, then close the stream off the event loop."""
+        self.release()
+        with anyio.CancelScope(shield=True):
+            await run_in_threadpool(self.stream.close)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            await self.aclose()
+
+
 # -- request helpers ----------------------------------------------------------
 
 
@@ -127,23 +225,103 @@ def _address(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
-async def _body(request: Request, limit: int) -> bytes:
+def _digits(value: str) -> int | None:
+    """The value of an ASCII decimal string, or None if it is not one."""
+    return int(value) if _DIGITS.fullmatch(value) else None
+
+
+def _declared_length(request: Request, limit: int, message: str) -> int | None:
     declared = request.headers.get("content-length")
-    if declared is not None:
-        if not declared.isdigit():
-            raise invalid("Content-Length is malformed")
-        if int(declared) > limit:
-            raise too_large(f"The request body is larger than {limit} bytes")
+    if declared is None:
+        return None
+    value = _digits(declared)
+    if value is None:
+        raise invalid("Content-Length is malformed")
+    if value > limit:
+        raise too_large(message)
+    return value
+
+
+def _body_timeout(why: str) -> HubError:
+    return HubError(
+        408,
+        "body_timeout",
+        f"The request body {why}; send it again",
+        headers={"Connection": "close"},
+    )
+
+
+async def _parts(request: Request, limit: int, message: str) -> AsyncIterator[bytes]:
+    """The request body's parts, within the route's byte limit and the
+    service's idle and overall time budgets (``HubLimits.body_*``).
+
+    Content-Length is checked first but not trusted: the running total is.
+    The overall budget is base + expected bytes / floor rate, where the
+    expected size is the declared length, or the limit when none is given.
+    No cancel scope spans a ``yield``.
+    """
+    limits = request.app.state.hub.settings.limits
+    declared = _declared_length(request, limit, message)
+    expected = declared if declared is not None else limit
+    budget = limits.body_base_seconds + expected / limits.body_min_bytes_per_second
+    deadline = anyio.current_time() + budget
+    source = request.stream().__aiter__()
+    size = 0
+    while True:
+        remaining = deadline - anyio.current_time()
+        if remaining <= 0:
+            raise _body_timeout(f"did not arrive within {budget:.0f} s")
+        part = b""
+        finished = False
+        with anyio.move_on_after(min(limits.body_idle_seconds, remaining)) as scope:
+            try:
+                part = await source.__anext__()
+            except StopAsyncIteration:
+                finished = True
+        if scope.cancelled_caught:
+            if remaining <= limits.body_idle_seconds:
+                raise _body_timeout(f"did not arrive within {budget:.0f} s")
+            raise _body_timeout(f"stalled for {limits.body_idle_seconds} s")
+        if finished:
+            return
+        size += len(part)
+        if size > limit:
+            raise too_large(message)
+        if part:
+            yield part
+
+
+async def _body(request: Request, limit: int) -> bytes:
+    message = f"The request body is larger than {limit} bytes"
     buffer = bytearray()
-    async for part in request.stream():
+    async for part in _parts(request, limit, message):
         buffer += part
-        if len(buffer) > limit:
-            raise too_large(f"The request body is larger than {limit} bytes")
     return bytes(buffer)
 
 
 def _reject_constant(name: str) -> Any:
     raise ValueError(f"{name} is not valid JSON")
+
+
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in out:
+            raise ValueError(f"repeated key {key!r}")
+        out[key] = value
+    return out
+
+
+def _depth_exceeds(value: Any, limit: int) -> bool:
+    stack = [(value, 1)]
+    while stack:
+        item, depth = stack.pop()
+        if isinstance(item, (dict, list)):
+            if depth > limit:
+                return True
+            children = item.values() if isinstance(item, dict) else item
+            stack.extend((child, depth + 1) for child in children)
+    return False
 
 
 async def _json(request: Request, limit: int) -> dict[str, Any]:
@@ -152,11 +330,21 @@ async def _json(request: Request, limit: int) -> dict[str, Any]:
         raise HubError(415, "unsupported_media_type", "Send the request body as application/json")
     raw = await _body(request, limit)
     try:
-        value = json.loads(raw.decode("utf-8"), parse_constant=_reject_constant)
+        value = json.loads(
+            raw.decode("utf-8"),
+            parse_constant=_reject_constant,
+            object_pairs_hook=_unique_object,
+        )
+    except RecursionError:
+        raise invalid("The request body is nested too deeply", "invalid_json") from None
     except (UnicodeDecodeError, ValueError):
         raise invalid("The request body is not valid JSON", "invalid_json") from None
     if not isinstance(value, dict):
         raise invalid("The request body must be a JSON object", "invalid_json")
+    if _depth_exceeds(value, MAX_JSON_DEPTH):
+        raise invalid(
+            f"The request body is nested more than {MAX_JSON_DEPTH} levels deep", "invalid_json"
+        )
     return value
 
 
@@ -170,9 +358,9 @@ def _int(request: Request, name: str, default: int, low: int, high: int) -> int:
     raw = request.query_params.get(name)
     if raw is None or raw == "":
         return default
-    if not raw.isdigit():
+    value = _digits(raw)
+    if value is None:
         raise invalid(f"{name} must be a non-negative integer")
-    value = int(raw)
     if not low <= value <= high:
         raise invalid(f"{name} must be between {low} and {high}")
     return value
@@ -246,6 +434,14 @@ def create_app(
             {"error": {"code": "invalid_request", "message": "The request is malformed"}},
             status_code=400,
         )
+
+    @app.exception_handler(ClientDisconnect)
+    async def _client_gone(request: Request, _exc: ClientDisconnect) -> Response:
+        # A client that hangs up mid-body (a rig losing its link, a closed
+        # tab) is an ordinary event for a resumable protocol, not a server
+        # error: no traceback, nothing acknowledged. The status is never seen.
+        log.info("client disconnected during %s %s", request.method, request.url.path)
+        return Response(status_code=400, headers={"Connection": "close"})
 
     @app.exception_handler(Exception)
     async def _unexpected(request: Request, exc: Exception) -> JSONResponse:
@@ -506,6 +702,26 @@ def create_app(
             body,
         )
 
+    @asynccontextmanager
+    async def _upload_slots(owner: str) -> AsyncIterator[None]:
+        """One of the owner's transfer slots, then a shared one (finding 2).
+
+        The owner's share is waited for briefly, without blocking the event
+        loop and without holding a shared slot; the shared gate refuses at
+        once, as before. Both are released however the request ends.
+        """
+        gate = hub.owner_transfers
+        deadline = anyio.current_time() + settings.limits.owner_transfer_wait_seconds
+        while not gate.try_acquire(owner):
+            if anyio.current_time() >= deadline:
+                raise gate.refusal(owner)
+            await anyio.sleep(0.05)
+        try:
+            with hub.transfers.slot():
+                yield
+        finally:
+            gate.release(owner)
+
     @app.post(API + "/experiments/{experiment_id}/versions")
     async def upload_version(request: Request, experiment_id: str) -> JSONResponse:
         principal = await writer(request)
@@ -514,7 +730,7 @@ def create_app(
         if kind != "application/zip":
             raise HubError(415, "unsupported_media_type", "Upload the package as application/zip")
         await call(catalog.precheck_version_upload, hub, principal, experiment_id)
-        with hub.transfers.slot():
+        async with _upload_slots(principal.user_id):
             temp, digest, size = await _receive_package(request)
             version, created = await call(
                 catalog.accept_version, hub, principal, experiment_id, temp, digest, size
@@ -525,19 +741,16 @@ def create_app(
         import hashlib
 
         limit = settings.limits.max_package_bytes
-        declared = request.headers.get("content-length")
-        if declared is not None and declared.isdigit() and int(declared) > limit:
-            raise too_large(f"A package may be at most {limit} bytes")
+        message = f"A package may be at most {limit} bytes"
+        parts = _parts(request, limit, message)
         temp = hub.store.new_temp()
         digest = hashlib.sha256()
         size = 0
         handle = await call(temp.open, "xb")
         try:
             pending = bytearray()
-            async for part in request.stream():
+            async for part in parts:
                 size += len(part)
-                if size > limit:
-                    raise too_large(f"A package may be at most {limit} bytes")
                 digest.update(part)
                 pending += part
                 if len(pending) >= 1024 * 1024:
@@ -643,7 +856,7 @@ def create_app(
         if offset < 0:
             raise invalid("offset is required")
         chunk_sha = request.headers.get("x-chunk-sha256", "")
-        with hub.transfers.slot():
+        async with _upload_slots(principal.user_id):
             data_bytes = await _body(request, settings.limits.max_chunk_bytes)
             return await call(
                 uploads.put_chunk, hub, principal, session_id, path, offset, data_bytes, chunk_sha
@@ -753,32 +966,69 @@ def create_app(
             data.index_state, hub, principal, _id(session_id, "Session not found")
         )
         data.require_indexed(row)
-        slot = hub.exports.slot()
-        slot.__enter__()
+        permit = hub.exports.slot()
+        permit.__enter__()
 
-        def guarded(stream: Iterator[bytes]) -> Iterator[bytes]:
-            try:
-                yield from stream
-            finally:
-                slot.__exit__(None, None, None)
+        def release() -> None:
+            permit.__exit__(None, None, None)
+
+        stream: Any = None
+        try:
+            # Open one stable snapshot with cancellation-safe ownership.
+            stream = await _open_stream(lambda: trials.open_export(hub, row.id, fmt))
+            media = "text/csv; charset=utf-8" if fmt == "csv" else "application/json"
+            name = f"session-{row.id}-trials.{fmt}"
+            response = PermitStreamingResponse(
+                stream,
+                release=release,
+                media_type=media,
+                headers={
+                    "Content-Disposition": f'attachment; filename="{name}"',
+                    "Content-Security-Policy": "sandbox; default-src 'none'",
+                    "Cache-Control": "private, no-store",
+                },
+            )
+        except BaseException:
+            release()
+            if stream is not None:
+                with anyio.CancelScope(shield=True):
+                    await call(GuardedStream(stream).close)
+            raise
+        return response
+
+    async def _open_stream(factory: Callable[[], Any]) -> Any:
+        """Create an export stream in a worker thread and hand it back, or
+        close it if this request is cancelled meanwhile.
+
+        A stream may hold a database snapshot from the moment it exists (the
+        export module primes the first part). If the request is cancelled
+        while the worker thread creates it, the result would be dropped. So
+        the thread records what it opened; whichever side comes second (this
+        handler's cancellation, or the thread finishing after it) closes it,
+        never on the event loop and never left to the garbage collector.
+        """
+        lock = threading.Lock()
+        state: dict[str, Any] = {"stream": None, "abandoned": False}
+
+        def create() -> Any:
+            stream = factory()
+            with lock:
+                abandoned = state["abandoned"]
+                state["stream"] = stream
+            if abandoned:  # the request is gone already: close it right here
+                GuardedStream(stream).close()
+            return stream
 
         try:
-            # Header, columns and rows come from one snapshot (trials.py).
-            stream = await call(trials.open_export, hub, row.id, fmt)
-            media = "text/csv; charset=utf-8" if fmt == "csv" else "application/json"
+            return await call(create)
         except BaseException:
-            slot.__exit__(None, None, None)
+            with lock:
+                state["abandoned"] = True
+                opened = state["stream"]
+            if opened is not None:
+                with anyio.CancelScope(shield=True):
+                    await call(GuardedStream(opened).close)
             raise
-        name = f"session-{row.id}-trials.{fmt}"
-        return StreamingResponse(
-            guarded(stream),
-            media_type=media,
-            headers={
-                "Content-Disposition": f'attachment; filename="{name}"',
-                "Content-Security-Policy": "sandbox; default-src 'none'",
-                "Cache-Control": "private, no-store",
-            },
-        )
 
     @app.get(API + "/data/sessions/{session_id}/files")
     async def session_file(request: Request, session_id: str) -> FileResponse:

@@ -13,8 +13,16 @@ Policy, all from settings.AuthPolicy:
   for the whole service; an exhausted window answers 429 with Retry-After
   and nothing is locked permanently. Unknown usernames cost the same hash
   as known ones and get the same generic answer.
+- Admission is atomic (auth-review finding 1): the counts and the new
+  attempt rows are written in ONE transaction that every sign-in serialises
+  on (SQLite: BEGIN IMMEDIATE; PostgreSQL: a transaction-scoped advisory
+  lock). An attempt is recorded as a failure BEFORE its hash runs and turned
+  into a success only if the password matched, so guesses still in flight
+  count against the account and address limits.
 - Invites are single use, stored hashed, expire, and are consumed in the
   same transaction that creates the account.
+- Opening a session re-reads the account under a row lock, so a password
+  reset or disable that commits while a hash runs wins (finding 4).
 
 Every function that touches the database takes the `Hub`; each opens its
 own short transactions, never one across a password hash.
@@ -33,7 +41,7 @@ from typing import Any
 
 from argon2 import PasswordHasher, Type
 from argon2.exceptions import VerifyMismatchError
-from sqlalchemy import Connection, and_, delete, func, insert, select, update
+from sqlalchemy import Connection, and_, delete, func, insert, select, text, update
 from sqlalchemy.exc import IntegrityError
 
 from alhazen.hub.context import Hub, new_id
@@ -99,8 +107,23 @@ def check_password(hub: Hub, value: Any, username: str) -> str:
     return value
 
 
+# Categories refused in any text a person reads (display names, experiment
+# metadata): controls, format characters (bidi overrides and isolates,
+# zero-width joiners/spaces, soft hyphen), line/paragraph separators and lone
+# surrogates (invalid in UTF-8, so they could not even be stored).
+_HIDDEN = frozenset(("Cc", "Cf", "Zl", "Zp", "Cs"))
+
+
+def has_hidden_characters(text: str, *, multiline: bool = False) -> bool:
+    """Whether ``text`` holds a character that is invisible, reorders the
+    text around it, or is a control (``\\n`` and ``\\t`` allowed when
+    ``multiline``). One rule for every human-readable field (finding 7)."""
+    allowed = ("\n", "\t") if multiline else ()
+    return any(ch not in allowed and unicodedata.category(ch) in _HIDDEN for ch in text)
+
+
 def _has_control(text: str) -> bool:
-    return any(unicodedata.category(ch) in ("Cc", "Cf", "Zl", "Zp") for ch in text)
+    return has_hidden_characters(text)
 
 
 # -- tokens -----------------------------------------------------------------
@@ -192,15 +215,48 @@ def _throttled(retry_ms: int) -> HubError:
     )
 
 
+# One fixed key for the advisory lock every admission takes on PostgreSQL.
+_ADMISSION_LOCK_KEY = 0x616C68617A656E31  # "alhazen1"
+
+
+def _serialize_admission(conn: Connection) -> None:
+    """Make this transaction the only one deciding admission right now.
+
+    SQLite needs nothing: every hub transaction starts with BEGIN IMMEDIATE,
+    the whole-database write lock. On PostgreSQL a transaction-scoped
+    advisory lock is taken (released at commit or rollback; re-entrant in
+    one transaction), so a count and the insert that follows it cannot
+    interleave with another sign-in's. Admission transactions are a few
+    small statements, so serialising them costs nothing at hub scale.
+    """
+    if conn.dialect.name == "postgresql":
+        conn.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _ADMISSION_LOCK_KEY})
+
+
 def _admit_hash(hub: Hub, conn: Connection, now: int) -> None:
     """The service-wide password-hash budget, recorded as it is spent."""
+    _serialize_admission(conn)
     since = now - 60_000
     if _count(conn, "hash", "*", since, success=None) >= hub.settings.auth.hashes_per_minute:
         raise _throttled(_oldest(conn, "hash", "*", since) + 60_000 - now)
     conn.execute(insert(auth_attempts).values(scope="hash", subject="*", at=now, success=True))
 
 
-def _admit_sign_in(hub: Hub, conn: Connection, username: str, address: str, now: int) -> None:
+@dataclass(frozen=True)
+class _Admission:
+    """The attempt rows written for one admitted sign-in, still marked failed."""
+
+    attempt_ids: tuple[int, ...]
+
+
+def _admit_sign_in(hub: Hub, conn: Connection, username: str, address: str, now: int) -> _Admission:
+    """Admit one password check or refuse it, atomically.
+
+    The account and address rows are inserted as failures here, in the same
+    serialised transaction as the counts, so concurrent guesses see each
+    other; `_settle` marks them successful if the password matched.
+    """
+    _serialize_admission(conn)
     policy = hub.settings.auth
     window = policy.failure_window_seconds * 1000
     since = now - window
@@ -211,16 +267,34 @@ def _admit_sign_in(hub: Hub, conn: Connection, username: str, address: str, now:
         if _count(conn, scope, subject, since, success=False) >= limit:
             raise _throttled(_oldest(conn, scope, subject, since) + window - now)
     _admit_hash(hub, conn, now)
+    ids = []
+    for scope, subject in (("account", username), ("address", address)):
+        ids.append(
+            int(
+                conn.execute(
+                    insert(auth_attempts)
+                    .values(scope=scope, subject=subject, at=now, success=False)
+                    .returning(auth_attempts.c.id)
+                ).scalar_one()
+            )
+        )
+    return _Admission(tuple(ids))
 
 
-def _record_failure(conn: Connection, username: str, address: str, now: int) -> None:
+def _settle(conn: Connection, admission: _Admission) -> None:
+    """The password matched: these attempts no longer count as failures."""
     conn.execute(
-        insert(auth_attempts),
-        [
-            {"scope": "account", "subject": username, "at": now, "success": False},
-            {"scope": "address", "subject": address, "at": now, "success": False},
-        ],
+        update(auth_attempts)
+        .where(auth_attempts.c.id.in_(admission.attempt_ids))
+        .values(success=True)
     )
+
+
+def _withdraw(hub: Hub, admission: _Admission) -> None:
+    """The check never ran (no hashing slot): forget the pending failures,
+    so a busy service does not count against the person signing in."""
+    with hub.db.transaction() as conn:
+        conn.execute(delete(auth_attempts).where(auth_attempts.c.id.in_(admission.attempt_ids)))
 
 
 def purge_attempts(hub: Hub) -> int:
@@ -229,6 +303,48 @@ def purge_attempts(hub: Hub) -> int:
     with hub.db.transaction() as conn:
         result = conn.execute(delete(auth_attempts).where(auth_attempts.c.at < horizon))
         return int(result.rowcount or 0)
+
+
+PURGE_BATCH = 1000
+
+
+def purge_sessions(hub: Hub, *, max_batches: int = 100) -> int:
+    """Delete sign-in sessions that ended (expired or revoked) more than
+    ``auth.session_retention_seconds`` ago; return how many (finding 8).
+
+    A dead session can never authenticate again, so its row is only history;
+    the audit log keeps sign-in, reset and disable events. Work is bounded:
+    batches of `PURGE_BATCH` rows in their own short transactions, at most
+    ``max_batches`` per call (the next housekeeping pass continues).
+    """
+    horizon = hub.clock() - hub.settings.auth.session_retention_seconds * 1000
+    removed = 0
+    for _ in range(max_batches):
+        with hub.db.transaction() as conn:
+            ids = (
+                conn.execute(
+                    select(auth_sessions.c.id)
+                    .where(
+                        (auth_sessions.c.expires_at < horizon)
+                        | (auth_sessions.c.revoked_at < horizon)
+                    )
+                    .limit(PURGE_BATCH)
+                )
+                .scalars()
+                .all()
+            )
+            if not ids:
+                break
+            conn.execute(delete(auth_sessions).where(auth_sessions.c.id.in_(ids)))
+            removed += len(ids)
+        if len(ids) < PURGE_BATCH:
+            break
+    return removed
+
+
+def housekeeping(hub: Hub) -> dict[str, int]:
+    """The auth part of the hourly housekeeping pass."""
+    return {"attempts": purge_attempts(hub), "sessions": purge_sessions(hub)}
 
 
 # -- registration -----------------------------------------------------------
@@ -249,6 +365,7 @@ def register(
     code_hash = invite_hash(invite_code.strip())
     now = hub.clock()
     with hub.db.transaction() as conn:
+        _serialize_admission(conn)
         hour_ago = now - 3_600_000
         limit = hub.settings.auth.registrations_per_address_per_hour
         if _count(conn, "register", address, hour_ago, success=None) >= limit:
@@ -320,16 +437,20 @@ def sign_in(
         raise HubError(401, "invalid_credentials", "Username or password is incorrect")
     now = hub.clock()
     with hub.db.transaction() as conn:
-        _admit_sign_in(hub, conn, name, address, now)
+        admission = _admit_sign_in(hub, conn, name, address, now)
         row = conn.execute(
             select(users).where(users.c.username == name, users.c.disabled_at.is_(None))
         ).first()
-    ok = _verify(hub, row.password_hash if row is not None else None, password)
-    now = hub.clock()
+    try:
+        ok = _verify(hub, row.password_hash if row is not None else None, password)
+    except HubError:
+        # No hashing slot within the wait: the check never happened.
+        _withdraw(hub, admission)
+        raise
     if not ok or row is None:
-        with hub.db.transaction() as conn:
-            _record_failure(conn, name, address, now)
+        # Already recorded as a failure at admission.
         raise HubError(401, "invalid_credentials", "Username or password is incorrect")
+    now = hub.clock()
     raw = secrets.token_urlsafe(32)
     policy = hub.settings.auth
     lifetime = policy.browser_max_seconds if kind == COOKIE_KIND else policy.token_seconds
@@ -338,14 +459,17 @@ def sign_in(
     new_hash = hash_password(hub, password) if rehash else None
     with hub.db.transaction() as conn:
         # The account may have been disabled or its password reset while the
-        # hash ran; the session is opened only against the state checked.
+        # hash ran. The row lock (PostgreSQL; SQLite holds the database lock)
+        # waits for such a change to commit and then reads it, so a session
+        # is opened only against the state the password was checked for.
         current = conn.execute(
-            select(users.c.password_changed_at).where(
-                users.c.id == row.id, users.c.disabled_at.is_(None)
-            )
+            select(users.c.password_changed_at)
+            .where(users.c.id == row.id, users.c.disabled_at.is_(None))
+            .with_for_update()
         ).first()
         if current is None or current.password_changed_at != row.password_changed_at:
             raise HubError(401, "invalid_credentials", "Username or password is incorrect")
+        _settle(conn, admission)
         if new_hash is not None:
             conn.execute(update(users).where(users.c.id == row.id).values(password_hash=new_hash))
         conn.execute(

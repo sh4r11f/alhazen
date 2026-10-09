@@ -2551,6 +2551,11 @@ class Workspace:
                 self._check_parameter_set(project, request, task)
             ref, shared = self._launch_rig(project, request.rig)
             merged = rig_mapping(ref.path, shared=shared)
+            # The hub release this folder was installed from, captured now,
+            # before anything runs, and written into both records below; None
+            # (and no key at all) for a folder that is not a hub install.
+            release = self._hub_release(project)
+            pinned = {"hub_release": release} if release is not None else {}
             (run_dir / "media").mkdir(parents=True)
             started = now()
             # The launch as it was decided, written once and never again
@@ -2574,6 +2579,7 @@ class Workspace:
                 # Where the subject's age and sex are recorded, likewise:
                 # "session.json", "workspace", or None when neither is known.
                 "demographics_recorded_in": demographics_in,
+                **pinned,
             }
             with (run_dir / "launch.json").open("x", encoding="utf-8") as stream:
                 json.dump(launch, stream, indent=2, ensure_ascii=False)
@@ -2642,6 +2648,9 @@ class Workspace:
                 # The measurements a Measure rig run was asked for, in run
                 # order as the page listed them; None for any other launch.
                 "measurements": list(request.measurements) if request.measurements else None,
+                # A hub-installed release's identity (hub base, experiment and
+                # version ids, source ZIP SHA-256), as launch.json holds it.
+                **pinned,
             }
             self.runs[key] = run
             self._save_run(run)
@@ -2671,6 +2680,24 @@ class Workspace:
             )
             self.worker.start()
             return dict(run)
+
+    def _hub_release(self, project: dict[str, Any]) -> dict[str, Any] | None:
+        """The pinned release of a project installed from the Experiment Hub
+        (under this workspace's ``hub/experiments``), from its trusted install
+        record: read from local files only, never the network, and only for
+        such a folder, so other launches never touch the hub's records. A
+        hub folder without a usable record refuses the launch rather than
+        run with its provenance missing."""
+        installs = (self.directory / "hub" / "experiments").resolve()
+        root = Path(project["path"]).resolve()
+        if not root.is_relative_to(installs):
+            return None
+        from alhazen.hub.installation import InstallError, InstallStore
+
+        try:
+            return InstallStore(self.directory / "hub").provenance(str(root))
+        except InstallError as exc:
+            raise ValueError(f"Cannot start {project['name']}: {exc.message}") from exc
 
     def _save_run(self, run: dict[str, Any]) -> None:
         replace_atomically(

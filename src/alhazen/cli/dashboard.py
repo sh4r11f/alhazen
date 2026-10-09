@@ -10,6 +10,7 @@ import os
 import re
 import secrets
 import sys
+import tempfile
 import threading
 import webbrowser
 from collections.abc import Iterator
@@ -79,6 +80,42 @@ PAGE_ASSETS = {
     "/workspace_upload.js": ("workspace_upload.js", "text/javascript; charset=utf-8"),
     "/workspace_upload.css": ("workspace_upload.css", "text/css; charset=utf-8"),
 }
+# The Experiment Hub page (alhazen.hub.assets, shared with the central hub
+# service): served like PAGE_ASSETS — a fixed table, no token, nothing but the
+# page — and only read when asked for. Its API is /api/hub/v1, behind the
+# token like every /api/ route (cli/workspace_hub.py answers it).
+HUB_ASSETS_DIR = Path(__file__).resolve().parents[1] / "hub" / "assets"
+HUB_ASSETS = {
+    "/hub": ("index.html", "text/html; charset=utf-8"),
+    "/hub/": ("index.html", "text/html; charset=utf-8"),
+    "/hub/assets/hub.css": ("hub.css", "text/css; charset=utf-8"),
+    "/hub/assets/hub_core.js": ("hub_core.js", "text/javascript; charset=utf-8"),
+    "/hub/assets/hub.js": ("hub.js", "text/javascript; charset=utf-8"),
+    "/hub/assets/hub_docs.js": ("hub_docs.js", "text/javascript; charset=utf-8"),
+    "/hub/assets/hub_docs.css": ("hub_docs.css", "text/css; charset=utf-8"),
+    "/hub/assets/icon.svg": ("icon.svg", "image/svg+xml"),
+    "/hub/assets/fonts/Nunito-latin.woff2": ("fonts/Nunito-latin.woff2", "font/woff2"),
+    "/hub/assets/fonts/OFL.txt": ("fonts/OFL.txt", "text/plain; charset=utf-8"),
+}
+# What the hub page needs to know before it holds the token: which role this
+# server plays and how to authenticate. Never the token itself.
+HUB_BOOTSTRAP = {
+    "role": "rig",
+    "api_base": "/api/hub/v1",
+    "auth": {
+        "kind": "workspace-token",
+        "header": "X-Alhazen-Token",
+        "fragment_key": "token",
+        "session_storage_key": "alhazen-workspace-token",
+        "query_key": "token",
+    },
+    "workspace_url": "/",
+}
+HUB_API = "/api/hub/v1"
+# A release uploaded through the hub page (POST /experiments/{id}/versions):
+# the package cap of the hub contract; spooled to disk past 8 MiB.
+MAX_HUB_PACKAGE_BYTES = 256 * 1024 * 1024
+
 # Written beside the lock by the server that holds it: its process id, when it
 # took the workspace and, once bound, the address of its page. The lock alone
 # says only that *someone* has the workspace; this says who, so the refusal
@@ -195,7 +232,25 @@ class DashboardServer(ThreadingHTTPServer):
         self.estimates = DurationEstimator(workspace)
         # Uploads of saved sessions to the archive (workspace_upload.py).
         self.uploads = Uploads(workspace, self.data)
+        # The Experiment Hub adapter, made on first use (hub()), so a
+        # dashboard that never opens the hub page imports none of it.
+        self._hub: Any = None
+        self._hub_lock = threading.Lock()
         super().__init__(("127.0.0.1", port), Handler)
+
+    def hub(self) -> Any:
+        """The hub adapter (cli/workspace_hub.HubAdapter), made once."""
+        with self._hub_lock:
+            if self._hub is None:
+                from alhazen.cli.workspace_hub import HubAdapter
+
+                self._hub = HubAdapter(self.workspace, self.data)
+            return self._hub
+
+    def close_hub(self) -> None:
+        with self._hub_lock:
+            if self._hub is not None:
+                self._hub.close()
 
     @property
     def origin(self) -> str:
@@ -204,6 +259,10 @@ class DashboardServer(ThreadingHTTPServer):
     @property
     def url(self) -> str:
         return f"{self.origin}/#token={self.token}"
+
+    @property
+    def hub_url(self) -> str:
+        return f"{self.origin}/hub#token={self.token}"
 
 
 class RequestTooLarge(ValueError):
@@ -286,6 +345,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             path, query = self._request()
             workspace = self.server.workspace
+            if path.startswith(HUB_API + "/"):
+                self._hub_answer("GET", path, query)
+                return
             if path == "/api/state":
                 self._json(workspace.state())
             elif path == "/api/schema":
@@ -352,6 +414,14 @@ class Handler(BaseHTTPRequestHandler):
             elif path in PAGE_ASSETS:
                 name, kind = PAGE_ASSETS[path]
                 self._file(ASSETS / name, kind)
+            elif path in HUB_ASSETS:
+                name, kind = HUB_ASSETS[path]
+                if not (HUB_ASSETS_DIR / name).is_file():
+                    self._json({"error": "The hub page is not part of this installation"}, 503)
+                else:
+                    self._file(HUB_ASSETS_DIR / name, kind)
+            elif path == "/hub/bootstrap.json":
+                self._json(HUB_BOOTSTRAP)
             else:
                 self._json({"error": "Not found"}, 404)
         except (ConnectionError, TimeoutError):
@@ -386,6 +456,9 @@ class Handler(BaseHTTPRequestHandler):
         return body
 
     def do_POST(self) -> None:
+        if unquote(urlsplit(self.path).path).startswith(HUB_API + "/"):
+            self._hub_write("POST")
+            return
         try:
             # The body is read before the request is judged. Refusing with its
             # bytes still unread in the socket makes Windows reset the
@@ -446,6 +519,130 @@ class Handler(BaseHTTPRequestHandler):
             self._refuse(409, exc)
         except (ValueError, OSError, AlhazenError, ValidationError) as exc:
             self._refuse(400, exc)
+
+    # -- the Experiment Hub (cli/workspace_hub.py) -----------------------------------
+
+    def do_PATCH(self) -> None:
+        if unquote(urlsplit(self.path).path).startswith(HUB_API + "/"):
+            self._hub_write("PATCH")
+        else:
+            # What BaseHTTPRequestHandler answered before PATCH existed here.
+            self.send_error(501, f"Unsupported method ({self.command!r})")
+
+    def _hub_refuse(self, exc: BaseException) -> None:
+        from alhazen.cli.workspace_hub import error_payload
+
+        status, payload = error_payload(exc)
+        with contextlib.suppress(ConnectionError):
+            self._json(payload, status)
+
+    def _hub_answer(
+        self,
+        method: str,
+        path: str,
+        query: dict[str, list[str]],
+        body: dict[str, Any] | None = None,
+        upload: tuple[Any, int] | None = None,
+    ) -> None:
+        """Answer a hub route; its refusals use the hub's error shape."""
+        from alhazen.cli.workspace_hub import ProxyStream
+
+        try:
+            answer = self.server.hub().handle(
+                method, path.removeprefix(HUB_API), query, body, upload
+            )
+            if isinstance(answer, ProxyStream):
+                self._hub_stream(answer)
+            else:
+                status, payload = answer
+                self._json(payload if payload is not None else {}, status)
+        except ConnectionError:
+            pass  # the page went away; nothing to answer
+        except Exception as exc:  # error_payload re-raises anything that is a bug
+            self._hub_refuse(exc)
+
+    def _hub_write(self, method: str) -> None:
+        """A POST or PATCH under /api/hub/v1: the body is read first (as do_POST
+        explains), as JSON (<= 1 MiB) or, for a release, application/zip."""
+        with contextlib.ExitStack() as stack:
+            try:
+                body, upload = self._hub_body(stack)
+                path, query = self._request()
+            except RequestTooLarge as exc:
+                with contextlib.suppress(ConnectionError):
+                    self._json({"error": {"code": "too_large", "message": str(exc)}}, 413)
+                return
+            except TimeoutError:
+                with contextlib.suppress(ConnectionError):
+                    self._json(
+                        {
+                            "error": {
+                                "code": "timeout",
+                                "message": "The request body did not arrive",
+                            }
+                        },
+                        408,
+                    )
+                return
+            except PermissionError as exc:
+                self._refuse(403, exc)
+                return
+            except (ValueError, OSError) as exc:
+                with contextlib.suppress(ConnectionError):
+                    self._json({"error": {"code": "invalid_request", "message": str(exc)}}, 400)
+                return
+            self._hub_answer(method, path, query, body, upload)
+
+    def _hub_body(
+        self, stack: contextlib.ExitStack
+    ) -> tuple[dict[str, Any] | None, tuple[Any, int] | None]:
+        """``(json_body, None)`` or ``(None, (spooled zip, length))``."""
+        kind = self.headers.get("Content-Type", "").split(";")[0].strip()
+        lengths = self.headers.get_all("Content-Length", [])
+        if len(lengths) != 1 or self.headers.get("Transfer-Encoding"):
+            raise ValueError("One Content-Length is required")
+        length = int(lengths[0])
+        if kind != "application/zip":
+            return ({} if length == 0 else self._body()), None
+        if length <= 0 or length > MAX_HUB_PACKAGE_BYTES:
+            raise RequestTooLarge("A package must be at most 256 MiB")
+        # Closed by the caller's ExitStack after the request is answered.
+        spool = stack.enter_context(
+            tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024)  # noqa: SIM115
+        )
+        remaining = length
+        while remaining:
+            block = self.rfile.read(min(1 << 20, remaining))
+            if not block:
+                raise ValueError("The package upload was cut off")
+            spool.write(block)
+            remaining -= len(block)
+        spool.seek(0)
+        return None, (spool, length)
+
+    def _hub_stream(self, stream: Any) -> None:
+        """Relay a download from the hub: always an attachment, under the
+        sandboxing CSP, with a sanitised name and an allowlisted type."""
+        from alhazen.cli.workspace_hub import _filename, stream_type
+
+        with stream.connect() as response:
+            length = response.headers.get("Content-Length")
+            self.send_response(200)
+            self.send_header("Content-Type", stream_type(response))
+            if length is not None and length.isdigit():
+                self.send_header("Content-Length", length)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Content-Security-Policy", DATA_FILE_CSP)
+            name = _filename(response, stream.filename)
+            self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quote(name)}")
+            self.end_headers()
+            while True:
+                block = response.read(256 * 1024)
+                if not block:
+                    break
+                self.wfile.write(block)
 
     def _file(
         self,
@@ -512,15 +709,23 @@ def _serve(args: argparse.Namespace, directory: Path) -> int:
     for path in args.project:
         workspace.add(path)
     server = DashboardServer(workspace, args.port)
+    hub = bool(getattr(args, "hub", False))
+    if hub:
+        # Made now, so uploads interrupted by the last stop resume for their
+        # own signed-in account without waiting for the page.
+        server.hub()
     # Now that the port is known, the holder record can carry the address a
     # second `alhazen dashboard` should open instead of starting its own.
     record_holder(workspace.directory, url=server.url)
     print(f"Alhazen dashboard: {server.url}", flush=True)
+    if hub:
+        print(f"Experiment Hub: {server.hub_url}", flush=True)
     print(
         f"Workspace: {workspace.directory}\nCtrl+C stops the server and any active run.", flush=True
     )
     if not args.no_browser:
-        threading.Timer(0.25, webbrowser.open, args=(server.url,)).start()
+        opened = server.hub_url if hub else server.url
+        threading.Timer(0.25, webbrowser.open, args=(opened,)).start()
     try:
         server.serve_forever(poll_interval=0.25)
     except KeyboardInterrupt:
@@ -532,5 +737,6 @@ def _serve(args: argparse.Namespace, directory: Path) -> int:
     finally:
         server.server_close()
         server.uploads.close()
+        server.close_hub()
         workspace.close()
     return 0
