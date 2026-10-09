@@ -47,6 +47,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 import unicodedata
 import zipfile
 import zlib
@@ -79,6 +80,9 @@ OLDEST_ALHAZEN = (2, 13, 0)
 
 _CHUNK = 1024 * 1024
 _MAX_PATH_CHARS = 1024
+# Package paths are shorter than other relative paths: joined to a real
+# install folder they must stay under Windows' 260-character limit.
+MAX_PACKAGE_PATH_CHARS = 180
 _MAX_COMPONENT_BYTES = 255
 # ZIP without zip64: every size and offset fits 32 bits, every count 16.
 _ZIP32_MAX = 0xFFFFFFFF
@@ -132,6 +136,7 @@ def _shown(value: str, limit: int = 120) -> str:
 
 
 _WINDOWS_FORBIDDEN = frozenset('<>:"|?*\\')
+_SHORT_NAME = re.compile(r"~[0-9]")
 _WINDOWS_RESERVED = re.compile(r"(con|prn|aux|nul|conin\$|conout\$|com[0-9¹²³]|lpt[0-9¹²³])")
 
 
@@ -174,6 +179,11 @@ def _path_problem(value: object) -> str | None:
             )
         if len(part.encode("utf-8")) > _MAX_COMPONENT_BYTES:
             return f"path {_shown(value)} has a name longer than {_MAX_COMPONENT_BYTES} bytes"
+        if _SHORT_NAME.search(part):
+            return (
+                f"path {_shown(value)} has a name with '~' and a digit, which can collide with a "
+                "Windows short (8.3) name"
+            )
         if _WINDOWS_RESERVED.fullmatch(part.split(".", 1)[0].casefold()):
             return f"path {_shown(value)} uses {part!r}, a name Windows reserves for a device"
     return None
@@ -197,9 +207,11 @@ def safe_relative(value: str) -> str:
 
 
 def _fold(path: str) -> str:
-    """The key two paths share if any common file system would treat them as
-    one name: Unicode compatibility-normalized and case-folded."""
-    return unicodedata.normalize("NFKC", unicodedata.normalize("NFKC", path).casefold())
+    """The key two paths share if any common file system might treat them as
+    one name: Unicode compatibility-normalized, upper-cased (NTFS compares
+    upper-case forms: dotless i matches I) and then case-folded."""
+    upper = unicodedata.normalize("NFKC", path).upper()
+    return unicodedata.normalize("NFKC", unicodedata.normalize("NFKC", upper).casefold())
 
 
 def _check_path_set(paths: Iterable[str]) -> None:
@@ -401,6 +413,10 @@ def _validate_manifest(value: object, *, max_files: int, max_expanded_bytes: int
         problem = _path_problem(entry["path"])
         if problem is not None:
             raise PackageError(f"{_where(field)}: {problem}")
+        if len(entry["path"]) > MAX_PACKAGE_PATH_CHARS:
+            raise PackageError(
+                f"{_where(field)}: package paths are at most {MAX_PACKAGE_PATH_CHARS} characters"
+            )
         size = _whole(entry["size"], field + ".size", minimum=0, maximum=max_expanded_bytes)
         digest = entry["sha256"]
         if not isinstance(digest, str) or not _SHA256.fullmatch(digest):
@@ -539,20 +555,38 @@ def compatibility_problems(
 
 # --------------------------------------------------------------------------
 # Reading a bundle
+#
+# Packages use a deliberately small subset of ZIP, read here by this module
+# alone (zipfile is only used to write): members stored or deflated; no
+# extra fields, comments, data descriptors, encryption or zip64; local
+# headers that repeat the central directory exactly; members laid end to end
+# from byte 0 with the central directory straight after; every deflate
+# stream ending exactly at its member's end. Every reader, and every Python
+# version, then sees one and the same set of names and bytes. The whole file
+# is read once, in order: the SHA-256 that names the release is computed
+# over exactly the bytes that were checked.
 
 _EOCD = struct.Struct("<4s4H2LH")
 _LOCAL = struct.Struct("<4s5H3L2H")
+_CENTRAL = struct.Struct("<4s6H3L5H2L")
 _EOCD_SIGNATURE = b"PK\x05\x06"
 _LOCAL_SIGNATURE = b"PK\x03\x04"
+_CENTRAL_SIGNATURE = b"PK\x01\x02"
 _ZIP64_EXTRA = 0x0001
 _FLAG_ENCRYPTED = 0x0001
+_FLAG_DEFLATE_LEVEL = 0x0006
 _FLAG_DESCRIPTOR = 0x0008
 _FLAG_STRONG_ENCRYPTION = 0x0040
 _FLAG_UTF8 = 0x0800
 _FLAG_MASKED_HEADERS = 0x2000
+_STORED = 0
+_DEFLATED = 8
+# ZIP 2.0: what stored and deflated members need. Higher means zip64,
+# other compression or encryption.
+_MAX_VERSION_NEEDED = 20
+_MAX_NAME_BYTES = 4 * _MAX_PATH_CHARS
 _DOS_DIRECTORY = 0x10
 _DOS_REPARSE_POINT = 0x400
-_SUPPORTED_METHODS = (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)
 
 
 @dataclass(frozen=True)
@@ -563,10 +597,12 @@ class _Limits:
 
     @classmethod
     def checked(cls, archive: object, expanded: object, files: object) -> _Limits:
+        # The defaults are the format's maxima: a hub may accept less, never
+        # more, so every release it accepts can be installed by every rig.
         for name, value, top in (
-            ("max_archive_bytes", archive, _ZIP32_MAX - 1),
-            ("max_expanded_bytes", expanded, _ZIP32_MAX - 1),
-            ("max_files", files, _ZIP16_MAX - 2),
+            ("max_archive_bytes", archive, DEFAULT_MAX_ARCHIVE_BYTES),
+            ("max_expanded_bytes", expanded, DEFAULT_MAX_EXPANDED_BYTES),
+            ("max_files", files, DEFAULT_MAX_FILES),
         ):
             if type(value) is not int or not 1 <= value <= top:
                 raise ValueError(f"{name} must be a whole number from 1 to {top}, not {value!r}")
@@ -574,42 +610,58 @@ class _Limits:
         return cls(archive, expanded, files)
 
 
-_DEFAULT_LIMITS = _Limits(DEFAULT_MAX_ARCHIVE_BYTES, DEFAULT_MAX_EXPANDED_BYTES, DEFAULT_MAX_FILES)
+@dataclass(frozen=True)
+class _Member:
+    """One member as read: where its data starts, how it is stored, and
+    what it decodes to."""
+
+    name: str
+    header_offset: int
+    data_offset: int
+    method: int
+    flags: int
+    crc: int
+    compressed: int
+    size: int
+    sha256: str
 
 
 def _identity(info: os.stat_result) -> tuple[int, int, int, int]:
     return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
 
 
-def _hash_handle(handle: IO[bytes], limit: int) -> tuple[str, int]:
-    digest = hashlib.sha256()
-    size = 0
-    while chunk := handle.read(_CHUNK):
-        size += len(chunk)
-        if size > limit:
-            raise PackageError(f"the package is larger than {limit} bytes")
-        digest.update(chunk)
-    return digest.hexdigest(), size
+class _Tap:
+    """Sequential reads that hash (and optionally copy) every byte read."""
+
+    def __init__(self, handle: IO[bytes], copy: IO[bytes] | None = None) -> None:
+        self.handle = handle
+        self.copy = copy
+        self.digest = hashlib.sha256()
+        self.position = 0
+
+    def read(self, length: int) -> bytes:
+        data = self.handle.read(length)
+        if len(data) != length:
+            raise PackageError("the ZIP archive is truncated")
+        self.digest.update(data)
+        if self.copy is not None:
+            self.copy.write(data)
+        self.position += length
+        return data
 
 
-def _read_exact(handle: IO[bytes], offset: int, length: int) -> bytes:
-    handle.seek(offset)
-    data = handle.read(length)
-    if len(data) != length:
-        raise PackageError("the ZIP archive is truncated")
-    return data
-
-
-def _central_directory(handle: IO[bytes], size: int, limits: _Limits) -> tuple[int, int, int]:
-    """(entries, offset, size) of the central directory, from an end record
-    that must be the archive's last 22 bytes: no comment, no trailing data,
-    no zip64, one disk. Read before zipfile parses anything, so a forged
-    member count is refused before millions of entries reach memory."""
+def _end_record(handle: IO[bytes], size: int, limits: _Limits) -> tuple[bytes, int, int, int]:
+    """The 22-byte end record, which must close the file: no comment, no
+    trailing data, one disk, no zip64; and (entries, cd_offset, cd_size).
+    Read first so a forged member count is refused before anything else."""
     if size < _EOCD.size:
         raise PackageError("the file is not a ZIP archive")
-    (signature, disk, cd_disk, on_disk, entries, cd_size, cd_offset, comment) = _EOCD.unpack(
-        _read_exact(handle, size - _EOCD.size, _EOCD.size)
-    )
+    handle.seek(size - _EOCD.size)
+    raw = handle.read(_EOCD.size)
+    handle.seek(0)
+    if len(raw) != _EOCD.size:
+        raise PackageError("the ZIP archive is truncated")
+    (signature, disk, cd_disk, on_disk, entries, cd_size, cd_offset, comment) = _EOCD.unpack(raw)
     if signature != _EOCD_SIGNATURE:
         raise PackageError(
             "the file is not a ZIP archive, or has a comment or data after its end record"
@@ -621,179 +673,304 @@ def _central_directory(handle: IO[bytes], size: int, limits: _Limits) -> tuple[i
     if entries > limits.files + 1:
         raise PackageError(f"the package has {entries} members; the limit is {limits.files} files")
     if cd_offset + cd_size != size - _EOCD.size:
-        raise PackageError("the ZIP archive has data between its directory and its end record")
-    return entries, cd_offset, cd_size
+        raise PackageError(
+            "the ZIP archive has data before its first member or between its directory and "
+            "its end record"
+        )
+    if cd_size > entries * (_CENTRAL.size + _MAX_NAME_BYTES):
+        raise PackageError("the ZIP directory is larger than its members need")
+    return raw, entries, cd_offset, cd_size
 
 
-def _has_zip64(extra: bytes) -> bool:
+def _extras_problem(name: str, extra: bytes) -> str:
     position = 0
     while position + 4 <= len(extra):
         header, length = struct.unpack_from("<HH", extra, position)
         if header == _ZIP64_EXTRA:
-            return True
+            return f"member {_shown(name)} uses zip64, which packages do not"
         position += 4 + length
-    return False
+    return (
+        f"member {_shown(name)} carries ZIP extra fields; packages carry none (a second name "
+        "or other metadata there would be read differently by other tools)"
+    )
 
 
-def _check_member(info: zipfile.ZipInfo) -> None:
-    """Refuse a member that is not a plain, unencrypted, portable file."""
-    name = info.orig_filename
-    if name.endswith("/"):
-        raise PackageError(f"the package holds the folder entry {_shown(name)}; only files")
-    if info.filename != name:
-        raise PackageError(f"the member name {_shown(name)} contains a NUL or a backslash")
-    problem = _path_problem(name)
-    if problem is not None:
-        raise PackageError(f"member {problem}")
-    if not name.isascii() and not info.flag_bits & _FLAG_UTF8:
-        raise PackageError(f"member {_shown(name)} has a non-ASCII name not marked as UTF-8")
-    if info.flag_bits & (_FLAG_ENCRYPTED | _FLAG_STRONG_ENCRYPTION | _FLAG_MASKED_HEADERS):
-        raise PackageError(f"member {_shown(name)} is encrypted")
-    if info.compress_type not in _SUPPORTED_METHODS:
+def _decode_name(raw: bytes, flags: int) -> str:
+    try:
+        return raw.decode("utf-8") if flags & _FLAG_UTF8 else raw.decode("ascii")
+    except UnicodeDecodeError as error:
+        shown = _shown(raw.decode("latin-1"))
+        if flags & _FLAG_UTF8:
+            raise PackageError(f"member name {shown} is marked UTF-8 but is not") from error
+        raise PackageError(f"member name {shown} is not ASCII and not marked as UTF-8") from error
+
+
+def _check_flags_and_method(name: str, flags: int, method: int, version: int) -> None:
+    if method not in (_STORED, _DEFLATED):
         raise PackageError(
-            f"member {_shown(name)} uses compression method {info.compress_type}; "
-            "packages use stored or deflate only"
+            f"member {_shown(name)} uses compression method {method}; packages use stored "
+            "or deflate only"
         )
-    if _has_zip64(info.extra) or _ZIP32_MAX in (info.file_size, info.compress_size):
-        raise PackageError(f"member {_shown(name)} uses zip64, which packages do not")
-    mode = info.external_attr >> 16
-    if info.create_system == 3 and stat.S_IFMT(mode) not in (0, stat.S_IFREG):
-        raise PackageError(f"member {_shown(name)} is a link, folder or device, not a file")
-    if info.external_attr & (_DOS_DIRECTORY | _DOS_REPARSE_POINT):
-        raise PackageError(f"member {_shown(name)} is marked as a folder or a link")
+    if flags & (_FLAG_ENCRYPTED | _FLAG_STRONG_ENCRYPTION | _FLAG_MASKED_HEADERS):
+        raise PackageError(f"member {_shown(name)} is encrypted")
+    if flags & _FLAG_DESCRIPTOR:
+        raise PackageError(
+            f"member {_shown(name)} uses a trailing data descriptor; package members state "
+            "their sizes and CRC in their headers"
+        )
+    allowed = _FLAG_UTF8 | (_FLAG_DEFLATE_LEVEL if method == _DEFLATED else 0)
+    if flags & ~allowed:
+        raise PackageError(f"member {_shown(name)} sets ZIP flags {flags:#06x} packages do not use")
+    if version > _MAX_VERSION_NEEDED:
+        raise PackageError(
+            f"member {_shown(name)} needs ZIP version {version / 10:.1f} features (such as "
+            "zip64); packages need 2.0 at most"
+        )
 
 
-def _check_layout(handle: IO[bytes], infos: list[zipfile.ZipInfo], cd_offset: int) -> None:
-    """Each member's bytes follow the previous member's with no gap, no
-    overlap and nothing before the first: a bomb built from members sharing
-    one compressed stream, or bytes hidden between members, is refused."""
-    expected = 0
-    for info in sorted(infos, key=lambda item: item.header_offset):
-        if info.header_offset != expected:
+def _payload(
+    read: Callable[[int], bytes],
+    name: str,
+    method: int,
+    compressed: int,
+    size: int,
+    crc: int,
+    sink: Callable[[bytes], object] | None,
+) -> str:
+    """Read exactly ``compressed`` raw bytes and decode them to exactly
+    ``size`` bytes with CRC ``crc``; the SHA-256 of the decoded bytes."""
+    digest = hashlib.sha256()
+    running = 0
+    produced = 0
+
+    def emit(data: bytes) -> None:
+        nonlocal running, produced
+        produced += len(data)
+        if produced > size:
+            raise PackageError(f"member {_shown(name)} holds more data than its header says")
+        running = zlib.crc32(data, running)
+        digest.update(data)
+        if sink is not None:
+            sink(data)
+
+    left = compressed
+    if method == _STORED:
+        if compressed != size:
+            raise PackageError(f"member {_shown(name)} is stored but its two sizes differ")
+        while left:
+            chunk = read(min(_CHUNK, left))
+            left -= len(chunk)
+            emit(chunk)
+    else:
+        inflater = zlib.decompressobj(-15)
+        try:
+            while left:
+                chunk = read(min(_CHUNK, left))
+                left -= len(chunk)
+                data = chunk
+                while data:
+                    if inflater.eof:
+                        raise PackageError(
+                            f"member {_shown(name)} has bytes after the end of its compressed data"
+                        )
+                    # Never more output than the header promises (plus one
+                    # byte, to notice a lie): no decompression bomb.
+                    emit(inflater.decompress(data, size - produced + 1))
+                    data = inflater.unconsumed_tail
+            # Output zlib still holds once all input is in (bounded the same way).
+            while not inflater.eof:
+                out = inflater.decompress(inflater.unconsumed_tail, size - produced + 1)
+                if not out and not inflater.eof:
+                    break
+                emit(out)
+        except zlib.error as error:
+            raise PackageError(f"member {_shown(name)} has damaged compressed data") from error
+        if not inflater.eof or inflater.unused_data:
             raise PackageError(
-                f"member {_shown(info.orig_filename)} overlaps another or follows hidden data"
+                f"member {_shown(name)}'s compressed data does not end exactly at the member's end"
             )
-        header = _LOCAL.unpack(_read_exact(handle, info.header_offset, _LOCAL.size))
-        signature, _version, flags, method = header[0], header[1], header[2], header[3]
-        name_length, extra_length = header[9], header[10]
+    if produced != size:
+        raise PackageError(f"member {_shown(name)} holds less data than its header says")
+    if running != crc:
+        raise PackageError(f"member {_shown(name)} fails its CRC check")
+    return digest.hexdigest()
+
+
+def _scan(
+    handle: IO[bytes], size: int, limits: _Limits, copy: IO[bytes] | None = None
+) -> tuple[str, list[_Member], bytes]:
+    """One ordered pass over a whole archive (optionally copying every byte
+    to ``copy``): (SHA-256 of the file, members, manifest bytes)."""
+    eocd, entries, cd_offset, cd_size = _end_record(handle, size, limits)
+    tap = _Tap(handle, copy)
+    members: list[_Member] = []
+    expanded = 0
+    manifest: bytes | None = None
+    while tap.position < cd_offset:
+        start = tap.position
+        if cd_offset - start < _LOCAL.size:
+            raise PackageError("the ZIP archive holds data that no member accounts for")
+        header = tap.read(_LOCAL.size)
+        (signature, version, flags, method, _time, _date, crc, compressed, length) = _LOCAL.unpack(
+            header
+        )[:9]
+        name_length, extra_length = _LOCAL.unpack(header)[9:]
         if signature != _LOCAL_SIGNATURE:
-            raise PackageError(f"member {_shown(info.orig_filename)} has no local header")
-        raw_name = _read_exact(handle, info.header_offset + _LOCAL.size, name_length)
-        encoding = "utf-8" if info.flag_bits & _FLAG_UTF8 else "cp437"
-        if raw_name != info.orig_filename.encode(encoding):
+            raise PackageError("the ZIP archive holds data that no member accounts for")
+        if len(members) >= entries:
+            raise PackageError("the ZIP archive holds more members than its directory lists")
+        if not 0 < name_length <= _MAX_NAME_BYTES:
+            raise PackageError("a member has an empty or over-long name")
+        name = _decode_name(tap.read(name_length), flags)
+        if extra_length:
+            raise PackageError(_extras_problem(name, tap.read(extra_length)))
+        _check_flags_and_method(name, flags, method, version)
+        if name.endswith("/"):
+            raise PackageError(f"the package holds the folder entry {_shown(name)}; only files")
+        problem = _path_problem(name)
+        if problem is not None:
+            raise PackageError(f"member {problem}")
+        expanded += length
+        if expanded > limits.expanded:
             raise PackageError(
-                f"member {_shown(info.orig_filename)} has a different name in its local header"
+                f"the package expands to more than {limits.expanded} bytes (the limit)"
             )
-        if method != info.compress_type or (flags ^ info.flag_bits) & (
-            _FLAG_ENCRYPTED | _FLAG_STRONG_ENCRYPTION | _FLAG_UTF8 | _FLAG_DESCRIPTOR
+        if name == MANIFEST_NAME and length > MAX_MANIFEST_BYTES:
+            raise PackageError(f"{MANIFEST_NAME} is larger than {MAX_MANIFEST_BYTES} bytes")
+        if tap.position + compressed > cd_offset:
+            raise PackageError(f"member {_shown(name)} runs into the ZIP directory")
+        collected: bytearray | None = bytearray() if name == MANIFEST_NAME else None
+        data_offset = tap.position
+        sha = _payload(
+            tap.read,
+            name,
+            method,
+            compressed,
+            length,
+            crc,
+            collected.extend if collected is not None else None,
+        )
+        if collected is not None:
+            if manifest is not None:
+                raise PackageError(f"member {_shown(name)} appears twice")
+            manifest = bytes(collected)
+        members.append(
+            _Member(name, start, data_offset, method, flags, crc, compressed, length, sha)
+        )
+    if len(members) != entries:
+        raise PackageError("the ZIP directory lists members the archive does not hold")
+
+    for index in range(entries):
+        record = tap.read(_CENTRAL.size)
+        fields = _CENTRAL.unpack(record)
+        (signature, made_by, version, flags, method, _time, _date, crc, compressed, length) = (
+            fields[:10]
+        )
+        name_length, extra_length, comment_length, disk, internal, external, offset = fields[10:]
+        member = members[index]
+        if signature != _CENTRAL_SIGNATURE:
+            raise PackageError("the ZIP directory is damaged")
+        if name_length > _MAX_NAME_BYTES:
+            raise PackageError("the ZIP directory is damaged")
+        raw_name = tap.read(name_length)
+        if extra_length:
+            raise PackageError(_extras_problem(member.name, tap.read(extra_length)))
+        if comment_length or disk or internal not in (0, 1):
+            raise PackageError(f"member {_shown(member.name)} has a comment or a disk number")
+        if (
+            offset != member.header_offset
+            or raw_name != member.name.encode("utf-8")
+            or (flags, method, crc, compressed, length)
+            != (member.flags, member.method, member.crc, member.compressed, member.size)
         ):
             raise PackageError(
-                f"member {_shown(info.orig_filename)} disagrees with its local header"
+                f"member {_shown(member.name)} disagrees with its entry in the ZIP directory"
             )
-        local_extra = _read_exact(
-            handle, info.header_offset + _LOCAL.size + name_length, extra_length
-        )
-        if _has_zip64(local_extra):
-            raise PackageError(f"member {_shown(info.orig_filename)} uses zip64")
-        end = info.header_offset + _LOCAL.size + name_length + extra_length + info.compress_size
-        if info.flag_bits & _FLAG_DESCRIPTOR:
-            # A data descriptor (written by streaming tools): optional
-            # signature, CRC, compressed and uncompressed size.
-            end += 16 if _read_exact(handle, end, 4) == b"PK\x07\x08" else 12
-        expected = end
-    if expected != cd_offset:
-        raise PackageError("the ZIP archive holds data that no member accounts for")
+        _check_flags_and_method(member.name, flags, method, version)
+        mode = external >> 16
+        if made_by >> 8 == 3 and stat.S_IFMT(mode) not in (0, stat.S_IFREG):
+            raise PackageError(
+                f"member {_shown(member.name)} is a link, folder or device, not a file"
+            )
+        if external & (_DOS_DIRECTORY | _DOS_REPARSE_POINT):
+            raise PackageError(f"member {_shown(member.name)} is marked as a folder or a link")
+    if tap.position != cd_offset + cd_size:
+        raise PackageError("the ZIP directory is larger than its entries")
+    if tap.read(_EOCD.size) != eocd or tap.position != size:
+        raise PackageError("the package changed while it was being checked")
+    if manifest is None:
+        raise PackageError(f"the package has no {MANIFEST_NAME} at its root")
+    return tap.digest.hexdigest(), members, manifest
 
 
-def _stream_member(
-    archive: zipfile.ZipFile,
-    info: zipfile.ZipInfo,
-    entry: Mapping[str, Any],
-    sink: Callable[[bytes], object] | None = None,
-) -> None:
-    """Decompress one member, never past its declared size, and check its
-    size and SHA-256 against the manifest entry."""
-    digest = hashlib.sha256()
-    size = 0
+def _verify_members(
+    members: list[_Member], manifest_bytes: bytes, limits: _Limits
+) -> dict[str, Any]:
+    """The validated manifest, after checking that the archive holds exactly
+    the manifest and the declared files, each with its declared size and hash."""
+    seen: set[str] = set()
+    for member in members:
+        if member.name in seen:
+            raise PackageError(f"member {_shown(member.name)} appears twice")
+        seen.add(member.name)
+    _check_path_set(member.name for member in members)
+    manifest = _validate_manifest(
+        _parse_manifest(manifest_bytes), max_files=limits.files, max_expanded_bytes=limits.expanded
+    )
+    by_name = {member.name: member for member in members}
+    declared = {entry["path"]: entry for entry in manifest["files"]}
+    present = set(by_name) - {MANIFEST_NAME}
+    extra = sorted(present - set(declared))
+    if extra:
+        shown = ", ".join(_shown(path) for path in extra[:10])
+        raise PackageError(f"the package holds files its manifest does not declare: {shown}")
+    absent = sorted(set(declared) - present)
+    if absent:
+        shown = ", ".join(_shown(path) for path in absent[:10])
+        raise PackageError(f"the manifest declares files the package lacks: {shown}")
+    for path, entry in declared.items():
+        member = by_name[path]
+        if member.size != entry["size"]:
+            raise PackageError(f"member {_shown(path)} does not match the size in {MANIFEST_NAME}")
+        if member.sha256 != entry["sha256"]:
+            raise PackageError(
+                f"member {_shown(path)} does not match the SHA-256 in {MANIFEST_NAME}"
+            )
+    return manifest
+
+
+_O_BINARY = getattr(os, "O_BINARY", 0)
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
+_O_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
+
+
+def _open_regular(path: Path) -> IO[bytes]:
+    """``path`` opened for binary reading, refused unless it is a regular
+    file. Opened non-blocking first, so a FIFO cannot stall the caller."""
     try:
-        with _open_member(archive, info) as source:
-            while chunk := source.read(_CHUNK):
-                size += len(chunk)
-                if size > entry["size"]:
-                    break
-                digest.update(chunk)
-                if sink is not None:
-                    sink(chunk)
-    except (zipfile.BadZipFile, EOFError, zlib.error) as error:
-        raise PackageError(f"member {_shown(entry['path'])} is damaged: {error}") from error
-    if size != entry["size"] or digest.hexdigest() != entry["sha256"]:
+        fd = _open_descriptor(path, os.O_RDONLY | _O_BINARY | _O_NONBLOCK)
+    except OSError as error:
         raise PackageError(
-            f"member {_shown(entry['path'])} does not match the size and SHA-256 in {MANIFEST_NAME}"
-        )
+            f"cannot open the package {_shown(path.name)}: {error.strerror}"
+        ) from error
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise PackageError(f"the package {_shown(path.name)} is not a regular file")
+    if _O_NONBLOCK:
+        os.set_blocking(fd, True)
+    return os.fdopen(fd, "rb")
 
 
-def _verify_open(
-    handle: IO[bytes], size: int, limits: _Limits
-) -> tuple[dict[str, Any], dict[str, zipfile.ZipInfo]]:
-    """Validate the archive in ``handle`` (``size`` bytes): structure,
-    manifest, member set and every file's bytes."""
-    entries, cd_offset, _cd_size = _central_directory(handle, size, limits)
-    handle.seek(0)
-    try:
-        archive = zipfile.ZipFile(handle)
-    except (zipfile.BadZipFile, zipfile.LargeZipFile, EOFError, ValueError) as error:
-        # ValueError includes a UnicodeDecodeError for a name flagged UTF-8.
-        raise PackageError(f"the ZIP archive cannot be read: {error}") from error
-    with archive:
-        infos = archive.infolist()
-        if len(infos) != entries or getattr(archive, "start_dir", cd_offset) != cd_offset:
-            raise PackageError("the ZIP directory does not match its end record")
-        for info in infos:
-            _check_member(info)
-        _check_layout(handle, infos, cd_offset)
-        by_name: dict[str, zipfile.ZipInfo] = {}
-        for info in infos:
-            if info.orig_filename in by_name:
-                raise PackageError(f"member {_shown(info.orig_filename)} appears twice")
-            by_name[info.orig_filename] = info
-        _check_path_set(by_name)
-
-        manifest_info = by_name.get(MANIFEST_NAME)
-        if manifest_info is None:
-            raise PackageError(f"the package has no {MANIFEST_NAME} at its root")
-        if manifest_info.file_size > MAX_MANIFEST_BYTES:
-            raise PackageError(f"{MANIFEST_NAME} is larger than {MAX_MANIFEST_BYTES} bytes")
-        raw = bytearray()
-        try:
-            with _open_member(archive, manifest_info) as source:
-                while chunk := source.read(_CHUNK):
-                    raw += chunk
-                    if len(raw) > manifest_info.file_size:
-                        raise PackageError(f"{MANIFEST_NAME} is longer than its header says")
-        except (zipfile.BadZipFile, EOFError, zlib.error) as error:
-            raise PackageError(f"{MANIFEST_NAME} is damaged: {error}") from error
-        manifest = _validate_manifest(
-            _parse_manifest(bytes(raw)), max_files=limits.files, max_expanded_bytes=limits.expanded
-        )
-
-        declared = {entry["path"]: entry for entry in manifest["files"]}
-        members = set(by_name) - {MANIFEST_NAME}
-        extra = sorted(members - set(declared))
-        if extra:
-            shown = ", ".join(_shown(path) for path in extra[:10])
-            raise PackageError(f"the package holds files its manifest does not declare: {shown}")
-        absent = sorted(set(declared) - members)
-        if absent:
-            shown = ", ".join(_shown(path) for path in absent[:10])
-            raise PackageError(f"the manifest declares files the package lacks: {shown}")
-        for path, entry in declared.items():
-            if by_name[path].file_size != entry["size"]:
-                raise PackageError(
-                    f"member {_shown(path)} does not match the size in {MANIFEST_NAME}"
-                )
-        for path, entry in declared.items():
-            _stream_member(archive, by_name[path], entry)
-    return manifest, by_name
+def _inspect_handle(handle: IO[bytes], name: str, limits: _Limits) -> PackageInfo:
+    before = os.fstat(handle.fileno())
+    if before.st_size > limits.archive:
+        raise PackageError(f"the package is larger than {limits.archive} bytes")
+    digest, members, manifest_bytes = _scan(handle, before.st_size, limits)
+    manifest = _verify_members(members, manifest_bytes, limits)
+    if _identity(before) != _identity(os.fstat(handle.fileno())):
+        raise PackageError(f"the package {_shown(name)} changed while it was being checked")
+    return PackageInfo(manifest=copy.deepcopy(manifest), sha256=digest, size=before.st_size)
 
 
 def inspect_bundle(
@@ -805,74 +982,36 @@ def inspect_bundle(
 ) -> PackageInfo:
     """Verify a package without writing anything; PackageError if refused.
 
-    Reads the whole file to hash it, then reads its structure and every
-    declared file's bytes (streamed, bounded by the declared sizes). The file
-    must not change while it is read: a changed size, modification time or
-    identity is refused, so the returned SHA-256 describes what was checked.
+    One ordered pass reads every byte once: the returned SHA-256 is computed
+    over exactly the bytes whose structure, manifest and file contents were
+    checked. Limits may be lowered but not raised above the defaults (the
+    format's maxima). A file whose size, modification time or identity
+    changes during the pass is refused. To keep the verified bytes
+    themselves, use :func:`stage_bundle`.
     """
     limits = _Limits.checked(max_archive_bytes, max_expanded_bytes, max_files)
     path = Path(path)
-    try:
-        handle = open(path, "rb")  # noqa: SIM115 - closed by the with below
-    except IsADirectoryError as error:
-        raise PackageError(f"the package {_shown(path.name)} is not a regular file") from error
-    except OSError as error:
-        raise PackageError(
-            f"cannot open the package {_shown(path.name)}: {error.strerror}"
-        ) from error
-    with handle:
-        before = os.fstat(handle.fileno())
-        if not stat.S_ISREG(before.st_mode):
-            raise PackageError(f"the package {_shown(path.name)} is not a regular file")
-        if before.st_size > limits.archive:
-            raise PackageError(f"the package is larger than {limits.archive} bytes")
-        digest, size = _hash_handle(handle, limits.archive)
-        manifest, _ = _verify_open(handle, size, limits)
-        after = os.fstat(handle.fileno())
-    if _identity(before) != _identity(after) or size != before.st_size:
-        raise PackageError(f"the package {_shown(path.name)} changed while it was being checked")
-    return PackageInfo(manifest=copy.deepcopy(manifest), sha256=digest, size=size)
+    with _open_regular(path) as handle:
+        return _inspect_handle(handle, path.name, limits)
 
 
-# --------------------------------------------------------------------------
-# Installing a bundle
+def _check_expected(expected_sha256: str | None) -> str | None:
+    if expected_sha256 is None:
+        return None
+    if not isinstance(expected_sha256, str) or not _SHA256.fullmatch(expected_sha256):
+        raise ValueError("expected_sha256 must be 64 lowercase hex digits")
+    return expected_sha256
 
-_O_BINARY = getattr(os, "O_BINARY", 0)
-_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
-_O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
-_O_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
 
-
-def _fsync_directory(path: Path) -> None:
-    """Make a folder's entries durable where the OS allows opening a folder
-    (POSIX). Windows has no such call; NTFS journals the rename itself."""
-    if sys.platform == "win32":
-        return
-    fd = _open_descriptor(path, os.O_RDONLY | _O_DIRECTORY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+class DigestMismatch(PackageError):
+    """The package's SHA-256 is not the release's expected one."""
 
 
 def _copy_private(source: Path, fd: int, limit: int) -> tuple[str, int]:
     """Copy ``source`` into the new private file open as ``fd``, hashing what
-    is copied, so the checks and the extraction read bytes nobody else can
-    change. Takes ownership of ``fd``."""
+    is copied. Takes ownership of ``fd``."""
     with os.fdopen(fd, "wb") as writer:
-        try:
-            reader = open(source, "rb")  # noqa: SIM115 - closed by the with below
-        except IsADirectoryError as error:
-            raise PackageError(
-                f"the package {_shown(source.name)} is not a regular file"
-            ) from error
-        except OSError as error:
-            raise PackageError(
-                f"cannot open the package {_shown(source.name)}: {error.strerror}"
-            ) from error
-        with reader:
-            if not stat.S_ISREG(os.fstat(reader.fileno()).st_mode):
-                raise PackageError(f"the package {_shown(source.name)} is not a regular file")
+        with _open_regular(source) as reader:
             digest = hashlib.sha256()
             size = 0
             while chunk := reader.read(_CHUNK):
@@ -886,28 +1025,144 @@ def _copy_private(source: Path, fd: int, limit: int) -> tuple[str, int]:
     return digest.hexdigest(), size
 
 
-def _extract_verified(bundle: Path, manifest: Mapping[str, Any], tree: Path) -> None:
+def _verified_copy(
+    source: Path, fd: int, copy_path: Path, expected: str | None, limits: _Limits
+) -> tuple[PackageInfo, list[_Member]]:
+    """Copy ``source`` into the private file ``fd`` (at ``copy_path``),
+    compare the expected digest, then verify the copy in one pass."""
+    digest, size = _copy_private(source, fd, limits.archive)
+    if expected is not None and digest != expected:
+        raise DigestMismatch(
+            f"the package's SHA-256 is {digest}, not the expected {expected}; nothing was installed"
+        )
+    with open(copy_path, "rb") as handle:
+        scanned, members, manifest_bytes = _scan(handle, size, limits)
+    if scanned != digest:
+        raise PackageError("the private copy of the package changed while it was being checked")
+    manifest = _verify_members(members, manifest_bytes, limits)
+    return PackageInfo(manifest=copy.deepcopy(manifest), sha256=digest, size=size), members
+
+
+@dataclass(frozen=True)
+class VerifiedBundle:
+    """A verified private copy of a package (mode 0600, never rewritten by
+    this module) and what it holds."""
+
+    path: Path
+    info: PackageInfo
+
+
+def stage_bundle(
+    source: Path,
+    staging_dir: Path,
+    *,
+    expected_sha256: str | None = None,
+    max_archive_bytes: int = DEFAULT_MAX_ARCHIVE_BYTES,
+    max_expanded_bytes: int = DEFAULT_MAX_EXPANDED_BYTES,
+    max_files: int = DEFAULT_MAX_FILES,
+) -> VerifiedBundle:
+    """Copy ``source`` once into a new private file in ``staging_dir``,
+    check ``expected_sha256`` against the copied bytes, and verify the copy.
+    The caller keeps (and later removes) the returned file; on refusal it is
+    removed here. Lets a server store exactly the bytes it checked."""
+    expected = _check_expected(expected_sha256)
+    limits = _Limits.checked(max_archive_bytes, max_expanded_bytes, max_files)
+    try:
+        fd, name = tempfile.mkstemp(prefix=".package-", suffix=".zip", dir=staging_dir)
+    except OSError as error:
+        raise PackageError(f"cannot create a staging file: {error.strerror}") from error
+    copy_path = Path(name)
+    try:
+        info, _ = _verified_copy(Path(source), fd, copy_path, expected, limits)
+    except BaseException:
+        os.unlink(copy_path)
+        raise
+    return VerifiedBundle(path=copy_path, info=info)
+
+
+# --------------------------------------------------------------------------
+# Installing a bundle
+
+
+def _fsync_directory(path: Path) -> bool:
+    """Make a folder's entries durable; False where that cannot be done or
+    confirmed (Windows, or a file system that refuses directory syncs)."""
+    if sys.platform == "win32":
+        return False
+    try:
+        fd = _open_descriptor(path, os.O_RDONLY | _O_DIRECTORY)
+    except OSError as error:
+        if error.errno in (errno.EACCES, errno.EPERM):
+            return False
+        raise
+    try:
+        os.fsync(fd)
+    except OSError as error:
+        if error.errno in (errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP, errno.EBADF):
+            return False
+        raise
+    finally:
+        os.close(fd)
+    return True
+
+
+class _Durability:
+    def __init__(self) -> None:
+        self.unconfirmed: list[str] = []
+
+    def directory(self, path: Path, what: str) -> None:
+        if not _fsync_directory(path):
+            self.unconfirmed.append(what)
+
+
+def _extract_verified(
+    bundle: Path, members: list[_Member], tree: Path, durability: _Durability
+) -> None:
     """Write every declared file of an already verified private copy into the
-    empty folder ``tree``, re-checking each file's hash as it is written."""
+    empty folder ``tree``, decoding and checking each file again."""
     folders = {""}
-    with open(bundle, "rb") as handle, zipfile.ZipFile(handle) as archive:
-        for entry in manifest["files"]:
-            parts = entry["path"].split("/")
+    with open(bundle, "rb") as handle:
+        for member in members:
+            if member.name == MANIFEST_NAME:
+                continue
+            parts = member.name.split("/")
             for depth in range(1, len(parts)):
                 folder = "/".join(parts[:depth])
                 if folder not in folders:
                     os.mkdir(tree.joinpath(*parts[:depth]), 0o755)
                     folders.add(folder)
-            target = tree.joinpath(*parts)
             fd = _open_descriptor(
-                target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_BINARY | _O_NOFOLLOW, 0o644
+                tree.joinpath(*parts),
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_BINARY | _O_NOFOLLOW,
+                0o644,
             )
             with os.fdopen(fd, "wb") as writer:
-                _stream_member(archive, archive.getinfo(entry["path"]), entry, writer.write)
+                handle.seek(member.data_offset)
+                sha = _payload(
+                    _exact_reader(handle),
+                    member.name,
+                    member.method,
+                    member.compressed,
+                    member.size,
+                    member.crc,
+                    writer.write,
+                )
+                if sha != member.sha256:
+                    raise PackageError(f"member {_shown(member.name)} changed during the install")
                 writer.flush()
                 os.fsync(writer.fileno())
     for folder in sorted(folders, key=len, reverse=True):
-        _fsync_directory(tree.joinpath(*folder.split("/")) if folder else tree)
+        durability.directory(tree.joinpath(*folder.split("/")) if folder else tree, "folders")
+
+
+def _exact_reader(handle: IO[bytes]) -> Callable[[int], bytes]:
+    def read(length: int) -> bytes:
+        data = handle.read(length)
+        if len(data) != length:
+            raise PackageError("the private copy of the package is truncated")
+        return data
+
+    return read
 
 
 def _same_folder(path: Path, claim: os.stat_result) -> bool:
@@ -918,85 +1173,421 @@ def _same_folder(path: Path, claim: os.stat_result) -> bool:
     return stat.S_ISDIR(now.st_mode) and (now.st_dev, now.st_ino) == (claim.st_dev, claim.st_ino)
 
 
-def _release_claim(destination: Path, claim: os.stat_result) -> None:
-    """Remove the empty placeholder this call created, and nothing else."""
-    if _same_folder(destination, claim) and not os.listdir(destination):
-        os.rmdir(destination)
+class InstallInterrupted(PackageError):
+    """An install record for this destination exists: an earlier install was
+    interrupted (or is still running). :func:`recover_install` clears it."""
 
 
-def extract_bundle(path: Path, destination: Path) -> PackageInfo:
+class InstallInProgress(PackageError):
+    """Another process is installing to this destination right now."""
+
+
+class InstallNotDurable(PackageError):
+    """Raised by :func:`extract_bundle` when the package WAS installed (the
+    final rename happened) but the file system could not confirm that the
+    folder entries are on disk. ``result`` carries the installed package."""
+
+    def __init__(self, result: InstallResult) -> None:
+        super().__init__(
+            f"{_shown(result.destination.name)} was installed, but its durability could not be "
+            f"confirmed ({result.durability_note}); the files are in place and verified"
+        )
+        self.result = result
+
+
+@dataclass(frozen=True)
+class InstallResult:
+    """A completed install. ``durable`` is True only when every file and
+    every folder entry, including the final rename, was synced and the OS
+    confirmed it; otherwise ``durability_note`` says what could not be."""
+
+    info: PackageInfo
+    destination: Path
+    durable: bool
+    durability_note: str
+
+
+@dataclass(frozen=True)
+class RecoveryResult:
+    """What :func:`recover_install` found and did. ``destination_state`` is
+    ``absent`` (nothing there), ``claim-removed`` (the empty claimed folder
+    was removed), ``installed`` (the rename had committed; the tree is kept)
+    or ``kept`` (something not created by the install is there; untouched).
+    ``removed`` names the leftovers deleted, beside the destination."""
+
+    record_found: bool
+    destination_state: str
+    removed: tuple[str, ...]
+
+
+_RECORD_SUFFIX = ".alhazen-install"
+_NONCE = re.compile(r"[0-9a-f]{32}")
+_MAX_RECORD_BYTES = 4096
+# Windows refuses paths of 260 characters or more unless long paths are
+# enabled machine-wide, which a package cannot know; installs stay below.
+_WINDOWS_MAX_PATH = 259
+
+
+def _record_path(destination: Path) -> Path:
+    return destination.parent / f".{destination.name}{_RECORD_SUFFIX}"
+
+
+def _leftover_names(destination: Path, nonce: str) -> tuple[str, str]:
+    """(private copy, staging folder) names, derived from the record's nonce
+    and never read from the record itself."""
+    stem = f".{destination.name[:40]}.{nonce}"
+    return f"{stem}.package", f"{stem}.staging"
+
+
+def _lock(fd: int) -> bool:
+    """Take an exclusive, non-blocking lock on an open record; False if
+    another process holds it. Released by the OS when the holder exits."""
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return False
+    except OSError as error:
+        if error.errno in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+            return False
+        raise PackageError(
+            f"cannot lock the install record (file locking unsupported here?): {error.strerror}"
+        ) from error
+    return True
+
+
+def _note(error: BaseException, text: str) -> None:
+    """Attach a cleanup failure to the error that is propagating, without
+    replacing it (add_note is Python 3.11+; 3.10 keeps it on an attribute)."""
+    add = getattr(error, "add_note", None)
+    if add is not None:
+        add(text)
+    else:
+        notes = getattr(error, "cleanup_notes", [])
+        error.cleanup_notes = [*notes, text]  # type: ignore[attr-defined]
+
+
+def _remove_tree_or_file(path: Path) -> str | None:
+    """Remove a leftover this install created: a real folder (recursively,
+    never through links) or a regular file. Returns its name if removed."""
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    if stat.S_ISDIR(info.st_mode):
+        shutil.rmtree(path)
+    elif stat.S_ISREG(info.st_mode):
+        os.unlink(path)
+    else:
+        raise PackageError(f"{_shown(path.name)} is not what the install created; left in place")
+    return path.name
+
+
+def _windows_path_check(destination: Path, staging: Path, members: list[_Member]) -> None:
+    if sys.platform != "win32" or not members:
+        return
+    longest = max(len(member.name) for member in members)
+    base = max(len(str(destination.resolve())), len(str(staging.resolve())))
+    if base + 1 + longest > _WINDOWS_MAX_PATH:
+        raise PackageError(
+            f"installing here would need paths of {base + 1 + longest} characters; Windows "
+            f"allows {_WINDOWS_MAX_PATH} unless long paths are enabled. Choose a shorter folder"
+        )
+
+
+def _replace_onto_claim(tree: Path, destination: Path) -> None:
+    """The commit: rename the finished tree onto the empty claimed folder."""
+    if sys.platform != "win32":
+        # POSIX rename atomically replaces the empty folder claimed earlier.
+        os.replace(tree, destination)
+        return
+    # Windows cannot rename onto a folder: free the name, then take it, with
+    # a bounded retry for antivirus or indexer handles briefly held open.
+    os.rmdir(destination)
+    delay = 0.05
+    for attempt in range(8):
+        try:
+            os.rename(tree, destination)
+            return
+        except PermissionError as error:
+            if attempt == 7 or getattr(error, "winerror", None) not in (5, 32):
+                raise
+            time.sleep(delay)
+            delay *= 2
+
+
+def install_bundle(
+    path: Path,
+    destination: Path,
+    *,
+    expected_sha256: str | None = None,
+    max_archive_bytes: int = DEFAULT_MAX_ARCHIVE_BYTES,
+    max_expanded_bytes: int = DEFAULT_MAX_EXPANDED_BYTES,
+    max_files: int = DEFAULT_MAX_FILES,
+) -> InstallResult:
     """Verify a package and install its files as the new folder ``destination``.
 
-    ``destination`` must not exist (not even as an empty folder or a broken
-    link) and its parent must. The name is claimed first by creating it, so
-    two installs to one place cannot both proceed. The package is copied into
-    a private file beside it and verified in full there with the default
-    limits; its files are written into a private staging folder (each hash
-    checked again, synced), the copy is removed, and the finished folder is
-    renamed onto the claimed name, so nothing is left to clean up after
-    success. On failure the copy, the staging folder and the empty claim are
-    removed; nothing this call did not create is touched. Nothing is imported
-    or run.
+    Steps, each beside ``destination`` in its parent folder:
+
+    1. refuse if ``destination`` exists (even an empty folder or broken link);
+    2. create and lock the owner record ``.<name>.alhazen-install`` (refused
+       with InstallInterrupted if one exists) and sync it;
+    3. claim ``destination`` by creating it empty;
+    4. copy the package into a private file, compare ``expected_sha256``
+       against the copied bytes (DigestMismatch, before anything else), and
+       verify the copy in one pass;
+    5. write each file into a private staging folder, decoding and checking
+       it again, syncing files and folders;
+    6. remove the copy and rename the staging folder onto the claim. This
+       rename is the commit: before it nothing is installed, after it the
+       install has happened and this function returns (never raises);
+    7. sync the parent and remove the record.
+
+    On a failure before the commit every leftover this call created is
+    removed (an independent attempt for each; failures are attached as notes
+    to the original error, which is the one raised), and the record is kept
+    only if some cleanup failed, so :func:`recover_install` can finish it.
+    After a crash, :func:`recover_install` removes exactly this install's
+    leftovers. Nothing is imported or run.
     """
+    expected = _check_expected(expected_sha256)
+    limits = _Limits.checked(max_archive_bytes, max_expanded_bytes, max_files)
     path = Path(path)
     destination = Path(destination)
     name = destination.name
-    if name in ("", ".", ".."):
-        raise PackageError("the install folder needs a name")
+    if name in ("", ".", "..") or name.startswith("."):
+        raise PackageError("the install folder needs a name that does not start with a dot")
     parent = destination.parent
     if not parent.is_dir():
         raise PackageError(f"the folder that should hold {_shown(name)} does not exist")
-    try:
-        os.mkdir(destination, 0o755)
-    except FileExistsError as error:
+    record = _record_path(destination)
+    if os.path.lexists(record):
+        raise InstallInterrupted(
+            f"an earlier install of {_shown(name)} was interrupted or is still running; "
+            "call recover_install for it, then install again"
+        )
+    if os.path.lexists(destination):
         raise PackageError(
             f"{_shown(name)} already exists; a package never installs over an existing folder"
+        )
+    nonce = os.urandom(16).hex()
+    copy_name, staging_name = _leftover_names(destination, nonce)
+    try:
+        record_fd = _open_descriptor(
+            record, os.O_RDWR | os.O_CREAT | os.O_EXCL | _O_BINARY | _O_NOFOLLOW, 0o600
+        )
+    except FileExistsError as error:
+        raise InstallInterrupted(
+            f"an earlier install of {_shown(name)} was interrupted or is still running; "
+            "call recover_install for it, then install again"
         ) from error
     except OSError as error:
-        raise PackageError(
-            f"cannot create the install folder {_shown(name)}: {error.strerror}"
-        ) from error
-    claim = os.lstat(destination)
-    installed = False
-    bundle: Path | None = None
-    tree: Path | None = None
+        raise PackageError(f"cannot write the install record: {error.strerror}") from error
+    durability = _Durability()
+    claim: os.stat_result | None = None
     try:
-        fd, bundle_name = tempfile.mkstemp(prefix=f".{name[:40]}.package-", dir=parent)
-        bundle = Path(bundle_name)
-        digest, size = _copy_private(path, fd, DEFAULT_MAX_ARCHIVE_BYTES)
-        info = inspect_bundle(bundle)
-        if (info.sha256, info.size) != (digest, size):
-            raise PackageError("the package changed while it was being installed")
-        tree = Path(tempfile.mkdtemp(prefix=f".{name[:40]}.staging-", dir=parent))
-        _extract_verified(bundle, info.manifest, tree)
+        if not _lock(record_fd):
+            raise InstallInProgress(f"another process is installing {_shown(name)}")
+        body = json.dumps(
+            {"format": 1, "destination": name, "nonce": nonce, "pid": os.getpid()},
+            sort_keys=True,
+        ).encode("utf-8")
+        os.write(record_fd, body.ljust(64))
+        os.fsync(record_fd)
+        durability.directory(parent, "the install record")
+        try:
+            os.mkdir(destination, 0o755)
+        except FileExistsError as error:
+            raise PackageError(
+                f"{_shown(name)} already exists; a package never installs over an existing folder"
+            ) from error
+        claim = os.lstat(destination)
+        copy_path = parent / copy_name
+        tree = parent / staging_name
+        fd = _open_descriptor(
+            copy_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_BINARY | _O_NOFOLLOW, 0o600
+        )
+        info, members = _verified_copy(path, fd, copy_path, expected, limits)
+        os.mkdir(tree, 0o700)
+        _windows_path_check(destination, tree, members)
+        _extract_verified(copy_path, members, tree, durability)
         os.chmod(tree, 0o755)
-        os.unlink(bundle)
-        bundle = None
+        os.unlink(copy_path)
         if not _same_folder(destination, claim) or os.listdir(destination):
             raise PackageError(f"{_shown(name)} was changed by something else during the install")
+        _replace_onto_claim(tree, destination)
+    except BaseException as error:
+        _abandon(error, destination, claim, (parent / copy_name, parent / staging_name), record)
+        os.close(record_fd)
+        if isinstance(error, OSError):
+            raise PackageError(
+                f"installing {_shown(name)} failed: {error.strerror or error}"
+            ) from error
+        raise
+    # Committed: from here on the install has happened, whatever follows.
+    # Each step is independent, and none can turn the install into a failure.
+    for step, what in (
+        (lambda: durability.directory(parent, "the final rename"), "syncing the final rename"),
+        (lambda: os.unlink(record), "removing the install record"),
+        (
+            lambda: durability.directory(parent, "the removal of the install record"),
+            "syncing the record's removal",
+        ),
+    ):
         try:
-            # POSIX rename atomically replaces the empty folder claimed above.
-            os.replace(tree, destination)
-        except OSError:
-            if sys.platform != "win32":
-                raise
-            # Windows cannot rename onto a folder: free the name, then take it.
+            step()
+        except OSError as error:
+            durability.unconfirmed.append(f"{what} ({error.strerror or error})")
+    os.close(record_fd)
+    unconfirmed = sorted(set(durability.unconfirmed))
+    note = "not confirmed on disk: " + ", ".join(unconfirmed)
+    if sys.platform == "win32":
+        note += " (Windows: folders cannot be synced from Python; files were flushed)"
+    return InstallResult(
+        info=info,
+        destination=destination,
+        durable=not unconfirmed,
+        durability_note=note if unconfirmed else "",
+    )
+
+
+def _abandon(
+    error: BaseException,
+    destination: Path,
+    claim: os.stat_result | None,
+    leftovers: tuple[Path, ...],
+    record: Path,
+) -> None:
+    """Undo an install that failed before its commit. Each step is attempted
+    independently; a failed step is noted on ``error`` and keeps the record,
+    so recover_install can finish the job later."""
+    complete = True
+    for leftover in leftovers:
+        try:
+            _remove_tree_or_file(leftover)
+        except (OSError, PackageError) as cleanup:
+            complete = False
+            _note(error, f"could not remove {leftover.name}: {cleanup}")
+    if claim is not None and _same_folder(destination, claim):
+        try:
             os.rmdir(destination)
-            os.rename(tree, destination)
-        installed = True
-        _fsync_directory(parent)
+        except OSError as cleanup:
+            # Not empty: something else wrote into the claim. It is no longer
+            # ours to delete, and nothing of ours remains in it.
+            if cleanup.errno not in (errno.ENOTEMPTY, errno.EEXIST):
+                complete = False
+                _note(error, f"could not remove the empty claimed folder: {cleanup.strerror}")
+    if complete:
+        try:
+            os.unlink(record)
+        except OSError as cleanup:
+            _note(error, f"could not remove the install record: {cleanup.strerror}")
+
+
+def extract_bundle(
+    path: Path,
+    destination: Path,
+    *,
+    expected_sha256: str | None = None,
+    max_archive_bytes: int = DEFAULT_MAX_ARCHIVE_BYTES,
+    max_expanded_bytes: int = DEFAULT_MAX_EXPANDED_BYTES,
+    max_files: int = DEFAULT_MAX_FILES,
+) -> PackageInfo:
+    """:func:`install_bundle`, returning the verified package. Never reports
+    a durable success it could not confirm: if the install committed but the
+    file system could not confirm durability (always so on Windows), it
+    raises InstallNotDurable, whose ``result`` says the files ARE installed.
+    Callers that handle that state should call install_bundle directly."""
+    result = install_bundle(
+        path,
+        destination,
+        expected_sha256=expected_sha256,
+        max_archive_bytes=max_archive_bytes,
+        max_expanded_bytes=max_expanded_bytes,
+        max_files=max_files,
+    )
+    if not result.durable:
+        raise InstallNotDurable(result)
+    return result.info
+
+
+def recover_install(destination: Path) -> RecoveryResult:
+    """Clear what an interrupted install of ``destination`` left behind.
+
+    Acts only through the owner record ``.<name>.alhazen-install``: refused
+    with InstallInProgress while its installer still holds the record's lock.
+    Removes the private copy and staging folder whose names derive from the
+    record's nonce, and the claimed destination only if it is an EMPTY
+    folder. A destination with content is kept: if the record is present it
+    is the committed install (``installed``), whose durability was never
+    confirmed. Without a record nothing is touched. Safe to repeat.
+    """
+    destination = Path(destination)
+    record = _record_path(destination)
+    try:
+        fd = _open_descriptor(record, os.O_RDWR | _O_BINARY | _O_NOFOLLOW)
+    except FileNotFoundError:
+        state = "kept" if os.path.lexists(destination) else "absent"
+        return RecoveryResult(record_found=False, destination_state=state, removed=())
     except OSError as error:
-        raise PackageError(
-            f"installing {_shown(name)} failed: {error.strerror or error}"
-        ) from error
+        raise PackageError(f"cannot open the install record: {error.strerror}") from error
+    try:
+        if not _lock(fd):
+            raise InstallInProgress(f"another process is installing {_shown(destination.name)}")
+        raw = os.read(fd, _MAX_RECORD_BYTES + 1)
+        nonce = _record_nonce(raw, destination.name)
+        removed: list[str] = []
+        if nonce is not None:
+            for leftover in _leftover_names(destination, nonce):
+                gone = _remove_tree_or_file(destination.parent / leftover)
+                if gone is not None:
+                    removed.append(gone)
+        try:
+            info = os.lstat(destination)
+        except FileNotFoundError:
+            state = "absent"
+        else:
+            if stat.S_ISDIR(info.st_mode) and not os.listdir(destination):
+                os.rmdir(destination)
+                removed.append(destination.name)
+                state = "claim-removed"
+            elif stat.S_ISDIR(info.st_mode) and nonce is not None:
+                state = "installed"
+            else:
+                state = "kept"
+        os.unlink(record)
+        removed.append(record.name)
+        _fsync_directory(destination.parent)
     finally:
-        if not installed:
-            if bundle is not None and os.path.lexists(bundle):
-                os.unlink(bundle)
-            if tree is not None and os.path.lexists(tree):
-                shutil.rmtree(tree)
-            _release_claim(destination, claim)
-    return info
+        os.close(fd)
+    return RecoveryResult(record_found=True, destination_state=state, removed=tuple(removed))
+
+
+def _record_nonce(raw: bytes, name: str) -> str | None:
+    """The nonce from a record, or None for a record cut short by a crash
+    before it was written (then no leftover can exist yet)."""
+    text = raw.decode("utf-8", "replace").strip()
+    if not text:
+        return None
+    try:
+        body = json.loads(text)
+    except ValueError as error:
+        raise PackageError("the install record is damaged; inspect it by hand") from error
+    if (
+        not isinstance(body, dict)
+        or body.get("format") != 1
+        or body.get("destination") != name
+        or not isinstance(body.get("nonce"), str)
+        or not _NONCE.fullmatch(body["nonce"])
+    ):
+        raise PackageError("the install record does not belong to this destination")
+    return str(body["nonce"])
 
 
 # --------------------------------------------------------------------------
@@ -1032,8 +1623,11 @@ _REFUSED_FOLDERS = {
 # registry. Only the experiment's top-level folders are data roots; a
 # package's own src/<pkg>/data/ holds code assets.
 _DATA_ROOT = re.compile(r"data(-.*)?|people")
-_SUBJECT_FOLDER = re.compile(r"sub-[a-z0-9]+")
+# Subject codes are any isalnum() text (non-ASCII letters included), so any
+# name beginning sub- counts: participant folders and run files alike.
+_SUBJECT = re.compile(r"sub-.+")
 _REFUSED_NAMES = {
+    ".git": "a git pointer, which holds this computer's paths",
     ".netrc": "credentials",
     "_netrc": "credentials",
     ".pgpass": "credentials",
@@ -1096,19 +1690,21 @@ _NOISE_NAMES = frozenset({".ds_store", "thumbs.db", "desktop.ini", ".coverage"})
 
 def _refusal(path: str) -> str | None:
     """Why ``path`` (a safe package path) may never be packaged, or None."""
-    parts = [part.casefold() for part in path.split("/")]
+    parts = [_fold(part) for part in path.split("/")]
     name = parts[-1]
     if name == MANIFEST_NAME:
         return "the package manifest's reserved name"
     for part in parts[:-1]:
         if part in _REFUSED_FOLDERS:
             return _REFUSED_FOLDERS[part]
-        if _SUBJECT_FOLDER.fullmatch(part):
+        if _SUBJECT.fullmatch(part):
             return "a subject's data folder"
     if len(parts) > 1 and _DATA_ROOT.fullmatch(parts[0]):
         return "the experiment's data or people folder"
     if name in _REFUSED_NAMES:
         return _REFUSED_NAMES[name]
+    if _SUBJECT.fullmatch(name):
+        return "a subject's data file"
     if name.startswith("rig-") and name.endswith(_RIG_SUFFIXES):
         return "a rig's own configuration or calibration (each lab uses its own rig)"
     if name.startswith(".alhazen"):
@@ -1128,7 +1724,7 @@ def _refusal(path: str) -> str | None:
 
 
 def _noise(path: str) -> bool:
-    parts = [part.casefold() for part in path.split("/")]
+    parts = [_fold(part) for part in path.split("/")]
     name = parts[-1]
     return (
         any(part in _NOISE_FOLDERS or part.endswith(".egg-info") for part in parts[:-1])
@@ -1146,6 +1742,21 @@ def _inside_environment(source: Path, path: str) -> bool:
         os.path.lexists(source.joinpath(*parts[:depth], "pyvenv.cfg"))
         for depth in range(len(parts))
     )
+
+
+# IO_REPARSE_TAG_NAME_SURROGATE: the reparse point stands for another name
+# (symbolic link, junction). Cloud-file placeholders are not surrogates.
+_NAME_SURROGATE = 0x20000000
+
+
+def _is_link(info: os.stat_result) -> bool:
+    """A symbolic link, or on Windows a junction or other name surrogate."""
+    if stat.S_ISLNK(info.st_mode):
+        return True
+    reparse = getattr(info, "st_file_attributes", 0) & getattr(
+        stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0
+    )
+    return bool(reparse and getattr(info, "st_reparse_tag", 0) & _NAME_SURROGATE)
 
 
 _DIR_FD = os.open in os.supports_dir_fd and bool(_O_NOFOLLOW and _O_DIRECTORY)
@@ -1174,9 +1785,7 @@ def _open_source(source: Path, path: str) -> int:
         else:
             for depth in range(1, len(parts) + 1):
                 info = os.lstat(source.joinpath(*parts[:depth]))
-                if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & getattr(
-                    stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0
-                ):
+                if _is_link(info):
                     raise PackageError(f"{_shown(path)} is or passes through a link")
             fd = _open_descriptor(source.joinpath(*parts), os.O_RDONLY | _O_BINARY)
     except FileNotFoundError as error:
@@ -1384,9 +1993,10 @@ def _git_tracked(source: Path) -> list[str] | None:
         )
         if probe.returncode != 0 or probe.stdout.strip() != b"true":
             if marked:
+                # git's own message names absolute paths; it is not repeated.
                 raise PackageError(
-                    "git cannot read the experiment's repository: "
-                    + probe.stderr.decode("utf-8", "replace").strip()[-300:]
+                    "git cannot read the experiment's repository (run `git status` in that "
+                    "folder to see why), so its tracked files cannot be listed"
                 )
             return None
         listing = subprocess.run(
@@ -1403,8 +2013,8 @@ def _git_tracked(source: Path) -> list[str] | None:
         raise PackageError("git did not answer in time while listing tracked files") from error
     if listing.returncode != 0:
         raise PackageError(
-            "git could not list the tracked files: "
-            + listing.stderr.decode("utf-8", "replace").strip()[-300:]
+            f"git could not list the tracked files (exit status {listing.returncode}); run "
+            "`git status` in that folder to see why"
         )
     names = {raw.decode("utf-8", "surrogateescape") for raw in listing.stdout.split(b"\0") if raw}
     return sorted(names)
@@ -1424,8 +2034,9 @@ def _walk(source: Path) -> list[str]:
         folders[:] = sorted(
             name
             for name in folders
-            if name.casefold() not in _REFUSED_FOLDERS
-            and name.casefold() not in _NOISE_FOLDERS
+            if _fold(name) not in _REFUSED_FOLDERS
+            and _fold(name) not in _NOISE_FOLDERS
+            and not _SUBJECT.fullmatch(_fold(name))
             and not os.path.islink(os.path.join(folder, name))
         )
         seen += len(folders) + len(names)
@@ -1446,9 +2057,7 @@ def _is_plain_file(source: Path, path: str) -> bool:
             info = os.lstat(source.joinpath(*parts[:depth]))
         except OSError:
             return False
-        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & getattr(
-            stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0
-        ):
+        if _is_link(info):
             return False
     return stat.S_ISREG(info.st_mode)
 
