@@ -314,6 +314,17 @@ class TestBuildAndInspect:
                 source, tmp_path / "d.zip", {**META, "documentation": "docs/experiment.json"}, CLEAN
             )
 
+    def test_file_systems_without_hard_links_get_an_exclusive_copy(
+        self, tmp_path, source, monkeypatch
+    ):
+        def no_links(*args, **kwargs):
+            raise PermissionError(1, "Operation not permitted")
+
+        monkeypatch.setattr(pk.os, "link", no_links)
+        info = build_bundle(source, tmp_path / "o.zip", dict(META), CLEAN)
+        assert sha((tmp_path / "o.zip").read_bytes()) == info.sha256
+        assert sorted(os.listdir(tmp_path)) == ["experiment", "o.zip"]
+
     def test_build_refuses_an_existing_output_and_leaves_it(self, tmp_path, source):
         (tmp_path / "out.zip").write_bytes(b"mine")
         with pytest.raises(PackageError, match="already exists"):
@@ -358,7 +369,11 @@ class TestBuildAndInspect:
 
     def test_env_templates_and_code_data_folders_are_allowed(self, tmp_path, source):
         (source / ".env.example").write_text("TOKEN=\n", encoding="utf-8")
-        info = build_bundle(source, tmp_path / "o.zip", dict(META), [*CLEAN, ".env.example"])
+        (source / "data_analysis").mkdir()
+        (source / "data_analysis" / "fit.py").write_text("", encoding="utf-8")
+        info = build_bundle(
+            source, tmp_path / "o.zip", dict(META), [*CLEAN, ".env.example", "data_analysis/fit.py"]
+        )
         assert ".env.example" in [entry["path"] for entry in info.manifest["files"]]
 
     def test_a_folder_holding_pyvenv_cfg_is_an_environment_whatever_its_name(
@@ -887,8 +902,8 @@ class TestExtract:
         info, path = bundle
         original = pk._copy_private
 
-        def swap_after_copy(source, target, limit):
-            result = original(source, target, limit)
+        def swap_after_copy(source, fd, limit):
+            result = original(source, fd, limit)
             source.write_bytes(b"swapped")
             return result
 
