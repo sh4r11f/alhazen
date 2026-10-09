@@ -904,3 +904,70 @@ test('an install the rig could not confirm as flushed to disk says so, without c
   })});
   assert.doesNotMatch(q.text(), /could not confirm/);
 });
+
+function rigStatus(over) {
+  return () => ({status: 200, body: Object.assign({state: 'signed_out', base_url: 'https://hub.example.org', user: null,
+    installed: [], jobs: [], run_active: false, interpreters: []}, over || {})});
+}
+
+test('rig registration: a link to the configured hub\'s own register page, never a local form', async () => {
+  const p = await mount({path: '/hub', hash: '#token=' + TOKEN, search: '?view=register', routes: rigRoutes({
+    'GET /auth/me': () => ({status: 401, body: {error: {code: 'unauthenticated', message: 'x'}}}),
+    'GET /local/status': rigStatus(),
+    'POST /auth/register': () => ({status: 409, body: {error: {code: 'register_on_hub', message: 'Create your account on https://evil.example'}}}),
+  })});
+  assert.equal(p.main.querySelectorAll('form').length, 0, 'no registration form');
+  assert.equal(p.main.querySelectorAll('input').length, 0, 'no password or invite fields');
+  const a = p.find('a', 'Register on hub.example.org');
+  assert.equal(a.getAttribute('href'), 'https://hub.example.org/?view=register');
+  assert.equal(a.getAttribute('target'), '_blank');
+  assert.equal(a.getAttribute('rel'), 'noopener noreferrer');
+  assert.match(p.text(), /come back and.*sign in on this rig/s);
+  assert.equal(p.find('a', 'sign in on this rig').getAttribute('href'), '/hub?view=signin');
+  assert.equal(p.hub.calls.filter((c) => c.path.endsWith('/auth/register')).length, 0, 'nothing is sent to the rig');
+  assert.doesNotMatch(p.text(), /evil\.example/);
+});
+
+test('rig registration keeps a configured base path and refuses an address that fails the hub check', async () => {
+  let p = await mount({path: '/hub', hash: '#token=' + TOKEN, search: '?view=register', routes: rigRoutes({
+    'GET /auth/me': () => ({status: 401, body: {error: {code: 'unauthenticated', message: 'x'}}}),
+    'GET /local/status': rigStatus({base_url: 'https://lab.example.org/hub/'}),
+  })});
+  assert.equal(p.find('a', 'Register on lab.example.org').getAttribute('href'), 'https://lab.example.org/hub/?view=register');
+  for (const bad of ['javascript:alert(1)', 'http://hub.example.org', 'https://user:pw@hub.example.org']) {
+    p = await mount({path: '/hub', hash: '#token=' + TOKEN, search: '?view=register', routes: rigRoutes({
+      'GET /config': () => ({status: 200, body: Object.assign({}, RIG_CONFIG.body, {rig: {base_url: bad, connected: true}})}),
+      'GET /auth/me': () => ({status: 401, body: {error: {code: 'unauthenticated', message: 'x'}}}),
+      'GET /local/status': rigStatus({base_url: bad}),
+    })});
+    assert.equal(p.main.querySelectorAll('a').filter((a) => /^(https?:|javascript:)/.test(a.getAttribute('href') || '')).length, 0, bad);
+    assert.match(p.text(), /Connect this rig first/, bad);
+  }
+});
+
+test('rig registration without a hub says to connect first, with the rig settings link', async () => {
+  const p = await mount({path: '/hub', hash: '#token=' + TOKEN, search: '?view=register', routes: rigRoutes({
+    'GET /config': () => ({status: 200, body: Object.assign({}, RIG_CONFIG.body, {rig: {base_url: null, connected: false}})}),
+    'GET /auth/me': () => ({status: 409, body: {error: {code: 'not_connected', message: 'No hub'}}}),
+    'GET /local/status': rigStatus({state: 'not_configured', base_url: null}),
+  })});
+  assert.match(p.text(), /Connect this rig first/);
+  assert.equal(p.find('a', 'Connect this rig').getAttribute('href'), '/hub?view=rig&tab=connection');
+  assert.equal(p.main.querySelectorAll('input').length, 0);
+  assert.equal(p.hub.calls.filter((c) => c.path.endsWith('/auth/register')).length, 0);
+});
+
+test('central registration keeps its form and posts to the hub', async () => {
+  const p = await mount({search: '?view=register', routes: {
+    'GET /config': () => SERVER_CONFIG, 'GET /auth/me': signedOut,
+    'POST /auth/register': () => ({status: 200, body: {user: ALICE}}),
+  }});
+  const form = p.main.querySelector('form');
+  const fields = form.querySelectorAll('input');
+  assert.deepEqual(fields.map((f) => f.getAttribute('name')), ['username', 'display_name', 'password', 'password_repeat', 'invite_code']);
+  assert.equal(p.main.querySelectorAll('a').filter((a) => /view=register/.test(a.getAttribute('href') || '')).length, 0);
+  fields[0].value = 'alice'; fields[1].value = 'Alice A'; fields[2].value = 'x'.repeat(14); fields[3].value = 'x'.repeat(14); fields[4].value = 'INV';
+  await p.submit(form);
+  assert.deepEqual(p.hub.calls.find((c) => c.path.endsWith('/auth/register')).json,
+    {username: 'alice', display_name: 'Alice A', password: 'x'.repeat(14), invite_code: 'INV'});
+});
