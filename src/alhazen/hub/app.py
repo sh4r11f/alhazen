@@ -38,7 +38,8 @@ import asyncio
 import json
 import logging
 import re
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+import threading
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -138,21 +139,64 @@ class SecurityHeaders:
         await self.app(scope, receive, send_with_headers)
 
 
+class GuardedStream:
+    """A synchronous body iterator that can be closed safely from any thread.
+
+    Starlette pulls each part with ``next`` in a worker thread. ``close``
+    takes the same lock, so it waits for a ``next`` still running there and
+    never interleaves with one; afterwards ``next`` ends the iteration. The
+    source's own ``close`` (a generator holding a database snapshot, or the
+    export module's primed iterator) runs exactly once, also when no part
+    was ever pulled. A source without ``close`` has nothing to release.
+    """
+
+    def __init__(self, source: Any) -> None:
+        self._source = iter(source)
+        self._closer = getattr(source, "close", None) or getattr(self._source, "close", None)
+        self._lock = threading.Lock()
+        self._closed = False
+
+    def __iter__(self) -> GuardedStream:
+        return self
+
+    def __next__(self) -> Any:
+        with self._lock:
+            if self._closed:
+                raise StopIteration
+            return next(self._source)
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            if self._closer is not None:
+                self._closer()
+
+
 class PermitStreamingResponse(StreamingResponse):
     """A streamed response that holds an admission permit until its ASGI call
-    ends, however it ends (auth-review finding 3).
+    ends, however it ends, and then closes its stream (auth-review finding 3).
 
-    The permit used to be released in the body generator's ``finally``. A
-    generator that never starts never runs it: when the client is already
-    gone, Starlette cancels the streaming task before its first step, and the
-    permit stayed taken until a cyclic garbage collection happened to run.
-    Releasing in ``__call__``'s ``finally`` covers completion, errors,
-    disconnects and cancellation alike. ``release`` is idempotent.
+    Formerly the permit was released in the body generator's ``finally``,
+    which never runs for a generator that never starts: when the client is
+    already gone, Starlette cancels the streaming task before its first step.
+    Now ``__call__``'s ``finally`` (completion, error, disconnect or
+    cancellation alike) first releases the permit, then closes the stream in
+    a worker thread under a shielded cancel scope: the stream may hold a
+    database snapshot whose cleanup is I/O, which must neither run on the
+    event loop nor be skipped by cancellation nor be left to the garbage
+    collector. `GuardedStream` makes that close wait for a part still being
+    produced in a worker thread. ``release`` and ``close`` are idempotent.
     """
 
     def __init__(self, content: Any, *, release: Callable[[], None], **kwargs: Any) -> None:
-        super().__init__(content, **kwargs)
-        self.source = content
+        self.stream = GuardedStream(content)
+        super().__init__(self.stream, **kwargs)
         self._release = release
         self._released = False
 
@@ -161,18 +205,17 @@ class PermitStreamingResponse(StreamingResponse):
             self._released = True
             self._release()
 
+    async def aclose(self) -> None:
+        """Release the permit, then close the stream off the event loop."""
+        self.release()
+        with anyio.CancelScope(shield=True):
+            await run_in_threadpool(self.stream.close)
+
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         try:
             await super().__call__(scope, receive, send)
         finally:
-            self.release()
-            close = getattr(self.source, "close", None)
-            if close is not None and not getattr(self.source, "gi_running", False):
-                # A started generator gets GeneratorExit now, not at GC time.
-                # Its yields sit outside database transactions, so closing it
-                # does no I/O. (One still running in a worker thread cannot be
-                # closed and is left to its own end.)
-                close()
+            await self.aclose()
 
 
 # -- request helpers ----------------------------------------------------------
@@ -659,6 +702,26 @@ def create_app(
             body,
         )
 
+    @asynccontextmanager
+    async def _upload_slots(owner: str) -> AsyncIterator[None]:
+        """One of the owner's transfer slots, then a shared one (finding 2).
+
+        The owner's share is waited for briefly, without blocking the event
+        loop and without holding a shared slot; the shared gate refuses at
+        once, as before. Both are released however the request ends.
+        """
+        gate = hub.owner_transfers
+        deadline = anyio.current_time() + settings.limits.owner_transfer_wait_seconds
+        while not gate.try_acquire(owner):
+            if anyio.current_time() >= deadline:
+                raise gate.refusal(owner)
+            await anyio.sleep(0.05)
+        try:
+            with hub.transfers.slot():
+                yield
+        finally:
+            gate.release(owner)
+
     @app.post(API + "/experiments/{experiment_id}/versions")
     async def upload_version(request: Request, experiment_id: str) -> JSONResponse:
         principal = await writer(request)
@@ -667,7 +730,7 @@ def create_app(
         if kind != "application/zip":
             raise HubError(415, "unsupported_media_type", "Upload the package as application/zip")
         await call(catalog.precheck_version_upload, hub, principal, experiment_id)
-        with hub.owner_transfers.slot(principal.user_id), hub.transfers.slot():
+        async with _upload_slots(principal.user_id):
             temp, digest, size = await _receive_package(request)
             version, created = await call(
                 catalog.accept_version, hub, principal, experiment_id, temp, digest, size
@@ -793,7 +856,7 @@ def create_app(
         if offset < 0:
             raise invalid("offset is required")
         chunk_sha = request.headers.get("x-chunk-sha256", "")
-        with hub.owner_transfers.slot(principal.user_id), hub.transfers.slot():
+        async with _upload_slots(principal.user_id):
             data_bytes = await _body(request, settings.limits.max_chunk_bytes)
             return await call(
                 uploads.put_chunk, hub, principal, session_id, path, offset, data_bytes, chunk_sha
@@ -909,9 +972,10 @@ def create_app(
         def release() -> None:
             permit.__exit__(None, None, None)
 
+        stream: Any = None
         try:
-            # Header, columns and rows come from one snapshot (trials.py).
-            stream = await call(trials.open_export, hub, row.id, fmt)
+            # Open one stable snapshot with cancellation-safe ownership.
+            stream = await _open_stream(lambda: trials.open_export(hub, row.id, fmt))
             media = "text/csv; charset=utf-8" if fmt == "csv" else "application/json"
             name = f"session-{row.id}-trials.{fmt}"
             response = PermitStreamingResponse(
@@ -926,8 +990,45 @@ def create_app(
             )
         except BaseException:
             release()
+            if stream is not None:
+                with anyio.CancelScope(shield=True):
+                    await call(GuardedStream(stream).close)
             raise
         return response
+
+    async def _open_stream(factory: Callable[[], Any]) -> Any:
+        """Create an export stream in a worker thread and hand it back, or
+        close it if this request is cancelled meanwhile.
+
+        A stream may hold a database snapshot from the moment it exists (the
+        export module primes the first part). If the request is cancelled
+        while the worker thread creates it, the result would be dropped. So
+        the thread records what it opened; whichever side comes second (this
+        handler's cancellation, or the thread finishing after it) closes it,
+        never on the event loop and never left to the garbage collector.
+        """
+        lock = threading.Lock()
+        state: dict[str, Any] = {"stream": None, "abandoned": False}
+
+        def create() -> Any:
+            stream = factory()
+            with lock:
+                abandoned = state["abandoned"]
+                state["stream"] = stream
+            if abandoned:  # the request is gone already: close it right here
+                GuardedStream(stream).close()
+            return stream
+
+        try:
+            return await call(create)
+        except BaseException:
+            with lock:
+                state["abandoned"] = True
+                opened = state["stream"]
+            if opened is not None:
+                with anyio.CancelScope(shield=True):
+                    await call(GuardedStream(opened).close)
+            raise
 
     @app.get(API + "/data/sessions/{session_id}/files")
     async def session_file(request: Request, session_id: str) -> FileResponse:
