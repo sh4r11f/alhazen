@@ -23,6 +23,7 @@ harmless; trusted code runs as the operator's OS user.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -38,6 +39,8 @@ from alhazen.data.atomic import replace_atomically
 from alhazen.hub.client import HubClient, HubError, api_path
 
 INSTALLS_FILE = "installs.json"
+# A record written before unpacking; becomes "installed" when complete.
+INSTALLING = "installing"
 # The package cap of the v1 contract (alhazen.hub.packages.inspect_bundle's
 # default); the hub's own limit may be lower, never higher.
 MAX_RELEASE_BYTES = 256 * 1024 * 1024
@@ -69,7 +72,7 @@ class PackageModule(Protocol):
         platform: str | None = None,
     ) -> list[str]: ...
 
-    def extract_bundle(self, path: Path, destination: Path) -> Any: ...
+    def extract_bundle(self, path: Path, destination: Path, **kwargs: Any) -> Any: ...
 
 
 class InstallError(ValueError):
@@ -186,11 +189,60 @@ class InstallStore:
         trust = (record or {}).get("trust") or {}
         if record is None or trust.get("sha256") != sha256 or record.get("sha256") != sha256:
             raise InstallError(409, "not_trusted", "This release's code has not been trusted")
+        if record.get("status") not in ("installed", "registered"):
+            raise InstallError(
+                409, "install_interrupted", "This release's install did not finish; recover it"
+            )
         if not (Path(record["path"]) / record.get("entrypoint", "run.py")).is_file():
             raise InstallError(
                 409, "install_missing", "The installed release's files are no longer there"
             )
         return record
+
+    def provenance(self, path: str, *, verify_up_to: int = 64 * 1024 * 1024) -> dict[str, Any]:
+        """The pinned release a launch of the project folder ``path`` runs,
+        for the run record: hub base (never a credential), experiment and
+        version ids, the source ZIP's SHA-256, and whether the declared files
+        still match it (``files_verified``: True/False, or None for a release
+        larger than ``verify_up_to`` bytes, not hashed at launch). Raises
+        InstallError when the folder is a hub install whose trusted record is
+        missing: a run of it must not start without its provenance."""
+        record = self.for_path(path)
+        if record is None:
+            raise InstallError(
+                409,
+                "install_unrecorded",
+                "This experiment folder is inside the hub's installs but has no install record",
+            )
+        trusted = self.trusted_record(record["sha256"])
+        size = sum(int(f["size"]) for f in trusted.get("files", []))
+        verified: bool | None = None
+        if size <= verify_up_to:
+            verified = not self.verify(trusted)
+        return {
+            "base_url": trusted.get("base_url"),
+            "experiment_id": trusted.get("experiment_id"),
+            "version_id": trusted.get("version_id"),
+            "sha256": trusted["sha256"],
+            "name": trusted.get("name"),
+            "version": trusted.get("version"),
+            "trusted_at": (trusted.get("trust") or {}).get("at"),
+            "files_verified": verified,
+        }
+
+    def _exact_tree(self, record: dict[str, Any]) -> list[str]:
+        """:meth:`verify`, plus any file in the folder the release does not
+        declare (for recovery, where extra content means someone else's)."""
+        root = Path(record["path"])
+        if not root.is_dir() or root.is_symlink():
+            return ["the folder is missing"]
+        declared = {entry["path"] for entry in record.get("files", [])}
+        extra = sorted(
+            p.relative_to(root).as_posix()
+            for p in root.rglob("*")
+            if (p.is_file() or p.is_symlink()) and p.relative_to(root).as_posix() not in declared
+        )
+        return self.verify(record) + [f"not part of the release: {name}" for name in extra]
 
     def verify(self, record: dict[str, Any]) -> list[str]:
         """Declared files of an install that are missing or changed since it
@@ -232,6 +284,12 @@ class InstallStore:
             )
         with self.install_lock:
             existing = self.record(sha256)
+            if existing is not None and existing.get("status") == INSTALLING:
+                raise InstallError(
+                    409,
+                    "install_interrupted",
+                    "An earlier install of this release did not finish; recover it first",
+                )
             if existing is not None and (Path(existing["path"]) / "run.py").is_file():
                 if existing.get("experiment_id") != experiment_id or (
                     existing.get("version_id") != version_id
@@ -276,43 +334,144 @@ class InstallStore:
                         "install; it was left untouched",
                     )
                 destination.parent.mkdir(parents=True, exist_ok=True)
+                # Recorded BEFORE unpacking, as "installing": an interruption
+                # leaves a record recover() can act on, and nothing can treat
+                # the folder as trusted until it is complete (trusted_record).
+                record = self._save(
+                    self._new_record(
+                        client, manifest, destination, sha256, experiment_id, version_id, trusted_by
+                    )
+                )
                 try:
-                    packages.extract_bundle(bundle, destination)
+                    durable, note = _extract(packages, bundle, destination, sha256)
                 except packages.PackageError as exc:
+                    self._unpack_failed(packages, sha256, destination, exc)
                     raise InstallError(
                         422, "invalid_package", f"The release could not be unpacked: {exc}"
                     ) from exc
             finally:
                 bundle.unlink(missing_ok=True)
-            files = [
-                {"path": str(f["path"]), "size": int(f["size"]), "sha256": str(f["sha256"])}
-                for f in manifest.get("files", [])
-            ]
-            _make_read_only(destination, files)
-            record = {
+            return self._complete(record, durable=durable, note=note)
+
+    def _new_record(
+        self,
+        client: HubClient,
+        manifest: dict[str, Any],
+        destination: Path,
+        sha256: str,
+        experiment_id: str,
+        version_id: str,
+        trusted_by: dict[str, Any],
+    ) -> dict[str, Any]:
+        files = [
+            {"path": str(f["path"]), "size": int(f["size"]), "sha256": str(f["sha256"])}
+            for f in manifest.get("files", [])
+        ]
+        return {
+            "sha256": sha256,
+            "experiment_id": experiment_id,
+            "version_id": version_id,
+            "base_url": client.base,
+            "path": str(destination.resolve()),
+            "entrypoint": str(manifest.get("entrypoint", "run.py")),
+            **_summary(manifest),
+            "files": files,
+            "documentation": manifest.get("documentation"),
+            "installed_at": None,
+            "installed_by": _public_user(trusted_by),
+            "trust": {
                 "sha256": sha256,
-                "experiment_id": experiment_id,
-                "version_id": version_id,
-                "base_url": client.base,
-                "path": str(destination.resolve()),
-                "entrypoint": str(manifest.get("entrypoint", "run.py")),
-                **_summary(manifest),
-                "files": files,
-                "documentation": manifest.get("documentation"),
-                "installed_at": now(),
-                "installed_by": _public_user(trusted_by),
-                "trust": {
-                    "sha256": sha256,
-                    "at": now(),
-                    "by": _public_user(trusted_by),
-                    "statement": TRUST_STATEMENT,
-                },
-                "status": "installed",
-                "project_id": None,
-                "python": None,
-                "error": None,
+                "at": now(),
+                "by": _public_user(trusted_by),
+                "statement": TRUST_STATEMENT,
+            },
+            "status": INSTALLING,
+            "durable": None,
+            "durability_note": None,
+            "project_id": None,
+            "python": None,
+            "error": None,
+        }
+
+    def _complete(self, record: dict[str, Any], *, durable: bool, note: str) -> dict[str, Any]:
+        _make_read_only(Path(record["path"]), record["files"])
+        record.update(
+            status="installed",
+            installed_at=now(),
+            durable=durable,
+            durability_note=note or None,
+            error=None,
+        )
+        return self._save(record)
+
+    def _unpack_failed(
+        self, packages: PackageModule, sha256: str, destination: Path, exc: Exception
+    ) -> None:
+        """After a refused unpack: an interrupted or concurrent install keeps
+        its record for explicit recovery; anything else that left no folder
+        forgets the pending record, so the release can be installed again."""
+        held = tuple(
+            getattr(packages, name)
+            for name in ("InstallInterrupted", "InstallInProgress")
+            if isinstance(getattr(packages, name, None), type)
+        )
+        kept = bool(held) and isinstance(exc, held)
+        if kept or os.path.lexists(destination):
+            self.update(sha256, error={"code": "install_interrupted", "message": str(exc)})
+            return
+        with self._lock:
+            records = [r for r in self.records() if r.get("sha256") != sha256]
+            replace_atomically(self.directory / INSTALLS_FILE, json.dumps(records, indent=2))
+
+    def recover(self, packages: PackageModule, sha256: str) -> dict[str, Any]:
+        """Explicitly clear an interrupted install of ``sha256`` through the
+        package module's recovery (which removes only its own leftovers and
+        an EMPTY claimed folder, never other content). A committed tree is
+        kept and completed only if every declared file matches the release;
+        otherwise it stays, untouched, with the reason recorded."""
+        check_sha256(sha256)
+        with self.install_lock:
+            record = self.record(sha256)
+            if record is None or record.get("status") != INSTALLING:
+                raise InstallError(404, "not_found", "No interrupted install of that release")
+            recover = getattr(packages, "recover_install", None)
+            if recover is None:
+                raise InstallError(
+                    503, "not_available", "This alhazen cannot recover interrupted installs"
+                )
+            try:
+                result = recover(Path(record["path"]))
+            except packages.PackageError as exc:
+                raise InstallError(409, "install_in_progress", str(exc)) from exc
+            state = str(result.destination_state)
+            outcome = {
+                "destination_state": state,
+                "removed": list(result.removed),
+                "record_found": bool(result.record_found),
             }
-            return self._save(record)
+            if state in ("absent", "claim-removed"):
+                with self._lock:
+                    records = [r for r in self.records() if r.get("sha256") != sha256]
+                    replace_atomically(
+                        self.directory / INSTALLS_FILE, json.dumps(records, indent=2)
+                    )
+                return {"recovery": outcome, "install": None}
+            problems = self._exact_tree(record) if state in ("installed", "kept") else []
+            if state in ("installed", "kept") and not problems:
+                # Exactly the release's declared files, each matching its
+                # digest-verified manifest entry: the unpack had committed.
+                done = self._complete(
+                    record, durable=False, note="completed after recovery; durability unconfirmed"
+                )
+                return {"recovery": outcome, "install": done}
+            message = (
+                "The release's folder was left untouched: " + "; ".join(problems[:5])
+                if problems
+                else "The release's folder holds something the install did not create; "
+                "left untouched"
+            )
+            kept = self.update(sha256, error={"code": "install_kept", "message": message})
+            return {"recovery": outcome, "install": kept}
 
     @staticmethod
     def _listed_version(
@@ -362,6 +521,26 @@ class InstallStore:
                 "unsupported_platform",
                 f"This release supports {', '.join(map(str, platforms))}, not {platform}",
             )
+
+
+def _extract(
+    packages: PackageModule, bundle: Path, destination: Path, sha256: str
+) -> tuple[bool, str]:
+    """Unpack; ``(durable, note)``. A package module with ``install_bundle``
+    gets the reviewed digest (checked against its own verified copy before
+    writing) and reports whether the file system confirmed durability, which
+    is recorded rather than treated as failure (Windows never confirms). An
+    older module gets ``extract_bundle``, the digest having been checked above."""
+    install = getattr(packages, "install_bundle", None)
+    if install is not None:
+        result = install(bundle, destination, expected_sha256=sha256)
+        return bool(result.durable), str(result.durability_note or "")
+    parameters = inspect.signature(packages.extract_bundle).parameters
+    if "expected_sha256" in parameters:
+        packages.extract_bundle(bundle, destination, expected_sha256=sha256)
+    else:
+        packages.extract_bundle(bundle, destination)
+    return True, ""
 
 
 def _public_user(user: dict[str, Any]) -> dict[str, str]:

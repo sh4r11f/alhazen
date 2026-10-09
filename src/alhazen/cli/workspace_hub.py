@@ -34,7 +34,8 @@ from typing import IO, Any
 
 from alhazen.cli import workspace as workspace_module
 from alhazen.cli.workspace import Workspace
-from alhazen.cli.workspace_data import DataView, _run_folder
+from alhazen.cli.workspace_data import DataView, _run_folder, data_roots
+from alhazen.cli.workspace_manage import _console_run_folder
 from alhazen.hub.client import (
     DEFAULT_TIMEOUT_S,
     HubClient,
@@ -63,6 +64,7 @@ from alhazen.hub.sync import (
     client_session_id,
     file_sha256,
     job_id_for,
+    portable_problems,
     privacy_fields,
     public_job,
     session_files,
@@ -137,6 +139,14 @@ PROXY_ROUTES = (
     _route("GET", "/data/sessions/{id}/trials", PAGE),
     _route("GET", "/data/sessions/{id}/export", ("format",), kind="stream", filename="trials"),
     _route("GET", "/data/sessions/{id}/files", ("path",), kind="stream"),
+    # Rebuild a session's derived trial index (owner only on the hub, 202);
+    # the raw files are never touched by it.
+    _route("POST", "/data/sessions/{id}/reindex"),
+    # The signed-in user's own unfinished uploads, and discarding one (an
+    # explicit action; the local session folder is never touched). The
+    # rest of the upload protocol is the rig's own (POST /local/upload).
+    _route("GET", "/sessions", PAGE),
+    _route("POST", "/sessions/{id}/abort"),
 )
 SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -178,6 +188,8 @@ class HubAdapter:
         timeout: float = DEFAULT_TIMEOUT_S,
         uploader_wait_s: float = 1.0,
         backoff_s: tuple[float, ...] = (1, 2, 4, 8, 16),
+        seal_wait_s: float | None = None,
+        background: bool = True,
     ) -> None:
         self.workspace = workspace
         self.data = data
@@ -191,7 +203,9 @@ class HubAdapter:
         self.previews = Previews()
         self.scratch = hub / "scratch"
         self._lock = threading.Lock()
-        self.outbox.recover()
+        extra = {"seal_wait_s": seal_wait_s} if seal_wait_s is not None else {}
+        # ``background`` False (alhazen hub install): no upload is recovered,
+        # resumed or sent; only the routes the caller uses run.
         self.uploader = Uploader(
             self.outbox,
             self.state,
@@ -199,10 +213,14 @@ class HubAdapter:
             self.busy,
             wait_s=uploader_wait_s,
             backoff_s=backoff_s,
+            start=background,
+            **extra,
         )
-        credential = self.state.credential()
-        if credential is not None:
-            self.uploader.resume_for(credential.base, credential.user_id)
+        if background:
+            self.outbox.recover()
+            credential = self.state.credential()
+            if credential is not None:
+                self.uploader.resume_for(credential.base, credential.user_id)
 
     def close(self) -> None:
         self.uploader.close()
@@ -252,7 +270,8 @@ class HubAdapter:
             return call(self._client_for(credential))
         except HubError as exc:
             if exc.status == 401:
-                self.state.clear_credential()
+                # Only the bearer this request used; a newer sign-in stays.
+                self.state.clear_credential(expected=credential)
                 raise HubRouteError(401, "unauthenticated", "Sign in to the hub again") from exc
             raise
 
@@ -292,9 +311,13 @@ class HubAdapter:
                 return 200, self.resume_job(match.group(1))
             if method == "POST" and action == "cancel":
                 return 200, self.cancel_job(match.group(1))
-        if route.startswith("/local/") or route.startswith("/sessions"):
+        if route.startswith("/local/"):
             raise HubRouteError(404, "not_found", "No such hub route on this rig")
-        return self._proxy(method, route, args, body, upload)
+        answer = self._proxy(method, route, args, body, upload)
+        aborted = re.fullmatch(r"/sessions/([A-Za-z0-9_-]{1,128})/abort", route)
+        if method == "POST" and aborted:
+            self._aborted_remotely(aborted.group(1))
+        return answer
 
     # -- proxied central routes ----------------------------------------------------------------
 
@@ -323,40 +346,43 @@ class HubAdapter:
         path = api_path(*route.strip("/").split("/"))
         query = {k: args[k] for k in spec.query if k in args} or None
         if spec.kind == "stream":
-            client = self._client_for(self._signed_in())
+            credential = self._signed_in()
             return ProxyStream(
-                connect=lambda: self._open_stream(client, path, query), filename=spec.filename
+                connect=lambda: self._open_stream(credential, path, query),
+                filename=spec.filename,
             )
         if spec.kind == "zip":
             if upload is None:
                 raise HubRouteError(400, "invalid_request", "Send the package as application/zip")
             stream, length = upload
-            answer = self._authed(
-                lambda c: c.json(
+            return self._authed(
+                lambda c: c.json_with_status(
                     method, path, data=stream, length=length, content_type="application/zip"
                 )
             )
-            return 201, answer
         json_body = body if method in ("POST", "PATCH") else None
         if not spec.auth:
-            answer = self._anonymous().json(
+            return self._anonymous().json_with_status(
                 method, path, query=query, json_body=json_body, authenticated=False
             )
-        else:
-            answer = self._authed(lambda c: c.json(method, path, query=query, json_body=json_body))
-        return (201 if method == "POST" else 200), answer
+        # The hub's own status passes through (201 created, 202 accepted).
+        return self._authed(
+            lambda c: c.json_with_status(method, path, query=query, json_body=json_body)
+        )
 
     @contextmanager
     def _open_stream(
-        self, client: HubClient, path: str, query: dict[str, str] | None
+        self, credential: Credential, path: str, query: dict[str, str] | None
     ) -> Iterator[HTTPResponse]:
-        """The hub's response for a download; a rejected bearer is forgotten."""
+        """The hub's response for a download; the rejected bearer (only that
+        one) is forgotten."""
+        client = self._client_for(credential)
         with ExitStack() as stack:
             try:
                 response = stack.enter_context(client.stream("GET", path, query=query))
             except HubError as exc:
                 if exc.status == 401:
-                    self.state.clear_credential()
+                    self.state.clear_credential(expected=credential)
                     raise HubRouteError(401, "unauthenticated", "Sign in to the hub again") from exc
                 raise
             yield response
@@ -394,7 +420,7 @@ class HubAdapter:
             raise HubRouteError(
                 503, "not_available", "The offline guide is not available in this install"
             ) from exc
-        return 200, documentation.global_guide()
+        return 200, {"guide": documentation.global_guide()}
 
     def login(self, args: dict[str, str], body: dict[str, Any]) -> tuple[int, Any]:
         username = _text(body, "username", 256)
@@ -467,12 +493,24 @@ class HubAdapter:
         except ValueError as exc:
             raise HubRouteError(400, "invalid_url", str(exc)) from exc
         probe_hub(base, timeout=CONNECT_TIMEOUT_S, opener=self._opener)
+        previous_revoked: bool | None = None
         with self._lock:
             credential = self.state.credential()
             if credential is not None and credential.base != base:
                 self._pause_jobs(credential)
+                # Revoked at the hub that issued it, with only that bearer;
+                # the new hub never sees it.
+                previous_revoked = self._revoke(credential)
             self.state.save_connection(Connection(base, allow))
-        return self.status(args, body)
+        status, answer = self.status(args, body)
+        return status, {**answer, "previous_revoked": previous_revoked}
+
+    def _revoke(self, credential: Credential) -> bool:
+        try:
+            self._client_for(credential).json("POST", "/auth/logout")
+        except HubError:
+            return False
+        return True
 
     def disconnect(self, args: dict[str, str], body: dict[str, Any]) -> tuple[int, Any]:
         if self.state.credential() is not None:
@@ -495,7 +533,12 @@ class HubAdapter:
             "title": record.get("title"),
             "project_id": record.get("project_id") if registered else None,
             "workspace_url": f"/?project={record['project_id']}&view=run" if registered else None,
-            "status": "registered" if registered else "installed",
+            "status": (
+                "installing"
+                if record.get("status") == "installing"
+                else ("registered" if registered else "installed")
+            ),
+            "durable": record.get("durable"),
             "python": record.get("python"),
             "installed_at": record.get("installed_at"),
             "hardware": record.get("hardware"),
@@ -547,6 +590,17 @@ class HubAdapter:
             )
         )
         return 201, {"install": self._install_public(self.register(record["sha256"], python))}
+
+    def install_recover(self, args: dict[str, str], body: dict[str, Any]) -> tuple[int, Any]:
+        """Explicit recovery of an interrupted install (package module's own
+        recovery; other content is never removed)."""
+        self._refuse_if_busy()
+        answer = self.installs.recover(self.packages(), check_sha256(body.get("sha256")))
+        install = answer["install"]
+        return 200, {
+            "recovery": answer["recovery"],
+            "install": self._install_public(install) if install else None,
+        }
 
     def register(self, sha256: str, python: str) -> dict[str, Any]:
         """Probe ``python`` and register a TRUSTED install with the workspace.
@@ -680,29 +734,102 @@ class HubAdapter:
         root = self.data._root(project_id, root_id)
         return project_id, root_id, run_id, _run_folder(root.path, run_id), project
 
-    def _release_for(self, project: dict[str, Any], body: dict[str, Any]) -> tuple[str, str, Any]:
+    def _recorded_release(self, project_id: str, folder: Path) -> dict[str, Any] | None:
+        """The hub release the workspace recorded at launch for the run that
+        wrote ``folder`` (run.json ``hub_release``), found through the run's
+        console as the Run page finds its session; None when no recorded run
+        of this project wrote it (an older run, or one from another tool)."""
+        existing, _, _ = data_roots(self.workspace.describe(project_id))
+        target = str(folder.resolve())
+        with self.workspace.lock:
+            runs = [
+                dict(r)
+                for r in self.workspace.runs.values()
+                if r.get("project") == project_id and r.get("hub_release")
+            ]
+        for run in runs:
+            console = Path(run["directory"]) / "console.log"
+            if _console_run_folder(console, existing, run.get("mode")) == target:
+                return dict(run["hub_release"])
+        return None
+
+    def _release_for(
+        self, project: dict[str, Any], folder: Path, body: dict[str, Any], base: str
+    ) -> tuple[str, str, dict[str, Any] | None, str]:
+        """``(experiment_id, version_id, install, source)`` for an upload.
+
+        The release recorded with the run at launch wins; else the folder's
+        install record; else the operator's choice. A choice that differs
+        from a recorded identity, or a release from another hub, is refused."""
         install = self.installs.for_path(project["path"])
-        experiment_id = body.get("experiment_id") or (install or {}).get("experiment_id")
-        version_id = body.get("version_id") or (install or {}).get("version_id")
+        recorded = self._recorded_release(project["id"], folder)
+        pinned, source = (recorded, "run_record") if recorded else (install, "install_record")
+        experiment_id = body.get("experiment_id") or (pinned or {}).get("experiment_id")
+        version_id = body.get("version_id") or (pinned or {}).get("version_id")
         check_identifier(experiment_id, "experiment_id")
         check_identifier(version_id, "version_id")
-        if install and (
-            install.get("experiment_id") != experiment_id or install.get("version_id") != version_id
-        ):
+        if pinned is None:
+            return str(experiment_id), str(version_id), install, "operator"
+        if pinned.get("base_url") != base:
             raise HubRouteError(
                 409,
                 "conflict",
-                "This experiment was installed from another hub release; its sessions are "
-                "uploaded under that release",
+                "This session's experiment was installed from another hub; it can only be "
+                "uploaded there",
             )
-        return str(experiment_id), str(version_id), install
+        if pinned.get("experiment_id") != experiment_id or pinned.get("version_id") != version_id:
+            what = "recorded with this run" if recorded else "this experiment was installed from"
+            raise HubRouteError(
+                409,
+                "conflict",
+                f"The release {what} differs from the one chosen; sessions are uploaded under "
+                "the release that ran them",
+            )
+        return str(experiment_id), str(version_id), install, source
+
+    def _release_intact(
+        self,
+        project: dict[str, Any],
+        folder: Path,
+        source: str,
+        install: dict[str, Any] | None,
+    ) -> bool | None:
+        """Whether the code that ran is the release the upload names: the
+        run's own launch record (files re-hashed before spawn), else the
+        install's files now. A modified release is refused; None means no
+        record says (an older run, or a project not from the hub)."""
+        if source == "run_record":
+            recorded = self._recorded_release(project["id"], folder) or {}
+            verified = recorded.get("files_verified")
+        elif source == "install_record" and install is not None:
+            verified = not self.installs.verify(install)
+        else:
+            return None
+        if verified is False:
+            raise HubRouteError(
+                409,
+                "release_modified",
+                "The experiment's files differed from the hub release when this session ran (or "
+                "differ now); it cannot be uploaded as that release",
+            )
+        return verified if isinstance(verified, bool) else None
 
     def upload_preview(self, args: dict[str, str], body: dict[str, Any]) -> tuple[int, Any]:
         self._refuse_if_busy()
         credential = self._signed_in()
         project_id, root_id, run_id, folder, project = self._session(body)
-        experiment_id, version_id, install = self._release_for(project, body)
+        experiment_id, version_id, install, release_source = self._release_for(
+            project, folder, body, credential.base
+        )
         listing = session_files(folder)
+        unportable = portable_problems(listing)
+        if unportable:
+            raise HubRouteError(
+                409,
+                "unsupported_path",
+                "The hub cannot store these file names: " + "; ".join(unportable[:5]),
+            )
+        files_verified = self._release_intact(project, folder, release_source, install)
         session_key = client_session_id(self.state.rig_id(), folder)
         manifest_sha = file_sha256(folder / "manifest.yaml")
         metadata = session_metadata(folder, run_id)
@@ -720,6 +847,7 @@ class HubAdapter:
             "folder": str(folder),
             "metadata": metadata,
             "install_sha256": (install or {}).get("sha256"),
+            "release_source": release_source,
         }
         preview_id = self.previews.create(binding)
         return 200, {
@@ -731,6 +859,8 @@ class HubAdapter:
             "recipient": {"base_url": credential.base, "user": dict(credential.user)},
             "experiment_id": experiment_id,
             "version_id": version_id,
+            "release_source": release_source,
+            "release_verified": files_verified,
             "metadata": metadata,
             "privacy": {"fields": privacy_fields(folder), "warning": PRIVACY_WARNING},
             "install": self._install_public(install) if install else None,
@@ -790,6 +920,7 @@ class HubAdapter:
                 "listing": binding["listing"],
                 "metadata": binding["metadata"],
                 "install_sha256": binding["install_sha256"],
+                "release_source": binding["release_source"],
                 "files": None,
                 "files_digest": None,
                 # Always re-initialised: the hub answers the same session for the
@@ -844,6 +975,17 @@ class HubAdapter:
         self.uploader.submit(job_id)
         return {"job": public_job(job)}
 
+    def _aborted_remotely(self, session_id: str) -> None:
+        """The user discarded a hub upload through the hub routes: a local
+        job for it stops, and records the discard (re-asked on the worker,
+        which the hub answers idempotently)."""
+        credential = self.state.credential()
+        if credential is None:
+            return
+        for job in self.outbox.visible(credential.base, credential.user_id):
+            if job.get("session_id") == session_id and job.get("status") != "completed":
+                self.cancel_job(job["id"])
+
     def cancel_job(self, job_id: str) -> dict[str, Any]:
         job = self._job(job_id)
         if job.get("status") in ACTIVE:
@@ -860,6 +1002,12 @@ class HubAdapter:
                 status="cancelled",
                 error={"code": "cancelled", "message": "Cancelled", "retryable": True},
             )
+        if job.get("status") != "completed" and job.get("session_id"):
+            # The hub's unfinished copy is discarded with this job's own
+            # bound credential, on the worker after it stops this job;
+            # pending until that account is signed in if it is not now.
+            self.uploader.request_abort(job_id)
+            job = self._job(job_id)
         return {"job": public_job(job)}
 
 
@@ -888,6 +1036,7 @@ LOCAL_ROUTES: dict[tuple[str, str], LocalHandler] = {
         {"items": [self._install_public(r) for r in self.installs.records()]},
     ),
     ("POST", "/local/install"): HubAdapter.install,
+    ("POST", "/local/install-recover"): HubAdapter.install_recover,
     ("POST", "/local/package-preview"): HubAdapter.package_preview,
     ("POST", "/local/package-upload"): HubAdapter.package_upload,
     ("GET", "/local/sessions"): HubAdapter.sessions,
@@ -928,7 +1077,8 @@ def cli_install(
     with workspace_lock(directory):
         workspace = Workspace(directory)
         try:
-            adapter = HubAdapter(workspace, DataView(workspace))
+            # No background uploads in an install command (review minor 10).
+            adapter = HubAdapter(workspace, DataView(workspace), background=False)
             try:
                 answer = adapter.handle(
                     "POST",

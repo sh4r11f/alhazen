@@ -15,12 +15,14 @@ local contract; the central API is [api-contract.md](api-contract.md).
 | `alhazen.hub.installation` | download, verification order, versioned unpack, trust record per SHA-256 | proves bytes, not safety of code |
 | `alhazen.hub.source` | preview of an experiment's source, metadata suggestion, pack + upload of an approved list | archive rules are all `alhazen.hub.packages` |
 | `alhazen.hub.sync` | session upload: preview binding, durable outbox, the background worker | no rig timing guarantee |
+| `alhazen.hub.protocol` | the shared upload identity: canonical `manifest_sha256` and receipt checks (stdlib; the hub service uses the same definition) | none beyond the contract |
 | `alhazen.hub.cli` | `alhazen hub` subcommands (stdlib argparse) | install registration is injected by `cli/main.py` |
 | `alhazen.cli.workspace_hub` | joins the workspace (registration, DataView discovery, active run) with the hub modules; route table | the only module that imports both |
 
 Layering: `alhazen.hub` sits directly below `alhazen.cli`. No `alhazen.hub` module imports
 `alhazen.cli`, even lazily; `cli/dashboard.py` imports `cli/workspace_hub.py` only when a hub
-route is first used (or with `--hub`), so a dashboard that never opens the hub page loads none
+route is first used (or with `--hub`); `cli/workspace.py` reads the install records only to
+snapshot a hub-installed project's release at launch (cli -> hub), so a dashboard that never opens the hub page loads none
 of it.
 
 ## Security rules the code enforces
@@ -37,7 +39,10 @@ of it.
   reached and reports `revoked: false`. A new hub address forgets the sign-in.
 - The proxy is an allowlist of exact methods and route shapes (ids `[A-Za-z0-9_-]{1,128}`),
   each with its allowed query keys; only Accept, Content-Type/Length, the bearer and the upload
-  chunk digest go upstream. The upload protocol (`/sessions/*`) is not proxied at all.
+  chunk digest go upstream. The hub's status passes through (201, 202). Writes include
+  `POST /data/sessions/{id}/reindex` (owner-only on the hub). The upload protocol
+  (`/sessions/*`) is not proxied at all. `GET /guide` is answered locally as
+  `{guide: global_guide()}`, for offline use.
   Downloads are relayed as attachments with a sandboxing CSP, `nosniff`, an allowlisted type
   and a sanitised file name.
 
@@ -59,8 +64,28 @@ of it.
    does not download again. The declared files are re-hashed before registration.
 
 The existing experiment registrations, local experiments without a hub account and offline
-runs are untouched. A run of an installed release is tied to its immutable folder, so the
-release is known from `installs.json` (`path` -> `sha256`, `version_id`).
+runs are untouched.
+
+## Run provenance
+
+`Workspace.start` gives every NEW run of a project under `<workspace>/hub/experiments/` a
+`hub_release` in both `run.json` and the write-once `launch.json`: hub base URL (no
+credential), experiment and version ids, the source ZIP's SHA-256, name, version, when it was
+trusted, and `files_verified` (the declared files re-hashed before spawn: true/false; null for
+a release over 64 MiB, not hashed at launch). It comes from the trusted install record, read
+from local files only; a hub folder with no usable record refuses the launch. Other projects'
+runs get no key and are otherwise unchanged; older records are never backfilled. History
+therefore never depends on the mutable `installs.json`.
+
+An upload uses the release recorded with the run that wrote the session (found through the
+run's console, as the Run page finds it): `release_source: "run_record"`. Otherwise the
+folder's install record (`"install_record"`), otherwise the operator's choice (`"operator"`).
+A different release, or a release from another hub, is refused.
+
+`session.json` itself does not carry `hub_release`: it is written by the session engine in the
+experiment's own interpreter (whose alhazen may be older) and is covered by the session's
+manifest, so adding it would mean an engine change and a rewrite of hashed research files. The
+link between a session and its release is the workspace's run record.
 
 ## Uploading a session
 
@@ -81,8 +106,11 @@ The job is a file in `<workspace>/hub/outbox/`. One worker thread runs jobs one 
 - it hashes each file once, refusing a file whose size or mtime changed since the preview
   (`local_changed`), and checks the hashes against the session's own manifest;
 - it initialises the session, sends 8 MiB chunks from the hub's own received offsets with
-  `X-Chunk-SHA256`, retries transient failures with the same identity, and is `completed` only
-  when `/complete` answers `committed` (staging/sealing are retried, anything else fails);
+  `X-Chunk-SHA256`, retries transient failures with the same identity (and
+  `sealing_in_progress`), and is `completed` only for a `committed` receipt whose session id,
+  client session id, experiment/version, file count, byte total and `manifest_sha256`
+  (`alhazen.hub.protocol`) all match the bound upload; any difference fails the job as
+  `receipt_mismatch` and the receipt is kept aside, never treated as completion;
 - local files are never changed, moved or deleted. A restart pauses active jobs as
   `interrupted`; they resume for their own account.
 

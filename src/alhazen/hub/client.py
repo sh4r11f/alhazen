@@ -219,6 +219,7 @@ class HubClient:
         content_type: str | None = None,
         headers: Mapping[str, str] | None = None,
         authenticated: bool = True,
+        timeout: float | None = None,
     ) -> Iterator[HTTPResponse]:
         """One request; yields the open response for 2xx, else HubError.
 
@@ -246,7 +247,7 @@ class HubClient:
             self.url(path, query), data=body, headers=sent, method=method
         )
         try:
-            response = self._send(request, timeout=self.timeout)
+            response = self._send(request, timeout=timeout or self.timeout)
         except urllib.error.HTTPError as exc:
             with exc:
                 retry_after = exc.headers.get("Retry-After") if exc.headers else None
@@ -280,7 +281,12 @@ class HubClient:
 
     def json(self, method: str, path: str, **kwargs: Any) -> Any:
         """A request whose answer is JSON (an empty 204 is None)."""
+        return self.json_with_status(method, path, **kwargs)[1]
+
+    def json_with_status(self, method: str, path: str, **kwargs: Any) -> tuple[int, Any]:
+        """``(status, answer)``: the hub's own 2xx status with its JSON."""
         with self.stream(method, path, **kwargs) as response:
+            status = int(response.status)
             try:
                 body = response.read(MAX_JSON_BYTES + 1)
             except (OSError, TimeoutError) as exc:
@@ -290,9 +296,9 @@ class HubClient:
         if len(body) > MAX_JSON_BYTES:
             raise HubError(502, "hub_bad_response", "The hub's answer is too large")
         if not body:
-            return None
+            return status, None
         try:
-            return json.loads(body.decode("utf-8"))
+            return status, json.loads(body.decode("utf-8"))
         except (UnicodeDecodeError, ValueError):
             raise HubError(502, "hub_bad_response", "The hub's answer is not JSON") from None
 

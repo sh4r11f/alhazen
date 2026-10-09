@@ -238,3 +238,23 @@ class TestRigState:
     def test_rig_id_is_stable(self, tmp_path):
         state = RigState(tmp_path / "hub")
         assert state.rig_id() == RigState(tmp_path / "hub").rig_id()
+
+
+def test_the_reviewed_digest_is_handed_to_a_package_module_that_checks_it(tmp_path):
+    from alhazen.hub.installation import _extract
+
+    seen = []
+
+    class Checking:
+        @staticmethod
+        def extract_bundle(path, destination, *, expected_sha256=None):
+            seen.append(expected_sha256)
+
+    class Older:
+        @staticmethod
+        def extract_bundle(path, destination):
+            seen.append("older")
+
+    _extract(Checking, tmp_path / "a.zip", tmp_path / "out", "f" * 64)
+    _extract(Older, tmp_path / "a.zip", tmp_path / "out", "f" * 64)
+    assert seen == ["f" * 64, "older"]

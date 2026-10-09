@@ -48,10 +48,18 @@ import yaml
 from alhazen.data.atomic import replace_atomically
 from alhazen.hub.client import HubClient, HubError, api_path
 from alhazen.hub.credentials import Credential, RigState
+from alhazen.hub.protocol import COMMITTED, canonical_metadata, receipt_problems, usable_metadata
 
 log = logging.getLogger(__name__)
 
 CHUNK_BYTES = 8 * 1024 * 1024
+HASH_BLOCK_BYTES = 1024 * 1024
+# How long a complete may keep answering "sealing" before the job pauses
+# (resumable): the hub's seal lease is 30 minutes.
+SEAL_WAIT_S = 35 * 60
+COMPLETE_TIMEOUT_S = 300.0
+CLOSED = ("aborted", "expired")
+ABORT_PREFIX = "abort:"
 PREVIEW_TTL_S = 30 * 60
 MAX_PREVIEWS = 64
 MAX_SESSION_FILES = 10_000
@@ -61,7 +69,6 @@ ACTIVE = ("queued", "waiting", "hashing", "uploading", "completing")
 TERMINAL = ("completed", "failed", "cancelled")
 # Codes after which the same account signing in again may resume a job.
 RESUMABLE_PAUSES = ("signed_out", "auth_context_changed", "interrupted", "unauthenticated")
-COMMITTED = ("committed", "complete", "completed")
 IN_PROGRESS = ("staging", "sealing")
 # The fields of session.json that identify a person or this machine, named in
 # the preview's privacy warning when present.
@@ -87,11 +94,12 @@ def now() -> str:
 
 
 class SyncError(ValueError):
-    def __init__(self, status: int, code: str, message: str) -> None:
+    def __init__(self, status: int, code: str, message: str, *, retryable: bool = False) -> None:
         super().__init__(message)
         self.status = status
         self.code = code
         self.message = message
+        self.retryable = retryable
 
 
 @dataclass(frozen=True)
@@ -151,18 +159,21 @@ def _card(folder: Path) -> dict[str, Any]:
 
 
 def session_metadata(folder: Path, run_id: str) -> dict[str, Any]:
-    """The contract's session metadata, from the run id and session.json."""
+    """The contract's session metadata, from the run id and session.json:
+    always the four keys, a value the hub would refuse (too long, control
+    characters) sent as None. The files themselves keep every value."""
     card = _card(folder)
     parts = run_id.split("/")
-    subject = parts[-3].removeprefix("sub-") if len(parts) >= 3 else None
     raw = card.get("rig")
     rig: dict[str, Any] = raw if isinstance(raw, dict) else {}
-    return {
-        "subject_code": subject,
-        "mode": card.get("mode") if isinstance(card.get("mode"), str) else None,
-        "rig_alias": rig.get("name") if isinstance(rig.get("name"), str) else None,
-        "started_at": card.get("created") if isinstance(card.get("created"), str) else None,
-    }
+    return usable_metadata(
+        {
+            "subject_code": parts[-3].removeprefix("sub-") if len(parts) >= 3 else None,
+            "mode": card.get("mode"),
+            "rig_alias": rig.get("name"),
+            "started_at": card.get("created"),
+        }
+    )
 
 
 def privacy_fields(folder: Path) -> list[str]:
@@ -178,9 +189,57 @@ def privacy_fields(folder: Path) -> list[str]:
 
 
 def client_session_id(rig_id: str, folder: Path) -> str:
-    """The session's stable upload identity: this rig and this folder."""
-    digest = hashlib.sha256(f"{rig_id}\0{folder.resolve()}".encode()).hexdigest()
+    """The session's stable upload identity on this rig.
+
+    From the session's own record when it has one (session.json's
+    experiment name, its subject/session/run and the moment it was created),
+    so moving or renaming the data folder does not make it a new upload;
+    otherwise from the folder's location."""
+    card = _card(folder)
+    raw_experiment, raw_subject = card.get("experiment"), card.get("subject")
+    experiment: dict[str, Any] = raw_experiment if isinstance(raw_experiment, dict) else {}
+    subject: dict[str, Any] = raw_subject if isinstance(raw_subject, dict) else {}
+    created = card.get("created")
+    name = experiment.get("name")
+    if isinstance(created, str) and created and isinstance(name, str) and name:
+        key = "\0".join(
+            [
+                "card",
+                name,
+                str(subject.get("id")),
+                str(card.get("session")),
+                str(card.get("run")),
+                str(card.get("task")),
+                created,
+            ]
+        )
+    else:
+        key = f"path\0{folder.resolve()}"
+    digest = hashlib.sha256(f"{rig_id}\0{key}".encode()).hexdigest()
     return f"rig-{digest[:40]}"
+
+
+def portable_problems(listing: list[LocalFile]) -> list[str]:
+    """Names the hub would refuse (alhazen.hub.packages.safe_relative: its
+    portable, normalised form, the same rule the hub's upload init applies),
+    and names that differ only in case — found before anything is hashed."""
+    from alhazen.hub.packages import PackageError, safe_relative
+
+    problems = []
+    seen: dict[str, str] = {}
+    for entry in listing:
+        try:
+            normal = safe_relative(entry.path)
+        except PackageError as exc:
+            problems.append(f"{entry.path!r}: {exc}")
+            continue
+        if normal != entry.path:
+            problems.append(f"{entry.path!r} is not in normal form ({normal!r})")
+        folded = entry.path.casefold()
+        if folded in seen:
+            problems.append(f"{entry.path!r} differs from {seen[folded]!r} only in case")
+        seen[folded] = entry.path
+    return problems
 
 
 def file_sha256(path: Path) -> str:
@@ -279,6 +338,8 @@ PUBLIC_JOB_FIELDS = (
     "session_id",
     "files_digest",
     "manifest_digest",
+    "release_source",
+    "remote_abort",
 )
 
 
@@ -390,6 +451,10 @@ class _Cancelled(Exception):
     pass
 
 
+class _Closed(Exception):
+    """The hub closed this upload attempt (aborted or expired)."""
+
+
 class _Paused(Exception):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
@@ -411,8 +476,11 @@ class Uploader:
         *,
         wait_s: float = 1.0,
         backoff_s: tuple[float, ...] = (1, 2, 4, 8, 16),
+        seal_wait_s: float = SEAL_WAIT_S,
+        start: bool = True,
     ) -> None:
         self.outbox = outbox
+        self.seal_wait_s = seal_wait_s
         self.state = state
         self.client_for = client_for
         self.busy = busy
@@ -424,11 +492,14 @@ class Uploader:
         self._pause: dict[str, tuple[str, str]] = {}
         self._flags = threading.Lock()
         self._thread = threading.Thread(target=self._loop, name="hub-uploader", daemon=True)
-        self._thread.start()
+        # Without ``start`` (alhazen hub install) nothing is ever sent.
+        if start:
+            self._thread.start()
 
     def close(self, timeout: float = 5.0) -> None:
         self._stop.set()
-        self._thread.join(timeout)
+        if self._thread.is_alive():
+            self._thread.join(timeout)
 
     # -- control ------------------------------------------------------------------------
 
@@ -459,6 +530,8 @@ class Uploader:
                 self.outbox.update(job["id"], status="queued", error=None)
                 self.submit(job["id"])
                 count += 1
+            if (job.get("remote_abort") or {}).get("status") == "pending":
+                self._queue.put(ABORT_PREFIX + job["id"])
         return count
 
     # -- the worker -----------------------------------------------------------------------
@@ -470,9 +543,13 @@ class Uploader:
             except queue.Empty:
                 continue
             try:
-                self._process(job_id)
+                if job_id.startswith(ABORT_PREFIX):
+                    self._abort(job_id.removeprefix(ABORT_PREFIX))
+                else:
+                    self._process(job_id)
             except Exception as exc:  # a bug must not kill the worker for every later job
                 log.exception("Upload job %s failed unexpectedly", job_id)
+                job_id = job_id.removeprefix(ABORT_PREFIX)
                 self._finish(job_id, "failed", "internal_error", f"Unexpected error: {exc}", False)
 
     def _finish(self, job_id: str, status: str, code: str, message: str, retryable: bool) -> None:
@@ -535,7 +612,7 @@ class Uploader:
                 self._hash(job, epoch)
             self._transfer(job, epoch)
         except _Cancelled:
-            self._finish(job_id, "cancelled", "cancelled", "Cancelled; local files are kept", True)
+            self._finish(job_id, "cancelled", "cancelled", "Cancelled; local files are kept", False)
         except _Paused as exc:
             self._finish(job_id, "paused", exc.code, str(exc), True)
         except _Fenced as exc:
@@ -543,38 +620,32 @@ class Uploader:
         except SyncError as exc:
             # A changed session needs a new preview and consent: never resumable.
             status = "paused" if exc.code == "local_changed" else "failed"
-            self._finish(job_id, status, exc.code, exc.message, False)
+            self._finish(job_id, status, exc.code, exc.message, exc.retryable)
         except HubError as exc:
-            if exc.status == 401:
-                self.state.clear_credential()
-                self._finish(job_id, "paused", "unauthenticated", "Sign in to the hub again", True)
-            else:
-                self._finish(job_id, "failed", exc.code, exc.message, exc.retryable)
+            self._finish(job_id, "failed", exc.code, exc.message, exc.retryable)
 
     def _hash(self, job: dict[str, Any], epoch: list[int]) -> None:
+        """Hash each file once, block by block, waiting (not restarting)
+        whenever a session starts on this rig; a file whose size or mtime
+        differs from the preview, before or after, pauses the job."""
         folder = Path(job["folder"])
         self._set(job, status="hashing")
         hashed = []
         for entry in job["listing"]:
             self._gate(job, epoch)
             path = folder / entry["path"]
-            try:
-                info = path.stat()
-            except OSError:
-                info = None
-            if (
-                info is None
-                or path.is_symlink()
-                or info.st_size != entry["size"]
-                or info.st_mtime_ns != entry["mtime_ns"]
-            ):
-                raise SyncError(
-                    409,
-                    "local_changed",
-                    f"{entry['path']} changed after the preview; preview the session again",
-                )
+            self._unchanged(path, entry, "after the preview")
+            digest = hashlib.sha256()
+            with path.open("rb") as stream:
+                while True:
+                    self._gate(job, epoch)
+                    block = stream.read(HASH_BLOCK_BYTES)
+                    if not block:
+                        break
+                    digest.update(block)
+            self._unchanged(path, entry, "while it was being hashed")
             hashed.append(
-                {"path": entry["path"], "size": entry["size"], "sha256": file_sha256(path)}
+                {"path": entry["path"], "size": entry["size"], "sha256": digest.hexdigest()}
             )
         problems = check_against_manifest(folder, hashed)
         if problems:
@@ -585,16 +656,37 @@ class Uploader:
             )
         self._set(job, files=hashed, files_digest=files_digest(hashed))
 
+    @staticmethod
+    def _unchanged(path: Path, entry: dict[str, Any], when: str) -> None:
+        try:
+            info = path.stat()
+        except OSError:
+            info = None
+        if (
+            info is None
+            or path.is_symlink()
+            or info.st_size != entry["size"]
+            or info.st_mtime_ns != entry["mtime_ns"]
+        ):
+            raise SyncError(
+                409, "local_changed", f"{entry['path']} changed {when}; preview the session again"
+            )
+
     def _call(self, job: dict[str, Any], epoch: list[int], fn: Callable[[HubClient], Any]) -> Any:
         """One idempotent request, retried on transient failures with the
-        same identity; the binding is re-checked before every attempt."""
+        same identity; the binding is re-checked before every attempt. A
+        401 forgets only the bearer this request used (a newer sign-in stays)
+        and pauses the job."""
         attempt = 0
         while True:
             self._gate(job, epoch)
-            client = self.client_for(self._credential(job))
+            credential = self._credential(job)
             try:
-                return fn(client)
+                return fn(self.client_for(credential))
             except HubError as exc:
+                if exc.status == 401:
+                    self.state.clear_credential(expected=credential)
+                    raise _Fenced("unauthenticated", "Sign in to the hub again") from None
                 if not exc.retryable or attempt >= len(self.backoff_s):
                     raise
                 delay = self.backoff_s[attempt]
@@ -610,8 +702,16 @@ class Uploader:
                 if self._stop.wait(delay):
                     raise _Paused("interrupted", "The dashboard is stopping") from None
 
+    def _chunk_size(self, job: dict[str, Any], epoch: list[int]) -> int:
+        """8 MiB, or the hub's smaller ``max_chunk_bytes`` (GET /config)."""
+        answer = self._call(job, epoch, lambda c: c.json("GET", "/config", authenticated=False))
+        limits = answer.get("limits") if isinstance(answer, dict) else None
+        limit = limits.get("max_chunk_bytes") if isinstance(limits, dict) else None
+        if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0:
+            return min(CHUNK_BYTES, limit)
+        return CHUNK_BYTES
+
     def _transfer(self, job: dict[str, Any], epoch: list[int]) -> None:
-        folder = Path(job["folder"])
         files = job["files"]
         self._set(
             job,
@@ -620,82 +720,181 @@ class Uploader:
             files_total=len(files),
             error=None,
         )
+        chunk = self._chunk_size(job, epoch)
+        for attempt in range(2):
+            try:
+                self._upload(job, epoch, chunk)
+                return
+            except _Closed as closed:
+                # The hub closed this attempt (aborted, or expired after a
+                # long pause). Same identity, new attempt: the hub starts a
+                # new one for an identical replay of a closed upload.
+                self._set(job, session_id=None, closed_attempts=job.get("closed_attempts", 0) + 1)
+                if attempt:
+                    raise SyncError(
+                        409,
+                        "upload_closed",
+                        f"The hub closed this upload ({closed}) and did not start a new attempt; "
+                        "resume later",
+                        retryable=True,
+                    ) from None
+
+    def _closed_check(self, view: dict[str, Any]) -> None:
+        status = str(view.get("status"))
+        if status in CLOSED:
+            raise _Closed(status)
+
+    def _remote(self, job: dict[str, Any], epoch: list[int], fn: Callable[[HubClient], Any]) -> Any:
+        try:
+            return self._call(job, epoch, fn)
+        except HubError as exc:
+            if exc.status == 410 and exc.code in ("upload_aborted", "upload_expired"):
+                raise _Closed(exc.code.removeprefix("upload_")) from None
+            raise
+
+    def _upload(self, job: dict[str, Any], epoch: list[int], chunk: int) -> None:
+        folder = Path(job["folder"])
+        files = job["files"]
         if not job.get("session_id"):
             body = {
                 "experiment_id": job["experiment_id"],
                 "version_id": job["version_id"],
                 "client_session_id": job["client_session_id"],
                 "files": files,
-                "metadata": job["metadata"],
+                "metadata": canonical_metadata(job["metadata"]),
                 "consent": True,
             }
             session = _unwrap(
-                self._call(
+                self._remote(
                     job,
                     epoch,
                     lambda c: c.json("POST", api_path("sessions", "init"), json_body=body),
                 ),
                 "session",
             )
+            answered = session.get("client_session_id")
+            if answered is not None and answered != job["client_session_id"]:
+                raise SyncError(
+                    502,
+                    "receipt_mismatch",
+                    "The hub answered for another upload identity; nothing was sent",
+                )
             self._set(job, session_id=str(session["id"]))
+            self._closed_check(session)
         progress = _unwrap(
-            self._call(
+            self._remote(
                 job,
                 epoch,
                 lambda c: c.json("GET", api_path("sessions", job["session_id"], "upload")),
             ),
             "session",
         )
-        received = {
-            str(f.get("path")): int(f.get("received", 0))
+        self._closed_check(progress)
+        state = {
+            str(f.get("path")): (int(f.get("received", 0)), f.get("verified"))
             for f in progress.get("files", [])
             if isinstance(f, dict)
         }
-        done = sum(min(received.get(f["path"], 0), f["size"]) for f in files)
-        self._set(
-            job,
-            bytes_done=done,
-            files_done=sum(received.get(f["path"], 0) >= f["size"] for f in files),
-        )
-        if str(progress.get("status")) not in COMMITTED:
+        received = {path: got for path, (got, _) in state.items()}
+
+        def progress_fields() -> dict[str, int]:
+            return {
+                "bytes_done": sum(min(received.get(f["path"], 0), f["size"]) for f in files),
+                "files_done": sum(received.get(f["path"], 0) >= f["size"] for f in files),
+            }
+
+        self._set(job, **progress_fields())
+        if str(progress.get("status")) not in (COMMITTED, "sealing"):
             for entry in files:
                 offset = received.get(entry["path"], 0)
+                if entry["size"] == 0 and state.get(entry["path"], (0, None))[1] is not True:
+                    # An empty file is sent as one empty chunk at offset 0.
+                    self._chunk(job, epoch, folder, entry, 0, chunk)
                 while offset < entry["size"]:
                     self._gate(job, epoch)
-                    offset = self._chunk(job, epoch, folder, entry, offset)
+                    offset = self._chunk(job, epoch, folder, entry, offset, chunk)
                     received[entry["path"]] = offset
-                    self._set(
-                        job,
-                        bytes_done=sum(min(received.get(f["path"], 0), f["size"]) for f in files),
-                        files_done=sum(received.get(f["path"], 0) >= f["size"] for f in files),
-                    )
+                    self._set(job, **progress_fields())
         self._set(job, status="completing")
-        for attempt in range(len(self.backoff_s) + 1):
-            receipt = _unwrap(
-                self._call(
-                    job,
-                    epoch,
-                    lambda c: c.json("POST", api_path("sessions", job["session_id"], "complete")),
-                ),
-                "receipt",
+        self._complete(job, epoch)
+
+    def _complete(self, job: dict[str, Any], epoch: list[int]) -> None:
+        """Ask for the receipt until the hub answers it. A seal in progress
+        (409 sealing_in_progress, its Retry-After honoured) or a timed-out
+        complete is the same upload still sealing, not a failure; after
+        ``seal_wait_s`` the job pauses, resumable, with the same identity."""
+        deadline = time.monotonic() + self.seal_wait_s
+        while True:
+            try:
+                receipt = _unwrap(
+                    self._remote(
+                        job,
+                        epoch,
+                        lambda c: c.json(
+                            "POST",
+                            api_path("sessions", job["session_id"], "complete"),
+                            timeout=COMPLETE_TIMEOUT_S,
+                        ),
+                    ),
+                    "receipt",
+                )
+            except HubError as exc:
+                if exc.code not in ("sealing_in_progress", "hub_unreachable"):
+                    raise
+                wait = _retry_after(exc.retry_after, self.wait_s)
+            else:
+                status = str(receipt.get("status"))
+                if status == COMMITTED:
+                    self._accept(job, receipt)
+                    return
+                if status not in IN_PROGRESS:
+                    raise HubError(
+                        502, "hub_bad_response", f"The hub did not commit the session ({status})"
+                    )
+                wait = self.wait_s
+            if time.monotonic() + wait > deadline:
+                raise _Paused(
+                    "sealing_in_progress",
+                    "The hub is still sealing this upload; it resumes with the same identity",
+                )
+            self._set(
+                job,
+                error={
+                    "code": "sealing_in_progress",
+                    "message": "The hub is sealing this upload",
+                    "retryable": True,
+                },
             )
-            status = str(receipt.get("status"))
-            if status in COMMITTED:
-                self._set(
-                    job,
-                    status="completed",
-                    receipt=receipt,
-                    error=None,
-                    bytes_done=job["bytes_total"],
-                    files_done=len(files),
-                )
-                return
-            if status not in IN_PROGRESS or attempt >= len(self.backoff_s):
-                raise HubError(
-                    502, "hub_bad_response", f"The hub did not commit the session ({status})"
-                )
-            if self._stop.wait(self.backoff_s[attempt]):
+            if self._stop.wait(wait):
                 raise _Paused("interrupted", "The dashboard is stopping")
+
+    def _accept(self, job: dict[str, Any], receipt: dict[str, Any]) -> None:
+        """Completed only for a receipt that certifies exactly the bound
+        upload (alhazen.hub.protocol.receipt_problems)."""
+        problems = receipt_problems(
+            receipt,
+            session_id=job["session_id"],
+            client_session_id=job["client_session_id"],
+            experiment_id=job["experiment_id"],
+            version_id=job["version_id"],
+            files=job["files"],
+            metadata=job["metadata"],
+        )
+        if problems:
+            self._set(job, rejected_receipt=receipt)
+            raise SyncError(
+                502,
+                "receipt_mismatch",
+                "The hub's receipt does not match this upload: " + "; ".join(problems[:4]),
+            )
+        self._set(
+            job,
+            status="completed",
+            receipt=receipt,
+            error=None,
+            bytes_done=job["bytes_total"],
+            files_done=len(job["files"]),
+        )
 
     def _chunk(
         self,
@@ -704,23 +903,20 @@ class Uploader:
         folder: Path,
         entry: dict[str, Any],
         offset: int,
+        chunk: int,
     ) -> int:
         path = folder / entry["path"]
-        info = path.stat()
         listed = next(f for f in job["listing"] if f["path"] == entry["path"])
-        if info.st_size != entry["size"] or info.st_mtime_ns != listed["mtime_ns"]:
-            raise SyncError(
-                409, "local_changed", f"{entry['path']} changed during the upload; preview again"
-            )
+        self._unchanged(path, listed, "during the upload")
         with path.open("rb") as stream:
             stream.seek(offset)
-            data = stream.read(min(CHUNK_BYTES, entry["size"] - offset))
-        if not data:
+            data = stream.read(min(chunk, entry["size"] - offset))
+        if not data and entry["size"]:
             raise SyncError(
                 409, "local_changed", f"{entry['path']} is shorter than when it was hashed"
             )
         digest = hashlib.sha256(data).hexdigest()
-        answer = self._call(
+        answer = self._remote(
             job,
             epoch,
             lambda c: c.json(
@@ -735,6 +931,57 @@ class Uploader:
         reported = _received(answer, entry["path"])
         return reported if reported is not None and reported > offset else offset + len(data)
 
+    # -- discarding the hub's copy -----------------------------------------------------------
+
+    def request_abort(self, job_id: str) -> None:
+        """Discard the hub's unfinished copy of this job's upload, on the
+        worker (after any work on the job stops), with the job's own bound
+        credential only; ``remote_abort`` records the outcome."""
+        self.outbox.update(job_id, remote_abort={"status": "pending", "at": now()})
+        self._queue.put(ABORT_PREFIX + job_id)
+
+    def _abort(self, job_id: str) -> None:
+        job = self.outbox.load(job_id)
+        if job is None:
+            return
+        outcome: dict[str, Any]
+        if job.get("status") == "completed" or job.get("receipt"):
+            outcome = {"status": "kept", "message": "Committed sessions are never discarded"}
+        elif not job.get("session_id"):
+            outcome = {"status": "none", "message": "Nothing was stored on the hub"}
+        else:
+            credential = self.state.credential()
+            if (
+                credential is None
+                or credential.base != job["base_url"]
+                or credential.user_id != job["user_id"]
+            ):
+                outcome = {
+                    "status": "pending",
+                    "message": "Sign in to the hub as the account that started this upload to "
+                    "discard its unfinished copy",
+                }
+            else:
+                outcome = self._abort_with(job, credential)
+        outcome["at"] = now()
+        self.outbox.update(job_id, remote_abort=outcome)
+
+    def _abort_with(self, job: dict[str, Any], credential: Credential) -> dict[str, Any]:
+        try:
+            self.client_for(credential).json(
+                "POST", api_path("sessions", job["session_id"], "abort")
+            )
+        except HubError as exc:
+            if exc.status == 401:
+                self.state.clear_credential(expected=credential)
+                return {"status": "pending", "message": "Sign in to the hub again to discard it"}
+            if exc.status == 404:
+                return {"status": "gone", "message": "The hub has no such upload"}
+            if exc.status == 409:
+                return {"status": "kept", "message": exc.message}
+            return {"status": "pending", "message": f"Not discarded yet: {exc.message}"}
+        return {"status": "aborted"}
+
 
 def _unwrap(answer: Any, key: str) -> dict[str, Any]:
     if isinstance(answer, dict) and isinstance(answer.get(key), dict):
@@ -742,6 +989,13 @@ def _unwrap(answer: Any, key: str) -> dict[str, Any]:
     if isinstance(answer, dict) and "id" in answer:
         return answer
     raise HubError(502, "hub_bad_response", f"The hub's answer has no {key}")
+
+
+def _retry_after(header: str | None, default: float) -> float:
+    """Seconds from a Retry-After header (bounded 1-60), else ``default``."""
+    if header and header.strip().isdigit():
+        return float(min(60, max(1, int(header.strip()))))
+    return default
 
 
 def _received(answer: Any, path: str) -> int | None:
