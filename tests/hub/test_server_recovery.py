@@ -12,11 +12,6 @@ import time
 
 import pytest
 from sqlalchemy import select, update
-
-from alhazen.hub import admin, trials, uploads
-from alhazen.hub.auth import Principal
-from alhazen.hub.errors import HubError
-from alhazen.hub.schema import data_sessions, trial_rows
 from tests.hub.server_support import (
     Hub,
     init_body,
@@ -25,6 +20,11 @@ from tests.hub.server_support import (
     session_files,
     sha,
 )
+
+from alhazen.hub import admin, trials, uploads
+from alhazen.hub.auth import Principal
+from alhazen.hub.errors import HubError
+from alhazen.hub.schema import data_sessions, trial_rows
 
 
 def ready(hub, tmp_path):
@@ -56,7 +56,9 @@ class TestEmptyFiles:
         files = {"events.csv": b"", "logs/empty.log": b"", "data.bin": b"xyz"}
         session = bob.post("/sessions/init", init_body(eid, vid, files)).json()
         assert {f["path"]: f["verified"] for f in session["files"]} == {
-            "data.bin": False, "events.csv": True, "logs/empty.log": True,
+            "data.bin": False,
+            "events.csv": True,
+            "logs/empty.log": True,
         }
         assert bob.put_chunk(session["id"], "data.bin", 0, b"xyz").status_code == 200
         receipt = bob.post(f"/sessions/{session['id']}/complete").json()
@@ -279,7 +281,9 @@ class TestFencedSeals:
         assert uploads.seal(hub_, sid, token, actor="test")["status"] == "committed"
         assert hub.maintenance.report["seals_resumed"] == 0
 
-    def test_commit_failure_releases_the_claim_for_an_immediate_retry(self, hub, tmp_path, monkeypatch):
+    def test_commit_failure_releases_the_claim_for_an_immediate_retry(
+        self, hub, tmp_path, monkeypatch
+    ):
         bob, eid, sid, who = self.setup_upload(hub, tmp_path)
         real = uploads.audit
 
@@ -368,10 +372,17 @@ class TestExpiryAgainstSealing:
             conn.execute(
                 update(data_sessions)
                 .where(data_sessions.c.id == session["id"])
-                .values(status="sealing", seal_token="t" * 32, seal_lease_until=hub.clock.now + 10**7)
+                .values(
+                    status="sealing", seal_token="t" * 32, seal_lease_until=hub.clock.now + 10**7
+                )
             )
             closed = uploads._close(
-                conn, session["id"], "expired", hub.clock.now, actor="test", horizon=hub.clock.now + 1
+                conn,
+                session["id"],
+                "expired",
+                hub.clock.now,
+                actor="test",
+                horizon=hub.clock.now + 1,
             )
         assert closed is False and row_of(hub, session["id"]).status == "sealing"
         assert hub_.store.staging_dir(session["id"]).exists()
@@ -387,7 +398,9 @@ class TestExpiryAgainstSealing:
 
         def do_init():
             try:
-                out["init"] = uploads.init_session(hub_, who, init_body(eid, vid, {"x": b"1"}, "new"))[1]
+                out["init"] = uploads.init_session(
+                    hub_, who, init_body(eid, vid, {"x": b"1"}, "new")
+                )[1]
             except HubError as exc:
                 out["init"] = exc.code
 
