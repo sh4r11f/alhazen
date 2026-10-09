@@ -53,7 +53,7 @@ ALHAZEN_HUB_TEST_POSTGRES_URL='postgresql://USER@/DB?host=SOCKET-DIR' \
 ```
 
 - **Marker and runtime.** The test is marked `slow`: it starts two services and a real session, about 25 s on the development sandbox. It stays in the default suite; deselect it while iterating with `-m 'not slow'`.
-- **Dependencies.** It needs the hub extra (FastAPI, uvicorn, SQLAlchemy, httpx) and skips cleanly without it.
+- **Dependencies.** It needs the hub extra (FastAPI, uvicorn, SQLAlchemy, httpx), like the other `tests/hub` service tests; it imports them directly rather than skipping.
 - **Network and ports.** It uses only `127.0.0.1`. The hub's port is probed free just before start; the dashboard picks its own (`--port 0`).
 - **What it never uses:** real data, real accounts, credentials or institutional paths.
 

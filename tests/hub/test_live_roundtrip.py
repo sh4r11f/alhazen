@@ -50,18 +50,14 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+import httpx
 import pytest
+from tests.hub.server_support import POSTGRES_ENV, _database_url
 
-httpx = pytest.importorskip("httpx")
-pytest.importorskip("fastapi")
-pytest.importorskip("uvicorn")
-
-from tests.hub.server_support import POSTGRES_ENV, _database_url  # noqa: E402
-
-from alhazen._scaffold import scaffold  # noqa: E402
-from alhazen.hub import admin  # noqa: E402
-from alhazen.hub.packages import build_bundle, suggest_files  # noqa: E402
-from alhazen.hub.settings import load_settings  # noqa: E402
+from alhazen._scaffold import scaffold
+from alhazen.hub import admin
+from alhazen.hub.packages import build_bundle, suggest_files
+from alhazen.hub.settings import load_settings
 
 pytestmark = pytest.mark.slow
 
