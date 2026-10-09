@@ -184,11 +184,11 @@ const HubApp = (() => {
     function drawRoleBadge() {
       const el = $('role-badge');
       if (state.role === 'rig') {
-        const link = rigLink();
-        const lamp = link.state === 'connected' ? 'ok' : (link.state === 'unreachable' ? 'err' : 'idle');
+        const hub = rigLink();
+        const lamp = hub.state === 'connected' ? 'ok' : (hub.state === 'unreachable' ? 'err' : 'idle');
         el.replaceChildren(h('span', {class: 'lamp lamp-' + lamp, 'aria-hidden': 'true'}),
-          h('span', {class: 'role-word'}, 'Rig'), h('span', {class: 'role-detail'}, link.where));
-        el.setAttribute('title', 'This page is served by this rig\u2019s dashboard. ' + link.sentence);
+          h('span', {class: 'role-word'}, 'Rig'), h('span', {class: 'role-detail'}, hub.where));
+        el.setAttribute('title', 'This page is served by this rig\u2019s dashboard. ' + hub.sentence);
       } else if (state.role === 'server') {
         el.replaceChildren(h('span', {class: 'lamp lamp-ok', 'aria-hidden': 'true'}),
           h('span', {class: 'role-word'}, 'Hub'), h('span', {class: 'role-detail'}, 'catalogue and accounts'));
@@ -210,12 +210,11 @@ const HubApp = (() => {
       return {state: 'connected', where: hostOf(base), sentence: 'Connected to ' + hostOf(base) + '.'};
     }
 
+    /** The host part of a hub address for display ("hub.example.org"),
+     *  or the address itself when it has none. */
     function hostOf(url) {
-      try {
-        return new URL(url).host;
-      } catch (exc) {
-        return String(url);
-      }
+      const match = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]+)/i.exec(String(url || ''));
+      return match ? match[1] : String(url || '');
     }
 
     function drawAccount() {
@@ -267,18 +266,26 @@ const HubApp = (() => {
         if (choice === 'system') env.localStorage.removeItem(THEME_KEY);
         else env.localStorage.setItem(THEME_KEY, choice);
       } catch (exc) {
-        // Storage refused (private window): the choice holds for this page.
+        if (!isStorageRefusal(exc)) throw exc;
         banner('Your theme choice cannot be remembered in this browser; it applies until you leave.', 'info');
       }
     }
 
+    /* A browser refuses storage (private windows, blocked site data, a full
+     * quota) with these DOMException names; anything else is a bug. */
+    function isStorageRefusal(exc) {
+      return Boolean(exc && ['SecurityError', 'QuotaExceededError', 'NS_ERROR_DOM_QUOTA_REACHED'].includes(exc.name));
+    }
+
     function storedTheme() {
+      let value = null;
       try {
-        const value = env.localStorage && env.localStorage.getItem(THEME_KEY);
-        return THEMES.includes(value) ? value : 'system';
+        value = env.localStorage ? env.localStorage.getItem(THEME_KEY) : null;
       } catch (exc) {
-        return 'system';
+        if (!isStorageRefusal(exc)) throw exc;
+        value = null;  // storage blocked: Auto, as on a first visit
       }
+      return THEMES.includes(value) ? value : 'system';
     }
 
     /* ---- navigation -------------------------------------------------------- */
@@ -411,7 +418,7 @@ const HubApp = (() => {
       state.csrf = '';
       state.library = null;
       if (state.role === 'rig') await loadLocal();
-      if (state.role === 'server') await loadMe().catch(() => {});
+      if (state.role === 'server') await loadMe().catch(noteFailure);
       drawChrome();
       banner('');
       let text = 'Signed out.';
@@ -442,11 +449,21 @@ const HubApp = (() => {
         if (button) button.addEventListener('click', () => setTheme(name));
       }
       let stored = '';
-      try { stored = env.sessionStorage.getItem(TOKEN_KEY) || ''; } catch (exc) { stored = ''; }
+      try {
+        stored = env.sessionStorage.getItem(TOKEN_KEY) || '';
+      } catch (exc) {
+        if (!isStorageRefusal(exc)) throw exc;
+        stored = '';  // blocked storage: only a token in the address can be used
+      }
       const found = C.readToken(loc.hash, stored);
       state.token = found.token;
       if (found.fromFragment) {
-        try { env.sessionStorage.setItem(TOKEN_KEY, found.token); } catch (exc) { /* tab-only token */ }
+        try {
+          env.sessionStorage.setItem(TOKEN_KEY, found.token);
+        } catch (exc) {
+          if (!isStorageRefusal(exc)) throw exc;
+          banner('This browser blocks tab storage, so reloading this page will need the address alhazen dashboard printed.', 'info');
+        }
         hist.replaceState(null, '', (loc.pathname || '/') + (loc.search || ''));
       }
       env.window && env.window.addEventListener && env.window.addEventListener('popstate', onPopState);
@@ -642,14 +659,19 @@ const HubApp = (() => {
       return {box, el: h('label', {class: 'check-row', for: box.getAttribute('id')}, box, h('span', null, label))};
     }
 
+    /** A <select> of [value, label] pairs showing `value`, or the first
+     *  option when `value` is not one of them (a browser would otherwise
+     *  show the first while reporting no value). */
     function select(options, value, attrs) {
       const el = h('select', Object.assign({id: nextId('s'), class: 'input select'}, attrs));
+      const known = options.some(([v]) => String(v) === String(value));
+      const shown = known ? String(value) : (options[0] ? String(options[0][0]) : '');
       for (const [v, label] of options) {
         const opt = h('option', {value: v}, label);
-        if (String(v) === String(value)) opt.selected = true;
+        if (String(v) === shown) opt.selected = true;
         el.appendChild(opt);
       }
-      el.value = value === undefined || value === null ? (options[0] ? options[0][0] : '') : String(value);
+      el.value = shown;
       return el;
     }
 
@@ -668,12 +690,18 @@ const HubApp = (() => {
     function copyButton(text, label) {
       const button = h('button', {type: 'button', class: 'btn btn-quiet btn-small'}, label || 'Copy');
       button.addEventListener('click', async () => {
-        try {
-          if (!env.clipboard || !env.clipboard.writeText) throw new Error('no clipboard');
-          await env.clipboard.writeText(text);
-          button.textContent = 'Copied';
-        } catch (exc) {
-          button.textContent = 'Copy failed: select the text';
+        if (!env.clipboard || typeof env.clipboard.writeText !== 'function') {
+          button.textContent = 'No clipboard here: select the text';
+        } else {
+          try {
+            await env.clipboard.writeText(text);
+            button.textContent = 'Copied';
+          } catch (exc) {
+            /* The browser's refusals (no permission, insecure page); said on
+             * the button. Anything else is a bug and propagates. */
+            if (!exc || !['NotAllowedError', 'SecurityError'].includes(exc.name)) throw exc;
+            button.textContent = 'Copy refused: select the text';
+          }
         }
         timers.set(() => { button.textContent = label || 'Copy'; }, 2500);
       });
@@ -1159,7 +1187,9 @@ const HubApp = (() => {
       }
       box.appendChild(h('div', {class: 'callout callout-warn'},
         h('p', {class: 'callout-title'}, 'This release is Python code from its author.'),
-        h('p', null, 'Trusting it lets alhazen import and run it as your operating-system user, with your access to files, '
+        /* The rig's own statement when it gives one (rig-contract: trust_statement). */
+        h('p', null, local.trust_statement ? String(local.trust_statement)
+          : 'Trusting it lets alhazen import and run it as your operating-system user, with your access to files, '
           + 'collected data, saved credentials and connected devices. A virtual environment is not a sandbox. Install only code whose author you trust.'),
         h('p', null, 'Installing downloads the archive, checks its SHA-256 and every file against the manifest, and extracts it into a new folder. '
           + 'Existing experiments and checkouts are not changed, and nothing is installed into the interpreter.')));
@@ -2146,6 +2176,7 @@ const HubApp = (() => {
           h('span', null, local.base_url || 'not connected'))],
         ['State', linkState.sentence],
         ['Operator', local.user ? (local.user.display_name || local.user.username) + ' (@' + local.user.username + ')' : 'nobody signed in'],
+        ['Signed in until', local.user && local.expires_at ? C.formatDate(local.expires_at) : null],
         ['Hub said', state.config && state.config.server_error ? state.config.server_error.message : null],
       ]));
       const url = input({type: 'url', name: 'hub', value: local.base_url || '', autocomplete: 'url', spellcheck: 'false',
@@ -2313,7 +2344,7 @@ const HubApp = (() => {
         }
         const table = h('table', {class: 'table'},
           h('caption', {class: 'visually-hidden'}, 'Sessions on this rig'),
-          h('thead', null, h('tr', null, ...['Session', 'Folder', 'Task', 'State', ''].map((t) => h('th', {scope: 'col'}, t)))));
+          h('thead', null, h('tr', null, ...['Session', 'Date', 'Task', 'Mode', 'Folder', 'State', ''].map((t) => h('th', {scope: 'col'}, t)))));
         const tbody = h('tbody');
         let chosen = null;
         for (const s of items) {
@@ -2329,8 +2360,10 @@ const HubApp = (() => {
             : null;
           tbody.appendChild(h('tr', {class: selected ? 'row-current' : null},
             h('td', {class: 'mono'}, 'sub-' + (s.subject || '?') + ' \u00b7 ses ' + (s.session ?? '?') + ' \u00b7 run ' + (s.run ?? '?')),
-            h('td', null, s.root_name || s.root_kind || ''),
+            h('td', null, s.date ? C.formatDate(s.date, false) : ''),
             h('td', null, s.task || ''),
+            h('td', null, s.mode || ''),
+            h('td', null, s.root_name || s.root_kind || ''),
             h('td', null, word),
             h('td', null, action)));
         }
@@ -2353,11 +2386,11 @@ const HubApp = (() => {
       const runPreview = async () => {
         previewArea.replaceChildren(h('p', {class: 'loading'}, h('span', {class: 'spinner', 'aria-hidden': 'true'}), 'Listing the session\u2019s files\u2026'));
         const body = {project_id: project.id, root_id: session.root_id, run_id: session.run_id};
-        if (release) Object.assign(body, release);
+        if (release) Object.assign(body, {experiment_id: release.experiment_id, version_id: release.version_id});
         try {
           const preview = await api('POST', '/local/upload-preview', {json: body, timeoutMs: 120000});
           if (ctx.epoch !== state.epoch) return;
-          previewArea.replaceChildren(consentForm(ctx, project, session, preview, status, runPreview));
+          previewArea.replaceChildren(consentForm(ctx, project, session, preview, status, runPreview, release ? release.label : ''));
         } catch (exc) {
           if (ctx.epoch !== state.epoch) return;
           noteFailure(exc);
@@ -2387,7 +2420,8 @@ const HubApp = (() => {
         const button = h('button', {type: 'button', class: 'btn btn-line'}, 'Use this release');
         button.addEventListener('click', () => {
           const [experiment_id, version_id] = String(choice.value).split('|');
-          if (experiment_id && version_id) onPick({experiment_id, version_id});
+          const item = usable.find((i) => i.experiment.id === experiment_id && i.version.id === version_id);
+          if (item) onPick({experiment_id, version_id, label: (item.experiment.title || experiment_id) + ' ' + versionLabel(item.version)});
         });
         wrap.replaceChildren(field('Record against', choice), button, status.el);
       }).catch((exc) => { noteFailure(exc); wrap.replaceChildren(errorBox(exc)); });
@@ -2398,7 +2432,7 @@ const HubApp = (() => {
      * recorded against, exactly which files (and their manifest digest),
      * what personal information they can hold. It names this preview_id;
      * a change to any of these needs a new preview (rig-contract B2). */
-    function consentForm(ctx, project, session, preview, status, again) {
+    function consentForm(ctx, project, session, preview, status, again, pickedLabel) {
       const p = preview || {};
       const recipient = p.recipient || {};
       const user = recipient.user || {};
@@ -2409,7 +2443,7 @@ const HubApp = (() => {
       const meta = p.metadata || {};
       const privacy = p.privacy || {};
       const releaseName = install ? (install.title || install.name || p.experiment_id) + ' ' + versionLabel(install)
-        : String(p.experiment_id || '') + ' / ' + String(p.version_id || '');
+        : pickedLabel || String(p.experiment_id || '') + ' / ' + String(p.version_id || '');
       const form = h('form', {class: 'form'});
       form.appendChild(spec([
         ['Recipient', h('span', null, h('span', {class: 'mono'}, recipient.base_url || '(unknown hub)'), h('span', null, ' \u00b7 account '),
@@ -2498,8 +2532,12 @@ const HubApp = (() => {
         numbers.textContent = parts.join(' \u00b7 ');
         detail.replaceChildren();
         if (js.error) detail.appendChild(h('p', {class: 'note note-' + (js.status === 'paused' ? 'warn' : 'err')}, js.error));
-        if (job.error && job.error.code === 'auth_context_changed') {
+        if (job.error && ['auth_context_changed', 'signed_out', 'unauthenticated'].includes(job.error.code)) {
           detail.appendChild(h('p', {class: 'muted small'}, 'It continues only when the account it was approved for is signed in to the same hub.'));
+        }
+        if (js.needsPreview && job.project_id && job.root_id && job.run_id) {
+          detail.appendChild(link({view: 'rig', tab: 'upload', project: job.project_id, root: job.root_id, run: job.run_id},
+            'Preview this session again', {class: 'btn btn-line'}));
         }
         if (js.ok) {
           detail.appendChild(h('p', {class: 'note note-ok'}, 'The hub verified every file and recorded the session. The originals stay on this rig.'));

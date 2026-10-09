@@ -315,7 +315,14 @@ const HubCore = (() => {
         if (outer) outer.removeEventListener('abort', onAbort);
       }
       let parsed = null;
-      const text = await response.text().catch(() => '');
+      let text;
+      try {
+        text = await response.text();
+      } catch (exc) {
+        /* The connection dropped while the body was arriving: never read
+         * as an empty success. */
+        throw new HubError('offline', 'The connection to the hub broke while it was answering. Try again.', {status: response.status});
+      }
       if (text) {
         try {
           parsed = JSON.parse(text);
@@ -372,6 +379,7 @@ const HubCore = (() => {
     try {
       parsed = new URL(text);
     } catch (exc) {
+      if (!(exc instanceof TypeError)) throw exc;  // URL() reports a malformed address as TypeError
       return {ok: false, reason: 'That is not a web address. Include https://.'};
     }
     const loopback = LOOPBACK.includes(parsed.hostname);
@@ -556,7 +564,12 @@ const HubCore = (() => {
       status, terminal, ok, fraction, retryable,
       running: ACTIVE.includes(status),
       word: JOB_WORDS[status] || status,
-      canResume: status === 'paused' || (status === 'failed' && retryable),
+      /* Resume only when the rig says it can help (error.retryable); a
+       * plain pause without an error can always be resumed. */
+      canResume: (status === 'paused' || status === 'failed') && (j.error ? retryable : status === 'paused'),
+      /* The selection changed or the job was cancelled: only a new preview
+       * and consent can send it (rig-contract: local_changed, preview_required). */
+      needsPreview: Boolean(j.error && typeof j.error === 'object' && ['local_changed', 'preview_required'].includes(j.error.code)),
       canCancel: !terminal,
       done: Number.isFinite(done) ? done : null,
       total: Number.isFinite(total) ? total : null,
@@ -583,7 +596,8 @@ const HubCore = (() => {
       const parsed = new URL(candidate);
       return parsed.protocol === 'https:' && !parsed.username && !parsed.password ? parsed.href : '';
     } catch (exc) {
-      return '';
+      if (!(exc instanceof TypeError)) throw exc;
+      return '';  // not an address after all: the citation stays text only
     }
   }
 
