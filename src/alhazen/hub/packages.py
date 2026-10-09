@@ -48,7 +48,6 @@ import subprocess
 import sys
 import tempfile
 import unicodedata
-import warnings
 import zipfile
 import zlib
 from collections.abc import Callable, Iterable, Mapping
@@ -856,22 +855,24 @@ def _fsync_directory(path: Path) -> None:
         os.close(fd)
 
 
-def _copy_private(source: Path, target: Path, limit: int) -> tuple[str, int]:
-    """Copy ``source`` into a new private file, hashing what is copied, so
-    the checks and the extraction read bytes nobody else can change."""
-    try:
-        reader = open(source, "rb")  # noqa: SIM115 - closed by the with below
-    except IsADirectoryError as error:
-        raise PackageError(f"the package {_shown(source.name)} is not a regular file") from error
-    except OSError as error:
-        raise PackageError(
-            f"cannot open the package {_shown(source.name)}: {error.strerror}"
-        ) from error
-    with reader:
-        if not stat.S_ISREG(os.fstat(reader.fileno()).st_mode):
-            raise PackageError(f"the package {_shown(source.name)} is not a regular file")
-        fd = _open_descriptor(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_BINARY, 0o600)
-        with os.fdopen(fd, "wb") as writer:
+def _copy_private(source: Path, fd: int, limit: int) -> tuple[str, int]:
+    """Copy ``source`` into the new private file open as ``fd``, hashing what
+    is copied, so the checks and the extraction read bytes nobody else can
+    change. Takes ownership of ``fd``."""
+    with os.fdopen(fd, "wb") as writer:
+        try:
+            reader = open(source, "rb")  # noqa: SIM115 - closed by the with below
+        except IsADirectoryError as error:
+            raise PackageError(
+                f"the package {_shown(source.name)} is not a regular file"
+            ) from error
+        except OSError as error:
+            raise PackageError(
+                f"cannot open the package {_shown(source.name)}: {error.strerror}"
+            ) from error
+        with reader:
+            if not stat.S_ISREG(os.fstat(reader.fileno()).st_mode):
+                raise PackageError(f"the package {_shown(source.name)} is not a regular file")
             digest = hashlib.sha256()
             size = 0
             while chunk := reader.read(_CHUNK):
@@ -880,8 +881,8 @@ def _copy_private(source: Path, target: Path, limit: int) -> tuple[str, int]:
                     raise PackageError(f"the package is larger than {limit} bytes")
                 digest.update(chunk)
                 writer.write(chunk)
-            writer.flush()
-            os.fsync(writer.fileno())
+        writer.flush()
+        os.fsync(writer.fileno())
     return digest.hexdigest(), size
 
 
@@ -929,11 +930,13 @@ def extract_bundle(path: Path, destination: Path) -> PackageInfo:
     ``destination`` must not exist (not even as an empty folder or a broken
     link) and its parent must. The name is claimed first by creating it, so
     two installs to one place cannot both proceed. The package is copied into
-    a private staging folder beside it, verified in full there with the
-    default limits, written out file by file (each hash checked again,
-    synced), and the finished tree is renamed onto the claimed name. On any
-    failure the staging folder and the empty claim are removed; nothing that
-    this call did not create is touched. Nothing is imported or run.
+    a private file beside it and verified in full there with the default
+    limits; its files are written into a private staging folder (each hash
+    checked again, synced), the copy is removed, and the finished folder is
+    renamed onto the claimed name, so nothing is left to clean up after
+    success. On failure the copy, the staging folder and the empty claim are
+    removed; nothing this call did not create is touched. Nothing is imported
+    or run.
     """
     path = Path(path)
     destination = Path(destination)
@@ -955,18 +958,20 @@ def extract_bundle(path: Path, destination: Path) -> PackageInfo:
         ) from error
     claim = os.lstat(destination)
     installed = False
-    staging: Path | None = None
+    bundle: Path | None = None
+    tree: Path | None = None
     try:
-        staging = Path(tempfile.mkdtemp(prefix=f".{name[:40]}.staging-", dir=parent))
-        bundle = staging / "bundle.zip"
-        digest, size = _copy_private(path, bundle, DEFAULT_MAX_ARCHIVE_BYTES)
+        fd, bundle_name = tempfile.mkstemp(prefix=f".{name[:40]}.package-", dir=parent)
+        bundle = Path(bundle_name)
+        digest, size = _copy_private(path, fd, DEFAULT_MAX_ARCHIVE_BYTES)
         info = inspect_bundle(bundle)
         if (info.sha256, info.size) != (digest, size):
             raise PackageError("the package changed while it was being installed")
-        tree = staging / "tree"
-        os.mkdir(tree, 0o755)
+        tree = Path(tempfile.mkdtemp(prefix=f".{name[:40]}.staging-", dir=parent))
         _extract_verified(bundle, info.manifest, tree)
+        os.chmod(tree, 0o755)
         os.unlink(bundle)
+        bundle = None
         if not _same_folder(destination, claim) or os.listdir(destination):
             raise PackageError(f"{_shown(name)} was changed by something else during the install")
         try:
@@ -979,7 +984,6 @@ def extract_bundle(path: Path, destination: Path) -> PackageInfo:
             os.rmdir(destination)
             os.rename(tree, destination)
         installed = True
-        os.chmod(destination, 0o755)
         _fsync_directory(parent)
     except OSError as error:
         raise PackageError(
@@ -987,21 +991,11 @@ def extract_bundle(path: Path, destination: Path) -> PackageInfo:
         ) from error
     finally:
         if not installed:
-            if staging is not None:
-                shutil.rmtree(staging)
+            if bundle is not None and os.path.lexists(bundle):
+                os.unlink(bundle)
+            if tree is not None and os.path.lexists(tree):
+                shutil.rmtree(tree)
             _release_claim(destination, claim)
-    assert staging is not None
-    try:
-        os.rmdir(staging)
-    except OSError as error:
-        # The install is complete; an empty hidden folder left beside it is
-        # housekeeping, reported rather than turned into a failed install.
-        warnings.warn(
-            f"installed {name!r}, but its empty staging folder could not be removed: "
-            f"{error.strerror}",
-            ResourceWarning,
-            stacklevel=2,
-        )
     return info
 
 
@@ -1034,10 +1028,10 @@ _REFUSED_FOLDERS = {
     ".docker": "credentials",
 }
 # Collected data lives in the experiment's data roots: data/, and beside it
-# data-rehearsal/, data-training/... (alhazen's naming), plus the people
+# data-rehearsal/, data-training/, data-dev... (alhazen's naming), plus the people
 # registry. Only the experiment's top-level folders are data roots; a
 # package's own src/<pkg>/data/ holds code assets.
-_DATA_ROOT = re.compile(r"data([-_].*)?|people")
+_DATA_ROOT = re.compile(r"data(-.*)?|people")
 _SUBJECT_FOLDER = re.compile(r"sub-[a-z0-9]+")
 _REFUSED_NAMES = {
     ".netrc": "credentials",
@@ -1228,11 +1222,14 @@ def _publish(temporary: Path, output: Path) -> None:
     """Give the finished archive its name without replacing anything there."""
     try:
         os.link(temporary, output)
-        return
     except FileExistsError as error:
         raise PackageError(f"{_shown(output.name)} already exists; choose a new name") from error
     except OSError:
-        pass  # no hard links on this file system: copy into an exclusive new file below
+        # No hard links on this file system: copy into an exclusive new file.
+        _copy_exclusive(temporary, output)
+
+
+def _copy_exclusive(temporary: Path, output: Path) -> None:
     try:
         fd = _open_descriptor(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_BINARY, 0o600)
     except FileExistsError as error:
@@ -1333,7 +1330,10 @@ def build_bundle(
     manifest["platforms"] = sorted(manifest["platforms"])
     manifest_bytes = _canonical_json(manifest)
 
-    fd, name = tempfile.mkstemp(prefix=f".{output.name[:40]}.partial-", dir=output.parent)
+    try:
+        fd, name = tempfile.mkstemp(prefix=f".{output.name[:40]}.partial-", dir=output.parent)
+    except OSError as error:
+        raise PackageError(f"cannot write the new package: {error.strerror}") from error
     temporary = Path(name)
     try:
         with os.fdopen(fd, "w+b") as handle:
@@ -1352,6 +1352,8 @@ def build_bundle(
         if info.manifest != manifest:
             raise AssertionError("the built manifest does not read back unchanged")
         _publish(temporary, output)
+    except OSError as error:
+        raise PackageError(f"writing the package failed: {error.strerror or error}") from error
     finally:
         os.unlink(temporary)
     return info
