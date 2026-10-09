@@ -510,6 +510,8 @@ a:hover { color: var(--accent-hover); }
 .task-link:hover { background: var(--hover-bg); color: var(--ink); }
 .task-link[aria-current=page] { background: var(--accent-soft); color: var(--ink); }
 .task-guide { min-width: 0; }
+/* A single task has no index column. Let its reading view use the full grid. */
+.docs-tasks > .task-guide:only-child { grid-column: 1 / -1; }
 
 /* ---- tables ---- */
 .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
