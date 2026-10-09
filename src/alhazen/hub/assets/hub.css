@@ -968,7 +968,7 @@ a:hover { color: var(--accent-ink); text-decoration-thickness: 2px; }
 .plan-term { font-weight: 600; }
 .timeline { list-style: none; margin: 0; padding: 0; display: flex; gap: 3px; overflow-x: auto; }
 .timeline-seg {
-  min-width: 84px; padding: 10px 12px; min-height: 66px; display: flex; flex-direction: column; justify-content: space-between;
+  min-width: 96px; padding: 10px 12px; min-height: 66px; display: flex; flex-direction: column; justify-content: space-between;
   background: var(--surface-2); border-radius: 6px; font-size: 0.875rem;
 }
 .timeline-seg.is-stim { background: var(--accent-soft); color: var(--accent-ink); }
@@ -1058,7 +1058,8 @@ a:hover { color: var(--accent-ink); text-decoration-thickness: 2px; }
   .plan-tests li { grid-template-columns: auto minmax(0, 1fr); }
   .plan-tests li > :last-child { grid-column: 1 / -1; }
   .timeline { flex-direction: column; }
-  .timeline-seg { min-height: 0; flex-direction: row; flex: 1 1 auto; }
+  .timeline .timeline-seg[data-span] { min-height: 0; flex-direction: row; flex: none; }
+  .plan-card .table { min-width: 560px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .card, .cat-chip { transition: none; }
