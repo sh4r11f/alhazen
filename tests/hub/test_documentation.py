@@ -255,6 +255,32 @@ class TestScaffoldExample:
         assert "[[param:fix_window_dva]]" in documentation["methods"]["markdown"]
         assert str(tmp_path) not in json.dumps(documentation)
 
+    def test_a_package_built_by_the_package_module_resolves(self, scaffolded, tmp_path):
+        """The seam with alhazen.hub.packages: its builder and inspector carry
+        the documentation pointer, and the hashed files it declares are the
+        ones read here."""
+        from alhazen.hub.packages import build_bundle, inspect_bundle
+
+        metadata = {
+            "name": "fixation-demo",
+            "version": "0.1.0",
+            "title": "Fixation demo",
+            "description": "The scaffold, documented.",
+            "hardware": {"display": True, "eye_tracker": True, "reward": False},
+            "license": "MIT",
+            "documentation": "docs/experiment.json",
+        }
+        built = build_bundle(
+            scaffolded, tmp_path / "built.zip", metadata, sorted(package_files(scaffolded))
+        )
+        inspected = inspect_bundle(tmp_path / "built.zip")
+        assert inspected.manifest["documentation"] == "docs/experiment.json"
+        documentation = read_documentation(tmp_path / "built.zip", inspected.manifest)
+        assert documentation is not None
+        assert documentation["source"]["descriptor_sha256"] == next(
+            f["sha256"] for f in built.manifest["files"] if f["path"] == "docs/experiment.json"
+        )
+
     def test_the_example_package_runs_with_only_documented_outcomes(self, scaffolded, tmp_path):
         """Runnable, not just plausible: simulate the scaffolded package
         headless, as the scaffold's own acceptance test does."""
@@ -337,7 +363,7 @@ class TestLegacyAndPackageIntegrity:
     def test_a_file_that_does_not_match_its_hash_is_refused(self, tmp_path):
         files = fixture_files()
         files["configs/task.yaml"] = scaffold_task_yaml(tmp_path)
-        tampered = files["docs/methods.md"].replace(b"Methods", b"Methodz")
+        tampered = files["docs/methods.md"].replace(b"Purpose", b"Purpoze")
         bundle, manifest = make_package(
             tmp_path, files, archive_override={"docs/methods.md": tampered}
         )
@@ -695,3 +721,28 @@ class TestGlobalGuide:
         )
         assert probe.returncode == 0, probe.stderr
         assert probe.stdout.strip() == "[]"
+
+
+# ---------------------------------------------------------------------------
+# 4. The renderer's fixtures are this module's real output
+# ---------------------------------------------------------------------------
+RESOLVED = Path(__file__).parent / "fixtures" / "documentation" / "resolved"
+REGENERATE = (
+    "tests/js/hub_docs.test.mjs draws this file; regenerate it from read_documentation / "
+    "global_guide (see docs/hub/documentation.md, 'Fixtures')"
+)
+
+
+class TestRendererFixtures:
+    def test_the_scaffold_fixture_is_what_the_server_returns(self, tmp_path):
+        bundle, manifest = with_descriptor(tmp_path, descriptor())
+        expected = json.loads((RESOLVED / "scaffold.json").read_text(encoding="utf-8"))
+        assert read_documentation(bundle, manifest) == expected, REGENERATE
+
+    def test_the_guide_fixture_is_what_the_server_returns(self):
+        expected = json.loads((RESOLVED / "guide.json").read_text(encoding="utf-8"))
+        actual = json.loads(json.dumps(global_guide()))
+        # The version is the installed alhazen's; everything else is fixed.
+        expected.pop("alhazen_version")
+        actual.pop("alhazen_version")
+        assert actual == expected, REGENERATE
