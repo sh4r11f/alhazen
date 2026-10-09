@@ -58,7 +58,7 @@ src/alhazen/
 ```
 
 Layering is enforced by import-linter (pyproject `[tool.importlinter]`),
-top to bottom: `cli` → `modes` → `session | testing | analysis` → `training` →
+top to bottom: `cli` → `hub` → `modes` → `session | testing | analysis` → `training` →
 `task` → `live_monitor` → `paradigms | devices` → `core | neural` →
 `stimuli | scenes` → `display` → `config | data | _scaffold` →
 `_deprecation`. Imports point only downward; `errors` and `version` sit
@@ -67,9 +67,11 @@ module with a line of its own at the bottom, so that every layer may import it
 while it imports nothing else from alhazen. `neural` shares core's line so
 that both the device layer (live, during a session) and
 the analysis layer (offline, over the files) can run the same spike detection
-and the same map arithmetic without either importing the other. `modes` sits
-directly under `cli`, the only package that imports it, and above `session`,
-which every mode builds or drives; the ruler that `--mode measure` and
+and the same map arithmetic without either importing the other. `hub` sits under `cli` and above `modes`: the optional service, packages and network
+client may describe execution modes but never depend on the local launcher. The
+CLI owns workspace registration, local-run discovery and active-session gating,
+and passes data or narrow callbacks into the hub. No hub API joins the frame loop.
+`modes` sits above `session`, which every mode builds or drives; the ruler that `--mode measure` and
 `alhazen calibrate ruler` both draw lives in `display/ruler.py` so that
 `modes` never imports from `cli`. `_scaffold` imports nothing from alhazen but
 `errors`, and its line keeps it that way.
