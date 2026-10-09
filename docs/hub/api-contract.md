@@ -89,3 +89,6 @@ Bootstrap correction from source review: existing dashboard token header is `X-A
 
 ## Documentation response resolution
 GET `/guide` returns `{guide: global_guide()}` on central and local adapters. This wrapper is the final response shape; it supersedes the earlier raw-dict wording. The descriptor/renderer contract is docs/hub/documentation.md, once integrated. Local install returns `{install}`, session preview requires `preview_id`, and job reads return `{job}`, as documented in docs/hub/rig.md. The static asset allowlist includes hub_docs.js and hub_docs.css. The local bootstrap /hub/bootstrap.json never carries credentials.
+
+## Package security review follow-up
+The package implementation must reject cross-reader ZIP ambiguity (unneeded extra fields, local/central disagreement and unused compressed bytes), exclude VCS pointer files and Unicode subject directories, and safely recover only its own interrupted install staging. `extract_bundle` gains an optional expected_sha256 keyword, checked against its private verified input before extraction; callers installing a hub release must supply it. A documented recovery API owns only recorded staging, never unrelated destination trees. The approved checksum is not merely checked after installation. Physical Windows/macOS/network-filesystem behavior remains unverified until tested.
