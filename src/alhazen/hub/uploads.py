@@ -309,133 +309,14 @@ def init_session(
     """Create (201, True) or return (200, False) the caller's upload."""
     parsed = parse_init(hub, body)
     digest = manifest_digest(parsed)
-    limits = hub.settings.limits
     now = hub.clock()
     stale: list[str] = []
     try:
         with hub.db.transaction() as conn:
             lock_owner(conn, principal.user_id)
-            existing = conn.execute(
-                select(data_sessions)
-                .where(
-                    data_sessions.c.owner_id == principal.user_id,
-                    data_sessions.c.client_session_id == parsed["client_session_id"],
-                )
-                .with_for_update()
-            ).first()
-            previous = None
-            if existing is not None:
-                if existing.status not in CLOSED:
-                    if existing.manifest_sha256 != digest:
-                        raise conflict(
-                            "session_conflict",
-                            "This client_session_id already names an upload with different "
-                            "content"
-                            + (
-                                "; abort it before sending other content"
-                                if existing.status in OPEN
-                                else "; a committed session is never replaced"
-                            ),
-                            session_id=existing.id,
-                            status=existing.status,
-                        )
-                    return progress_view(conn, existing), False
-                previous = existing.id
-            may_collect_with(conn, principal, parsed["experiment_id"], parsed["version_id"])
+            # Stale uploads expire first, so a retry of one starts a new attempt.
             stale = _expire_owner_stale(hub, conn, principal.user_id, now)
-            active = conn.execute(
-                select(func.count())
-                .select_from(data_sessions)
-                .where(
-                    data_sessions.c.owner_id == principal.user_id,
-                    data_sessions.c.status.in_(OPEN),
-                )
-            ).scalar_one()
-            if active >= limits.max_staging_sessions:
-                raise HubError(
-                    429,
-                    "upload_limit",
-                    f"You have {active} unfinished uploads, the most allowed at once; finish or "
-                    "abort one first (GET /sessions lists them)",
-                )
-            require_room(conn, principal.user_id, parsed["total"], limits.user_quota_bytes)
-            _require_disk(hub, conn, parsed["total"])
-            if previous is not None:
-                # Retire the closed attempt's key; its row and history stay.
-                conn.execute(
-                    update(data_sessions)
-                    .where(data_sessions.c.id == previous)
-                    .values(
-                        client_session_id=_RETIRED_PREFIX + previous,
-                        retired_client_id=parsed["client_session_id"],
-                    )
-                )
-            session_id = new_id()
-            conn.execute(
-                insert(data_sessions).values(
-                    id=session_id,
-                    owner_id=principal.user_id,
-                    experiment_id=parsed["experiment_id"],
-                    version_id=parsed["version_id"],
-                    client_session_id=parsed["client_session_id"],
-                    status="staging",
-                    metadata=json.dumps(parsed["metadata"], sort_keys=True),
-                    subject_code=parsed["metadata"]["subject_code"],
-                    mode=parsed["metadata"]["mode"],
-                    manifest_sha256=digest,
-                    total_bytes=parsed["total"],
-                    file_count=len(parsed["files"]),
-                    storage_key=None,
-                    created_at=now,
-                    updated_at=now,
-                    completed_at=None,
-                    seal_lease_until=None,
-                    seal_token=None,
-                    problem_code=None,
-                    problem_at=None,
-                    previous_attempt_id=previous,
-                    retired_client_id=None,
-                    index_status="none",
-                    index_claimed_until=None,
-                    index_token=None,
-                    index_rows=0,
-                    index_error=None,
-                    index_columns=None,
-                )
-            )
-            conn.execute(
-                insert(session_files),
-                [
-                    {
-                        "session_id": session_id,
-                        "path": f["path"],
-                        "size": f["size"],
-                        "sha256": f["sha256"],
-                        "received": 0,
-                        "verified": f["size"] == 0,
-                    }
-                    for f in parsed["files"]
-                ],
-            )
-            # Empty files are complete now: create them durably before the
-            # row that calls them verified commits.
-            for f in parsed["files"]:
-                if f["size"] == 0:
-                    hub.store.create_empty(session_id, f["path"])
-            audit(
-                conn,
-                now,
-                f"user:{principal.user_id}",
-                "session.init",
-                session_id,
-                {
-                    "experiment": parsed["experiment_id"],
-                    "files": len(parsed["files"]),
-                    "bytes": parsed["total"],
-                    "previous_attempt": previous,
-                },
-            )
-            view = progress_view(conn, _row(conn, session_id))
+            view, created = _init_locked(hub, conn, principal, parsed, digest, now)
     except IntegrityError:
         # A concurrent init with the same client_session_id won the insert.
         with hub.db.transaction() as conn:
@@ -453,7 +334,134 @@ def init_session(
             return progress_view(conn, existing), False
     for session_id in stale:
         hub.store.remove_staging(session_id)
-    return view, True
+    return view, created
+
+
+def _init_locked(
+    hub: Hub, conn: Connection, principal: Principal, parsed: dict[str, Any], digest: str, now: int
+) -> tuple[dict[str, Any], bool]:
+    """The init decision and insert, under the owner's lock."""
+    limits = hub.settings.limits
+    existing = conn.execute(
+        select(data_sessions)
+        .where(
+            data_sessions.c.owner_id == principal.user_id,
+            data_sessions.c.client_session_id == parsed["client_session_id"],
+        )
+        .with_for_update()
+    ).first()
+    previous = None
+    if existing is not None:
+        if existing.status not in CLOSED:
+            if existing.manifest_sha256 != digest:
+                raise conflict(
+                    "session_conflict",
+                    "This client_session_id already names an upload with different "
+                    "content"
+                    + (
+                        "; abort it before sending other content"
+                        if existing.status in OPEN
+                        else "; a committed session is never replaced"
+                    ),
+                    session_id=existing.id,
+                    status=existing.status,
+                )
+            return progress_view(conn, existing), False
+        previous = existing.id
+    may_collect_with(conn, principal, parsed["experiment_id"], parsed["version_id"])
+    active = conn.execute(
+        select(func.count())
+        .select_from(data_sessions)
+        .where(
+            data_sessions.c.owner_id == principal.user_id,
+            data_sessions.c.status.in_(OPEN),
+        )
+    ).scalar_one()
+    if active >= limits.max_staging_sessions:
+        raise HubError(
+            429,
+            "upload_limit",
+            f"You have {active} unfinished uploads, the most allowed at once; finish or "
+            "abort one first (GET /sessions lists them)",
+        )
+    require_room(conn, principal.user_id, parsed["total"], limits.user_quota_bytes)
+    _require_disk(hub, conn, parsed["total"])
+    if previous is not None:
+        # Retire the closed attempt's key; its row and history stay.
+        conn.execute(
+            update(data_sessions)
+            .where(data_sessions.c.id == previous)
+            .values(
+                client_session_id=_RETIRED_PREFIX + previous,
+                retired_client_id=parsed["client_session_id"],
+            )
+        )
+    session_id = new_id()
+    conn.execute(
+        insert(data_sessions).values(
+            id=session_id,
+            owner_id=principal.user_id,
+            experiment_id=parsed["experiment_id"],
+            version_id=parsed["version_id"],
+            client_session_id=parsed["client_session_id"],
+            status="staging",
+            metadata=json.dumps(parsed["metadata"], sort_keys=True),
+            subject_code=parsed["metadata"]["subject_code"],
+            mode=parsed["metadata"]["mode"],
+            manifest_sha256=digest,
+            total_bytes=parsed["total"],
+            file_count=len(parsed["files"]),
+            storage_key=None,
+            created_at=now,
+            updated_at=now,
+            completed_at=None,
+            seal_lease_until=None,
+            seal_token=None,
+            problem_code=None,
+            problem_at=None,
+            previous_attempt_id=previous,
+            retired_client_id=None,
+            index_status="none",
+            index_claimed_until=None,
+            index_token=None,
+            index_rows=0,
+            index_error=None,
+            index_columns=None,
+        )
+    )
+    conn.execute(
+        insert(session_files),
+        [
+            {
+                "session_id": session_id,
+                "path": f["path"],
+                "size": f["size"],
+                "sha256": f["sha256"],
+                "received": 0,
+                "verified": f["size"] == 0,
+            }
+            for f in parsed["files"]
+        ],
+    )
+    # Empty files are complete now: create them durably before the
+    # row that calls them verified commits.
+    for f in parsed["files"]:
+        if f["size"] == 0:
+            hub.store.create_empty(session_id, f["path"])
+    audit(
+        conn,
+        now,
+        f"user:{principal.user_id}",
+        "session.init",
+        session_id,
+        {
+            "experiment": parsed["experiment_id"],
+            "files": len(parsed["files"]),
+            "bytes": parsed["total"],
+            "previous_attempt": previous,
+        },
+    )
+    return progress_view(conn, _row(conn, session_id)), True
 
 
 def _require_disk(hub: Hub, conn: Connection, adding: int) -> None:

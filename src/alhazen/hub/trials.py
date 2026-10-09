@@ -20,12 +20,12 @@ from __future__ import annotations
 
 import csv
 import io
-import itertools
 import json
 import logging
 import re
 import secrets
 from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from sqlalchemy import delete, func, insert, select, update
@@ -336,10 +336,12 @@ class IndexChanged(RuntimeError):
     end as if complete."""
 
 
-def _snapshot_rows(hub: Hub, session_id: str) -> Iterator[tuple[list[str], bool, Iterator[Any]]]:
+@contextmanager
+def _snapshot(hub: Hub, session_id: str) -> Iterator[tuple[list[str], bool, Iterator[Any]]]:
     """One consistent view of a session's index: its columns, whether rows
     come from several files, and the rows, all read in one snapshot so a
-    rebuild committing meanwhile cannot mix two index generations."""
+    rebuild committing meanwhile cannot mix two index generations. The
+    connection is released when the ``with`` block ends, however it ends."""
     with hub.db.snapshot() as conn:
         state = conn.execute(
             select(data_sessions.c.index_status, data_sessions.c.index_columns).where(
@@ -359,12 +361,15 @@ def _snapshot_rows(hub: Hub, session_id: str) -> Iterator[tuple[list[str], bool,
             .where(trial_rows.c.session_id == session_id)
             .order_by(trial_rows.c.ordinal)
         )
-        yield columns, int(sources) > 1, iter(result)
+        try:
+            yield columns, int(sources) > 1, iter(result)
+        finally:
+            result.close()
 
 
 def export_csv(hub: Hub, session_id: str) -> Iterator[bytes]:
     """The index as CSV, streamed from one snapshot."""
-    for columns, multiple, rows in _snapshot_rows(hub, session_id):
+    with _snapshot(hub, session_id) as (columns, multiple, rows):
         header = (["source_file"] if multiple else []) + columns
         yield _csv_line([safe_cell(h) for h in header])
         buffer = io.StringIO()
@@ -392,7 +397,7 @@ def _csv_line(cells: list[str]) -> bytes:
 
 def export_json(hub: Hub, session_id: str) -> Iterator[bytes]:
     """The index as one JSON document, streamed from one snapshot."""
-    for columns, _multiple, rows in _snapshot_rows(hub, session_id):
+    with _snapshot(hub, session_id) as (columns, _multiple, rows):
         yield (
             '{"session_id":'
             + json.dumps(session_id)
@@ -419,13 +424,61 @@ def export_json(hub: Hub, session_id: str) -> Iterator[bytes]:
         yield b"]}"
 
 
-def open_export(hub: Hub, session_id: str, fmt: str) -> Iterator[bytes]:
+class ExportStream:
+    """An export whose first part is already read (so refusals happen before
+    a response starts), holding one database snapshot until it is exhausted
+    or closed.
+
+    Iterate it, and call ``close()`` when the response ends for any reason
+    (finished, client gone, cancelled, never started): that releases the
+    snapshot's connection at once, without waiting for garbage collection.
+    ``close()`` is idempotent; it is also a context manager.
+    """
+
+    def __init__(self, first: bytes, rest: Iterator[bytes]) -> None:
+        self._first: bytes | None = first
+        self._rest = rest
+        self._closed = False
+
+    def __iter__(self) -> ExportStream:
+        return self
+
+    def __next__(self) -> bytes:
+        if self._closed:
+            raise StopIteration
+        if self._first is not None:
+            part, self._first = self._first, None
+            return part
+        try:
+            return next(self._rest)
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self) -> None:
+        if not self._closed:
+            self._closed = True
+            self._first = None
+            close = getattr(self._rest, "close", None)
+            if close is not None:
+                close()
+
+    def __enter__(self) -> ExportStream:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
+
+
+def open_export(hub: Hub, session_id: str, fmt: str) -> ExportStream:
     """Start an export and return its stream, with the first part already
     read, so a session whose index is not ready is refused (409) before any
     response starts instead of ending a 200 download early."""
     stream = export_csv(hub, session_id) if fmt == "csv" else export_json(hub, session_id)
     try:
         first = next(stream)
+    except StopIteration:  # pragma: no cover - both formats always yield a first part
+        raise HubError(500, "internal", "The export produced nothing") from None
     except IndexChanged:
         raise HubError(
             409,
@@ -433,4 +486,4 @@ def open_export(hub: Hub, session_id: str, fmt: str) -> Iterator[bytes]:
             "This session's trial index is being rebuilt or is not available; its original "
             "files remain downloadable",
         ) from None
-    return itertools.chain([first], stream)
+    return ExportStream(first, stream)

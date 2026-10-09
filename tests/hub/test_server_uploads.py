@@ -231,6 +231,8 @@ class TestSealing:
         assert status_of(hub, session["id"]).status == "committed"
 
     def test_an_existing_final_is_verified_never_overwritten(self, hub, tmp_path, monkeypatch):
+        # Data review MA1/minor 3: the conflict is recorded on the upload (not
+        # retried forever), the disputed copy is kept, and the owner may abort.
         _ada, bob, eid, vid = ready(hub, tmp_path)
         session = bob.upload_session(eid, vid, {"a": b"abcd"}, complete=False)
         store = hub.app.state.hub.store
@@ -239,11 +241,17 @@ class TestSealing:
         (final / "files" / "a").write_bytes(b"ZZZZ")
         (final / "manifest.json").write_text("{}", encoding="utf-8")
         response = bob.post(f"/sessions/{session['id']}/complete")
-        assert (
-            response.status_code == 500 and response.json()["error"]["code"] == "artifact_conflict"
-        )
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "artifact_conflict"
         assert (final / "files" / "a").read_bytes() == b"ZZZZ"
-        assert status_of(hub, session["id"]).status == "sealing"
+        row = status_of(hub, session["id"])
+        assert row.status == "sealing" and row.problem_code == "artifact_conflict"
+        again = bob.post(f"/sessions/{session['id']}/complete")
+        assert again.status_code == 409 and again.json()["error"]["code"] == "artifact_conflict"
+        hub.maintenance.run_once(force_reconcile=True)
+        assert hub.maintenance.report["stuck_seals"] == 1
+        assert bob.post(f"/sessions/{session['id']}/abort").json()["status"] == "aborted"
+        assert (final / "files" / "a").read_bytes() == b"ZZZZ"
 
     def test_sealing_blocks_more_chunks_and_a_second_sealer(self, hub, tmp_path):
         _ada, bob, eid, vid = ready(hub, tmp_path)
@@ -252,14 +260,18 @@ class TestSealing:
             conn.execute(
                 update(data_sessions)
                 .where(data_sessions.c.id == session["id"])
-                .values(status="sealing", seal_lease_until=hub.clock.now + 60_000)
+                .values(
+                    status="sealing", seal_token="x" * 32, seal_lease_until=hub.clock.now + 60_000
+                )
             )
-        busy = bob.post(f"/sessions/{session['id']}/complete")
-        assert busy.status_code == 409 and busy.json()["error"]["code"] == "sealing_in_progress"
+        busy = bob.post(f"/sessions/{session['id']}/complete")  # someone else's live claim
+        assert busy.status_code == 202 and busy.json()["status"] == "sealing"
         assert "retry-after" in busy.headers
         assert bob.put_chunk(session["id"], "a", 0, b"abcd").status_code == 409
+        assert bob.post(f"/sessions/{session['id']}/abort").status_code == 409
         hub.clock.advance(61)
         assert bob.post(f"/sessions/{session['id']}/complete").json()["status"] == "committed"
+
 
     def test_committed_session_refuses_chunks_and_abort(self, hub, tmp_path):
         _ada, bob, eid, vid = ready(hub, tmp_path)
