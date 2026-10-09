@@ -92,6 +92,30 @@ Private screens (library, mine, data) send a signed-out reader to sign in and ba
 - **Publishing** needs a licence, two acknowledgements and a second confirmation; the page says that
   downloads cannot be recalled and that later versions stay private.
 
+## Unfinished uploads
+
+Below the session list, Data shows the signed-in account's uploads the hub has not committed
+(`GET /api/hub/v1/sessions?limit=20`: caller-owned staging or sealing uploads), each with what it is,
+bytes received of the total and when it last changed. They hold reserved quota until they finish,
+expire or are discarded. **Discard…** appears only for a staging upload and asks first: the
+confirmation says that only the hub's partial copy is removed, that the session's files on the rig stay
+as they are and that received sessions are never removed. Confirming sends
+`POST /api/hub/v1/sessions/{id}/abort`; the button shows it is busy, and afterwards the list is always
+read again from the hub. A sealing upload's Discard is disabled with the reason. A 409 (it started
+sealing or was committed meanwhile) or 410 (already expired or closed) is shown in the hub's words and
+the list is refreshed; an offline or other failure keeps the row and lets you try again. The list is
+fetched per screen for the current account, so after a sign-out or account change only the new
+account's uploads appear. Nothing is discarded automatically. A rig's own transfer controls (Resume,
+Cancel) stay on This rig → Upload data.
+
+## Install durability
+
+When the rig reports an install with `durable: false`, the install row and the install panel add that
+the files are installed and verified but the computer could not confirm they were written through to
+disk, with the rig's `durability_note` (folder sync is unavailable on Windows and some mounts). It says
+this is about storage, not the code, and suggests checking the install again after a power loss.
+Windows behaviour itself is unverified here.
+
 ## Rebuilding a trial index (contract gate B1)
 
 Trial rows are derived from the raw files. When the server reports `session.index.status = "failed"`, the

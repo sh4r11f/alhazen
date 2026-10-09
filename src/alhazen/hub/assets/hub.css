@@ -574,6 +574,19 @@ a:hover { color: var(--accent-hover); }
 .meter-p95 { width: 95%; }
 .meter-p100 { width: 100%; }
 
+/* ---- unfinished uploads (Data) ---- */
+.unfinished-list { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 8px; max-width: 900px; }
+.unfinished-row {
+  display: flex; gap: 12px 20px; flex-wrap: wrap; justify-content: space-between; align-items: flex-start;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px;
+}
+.unfinished-main { flex: 1 1 280px; min-width: 0; }
+.unfinished-main p { margin: 0 0 2px; }
+.unfinished-what { font-weight: 800; }
+.unfinished-actions { flex: 0 1 320px; display: grid; gap: 6px; justify-items: start; }
+.unfinished-actions .confirm p { flex-basis: 100%; }
+.durability { margin: 4px 0 0; }
+
 /* ---- footer ---- */
 .footer { border-top: 1px solid var(--line); background: var(--surface); }
 .footer-inner {

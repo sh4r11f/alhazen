@@ -321,3 +321,15 @@ test('a trial row is read from the server\'s {ordinal, source_path, values}; fla
   assert.equal(flat.values.rt, 0.3);
   assert.equal(C.trialRow(null).ordinal, null);
 });
+
+test('upload states: only a staging upload can be discarded; sealing says why not', () => {
+  let u = C.uploadState({status: 'staging', received_bytes: 10, total_bytes: 40});
+  assert.equal(u.canDiscard, true);
+  assert.equal(u.received, 10);
+  assert.equal(u.total, 40);
+  u = C.uploadState({status: 'sealing'});
+  assert.equal(u.canDiscard, false);
+  assert.match(u.whyNot, /verifying and sealing/);
+  for (const status of ['committed', 'aborted', 'expired', '']) assert.equal(C.uploadState({status}).canDiscard, false, status);
+  assert.equal(C.uploadState({status: 'staging'}).received, null);
+});

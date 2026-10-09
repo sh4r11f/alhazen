@@ -772,3 +772,135 @@ test('the experiment filter offers pinned and collected-on experiments, not only
   assert.equal(p.hub.calls.filter((c) => c.path.endsWith('/data/sessions')).pop().query.get('experiment_id'), 'e1');
   assert.equal(p.main.querySelector('select').value, 'e1', 'the filter shows the chosen experiment after the reload');
 });
+
+/* GET /sessions as the server writes it (uploads.session_row_view plus
+ * progress fields): the caller's own unfinished uploads. */
+function upload(over) {
+  return Object.assign({id: 'u1', status: 'staging', experiment_id: 'e1', version_id: 'v1', client_session_id: 'rig-1',
+    metadata: {subject_code: 'S07', mode: 'run', rig_alias: 'lab', started_at: '2026-10-08T09:00:00Z'},
+    total_bytes: 4096, file_count: 3, received_bytes: 1024, created_at: '2026-10-08T09:30:00Z', updated_at: '2026-10-08T09:40:00Z',
+    index: {status: 'none', rows: 0, error: null}}, over || {});
+}
+function dataRoutes(over) {
+  return Object.assign({}, ALICE_ROUTES, {'GET /data/sessions': () => ({status: 200, body: {items: [], next_offset: null}})}, over || {});
+}
+
+test('unfinished uploads: the owner\'s list, and Discard only after an explicit confirmation', async () => {
+  let open = [upload(), upload({id: 'u2', status: 'sealing', received_bytes: 4096})];
+  const aborts = [];
+  const p = await mount({search: '?view=data', routes: dataRoutes({
+    'GET /sessions': () => ({status: 200, body: {items: open, next_offset: null}}),
+    'POST /sessions/u1/abort': (req) => { aborts.push(req); open = open.filter((u) => u.id !== 'u1'); return {status: 200, body: upload({status: 'aborted'})}; },
+  })});
+  assert.equal(p.hub.calls.find((c) => c.path === '/api/hub/v1/sessions').query.get('limit'), '20');
+  let t = p.text();
+  assert.match(t, /Unfinished uploads/);
+  assert.match(t, /Subject S07/);
+  assert.match(t, /1\.0 KiB of 4\.0 KiB received/);
+  assert.match(t, /Being verified and sealed by the hub/);
+  // Sealing cannot be discarded, and says why.
+  const sealed = p.main.querySelectorAll('li').find((li) => li.textContent.includes('Upload u2'));
+  assert.ok(sealed.querySelector('button').disabled);
+  assert.match(sealed.textContent, /cannot be discarded now/);
+  // The first press only asks; the confirmation names what stays.
+  await p.click(p.find('button', 'Discard\u2026'));
+  assert.equal(aborts.length, 0, 'nothing is discarded without confirmation');
+  t = p.text();
+  assert.match(t, /files on the rig stay exactly as they are/);
+  assert.match(t, /already received are never removed/);
+  await p.click(p.find('button', 'Keep it'));
+  assert.equal(aborts.length, 0);
+  await p.click(p.find('button', 'Discard\u2026'));
+  await p.click(p.find('button', 'Discard the partial upload'));
+  assert.equal(aborts.length, 1);
+  assert.equal(aborts[0].init.headers['X-CSRF-Token'], 'c1');
+  assert.equal(p.hub.calls.filter((c) => c.path === '/api/hub/v1/sessions').length, 2, 'the list is read again from the hub');
+  t = p.text();
+  assert.match(t, /Discarded on the hub/);
+  assert.doesNotMatch(t, /Upload u1/);
+  assert.match(t, /Upload u2/);
+  assert.equal(p.document.activeElement.getAttribute('data-focus'), 'unfinished-status');
+});
+
+test('a discard the hub refuses or cannot be reached for is said plainly; nothing is shown as removed', async () => {
+  let reply = () => new TypeError('Failed to fetch');
+  let open = [upload()];
+  const p = await mount({search: '?view=data', routes: dataRoutes({
+    'GET /sessions': () => ({status: 200, body: {items: open, next_offset: null}}),
+    'POST /sessions/u1/abort': () => reply(),
+  })});
+  await p.click(p.find('button', 'Discard\u2026'));
+  await p.click(p.find('button', 'Discard the partial upload'));
+  assert.match(p.text(), /Not discarded: The hub cannot be reached/);
+  assert.match(p.text(), /Upload u1/);
+  const again = p.find('button', 'Discard the partial upload');
+  assert.ok(!again.disabled, 'can be tried again');
+  // Meanwhile the rig finished it and the hub started sealing: 409, list refreshed.
+  reply = () => { open = [upload({status: 'sealing'})]; return {status: 409, body: {error: {code: 'session_sealing', message: 'Only an unfinished upload can be aborted; committed sessions are kept'}}}; };
+  await p.click(again);
+  assert.match(p.text(), /Only an unfinished upload can be aborted; committed sessions are kept/);
+  assert.match(p.text(), /Being verified and sealed/);
+  assert.doesNotMatch(p.text(), /Discarded on the hub/);
+  // Already expired on the hub: 410.
+  open = [upload()];
+  await p.page.draw();
+  await settleAll();
+  open = [];
+  const routes410 = p.find('button', 'Discard\u2026');
+  reply = () => ({status: 410, body: {error: {code: 'upload_expired', message: 'This upload expired; start a new one'}}});
+  await p.click(routes410);
+  await p.click(p.find('button', 'Discard the partial upload'));
+  assert.match(p.text(), /This upload expired; start a new one/);
+  assert.match(p.text(), /None\./);
+});
+
+test('unfinished uploads belong to the signed-in account: signing out and in as someone else shows only theirs', async () => {
+  let who = ALICE;
+  const lists = {u1: [upload({id: 'alice-up'})], u9: [upload({id: 'bob-up'})]};
+  const p = await mount({search: '?view=data', routes: dataRoutes({
+    'GET /auth/me': () => (who ? {status: 200, body: {user: who, csrf_token: 'c'}} : {status: 401, body: {error: {code: 'unauthenticated', message: 'x'}}}),
+    'POST /auth/logout': () => { who = null; return {status: 200, body: {ok: true}}; },
+    'POST /auth/login': () => { who = {id: 'u9', username: 'bob', display_name: 'Bob B'}; return {status: 200, body: {user: who, csrf_token: 'c9'}}; },
+    'GET /sessions': () => (who ? {status: 200, body: {items: lists[who.id], next_offset: null}} : {status: 401, body: {error: {code: 'unauthenticated', message: 'x'}}}),
+  })});
+  assert.match(p.text(), /Upload alice-up/);
+  await p.click(p.document.getElementById('account').querySelector('button'));
+  assert.doesNotMatch(p.text(), /alice-up/);
+  await p.back('/?view=data');
+  const form = p.main.querySelector('form');
+  const [user, password] = form.querySelectorAll('input');
+  user.value = 'bob';
+  password.value = 'correct horse battery';
+  await p.submit(form);
+  assert.equal(p.loc.search, '?view=data');
+  assert.match(p.text(), /Upload bob-up/);
+  assert.doesNotMatch(p.text(), /alice-up/);
+});
+
+test('a list the hub cannot give is an error with Try again, not an empty list', async () => {
+  const p = await mount({search: '?view=data', routes: dataRoutes({
+    'GET /sessions': () => ({status: 503, body: {error: {code: 'unavailable', message: 'The hub is restarting.'}}}),
+  })});
+  const block = p.main.querySelector('section.unfinished');
+  assert.match(block.textContent, /The hub is restarting/);
+  assert.doesNotMatch(block.textContent, /None\./);
+  assert.ok(block.querySelector('button'));
+});
+
+test('an install the rig could not confirm as flushed to disk says so, without calling the code unsafe', async () => {
+  const record = {sha256: release().sha256, experiment_id: 'e1', version_id: 'v1', version: '1.2.0', title: 'Fixation demo',
+    status: 'registered', workspace_url: '/?project=p9', error: null, durable: false, durability_note: 'folder sync is not available on Windows'};
+  const p = await mount({path: '/hub', hash: '#token=' + TOKEN, search: '?view=rig&tab=installed', routes: rigRoutes({
+    'GET /local/status': () => ({status: 200, body: {state: 'signed_in', base_url: 'https://hub.example.org', user: ALICE, jobs: [], run_active: false, interpreters: [], installed: [record]}}),
+  })});
+  const t = p.text();
+  assert.match(t, /installed and verified, but this computer could not confirm/);
+  assert.match(t, /folder sync is not available on Windows/);
+  assert.match(t, /about storage, not about the code/);
+  assert.doesNotMatch(t, /unsafe|dangerous|corrupt/i);
+  const durable = Object.assign({}, record, {durable: true, durability_note: null});
+  const q = await mount({path: '/hub', hash: '#token=' + TOKEN, search: '?view=rig&tab=installed', routes: rigRoutes({
+    'GET /local/status': () => ({status: 200, body: {state: 'signed_in', base_url: 'https://hub.example.org', user: ALICE, jobs: [], run_active: false, interpreters: [], installed: [durable]}}),
+  })});
+  assert.doesNotMatch(q.text(), /could not confirm/);
+});
