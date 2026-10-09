@@ -1217,7 +1217,7 @@ const HubApp = (() => {
         h('p', {class: 'callout-title'}, 'This release is Python code from its author.'),
         /* The rig's own statement when it gives one (rig-contract: trust_statement). */
         h('p', null, local.trust_statement ? String(local.trust_statement)
-          : 'Trusting it lets alhazen import and run it as your operating-system user, with your access to files, '
+          : 'Trusting it lets Alhazen import and run it as your operating-system user, with your access to files, '
           + 'collected data, saved credentials and connected devices. A virtual environment is not a sandbox. Install only code whose author you trust.'),
         h('p', null, 'Installing downloads the archive, checks its SHA-256 and every file against the manifest, and extracts it into a new folder. '
           + 'Existing experiments and checkouts are not changed, and nothing is installed into the interpreter.')));
@@ -1366,8 +1366,8 @@ const HubApp = (() => {
     }
 
     function screenGuide(ctx) {
-      const section = screenShell('Guide', 'How alhazen runs an experiment',
-        'Modes, protections and what each choice records, taken from the alhazen version this '
+      const section = screenShell('Guide', 'How Alhazen runs an experiment',
+        'Modes, protections and what each choice records, taken from the Alhazen version this '
         + (state.role === 'rig' ? 'rig runs. Readable offline.' : 'hub runs.'));
       const area = region('the guide');
       section.appendChild(area.el);
@@ -1390,6 +1390,7 @@ const HubApp = (() => {
     function authShell(title, lede) {
       const section = h('section', {class: 'screen screen-auth'});
       const body = h('div', {class: 'auth-main'},
+        h('p', {class: 'auth-brand'}, brandMark(), h('span', {class: 'auth-brand-word'}, 'Alhazen')),
         h('header', {class: 'screen-head'},
           h('h1', {class: 'screen-title', tabindex: '-1', 'data-heading': ''}, title),
           lede ? h('p', {class: 'lede'}, lede) : null));
@@ -1406,6 +1407,17 @@ const HubApp = (() => {
           h('span', {class: 'auth-point-name'}, name), h('span', {class: 'auth-point-text'}, text)))));
       section.appendChild(h('div', {class: 'auth'}, body, aside));
       return {section, body};
+    }
+
+    /** The Alhazen mark (the Penrose "impossible A"): ink paths plus one
+     *  accent face, coloured by CSS tokens. Built as SVG nodes. */
+    const MARK_INK = 'M7.83 56.61L11.81 49.72L11.98 49.52L12.21 49.35L12.38 49.28L12.64 49.24L20.6 49.24L16.62 42.35L16.55 42.2L16.51 42.01L16.5 41.82L16.53 41.64L16.62 41.39L26.31 24.61L26.49 24.39L26.73 24.23L26.92 24.16L27.12 24.13L27.41 24.16L27.6 24.23L27.77 24.33L27.92 24.47L28.02 24.61L37.41 40.87L44.77 40.87L27.17 10.39L4.15 50.24ZM55.59 57.61L59.27 51.24L13.24 51.24L9.57 57.61ZM26.59 40.87L30.85 33.5L27.17 27.13L19.23 40.87Z';
+    const MARK_FACE = 'M22.91 49.24L59.27 49.24L36.26 9.39L28.9 9.39L47.38 41.39L47.45 41.55L47.49 41.75L47.5 41.95L47.46 42.14L47.34 42.41L47.14 42.64L46.89 42.79L46.7 42.85L46.52 42.87L19.23 42.87Z';
+    function brandMark() {
+      const box = svg('svg', {viewBox: '0 0 64 64', width: '28', height: '28', class: 'brand-mark', focusable: 'false', 'aria-hidden': 'true'});
+      box.appendChild(svg('path', {class: 'mark-ink', d: MARK_INK}));
+      box.appendChild(svg('path', {class: 'mark-face', d: MARK_FACE}));
+      return box;
     }
 
     /** A password field with a Show/Hide switch inside it. */
@@ -1758,7 +1770,7 @@ const HubApp = (() => {
 
     function zipPanel(experiment) {
       const block = h('section', {class: 'panel'}, h('h2', {class: 'panel-title'}, 'Add a version'),
-        h('p', {class: 'muted'}, 'Upload a release archive made with alhazen (alhazen-package.json inside). '
+        h('p', {class: 'muted'}, 'Upload a release archive made with Alhazen (alhazen-package.json inside). '
           + 'Its version comes from the manifest and cannot be replaced later. It stays private.'));
       const file = input({type: 'file', name: 'archive', accept: '.zip,application/zip'});
       const status = statusLine();

@@ -227,13 +227,19 @@ a:hover { color: var(--accent-ink); text-decoration-thickness: 2px; }
   display: flex; align-items: center; gap: 8px 28px; flex-wrap: wrap;
 }
 .brand {
-  display: inline-flex; align-items: baseline; gap: 12px; min-height: 44px; padding-top: 10px;
+  display: inline-flex; align-items: center; gap: 10px; min-height: 44px;
   color: var(--ink); text-decoration: none;
 }
 .brand:hover { color: var(--ink); }
-.brand-word { font-weight: 800; font-size: 1.4rem; letter-spacing: -0.045em; line-height: 1; }
-.brand-dot { color: var(--accent-ink); }
-.brand-sub { font-weight: 500; font-size: 0.95rem; color: var(--muted); letter-spacing: -0.005em; }
+/* The mark: the Penrose "impossible A", ink plus one accent face. */
+.brand-mark { display: block; flex: none; width: 28px; height: 28px; }
+.mark-ink { fill: var(--ink); }
+.mark-face { fill: var(--accent); }
+.brand-word { font-weight: 800; font-size: 1.35rem; letter-spacing: -0.035em; line-height: 1; }
+.brand-sub {
+  font-weight: 500; font-size: 0.95rem; color: var(--muted); letter-spacing: -0.005em;
+  padding-left: 12px; margin-left: 2px; border-left: 1px solid var(--line-strong); line-height: 1.2;
+}
 .role {
   margin: 0; display: inline-flex; align-items: center; gap: 8px;
   font-size: 0.875rem; color: var(--muted);
@@ -407,6 +413,8 @@ a:hover { color: var(--accent-ink); text-decoration-thickness: 2px; }
   box-shadow: 0 30px 70px -40px var(--shadow);
 }
 .auth-main { padding: 64px 72px 56px; display: flex; flex-direction: column; justify-content: center; }
+.auth-brand { display: flex; align-items: center; gap: 10px; margin: 0 0 36px; }
+.auth-brand-word { font-weight: 800; font-size: 1.35rem; letter-spacing: -0.035em; line-height: 1; }
 .auth-main .screen-head { margin-bottom: 28px; }
 .auth-main .screen-title { font-size: 2rem; }
 .auth-main .lede { font-size: 1rem; }
@@ -702,7 +710,7 @@ a:hover { color: var(--accent-ink); text-decoration-thickness: 2px; }
   align-items: center; flex-wrap: wrap; color: var(--muted); font-size: 0.9rem;
 }
 .footer-note { margin: 0; flex: 1 1 auto; display: inline-flex; align-items: baseline; gap: 10px; }
-.footer-word { color: var(--ink); font-weight: 800; letter-spacing: -0.04em; font-size: 1.05rem; }
+.footer-word { color: var(--ink); font-weight: 800; letter-spacing: -0.03em; font-size: 1.05rem; }
 .footer-links { margin: 0; }
 .footer-links a { display: inline-flex; align-items: center; min-height: 40px; color: var(--muted); text-decoration: none; font-weight: 500; }
 .footer-links a:hover { color: var(--ink); }
@@ -724,7 +732,6 @@ a:hover { color: var(--accent-ink); text-decoration-thickness: 2px; }
 }
 @media (max-width: 640px) {
   .masthead-inner { padding: 6px 16px; gap: 0 12px; min-height: 0; }
-  .brand { padding-top: 6px; }
   .brand-sub { display: none; }
   .role-detail { display: none; }
   .primary-nav { order: 3; flex-basis: 100%; overflow-x: auto; margin: 0 -10px; padding-bottom: 6px; }

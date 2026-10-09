@@ -880,7 +880,7 @@ const HubDocs = (() => {
     const messages = {
       methods: ['No methods for this version', 'The authors did not include documentation in this package version. Read its source and parameter files before running it; nothing here has been filled in for them.'],
       task: ['No documentation for this task', 'This package version does not document this task. Its parameters and timing are only in its source and parameter files.'],
-      guide: ['The guide is not available', 'The guide comes with alhazen itself; this hub could not provide it.'],
+      guide: ['The guide is not available', 'The guide comes with Alhazen itself; this hub could not provide it.'],
     };
     const [title, body] = messages[kind] || messages.methods;
     const box = el(c, 'div', 'hd-doc hd-missing');
