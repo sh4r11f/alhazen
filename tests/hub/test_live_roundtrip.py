@@ -56,11 +56,12 @@ httpx = pytest.importorskip("httpx")
 pytest.importorskip("fastapi")
 pytest.importorskip("uvicorn")
 
+from tests.hub.server_support import POSTGRES_ENV, _database_url  # noqa: E402
+
 from alhazen._scaffold import scaffold  # noqa: E402
 from alhazen.hub import admin  # noqa: E402
 from alhazen.hub.packages import build_bundle, suggest_files  # noqa: E402
 from alhazen.hub.settings import load_settings  # noqa: E402
-from tests.hub.server_support import POSTGRES_ENV, _database_url  # noqa: E402
 
 pytestmark = pytest.mark.slow
 
@@ -240,6 +241,7 @@ class Rig:
     (server.json), the way the browser page gets it; it is never printed."""
 
     def __init__(self, root: Path) -> None:
+        root.mkdir(parents=True)
         self.state = root / "rig-state"
         self.log = root / "dashboard.log"
         self.process: subprocess.Popen[bytes] | None = None
@@ -371,6 +373,17 @@ def scaffold_package(root: Path, version: str) -> tuple[Path, dict[str, Any]]:
 
 @pytest.fixture
 def stack(tmp_path: Path) -> Iterator[tuple[CentralHub, Rig]]:
+    # Both children (and the interpreter the rig probes and runs) must import
+    # this checkout, not whatever alhazen happens to be installed.
+    probe = subprocess.run(
+        [sys.executable, "-c", "import alhazen, sys; sys.stdout.write(alhazen.__file__)"],
+        env=child_env(),
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+    )
+    assert Path(probe.stdout).resolve().is_relative_to(SOURCE), "children import another alhazen"
     hub = CentralHub(tmp_path / "hub")
     rig = Rig(tmp_path / "rig")
     try:
@@ -380,6 +393,8 @@ def stack(tmp_path: Path) -> Iterator[tuple[CentralHub, Rig]]:
     finally:
         rig.close()
         stop(hub.process)
+        for child in (rig.process, hub.process):
+            assert child is None or child.poll() is not None, "a child process outlived the test"
 
 
 def test_publish_install_simulate_upload_query_export(
