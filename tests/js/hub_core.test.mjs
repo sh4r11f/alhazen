@@ -9,7 +9,9 @@ import vm from 'node:vm';
 const ASSETS = new URL('../../src/alhazen/hub/assets/', import.meta.url);
 
 function load() {
-  const context = vm.createContext({URL, URLSearchParams, AbortController, setTimeout, clearTimeout});
+  /* URL comes from Node, so its TypeError must be the one the script sees:
+   * one realm, as in a browser. */
+  const context = vm.createContext({URL, URLSearchParams, AbortController, setTimeout, clearTimeout, TypeError});
   vm.runInContext(readFileSync(new URL('hub_core.js', ASSETS), 'utf8') + '\nthis.C = HubCore;', context);
   return context.C;
 }
@@ -275,4 +277,10 @@ test('the rig token comes from the fragment first, then the tab', () => {
   assert.deepEqual({...C.readToken('#token=' + t, 'B'.repeat(43))}, {token: t, fromFragment: true});
   assert.deepEqual({...C.readToken('', 'B'.repeat(43))}, {token: 'B'.repeat(43), fromFragment: false});
   assert.deepEqual({...C.readToken('#token=<script>', '')}, {token: '', fromFragment: false});
+});
+
+test('a body that breaks off mid-answer is a failure, never an empty success', async () => {
+  const fetch = async () => ({ok: true, status: 200, headers: {get: () => null}, text: async () => { throw new TypeError('network error'); }});
+  const api = C.createApi({fetch, role: 'server'});
+  await assert.rejects(() => api.request('POST', '/library', {json: {}}), (e) => e.kind === 'offline');
 });

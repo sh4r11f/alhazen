@@ -210,12 +210,11 @@ const HubApp = (() => {
       return {state: 'connected', where: hostOf(base), sentence: 'Connected to ' + hostOf(base) + '.'};
     }
 
+    /** The host part of a hub address for display ("hub.example.org"),
+     *  or the address itself when it has none. */
     function hostOf(url) {
-      try {
-        return new URL(url).host;
-      } catch (exc) {
-        return String(url);
-      }
+      const match = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]+)/i.exec(String(url || ''));
+      return match ? match[1] : String(url || '');
     }
 
     function drawAccount() {
@@ -267,18 +266,26 @@ const HubApp = (() => {
         if (choice === 'system') env.localStorage.removeItem(THEME_KEY);
         else env.localStorage.setItem(THEME_KEY, choice);
       } catch (exc) {
-        // Storage refused (private window): the choice holds for this page.
+        if (!isStorageRefusal(exc)) throw exc;
         banner('Your theme choice cannot be remembered in this browser; it applies until you leave.', 'info');
       }
     }
 
+    /* A browser refuses storage (private windows, blocked site data, a full
+     * quota) with these DOMException names; anything else is a bug. */
+    function isStorageRefusal(exc) {
+      return Boolean(exc && ['SecurityError', 'QuotaExceededError', 'NS_ERROR_DOM_QUOTA_REACHED'].includes(exc.name));
+    }
+
     function storedTheme() {
+      let value = null;
       try {
-        const value = env.localStorage && env.localStorage.getItem(THEME_KEY);
-        return THEMES.includes(value) ? value : 'system';
+        value = env.localStorage ? env.localStorage.getItem(THEME_KEY) : null;
       } catch (exc) {
-        return 'system';
+        if (!isStorageRefusal(exc)) throw exc;
+        value = null;  // storage blocked: Auto, as on a first visit
       }
+      return THEMES.includes(value) ? value : 'system';
     }
 
     /* ---- navigation -------------------------------------------------------- */
@@ -411,7 +418,7 @@ const HubApp = (() => {
       state.csrf = '';
       state.library = null;
       if (state.role === 'rig') await loadLocal();
-      if (state.role === 'server') await loadMe().catch(() => {});
+      if (state.role === 'server') await loadMe().catch(noteFailure);
       drawChrome();
       banner('');
       let text = 'Signed out.';
@@ -442,11 +449,21 @@ const HubApp = (() => {
         if (button) button.addEventListener('click', () => setTheme(name));
       }
       let stored = '';
-      try { stored = env.sessionStorage.getItem(TOKEN_KEY) || ''; } catch (exc) { stored = ''; }
+      try {
+        stored = env.sessionStorage.getItem(TOKEN_KEY) || '';
+      } catch (exc) {
+        if (!isStorageRefusal(exc)) throw exc;
+        stored = '';  // blocked storage: only a token in the address can be used
+      }
       const found = C.readToken(loc.hash, stored);
       state.token = found.token;
       if (found.fromFragment) {
-        try { env.sessionStorage.setItem(TOKEN_KEY, found.token); } catch (exc) { /* tab-only token */ }
+        try {
+          env.sessionStorage.setItem(TOKEN_KEY, found.token);
+        } catch (exc) {
+          if (!isStorageRefusal(exc)) throw exc;
+          banner('This browser blocks tab storage, so reloading this page will need the address alhazen dashboard printed.', 'info');
+        }
         hist.replaceState(null, '', (loc.pathname || '/') + (loc.search || ''));
       }
       env.window && env.window.addEventListener && env.window.addEventListener('popstate', onPopState);
@@ -668,12 +685,18 @@ const HubApp = (() => {
     function copyButton(text, label) {
       const button = h('button', {type: 'button', class: 'btn btn-quiet btn-small'}, label || 'Copy');
       button.addEventListener('click', async () => {
-        try {
-          if (!env.clipboard || !env.clipboard.writeText) throw new Error('no clipboard');
-          await env.clipboard.writeText(text);
-          button.textContent = 'Copied';
-        } catch (exc) {
-          button.textContent = 'Copy failed: select the text';
+        if (!env.clipboard || typeof env.clipboard.writeText !== 'function') {
+          button.textContent = 'No clipboard here: select the text';
+        } else {
+          try {
+            await env.clipboard.writeText(text);
+            button.textContent = 'Copied';
+          } catch (exc) {
+            /* The browser's refusals (no permission, insecure page); said on
+             * the button. Anything else is a bug and propagates. */
+            if (!exc || !['NotAllowedError', 'SecurityError'].includes(exc.name)) throw exc;
+            button.textContent = 'Copy refused: select the text';
+          }
         }
         timers.set(() => { button.textContent = label || 'Copy'; }, 2500);
       });
