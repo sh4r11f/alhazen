@@ -269,6 +269,9 @@ const HubCore = (() => {
 
     async function request(method, path, opts) {
       const o = opts || {};
+      /* A bad path is the caller's bug: thrown here, before the network
+       * try block, so it is never reported as "offline". */
+      const target = address(path, o.query, o.prefix);
       const headers = Object.assign({Accept: 'application/json'}, o.headers || {});
       if (role === 'rig') {
         const token = options.token ? options.token() : '';
@@ -297,7 +300,7 @@ const HubCore = (() => {
       const timer = limit ? timers.set(() => { timedOut = true; controller.abort(); }, limit) : null;
       let response;
       try {
-        response = await doFetch(address(path, o.query, o.prefix), {
+        response = await doFetch(target, {
           method, headers, body, credentials: 'same-origin', redirect: 'error',
           cache: 'no-store', signal: controller.signal,
         });

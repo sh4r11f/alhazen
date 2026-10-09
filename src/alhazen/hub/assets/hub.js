@@ -2558,6 +2558,17 @@ const HubApp = (() => {
     }
 
     $('main').addEventListener('click', onMainClick);
+    /* The static brand and footer links: same-page navigation too. */
+    for (const [id, route] of [['brand', {view: 'home'}], ['footer-guide', {view: 'guide'}]]) {
+      const el = doc.getElementById(id);
+      if (!el) continue;
+      el.setAttribute('href', (loc.pathname || '/') + (C.formatRoute(route) || '?'));
+      el.addEventListener('click', (event) => {
+        if (!state.booted || (event && (event.button > 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey))) return;
+        prevent(event);
+        go(route);
+      });
+    }
     const ready = boot();
     return {state, ready, go, draw};
   }
