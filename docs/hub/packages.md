@@ -20,7 +20,7 @@ chosen source, README or documentation holds no secret or participant data:
 the author reviews the exact file list before building, and publishing asks
 for a separate confirmation.
 
-## Layout
+## Layout: a small, strict ZIP subset
 
 ```
 alhazen-package.json      the manifest, at the root
@@ -28,10 +28,28 @@ run.py                    the entry point (required)
 ...                       exactly the files the manifest declares
 ```
 
-Nothing else may appear: no folder entries, no undeclared files, nothing
-before the first member, between members, or after the end record (so no
-archive comment). Members are stored or deflate-compressed, unencrypted,
-regular files, without zip64.
+Packages use only the part of ZIP that `build_bundle` writes, and this
+module reads them with its own parser (Python's `zipfile` is used only to
+write), so every reader and every supported Python sees the same names and
+bytes:
+
+- members stored or deflated, nothing else; no encryption, no zip64, ZIP
+  version 2.0 at most; flags limited to UTF-8 names (and deflate's level
+  bits);
+- **no extra fields** in local or central headers (an Info-ZIP Unicode path
+  field, for example, can give a member a second name that other tools use);
+- no data descriptors: each local header states the same CRC and sizes as
+  its central-directory entry, along with the same flags, method and name;
+- members laid end to end from byte 0, the central directory straight after
+  in the same order, then the end record with no comment: no hidden bytes
+  anywhere;
+- every deflate stream ends exactly at its member's end, decodes to exactly
+  the declared size and matches its CRC; a stored member's two sizes agree;
+- no folder entries, links, devices or encrypted members; a non-ASCII name
+  carries the UTF-8 flag.
+
+The whole file is read once, in order, by `inspect_bundle`: the SHA-256 it
+returns is computed over exactly the bytes it checked.
 
 ## Manifest (schema 1)
 
@@ -76,15 +94,23 @@ raises. Refused, never repaired:
 - names over 255 bytes or paths over 1,024 characters;
 - text not in Unicode NFC.
 
+- a `~` followed by a digit in a name (it can collide with a Windows 8.3
+  short name such as `PROGRA~1`).
+
 Across a whole package, two paths that one common file system would treat as
-one name (case, Unicode compatibility form), a folder spelled two ways, and a
-path that is both a file and a folder are refused. A ZIP name that is not
-ASCII must carry the UTF-8 flag.
+one name (case, including NTFS upper-case matching such as dotless `ı` and
+`I`, or Unicode compatibility form), a folder spelled two ways, and a path
+that is both a file and a folder are refused. Package paths are at most 180
+characters, so that joined to an install folder they stay within Windows'
+260-character limit; on Windows an install whose joined paths would reach
+260 characters is refused before anything is written.
 
 ## Limits
 
-`inspect_bundle` defaults: 256 MiB archive, 1 GiB expanded, 10,000 files
-(the server may pass its own). The member count is read from the end record
+256 MiB archive, 1 GiB expanded, 10,000 files. These defaults are the
+format's maxima: `inspect_bundle`, `stage_bundle`, `install_bundle` and
+`extract_bundle` accept lower limits and refuse higher ones (ValueError), so
+a hub can never accept a release that a rig cannot install. The member count is read from the end record
 and refused before the directory is parsed; expansion is refused from the
 declared sizes before anything is decompressed, and decompression never
 reads past a member's declared size.
@@ -95,10 +121,14 @@ reads past a member's declared size.
 from pathlib import Path
 
 from alhazen.hub.packages import (
+    InstallInterrupted,
+    InstallNotDurable,
     build_bundle,
     compatibility_problems,
-    extract_bundle,
     inspect_bundle,
+    install_bundle,
+    recover_install,
+    stage_bundle,
     suggest_files,
 )
 
@@ -114,10 +144,18 @@ metadata = {
     "documentation": "docs/experiment.json",
 }
 info = build_bundle(source, Path("my-experiment-1.0.0.zip"), metadata, files)
-same = inspect_bundle(Path("my-experiment-1.0.0.zip"))
-installed = extract_bundle(Path("my-experiment-1.0.0.zip"), Path("installed/my-experiment"))
+staged = stage_bundle(Path("upload.part"), Path("staging"), expected_sha256=info.sha256)
+
+destination = Path("installed/my-experiment-1.0.0")
+try:
+    result = install_bundle(staged.path, destination, expected_sha256=info.sha256)
+except InstallInterrupted:
+    recover_install(destination)  # clears only that install's own leftovers
+    result = install_bundle(staged.path, destination, expected_sha256=info.sha256)
+if not result.durable:
+    print("installed; not confirmed on disk:", result.durability_note)
 problems = compatibility_problems(
-    installed.manifest, python_version=(3, 11), alhazen_version="2.13.0", platform="linux"
+    result.info.manifest, python_version=(3, 11), alhazen_version="2.13.0", platform="linux"
 )
 ```
 
@@ -128,7 +166,8 @@ problems = compatibility_problems(
   clutter (`build/`, `dist/`, `node_modules/`, `.pytest_cache/`, `.idea/`,
   `.DS_Store`, `movies/`...). Source, configs, lock files, Markdown,
   documentation JSON and diagram files stay in. A repository git cannot read
-  is an error, not a silent switch to listing every file.
+  is an error (whose message repeats none of git's paths), not a silent
+  switch to listing every file.
 - **`build_bundle(source, output, metadata, files)`**: packages exactly
   `files`. `metadata` is the manifest minus `schema_version` and `files`;
   `entrypoint`, `python_min`, `alhazen_min`, `platforms` and `citations`
@@ -139,33 +178,80 @@ problems = compatibility_problems(
   with `inspect_bundle`, and only then given its name, never replacing an
   existing file. Output is deterministic for one Python and zlib: fixed
   timestamps and permissions, sorted members, canonical manifest JSON.
-- **`inspect_bundle(path, ...)`**: hashes the whole file, then checks the
-  structure, the manifest, the member set and every file's bytes. A file that
-  changes while being read is refused.
-- **`extract_bundle(path, destination)`**: claims `destination` by creating
-  it (refused if anything exists there, even an empty folder or a broken
-  link), copies the package into a private staging folder beside it,
-  verifies the copy, writes each file (hash checked again, synced, mode 0644,
-  never executable), and renames the finished tree onto the claimed name. On
-  failure it removes only its staging folder and its own empty claim.
+- **`inspect_bundle(path, *, max_archive_bytes, max_expanded_bytes,
+  max_files) -> PackageInfo`**: one ordered pass, as above. A path that is
+  not a regular file (a FIFO, a folder) is refused without blocking.
+- **`stage_bundle(source, staging_dir, *, expected_sha256=None, limits...)
+  -> VerifiedBundle(path, info)`**: copies `source` once into a new 0600 file
+  in `staging_dir`, compares `expected_sha256` against the copied bytes, then
+  verifies the copy. The caller keeps the copy (a server files it by digest)
+  and never re-reads the mutable original. Refusals remove the copy.
+- **`install_bundle(path, destination, *, expected_sha256=None, limits...)
+  -> InstallResult(info, destination, durable, durability_note)`**, in its
+  parent folder:
+  1. refuse if `.<name>.alhazen-install` exists (`InstallInterrupted`) or
+     `destination` exists (even an empty folder or a broken link);
+  2. create, lock and sync the owner record `.<name>.alhazen-install`;
+  3. claim `destination` by creating it empty;
+  4. copy the package to `.<name>.<nonce>.package` (0600), compare
+     `expected_sha256` (`DigestMismatch`, before anything is extracted),
+     verify the copy;
+  5. write each file into `.<name>.<nonce>.staging`, decoding and checking it
+     again (mode 0644, never executable), syncing files and folders;
+  6. remove the copy and rename the staging folder onto the claim. **The
+     rename is the commit**: before it nothing is installed and a failure
+     raises; after it the function returns, never raises;
+  7. sync the parent and remove the record.
+  `durable` is True only if every file and folder entry, including the
+  rename and the record's removal, was synced and the OS confirmed it. A
+  file system that refuses directory syncs (EINVAL/ENOTSUP) and Windows,
+  where Python cannot sync a folder, give `durable=False` with a note. On a
+  failure before the commit every leftover is removed independently; a
+  cleanup failure is attached as a note to the original error (which is the
+  one raised) and keeps the record so `recover_install` can finish.
+- **`extract_bundle(path, destination, *, expected_sha256=None, limits...)
+  -> PackageInfo`**: `install_bundle`, but raises `InstallNotDurable` (whose
+  `result` says the files ARE installed) instead of returning an install
+  whose durability was not confirmed. On Windows that is every install, so
+  rig code should call `install_bundle` and show the durability state.
+- **`recover_install(destination) -> RecoveryResult(record_found,
+  destination_state, removed)`**: acts only through the owner record, and is
+  refused with `InstallInProgress` while the installer still holds the
+  record's lock (released by the OS when the process ends). Removes the copy
+  and staging folder whose names derive from the record's nonce (never
+  names read from it; a link or other non-file at those names is refused and
+  left in place), and the destination only if it is an empty folder.
+  `destination_state` is `absent`, `claim-removed`, `installed` (the rename
+  had committed; the tree is kept, its durability unconfirmed) or `kept`
+  (no record, or something else is there; untouched). Safe to repeat.
 - **`compatibility_problems(manifest, ...)`**: the declared requirements
   that the chosen interpreter, installed alhazen or platform does not meet,
   as sentences. A development build counts as its release number; an unknown
   alhazen version is reported.
 
 `PackageError` (a `ValueError` and an `AlhazenError`) is the one refusal
-type. Its messages name archive members (escaped) and file names, never
-absolute local paths, so the server may return them.
+type; `DigestMismatch`, `InstallInterrupted`, `InstallInProgress` and
+`InstallNotDurable` are subclasses. Messages name archive members (escaped)
+and file names, never absolute local paths, so the server may return them.
+
+## Limits of what was verified
+
+Checked on Linux with Python 3.10 to 3.13. Not verified on real Windows
+(8.3 short names, NTFS case table, the 260-character limit, reparse-point
+tags, the rename retry for briefly held handles, `msvcrt` record locking) or
+macOS, or on network/FUSE mounts (directory sync, `flock`). On those the
+module fails closed (refuses, or reports `durable=False`) rather than
+claiming more.
 
 ## Refused file classes
 
 | Class | Matched by |
 |---|---|
-| Version control | a `.git`, `.hg`, `.svn`, `.bzr` folder |
+| Version control | a `.git`, `.hg`, `.svn`, `.bzr` folder; a `.git` file (a worktree or submodule pointer, holding local paths) at any depth |
 | Environments | `.venv`, `venv`, `virtualenv`, `.tox`, `.nox`, `.conda`, `conda-meta`, `site-packages` folders; any folder with `pyvenv.cfg` |
 | Bytecode | `__pycache__`, `*.pyc`, `*.pyo` |
 | Credentials and keys | `.env`, `.env.*`, `*.env` (not `.env.example`/`.sample`/`.template`); `.ssh`, `.gnupg`, `.aws`, `.azure`, `.gcloud`, `.kube`, `.docker` folders; `.netrc`, `.pgpass`, `.pypirc`, `.npmrc`, `.git-credentials`, `.htpasswd`, `known_hosts`, `authorized_keys`, `id_rsa`/`id_dsa`/`id_ecdsa`/`id_ed25519`; `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`, `*.kdbx`, `*.ppk`, `*.ovpn`; names with the word secret(s), credential(s) or token(s) |
-| Collected data | top-level `data`, `data-*`, `data_*`, `people` folders; `sub-<id>` folders anywhere; `participants.tsv/.json`, `subjects.csv`, `experimenters.csv`; databases `*.sqlite`, `*.sqlite3`, `*.db` and their `-wal`/`-shm`/`-journal`; eye-tracker recordings `*.edf`, `*.asc` |
+| Collected data | top-level `data`, `data-*`, `people` folders; any folder or file named `sub-...` anywhere, whatever the subject code (non-ASCII and compatibility forms included); `participants.tsv/.json`, `subjects.csv`, `experimenters.csv`; databases `*.sqlite`, `*.sqlite3`, `*.db` and their `-wal`/`-shm`/`-journal`; eye-tracker recordings `*.edf`, `*.asc` |
 | Rig-specific | `rig-*.yaml`, `rig-*.yml`, `rig-*.json` anywhere (rig files, gamma and reward calibrations, measurement reports): each lab runs on its own rig |
 | Local state | names starting `.alhazen`; the manifest's own name |
 
