@@ -3,7 +3,7 @@
 BIDS-inspired, not BIDS-compliant:
 ``v<version>/sub-<ID>/ses-<NNN>/run-<NN>_task-<name>/`` with per-file
 basenames ``sub-<ID>_ses-<NNN>_run-<NN>_<YYYYMMDD>``. The task is in the run
-folder's name and not in the file names (it was in both before 3.0): saying it
+folder's name and not in the file names (it was in both before 2.14): saying it
 twice made a run's paths long enough to pass Windows' 260-character limit, and
 a file over that limit cannot be written at all. The first
 level is the experiment's version (alhazen 2.0): data recorded by two
@@ -94,7 +94,7 @@ def base_name(subject: str, session: int, run: int, date_yyyymmdd: str) -> str:
 
     The task is left out on purpose. The run folder these files sit in
     already names it (`run_dirname`), and repeating it here cost its whole
-    length a second time in every path. Before 3.0 the name was
+    length a second time in every path. Before 2.14 the name was
     ``sub-<ID>_ses-<NNN>_run-<NN>_task-<name>_<YYYYMMDD>``; readers find a
     run's files by their ending (``*_trials.csv``) and its date by the last
     ``_`` segment, so they read both forms.

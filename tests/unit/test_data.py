@@ -59,7 +59,7 @@ class TestSessionPaths:
         )
         assert paths.run_dir == tmp_path / "v0.1.0" / "sub-M1" / "ses-003" / "run-02_task-mib-quest"
         # The task is in the folder's name only: said again in every file
-        # name (as before 3.0), it made paths too long for Windows.
+        # name (as before 2.14), it made paths too long for Windows.
         assert paths.trials_path.name == "sub-M1_ses-003_run-02_20260826_trials.csv"
         assert paths.figures_dir.is_dir()
         assert paths.snapshot_path.parent == paths.run_dir

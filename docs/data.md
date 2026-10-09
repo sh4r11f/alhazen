@@ -2,7 +2,7 @@
 
 *Where a session's data goes, what each file in a run folder is for, how the
 experiment's version decides the folder, and what changed in alhazen 2.0 and
-3.0.*
+2.14.*
 
 Every session that runs trials (`run`, `test`, `simulate`) writes one **run
 folder**. The run folder is the record: the database and the live monitor are
@@ -323,18 +323,18 @@ come back.
   name and falls back to the old one. The manifest covers whichever names a
   run has, and nothing in alhazen opens either file by name.
 
-## 7. Migrating to 3.0: shorter file names
+## 7. Migrating to 2.14: shorter file names
 
 **What changed.** A run's data files no longer repeat the task, which the run
 folder already names:
 
 | | Run folder | A file in it |
 | --- | --- | --- |
-| before 3.0 | `run-01_task-saccade-bias/` | `sub-01_ses-001_run-01_task-saccade-bias_20260928_trials.csv` |
-| from 3.0 | `run-01_task-saccade-bias/` | `sub-01_ses-001_run-01_20260928_trials.csv` |
+| before 2.14 | `run-01_task-saccade-bias/` | `sub-01_ses-001_run-01_task-saccade-bias_20260928_trials.csv` |
+| from 2.14 | `run-01_task-saccade-bias/` | `sub-01_ses-001_run-01_20260928_trials.csv` |
 
 The folders did not change, and no existing file is renamed: a run recorded
-before 3.0 keeps its names and is still read.
+before 2.14 keeps its names and is still read.
 
 **Why.** Windows refuses a path of 260 characters or more unless an
 administrator has switched on long paths, and most machines have not. The
@@ -345,8 +345,8 @@ out of room:
 graph LR
     A["where the data root is<br/>(yours)"] --> B["v0.5.0 / sub-m01 / ses-001"]
     B --> C["run-01_task-NAME<br/>(the task, once)"]
-    C --> D["before 3.0:<br/>sub-m01_ses-001_run-01_task-NAME_20261008_trials.csv<br/>(the task, a second time)"]
-    C --> E["from 3.0:<br/>sub-m01_ses-001_run-01_20261008_trials.csv"]
+    C --> D["before 2.14:<br/>sub-m01_ses-001_run-01_task-NAME_20261008_trials.csv<br/>(the task, a second time)"]
+    C --> E["from 2.14:<br/>sub-m01_ses-001_run-01_20261008_trials.csv"]
 ```
 
 A file over the limit cannot be opened, and a run's tables are written when

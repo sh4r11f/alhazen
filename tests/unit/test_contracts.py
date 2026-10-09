@@ -165,7 +165,7 @@ class TestRunLayout:
         )
 
     def test_what_a_runs_data_files_start_with_is_unchanged(self, tmp_path):
-        # `{base}` in the names above. 3.0 took the task out of it (the run
+        # `{base}` in the names above. 2.14 took the task out of it (the run
         # folder names the task), so that a run's paths fit Windows' limit of
         # 260 characters; docs/data.md has the migration.
         paths = SessionPaths.create(

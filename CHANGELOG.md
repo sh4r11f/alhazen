@@ -29,8 +29,8 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Changed
 
-- **BREAKING (run-directory layout): a run's data files no longer repeat the
-  task in their names.** `sub-01_ses-001_run-01_task-saccade-bias_20260928_trials.csv`
+- **Run-directory layout, in a minor version: a run's data files no longer
+  repeat the task in their names.** `sub-01_ses-001_run-01_task-saccade-bias_20260928_trials.csv`
   is now `sub-01_ses-001_run-01_20260928_trials.csv`; the run folder
   (`run-01_task-saccade-bias/`) is unchanged and still names the task. The
   repeated name made paths too long for a Windows machine without long paths
@@ -38,8 +38,10 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   end of a session. Runs recorded before this keep their names and are still
   read; nothing in alhazen needed changing to read both, because every reader
   finds a table by its ending. `alhazen.data.naming.base_name` lost its
-  `task_name` argument. By the policy above this is a major version; the
-  migration is [docs/data.md](docs/data.md) §7.
+  `task_name` argument. The policy above keeps file names for a major
+  version. This is the one exception so far, taken because it fixes lost data
+  and no reader had to change; the migration is
+  [docs/data.md](docs/data.md) §7.
 
 ### Added
 
