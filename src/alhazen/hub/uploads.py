@@ -55,7 +55,7 @@ from typing import Any
 from sqlalchemy import Connection, delete, func, insert, select, update
 from sqlalchemy.exc import IntegrityError
 
-from alhazen.hub import packages
+from alhazen.hub import packages, protocol
 from alhazen.hub.auth import Principal, audit
 from alhazen.hub.catalog import may_collect_with
 from alhazen.hub.context import Hub, new_id
@@ -70,7 +70,7 @@ log = logging.getLogger(__name__)
 
 _SHA = re.compile(r"^[0-9a-f]{64}$")
 _CLIENT_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
-METADATA_KEYS = {"subject_code": 64, "mode": 32, "rig_alias": 64, "started_at": 40}
+METADATA_KEYS = protocol.METADATA_LIMITS  # the four keys and their limits, one definition
 DURABILITY = "verified on the hub's primary storage; not an independent backup"
 MISSING = "the stored copy of this session is missing; an operator must restore it"
 EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
@@ -180,17 +180,12 @@ def parse_init(hub: Hub, body: dict[str, Any]) -> dict[str, Any]:
 
 
 def manifest_digest(parsed: dict[str, Any]) -> str:
-    """Canonical identity of an upload (docs/hub/server.md): sha256 of the
-    compact, key-sorted UTF-8 JSON of experiment_id, version_id, the files
-    sorted by path and the metadata."""
-    canonical = {
-        "experiment_id": parsed["experiment_id"],
-        "version_id": parsed["version_id"],
-        "files": parsed["files"],
-        "metadata": parsed["metadata"],
-    }
-    data = json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return hashlib.sha256(data.encode("utf-8")).hexdigest()
+    """Canonical identity of an upload: the shared protocol's definition
+    (alhazen.hub.protocol.manifest_sha256), the same function the rig uses
+    to check a receipt."""
+    return protocol.manifest_sha256(
+        parsed["experiment_id"], parsed["version_id"], parsed["files"], parsed["metadata"]
+    )
 
 
 # -- views --------------------------------------------------------------------

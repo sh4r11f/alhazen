@@ -43,6 +43,21 @@ worker process**. Public entry points:
 | `admin.reset_password / disable_user / enable_user` | Recovery; revokes every session; audited |
 | `admin.reconcile / reindex_sessions / expire_stale_uploads` | Maintenance on demand |
 
+The same operations from a shell on the hub host (passwords via getpass):
+
+```
+python -m alhazen.hub.admin --config PRIVATE.toml init-db
+python -m alhazen.hub.admin --config PRIVATE.toml migrate
+python -m alhazen.hub.admin --config PRIVATE.toml --actor NAME invite --note "who" --days 7
+python -m alhazen.hub.admin --config PRIVATE.toml invites
+python -m alhazen.hub.admin --config PRIVATE.toml --actor NAME revoke-invite INVITE_ID
+python -m alhazen.hub.admin --config PRIVATE.toml --actor NAME reset-password USERNAME
+python -m alhazen.hub.admin --config PRIVATE.toml --actor NAME disable USERNAME   # enable USERNAME
+python -m alhazen.hub.admin --config PRIVATE.toml reconcile
+python -m alhazen.hub.admin --config PRIVATE.toml reindex [SESSION_ID]
+python -m alhazen.hub.admin --config PRIVATE.toml expire-uploads
+```
+
 Every admin action takes an `actor` label and is written to the audit table.
 There is no email: invite codes and reset passwords are shown once to the
 operator, who passes them on through a channel they trust.
@@ -100,7 +115,15 @@ live SQLite database on shared or network storage.
 
 ## Schema and migrations
 
-`schema.METADATA` always describes the newest schema (`SCHEMA_VERSION`, now 1).
+`schema.METADATA` always describes the newest schema (`SCHEMA_VERSION`, now 2).
+Schema 2 (data review fixes) adds nullable `hub_sessions` columns:
+`seal_token`, `problem_code`, `problem_at`, `previous_attempt_id`,
+`retired_client_id`, `index_token`. To bring a schema-1 database forward:
+
+```
+pg_dump -Fc ... > hub-before-v2.dump          # or copy the SQLite file while stopped
+python -m alhazen.hub.admin --config PRIVATE.toml migrate
+```
 `admin.init_database` creates it in an empty database (idempotent at the same
 version, refuses any other existing state). `admin.migrate_database` applies
 explicit N→N+1 steps in one transaction; take a backup first. `create_app`
@@ -155,44 +178,85 @@ Nothing drops a table holding user data.
 `X-Chunk-SHA256`) → `POST /sessions/{id}/complete`. Init and progress
 (`GET /sessions/{id}/upload`) return the same shape:
 `{id, experiment_id, version_id, client_session_id, status, metadata,
-created_at, completed_at, manifest_sha256, total_bytes, file_count, index,
-files:[{path, size, sha256, received, verified}], received_bytes}`.
+created_at, updated_at, completed_at, manifest_sha256, total_bytes,
+file_count, previous_attempt_id, problem, index, files:[{path, size, sha256,
+received, verified}], received_bytes}`.
 
 States (review gate B1): `staging → sealing → committed`; `aborted`
-(`POST /sessions/{id}/abort`, owner, staging only) and `expired` (untouched for
-7 days) release the reservation and delete only the partial bytes.
+(`POST /sessions/{id}/abort`) and `expired` (untouched for 7 days) release the
+reservation and delete only the partial bytes.
 
-- **Identity.** `(collector, client_session_id)` names one manifest forever.
-  `manifest_sha256` is the SHA-256 of the compact, key-sorted UTF-8 JSON of
-  `{experiment_id, version_id, files (sorted by path, each {path, sha256,
-  size}), metadata}`, with `metadata` holding exactly `subject_code, mode,
-  rig_alias, started_at` (absent ones as `null`). An identical init returns
-  the existing session; different content is `409 session_conflict`.
+- **Identity.** `manifest_sha256` is `alhazen.hub.protocol.manifest_sha256`
+  (one implementation for hub and rig): SHA-256 of the compact, key-sorted
+  UTF-8 JSON of `{experiment_id, version_id, files (sorted by path, each
+  {path, sha256, size}), metadata}`, `metadata` holding exactly
+  `subject_code, mode, rig_alias, started_at` (absent ones `null`).
+- **One open or committed upload per (collector, client_session_id).**
+  An identical init returns it (`200`). Different content is
+  `409 session_conflict` (`error.session_id`, `error.status`): abort an
+  open upload first; a committed session is never replaced.
+- **Retrying a closed upload.** After `aborted` or `expired`, an init with the
+  same `client_session_id` starts a NEW attempt (`201`, new id,
+  `previous_attempt_id` = the closed one), with or without the same content.
+  The closed row is kept unchanged as history (its `client_session_id` still
+  reads the original; only its unique key is retired). Quota and the
+  open-upload limit apply to the new attempt as to any init. A client that
+  gets `410 upload_aborted` / `upload_expired` on PUT or complete clears its
+  stored session id and calls init again with the same client id. Whether
+  new content needs fresh consent is the client's rule (the rig's preview
+  binding); the hub only refuses replacing an open or committed upload.
 - **Reservation.** The whole session's bytes are reserved against the
   collector's quota (sessions and package versions together) and the disk's
   free space in the transaction that creates it.
-- **Chunks.** One session's chunks and its completion are serialized by a row
+- **Empty files.** A `size: 0` file must declare the empty digest
+  (`e3b0c442…b855`); it is created (synced) and marked verified at init and
+  needs no chunk. An empty PUT at offset 0 is a harmless replay.
+- **Chunks.** One session's chunks and its seal claim are serialized by a row
   lock. The server truncates any unacknowledged tail, writes, fsyncs, and only
   then records the chunk `(path, offset, length, sha256)` and the new
   `received`. Retrying a recorded chunk is a replay (`replay: true`); other
   bytes at a covered offset are `409 chunk_conflict`; any other offset is
-  `409 offset_mismatch` with `error.received`. A file is hashed in full at its
-  last byte; a mismatch discards it (`409 file_hash_mismatch`, resend from 0).
-- **Seal.** `complete` requires every file received and verified, claims the
-  seal with a 30-minute lease, re-hashes every staged file, writes
-  `manifest.json`, fsyncs files and folders, renames the tree into
-  `sessions/<experiment>/<session>/` on the same filesystem, fsyncs the
-  parents, and only then commits the row. A retry finds an installed tree,
-  verifies it and commits; an existing final that differs is never
-  overwritten (`500 artifact_conflict`, left for the operator). Retries during
-  a live seal get `409 sealing_in_progress` with `Retry-After`.
-- **Receipt.** `{id, status: "committed", manifest_sha256, file_count,
-  total_bytes, completed_at, durability, index, ...}` certifies verified files
-  on the hub's primary storage. It is **not** a backup; rigs keep originals.
-- **Reconciliation** (maintenance, every 10 minutes and on demand) finishes
-  seals whose lease expired, and reports committed rows without stored files
-  and stored folders without a committed row. It deletes nothing. Any problem
-  makes `/readyz` answer `503`.
+  `409 offset_mismatch` with `error.received`. A file of at most 64 MiB is
+  hashed whole at its last byte (`409 file_hash_mismatch`, resend from 0);
+  larger files only at the seal, so no PUT does long work.
+- **Seal (fenced).** `complete` requires every file fully received, then
+  claims the seal with a random token and a 30-minute lease. The sealer
+  renews the lease between files and every 256 MiB it hashes; renewal,
+  commit, reset, lease release and problem marks are database updates
+  conditional on the token, so a sealer whose claim was taken over can
+  change nothing and reports the current state instead. It re-hashes every
+  staged file, writes `manifest.json`, fsyncs files and folders, renames the
+  tree into `sessions/<experiment>/<session>/` on the same filesystem, fsyncs
+  the parents, and only then commits. A staged file that vanished means
+  another sealer installed the tree: it is verified, never called bad. An
+  existing final that differs is never overwritten: the upload is marked
+  `problem.code = "artifact_conflict"` (`409`), stays out of reconciliation
+  retries, and its owner may abort it (the disputed copy stays for the
+  operator).
+- **Answers.** `200` with the receipt once committed; `202 {…, status:
+  "sealing", retry_after: 5}` with `Retry-After` while the seal runs (the
+  route waits up to 10 s, then the seal continues in the background); call
+  complete again or poll `GET /sessions/{id}/upload`. A failed commit
+  transaction releases the claim, so a retry may seal at once.
+- **Receipt.** `{id, status: "committed", client_session_id, experiment_id,
+  version_id, manifest_sha256, file_count, total_bytes, completed_at,
+  durability, problem, index}` certifies verified files on the hub's primary
+  storage. It is **not** a backup; rigs keep originals. If reconciliation
+  later finds the stored files missing, the receipt and data detail say so
+  (`problem.code = "artifact_missing"`, `durability` changed) until they are
+  restored.
+- **Unfinished uploads.** `GET /sessions?limit=&offset=` → `{items,
+  next_offset}`: the caller's `staging` and `sealing` uploads (session shape
+  plus `received_bytes`, `files_verified`, `sealing_active`, `expires_at`,
+  `expired`, `can_abort`). `POST /sessions/{id}/abort` closes a staging upload
+  (or one stuck on `artifact_conflict`), never a live seal or committed data.
+- **Reconciliation** (maintenance, every 10 minutes and on demand) takes over
+  seals whose lease ran out and finishes them; marks committed sessions whose
+  files are missing (and clears the mark when restored); removes staging
+  leftovers of committed, aborted or expired sessions and interrupted package
+  uploads older than a day; reports orphan session folders, unknown staging
+  folders, orphan release files and stuck seals. `/readyz` shows counts only;
+  `admin.reconcile` and the log carry the ids.
 
 ## Data, trial index and exports
 
@@ -203,6 +267,16 @@ derived: after commit, the maintenance worker parses every `trials.csv` /
 `failed` with a message and keeps no rows; the session and its files stay
 available. `POST /data/sessions/{id}/reindex` (owner) or
 `admin.reindex_sessions` rebuilds it from the raw files.
+
+Trial pages carry at most 4 MiB of row values (always at least one row);
+use the returned `next_offset`. Index jobs hold a token: a rebuild requested
+while one runs fences it and runs afterwards, and a transient database error
+returns the job to `pending` instead of failing it. Exports read the session's
+index state, columns and rows in ONE snapshot (REPEATABLE READ on PostgreSQL)
+so a concurrent rebuild cannot mix generations; `trials.open_export` reads the
+first part before the response starts (a not-ready index is a `409`) and
+returns an `ExportStream` whose `close()` releases the snapshot at once,
+whether the stream finished, was abandoned or never started.
 
 Exports stream from the index. CSV cells starting with `= + - @`, tab or
 carriage return are prefixed with `'` unless they are plain numbers. Original
