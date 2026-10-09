@@ -259,3 +259,16 @@ test('the guide shows every mode in order, with its sources', () => {
   assert.ok(!/api key|provider key/i.test(view.textContent));
   assertNoInlineBehaviour(view);
 });
+
+
+test('stimulus schematics keep their authored label size in a focusable narrow-pane scroller', () => {
+  const view = HubDocs.renderTaskGuide(SCAFFOLD, 'fixation-demo', options());
+  const figure = view.querySelector('figure.hd-figure--diagram');
+  const canvas = figure.querySelector('.hd-figure-canvas');
+  assert.match(canvas.getAttribute('class'), /hd-figure-canvas--wide/);
+  assert.equal(canvas.getAttribute('tabindex'), '0');
+  assert.equal(canvas.getAttribute('role'), 'group');
+  assert.match(canvas.getAttribute('aria-label'), /Stimulus.*scrolls sideways/);
+  const drawing = canvas.querySelector('svg');
+  assert.ok(Number(drawing.getAttribute('width')) >= 400);
+});

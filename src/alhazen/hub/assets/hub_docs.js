@@ -1156,7 +1156,8 @@ const HubDocs = (() => {
       figureNumber += 1;
       const part = section(c, 'stimulus', 'Stimulus');
       const notes = ['To scale in ' + task.diagram.unit + ' at the documented defaults; an explanation of the design, not a measurement of any rig.'];
-      part.appendChild(figure(c, figureNumber, 'diagram', 'Stimulus', task.diagram.caption, diagramSvg(task, options), notes, false));
+      // Keep scientific labels at their authored size; a phone scrolls the drawing instead of reducing text to 7 px.
+      part.appendChild(figure(c, figureNumber, 'diagram', 'Stimulus', task.diagram.caption, diagramSvg(task, options), notes, true));
       const legend = diagramLegend(c, task);
       if (legend) part.appendChild(legend);
       view.appendChild(part);
