@@ -296,6 +296,14 @@ def records_experimenter(project: dict[str, Any]) -> bool | None:
     return "experimenter" in capabilities
 
 
+def trains(project: dict[str, Any]) -> bool:
+    """Whether the project's alhazen runs training-ladder stages
+    (``--mode training``): its probe reported the "training-mode"
+    capability. False when unknown (a registration made before probes)."""
+    capabilities = project.get("capabilities") or []
+    return "training-mode" in capabilities
+
+
 def records_demographics(project: dict[str, Any]) -> bool | None:
     """Whether the project's alhazen records the subject's age and sex in its
     session folders (``--age``, ``--sex``): True, False, or None when its
@@ -764,6 +772,100 @@ def _derived_parameter_sets(configs: list[str], declared: dict[str, Any]) -> lis
     return sets
 
 
+LADDERS_SHAPE = (
+    "run.py's LADDERS must be a module-level dict literal naming each training ladder's "
+    'file, like LADDERS = {"Pursuit (monkey)": HERE / "configs" / "training-pursuit.yaml"}'
+)
+
+
+def project_ladders(root: Path, declared: dict[str, Any]) -> dict[str, Any]:
+    """The experiment's training ladders (alhazen.training.ladder), read from
+    run.py's ``LADDERS`` without running it, each file loaded with this
+    alhazen's ladder model.
+
+    Returns ``{"ladders": [{"label", "file", "name", "title", "description",
+    "stages": [...]}], "error": None}``; ``error`` says what to fix when the
+    table or a file cannot be read (the ladders that can be read are still
+    offered). Whether a stage's overrides suit its task is the project's own
+    alhazen's to say, when the launch (or its estimate) resolves the stage.
+    """
+    from alhazen.training.ladder import load_ladder
+
+    run_py = root / "run.py"
+    if declared.get("error") or not run_py.is_file():
+        return {"ladders": [], "error": None}
+    try:
+        tree = ast.parse(run_py.read_text(encoding="utf-8"))
+    except (SyntaxError, UnicodeDecodeError):
+        return {"ladders": [], "error": None}  # project_tasks reports it already
+    node = _module_assignment(tree, "LADDERS")
+    if node is None:
+        return {"ladders": [], "error": None}
+    if not isinstance(node, ast.Dict) or not node.keys:
+        return {"ladders": [], "error": LADDERS_SHAPE}
+    names = [task["name"] for task in declared.get("tasks", [])]
+    ladders: list[dict[str, Any]] = []
+    problems: list[str] = []
+    for key, value in zip(node.keys, node.values, strict=True):
+        if not (isinstance(key, ast.Constant) and isinstance(key.value, str) and key.value.strip()):
+            problems.append(LADDERS_SHAPE)
+            continue
+        label = key.value.strip()
+        relative = _params_path(tree, value)
+        if relative is None:
+            problems.append(
+                f"run.py's LADDERS[{label!r}] gives its file in a form that cannot "
+                f"be read without running run.py; {LADDERS_SHAPE}"
+            )
+            continue
+        path = path_inside(root, relative)
+        try:
+            ladder = load_ladder(path)
+        except ConfigError as exc:
+            problems.append(f"LADDERS[{label!r}]: {exc}")
+            continue
+        stages = []
+        for index, stage in enumerate(ladder.stages):
+            task = stage.task or ladder.task
+            # A training task named by import path ("package.module:Class")
+            # is not one of TASKS, on purpose; the project's alhazen imports
+            # it when the stage runs.
+            if names and task is not None and ":" not in task and task not in names:
+                problems.append(
+                    f"LADDERS[{label!r}] stage {stage.id!r} runs task {task!r}, which is not one "
+                    f"of TASKS ({', '.join(names)})"
+                )
+            stages.append(
+                {
+                    "id": stage.id,
+                    "number": index + 1,
+                    "title": stage.title,
+                    "description": stage.description,
+                    "task": task,
+                    "params": stage.params or ladder.params,
+                    "overrides": stage.overrides,
+                    "success": stage.success,
+                    "reward": stage.reward.model_dump(mode="json", exclude_unset=True),
+                    "criterion": (
+                        stage.criterion.model_dump(mode="json")
+                        if stage.criterion is not None
+                        else None
+                    ),
+                }
+            )
+        ladders.append(
+            {
+                "label": label,
+                "file": relative,
+                "name": ladder.name,
+                "title": ladder.title,
+                "description": ladder.description,
+                "stages": stages,
+            }
+        )
+    return {"ladders": ladders, "error": "; ".join(problems) or None}
+
+
 def project_parameter_sets(
     root: Path, configs: list[str], declared: dict[str, Any]
 ) -> dict[str, Any]:
@@ -1024,6 +1126,14 @@ class Launch(BaseModel):
     # renames anything already recorded. None from a client that sends no
     # label, and for a launch that takes no parameters.
     parameter_set: str | None = None
+    # A training launch (mode "training"): the ladder, by run.py's LADDERS
+    # label, and the stage, by its id (project_ladders). `rehearse` runs the
+    # stage in simulate mode instead, headless, filed under the training
+    # root's rehearsal sibling: a dry run of the stage with nobody in the
+    # chair. None/False for every other launch.
+    ladder: str | None = None
+    stage: str | None = None
+    rehearse: bool = False
     # The calibration target for this run, when the page's choice differs
     # from the rig's (CalibrationChoice); None runs the rig's own.
     calibration_target: CalibrationChoice | None = None
@@ -1089,6 +1199,10 @@ MODE_FLAGS = frozenset(
         "--sex",
         "--measure",
         "--measure-status",
+        # Sent for a training launch (--mode training, or its rehearsal):
+        # the ladder and the stage the Training panel chose.
+        "--ladder",
+        "--stage",
     }
 )
 # The same for a standalone preview module: the flags `_script_command`
@@ -1196,6 +1310,8 @@ def _launch_initials(request: Launch, mode: Mode) -> str | None:
     if not text:
         if mode in {Mode.RUN, Mode.TEST}:
             raise ValueError("Subject initials are required for run and test modes")
+        if mode is Mode.TRAINING:
+            raise ValueError("Subject initials are required for training mode")
         return None
     return normalize_initials(text)
 
@@ -1232,7 +1348,9 @@ SEED_SEARCH_BYTES = 65536
 # The modes whose session draws a seed when it is given none, and prints it.
 # Demo and movie take 0 when given none (the command line's own default) and
 # measure takes none, so none of the three prints the line.
-SEED_DRAWING_MODES = frozenset({Mode.RUN.value, Mode.TEST.value, Mode.SIMULATE.value})
+SEED_DRAWING_MODES = frozenset(
+    {Mode.RUN.value, Mode.TEST.value, Mode.SIMULATE.value, Mode.TRAINING.value}
+)
 
 
 def console_seed(console: Path) -> int | None:
@@ -1277,8 +1395,13 @@ def _mode_command(
     measure_subject: str | None = None,
     experimenter: dict[str, Any] | None = None,
     demographics: dict[str, Any] | None = None,
+    training: tuple[str, str] | None = None,
 ) -> list[str]:
-    """run.py's arguments for one of the six modes: the launcher's flags, then the extras.
+    """run.py's arguments for one of the modes: the launcher's flags, then the extras.
+
+    ``training`` is ``(ladder, stage)`` for a training launch — training mode,
+    or simulate mode rehearsing the stage — sent as ``--ladder``/``--stage``;
+    such a launch sends no ``--params`` (the stage names its own).
 
     Refusals come first, before anything is written to the run directory,
     in the words the person at the screen needs. TestCommandContract parses
@@ -1298,8 +1421,16 @@ def _mode_command(
     if mode is Mode.MEASURE and has_parameters:
         raise ValueError("Measure rig does not use task parameters")
     extra = _extra_arguments(request.extra_args, reserved)
+    if mode is Mode.TRAINING and training is None:
+        raise ValueError("Training runs one stage of a ladder: choose the stage")
+    if training is not None and has_parameters:
+        raise ValueError(
+            "A training stage names its own parameters (the ladder file); this launch sends none"
+        )
     if mode in {Mode.RUN, Mode.TEST} and not request.subject.strip():
         raise ValueError("A subject ID is required for run and test modes")
+    if mode is Mode.TRAINING and not request.subject.strip():
+        raise ValueError("A subject ID is required for training mode")
     initials = _launch_initials(request, mode)
     output = run_dir / "media"
     command = [str(root / "run.py"), "--mode", mode.value]
@@ -1310,6 +1441,8 @@ def _mode_command(
     if task is not None:
         command += ["--task", task]
     command += ["--rig", rig]
+    if training is not None:
+        command += ["--ladder", training[0], "--stage", training[1]]
     # No seed typed, no --seed: the session draws its own and records it,
     # and prints it on the console, where the history reads it (console_seed).
     if request.seed is not None:
@@ -1762,6 +1895,7 @@ class Workspace:
                 params.append(path.relative_to(root).as_posix())
         declared = project_tasks(root)
         menu = project_parameter_sets(root, params, declared)
+        ladders = project_ladders(root, declared)
         shared = _shared_rigs(project)
         # The experiment's names, read from its pyproject.toml on every
         # describe (like its rigs and tasks) so an edit shows on the next
@@ -1792,6 +1926,13 @@ class Workspace:
             "parameter_sets": menu["sets"],
             "default_parameter_set": menu["default"],
             "parameter_sets_error": menu["error"],
+            # The training ladders (run.py's LADDERS; project_ladders), and
+            # whether this project's alhazen can run a stage (its probe's
+            # "training-mode" capability): the Mode menu offers Training only
+            # when both say so.
+            "ladders": ladders["ladders"],
+            "ladders_error": ladders["error"],
+            "trains": trains(project),
             "available": (root / "run.py").is_file(),
             # The experiment's version, the protocol its data is filed under
             # (pyproject.toml's [project] version), or None with the reason.
@@ -1804,6 +1945,29 @@ class Workspace:
             "meta": project.get("meta", {}),
             "archived": bool(project.get("archived", False)),
         }
+
+    def training(self, key: str) -> dict[str, Any]:
+        """Every training ladder's history (alhazen.training.history), read
+        from the training roots beside each of the project's rig data roots:
+        per stage its sessions with their success rates, and per subject what
+        the stage's criterion recommends. Reads only."""
+        from alhazen.cli.workspace_data import data_roots
+        from alhazen.training.history import ladder_history
+        from alhazen.training.ladder import load_ladder
+
+        described = self.describe(key)
+        root = Path(described["path"])
+        existing, missing, _problems = data_roots(described)
+        real = [entry.path for entry in [*existing, *missing] if entry.kind == "real"]
+        ladders = []
+        for entry in described["ladders"]:
+            try:
+                ladder = load_ladder(path_inside(root, entry["file"]))
+            except ConfigError as exc:
+                ladders.append({"label": entry["label"], "error": str(exc), "stages": []})
+                continue
+            ladders.append({"label": entry["label"], **ladder_history(real, ladder)})
+        return {"ladders": ladders, "error": described["ladders_error"]}
 
     def config(self, key: str, path: str) -> dict[str, Any]:
         root = Path(self.project(key)["path"])
@@ -1901,17 +2065,41 @@ class Workspace:
         # anything else exists, and with the menu's names for the rigs that
         # do collect: the child would refuse it too, but only after the
         # workspace had filed a failed run for it (docs/rigs.md §5).
-        if request.mode == Mode.RUN.value:
+        training = None
+        if request.mode == Mode.TRAINING.value or request.stage or request.ladder:
+            training, request = self._training_launch(project, request)
+        if request.mode == Mode.RUN.value or (
+            request.mode == Mode.TRAINING.value and not request.rehearse
+        ):
             refusal = real_data_refusal(
-                Mode.RUN, checked, ref, instead=lambda: _real_data_instead(root, shared)
+                Mode(request.mode), checked, ref, instead=lambda: _real_data_instead(root, shared)
             )
             if refusal is not None:
                 raise ValueError(refusal)
         self._check_registered_initials(root, request, checked)
         self._check_calibration_choice(project, request, checked)
         check_measurements(project, request.mode, request.measurements)
-        task = self._task_for(project, request)
+        task = None if training is not None else self._task_for(project, request)
         base = [project["python"], "-u"]
+        if training is not None:
+            # The stage names its task (run_experiment reads it from the
+            # ladder) and its params; a rehearsal is simulate mode, headless.
+            mode = Mode.SIMULATE if request.rehearse else Mode.TRAINING
+            launched = request.model_copy(update={"headless": request.rehearse})
+            rig = ref.spec if ref.source == "alhazen" else str(ref.path)
+            return base + _mode_command(
+                mode,
+                launched,
+                root,
+                rig,
+                run_dir,
+                no_browser_flag(project.get("alhazen_version")),
+                task=None,
+                reserved=MODE_FLAGS | {"--task"},
+                experimenter=experimenter,
+                demographics=demographics,
+                training=training,
+            )
         if request.mode in {m.value for m in Mode}:
             # With a task chosen from the menu, `--task` is the form's too and
             # may not be contradicted from the extra arguments.
@@ -1944,6 +2132,46 @@ class Workspace:
         # to load_rig, which takes a file: a shared rig goes as the file the
         # probe recorded.
         return base + _script_command(request, root, ref.path, run_dir)
+
+    def _training_launch(
+        self, project: dict[str, Any], request: Launch
+    ) -> tuple[tuple[str, str], Launch]:
+        """``(ladder name, stage id)`` for a training launch, checked against
+        the project's ladders, and the request as it will run. Each refusal
+        says what to choose, before anything is written."""
+        if request.mode != Mode.TRAINING.value:
+            raise ValueError("A ladder and a stage are for Training; clear them for this launch")
+        if not trains(project):
+            raise ValueError(
+                f"{project['name']}'s alhazen ({project.get('alhazen_version')}) cannot run "
+                "training stages, or was registered before the workspace asked: update its "
+                "alhazen, then open Project settings and save, to register it again"
+            )
+        if request.parameters is not None or request.parameters_yaml is not None:
+            raise ValueError(
+                "A training stage names its own parameters (the ladder file); this launch sends "
+                "none"
+            )
+        described = self.describe(project["id"])
+        ladders = described["ladders"]
+        if not ladders:
+            raise ValueError(
+                described["ladders_error"]
+                or f"{project['name']}'s run.py registers no training ladder (LADDERS)"
+            )
+        chosen = request.ladder or (ladders[0]["label"] if len(ladders) == 1 else None)
+        ladder = next((x for x in ladders if chosen in (x["label"], x["name"])), None)
+        if ladder is None:
+            raise ValueError(f"Choose a training ladder: {', '.join(x['label'] for x in ladders)}")
+        stage = next((x for x in ladder["stages"] if x["id"] == request.stage), None)
+        if stage is None:
+            raise ValueError(
+                f"Choose a stage of {ladder['label']}: "
+                f"{', '.join(x['id'] for x in ladder['stages'])}"
+            )
+        return (ladder["name"], stage["id"]), request.model_copy(
+            update={"task": stage["task"], "parameter_set": None}
+        )
 
     @staticmethod
     def _check_registered_initials(root: Path, request: Launch, rig: RigConfig) -> None:
@@ -2014,13 +2242,15 @@ class Workspace:
             return request, snapshot
         if not names_people:
             raise ValueError(
-                "Only a session (run, test, simulate) or Measure rig takes a subject or an "
-                "experimenter; clear them for this launch"
+                "Only a session (run, training, test, simulate) or Measure rig takes a subject or "
+                "an experimenter; clear them for this launch"
             )
         assert mode is not None
         if self.people is None:
             raise ValueError(self.people_error or "The people registry is not available")
-        named_subject = mode in {Mode.RUN, Mode.TEST}
+        named_subject = mode in {Mode.RUN, Mode.TEST} or (
+            mode is Mode.TRAINING and not request.rehearse
+        )
         if named_subject and request.subject_record is not None and request.experimenter is None:
             raise ValueError("Choose the experimenter who runs this session")
         taken = self.people.launch_identity(
@@ -2092,7 +2322,7 @@ class Workspace:
                 "A calibration-target choice is for run and test, which calibrate the rig's eye "
                 "tracker; a script never calibrates"
             )
-        if request.mode not in {Mode.RUN.value, Mode.TEST.value}:
+        if request.mode not in {Mode.RUN.value, Mode.TEST.value, Mode.TRAINING.value}:
             return  # refused by _mode_command, in the mode's own words
         try:
             with_calibration_target(
@@ -2305,8 +2535,20 @@ class Workspace:
             if text is not None:
                 parse_parameters(text)
             project = self.project(request.project)
-            task = self._task_for(project, request)
-            self._check_parameter_set(project, request, task)
+            training: dict[str, Any] | None = None
+            if request.mode == Mode.TRAINING.value:
+                (ladder_name, stage_id), launched = self._training_launch(project, request)
+                task = launched.task
+                # For the history and run.json: which rung, and whether it
+                # was a rehearsal (simulate mode, headless) of it.
+                training = {
+                    "ladder": ladder_name,
+                    "stage": stage_id,
+                    "rehearse": request.rehearse,
+                }
+            else:
+                task = self._task_for(project, request)
+                self._check_parameter_set(project, request, task)
             ref, shared = self._launch_rig(project, request.rig)
             merged = rig_mapping(ref.path, shared=shared)
             (run_dir / "media").mkdir(parents=True)
@@ -2322,6 +2564,7 @@ class Workspace:
                 "mode": request.mode,
                 "task": task,
                 "parameter_set": request.parameter_set,
+                "training": training,
                 "rig": Path(request.rig).as_posix(),
                 "rig_name": ref.name,
                 "started": started,
@@ -2362,6 +2605,9 @@ class Workspace:
                 # The Task parameters entry it was launched from, by its
                 # label; None when the client named none.
                 "parameter_set": request.parameter_set,
+                # The training stage ({ladder, stage, rehearse}) for a
+                # Training launch; None for any other.
+                "training": training,
                 # What was launched: a project-relative path, stored as posix
                 # whatever the client typed so run.json reads the same on
                 # every OS, or `alhazen/<name>` for a shared rig. The rig

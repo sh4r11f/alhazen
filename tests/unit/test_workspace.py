@@ -595,7 +595,12 @@ class TestCommandContract:
     before them, and the parse stops exactly where they begin.
     """
 
-    @pytest.mark.parametrize("mode, sheet", [(m.value, False) for m in Mode] + [("movie", True)])
+    # Training names a ladder stage instead of parameters: its command is held
+    # to the same parser in tests/unit/test_workspace_training.py.
+    @pytest.mark.parametrize(
+        "mode, sheet",
+        [(m.value, False) for m in Mode if m is not Mode.TRAINING] + [("movie", True)],
+    )
     def test_every_mode_command_parses_with_the_runner_parser(self, workspace, mode, sheet):
         request = request_for(
             workspace,
@@ -653,7 +658,9 @@ class TestCommandContract:
         `--no-dashboard-browser` because that is the spelling it knows."""
         emitted: set[str] = set()
         for version in ("1.8.0", "1.9.0"):
-            for mode in Mode:
+            # Training names a ladder stage, not parameters: its flags are
+            # added below, from a project that registers a ladder.
+            for mode in (m for m in Mode if m is not Mode.TRAINING):
                 request = request_for(
                     workspace,
                     mode=mode.value,
@@ -724,6 +731,9 @@ class TestCommandContract:
             request, workspace.directory / "job", demographics={"age": "27", "sex": "female"}
         )
         emitted.update(token for token in command if token.startswith("--"))
+        # The training flags: emitted for a Training launch by a project whose
+        # run.py registers a ladder (tests/unit/test_workspace_training.py).
+        emitted.update({"--ladder", "--stage"})
         assert emitted == MODE_FLAGS
 
 

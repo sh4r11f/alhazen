@@ -45,6 +45,7 @@ def run_experiment(
     params_hook: Callable[[Any, argparse.Namespace], Any] | None = None,
     tasks: Mapping[str, tuple[type, Path | str | None]] | None = None,
     default_task: str | None = None,
+    ladders: Mapping[str, Path | str] | None = None,
 ) -> int:
     """Parse ``argv`` and run this experiment in the mode it names.
 
@@ -106,11 +107,22 @@ def run_experiment(
     ``default_task``, else the first task declared; with ``task_class``, its
     task — and warns (a ``FutureWarning`` naming that task); 3.0 refuses it.
 
+    ``ladders`` registers the experiment's training ladders
+    (alhazen.training.ladder), for ``--mode training --stage <id>``: a
+    mapping from each ladder's label — what ``--ladder`` and the workspace's
+    Training stage list show — to its YAML file. Write it, like ``TASKS``, as
+    a module-level dict literal, ``LADDERS = {"Pursuit (monkey)": HERE /
+    "configs" / "training-pursuit.yaml"}``, beside ``PARAMETERS``, and pass
+    ``ladders=LADDERS``: the workspace reads the same table out of run.py.
+    With ``--stage`` the stage names the task (``--task`` may be left out)
+    and its params file (``--params`` is refused).
+
     ``default_task`` is deprecated (since 2.5, removed in 3.0) and warns
     whenever it is given: it chose what a command without ``--task`` ran,
     and in 3.0 there is no such command. Until then it still does.
     """
     from alhazen.cli.main import _run_session, add_mode_arguments
+    from alhazen.task.task import default_params_path
 
     # Deprecated wherever it is passed — even beside task_class=, where it
     # never did anything — because run.py's own line is what has to change.
@@ -183,6 +195,46 @@ def run_experiment(
     # when --params is still None) and keeps an explicit --params above both.
     parser.set_defaults(params=str(default_params) if default_params else None)
     args = parser.parse_args(argv)
+    given = list(sys.argv[1:] if argv is None else argv)
+    # Which flags were TYPED, for a training stage (alhazen.cli.main
+    # _settle_training_stage): --params has run.py's file as its default, so
+    # only the command line can say whether one was given.
+    args.params_explicit = any(arg == "--params" or arg.startswith("--params=") for arg in given)
+    args.task_explicit = args.task is not None
+    args.ladders = dict(ladders or {})
+    if tasks is not None:
+        args.tasks_table = dict(tasks)
+    else:
+        assert task_class is not None  # one of the two, checked above
+        args.tasks_table = {
+            getattr(task_class, "name", task_class.__name__): (
+                task_class,
+                default_params if default_params is not None else default_params_path(task_class),
+            )
+        }
+    stage_task = None
+    if args.stage and args.task is None:
+        # The stage names its task (one of TASKS, or a training task by
+        # import path): no --task needed, and no warning for its absence. A
+        # ladder or stage that cannot be found is said here.
+        from alhazen.errors import ConfigError
+        from alhazen.training.ladder import find_ladder, load_ladder
+
+        try:
+            _, ladder_path = find_ladder(args.ladder or "", args.ladders)
+            ladder = load_ladder(ladder_path)
+            stage = ladder.stage(args.stage)
+        except ConfigError as exc:
+            print(f"CANNOT RUN: {exc}", file=sys.stderr)
+            return 2
+        stage_task = str(stage.task or ladder.task)
+        if ":" not in stage_task and stage_task not in names:
+            print(
+                f"CANNOT RUN: stage {args.stage!r} runs task {stage_task!r}, which is not one of "
+                f"this run.py's tasks ({', '.join(names)}) nor an import path",
+                file=sys.stderr,
+            )
+            return 2
     # The default rig goes in as typed — a name or a path — and is resolved by
     # the dispatch exactly as a --rig typed on the command line would be. It
     # is filled in after parsing rather than as the flag's default so the
@@ -199,7 +251,11 @@ def run_experiment(
     # arguments this parser was given, which are sys.argv's unless the
     # caller passed its own.
     args.invocation = [sys.argv[0], *(sys.argv[1:] if argv is None else argv)]
-    if args.task is None and args.mode != Mode.MEASURE.value:
+    if (
+        args.task is None
+        and stage_task is None
+        and args.mode not in (Mode.MEASURE.value, Mode.TRAINING.value)
+    ):
         # Deprecated, not refused: refusing a command that used to work is a
         # MAJOR change (docs/versioning.md §1, §4), so until 3.0 it runs what
         # it always ran and says which task that is. A FutureWarning rather
@@ -222,8 +278,14 @@ def run_experiment(
     # Measure mode runs no task, so it needs none named; the one it is given
     # here only says which experiment's folder to look for a rig name in, and
     # every task in the table belongs to the same experiment.
-    args.task = unnamed if args.task is None else args.task
-    if tasks is not None:
+    if stage_task is not None:
+        # The training stage decides the task and its params
+        # (alhazen.cli.main._settle_training_stage resolves it).
+        args.task = stage_task
+        task_class = None
+    else:
+        args.task = unnamed if args.task is None else args.task
+    if tasks is not None and stage_task is None:
         # The chosen task's params file stands in for --params exactly as
         # default_params does for one task; an explicit --params still wins.
         task_class, task_params = tasks[args.task]

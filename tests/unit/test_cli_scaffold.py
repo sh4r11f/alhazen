@@ -162,9 +162,10 @@ class TestScaffold:
             assert rig.real_data is collects, name
             # Run mode refuses the Mac and takes the lab rig; every other mode
             # takes both.
+            # (Training, 2.13, drives a real subject as run does.)
             for mode in Mode:
                 refused = real_data_refusal(mode, rig) is not None
-                assert refused is (mode is Mode.RUN and not collects), (name, mode)
+                assert refused is (mode.drives_subject and not collects), (name, mode)
 
     def test_the_laptop_rig_has_no_devices_and_the_mode_supplies_them(self, tmp_path):
         """A laptop has no tracker, and the file no longer pretends it does

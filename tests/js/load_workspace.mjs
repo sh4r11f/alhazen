@@ -30,6 +30,8 @@ const PAGE_HTML = readFileSync(new URL('workspace.html', ASSETS), 'utf8');
 const PARAMETERS_JS = fileURLToPath(new URL('workspace_parameters.js', ASSETS));
 const CALIBRATION_JS = fileURLToPath(new URL('workspace_calibration.js', ASSETS));
 const WORKSPACE_JS = fileURLToPath(new URL('workspace.js', ASSETS));
+const TRAINING_JS = fileURLToPath(new URL('workspace_training.js', ASSETS));
+const TRAINING_SOURCE = readFileSync(TRAINING_JS, 'utf8');
 const MANAGE_JS = fileURLToPath(new URL('workspace_manage.js', ASSETS));
 const MANAGE_SOURCE = readFileSync(MANAGE_JS, 'utf8');
 const PARAMETERS_SOURCE = readFileSync(PARAMETERS_JS, 'utf8');
@@ -173,6 +175,9 @@ function fakeServer() {
     }
     if (path === '/api/state') return response(server.state);
     if (path === '/api/manage/people') return response(server.people);
+    /* The training ladders' history (GET /api/training): none run yet,
+     * unless the test says otherwise. */
+    if (path === '/api/training') return response(server.training || { ladders: [] });
     if (path.startsWith('/api/runs/')) {
       const run = server.details[path.slice('/api/runs/'.length)];
       return run ? response(run) : response({ error: 'Unknown run' }, 404);
@@ -281,6 +286,7 @@ export function loadWorkspace(options = {}) {
    * test, with the asset's own line numbers in the stack. */
   vm.runInContext(PARAMETERS_SOURCE, context, { filename: PARAMETERS_JS });
   vm.runInContext(CALIBRATION_SOURCE, context, { filename: CALIBRATION_JS });
+  vm.runInContext(TRAINING_SOURCE, context, { filename: TRAINING_JS });
   vm.runInContext(WORKSPACE_WITHOUT_POLL, context, { filename: WORKSPACE_JS });
   /* workspace.html loads the management script after workspace.js; it only
    * defines window.WorkspaceManage, which workspace.js looks up when used. */

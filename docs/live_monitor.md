@@ -750,3 +750,20 @@ and `dashboard.html`). Both are covered by the run manifest.
 The saved page is the same page, with its snapshot baked in and nothing to
 poll: it loads no fonts, scripts or styles from the network, so it still opens
 years later on a machine with no internet.
+
+
+## The juice panel
+
+A session that pays through the reward line (a monkey's: an experiment
+session or a training stage) gets one more panel, **Juice delivered**, in
+the Reward section, whatever the task's live monitor spec says. One bar per
+paid trial, stacked by what it was paid for — the trial's outcome, a trial a
+device cut short (`on_fault`), a manual `r`, a mid-trial drop — and the
+cumulative total as a step line on the right-hand axis. The amounts are in
+µL when the rig's reward calibration (`rig-<name>.reward.yaml`, the Measure
+rig's Juice per pulse) covers every pulse width delivered, on the session's
+line and at its voltage; otherwise in pulses, with the valve-open time in the
+stats strip. Both axis titles carry the unit. The same numbers go into
+session.json as `reward.delivered`, written at teardown from the same events
+(`alhazen.live_monitor.juice`), and the workspace's History session details
+draw the same plot.

@@ -369,7 +369,9 @@ class TestEveryLaunchNamesItsTask:
             **overrides,
         )
 
-    @pytest.mark.parametrize("mode", [m.value for m in Mode])
+    # Training's task is the ladder stage's, named by the stage itself rather
+    # than --task (tests/unit/test_workspace_training.py).
+    @pytest.mark.parametrize("mode", [m.value for m in Mode if m is not Mode.TRAINING])
     @pytest.mark.parametrize("asked", [None, "mt-tuning"], ids=["menu-default", "chosen"])
     def test_a_project_with_a_menu_is_sent_a_task_in_every_mode(self, workspace, mode, asked):
         root = Path(workspace.projects[0]["path"])
@@ -382,7 +384,7 @@ class TestEveryLaunchNamesItsTask:
         # default_task= here — explicitly, never leaving it to run.py.
         assert command[start : start + 4] == ["--mode", mode, "--task", asked or "mib-search"]
 
-    @pytest.mark.parametrize("mode", [m.value for m in Mode])
+    @pytest.mark.parametrize("mode", [m.value for m in Mode if m is not Mode.TRAINING])
     def test_a_one_task_project_on_2_5_is_sent_its_name_in_every_mode(
         self, workspace, monkeypatch, mode
     ):

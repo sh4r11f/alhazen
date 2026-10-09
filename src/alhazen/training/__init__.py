@@ -1,4 +1,9 @@
-"""Training: curricula, criteria, and a subject's place in them.
+"""Training: curricula, criteria, a subject's place in them, and ladders.
+
+A ladder (``training.ladder``) is the stages a monkey climbs toward an
+experiment's final task, each its own task variant paid on its own success,
+chosen by the operator per session in training mode; ``training.history``
+reads how a subject has done at each stage back from the data.
 
 A curriculum is data — named stages that override the task's own parameters,
 with criteria for moving between them — so a shaping protocol can be read,
@@ -15,6 +20,8 @@ from alhazen.training.criteria import (
     register_metric,
     success_rate,
 )
+from alhazen.training.history import ladder_history
+from alhazen.training.ladder import Ladder, LadderStage, StageReward, load_ladder, resolve_stage
 from alhazen.training.stages import Curriculum, Ramp, Stage, StageCriteria
 from alhazen.training.state import TrainingState as TrainingState
 from alhazen.training.supervisor import StageChange as StageChange
@@ -26,6 +33,12 @@ from alhazen.training.supervisor import TrainingSupervisor as TrainingSupervisor
 # imports them this way, but are not exported.
 __all__ = [
     "Curriculum",
+    "Ladder",
+    "LadderStage",
+    "StageReward",
+    "ladder_history",
+    "load_ladder",
+    "resolve_stage",
     "Ramp",
     "Stage",
     "StageCriteria",

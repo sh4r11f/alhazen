@@ -951,7 +951,18 @@
       return;
     }
     if (epoch !== current.epoch) return;
-    drawHistory(container, p, history);
+    // The training ladders' summary (workspace_training.js), when the
+    // experiment registers one: read beside the sessions, never instead.
+    let training = null;
+    if ((p.ladders || []).length && window.TrainingLadder) {
+      try {
+        training = await h.api(`/api/training?project=${encodeURIComponent(p.id)}`);
+      } catch (e) {
+        training = {ladders: [], error: e.message};
+      }
+      if (epoch !== current.epoch) return;
+    }
+    drawHistory(container, p, history, training);
   }
 
   function experimenterText(x) {
@@ -991,7 +1002,7 @@
     return true;
   }
 
-  function drawHistory(container, p, history) {
+  function drawHistory(container, p, history, training = null) {
     const toolbar = el('div', 'm-toolbar');
     const search = input(historyQuery, {type: 'search', placeholder: 'Filter by subject, '
       + 'experimenter, task, rig or date…', 'aria-label': 'Filter sessions'});
@@ -1066,7 +1077,11 @@
     }
     sessionsBox.append(sessionTable);
     launchesBox.append(launchTable);
-    container.replaceChildren(toolbar, notes, detail, sessionsBox, launchesBox);
+    const trainingBox = training && window.TrainingLadder
+      ? TrainingLadder.historyPanel(training, {node: h.node, panel})
+      : null;
+    container.replaceChildren(toolbar, notes, detail,
+      ...(trainingBox ? [trainingBox] : []), sessionsBox, launchesBox);
   }
 
   function sessionRows(sessions, history, p, detail, changed) {
@@ -1142,8 +1157,10 @@
     t.append(head);
     for (const l of launches) {
       const tr = el('tr');
-      const what = l.parameter_set || l.task
-        ? `${h.label(l.mode)} · ${l.parameter_set || l.task}` : h.label(l.mode);
+      const stage = l.training
+        ? `stage ${l.training.stage}${l.training.rehearse ? ' (rehearsal)' : ''}` : null;
+      const what = stage || l.parameter_set || l.task
+        ? `${h.label(l.mode)} · ${stage || l.parameter_set || l.task}` : h.label(l.mode);
       const subject = l.subject ? `sub-${l.subject}${l.initials ? ` · ${l.initials}` : ''}` : '—';
       const status = el('td');
       let kind = 'off';
@@ -1211,6 +1228,13 @@
       : 'not from this workspace, or before it kept launch records');
     box.append(facts);
     for (const problem of run.problems) box.append(message('note', problem));
+    // What the session paid through the reward line (a monkey's), trial by
+    // trial and in total (workspace_juice.js); nothing for one that paid none.
+    if (run.juice && run.juice.form === 'juice' && window.JuiceChart) {
+      box.append(JuiceChart.render(run.juice, {node: h.node}));
+    } else if (run.juice && run.juice.form === 'empty') {
+      box.append(el('p', 'm-unknown', 'The reward line was open; no juice was delivered.'));
+    }
     const actions = el('div', 'm-subtools');
     const viewer = el('div');
     if (run.page) {

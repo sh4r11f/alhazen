@@ -61,6 +61,7 @@ from alhazen.config.models import SessionConfig, age_number, normalize_age, norm
 from alhazen.config.reward_calibration import load_reward_calibration, ul_per_pulse
 from alhazen.config.rigs import rig_mapping
 from alhazen.config.snapshot import build_provenance, write_snapshot
+from alhazen.data.atomic import replace_atomically
 from alhazen.data.paths import SessionPaths
 from alhazen.errors import ConfigError
 from alhazen.task.subject_kind import SubjectKind, subject_kind_of
@@ -206,6 +207,9 @@ class RunIdentity:
       guess.
     - ``demographics`` — the subject's age and sex (``--age``, ``--sex``),
       or None when neither was given: the card then records both as null.
+    - ``training`` — the training-ladder stage the session runs
+      (``alhazen.training.ladder.ResolvedStage.record``), or None for any
+      session that is not one: the card's ``training`` is then null.
     """
 
     experiment: Experiment
@@ -216,6 +220,7 @@ class RunIdentity:
     command: tuple[str, ...] | None = None
     experimenter: Experimenter | None = None
     demographics: SubjectDemographics | None = None
+    training: dict[str, Any] | None = None
 
 
 # How the alhazen console command is recorded: by its name, which is what a
@@ -359,6 +364,19 @@ def reward_record(
     }
 
 
+def record_reward_delivered(path: Path, totals: dict[str, Any]) -> None:
+    """Add what reached the valve (``live_monitor.juice.juice_totals``) to
+    session.json's ``reward`` as ``delivered``, at teardown.
+
+    The card is written before trial 1 and this is its one later addition:
+    the total a session paid is only known at its end. Added in 2.13.0
+    without a schema bump: a new key, which a reader of schema 1 ignores.
+    """
+    card = json.loads(path.read_text(encoding="utf-8"))
+    card.setdefault("reward", {})["delivered"] = totals
+    replace_atomically(path, json.dumps(card, indent=2, ensure_ascii=False) + "\n")
+
+
 def session_card(
     cfg: SessionConfig,
     paths: SessionPaths,
@@ -399,6 +417,12 @@ def session_card(
         },
         "task": info.task_name,
         "mode": identity.mode,
+        # The training-ladder stage this session ran ({ladder, stage, success,
+        # reward, criterion, ...}; alhazen.training.ladder), or null for a
+        # session that is not a training stage. Added in 2.13.0 without a
+        # schema bump, like ``command``: a new key, which a reader of schema 1
+        # ignores.
+        "training": identity.training,
         # Initials are recorded here and in the registry, never in a path.
         # Age (years, a number) and sex (a SUBJECT_SEXES code) beside them,
         # null when not recorded; added after 2.11.0 without a schema bump,

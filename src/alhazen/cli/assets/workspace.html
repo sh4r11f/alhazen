@@ -36,6 +36,13 @@
        workspace.js mounts into #duration-estimate. -->
   <link rel="stylesheet" href="/workspace_duration.css">
   <script src="/workspace_duration.js" defer></script>
+  <!-- The Training panel (a training ladder's stages, Training mode) and the
+       History page's training summary. -->
+  <link rel="stylesheet" href="/workspace_training.css">
+  <script src="/workspace_training.js" defer></script>
+  <!-- The juice a session delivered (History's session details). -->
+  <link rel="stylesheet" href="/workspace_juice.css">
+  <script src="/workspace_juice.js" defer></script>
   <script src="/workspace.js" defer></script>
   <!-- The Data view: its stylesheet, then the view itself.
        workspace_data.js defines window.WorkspaceData = {show, hide};
@@ -472,6 +479,14 @@
               <div id="parameter-fields"></div>
               <textarea id="parameter-yaml" spellcheck="false"
                         aria-label="Parameter text (YAML or JSON)" hidden></textarea>
+            </fieldset>
+
+            <!-- Training: the ladder's stages, in order, in Task parameters'
+                 place (a stage names its own parameters). Shown for Training
+                 mode only (workspace_training.js draws it). -->
+            <fieldset id="training-ladder-stage" class="form-section stage" hidden disabled>
+              <h3 class="section-title">Training stage</h3>
+              <div id="training-ladder"></div>
             </fieldset>
 
             <!-- Measure rig: the measurements to run instead of Task

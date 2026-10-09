@@ -185,7 +185,11 @@ const WorkspaceData = (() => {
    *  (`amodal-averaging/lab-rehearsal`), so they go on the line under the
    *  picker (rootDetail), not into an option the menu would cut off. */
   function rootLabel(root) {
-    const kind = root.kind === 'rehearsal' ? 'rehearsal (test, simulate)' : 'real (run)';
+    const kind = {
+      rehearsal: 'rehearsal (test, simulate)',
+      training: 'training stage',
+      'training-rehearsal': 'training stage rehearsal',
+    }[root.kind] || 'real (run)';
     return `${root.name} — ${kind}`;
   }
 

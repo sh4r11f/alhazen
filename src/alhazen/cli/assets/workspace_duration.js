@@ -33,6 +33,7 @@ const DurationEstimate = (() => {
   const FIELDS = [
     'project', 'mode', 'task', 'parameter_set', 'rig', 'trials', 'headless', 'mouse',
     'extra_args', 'parameters_yaml', 'parameters', 'measurements', 'calibration_target',
+    'ladder', 'stage', 'rehearse',
   ];
 
   function stable(value) {

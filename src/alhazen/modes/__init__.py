@@ -12,6 +12,13 @@ the same six, written once.
     simulate  the whole session, with nobody in the chair
     test      the whole session, with a person in it and fewer trials
     run       the experiment
+    training  one stage of the experiment's monkey training ladder
+
+The seventh, training, came later (2.13): it runs the stage of a training
+ladder the operator chose (``--stage``; alhazen.training.ladder) on the rig
+as run mode drives it, pays only that stage's success, and files the session
+under its own root, ``<data_root>-training/<ladder>/<stage>/``, never the
+experiment's.
 
 Three of them — simulate, test, run — are one code path with different
 arguments, because that is the property that makes a rehearsal worth
@@ -60,6 +67,7 @@ class Mode(str, Enum):
     SIMULATE = "simulate"
     TEST = "test"
     RUN = "run"
+    TRAINING = "training"
 
     @property
     def writes_real_data(self) -> bool:
@@ -74,7 +82,19 @@ class Mode(str, Enum):
 
     @property
     def runs_trials(self) -> bool:
-        return self in (Mode.SIMULATE, Mode.TEST, Mode.RUN)
+        return self in (Mode.SIMULATE, Mode.TEST, Mode.RUN, Mode.TRAINING)
+
+    @property
+    def drives_subject(self) -> bool:
+        """Whether a real subject sits in the chair, on the rig as written.
+
+        Run and training both do: the rig's tracker, reward line and sync are
+        driven exactly as the rig file says, and a development rig is refused
+        (`real_data_refusal`). They differ in where the data goes — the
+        experiment's data root, or the training root (``writes_real_data``
+        stays run's alone).
+        """
+        return self in (Mode.RUN, Mode.TRAINING)
 
     @property
     def summary(self) -> str:
@@ -88,6 +108,7 @@ MODE_SUMMARIES = {
     Mode.SIMULATE: "the whole session, driven by a simulated subject",
     Mode.TEST: "the whole session with fewer trials, for a person to sit through once",
     Mode.RUN: "the experiment",
+    Mode.TRAINING: "one stage of the monkey training ladder, paid on that stage's success",
 }
 
 # Why each of the other five modes cannot take --headless. Spelled out per
@@ -99,15 +120,17 @@ _NOT_HEADLESS = {
     Mode.MOVIE: "movie mode never opens a window, so there is nothing to make headless",
     Mode.TEST: "test mode is for a person to sit through, and a person needs a window",
     Mode.RUN: "run mode records real data, and a subject needs a window",
+    Mode.TRAINING: "training mode trains a real subject, who needs a window",
 }
 
-# Why each of the other five modes cannot take --mouse.
+# Why each of the other modes cannot take --mouse.
 _NOT_MOUSE = {
     Mode.MEASURE: "measure mode measures the rig's own tracker, and the mouse is not one",
     Mode.DEMO: "demo mode reads no gaze",
     Mode.MOVIE: "movie mode reads no gaze",
     Mode.SIMULATE: "simulate mode's gaze comes from the task's own autopilot",
     Mode.RUN: "run mode records real data, so its gaze must come from the rig's tracker",
+    Mode.TRAINING: "training mode pays for real gaze, so it must come from the rig's tracker",
 }
 
 
@@ -142,7 +165,8 @@ def flag_refusal(
         return f"--mouse: only test mode takes the mouse cursor as gaze — {_NOT_MOUSE[mode]}"
     if calibration and mode in _NOT_CALIBRATING:
         return (
-            f"{CALIBRATION_FLAGS}: only run and test calibrate the rig's eye tracker — "
+            f"{CALIBRATION_FLAGS}: only run and test calibrate the rig's eye tracker (and "
+            f"training, which drives it as run does) — "
             f"{_NOT_CALIBRATING[mode]}"
         )
     if calibration and mouse:
@@ -191,7 +215,7 @@ def real_data_refusal(
     and is called only for a session that is refused, because finding the
     rigs that do collect reads every rig file.
     """
-    if not mode.writes_real_data or rig.real_data:
+    if not mode.drives_subject or rig.real_data:
         return None
     if ref is None:
         who = "this rig"
@@ -205,8 +229,9 @@ def real_data_refusal(
     else:
         who = f"{ref.name} ({ref.path})"
         on_purpose = f"write `real_data: true` in {ref.path}, with a comment saying why"
+    what = "records real data" if mode is Mode.RUN else "drives a real subject"
     lines = [
-        f"{mode.value} mode records real data, and {who} is a development rig: its settings "
+        f"{mode.value} mode {what}, and {who} is a development rig: its settings "
         f"say `real_data: false`. Nothing was started and nothing was written.",
         *instead(),
         f"To record real data on this machine on purpose, {on_purpose} ({REAL_DATA_DOCS}).",

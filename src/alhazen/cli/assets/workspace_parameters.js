@@ -109,7 +109,8 @@ const ParameterChoices = (() => {
    * parameter-file flag; the built-in session and movie modes always do.
    */
   function usesParameters(mode, scripts) {
-    if (mode === 'measure') return false;
+    // Measure rig takes none, and a Training stage names its own.
+    if (mode === 'measure' || mode === 'training') return false;
     const script = scripts.find((s) => s.id === mode);
     return script ? !!script.params_flag : true;
   }

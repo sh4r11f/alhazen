@@ -1,0 +1,174 @@
+/* The Training panel (workspace_training.js): a training ladder drawn as a
+ * ladder — numbered marks on one vertical rail, the chosen stage lit — with
+ * each stage's record beside it, and the History page's training summary.
+ * Scoped to .tl-*; colours are the page's tokens, so both themes follow. */
+
+#training-ladder { container-type: inline-size; }
+#training-ladder .tl-intro { margin: 2px 0 10px; }
+
+.tl-ladders { margin: 0 0 10px; flex-wrap: wrap; }
+
+.tl-ladder {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  position: relative;
+}
+
+/* The rail the rungs hang on: one hairline through every mark's centre. */
+.tl-ladder::before {
+  content: "";
+  position: absolute;
+  left: 15px;
+  top: 18px;
+  bottom: 18px;
+  width: 2px;
+  background: var(--line);
+}
+
+.tl-rung { position: relative; margin: 0; }
+
+.tl-rung-button {
+  all: unset;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) minmax(148px, 34%);
+  gap: 4px 12px;
+  width: 100%;
+  padding: 10px 10px 10px 0;
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--ink);
+  font-family: var(--sans);
+  border: 1px solid transparent;
+}
+
+.tl-rung-button:hover { background: var(--hover-bg); }
+.tl-rung-button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+
+.tl-rung[data-selected=true] .tl-rung-button {
+  background: var(--accent-soft);
+  border-color: var(--run-line);
+}
+
+.tl-mark {
+  position: relative;
+  z-index: 1;
+  width: 28px;
+  height: 28px;
+  margin-left: 2px;
+  border-radius: 50%;
+  display: inline-grid;
+  place-items: center;
+  background: var(--surface);
+  border: 2px solid var(--field-border);
+  font: 700 12px/1 var(--mono);
+  color: var(--muted);
+  box-sizing: border-box;
+}
+
+.tl-rung[data-selected=true] .tl-mark {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+
+.tl-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.tl-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.tl-title { font-weight: 800; font-size: 15px; line-height: 1.25; }
+.tl-id, .tl-k, .tl-mono { font: 600 11px/1.3 var(--mono); color: var(--muted); }
+.tl-id { letter-spacing: .02em; }
+.tl-desc { color: var(--muted); font-size: 13px; line-height: 1.4; }
+
+.tl-facts { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.tl-fact { display: inline-flex; gap: 6px; align-items: baseline; min-width: 0; }
+.tl-k { text-transform: uppercase; letter-spacing: .08em; }
+.tl-v { font: 600 12px/1.3 var(--mono); color: var(--ink); overflow-wrap: anywhere; }
+.tl-criterion { font-size: 12px; color: var(--muted); line-height: 1.35; }
+
+.tl-record {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  text-align: right;
+  min-width: 0;
+}
+
+.tl-rate { font: 800 18px/1 var(--mono); color: var(--ink); }
+.tl-counts { font: 600 11px/1.3 var(--mono); color: var(--muted); }
+.tl-muted { font-size: 12px; color: var(--muted); }
+
+.tl-meter {
+  display: block;
+  width: 100%;
+  max-width: 140px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+
+.tl-fill { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
+
+/* A recommendation: lamp + word, never a button. */
+.tl-verdict {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: 700 11px/1.3 var(--mono);
+  color: var(--muted);
+  text-align: left;
+}
+
+.tl-verdict::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex: none;
+}
+
+.tl-verdict[data-state=ok] { color: var(--ok-ink); }
+.tl-verdict[data-state=ok]::before { background: var(--ok-ink); }
+.tl-verdict[data-state=bad] { color: var(--bad-ink); }
+.tl-verdict[data-state=bad]::before { background: var(--bad-ink); }
+.tl-verdict[data-state=run]::before { background: var(--run-ink); }
+
+.tl-rehearse { margin-top: 10px; }
+.tl-note { margin-top: 6px; }
+
+/* Narrow panes: the record moves under the stage, beside the mark. */
+@container (max-width: 520px) {
+  .tl-rung-button { grid-template-columns: 32px minmax(0, 1fr); }
+  .tl-record { grid-column: 2; align-items: flex-start; text-align: left; }
+  /* Each fact's name above its value, so a long value has the whole width
+   * and breaks between words, not inside them. */
+  .tl-fact { flex-direction: column; gap: 1px; }
+  .tl-v { overflow-wrap: break-word; }
+}
+
+@media (max-width: 560px) {
+  .tl-rung-button { grid-template-columns: 32px minmax(0, 1fr); }
+  .tl-record { grid-column: 2; align-items: flex-start; text-align: left; }
+}
+
+/* History: the training summary. */
+.tl-history { margin: 4px 0 14px; }
+.tl-history-title { margin: 6px 0 8px; font-size: 14px; font-weight: 800; }
+.tl-history-stages { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.tl-history-stage {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+  display: grid;
+  gap: 6px;
+}
+.tl-history-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+.tl-history-head .tl-mark { width: 24px; height: 24px; margin: 0; font-size: 11px; }
+.tl-sessions td { vertical-align: middle; }
+.tl-sessions td, .tl-sessions th { white-space: nowrap; }
+.tl-success-inner { display: flex; align-items: center; gap: 8px; }
+.tl-sessions .tl-rate { font-size: 13px; min-width: 38px; }
+.tl-sessions .tl-meter { width: 90px; }
+.tl-sessions tr[data-kind=rehearsal] td { color: var(--muted); }

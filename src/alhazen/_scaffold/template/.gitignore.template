@@ -1,4 +1,6 @@
 data/
+data-training/
+data-training-rehearsal/
 movies/
 __pycache__/
 *.egg-info/

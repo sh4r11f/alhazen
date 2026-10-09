@@ -94,6 +94,11 @@ class EstimateRequest(BaseModel):
     extra_args: str = ""
     calibration_target: CalibrationChoice | None = None
     measurements: list[str] | None = None
+    # A Training launch: the ladder (label), the stage (id), and whether it
+    # only rehearses the stage (simulate mode, headless).
+    ladder: str | None = None
+    stage: str | None = None
+    rehearse: bool = False
 
 
 def _answer(status: str, headline: str, reason: str, **extra: Any) -> dict[str, Any]:
@@ -168,6 +173,26 @@ class DurationEstimator:
             )
 
         mode = Mode(request.mode)
+        training = None
+        if mode is Mode.TRAINING or request.stage or request.ladder:
+            if mode is Mode.TRAINING and not request.stage:
+                return _answer("unknown", "No estimate yet", "Choose the training stage to run.")
+            (ladder_name, stage_id), _ = workspace._training_launch(
+                project,
+                Launch(
+                    project=request.project,
+                    mode=request.mode,
+                    rig=request.rig,
+                    ladder=request.ladder,
+                    stage=request.stage,
+                    rehearse=request.rehearse,
+                ),
+            )
+            training = (ladder_name, stage_id)
+            # A rehearsal of the stage is a headless simulation.
+            if request.rehearse:
+                mode = Mode.SIMULATE
+                request = request.model_copy(update={"headless": True})
         refusal = flag_refusal(
             mode,
             headless=request.headless,
@@ -187,11 +212,18 @@ class DurationEstimator:
             parameter_set=request.parameter_set,
             extra_args=request.extra_args,
         )
-        task = workspace._task_for(project, launch)
-        workspace._check_parameter_set(project, launch, task)
-        reserved = MODE_FLAGS | {"--task", FLAG} if task is not None else MODE_FLAGS | {FLAG}
-        if task is None:
-            task = workspace._one_task(project, launch)
+        if training is not None:
+            # The stage names its task and its params.
+            if request.parameters is not None or request.parameters_yaml:
+                raise ValueError("A training stage names its own parameters (the ladder file)")
+            task = None
+            reserved = MODE_FLAGS | {"--task", FLAG}
+        else:
+            task = workspace._task_for(project, launch)
+            workspace._check_parameter_set(project, launch, task)
+            reserved = MODE_FLAGS | {"--task", FLAG} if task is not None else MODE_FLAGS | {FLAG}
+            if task is None:
+                task = workspace._one_task(project, launch)
         extra = _extra_arguments(request.extra_args, reserved)
         ref, shared = workspace._launch_rig(project, request.rig)
         rig = ref.spec if ref.source == "alhazen" else str(ref.path)
@@ -210,6 +242,8 @@ class DurationEstimator:
         if task is not None:
             command += ["--task", task]
         command += ["--rig", rig]
+        if training is not None:
+            command += ["--ladder", training[0], "--stage", training[1]]
         if mode in {Mode.TEST, Mode.SIMULATE}:
             command += ["--trials-per-condition", str(request.trials)]
         if request.headless:

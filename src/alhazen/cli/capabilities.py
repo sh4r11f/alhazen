@@ -13,6 +13,10 @@ before a launch, what an older one will not record.
   session.json and session.log (and participants.tsv for a new subject).
 - ``duration-estimate``: ``--estimate-duration``, which prints how long the
   launch would take as JSON instead of running it (alhazen.cli.duration).
+- ``training-mode``: ``--mode training`` with ``--ladder``/``--stage``, a
+  stage of a training ladder run.py registers (``LADDERS``), filed under the
+  stage's training root (alhazen.training.ladder); test and simulate take
+  ``--stage`` to rehearse one.
 
 Names are only ever added. A module without the file is an alhazen from
 before any of them.
@@ -21,5 +25,5 @@ before any of them.
 from __future__ import annotations
 
 CAPABILITIES: frozenset[str] = frozenset(
-    {"duration-estimate", "experimenter", "subject-demographics"}
+    {"duration-estimate", "experimenter", "subject-demographics", "training-mode"}
 )

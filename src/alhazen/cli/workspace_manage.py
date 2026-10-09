@@ -371,6 +371,7 @@ class Management:
                     "mode": run["mode"],
                     "task": run.get("task"),
                     "parameter_set": run.get("parameter_set"),
+                    "training": run.get("training"),
                     "rig": run.get("rig_name") or run.get("rig"),
                     "status": run["status"],
                     "started": run["started"],
@@ -542,7 +543,7 @@ def _console_run_folder(console: Path, roots: list[Any], mode: str | None) -> st
     if named is not None:
         candidates = [r for r in roots if str(r.path.resolve()) == named.group(1).strip()]
     else:
-        kind = "real" if mode == "run" else "rehearsal"
+        kind = {"run": "real", "training": "training"}.get(mode or "", "rehearsal")
         candidates = [r for r in roots if r.kind == kind]
     found = []
     for root in candidates:
