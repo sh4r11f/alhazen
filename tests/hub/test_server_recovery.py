@@ -536,7 +536,7 @@ class TestExportStreamLifetime:
         ada, _bob, eid, vid = ready(hub, tmp_path)
         rows = "".join(f"{n},CORRECT,0.3,x\n" for n in range(1200))
         files = {"trials.csv": ("trial_index,outcome,rt,label\n" + rows).encode()}
-        receipt = ada.upload_session(eid, vid, files)
+        receipt = ada.upload_session(eid, vid, files, chunk=1 << 20)
         hub.maintenance.drain_index()
         return service(hub), receipt["id"], ada
 
