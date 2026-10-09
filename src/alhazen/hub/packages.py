@@ -8,15 +8,21 @@ its size and SHA-256, the hub stores the ZIP unchanged, and a rig verifies and
 installs it with :func:`extract_bundle`. The SHA-256 of the whole ZIP is the
 release's identity; nothing else names a version.
 
-**What this module guarantees.** A bundle that passes :func:`inspect_bundle`
-holds exactly the manifest and the files the manifest declares; every path is
-a portable relative POSIX path that cannot leave the install folder on Linux,
-macOS or Windows, collides with no other path on a case-insensitive file
-system, and names a regular file; no member is encrypted, a link, a device or
-a directory entry; the archive fits the size and member limits and every
-file's bytes match its declared size and hash. :func:`extract_bundle` writes
-only after all of that holds, into a staging folder it created, and moves the
-finished tree into place without ever writing over an existing folder.
+**What this module guarantees.** A package is a small, strict ZIP subset
+(stored or deflated members, no extra fields, descriptors, comments or
+hidden bytes; headers that agree), read by this module's own parser in one
+ordered pass, so every reader and Python version sees the same names and
+bytes, and the SHA-256 that names the release covers exactly the bytes that
+were checked. A bundle that passes :func:`inspect_bundle` holds exactly the
+manifest and the files it declares; every path is a portable relative POSIX
+path that cannot leave the install folder on Linux, macOS or Windows and
+collides with no other path on a case-insensitive file system; the archive
+fits the limits and every file's bytes match its declared size and hash.
+:func:`install_bundle` writes only after all of that holds (and after an
+expected digest matched), into a staging folder named by an owner record,
+and commits by renaming it onto a claimed empty folder: never over an
+existing one. After a crash, :func:`recover_install` removes that install's
+own leftovers and nothing else.
 
 **What it does not guarantee.** Validation is not a security review of the
 code. A package that passes every check can still run anything once a person
