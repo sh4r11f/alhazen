@@ -1175,21 +1175,26 @@ class TestHTTP:
         """The workspace ships its own font (the page may load nothing from
         outside, and a rig may have no internet) and its logo as the icon."""
         call, _ = http
-        status, headers, font = call("/fonts/Nunito-latin.woff2")
+        status, headers, font = call("/fonts/Manrope-latin.woff2")
         assert status == 200 and headers["Content-Type"] == "font/woff2"
         assert font[:4] == b"wOF2"
         # The CSP names fonts explicitly: from this server only.
         assert "font-src 'self'" in headers["Content-Security-Policy"]
         status, headers, icon = call("/favicon.svg")
         assert status == 200 and headers["Content-Type"] == "image/svg+xml"
-        assert icon.startswith(b"<svg") and b"logo-bricks-turned" in icon
+        assert icon.startswith(b"<svg")
         # An image must be well-formed XML, or the browser shows no icon at
         # all and says nothing (a "--" inside an XML comment is enough). The
-        # letter A is a path clipping the upright bricks, not text.
+        # mark is the Penrose A as two paths (ink, face), not text.
         root = ElementTree.fromstring(icon)
         svg = "{http://www.w3.org/2000/svg}"
-        assert root.find(f".//{svg}clipPath[@id='logo-letter']/{svg}path") is not None
+        assert [p.get("class") for p in root.iter(f"{svg}path")] == ["mark-ink", "mark-face"]
         assert root.find(f".//{svg}text") is None
+        # The sidebar's page icons are served the same way.
+        for name in ("experiments", "general", "run", "data", "history"):
+            status, headers, body = call(f"/icon-{name}.svg")
+            assert status == 200 and headers["Content-Type"] == "image/svg+xml"
+            ElementTree.fromstring(body)
         # Only the named files: nothing else under assets/ by URL.
         assert call("/fonts/OFL.txt")[0] == 404
         assert call("/fonts/../workspace.css")[0] in {400, 404}
@@ -1209,7 +1214,7 @@ class TestHTTP:
         # cli/assets/* covers it).
         package = root / "src" / "alhazen"
         fonts = package / "cli" / "assets" / "fonts"
-        assert sorted(p.name for p in fonts.iterdir()) == ["Nunito-latin.woff2", "OFL.txt"]
+        assert sorted(p.name for p in fonts.iterdir()) == ["Manrope-latin.woff2", "OFL.txt"]
         for path in fonts.iterdir():
             relative = path.relative_to(package)
             assert any(relative.match(pattern) for pattern in patterns), relative

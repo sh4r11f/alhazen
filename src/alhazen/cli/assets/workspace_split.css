@@ -1,0 +1,558 @@
+/* Alhazen experiment workspace — the Split design layer (2026-10-09).
+ *
+ * Loaded after every other stylesheet (workspace.html), so it restyles
+ * them without touching their rules or the page's behaviour. Three ideas:
+ *
+ *   1. The sidebar is an icon rail (64 px) that opens over the page on
+ *      hover or keyboard focus, labels and all, and stays open on wide
+ *      windows (1500 px and up). The Penrose lockup heads it.
+ *   2. The Run page is two panes, always: the settings on the left (the
+ *      paper surface), the session on the right — the instrument, on the
+ *      darker --instrument surface, held in the window while the form
+ *      scrolls. Before a run it shows the last session; during one, the
+ *      live monitor; after it, media, console and upload.
+ *   3. One voice: Manrope everywhere, mono only for identifiers (paths,
+ *      hashes, seeds, parameter keys, the console). The mono uppercase
+ *      labels and eyebrows of the earlier design are set in plain type or
+ *      removed.
+ *
+ * Colours are tokens only (workspace.css :root and its dark copies).
+ */
+
+/* ---- Type ---- */
+body {
+  font: 15px/1.55 var(--sans);
+  font-feature-settings: "kern", "calt";
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1 {
+  font-size: 30px;
+  font-weight: 750;
+  letter-spacing: -.02em;
+  line-height: 1.15;
+}
+
+h2 { font-size: 17px; font-weight: 700; letter-spacing: -.01em; }
+h3 { font-size: 15px; font-weight: 700; }
+
+label { font-size: 13.5px; font-weight: 600; color: var(--ink); }
+.optional { font-weight: 500; color: var(--muted); }
+
+/* The labelling voice of the earlier design, in plain type: same words,
+ * no mono, no capitals, no tracking. */
+.step, .parameter-group, .status, #media-count, .sidebar-label, .stage::before,
+.rig-facts dt, .launch-summary, .calibration-title, .calibration-origin, .picture-order,
+.subject-facts .facts-value, .duration-counts, .duration-details > summary,
+.duration-section h4, .juice-k, .nav-count, .nav-running, .m-label, .m-count, .m-lamp,
+.m-tag, .m-table th, .m-facts dt, .m-exp-facts dt, .mx-group-title, .mx-step, .mx-tag,
+.mx-order, .mx-progress-count, .mx-state, .tl-mark, .tl-k, .tl-rate, .tl-counts,
+.tl-verdict, .up-eyebrow, .up-lamp, .up-progress-head, .up-table th {
+  font-family: var(--sans);
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.rig-facts dt, .m-facts dt, .m-exp-facts dt, .tl-k, .juice-k,
+.m-table th, .up-table th, .mx-group-title, .calibration-title, .parameter-group {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.status, .up-lamp, .m-lamp, .mx-state { font-size: 13px; font-weight: 650; text-transform: lowercase; }
+#history-count { text-transform: lowercase; }
+.up-eyebrow { font-size: 13px; font-weight: 600; text-transform: lowercase; }
+.up-eyebrow::first-letter { text-transform: uppercase; }
+
+/* Removed: decorative labels and explanations the page does not need. The
+ * elements stay (scripts write them); only their display goes. */
+.eyebrow, .m-eyebrow, .duration-eyebrow, .empty-tag, .viewfinder, .local-badge,
+footer, #seed-help, #extra-help, #parameters-help, .output-empty p:empty,
+.home-sub, .welcome-art {
+  display: none !important;
+}
+
+/* The duration line keeps its lamp, now on the value. */
+.duration-row { align-items: center; }
+.duration-value { font-size: 17px; font-weight: 750; letter-spacing: -.01em; }
+
+/* ---- Controls ---- */
+input:not([type=checkbox]):not([type=radio]), select, textarea {
+  min-height: 38px;
+  border-radius: 8px;
+  font-size: 14.5px;
+}
+
+button { border-radius: 8px; font-weight: 600; }
+
+.primary {
+  border-radius: 8px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.help { font-size: 13px; line-height: 1.45; color: var(--muted); }
+
+/* ---- Sidebar: the icon rail ---- */
+.sidebar {
+  flex: 0 0 64px;
+  position: relative;
+  z-index: 30;
+  background: var(--rail);
+  border-right: 1px solid var(--rail-line);
+}
+
+.sidebar-inner {
+  width: 64px;
+  padding: 16px 10px 14px;
+  background: var(--rail);
+  border-right: 1px solid var(--rail-line);
+  overflow-x: hidden;
+}
+
+.brand {
+  gap: 10px;
+  margin: 0 0 22px;
+  padding: 2px 3px;
+  color: var(--ink);
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -.02em;
+  line-height: 1.15;
+  white-space: nowrap;
+}
+
+.brandmark { width: 38px; height: 38px; }
+.brandmark .mark-ink { fill: currentColor; }
+.brandmark .mark-face { fill: var(--accent); }
+
+.brand-name small {
+  display: block;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--muted);
+  margin-top: 1px;
+}
+
+.nav-item, .nav-group-toggle {
+  min-height: 40px;
+  padding: 0 10px;
+  gap: 12px;
+  border-radius: 8px;
+  font-size: 14.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.nav-item.selected {
+  color: var(--accent);
+  background: var(--selected-bg);
+  box-shadow: none;
+}
+
+.nav-item:focus-visible, .nav-running:focus-visible, .nav-group-toggle:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+/* Page icons: the glyph's character is kept (the script writes it) but
+ * drawn as a line icon, a mask in the text colour. */
+.nav-glyph,
+.experiment-nav .nav-glyph {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  font-size: 0;
+  border: 0;
+  border-radius: 0;
+  opacity: 1;
+  background: currentColor;
+  -webkit-mask: var(--icon) center / 20px 20px no-repeat;
+  mask: var(--icon) center / 20px 20px no-repeat;
+}
+
+#nav-experiments { --icon: url("/icon-experiments.svg"); }
+.nav-item[data-view=general] { --icon: url("/icon-general.svg"); }
+.nav-item[data-view=run] { --icon: url("/icon-run.svg"); }
+.nav-item[data-view=data] { --icon: url("/icon-data.svg"); }
+.nav-item[data-view=history] { --icon: url("/icon-history.svg"); }
+
+.experiment-nav { margin-left: 0; gap: 1px; }
+.experiment-nav::before { display: none; }
+
+.experiment-nav .nav-item {
+  padding: 0 10px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.experiment-nav .nav-item.selected,
+.experiment-nav .nav-item.selected .nav-glyph {
+  color: var(--accent);
+  background: var(--selected-bg);
+  border: 0;
+}
+
+.experiment-nav .nav-item.selected .nav-glyph { background: currentColor; }
+
+.nav-group-toggle { color: var(--muted); font-size: 13.5px; }
+.nav-group.current .nav-group-toggle { color: var(--ink); font-weight: 700; }
+.nav-chevron { width: 20px; font-size: 10px; }
+
+.nav-count {
+  font-size: 12.5px;
+  font-weight: 600;
+  border: 0;
+  padding: 0;
+  color: var(--muted);
+}
+
+.nav-running-lamp, .nav-lamp {
+  background: var(--ok-ink);
+  box-shadow: 0 0 0 3px var(--ok-bg);
+}
+
+.nav-running {
+  font-size: 13px;
+  font-weight: 600;
+  border-color: var(--rail-line);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.nav-experiment { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--rail-line); }
+
+.sidebar-bottom { padding: 16px 0 0; }
+.connection { font-size: 13px; white-space: nowrap; padding: 0 16px; }
+.connection-dot { margin-right: 10px; }
+.theme-switch { margin: 0 0 12px; }
+.theme-switch button { font-size: 13px; padding: 6px 8px; }
+
+/* Collapsed (narrower windows): icons only; the rail opens over the page
+ * on hover or when a control in it has keyboard focus. */
+@media (min-width: 861px) and (max-width: 1499px) {
+  .sidebar-inner {
+    transition: width 140ms ease-out, box-shadow 140ms ease-out;
+  }
+  .sidebar-inner:hover,
+  .sidebar-inner:focus-within {
+    width: 248px;
+    box-shadow: 8px 0 28px var(--shadow);
+  }
+  .sidebar-inner:not(:hover):not(:focus-within) .brand-name,
+  .sidebar-inner:not(:hover):not(:focus-within) .nav-label,
+  .sidebar-inner:not(:hover):not(:focus-within) .nav-count,
+  .sidebar-inner:not(:hover):not(:focus-within) .nav-running-text,
+  .sidebar-inner:not(:hover):not(:focus-within) .theme-switch,
+  .sidebar-inner:not(:hover):not(:focus-within) #connection,
+  .sidebar-inner:not(:hover):not(:focus-within) .nav-group-toggle,
+  .sidebar-inner:not(:hover):not(:focus-within) .nav-group:not(.current) {
+    display: none;
+  }
+  .sidebar-inner:not(:hover):not(:focus-within) .nav-running {
+    justify-content: center;
+    padding: 0;
+    min-height: 40px;
+  }
+  .sidebar-inner:not(:hover):not(:focus-within) .connection { padding: 0 18px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-inner { transition: none !important; }
+}
+
+/* Wide windows: the rail open, with its labels. */
+@media (min-width: 1500px) {
+  .sidebar { flex-basis: 248px; }
+  .sidebar-inner { width: 248px; padding: 18px 14px 16px; }
+}
+
+/* ---- Main column ---- */
+main { padding: 0 32px; max-width: none; }
+
+.topbar {
+  height: 52px;
+  font-size: 13.5px;
+  color: var(--muted);
+}
+
+#breadcrumb { font-weight: 650; }
+
+.page-heading { padding: 22px 0 18px; align-items: flex-end; }
+.page-heading h1 { font-size: 26px; }
+.path { font-size: 12.5px; margin-top: 4px; }
+
+.quiet { font-weight: 600; }
+
+/* ---- The Run page: settings | instrument ---- */
+.workspace-grid {
+  gap: 0;
+  align-items: stretch;
+  border-top: 1px solid var(--line);
+}
+
+@media (min-width: 861px) {
+  .workspace-grid {
+    grid-template-columns: minmax(380px, 460px) minmax(0, 1fr);
+    margin-right: -32px;
+  }
+}
+
+@media (max-width: 860px) {
+  .workspace-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* The settings pane: no card, on the paper. */
+.configuration.card {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  padding-right: 28px;
+}
+
+.configuration > .card-heading {
+  min-height: 0;
+  padding: 18px 0 4px;
+  border: 0;
+}
+
+.configuration > .card-heading h2 { font-size: 15px; font-weight: 700; }
+
+/* The steps: a small numbered marker per stage on a hairline, sans. */
+.configuration form { padding: 10px 0 0; }
+
+.stage,
+.form-section.stage,
+#task-parameters.stage {
+  padding: 0 0 18px 36px;
+  margin: 0;
+}
+
+.stage::before {
+  width: 22px;
+  height: 22px;
+  top: 1px;
+  font-size: 12px;
+  font-weight: 700;
+  border-radius: 50%;
+  color: var(--node-ink);
+  background: var(--node);
+  border: 1px solid var(--line);
+  content: counter(stage);
+}
+
+.stage::after { left: 10.5px; top: 28px; width: 1px; background: var(--line); }
+
+.stage:focus-within::before {
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.stage:focus-within::after { background: var(--line); }
+
+.stage-title,
+.stage .section-title label {
+  font-size: 14.5px;
+  font-weight: 700;
+  line-height: 24px;
+  margin: 0 0 8px;
+}
+
+.rig-summary {
+  background: var(--surface-2);
+  border: 0;
+  border-radius: 8px;
+}
+
+.rig-facts dd { font-size: 13.5px; }
+
+/* The launch bar: the end of the settings, held at the window's bottom
+ * while the form is longer than the window. */
+.launch-footer {
+  margin: 0 -28px 0 0;
+  padding: 14px 28px 16px 0;
+  background: var(--paper);
+  border-top: 1px solid var(--line);
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+}
+
+.launch-footer::before { display: none; }
+
+.launch-summary {
+  font-size: 13.5px;
+  font-weight: 650;
+  color: var(--ink);
+  margin: 2px 0 4px;
+}
+
+.launch { width: 100%; min-height: 44px; font-size: 15px; }
+
+/* The instrument pane: the session, on the darker surface, in view all
+ * the time; each part scrolls inside it. */
+.instrument-pane {
+  --surface: var(--instrument);
+  --surface-2: var(--instrument-2);
+  --line: var(--instrument-line);
+  min-width: 0;
+  background: var(--instrument);
+  color: var(--instrument-ink);
+  border-left: 1px solid var(--instrument-line);
+}
+
+.results-column {
+  padding: 18px 28px 24px;
+  gap: 0;
+}
+
+.results-column .card {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.results-column .card + .card { border-top: 1px solid var(--instrument-line); }
+
+.results-column .card-heading { min-height: 46px; padding: 0; border: 0; }
+.results-column .card-heading h2 { font-size: 15px; font-weight: 700; }
+
+/* Session first, then upload (once a session has ended), then the runs. */
+.output-card { order: 0; }
+#upload-card { order: 1; padding: 16px 0; }
+.history-card { order: 2; }
+
+.run-info { padding: 0 0 10px; font-size: 13.5px; color: var(--instrument-muted); }
+
+.output-toolbar { padding: 0; border-bottom: 1px solid var(--instrument-line); }
+.output-tabs button { font-size: 14px; font-weight: 650; color: var(--instrument-muted); }
+.output-tabs button.selected { color: var(--instrument-ink); border-bottom: 2px solid var(--accent); }
+
+#media-panel, #console-panel, #monitor-panel { margin-top: 14px; }
+
+.output-empty {
+  background: var(--instrument-2);
+  border-radius: 10px;
+  border: 0;
+  min-height: 260px;
+  display: grid;
+  place-content: center;
+  text-align: center;
+  gap: 6px;
+  padding: 24px;
+}
+
+.output-empty h3 { font-size: 16px; font-weight: 700; color: var(--instrument-ink); }
+.output-empty p { font-size: 13.5px; color: var(--instrument-muted); }
+
+#console { border-radius: 10px; }
+#monitor-frame { border-radius: 10px; border: 1px solid var(--instrument-line); }
+.monitor-note { color: var(--instrument-muted); font-size: 13.5px; }
+
+.status {
+  padding: 0;
+  background: transparent !important;
+  border: 0 !important;
+}
+
+#history .history-text strong { font-weight: 700; }
+
+@media (min-width: 861px) {
+  .results-column {
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    max-height: 100vh;
+    overflow-y: auto;
+  }
+  .output-card { flex: 1 0 auto; min-height: 380px; }
+  .history-card { flex: 0 0 auto; }
+  #history { max-height: 260px; overflow: auto; }
+  #monitor-frame { min-height: calc(100vh - 220px); }
+}
+
+@media (min-width: 861px) and (max-height: 719px) {
+  .results-column { position: static; height: auto; max-height: none; }
+}
+
+/* ---- Home, General, Data, History: one pane, same language ---- */
+.home, .manage-page, #data-view { max-width: 1180px; padding-bottom: 40px; }
+
+.home-heading { padding: 22px 0 6px; align-items: flex-end; }
+.home-heading h1 { font-size: 26px; }
+
+.welcome { padding: 48px 0; text-align: left; }
+.welcome h2 { font-size: 20px; margin-bottom: 14px; }
+
+.m-panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 20px 22px;
+}
+
+.m-title { font-size: 18px; font-weight: 750; letter-spacing: -.01em; }
+
+.m-table th { border-bottom-color: var(--line); }
+
+/* ---- Small screens: the rail becomes a band, the panes stack ---- */
+@media (max-width: 860px) {
+  .sidebar { flex: none; border-right: 0; border-bottom: 1px solid var(--rail-line); }
+  .sidebar-inner {
+    width: auto;
+    padding: 12px 16px;
+    border-right: 0;
+  }
+  .brand { margin: 0 0 10px; }
+  .brandmark { width: 32px; height: 32px; }
+  .nav-global, .nav-groups, .experiment-nav { flex-direction: row; flex-wrap: wrap; gap: 4px; }
+  .nav-experiment { margin-top: 8px; padding-top: 8px; }
+  .nav-group { width: 100%; }
+  .nav-group:not(.current) { display: none; }
+  .nav-group-toggle { min-height: 32px; padding: 0 4px; }
+  .nav-item { min-height: 38px; padding: 0 10px; gap: 8px; font-size: 14px; }
+  .sidebar-bottom { display: none; }
+  main { padding: 0 16px; }
+  .workspace-grid { margin-right: 0; border-top: 0; }
+  .configuration.card { padding-right: 0; }
+  .launch-footer { margin: 0; padding: 14px 0 16px; position: sticky; bottom: 0; }
+  .instrument-pane {
+    margin: 18px -16px 0;
+    border-left: 0;
+    border-top: 1px solid var(--instrument-line);
+  }
+  .results-column {
+    display: flex;
+    flex-direction: column;
+    padding: 16px;
+  }
+  .output-card { min-height: 0; }
+  #monitor-frame { min-height: 560px; }
+  .page-heading { padding: 16px 0 12px; }
+  .page-heading h1, .home-heading h1 { font-size: 22px; }
+  .m-panel { padding: 16px; }
+}
+
+/* The upload card's destination line: the session path stays mono, the
+ * sentence after it is ordinary text. */
+.up-dest { font: 13.5px/1.55 var(--sans); }
+.up-dest .up-run { font-family: var(--mono); font-size: 12.5px; }
+.up-title { font-size: 15px; font-weight: 700; }
+
+/* The live monitor gets the pane's height; the column scrolls past it to
+ * the recent runs. */
+@media (min-width: 861px) {
+  #monitor-panel:not([hidden]) { flex: 1 0 auto; overflow: visible; }
+  #monitor-frame { height: calc(100vh - 210px); min-height: 520px; }
+}
+
+@media (max-width: 860px) {
+  .output-toolbar { flex-wrap: wrap; row-gap: 4px; }
+  .output-actions { margin-left: auto; }
+}

@@ -2628,20 +2628,17 @@ async function refreshRun() {
   let heading;
   let detail;
   if (!run) {
-    heading = 'A closer look at your experiment.';
-    detail = 'Preview images and recorded movies appear here. '
-      + 'Choose a mode and start a run to see the results.';
+    heading = 'No run yet';
+    detail = '';
   } else if (active) {
-    heading = 'Your experiment is working.';
-    detail = 'Images appear as they are written. Movies are available when recording '
-      + 'finishes. Follow progress in the console.';
+    heading = 'Your experiment is working';
+    detail = 'Images appear as they are written; movies when recording finishes.';
   } else if (run.status === 'failed') {
-    heading = 'This run needs attention.';
-    detail = 'Open the console for the error and the command that produced it.';
+    heading = 'Run failed';
+    detail = 'The console has the error and the command.';
   } else {
-    heading = 'No images or movies in this run.';
-    detail = 'Session modes write their data to the rig’s data directory. '
-      + 'Use a preview script or movie mode to generate media.';
+    heading = 'No media in this run';
+    detail = '';
   }
   empty.querySelector('h3').textContent = heading;
   empty.querySelector('p').textContent = detail;

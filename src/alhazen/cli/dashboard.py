@@ -43,7 +43,7 @@ ASSETS = Path(__file__).with_name("assets")
 # The page's own files, by URL: (file under ASSETS, content type). Served to
 # anyone who can reach the loopback port, without the token: none of them
 # holds anything but the page itself. The font is the workspace's own
-# (Nunito, SIL OFL, assets/fonts/OFL.txt), since the page may load nothing
+# (Manrope, SIL OFL, assets/fonts/OFL.txt), since the page may load nothing
 # from outside (the CSP below) and a rig may have no internet.
 PAGE_ASSETS = {
     "/": ("workspace.html", "text/html; charset=utf-8"),
@@ -67,7 +67,15 @@ PAGE_ASSETS = {
     "/workspace_juice.css": ("workspace_juice.css", "text/css; charset=utf-8"),
     "/workspace.css": ("workspace.css", "text/css; charset=utf-8"),
     "/favicon.svg": ("favicon.svg", "image/svg+xml"),
-    "/fonts/Nunito-latin.woff2": ("fonts/Nunito-latin.woff2", "font/woff2"),
+    "/fonts/Manrope-latin.woff2": ("fonts/Manrope-latin.woff2", "font/woff2"),
+    # The Split design layer (loaded last) and the sidebar's page icons,
+    # drawn as CSS masks in the text colour.
+    "/workspace_split.css": ("workspace_split.css", "text/css; charset=utf-8"),
+    "/icon-experiments.svg": ("icon-experiments.svg", "image/svg+xml"),
+    "/icon-general.svg": ("icon-general.svg", "image/svg+xml"),
+    "/icon-run.svg": ("icon-run.svg", "image/svg+xml"),
+    "/icon-data.svg": ("icon-data.svg", "image/svg+xml"),
+    "/icon-history.svg": ("icon-history.svg", "image/svg+xml"),
     # The Data view (workspace_data.py serves its reads).
     "/workspace_data.js": ("workspace_data.js", "text/javascript; charset=utf-8"),
     "/workspace_data.css": ("workspace_data.css", "text/css; charset=utf-8"),
