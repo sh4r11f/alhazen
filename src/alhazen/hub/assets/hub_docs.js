@@ -573,7 +573,7 @@ const HubDocs = (() => {
     if (layout.between) {
       const gapX = layout.between.x - TL.gap / 2;
       phases.appendChild(svg(c, 'path', { d: 'M' + (gapX - 5) + ',' + (TL.barY + 2) + ' l4,' + (TL.barH - 4) + ' M' + (gapX + 1) + ',' + (TL.barY + 2) + ' l4,' + (TL.barH - 4), class: 'hd-tl-gapmark' }));
-      phases.appendChild(svg(c, 'text', { x: gapX, y: TL.barY + TL.barH + 14, 'text-anchor': 'middle', class: 'hd-tl-note' }, 'next trial'));
+      phases.appendChild(svg(c, 'text', { x: gapX, y: TL.barY + TL.barH + 14, 'text-anchor': 'middle', class: 'hd-tl-note' }, 'after the trial'));
       drawSegment({ ...layout.between, id: 'between', conditional: false }, phases);
     }
     root.appendChild(phases);
