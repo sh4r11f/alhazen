@@ -48,6 +48,8 @@ from typing import Any
 
 import yaml
 
+from alhazen.hub.packages import PackageError, safe_relative
+
 __all__ = [
     "DESCRIPTOR_SCHEMA",
     "SCHEMA_VERSION",
@@ -107,10 +109,6 @@ PARAM_NAME_PATTERN = re.compile(
 EVENT_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 UNIT_PATTERN = re.compile(r"^[^\x00-\x1f<>]{1,24}$")
 MODEL_PATTERN = re.compile(r"^[A-Za-z_][\w.]{0,199}(:[A-Za-z_]\w{0,99})?$")
-# A package path as packages.safe_relative leaves it: relative POSIX, no
-# empty, "." or ".." segment, no backslash or drive. Membership in the
-# manifest's file list is the real guard; this only keeps the message honest.
-PACKAGE_PATH_PATTERN = re.compile(r"^(?!/)(?!.*\\)(?!.*:)[^\x00-\x1f]{1,400}$")
 MARKDOWN_REFERENCE = re.compile(r"\[\[([a-z]+):([^\]\s]{1,80})\]\]")
 CONTROL_CHARACTERS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
@@ -199,12 +197,15 @@ def _declared_files(manifest: dict[str, Any]) -> dict[str, tuple[int, str]]:
 
 
 def _package_path(value: Any, where: str) -> str:
-    if not isinstance(value, str) or not PACKAGE_PATH_PATTERN.match(value):
+    """A path inside the package, by packages.safe_relative's rule (the one
+    the manifest's own file list obeys). Membership in that list is checked
+    where the file is read."""
+    if not isinstance(value, str):
         raise DocumentationError(f"{where} must be a relative path inside the package")
-    parts = value.split("/")
-    if any(part in ("", ".", "..") for part in parts):
-        raise DocumentationError(f"{where} must be a normalized relative path inside the package")
-    return value
+    try:
+        return safe_relative(value)
+    except PackageError as error:
+        raise DocumentationError(f"{where}: {error}") from None
 
 
 def _decode(data: bytes, path: str) -> str:

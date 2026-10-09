@@ -1,5 +1,3 @@
-# Methods
-
 This package is the experiment `alhazen new fixation_demo` writes. These methods describe its
 code and its parameter file; they report no data.
 
