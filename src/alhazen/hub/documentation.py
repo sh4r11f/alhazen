@@ -150,8 +150,9 @@ class _Bundle:
         if info.is_dir() or info.file_size != size:
             raise DocumentationError(f"{what} {path!r} does not match its declared size")
         try:
-            with self._archive.open(info) as handle:
-                data = handle.read(limit + 1)
+            # Bounded: zipfile reads at most the header's file_size, already
+            # checked against the declared size and the limit above.
+            data = self._archive.read(info)
         except (
             zipfile.BadZipFile,
             zlib.error,

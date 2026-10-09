@@ -128,10 +128,16 @@ with messages naming package paths and descriptor fields only.
 ## Python interface
 
 ```python
-from alhazen.hub.documentation import DocumentationError, read_documentation, global_guide
+from pathlib import Path
 
-read_documentation(bundle_path: Path, manifest: dict) -> dict | None
-global_guide() -> dict
+from alhazen.hub.documentation import DocumentationError, global_guide, read_documentation
+
+manifest = {"name": "fixation-demo", "files": []}  # the package's parsed alhazen-package.json
+try:
+    documentation = read_documentation(Path("package.zip"), manifest)  # dict, or None if absent
+except DocumentationError as error:
+    print(f"refused: {error}")  # the server answers 422 invalid_documentation
+guide = global_guide()  # dict
 ```
 
 `read_documentation` returns None when the manifest names no documentation. The resolved
