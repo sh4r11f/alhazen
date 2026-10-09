@@ -81,28 +81,42 @@ class OwnerGate:
         with self._lock:
             return self._held.get(owner, 0)
 
-    @contextmanager
-    def slot(self, owner: str) -> Iterator[None]:
+    def try_acquire(self, owner: str) -> bool:
+        """Take one of the owner's slots if one is free; never waits."""
         with self._lock:
             count = self._held.get(owner, 0)
             if count >= self.per_owner:
-                raise HubError(
-                    429,
-                    "owner_transfer_limit",
-                    f"You already have {count} {self.name} running, the most one account may "
-                    "run at once; retry when one finishes",
-                    headers={"Retry-After": "5"},
-                )
+                return False
             self._held[owner] = count + 1
+            return True
+
+    def release(self, owner: str) -> None:
+        with self._lock:
+            left = self._held.get(owner, 1) - 1
+            if left > 0:
+                self._held[owner] = left
+            else:
+                self._held.pop(owner, None)
+
+    def refusal(self, owner: str) -> HubError:
+        return HubError(
+            429,
+            "owner_transfer_limit",
+            f"You already have {self.held(owner)} {self.name} running, the most one account may "
+            "run at once; retry when one finishes",
+            headers={"Retry-After": "5"},
+        )
+
+    @contextmanager
+    def slot(self, owner: str) -> Iterator[None]:
+        """Take a slot or refuse at once (the app waits briefly first; see
+        app._upload_slots)."""
+        if not self.try_acquire(owner):
+            raise self.refusal(owner)
         try:
             yield
         finally:
-            with self._lock:
-                left = self._held.get(owner, 1) - 1
-                if left > 0:
-                    self._held[owner] = left
-                else:
-                    self._held.pop(owner, None)
+            self.release(owner)
 
 
 @dataclass

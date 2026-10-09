@@ -114,6 +114,7 @@ def served(hub: Hub) -> Iterator[int]:
     while not server.started:
         assert time.monotonic() < deadline, "uvicorn did not start"
         time.sleep(0.02)
+    hub.server_thread_ident = thread.ident  # type: ignore[attr-defined]
     try:
         yield port
     finally:
@@ -358,7 +359,13 @@ class TestBodyBudgets:
         assert list((hub.settings.artifact_root / "tmp").iterdir()) == []
 
     def test_one_owner_cannot_hold_every_transfer_slot(self, tmp_path, clock, caplog):
-        hub = tight_hub(tmp_path, clock, body_idle_seconds=30, body_base_seconds=60)
+        hub = tight_hub(
+            tmp_path,
+            clock,
+            body_idle_seconds=30,
+            body_base_seconds=60,
+            owner_transfer_wait_seconds=1,
+        )
         hub.tmp = tmp_path  # type: ignore[attr-defined]
         hub.register("slow")
         hub.register("ada")
@@ -395,6 +402,35 @@ class TestBodyBudgets:
         assert any("client disconnected" in r.getMessage() for r in caplog.records)
         for sid, _payload in slow_ids:
             assert slow.get(f"/sessions/{sid}/upload").json()["received_bytes"] == 0
+
+    def test_a_burst_from_one_owner_waits_for_its_own_slots(self, tmp_hub):
+        """A rig's back-to-back retries (or two rigs on one account) briefly
+        exceed the owner's share: they wait for it instead of failing."""
+        tmp_hub.register("ada")
+        rig = tmp_hub.bearer("ada")
+        session_id, payload = staging_upload(tmp_hub, rig, 64, "burst")
+        statuses: list[int] = []
+        start = threading.Barrier(6)
+
+        def send() -> None:
+            client = TestClient(tmp_hub.app, base_url=ORIGIN, raise_server_exceptions=False)
+            start.wait()
+            statuses.append(
+                client.put(
+                    f"{API}/sessions/{session_id}/files",
+                    params={"path": "f.bin", "offset": 0},
+                    content=payload,
+                    headers={**rig.headers(), "X-Chunk-SHA256": sha(payload)},
+                ).status_code
+            )
+
+        threads = [threading.Thread(target=send) for _ in range(6)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(60)
+        assert sorted(statuses) == [200] * 6, statuses  # one write, five replays
+        assert service(tmp_hub).owner_transfers.held(rig.user["id"]) == 0
 
     def test_owner_gate_is_per_owner(self, hub):
         gate = service(hub).owner_transfers
@@ -488,6 +524,216 @@ class TestExportPermit:
                 conn.close()
         finally:
             gc.enable()
+
+
+class HeldSnapshotStream:
+    """Stands in for the export stream: it holds a real pooled database
+    connection across its parts, as a snapshot export does, and records which
+    thread closes it and in what order relative to each ``next``."""
+
+    def __init__(self, engine: Any, parts: int, delay: float = 0.0, hold: Any = None) -> None:
+        self.conn = engine.connect()  # checked out from the pool until close()
+        self.parts, self.delay, self.hold = parts, delay, hold
+        self.sent = 0
+        self.events: list[str] = []
+        self.close_threads: list[int | None] = []
+
+    def __iter__(self) -> HeldSnapshotStream:
+        return self
+
+    def __next__(self) -> bytes:
+        self.events.append("next-start")
+        try:
+            if self.hold is not None and self.sent == 1:
+                self.events.append("held")
+                self.hold.wait(30)
+            if self.delay:
+                time.sleep(self.delay)
+            if self.sent >= self.parts:
+                raise StopIteration
+            self.sent += 1
+            return b"x" * 4096
+        finally:
+            self.events.append("next-end")
+
+    def close(self) -> None:
+        self.events.append("close")
+        self.close_threads.append(threading.get_ident())
+        self.conn.close()
+
+
+def serve_stream(monkeypatch: Any, factory: Any) -> None:
+    """Make the export route stream ``factory()``, whichever export
+    constructor this tree has (export_csv here; open_export after the
+    server's snapshot exports)."""
+    from alhazen.hub import trials
+
+    if hasattr(trials, "open_export"):
+        monkeypatch.setattr(trials, "open_export", lambda *_a, **_k: factory())
+    monkeypatch.setattr(trials, "export_csv", lambda *_a, **_k: factory())
+    monkeypatch.setattr(trials, "export_json", lambda *_a, **_k: factory())
+
+
+class TestExportStreamClose:
+    """The response's finalizer closes the actual stream (finding 3, with the
+    snapshot exports): off the event loop, also before the first send, after
+    a part still running in a worker thread, never twice, never by GC."""
+
+    def test_disconnect_before_first_send_closes_the_stream_off_the_loop(
+        self, tmp_hub, monkeypatch
+    ):
+        import asyncio
+
+        rig, session_id = indexed_session(tmp_hub)
+        svc = service(tmp_hub)
+        pool = svc.db.engine.pool
+        streams: list[HeldSnapshotStream] = []
+
+        def factory() -> HeldSnapshotStream:
+            streams.append(HeldSnapshotStream(svc.db.engine, parts=50))
+            return streams[-1]
+
+        serve_stream(monkeypatch, factory)
+        baseline = pool.checkedout()
+        scope = export_scope(session_id, rig.token)
+
+        async def receive() -> dict[str, Any]:
+            return {"type": "http.disconnect"}
+
+        async def send(_message: dict[str, Any]) -> None:
+            return None
+
+        gc.disable()
+        try:
+            loop_thread = threading.get_ident()
+            asyncio.run(tmp_hub.app(scope, receive, send))
+        finally:
+            gc.enable()
+        assert len(streams) == 1
+        stream = streams[0]
+        assert stream.events.count("close") == 1
+        assert stream.close_threads[0] != loop_thread
+        assert pool.checkedout() == baseline
+        assert svc.exports._slots._value == tmp_hub.settings.limits.max_concurrent_exports
+
+    def test_early_disconnect_under_uvicorn_returns_the_connection(self, tmp_hub, monkeypatch):
+        rig, session_id = indexed_session(tmp_hub)
+        svc = service(tmp_hub)
+        pool = svc.db.engine.pool
+        streams: list[HeldSnapshotStream] = []
+
+        def factory() -> HeldSnapshotStream:
+            streams.append(HeldSnapshotStream(svc.db.engine, parts=10_000, delay=0.002))
+            return streams[-1]
+
+        serve_stream(monkeypatch, factory)
+        gc.disable()
+        try:
+            with served(tmp_hub) as port:
+                baseline = pool.checkedout()
+                conn = raw_request(port, export_head(session_id, rig.token))
+                assert status_line(conn).startswith("HTTP/1.1 200")
+                conn.close()  # after the first bytes, long before the end
+                assert wait_for(lambda: streams and "close" in streams[0].events)
+                assert wait_for(lambda: pool.checkedout() == baseline)
+                server_thread = tmp_hub.server_thread_ident
+        finally:
+            gc.enable()
+        stream = streams[0]
+        assert stream.sent < stream.parts
+        assert stream.events.count("close") == 1
+        assert stream.close_threads[0] != server_thread
+        assert svc.exports._slots._value == tmp_hub.settings.limits.max_concurrent_exports
+
+    def test_close_waits_for_a_part_running_in_a_worker_thread(self, tmp_hub, monkeypatch):
+        import httpx
+
+        rig, session_id = indexed_session(tmp_hub)
+        svc = service(tmp_hub)
+        hold = threading.Event()
+        streams: list[HeldSnapshotStream] = []
+
+        def factory() -> HeldSnapshotStream:
+            streams.append(HeldSnapshotStream(svc.db.engine, parts=100, hold=hold))
+            return streams[-1]
+
+        serve_stream(monkeypatch, factory)
+        gc.disable()
+        try:
+            with served(tmp_hub) as port:
+                conn = raw_request(port, export_head(session_id, rig.token))
+                assert status_line(conn).startswith("HTTP/1.1 200")
+                assert wait_for(lambda: streams and "held" in streams[0].events)
+                conn.close()  # disconnect while next() is blocked in a worker thread
+                # The event loop stays free while that part is stuck.
+                started = time.monotonic()
+                health = httpx.get(f"http://127.0.0.1:{port}{API}/healthz", timeout=5)
+                assert health.status_code == 200 and time.monotonic() - started < 2
+                time.sleep(0.3)
+                assert "close" not in streams[0].events  # not while next() runs
+                hold.set()
+                assert wait_for(lambda: "close" in streams[0].events)
+                assert wait_for(
+                    lambda: (
+                        svc.exports._slots._value == tmp_hub.settings.limits.max_concurrent_exports
+                    )
+                )
+        finally:
+            hold.set()
+            gc.enable()
+        events = streams[0].events
+        assert events.count("close") == 1
+        held_end = events.index("next-end", events.index("held"))
+        assert events.index("close") > held_end
+        assert events[events.index("close") + 1 :].count("next-start") == 0
+
+    def test_guarded_stream_closes_once_and_then_ends(self):
+        closed: list[int] = []
+
+        def parts() -> Iterator[bytes]:
+            try:
+                yield b"a"
+                yield b"b"
+            finally:
+                closed.append(1)
+
+        guarded = app_module.GuardedStream(parts())
+        assert next(guarded) == b"a"
+        guarded.close()
+        guarded.close()
+        assert closed == [1]
+        assert list(guarded) == []
+        never_started = app_module.GuardedStream(parts())
+        never_started.close()
+        assert closed == [1]  # an unstarted generator has nothing to release
+        no_close = app_module.GuardedStream(iter([b"x"]))
+        no_close.close()
+        assert list(no_close) == []
+
+
+def export_scope(session_id: str, token: str) -> dict[str, Any]:
+    path = f"{API}/data/sessions/{session_id}/export"
+    return {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"format=csv",
+        "headers": [(b"host", b"127.0.0.1:8750"), (b"authorization", f"Bearer {token}".encode())],
+        "client": ("127.0.0.1", 50000),
+        "server": ("127.0.0.1", 8750),
+        "root_path": "",
+    }
+
+
+def export_head(session_id: str, token: str) -> str:
+    return (
+        f"GET {API}/data/sessions/{session_id}/export?format=csv HTTP/1.1\r\n"
+        f"Host: 127.0.0.1\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n"
+    )
 
 
 # -- finding 5: numbers and JSON ---------------------------------------------

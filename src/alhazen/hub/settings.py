@@ -81,6 +81,10 @@ class HubLimits:
     # most this many body-carrying uploads (chunks, packages) at once, so no
     # single account can hold every transfer slot.
     max_transfers_per_owner: int = 2
+    # A request over that share waits up to this long for one of its own
+    # slots (a rig's back-to-back retries, two rigs of one account) before
+    # 429 owner_transfer_limit. Waiting never holds a shared slot.
+    owner_transfer_wait_seconds: int = 10
     # A request body must keep arriving: at most this long between two
     # received parts, else 408 and the slot is released.
     body_idle_seconds: int = 30
