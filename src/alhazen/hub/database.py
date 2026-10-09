@@ -57,7 +57,10 @@ def make_engine(settings: HubSettings) -> Engine:
 
         @event.listens_for(engine, "begin")
         def _sqlite_begin(conn: Connection) -> None:
-            conn.exec_driver_sql("BEGIN IMMEDIATE")
+            # A read snapshot (Database.snapshot) begins deferred; everything
+            # else takes the write lock up front.
+            deferred = conn.get_execution_options().get("hub_snapshot", False)
+            conn.exec_driver_sql("BEGIN DEFERRED" if deferred else "BEGIN IMMEDIATE")
 
         return engine
     return create_engine(url, pool_pre_ping=True, pool_size=5, max_overflow=5, future=True)
@@ -75,6 +78,32 @@ class Database:
         try:
             with self.engine.begin() as conn:
                 yield conn
+        except DBAPIError as exc:
+            if exc.connection_invalidated or _is_unavailable(exc):
+                raise HubError(
+                    503,
+                    "database_unavailable",
+                    "The hub database is unavailable; retry shortly",
+                    headers={"Retry-After": "5"},
+                ) from exc
+            raise
+
+    @contextmanager
+    def snapshot(self) -> Iterator[Connection]:
+        """A read-only transaction that sees ONE committed state for all its
+        statements (REPEATABLE READ on PostgreSQL; a deferred transaction on
+        SQLite), for reads that must not straddle a concurrent rewrite, such
+        as a streamed export racing a rebuild of the same rows."""
+        options: dict[str, Any] = (
+            {"hub_snapshot": True}
+            if self.settings.is_sqlite
+            else {"isolation_level": "REPEATABLE READ"}
+        )
+        try:
+            with self.engine.connect() as raw:
+                conn = raw.execution_options(**options)
+                with conn.begin():
+                    yield conn
         except DBAPIError as exc:
             if exc.connection_invalidated or _is_unavailable(exc):
                 raise HubError(

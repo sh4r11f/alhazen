@@ -272,8 +272,7 @@ def reindex_sessions(settings: HubSettings, session_id: str | None = None) -> in
         for sid in ids:
             request_reindex(hub, None, sid)
             claimed = claim_next(hub, sid)
-            if claimed is not None:
-                index_session(hub, claimed)
+            if claimed is not None and index_session(hub, *claimed) != "superseded":
                 done += 1
         return done
     finally:
@@ -289,3 +288,86 @@ def expire_stale_uploads(settings: HubSettings) -> int:
         return expire_stale(hub)
     finally:
         hub.db.dispose()
+
+
+# -- command line -------------------------------------------------------------
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Operator commands on the hub host:
+
+        python -m alhazen.hub.admin --config PRIVATE.toml COMMAND ...
+
+    Passwords are read with getpass, never from arguments. Every changing
+    command records ``--actor`` (default: this OS user) in the audit log.
+    """
+    import argparse
+    import getpass
+    import json as json_module
+    import sys
+    from pathlib import Path
+
+    from alhazen.hub.schema import SchemaError
+    from alhazen.hub.settings import SettingsError, load_settings
+
+    parser = argparse.ArgumentParser(prog="python -m alhazen.hub.admin", description=main.__doc__)
+    parser.add_argument("--config", required=True, type=Path, help="the hub's private TOML file")
+    parser.add_argument("--actor", default=None, help="operator name recorded in the audit log")
+    commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("init-db", help="create the schema in an empty database")
+    commands.add_parser("migrate", help="upgrade the schema (take a backup first)")
+    invite = commands.add_parser("invite", help="create a single-use invite; prints the code once")
+    invite.add_argument("--note", default="")
+    invite.add_argument("--days", type=int, default=None)
+    commands.add_parser("invites", help="list invites")
+    revoke = commands.add_parser("revoke-invite")
+    revoke.add_argument("invite_id")
+    for name in ("reset-password", "disable", "enable"):
+        commands.add_parser(name).add_argument("username")
+    commands.add_parser("reconcile", help="finish abandoned seals and report artifacts")
+    reindex = commands.add_parser("reindex", help="rebuild derived trial rows")
+    reindex.add_argument("session_id", nargs="?")
+    commands.add_parser("expire-uploads", help="expire unfinished uploads past retention")
+    args = parser.parse_args(argv)
+    actor = args.actor or getpass.getuser()
+
+    def show(value: Any) -> None:
+        print(json_module.dumps(value, indent=1, sort_keys=True, default=str))
+
+    try:
+        settings = load_settings(args.config)
+        if args.command == "init-db":
+            show({"schema_version": init_database(settings)})
+        elif args.command == "migrate":
+            show({"schema_version": migrate_database(settings)})
+        elif args.command == "invite":
+            code = create_invite(settings, actor=actor, note=args.note, expires_days=args.days)
+            show({"id": code.id, "code": code.code, "expires_at": code.expires_at})
+        elif args.command == "invites":
+            show(list_invites(settings))
+        elif args.command == "revoke-invite":
+            show({"revoked": revoke_invite(settings, args.invite_id, actor=actor)})
+        elif args.command == "reset-password":
+            first = getpass.getpass("New password: ")
+            if getpass.getpass("Again: ") != first:
+                raise AdminError("the two passwords differ")
+            show({"sessions_revoked": reset_password(settings, args.username, first, actor=actor)})
+        elif args.command == "disable":
+            show({"sessions_revoked": disable_user(settings, args.username, actor=actor)})
+        elif args.command == "enable":
+            enable_user(settings, args.username, actor=actor)
+            show({"enabled": args.username})
+        elif args.command == "reconcile":
+            show(reconcile(settings))
+        elif args.command == "reindex":
+            show({"indexed": reindex_sessions(settings, args.session_id)})
+        elif args.command == "expire-uploads":
+            show({"expired": expire_stale_uploads(settings)})
+    except (AdminError, SettingsError, SchemaError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
