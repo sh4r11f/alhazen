@@ -17,9 +17,10 @@ import socket
 import threading
 import time
 from collections import Counter
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 import pytest
 import uvicorn
@@ -40,7 +41,6 @@ from alhazen.hub import admin, auth
 from alhazen.hub import app as app_module
 from alhazen.hub.context import Gate
 from alhazen.hub.schema import auth_attempts, auth_sessions
-
 
 # -- helpers -------------------------------------------------------------------
 
@@ -288,14 +288,18 @@ class TestBodyBudgets:
         with served(hub) as port:
             started = time.monotonic()
             conn = raw_request(
-                port, put_head(port, rig.token, session_id, "f.bin", 1000, sha(payload)), payload[:10]
+                port,
+                put_head(port, rig.token, session_id, "f.bin", 1000, sha(payload)),
+                payload[:10],
             )
             line = status_line(conn)
             elapsed = time.monotonic() - started
             conn.close()
             assert line.startswith("HTTP/1.1 408"), line
             assert elapsed < 10
-            assert wait_for(lambda: svc.transfers._slots._value == hub.settings.limits.max_concurrent_transfers)
+            assert wait_for(
+                lambda: svc.transfers._slots._value == hub.settings.limits.max_concurrent_transfers
+            )
             assert svc.owner_transfers.held(rig.user["id"]) == 0
         progress = rig.get(f"/sessions/{session_id}/upload").json()
         assert progress["received_bytes"] == 0
@@ -313,7 +317,9 @@ class TestBodyBudgets:
         rig = hub.bearer("ada")
         session_id, payload = staging_upload(hub, rig, 1000, "drip")
         with served(hub) as port:
-            conn = raw_request(port, put_head(port, rig.token, session_id, "f.bin", 1000, sha(payload)))
+            conn = raw_request(
+                port, put_head(port, rig.token, session_id, "f.bin", 1000, sha(payload))
+            )
             conn.settimeout(0.5)
             started = time.monotonic()
             line = ""
@@ -324,7 +330,7 @@ class TestBodyBudgets:
                     break
                 try:
                     data = conn.recv(4096)
-                except socket.timeout:
+                except TimeoutError:
                     continue
                 line = data.split(b"\r\n", 1)[0].decode()
                 break
@@ -381,7 +387,9 @@ class TestBodyBudgets:
             for conn in held:  # hang up mid-body
                 conn.close()
             assert wait_for(lambda: svc.owner_transfers.held(slow.user["id"]) == 0)
-            assert wait_for(lambda: svc.transfers._slots._value == hub.settings.limits.max_concurrent_transfers)
+            assert wait_for(
+                lambda: svc.transfers._slots._value == hub.settings.limits.max_concurrent_transfers
+            )
         errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
         assert errors == [], [r.getMessage() for r in errors]
         assert any("client disconnected" in r.getMessage() for r in caplog.records)
@@ -391,9 +399,8 @@ class TestBodyBudgets:
     def test_owner_gate_is_per_owner(self, hub):
         gate = service(hub).owner_transfers
         with gate.slot("a"), gate.slot("a"):
-            with pytest.raises(app_module.HubError) as refused:
-                with gate.slot("a"):
-                    pass
+            with pytest.raises(app_module.HubError) as refused, gate.slot("a"):
+                pass
             assert refused.value.status == 429 and refused.value.code == "owner_transfer_limit"
             with gate.slot("b"):
                 assert gate.held("b") == 1
@@ -412,7 +419,9 @@ def indexed_session(hub: Hub) -> tuple[Any, str]:
     version = rig.upload_version(experiment["id"], make_bundle(hub.tmp)).json()["version"]
     receipt = rig.upload_session(experiment["id"], version["id"], session_files())
     hub.maintenance.drain_index()
-    assert rig.get(f"/data/sessions/{receipt['id']}").json()["session"]["index"]["status"] == "indexed"
+    assert (
+        rig.get(f"/data/sessions/{receipt['id']}").json()["session"]["index"]["status"] == "indexed"
+    )
     return rig, receipt["id"]
 
 

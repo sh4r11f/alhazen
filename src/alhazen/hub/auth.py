@@ -41,7 +41,7 @@ from typing import Any
 
 from argon2 import PasswordHasher, Type
 from argon2.exceptions import VerifyMismatchError
-from sqlalchemy import Connection, and_, delete, func, insert, select, update
+from sqlalchemy import Connection, and_, delete, func, insert, select, text, update
 from sqlalchemy.exc import IntegrityError
 
 from alhazen.hub.context import Hub, new_id
@@ -230,7 +230,7 @@ def _serialize_admission(conn: Connection) -> None:
     small statements, so serialising them costs nothing at hub scale.
     """
     if conn.dialect.name == "postgresql":
-        conn.exec_driver_sql("SELECT pg_advisory_xact_lock(%s)" % int(_ADMISSION_LOCK_KEY))
+        conn.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _ADMISSION_LOCK_KEY})
 
 
 def _admit_hash(hub: Hub, conn: Connection, now: int) -> None:
