@@ -407,7 +407,7 @@ class Uploader:
         self._queue: queue.Queue[str] = queue.Queue()
         self._stop = threading.Event()
         self._cancel: set[str] = set()
-        self._pause: set[str] = set()
+        self._pause: dict[str, tuple[str, str]] = {}
         self._flags = threading.Lock()
         self._thread = threading.Thread(target=self._loop, name="hub-uploader", daemon=True)
         self._thread.start()
@@ -421,16 +421,20 @@ class Uploader:
     def submit(self, job_id: str) -> None:
         with self._flags:
             self._cancel.discard(job_id)
-            self._pause.discard(job_id)
+            self._pause.pop(job_id, None)
         self._queue.put(job_id)
 
     def cancel(self, job_id: str) -> None:
         with self._flags:
             self._cancel.add(job_id)
 
-    def pause(self, job_id: str) -> None:
+    def pause(
+        self, job_id: str, code: str = "paused", message: str = "Paused by the operator"
+    ) -> None:
+        """Stop a job at its next unit of work, as ``paused`` with ``code``
+        (one of RESUMABLE_PAUSES lets the same account's sign-in resume it)."""
         with self._flags:
-            self._pause.add(job_id)
+            self._pause[job_id] = (code, message)
 
     def resume_for(self, base: str, user_id: str) -> int:
         """Queue this account's jobs that paused for sign-in reasons."""
@@ -470,7 +474,7 @@ class Uploader:
                 if job["id"] in self._cancel:
                     raise _Cancelled()
                 if job["id"] in self._pause:
-                    raise _Paused("paused", "Paused by the operator")
+                    raise _Paused(*self._pause.pop(job["id"]))
             if self._stop.is_set():
                 raise _Paused("interrupted", "The dashboard is stopping")
             if not self.busy():

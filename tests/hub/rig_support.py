@@ -1,9 +1,8 @@
-"""Test doubles for the rig hub tests: a stand-in central hub over real
+"""Test support for the rig hub tests: a stand-in central hub over real
 loopback HTTP, implementing the parts of docs/hub/api-contract.md the rig
-uses, and a minimal stand-in for ``alhazen.hub.packages`` (the shared package
-module is owned and tested by the package worker; this double implements its
-contract signatures on plain ZIP files so the rig's own logic is tested
-without it). Synthetic users and data only."""
+uses (the real service is tested by its own suite; the rig/server seam is
+verified in the integration run), and synthetic releases built with the real
+``alhazen.hub.packages``. Synthetic users and data only."""
 
 from __future__ import annotations
 
@@ -13,92 +12,14 @@ import json
 import re
 import threading
 import zipfile
-from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+from alhazen.hub import packages
+
 MANIFEST = "alhazen-package.json"
-
-
-class FakePackageError(ValueError):
-    pass
-
-
-@dataclass(frozen=True)
-class FakePackageInfo:
-    manifest: dict
-    sha256: str
-    size: int
-
-
-class FakePackages:
-    """``alhazen.hub.packages``' signatures over plain ZIPs."""
-
-    PackageError = FakePackageError
-    PackageInfo = FakePackageInfo
-
-    def __init__(self) -> None:
-        self.extracted: list[Path] = []
-
-    @staticmethod
-    def suggest_files(source: Path) -> list[str]:
-        out = []
-        for path in sorted(source.rglob("*")):
-            rel = path.relative_to(source).as_posix()
-            parts = rel.split("/")
-            if not path.is_file() or path.is_symlink():
-                continue
-            if any(p.startswith(".") or p == "__pycache__" for p in parts):
-                continue
-            if parts[0].startswith("data") or parts[-1].startswith("rig-"):
-                continue
-            out.append(rel)
-        return out
-
-    def build_bundle(self, source: Path, output: Path, metadata: dict, files: list[str]):
-        listed = []
-        for rel in sorted(files):
-            data = (source / rel).read_bytes()
-            listed.append(
-                {"path": rel, "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
-            )
-        manifest = {**metadata, "files": listed}
-        with zipfile.ZipFile(output, "x") as archive:
-            archive.writestr(MANIFEST, json.dumps(manifest, sort_keys=True))
-            for rel in sorted(files):
-                archive.writestr(rel, (source / rel).read_bytes())
-        data = output.read_bytes()
-        return FakePackageInfo(manifest, hashlib.sha256(data).hexdigest(), len(data))
-
-    def inspect_bundle(self, path: Path):
-        data = path.read_bytes()
-        try:
-            with zipfile.ZipFile(io.BytesIO(data)) as archive:
-                manifest = json.loads(archive.read(MANIFEST))
-                names = set(archive.namelist()) - {MANIFEST}
-                if names != {f["path"] for f in manifest["files"]}:
-                    raise FakePackageError("members differ from the manifest")
-                for entry in manifest["files"]:
-                    if hashlib.sha256(archive.read(entry["path"])).hexdigest() != entry["sha256"]:
-                        raise FakePackageError(f"hash mismatch: {entry['path']}")
-        except (KeyError, zipfile.BadZipFile, ValueError) as exc:
-            raise FakePackageError(str(exc)) from exc
-        return FakePackageInfo(manifest, hashlib.sha256(data).hexdigest(), len(data))
-
-    def extract_bundle(self, path: Path, destination: Path):
-        info = self.inspect_bundle(path)
-        if destination.exists():
-            raise FakePackageError("destination exists")
-        destination.mkdir(parents=True)
-        with zipfile.ZipFile(path) as archive:
-            for entry in info.manifest["files"]:
-                target = destination / entry["path"]
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(archive.read(entry["path"]))
-        self.extracted.append(destination)
-        return info
 
 
 def release_zip(
@@ -114,7 +35,6 @@ def release_zip(
     (source / "run.py").write_text(run_py)
     (source / "pyproject.toml").write_text(f'[project]\nname = "{name}"\nversion = "{version}"\n')
     metadata = {
-        "schema_version": 1,
         "name": name,
         "version": version,
         "title": "Demo task",
@@ -128,8 +48,8 @@ def release_zip(
         "citations": [],
     }
     out = tmp / f"{name}-{version}-{abs(hash(run_py))}.zip"
-    info = FakePackages().build_bundle(source, out, metadata, ["pyproject.toml", "run.py"])
-    return out.read_bytes(), info.manifest
+    info = packages.build_bundle(source, out, metadata, ["pyproject.toml", "run.py"])
+    return out.read_bytes(), dict(info.manifest)
 
 
 ID = r"[A-Za-z0-9_-]+"
@@ -252,7 +172,7 @@ class _HubHandler(BaseHTTPRequestHandler):
             self.send_header("Location", "http://127.0.0.1:9/elsewhere")
             self.send_header("Content-Length", "0")
             self.end_headers()
-            return
+            return None
         who = self._who()
         if method == "GET" and path == "/config":
             return self._send(
