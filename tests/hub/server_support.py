@@ -80,7 +80,7 @@ class Hub:
         self.settings = settings
         self.clock = clock
         self.app = create_app(settings, clock=clock, start_maintenance=False)
-        self.client = TestClient(self.app, base_url=ORIGIN)
+        self.client = TestClient(self.app, base_url=ORIGIN, raise_server_exceptions=False)
 
     @property
     def maintenance(self) -> Any:
@@ -206,7 +206,7 @@ class Browser(Caller):
 
     def __init__(self, hub: Hub, username: str, password: str) -> None:
         self.hub = hub
-        self.client = TestClient(hub.app, base_url=ORIGIN)
+        self.client = TestClient(hub.app, base_url=ORIGIN, raise_server_exceptions=False)
         response = self.client.post(
             f"{API}/auth/login",
             json={"username": username, "password": password},
@@ -225,7 +225,7 @@ class Bearer(Caller):
 
     def __init__(self, hub: Hub, username: str, password: str) -> None:
         self.hub = hub
-        self.client = TestClient(hub.app, base_url=ORIGIN)
+        self.client = TestClient(hub.app, base_url=ORIGIN, raise_server_exceptions=False)
         response = self.client.post(
             f"{API}/auth/token", json={"username": username, "password": password}
         )
