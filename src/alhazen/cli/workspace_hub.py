@@ -119,7 +119,6 @@ def _route(method: str, path: str, query: tuple[str, ...] = (), **kw: Any) -> Ro
 PAGE = ("limit", "offset")
 # The exact central routes the rig page may reach through the adapter.
 PROXY_ROUTES = (
-    _route("POST", "/auth/register", auth=False),
     _route("GET", "/catalog", ("query", *PAGE)),
     _route("GET", "/experiments", PAGE),
     _route("POST", "/experiments"),
@@ -435,6 +434,17 @@ class HubAdapter:
             "expires_at": credential.expires_at,
         }
 
+    def register_account(self, args: dict[str, str], body: dict[str, Any]) -> tuple[int, Any]:
+        """Registration is a browser action on the hub itself: the hub
+        requires its own page's Origin for it (gate M1), which a rig must not
+        forge. The page is told where to go instead."""
+        base = self._connection().base
+        raise HubRouteError(
+            409,
+            "register_on_hub",
+            f"Create your account on the hub's own page ({base}), then sign in here",
+        )
+
     def me(self, args: dict[str, str], body: dict[str, Any]) -> tuple[int, Any]:
         answer = self._authed(lambda c: c.json("GET", "/auth/me"))
         user = public_user(answer.get("user") if isinstance(answer, dict) else None)
@@ -521,8 +531,10 @@ class HubAdapter:
     # -- projects and installs ------------------------------------------------------------------
 
     def _install_public(self, record: dict[str, Any]) -> dict[str, Any]:
-        registered = record.get("project_id") and any(
-            p["id"] == record["project_id"] for p in self.workspace.projects
+        registered = (
+            record.get("status") != "installing"
+            and record.get("project_id")
+            and any(p["id"] == record["project_id"] for p in self.workspace.projects)
         )
         return {
             "sha256": record.get("sha256"),
@@ -1026,6 +1038,7 @@ LOCAL_ROUTES: dict[tuple[str, str], LocalHandler] = {
     ("POST", "/auth/login"): HubAdapter.login,
     ("POST", "/auth/token"): HubAdapter.login,
     ("GET", "/auth/me"): HubAdapter.me,
+    ("POST", "/auth/register"): HubAdapter.register_account,
     ("POST", "/auth/logout"): HubAdapter.logout,
     ("GET", "/local/status"): HubAdapter.status,
     ("POST", "/local/connect"): HubAdapter.connect,

@@ -37,6 +37,11 @@ of it.
 - The bearer from `POST /auth/token` is stored server-side, owner-only, and never returned to
   the page. A 401 from the hub forgets it. Logout clears it locally even when the hub cannot be
   reached and reports `revoked: false`. A new hub address forgets the sign-in.
+- Registration is a browser action on the hub's own page (it requires the hub's exact Origin,
+  which the rig must not forge): the rig answers `POST /auth/register` with 409
+  `register_on_hub` naming the hub's address. A 401 forgets only the bearer the refused request
+  used (compare-and-delete), never a sign-in made since. Connecting to another hub first revokes
+  the old bearer at the old hub (`previous_revoked`).
 - The proxy is an allowlist of exact methods and route shapes (ids `[A-Za-z0-9_-]{1,128}`),
   each with its allowed query keys; only Accept, Content-Type/Length, the bearer and the upload
   chunk digest go upstream. The hub's status passes through (201, 202). Writes include
@@ -54,9 +59,14 @@ of it.
 2. the hub's version record must list that exact SHA-256 (`hash_mismatch` otherwise);
 3. the ZIP is downloaded (size cap, SHA-256 checked), `packages.inspect_bundle` validates it,
    its name/version must match the hub's record and the platform must be declared;
-4. `packages.extract_bundle` unpacks it into a new folder
+4. an `installing` record is written, then `packages.install_bundle(expected_sha256=...)` unpacks it into a new folder
    `<workspace>/hub/experiments/<name>/<version>-<sha12>`; an existing folder is never replaced;
-   the declared files are made read-only (folders stay writable for data);
+   the declared files are made read-only (folders stay writable for data). A durability the
+   file system could not confirm is recorded (`durable: false`, its note) rather than treated as
+   failure (Windows never confirms; not physically verified there). An interrupted install is
+   cleared only by `POST /local/install-recover {sha256}` through the package module's own
+   recovery: its leftovers and an empty claim are removed, a committed tree is completed only if
+   it holds exactly the release's declared files, and any other content is left untouched;
 5. the trust acknowledgement is recorded with the digest, user and statement;
 6. only now the chosen interpreter is probed (this imports code from the folder), checked with
    `packages.compatibility_problems`, and the folder is registered with the workspace. A refusal
@@ -103,16 +113,32 @@ The job is a file in `<workspace>/hub/outbox/`. One worker thread runs jobs one 
 - before every request the stored sign-in must be the job's hub and account; otherwise the job
   pauses (`signed_out`, `auth_context_changed`) and never runs under another account; signing
   in again as the same account resumes it;
-- it hashes each file once, refusing a file whose size or mtime changed since the preview
-  (`local_changed`), and checks the hashes against the session's own manifest;
-- it initialises the session, sends 8 MiB chunks from the hub's own received offsets with
+- it hashes each file once in 1 MiB blocks, waiting between blocks while a session runs, and
+  refuses a file whose size or mtime changed (`local_changed`); the hashes must match the
+  session's own manifest. File names the hub would refuse (not portable, not NFC, differing only
+  in case) are found at preview (`unsupported_path`);
+- it initialises the session (empty files are sent as one empty chunk), sends chunks of at most
+  8 MiB or the hub's `max_chunk_bytes` from the hub's own received offsets with
   `X-Chunk-SHA256`, retries transient failures with the same identity (and
   `sealing_in_progress`), and is `completed` only for a `committed` receipt whose session id,
   client session id, experiment/version, file count, byte total and `manifest_sha256`
   (`alhazen.hub.protocol`) all match the bound upload; any difference fails the job as
   `receipt_mismatch` and the receipt is kept aside, never treated as completion;
+- an attempt the hub closed (410 `upload_aborted`/`upload_expired`) is initialised again with
+  the same `client_session_id` (the hub starts a new attempt for an identical replay); if the
+  hub keeps answering closed, the job fails `upload_closed`, resumable;
+- a complete answered `sealing_in_progress` (Retry-After honoured) or timed out is the same
+  upload still sealing: it is asked again until the 35-minute bound, then the job pauses,
+  resumable, with the same session;
+- Cancel discards the hub's unfinished copy with the job's own bound credential, on the worker
+  after the job stops (`remote_abort`: `aborted`, `pending` until that account is signed in
+  and the hub reachable, `kept` for committed data, which is never aborted). The hub routes
+  `GET /sessions` and `POST /sessions/{id}/abort` list and discard the user's own unfinished
+  uploads; a discard there also cancels the matching local job;
 - local files are never changed, moved or deleted. A restart pauses active jobs as
-  `interrupted`; they resume for their own account.
+  `interrupted`; they resume for their own account. `client_session_id` comes from the
+  session's own record (session.json experiment, subject/session/run, created) where present,
+  so a moved data folder is the same upload.
 
 ## `alhazen hub`
 
@@ -120,7 +146,7 @@ The job is a file in `<workspace>/hub/outbox/`. One worker thread runs jobs one 
 `logout`, `status`, `pack DIR --output F [--license] [--yes]`, `push F --experiment ID`,
 `install EXP VER --sha256 S --python PY --trust-code`, `serve --config FILE` (needs the
 service from the hub extra). It shares `--state-dir` with the dashboard; `install` takes the
-workspace lock, so it refuses while a dashboard holds the workspace.
+workspace lock, so it refuses while a dashboard holds the workspace, and it starts no upload.
 
 ## Not verified here
 
