@@ -75,7 +75,7 @@ ASSETS = {
     "hub_docs.js": "text/javascript; charset=utf-8",
     "hub_docs.css": "text/css; charset=utf-8",
     "icon.svg": "image/svg+xml",
-    "fonts/Nunito-latin.woff2": "font/woff2",
+    "fonts/Manrope-latin.woff2": "font/woff2",
     "fonts/OFL.txt": "text/plain; charset=utf-8",
 }
 PAGE_CSP = (

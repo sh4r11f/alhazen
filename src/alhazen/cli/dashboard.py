@@ -94,7 +94,7 @@ HUB_ASSETS = {
     "/hub/assets/hub_docs.js": ("hub_docs.js", "text/javascript; charset=utf-8"),
     "/hub/assets/hub_docs.css": ("hub_docs.css", "text/css; charset=utf-8"),
     "/hub/assets/icon.svg": ("icon.svg", "image/svg+xml"),
-    "/hub/assets/fonts/Nunito-latin.woff2": ("fonts/Nunito-latin.woff2", "font/woff2"),
+    "/hub/assets/fonts/Manrope-latin.woff2": ("fonts/Manrope-latin.woff2", "font/woff2"),
     "/hub/assets/fonts/OFL.txt": ("fonts/OFL.txt", "text/plain; charset=utf-8"),
 }
 # What the hub page needs to know before it holds the token: which role this
