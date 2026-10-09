@@ -483,20 +483,14 @@ a:hover { color: var(--accent-ink); text-decoration-thickness: 2px; }
 
 /* ---- landing: headline and drawing, the live latest-releases table,
  * three facts with line icons ---- */
-.hero {
-  display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr); gap: 48px; align-items: center;
-  padding: 24px 0 8px;
-}
-.hero-text { min-width: 0; }
+.hero { padding: 32px 0 8px; text-align: center; display: grid; justify-items: center; }
 .hero-title {
-  margin: 0; max-width: 15ch; font-size: clamp(2.6rem, 1.3rem + 3.6vw, 4.25rem); line-height: 1.02;
-  font-weight: 800; letter-spacing: -0.045em;
+  margin: 0; max-width: 17ch; font-size: clamp(2.6rem, 1.3rem + 3.6vw, 4.25rem); line-height: 1.02;
+  font-weight: 800; letter-spacing: -0.045em; text-wrap: balance;
 }
-.hero .lede { font-size: 1.25rem; margin-top: 24px; }
-.hero .actions { margin-top: 36px; }
+.hero .lede { font-size: 1.25rem; margin-top: 24px; max-width: 52ch; }
+.hero .actions { margin-top: 36px; justify-content: center; }
 .hero .btn { min-height: 48px; padding: 0 22px; font-size: 1rem; }
-.hero-figure { display: flex; justify-content: center; color: var(--ink); }
-.hero-brain { display: block; width: 100%; max-width: 460px; height: auto; }
 .block-link { font-weight: 500; text-decoration: none; }
 .block-link:hover { text-decoration: underline; }
 .preview {
@@ -721,12 +715,6 @@ a:hover { color: var(--accent-ink); text-decoration-thickness: 2px; }
 .theme-btn[aria-pressed=true] { background: var(--surface-3); color: var(--ink); }
 
 /* ---- responsive ---- */
-@media (max-width: 1079px) {
-  .hero { grid-template-columns: minmax(0, 1fr); gap: 0; }
-  /* Stacked: the drawing sits small above the headline. */
-  .hero-figure { order: -1; justify-content: flex-start; margin-bottom: 28px; }
-  .hero-brain { max-width: 240px; }
-}
 @media (max-width: 960px) {
   .exp-grid, .mine-grid, .docs-tasks { grid-template-columns: minmax(0, 1fr); gap: 32px; }
   .sheet, .task-list { position: static; }
@@ -747,11 +735,10 @@ a:hover { color: var(--accent-ink); text-decoration-thickness: 2px; }
   .banner { width: calc(100% - 32px); }
   .hero { padding: 16px 0 0; }
   .hero .lede { font-size: 1.1rem; margin-top: 18px; }
-  .hero .actions { margin-top: 28px; }
+  .hero .actions { margin-top: 28px; width: 100%; }
+  .hero .actions .btn { flex: 1 1 140px; }
   .block { margin-top: 44px; }
   .features { grid-template-columns: minmax(0, 1fr); gap: 24px; margin-top: 48px; }
-  .hero-figure { margin-bottom: 20px; }
-  .hero-brain { max-width: 176px; }
   .preview { margin-top: 44px; }
   .preview-bar { padding-left: 16px; }
   /* Dense rows become stacked rows: title first, the facts on one line under it. */
