@@ -2,7 +2,8 @@
 
 Runs, in order, on start and then periodically: seal reconciliation (finish
 abandoned seals, report missing or orphaned artifacts), expiry of stale
-unfinished uploads, pruning of old sign-in throttle records, and the trial
+unfinished uploads, pruning of old sign-in throttle records and ended
+sign-in sessions, and the trial
 index queue. One thread means at most one index job at a time (review gate
 M4). Its latest report and any failure are exposed through /readyz, so a
 broken step is visible rather than only logged.
@@ -16,9 +17,11 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any
 
-from alhazen.hub.auth import purge_attempts
+from alhazen.hub.auth import housekeeping as auth_housekeeping
 from alhazen.hub.context import Hub
 from alhazen.hub.trials import claim_next, index_session
 from alhazen.hub.uploads import expire_stale, reconcile
@@ -30,9 +33,20 @@ HOUSEKEEP_EVERY_MS = 60 * 60 * 1000
 POLL_SECONDS = 30.0
 
 
+SEAL_WORKERS = 2
+
+
 class Maintenance:
     def __init__(self, hub: Hub) -> None:
         self.hub = hub
+        # Seals requested over HTTP run here, so a request can answer 202 and
+        # the client poll while a large session is hashed. Bounded: at most
+        # SEAL_WORKERS seals hash at once; others wait their turn (their
+        # claim's lease is renewed only once they start, so a queued seal
+        # whose lease lapses is simply taken over later; the token fences it).
+        self._seals = ThreadPoolExecutor(
+            max_workers=SEAL_WORKERS, thread_name_prefix="alhazen-hub-seal"
+        )
         self.report: dict[str, Any] | None = None
         self.last_error: str | None = None
         self._last_reconcile = -RECONCILE_EVERY_MS
@@ -49,7 +63,13 @@ class Maintenance:
             )
             self._thread.start()
 
+    def submit_seal(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Future[Any]:
+        return self._seals.submit(fn, *args, **kwargs)
+
     def stop(self, timeout: float = 10.0) -> None:
+        # Running seals finish in their threads; queued ones are dropped and
+        # their lapsed claims taken over by the next start's reconciliation.
+        self._seals.shutdown(wait=False, cancel_futures=True)
         self._stop.set()
         self._wake.set()
         if self._thread is not None:
@@ -80,7 +100,7 @@ class Maintenance:
             if now - self._last_housekeep >= HOUSEKEEP_EVERY_MS:
                 try:
                     expire_stale(self.hub)
-                    purge_attempts(self.hub)
+                    auth_housekeeping(self.hub)
                     self._last_housekeep = now
                 except Exception as exc:  # noqa: BLE001 - recorded for /readyz and logged
                     log.exception("hub housekeeping failed")
@@ -99,7 +119,7 @@ class Maintenance:
             claimed = claim_next(self.hub, session_id)
             if claimed is None:
                 return done
-            index_session(self.hub, claimed)
+            index_session(self.hub, *claimed)
             done += 1
             if session_id is not None:
                 return done

@@ -20,10 +20,21 @@ Write checks (review gate M1):
 - Bearer (rig/CLI) requests carry no cookie; a request carrying both a
   cookie and a bearer is refused, never silently resolved.
 - ``POST /auth/token`` never sets a cookie and refuses a request with one.
+
+Request bodies (auth-review findings 2, 5, 6): every body is read through
+`_parts`, which enforces the route's byte limit, an idle budget (a part must
+arrive within ``limits.body_idle_seconds``) and an overall budget (base +
+expected bytes / floor rate), answering 408 and releasing its slots when a
+client stalls. Uploads take a per-owner slot before a shared transfer slot.
+Numbers in queries and headers are ASCII digits only; JSON is bounded in
+nesting and refuses repeated keys. A client that disconnects mid-body ends
+its request quietly, without an error traceback. A streamed export releases
+its admission permit when the ASGI response call ends, however it ends.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -32,11 +43,13 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+import anyio
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.requests import ClientDisconnect
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from alhazen.hub import auth, catalog, data, trials, uploads
@@ -71,7 +84,16 @@ PAGE_CSP = (
 )
 API_CSP = "default-src 'none'; frame-ancestors 'none'; sandbox"
 _ID = re.compile(r"^[0-9a-f]{32}$")
+# How long POST .../complete waits for its seal before answering 202 (below
+# the rig client's 20 s request timeout).
+COMPLETE_WAIT_SECONDS = 10.0
+# ASCII digits only: str.isdigit() also accepts superscripts and other
+# scripts' digits, some of which int() then rejects (finding 5).
+_DIGITS = re.compile(r"[0-9]{1,18}")
 _MAX_OFFSET = 10_000_000
+# JSON bodies: deepest nesting accepted. The hub's documents are flat
+# objects with lists of objects; nothing legitimate comes close.
+MAX_JSON_DEPTH = 32
 
 
 def cookie_name(settings: HubSettings) -> str:
@@ -116,6 +138,43 @@ class SecurityHeaders:
         await self.app(scope, receive, send_with_headers)
 
 
+class PermitStreamingResponse(StreamingResponse):
+    """A streamed response that holds an admission permit until its ASGI call
+    ends, however it ends (auth-review finding 3).
+
+    The permit used to be released in the body generator's ``finally``. A
+    generator that never starts never runs it: when the client is already
+    gone, Starlette cancels the streaming task before its first step, and the
+    permit stayed taken until a cyclic garbage collection happened to run.
+    Releasing in ``__call__``'s ``finally`` covers completion, errors,
+    disconnects and cancellation alike. ``release`` is idempotent.
+    """
+
+    def __init__(self, content: Any, *, release: Callable[[], None], **kwargs: Any) -> None:
+        super().__init__(content, **kwargs)
+        self.source = content
+        self._release = release
+        self._released = False
+
+    def release(self) -> None:
+        if not self._released:
+            self._released = True
+            self._release()
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self.release()
+            close = getattr(self.source, "close", None)
+            if close is not None and not getattr(self.source, "gi_running", False):
+                # A started generator gets GeneratorExit now, not at GC time.
+                # Its yields sit outside database transactions, so closing it
+                # does no I/O. (One still running in a worker thread cannot be
+                # closed and is left to its own end.)
+                close()
+
+
 # -- request helpers ----------------------------------------------------------
 
 
@@ -123,23 +182,103 @@ def _address(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
-async def _body(request: Request, limit: int) -> bytes:
+def _digits(value: str) -> int | None:
+    """The value of an ASCII decimal string, or None if it is not one."""
+    return int(value) if _DIGITS.fullmatch(value) else None
+
+
+def _declared_length(request: Request, limit: int, message: str) -> int | None:
     declared = request.headers.get("content-length")
-    if declared is not None:
-        if not declared.isdigit():
-            raise invalid("Content-Length is malformed")
-        if int(declared) > limit:
-            raise too_large(f"The request body is larger than {limit} bytes")
+    if declared is None:
+        return None
+    value = _digits(declared)
+    if value is None:
+        raise invalid("Content-Length is malformed")
+    if value > limit:
+        raise too_large(message)
+    return value
+
+
+def _body_timeout(why: str) -> HubError:
+    return HubError(
+        408,
+        "body_timeout",
+        f"The request body {why}; send it again",
+        headers={"Connection": "close"},
+    )
+
+
+async def _parts(request: Request, limit: int, message: str) -> AsyncIterator[bytes]:
+    """The request body's parts, within the route's byte limit and the
+    service's idle and overall time budgets (``HubLimits.body_*``).
+
+    Content-Length is checked first but not trusted: the running total is.
+    The overall budget is base + expected bytes / floor rate, where the
+    expected size is the declared length, or the limit when none is given.
+    No cancel scope spans a ``yield``.
+    """
+    limits = request.app.state.hub.settings.limits
+    declared = _declared_length(request, limit, message)
+    expected = declared if declared is not None else limit
+    budget = limits.body_base_seconds + expected / limits.body_min_bytes_per_second
+    deadline = anyio.current_time() + budget
+    source = request.stream().__aiter__()
+    size = 0
+    while True:
+        remaining = deadline - anyio.current_time()
+        if remaining <= 0:
+            raise _body_timeout(f"did not arrive within {budget:.0f} s")
+        part = b""
+        finished = False
+        with anyio.move_on_after(min(limits.body_idle_seconds, remaining)) as scope:
+            try:
+                part = await source.__anext__()
+            except StopAsyncIteration:
+                finished = True
+        if scope.cancelled_caught:
+            if remaining <= limits.body_idle_seconds:
+                raise _body_timeout(f"did not arrive within {budget:.0f} s")
+            raise _body_timeout(f"stalled for {limits.body_idle_seconds} s")
+        if finished:
+            return
+        size += len(part)
+        if size > limit:
+            raise too_large(message)
+        if part:
+            yield part
+
+
+async def _body(request: Request, limit: int) -> bytes:
+    message = f"The request body is larger than {limit} bytes"
     buffer = bytearray()
-    async for part in request.stream():
+    async for part in _parts(request, limit, message):
         buffer += part
-        if len(buffer) > limit:
-            raise too_large(f"The request body is larger than {limit} bytes")
     return bytes(buffer)
 
 
 def _reject_constant(name: str) -> Any:
     raise ValueError(f"{name} is not valid JSON")
+
+
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in out:
+            raise ValueError(f"repeated key {key!r}")
+        out[key] = value
+    return out
+
+
+def _depth_exceeds(value: Any, limit: int) -> bool:
+    stack = [(value, 1)]
+    while stack:
+        item, depth = stack.pop()
+        if isinstance(item, (dict, list)):
+            if depth > limit:
+                return True
+            children = item.values() if isinstance(item, dict) else item
+            stack.extend((child, depth + 1) for child in children)
+    return False
 
 
 async def _json(request: Request, limit: int) -> dict[str, Any]:
@@ -148,11 +287,21 @@ async def _json(request: Request, limit: int) -> dict[str, Any]:
         raise HubError(415, "unsupported_media_type", "Send the request body as application/json")
     raw = await _body(request, limit)
     try:
-        value = json.loads(raw.decode("utf-8"), parse_constant=_reject_constant)
+        value = json.loads(
+            raw.decode("utf-8"),
+            parse_constant=_reject_constant,
+            object_pairs_hook=_unique_object,
+        )
+    except RecursionError:
+        raise invalid("The request body is nested too deeply", "invalid_json") from None
     except (UnicodeDecodeError, ValueError):
         raise invalid("The request body is not valid JSON", "invalid_json") from None
     if not isinstance(value, dict):
         raise invalid("The request body must be a JSON object", "invalid_json")
+    if _depth_exceeds(value, MAX_JSON_DEPTH):
+        raise invalid(
+            f"The request body is nested more than {MAX_JSON_DEPTH} levels deep", "invalid_json"
+        )
     return value
 
 
@@ -166,9 +315,9 @@ def _int(request: Request, name: str, default: int, low: int, high: int) -> int:
     raw = request.query_params.get(name)
     if raw is None or raw == "":
         return default
-    if not raw.isdigit():
+    value = _digits(raw)
+    if value is None:
         raise invalid(f"{name} must be a non-negative integer")
-    value = int(raw)
     if not low <= value <= high:
         raise invalid(f"{name} must be between {low} and {high}")
     return value
@@ -185,7 +334,11 @@ def create_app(
     settings: HubSettings, *, clock: Clock = system_clock, start_maintenance: bool = True
 ) -> FastAPI:
     database = Database(settings)
-    database.check_schema()
+    try:
+        database.check_schema()
+    except BaseException:
+        database.dispose()
+        raise
     hub = Hub(
         settings=settings, db=database, store=ArtifactStore(settings.artifact_root), clock=clock
     )
@@ -238,6 +391,14 @@ def create_app(
             {"error": {"code": "invalid_request", "message": "The request is malformed"}},
             status_code=400,
         )
+
+    @app.exception_handler(ClientDisconnect)
+    async def _client_gone(request: Request, _exc: ClientDisconnect) -> Response:
+        # A client that hangs up mid-body (a rig losing its link, a closed
+        # tab) is an ordinary event for a resumable protocol, not a server
+        # error: no traceback, nothing acknowledged. The status is never seen.
+        log.info("client disconnected during %s %s", request.method, request.url.path)
+        return Response(status_code=400, headers={"Connection": "close"})
 
     @app.exception_handler(Exception)
     async def _unexpected(request: Request, exc: Exception) -> JSONResponse:
@@ -355,11 +516,15 @@ def create_app(
             and not problems
             and not maintenance.last_error
         )
+        # Counts only: the identifiers stay in the operator's report and logs.
+        public_report = (
+            {k: v for k, v in report.items() if not k.endswith("_ids")} if report else None
+        )
         body = {
             "status": "ready" if ready else "not_ready",
             "database": "ok" if db_ok else "unavailable",
             "artifacts": "ok" if store_ok else "unwritable",
-            "reconciliation": report,
+            "reconciliation": public_report,
             "maintenance_error": maintenance.last_error,
         }
         return JSONResponse(body, status_code=200 if ready else 503)
@@ -502,7 +667,7 @@ def create_app(
         if kind != "application/zip":
             raise HubError(415, "unsupported_media_type", "Upload the package as application/zip")
         await call(catalog.precheck_version_upload, hub, principal, experiment_id)
-        with hub.transfers.slot():
+        with hub.owner_transfers.slot(principal.user_id), hub.transfers.slot():
             temp, digest, size = await _receive_package(request)
             version, created = await call(
                 catalog.accept_version, hub, principal, experiment_id, temp, digest, size
@@ -513,19 +678,16 @@ def create_app(
         import hashlib
 
         limit = settings.limits.max_package_bytes
-        declared = request.headers.get("content-length")
-        if declared is not None and declared.isdigit() and int(declared) > limit:
-            raise too_large(f"A package may be at most {limit} bytes")
+        message = f"A package may be at most {limit} bytes"
+        parts = _parts(request, limit, message)
         temp = hub.store.new_temp()
         digest = hashlib.sha256()
         size = 0
         handle = await call(temp.open, "xb")
         try:
             pending = bytearray()
-            async for part in request.stream():
+            async for part in parts:
                 size += len(part)
-                if size > limit:
-                    raise too_large(f"A package may be at most {limit} bytes")
                 digest.update(part)
                 pending += part
                 if len(pending) >= 1024 * 1024:
@@ -631,16 +793,50 @@ def create_app(
         if offset < 0:
             raise invalid("offset is required")
         chunk_sha = request.headers.get("x-chunk-sha256", "")
-        with hub.transfers.slot():
+        with hub.owner_transfers.slot(principal.user_id), hub.transfers.slot():
             data_bytes = await _body(request, settings.limits.max_chunk_bytes)
             return await call(
                 uploads.put_chunk, hub, principal, session_id, path, offset, data_bytes, chunk_sha
             )
 
+    @app.get(f"{API}/sessions")
+    async def unfinished_uploads(request: Request) -> dict[str, Any]:
+        principal = await member(request)
+        limit, offset = _page(request)
+        return await call(uploads.list_unfinished, hub, principal, limit, offset)
+
+    def _sealing(view: dict[str, Any]) -> JSONResponse:
+        return JSONResponse(
+            {**view, "status": "sealing", "retry_after": 5},
+            status_code=202,
+            headers={"Retry-After": "5"},
+        )
+
     @app.post(API + "/sessions/{session_id}/complete")
-    async def complete(request: Request, session_id: str) -> dict[str, Any]:
+    async def complete(request: Request, session_id: str) -> Any:
+        """200 with the committed receipt, or 202 {status: "sealing"} while the
+        seal runs (poll by calling complete again, or GET .../upload)."""
         principal = await writer(request)
-        result = await call(uploads.complete, hub, principal, _id(session_id, "Upload not found"))
+        session_id = _id(session_id, "Upload not found")
+        state, value = await call(uploads.begin_complete, hub, principal, session_id)
+        if state == "done":
+            return value
+        if state == "busy":
+            assert isinstance(value, dict)
+            return _sealing(value)
+        future = maintenance.submit_seal(
+            uploads.seal, hub, session_id, value, actor=f"user:{principal.user_id}"
+        )
+        try:
+            result = await asyncio.wait_for(
+                asyncio.shield(asyncio.wrap_future(future)), COMPLETE_WAIT_SECONDS
+            )
+        except asyncio.TimeoutError:
+            return _sealing(await call(uploads.progress, hub, principal, session_id))
+        except HubError as exc:
+            if exc.code != "sealing_in_progress":
+                raise
+            return _sealing(await call(uploads.progress, hub, principal, session_id))
         maintenance.wake()
         return result
 
@@ -689,10 +885,10 @@ def create_app(
         index = {"status": row.index_status, "rows": int(row.index_rows), "error": row.index_error}
         if row.index_status != "indexed":
             return {"items": [], "next_offset": None, "columns": columns, "index": index}
-        items, more = await call(trials.page, hub, row.id, limit, offset)
+        items, next_offset = await call(trials.page, hub, row.id, limit, offset)
         return {
             "items": items,
-            "next_offset": offset + limit if more else None,
+            "next_offset": next_offset,
             "columns": columns,
             "index": index,
         }
@@ -707,50 +903,31 @@ def create_app(
             data.index_state, hub, principal, _id(session_id, "Session not found")
         )
         data.require_indexed(row)
-        slot = hub.exports.slot()
-        slot.__enter__()
+        permit = hub.exports.slot()
+        permit.__enter__()
 
-        def guarded(stream: Iterator[bytes]) -> Iterator[bytes]:
-            try:
-                yield from stream
-            finally:
-                slot.__exit__(None, None, None)
+        def release() -> None:
+            permit.__exit__(None, None, None)
 
         try:
-            if fmt == "csv":
-                sources = await call(_source_count, row.id)
-                stream = trials.export_csv(hub, row.id, columns, sources > 1)
-                media = "text/csv; charset=utf-8"
-            else:
-                stream = trials.export_json(hub, row.id, columns)
-                media = "application/json"
-        except BaseException:
-            slot.__exit__(None, None, None)
-            raise
-        name = f"session-{row.id}-trials.{fmt}"
-        return StreamingResponse(
-            guarded(stream),
-            media_type=media,
-            headers={
-                "Content-Disposition": f'attachment; filename="{name}"',
-                "Content-Security-Policy": "sandbox; default-src 'none'",
-                "Cache-Control": "private, no-store",
-            },
-        )
-
-    def _source_count(session_id: str) -> int:
-        from sqlalchemy import func, select
-
-        from alhazen.hub.schema import trial_rows
-
-        with database.transaction() as conn:
-            return int(
-                conn.execute(
-                    select(func.count(func.distinct(trial_rows.c.source_path))).where(
-                        trial_rows.c.session_id == session_id
-                    )
-                ).scalar_one()
+            # Header, columns and rows come from one snapshot (trials.py).
+            stream = await call(trials.open_export, hub, row.id, fmt)
+            media = "text/csv; charset=utf-8" if fmt == "csv" else "application/json"
+            name = f"session-{row.id}-trials.{fmt}"
+            response = PermitStreamingResponse(
+                stream,
+                release=release,
+                media_type=media,
+                headers={
+                    "Content-Disposition": f'attachment; filename="{name}"',
+                    "Content-Security-Policy": "sandbox; default-src 'none'",
+                    "Cache-Control": "private, no-store",
+                },
             )
+        except BaseException:
+            release()
+            raise
+        return response
 
     @app.get(API + "/data/sessions/{session_id}/files")
     async def session_file(request: Request, session_id: str) -> FileResponse:

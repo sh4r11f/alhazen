@@ -287,3 +287,49 @@ test('a body that breaks off mid-answer is a failure, never an empty success', a
   const api = C.createApi({fetch, role: 'server'});
   await assert.rejects(() => api.request('POST', '/library', {json: {}}), (e) => e.kind === 'offline');
 });
+
+test('trial index state: nested server shape, older flat fields, and what each allows', () => {
+  let s = C.indexState({index: {status: 'failed', rows: 0, error: 'budget'}});
+  assert.equal(s.failed, true);
+  assert.equal(s.canRebuild, true);
+  assert.equal(s.ready, false);
+  assert.equal(s.error, 'budget');
+  s = C.indexState({index: {status: 'indexed', rows: 12, error: null}});
+  assert.equal(s.ready, true);
+  assert.equal(s.rows, 12);
+  assert.equal(s.canRebuild, false);
+  assert.equal(C.indexState({index: {status: 'pending', rows: 0, error: null}}).busy, true);
+  assert.equal(C.indexState({index: {status: 'indexing'}}).busy, true);
+  assert.equal(C.indexState({index: {status: 'none', rows: 0}}).word, 'No trial table in this session');
+  s = C.indexState({index_status: 'failed', index_error: 'flat', index_rows: 0});
+  assert.equal(s.failed, true);
+  assert.equal(s.error, 'flat');
+  s = C.indexState({});
+  assert.equal(s.status, '');
+  assert.equal(s.ready, false);
+  assert.equal(s.canRebuild, false);
+  assert.equal(s.rows, null);
+});
+
+test('a trial row is read from the server\'s {ordinal, source_path, values}; flat rows still work', () => {
+  const row = C.trialRow({ordinal: 3, source_path: 'trials.csv', values: {trial_index: '4', outcome: 'FIXATED'}});
+  assert.equal(row.ordinal, 3);
+  assert.equal(row.source, 'trials.csv');
+  assert.equal(row.values.outcome, 'FIXATED');
+  const flat = C.trialRow({trial: 1, rt: 0.3});
+  assert.equal(flat.ordinal, null);
+  assert.equal(flat.values.rt, 0.3);
+  assert.equal(C.trialRow(null).ordinal, null);
+});
+
+test('upload states: only a staging upload can be discarded; sealing says why not', () => {
+  let u = C.uploadState({status: 'staging', received_bytes: 10, total_bytes: 40});
+  assert.equal(u.canDiscard, true);
+  assert.equal(u.received, 10);
+  assert.equal(u.total, 40);
+  u = C.uploadState({status: 'sealing'});
+  assert.equal(u.canDiscard, false);
+  assert.match(u.whyNot, /verifying and sealing/);
+  for (const status of ['committed', 'aborted', 'expired', '']) assert.equal(C.uploadState({status}).canDiscard, false, status);
+  assert.equal(C.uploadState({status: 'staging'}).received, null);
+});

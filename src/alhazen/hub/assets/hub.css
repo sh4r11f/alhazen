@@ -136,6 +136,41 @@
     --shadow: #00000066;
 }
 
+/* ---- the documentation viewer (hub_docs.css) in the dark theme ----
+ * hub_docs.css has its own light defaults; in dark it reads these
+ * variables (documentation-contract). Both copies stay identical, like the
+ * palettes; the stimulus panel stays physical grey. */
+/* HD-DARK-AUTO */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme=light]) .hd-doc {
+    --hd-ink: var(--ink);
+    --hd-muted: var(--muted);
+    --hd-faint: var(--lamp-idle);
+    --hd-paper: var(--surface);
+    --hd-soft: var(--surface-2);
+    --hd-rule: var(--line);
+    --hd-accent: var(--accent);
+    --hd-accent-soft: var(--accent-soft);
+    --hd-fail: var(--bad-ink);
+    --hd-abort: var(--warn-ink);
+    --hd-ok: var(--ok-ink);
+  }
+}
+/* HD-DARK-EXPLICIT */
+:root[data-theme=dark] .hd-doc {
+  --hd-ink: var(--ink);
+  --hd-muted: var(--muted);
+  --hd-faint: var(--lamp-idle);
+  --hd-paper: var(--surface);
+  --hd-soft: var(--surface-2);
+  --hd-rule: var(--line);
+  --hd-accent: var(--accent);
+  --hd-accent-soft: var(--accent-soft);
+  --hd-fail: var(--bad-ink);
+  --hd-abort: var(--warn-ink);
+  --hd-ok: var(--ok-ink);
+}
+
 /* ---- base ---- */
 *, *::before, *::after { box-sizing: border-box; }
 html { background: var(--paper); }
@@ -475,6 +510,8 @@ a:hover { color: var(--accent-hover); }
 .task-link:hover { background: var(--hover-bg); color: var(--ink); }
 .task-link[aria-current=page] { background: var(--accent-soft); color: var(--ink); }
 .task-guide { min-width: 0; }
+/* A single task has no index column. Let its reading view use the full grid. */
+.docs-tasks > .task-guide:only-child { grid-column: 1 / -1; }
 
 /* ---- tables ---- */
 .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
@@ -538,6 +575,19 @@ a:hover { color: var(--accent-hover); }
 .meter-p90 { width: 90%; }
 .meter-p95 { width: 95%; }
 .meter-p100 { width: 100%; }
+
+/* ---- unfinished uploads (Data) ---- */
+.unfinished-list { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 8px; max-width: 900px; }
+.unfinished-row {
+  display: flex; gap: 12px 20px; flex-wrap: wrap; justify-content: space-between; align-items: flex-start;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px;
+}
+.unfinished-main { flex: 1 1 280px; min-width: 0; }
+.unfinished-main p { margin: 0 0 2px; }
+.unfinished-what { font-weight: 800; }
+.unfinished-actions { flex: 0 1 320px; display: grid; gap: 6px; justify-items: start; }
+.unfinished-actions .confirm p { flex-basis: 100%; }
+.durability { margin: 4px 0 0; }
 
 /* ---- footer ---- */
 .footer { border-top: 1px solid var(--line); background: var(--surface); }

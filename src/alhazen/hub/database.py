@@ -14,16 +14,19 @@ leaves no partial rows.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
 from sqlalchemy import Connection, Engine, create_engine, event
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 
 from alhazen.hub.errors import HubError
-from alhazen.hub.schema import check_version
+from alhazen.hub.schema import SchemaError, check_version
 from alhazen.hub.settings import HubSettings
+
+log = logging.getLogger(__name__)
 
 
 def engine_url(settings: HubSettings) -> str:
@@ -54,7 +57,10 @@ def make_engine(settings: HubSettings) -> Engine:
 
         @event.listens_for(engine, "begin")
         def _sqlite_begin(conn: Connection) -> None:
-            conn.exec_driver_sql("BEGIN IMMEDIATE")
+            # A read snapshot (Database.snapshot) begins deferred; everything
+            # else takes the write lock up front.
+            deferred = conn.get_execution_options().get("hub_snapshot", False)
+            conn.exec_driver_sql("BEGIN DEFERRED" if deferred else "BEGIN IMMEDIATE")
 
         return engine
     return create_engine(url, pool_pre_ping=True, pool_size=5, max_overflow=5, future=True)
@@ -82,17 +88,45 @@ class Database:
                 ) from exc
             raise
 
+    @contextmanager
+    def snapshot(self) -> Iterator[Connection]:
+        """A read-only transaction that sees ONE committed state for all its
+        statements (REPEATABLE READ on PostgreSQL; a deferred transaction on
+        SQLite), for reads that must not straddle a concurrent rewrite, such
+        as a streamed export racing a rebuild of the same rows."""
+        options: dict[str, Any] = (
+            {"hub_snapshot": True}
+            if self.settings.is_sqlite
+            else {"isolation_level": "REPEATABLE READ"}
+        )
+        try:
+            with self.engine.connect() as raw:
+                conn = raw.execution_options(**options)
+                with conn.begin():
+                    yield conn
+        except DBAPIError as exc:
+            if exc.connection_invalidated or _is_unavailable(exc):
+                raise HubError(
+                    503,
+                    "database_unavailable",
+                    "The hub database is unavailable; retry shortly",
+                    headers={"Retry-After": "5"},
+                ) from exc
+            raise
+
     def check_schema(self) -> None:
         with self.engine.connect() as conn:
             check_version(conn)
 
     def ping(self) -> bool:
+        """Whether the database answers at the expected schema (for /readyz)."""
         try:
             with self.engine.connect() as conn:
                 check_version(conn)
-            return True
-        except Exception:  # noqa: BLE001 - readiness reports any failure as not ready
+        except (SQLAlchemyError, SchemaError) as exc:
+            log.warning("hub database not ready: %s", type(exc).__name__)
             return False
+        return True
 
     def dispose(self) -> None:
         self.engine.dispose()

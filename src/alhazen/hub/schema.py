@@ -40,7 +40,7 @@ from sqlalchemy import (
     select,
 )
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 ID = 32  # opaque random identifiers: 32 lowercase hex characters
 
 METADATA = MetaData()
@@ -202,12 +202,29 @@ data_sessions = Table(
     Column("created_at", BigInteger, nullable=False),
     Column("updated_at", BigInteger, nullable=False),
     Column("completed_at", BigInteger, nullable=True),
-    # Until when the current seal attempt owns the session (status sealing).
+    # The current seal attempt (status sealing): a random token naming the
+    # sealer and the time its lease ends. Every seal step after the claim is
+    # conditional on the token, so a sealer whose lease was taken over can
+    # neither commit, reset nor release anything (schema 2).
     Column("seal_lease_until", BigInteger, nullable=True),
+    Column("seal_token", String(64), nullable=True),
+    # A condition an operator or the owner must act on: "artifact_conflict"
+    # (a stored final copy disagrees; the seal stopped) or "artifact_missing"
+    # (a committed session's stored files are gone). Schema 2.
+    Column("problem_code", String(32), nullable=True),
+    Column("problem_at", BigInteger, nullable=True),
+    # Retry of a closed (aborted/expired) upload: the new attempt names the
+    # attempt it replaces; the closed row keeps its original client id here
+    # and gives up the unique (owner, client_session_id) key. Schema 2.
+    Column("previous_attempt_id", String(ID), nullable=True),
+    Column("retired_client_id", String(128), nullable=True),
     # Derived trial index state, independent of the raw state:
     # "none" | "pending" | "indexing" | "indexed" | "partial" | "failed".
     Column("index_status", String(16), nullable=False),
     Column("index_claimed_until", BigInteger, nullable=True),
+    # The current index job's token (schema 2): a rebuild requested while a
+    # job runs, or a takeover after its claim lapsed, fences the old job.
+    Column("index_token", String(64), nullable=True),
     Column("index_rows", Integer, nullable=False),
     Column("index_error", String(500), nullable=True),
     Column("index_columns", Text, nullable=True),
@@ -251,9 +268,26 @@ trial_rows = Table(
     PrimaryKeyConstraint("session_id", "ordinal"),
 )
 
+
+def _v1_to_v2(conn: Connection) -> None:
+    """Schema 2: seal tokens, problem marks, retried attempts and index tokens.
+
+    Only nullable columns are added (portable ADD COLUMN on SQLite and
+    PostgreSQL); existing rows keep NULL, which every reader treats as "none".
+    """
+    for name, kind in (
+        ("seal_token", "VARCHAR(64)"),
+        ("problem_code", "VARCHAR(32)"),
+        ("problem_at", "BIGINT"),
+        ("previous_attempt_id", "VARCHAR(32)"),
+        ("retired_client_id", "VARCHAR(128)"),
+        ("index_token", "VARCHAR(64)"),
+    ):
+        conn.exec_driver_sql(f"ALTER TABLE hub_sessions ADD COLUMN {name} {kind}")
+
+
 # Steps that upgrade an existing database from version N to N+1, keyed by N.
-# Empty at version 1: there is nothing older to upgrade from.
-MIGRATIONS: dict[int, Callable[[Connection], None]] = {}
+MIGRATIONS: dict[int, Callable[[Connection], None]] = {1: _v1_to_v2}
 
 
 class SchemaError(RuntimeError):

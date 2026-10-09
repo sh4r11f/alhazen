@@ -28,7 +28,7 @@ from sqlalchemy import Connection, and_, delete, func, insert, or_, select, upda
 from sqlalchemy.exc import IntegrityError
 
 from alhazen.hub import packages
-from alhazen.hub.auth import Principal, audit
+from alhazen.hub.auth import Principal, audit, has_hidden_characters
 from alhazen.hub.context import Hub, new_id
 from alhazen.hub.errors import HubError, conflict, invalid, not_found, too_large
 from alhazen.hub.quota import lock_owner, require_room
@@ -93,8 +93,10 @@ def parse_metadata(body: dict[str, Any], *, partial: bool) -> dict[str, Any]:
 
 
 def _bad_text(value: str, *, multiline: bool) -> bool:
-    allowed = {"\n", "\t"} if multiline else set()
-    return any((ord(ch) < 32 and ch not in allowed) or ord(ch) == 127 for ch in value)
+    # The display-name rule (controls, bidi/format and other invisible
+    # characters, separators, lone surrogates): public metadata is read by
+    # people and must show what it says (auth-review finding 7).
+    return has_hidden_characters(value, multiline=multiline)
 
 
 # -- shapes ------------------------------------------------------------------
@@ -342,12 +344,15 @@ def accept_version(
     version_id = new_id()
     key = hub.store.release_key(experiment_id, version_id)
     installed = False
+    staged: Path | None = None
     try:
-        info = _inspect(hub, temp)
+        bundle = _stage(hub, temp, sha256)
+        staged = bundle.path
+        info = bundle.info
         if info.sha256 != sha256 or info.size != size:
             raise HubError(500, "internal", "Package digest disagreement; nothing was stored")
         manifest = info.manifest
-        _check_documentation(temp, manifest)
+        _check_documentation(staged, manifest)
         name = str(manifest.get("name", ""))
         version = str(manifest.get("version", ""))
         now = hub.clock()
@@ -380,7 +385,7 @@ def accept_version(
             if count >= hub.settings.limits.max_versions_per_experiment:
                 raise too_large("This experiment has reached its version limit", "version_limit")
             require_room(conn, principal.user_id, info.size, hub.settings.limits.user_quota_bytes)
-            hub.store.install_release(temp, key)
+            hub.store.install_release(staged, key)
             installed = True
             conn.execute(
                 insert(versions).values(
@@ -420,13 +425,20 @@ def accept_version(
         raise
     finally:
         temp.unlink(missing_ok=True)
+        if staged is not None:
+            staged.unlink(missing_ok=True)
 
 
-def _inspect(hub: Hub, temp: Path) -> packages.PackageInfo:
+def _stage(hub: Hub, temp: Path, sha256: str) -> packages.VerifiedBundle:
+    """A private verified copy of the received upload: what gets stored is
+    exactly the bytes that were checked (packages.stage_bundle), and they must
+    be the bytes this request streamed (``sha256``)."""
     limits = hub.settings.limits
     try:
-        return packages.inspect_bundle(
+        return packages.stage_bundle(
             temp,
+            hub.store.root / "tmp",
+            expected_sha256=sha256,
             max_archive_bytes=limits.max_package_bytes,
             max_expanded_bytes=limits.max_package_expanded_bytes,
             max_files=limits.max_package_files,

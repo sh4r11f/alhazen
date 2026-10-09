@@ -22,7 +22,7 @@
  *   sameOriginPath, HubError, errorFromResponse, createApi, validateHubUrl,
  *   validatePython, validatePackageMetadata, parseList, parseTags,
  *   formatBytes, formatDate, shortHash, hardwareList, platformsText,
- *   trialColumns, cellText, jobState, uploadTotals, firstHttpsUrl,
+ *   trialColumns, trialRow, cellText, jobState, indexState, uploadState, uploadState, uploadTotals, firstHttpsUrl,
  *   readToken, seg, nextOffsetLabel}
  */
 'use strict';
@@ -523,6 +523,20 @@ const HubCore = (() => {
     return columns;
   }
 
+  /** One derived trial row as the server sends it ({ordinal, source_path,
+   *  values}) -> {ordinal, source, values}. An item without a `values`
+   *  object is read as the values themselves (older flat rows). */
+  function trialRow(item) {
+    const it = item && typeof item === 'object' ? item : {};
+    const nested = it.values && typeof it.values === 'object' && !Array.isArray(it.values);
+    const ordinal = Number.isInteger(it.ordinal) && it.ordinal >= 0 ? it.ordinal : null;
+    return {
+      ordinal: nested ? ordinal : null,
+      source: nested && typeof it.source_path === 'string' ? it.source_path : '',
+      values: nested ? it.values : it,
+    };
+  }
+
   /** One table cell as text: numbers and words as they are, objects as
    *  compact JSON, missing values blank. Long values are cut. */
   function cellText(value) {
@@ -577,6 +591,64 @@ const HubCore = (() => {
     };
   }
 
+  /* A committed session's derived trial index (server: session.index =
+   * {status, rows, error}; statuses none | pending | indexing | indexed |
+   * failed). The raw files are the record either way; the index only
+   * decides whether trial rows and exports can be read. */
+  const INDEX_WORDS = {
+    indexed: 'Trial rows indexed',
+    pending: 'Trial index queued for rebuilding',
+    indexing: 'Trial index being rebuilt',
+    failed: 'Trial index failed',
+    none: 'No trial table in this session',
+  };
+
+  /** -> {status, rows, error, ready, busy, failed, canRebuild, word}.
+   *  Reads the nested `index` object, or the flat index_status /
+   *  index_rows / index_error fields of older answers. */
+  function indexState(session) {
+    const s = session || {};
+    const nested = s.index && typeof s.index === 'object' ? s.index : null;
+    const status = String((nested ? nested.status : s.index_status) || '').toLowerCase();
+    const rowsRaw = nested ? nested.rows : s.index_rows;
+    const rows = Number.isFinite(Number(rowsRaw)) && rowsRaw !== null && rowsRaw !== undefined ? Number(rowsRaw) : null;
+    const rawError = nested ? nested.error : s.index_error;
+    const error = rawError && typeof rawError === 'object' ? String(rawError.message || rawError.code || '') : String(rawError || '');
+    const failed = status === 'failed' || status === 'error';
+    return {
+      status, rows, error, failed,
+      ready: status === 'indexed',
+      busy: status === 'pending' || status === 'indexing',
+      canRebuild: failed,
+      word: INDEX_WORDS[status] || (status ? 'Trial index: ' + status : 'Trial index state not reported'),
+    };
+  }
+
+  /* An unfinished remote upload (GET /sessions; server states staging ->
+   * sealing -> committed, or aborted / expired). Only staging can be
+   * discarded: sealing is the hub verifying and installing it, and a
+   * committed session is kept. */
+  const UPLOAD_WORDS = {
+    staging: 'Waiting for the rest of its files',
+    sealing: 'Being verified and sealed by the hub',
+    committed: 'Received',
+    aborted: 'Discarded',
+    expired: 'Expired',
+  };
+
+  /** -> {status, word, received, total, canDiscard, whyNot}. */
+  function uploadState(upload) {
+    const u = upload || {};
+    const status = String(u.status || '').toLowerCase();
+    const received = Number.isFinite(Number(u.received_bytes)) && u.received_bytes !== null && u.received_bytes !== undefined ? Number(u.received_bytes) : null;
+    const total = Number.isFinite(Number(u.total_bytes)) && u.total_bytes !== null && u.total_bytes !== undefined ? Number(u.total_bytes) : null;
+    const canDiscard = status === 'staging';
+    let whyNot = '';
+    if (status === 'sealing') whyNot = 'The hub is verifying and sealing it; it cannot be discarded now. It finishes or fails on its own.';
+    else if (!canDiscard) whyNot = 'Only an upload that is still receiving files can be discarded.';
+    return {status, word: UPLOAD_WORDS[status] || (status || 'state not reported'), received, total: total === null ? received : total, canDiscard, whyNot};
+  }
+
   /** Files and bytes of an upload or package preview. */
   function uploadTotals(files, declaredTotal) {
     const list = Array.isArray(files) ? files : [];
@@ -611,7 +683,7 @@ const HubCore = (() => {
     API_PREFIX, VIEWS, PRIVATE_VIEWS, RIG_TABS, EXPERIMENT_TABS, parseRoute, formatRoute, safeNext, sameOriginPath,
     HubError, errorFromResponse, createApi, seg, readToken, validateHubUrl, validatePython, validatePassword,
     validatePackageMetadata, parseList, parseTags, formatBytes, formatDate, shortHash,
-    hardwareList, platformsText, trialColumns, cellText, jobState, uploadTotals, firstHttpsUrl,
+    hardwareList, platformsText, trialColumns, trialRow, cellText, jobState, indexState, uploadState, uploadTotals, firstHttpsUrl,
     nextOffsetLabel,
   };
 })();
