@@ -499,7 +499,12 @@ class HubAdapter:
             "title": record.get("title"),
             "project_id": record.get("project_id") if registered else None,
             "workspace_url": f"/?project={record['project_id']}&view=run" if registered else None,
-            "status": "registered" if registered else "installed",
+            "status": (
+                "installing"
+                if record.get("status") == "installing"
+                else ("registered" if registered else "installed")
+            ),
+            "durable": record.get("durable"),
             "python": record.get("python"),
             "installed_at": record.get("installed_at"),
             "hardware": record.get("hardware"),
@@ -551,6 +556,17 @@ class HubAdapter:
             )
         )
         return 201, {"install": self._install_public(self.register(record["sha256"], python))}
+
+    def install_recover(self, args: dict[str, str], body: dict[str, Any]) -> tuple[int, Any]:
+        """Explicit recovery of an interrupted install (package module's own
+        recovery; other content is never removed)."""
+        self._refuse_if_busy()
+        answer = self.installs.recover(self.packages(), check_sha256(body.get("sha256")))
+        install = answer["install"]
+        return 200, {
+            "recovery": answer["recovery"],
+            "install": self._install_public(install) if install else None,
+        }
 
     def register(self, sha256: str, python: str) -> dict[str, Any]:
         """Probe ``python`` and register a TRUSTED install with the workspace.
@@ -933,6 +949,7 @@ LOCAL_ROUTES: dict[tuple[str, str], LocalHandler] = {
         {"items": [self._install_public(r) for r in self.installs.records()]},
     ),
     ("POST", "/local/install"): HubAdapter.install,
+    ("POST", "/local/install-recover"): HubAdapter.install_recover,
     ("POST", "/local/package-preview"): HubAdapter.package_preview,
     ("POST", "/local/package-upload"): HubAdapter.package_upload,
     ("GET", "/local/sessions"): HubAdapter.sessions,
