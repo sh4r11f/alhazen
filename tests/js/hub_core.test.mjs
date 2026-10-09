@@ -310,3 +310,14 @@ test('trial index state: nested server shape, older flat fields, and what each a
   assert.equal(s.canRebuild, false);
   assert.equal(s.rows, null);
 });
+
+test('a trial row is read from the server\'s {ordinal, source_path, values}; flat rows still work', () => {
+  const row = C.trialRow({ordinal: 3, source_path: 'trials.csv', values: {trial_index: '4', outcome: 'FIXATED'}});
+  assert.equal(row.ordinal, 3);
+  assert.equal(row.source, 'trials.csv');
+  assert.equal(row.values.outcome, 'FIXATED');
+  const flat = C.trialRow({trial: 1, rt: 0.3});
+  assert.equal(flat.ordinal, null);
+  assert.equal(flat.values.rt, 0.3);
+  assert.equal(C.trialRow(null).ordinal, null);
+});

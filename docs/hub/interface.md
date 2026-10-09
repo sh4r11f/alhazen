@@ -48,8 +48,8 @@ parameter can only name one of the page's own screens.
 | `view=signin&next=`, `view=register` | Sign in; register with an invite code (password 12 to 1024 characters). | `POST /auth/login`, `POST /auth/register` |
 | `view=library` | Pinned releases; install or open in the workspace (rig), download (central). | `GET /library` |
 | `view=mine`, `&new=1`, `&id=` | My experiments: create, edit details, versions, add a version (upload a `.zip` on central; pack a registered project on a rig after reviewing every file and the manifest), publish with two acknowledgements and a confirmation, unpublish with a confirmation. | `GET|POST /experiments`, `PATCH /experiments/{id}`, `POST …/versions`, `POST …/publish|unpublish`, `GET /local/projects`, `POST /local/package-preview|package-upload` |
-| `view=data&experiment=&subject=&mode=&offset=` | Uploaded sessions, filtered. | `GET /data/sessions` |
-| `…&session=&toffset=` | One session: metadata, manifest digest, receipt durability, files with downloads, and the trial index from `session.index` (`status`, `rows`, `error`). Indexed: trial rows (paged, in the server's column order) and CSV/JSON export. Queued or rebuilding: said so, polled until the server reports a final state. Failed: the reason and **Rebuild trial index**. No trial table: said so. The raw files stay downloadable in every state. | `GET /data/sessions/{id}`, `…/trials`, `…/export`, `…/files`, `POST …/reindex` |
+| `view=data&experiment=&subject=&mode=&offset=` | Uploaded sessions, filtered. The Experiment filter offers your own experiments, your library's (read fresh) and those the listed sessions name (`experiment_title`, the server's authorised label); it never lists anyone else's. | `GET /data/sessions`, `GET /experiments`, `GET /library` |
+| `…&session=&toffset=` | One session: metadata, manifest digest, receipt durability, files with downloads, and the trial index from `session.index` (`status`, `rows`, `error`). Indexed: trial rows (20 per page) read from each item's `values` under the server's declared `columns`, with the row number and, when a session has several trial tables, the source file in their own columns; CSV/JSON export. Queued or rebuilding: said so, polled until the server reports a final state. Failed: the reason and **Rebuild trial index**. No trial table: said so. The raw files stay downloadable in every state. | `GET /data/sessions/{id}`, `…/trials`, `…/export`, `…/files`, `POST …/reindex` |
 | `view=rig&tab=connection|installed|upload&project=&root=&run=&job=` | Rig only: connect or disconnect a hub; installed releases; choose a finished session, review it and opt in; follow a transfer. | `/local/*` |
 
 Private screens (library, mine, data) send a signed-out reader to sign in and back afterwards.
@@ -64,6 +64,7 @@ Private screens (library, mine, data) send a signed-out reader to sign in and ba
   rig reports the hub's receipt.
 - **Stale answers are dropped.** Each draw has an epoch and an `AbortController`; an answer for a
   screen the reader has left is ignored and its request aborted. Polling stops on navigation.
+- **Titles.** The tab title is the screen's heading, also when the heading arrives with the data.
 - **Focus.** A navigation focuses the new screen's heading once it has loaded; an in-screen step
   (pager, filter, tab) keeps focus on the control that made it. Sign-in errors, refusals and progress
   are announced through `role=alert` / `role=status`.

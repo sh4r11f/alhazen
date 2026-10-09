@@ -566,7 +566,7 @@ test('data: filters become the address, sessions link to their detail, exports a
   const p = await mount({search: '?view=data', routes: Object.assign({}, ALICE_ROUTES, {
     'GET /data/sessions': (req) => ({status: 200, body: {items: req.query.get('subject_code') === 'S01' ? [sessionView()] : [], next_offset: null}}),
     'GET /data/sessions/s1': () => ({status: 200, body: sessionDetail(sessionView())}),
-    'GET /data/sessions/s1/trials': () => ({status: 200, body: {items: [{rt: 0.31, trial: 1}], next_offset: null, columns: ['trial', 'rt'], index: {status: 'indexed', rows: 1, error: null}}}),
+    'GET /data/sessions/s1/trials': () => ({status: 200, body: {items: [{ordinal: 0, source_path: 'trials.csv', values: {rt: '0.31', trial: '1', outcome: 'FIXATED'}}], next_offset: null, columns: ['trial', 'rt'], index: {status: 'indexed', rows: 1, error: null}}}),
   })});
   assert.match(p.text(), /No sessions uploaded yet/);
   const form = p.main.querySelector('form');
@@ -583,6 +583,9 @@ test('data: filters become the address, sessions link to their detail, exports a
   assert.match(t, /0\.31/);
   const headers = p.main.querySelectorAll('th').map((th) => th.textContent);
   assert.ok(headers.indexOf('trial') < headers.indexOf('rt'), 'columns in the server\'s declared order');
+  for (const internal of ['values', 'ordinal', 'source_path', 'outcome']) assert.ok(!headers.includes(internal), internal);
+  assert.match(t, /From trials\.csv/);
+  assert.match(p.document.title, /^Session S01 · .* · Alhazen Experiment Hub$/);
   assert.equal(p.find('a', 'CSV').getAttribute('href'), '/api/hub/v1/data/sessions/s1/export?format=csv');
   assert.equal(p.find('a', 'trials.csv').getAttribute('href'), '/api/hub/v1/data/sessions/s1/files?path=trials.csv');
   assert.equal(p.find('button', 'Rebuild trial index'), undefined, 'no rebuild offered for a ready index');
@@ -598,7 +601,7 @@ test('a failed trial index keeps files readable and offers Rebuild; queued, then
       current = sessionView({index: {status: 'pending', rows: 0, error: null}});
       return {status: 202, body: sessionDetail(current)};
     },
-    'GET /data/sessions/s1/trials': () => ({status: 200, body: {items: [{trial: 1, rt: 0.5}], next_offset: null, columns: ['trial', 'rt'], index: current.index}}),
+    'GET /data/sessions/s1/trials': () => ({status: 200, body: {items: [{ordinal: 0, source_path: 'trials.csv', values: {trial: '1', rt: '0.5'}}], next_offset: null, columns: ['trial', 'rt'], index: current.index}}),
   })});
   let t = p.text();
   assert.match(t, /the index budget/);
@@ -718,4 +721,54 @@ test('a session of a project not installed from the hub is recorded against a re
   await p.click(p.find('button', 'Use this release'));
   assert.deepEqual(previews[1], {project_id: 'p1', root_id: 'r1', run_id: SESSION.run_id, experiment_id: 'e1', version_id: 'v1'});
   assert.match(p.text(), /recorded against Fixation demo v1\.2\.0/);
+});
+
+test('trial rows: the real {ordinal, source_path, values} items under the declared columns, paged', async () => {
+  /* As hub/trials.py page() and app.py session_trials write them (repro:
+   * first-e2e-proof.json, the scaffold experiment's trial table). */
+  const columns = ['trial_index', 'attempt', 'outcome', 'completed', 'success', 'fault', 'acquire_latency_s'];
+  const item = (n, source) => ({ordinal: n, source_path: source,
+    values: {trial_index: String(n + 1), attempt: '1', outcome: n % 2 ? 'NO_FIXATION' : 'FIXATED', completed: 'True', success: n % 2 ? 'False' : 'True', fault: '', acquire_latency_s: '0.41', extra_field: 'x'}});
+  const pages = {
+    0: {items: Array.from({length: 20}, (_, i) => item(i, i < 10 ? 'sub-01/run-1/trials.csv' : 'sub-01/run-2/trials.csv')), next_offset: 20},
+    20: {items: [item(20, 'sub-01/run-2/trials.csv')], next_offset: null},
+  };
+  const p = await mount({search: '?view=data&session=s1', routes: Object.assign({}, ALICE_ROUTES, {
+    'GET /data/sessions/s1': () => ({status: 200, body: Object.assign(sessionDetail(sessionView({index: {status: 'indexed', rows: 21, error: null}})), {columns})}),
+    'GET /data/sessions/s1/trials': (req) => ({status: 200, body: Object.assign({columns, index: {status: 'indexed', rows: 21, error: null}}, pages[Number(req.query.get('offset') || 0)])}),
+  })});
+  const table = p.main.querySelector('table.table-dense');
+  const headers = table.querySelectorAll('th').map((th) => th.textContent);
+  assert.deepEqual(headers, ['#', 'source', ...columns], 'declared columns only, plus row number and source (two trial tables)');
+  const first = table.querySelector('tbody').querySelectorAll('tr')[0].querySelectorAll('td').map((td) => td.textContent);
+  assert.deepEqual(first, ['1', 'sub-01/run-1/trials.csv', '1', '1', 'FIXATED', 'True', 'True', '', '0.41']);
+  assert.doesNotMatch(table.textContent, /\{|"trial_index"/, 'no JSON blobs in cells');
+  assert.equal(p.hub.calls.find((c) => c.path.endsWith('/trials')).query.get('limit'), '20');
+  await p.click(p.find('a', 'Next'));
+  assert.equal(p.loc.search, '?view=data&session=s1&toffset=20');
+  assert.equal(p.hub.calls.filter((c) => c.path.endsWith('/trials')).pop().query.get('offset'), '20');
+  const rows = p.main.querySelector('table.table-dense').querySelector('tbody').querySelectorAll('tr');
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].querySelectorAll('td')[0].textContent, '21');
+  assert.equal(p.document.activeElement.textContent, 'Previous');
+});
+
+test('the experiment filter offers pinned and collected-on experiments, not only authored ones', async () => {
+  const collector = {id: 'u3', username: 'carol', display_name: 'Carol C'};
+  const p = await mount({search: '?view=data', routes: {
+    'GET /config': () => SERVER_CONFIG,
+    'GET /auth/me': () => ({status: 200, body: {user: collector, csrf_token: 'c3'}}),
+    'GET /experiments': () => ({status: 200, body: {items: [], next_offset: null}}),
+    'GET /library': () => ({status: 200, body: {items: [{experiment: experiment({id: 'e1', title: 'Public fixation'}), version: release(), added_at: '2026-10-09T00:00:00Z', available: true}], next_offset: null}}),
+    'GET /data/sessions': (req) => ({status: 200, body: {items: req.query.get('experiment_id') === 'e1' || !req.query.get('experiment_id')
+      ? [sessionView({experiment_id: 'e2', experiment_title: 'Unpinned since', id: 's2'})] : [], next_offset: null}}),
+  }});
+  const choice = p.main.querySelector('select');
+  const options = choice.querySelectorAll('option').map((o) => [o.value, o.textContent]);
+  assert.deepEqual(options, [['', 'All experiments'], ['e1', 'Public fixation'], ['e2', 'Unpinned since']]);
+  choice.value = 'e1';
+  await p.submit(p.main.querySelector('form'));
+  assert.equal(p.loc.search, '?view=data&experiment=e1');
+  assert.equal(p.hub.calls.filter((c) => c.path.endsWith('/data/sessions')).pop().query.get('experiment_id'), 'e1');
+  assert.equal(p.main.querySelector('select').value, 'e1', 'the filter shows the chosen experiment after the reload');
 });

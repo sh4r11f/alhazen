@@ -537,9 +537,16 @@ const HubApp = (() => {
       const ctx = {epoch: state.epoch, route};
       const node = screen(ctx);
       main.replaceChildren(node);
-      const title = node.querySelector('[data-heading]');
-      doc.title = (title ? title.textContent + ' · ' : '') + 'Alhazen Experiment Hub';
+      titleFromHeading();
       settleFocus(false);
+    }
+
+    /** The tab title names the screen by its heading, also when the heading
+     *  arrives with the screen's data (an experiment, a session). */
+    function titleFromHeading() {
+      const heading = $('main').querySelector('[data-heading]');
+      const text = heading ? heading.textContent.replace(/\s+/g, ' ').trim() : '';
+      doc.title = (text ? text + ' · ' : '') + 'Alhazen Experiment Hub';
     }
 
     function flashNode() {
@@ -571,14 +578,23 @@ const HubApp = (() => {
         fill(...nodes) {
           el.setAttribute('aria-busy', 'false');
           el.replaceChildren(...nodes.flat().filter(Boolean));
-          settleFocus(true);
+          titleFromHeading();
+          settleFocus(screenSettled());
         },
         fail(error, retry) {
           el.setAttribute('aria-busy', 'false');
           el.replaceChildren(errorBox(error, retry));
-          settleFocus(true);
+          titleFromHeading();
+          settleFocus(screenSettled());
         },
       };
+    }
+
+    /** Whether every region of the screen has answered: only then may a
+     *  missing focus target fall back to the heading (a pager arrives with
+     *  the last region, after the session's own data). */
+    function screenSettled() {
+      return !$('main').querySelector('[aria-busy="true"]');
     }
 
     function errorBox(error, retry) {
@@ -1007,7 +1023,6 @@ const HubApp = (() => {
         const tab = r.tab || 'overview';
         body.fill(experimentHead(experiment, version, versions), experimentTabs(r, tab, versions.length),
           experimentTab(ctx, tab, experiment, version, versions));
-        doc.title = (experiment.title || 'Experiment') + ' · Alhazen Experiment Hub';
       })();
       return section;
     }
@@ -1975,7 +1990,9 @@ const HubApp = (() => {
         }
       } catch (exc) { noteFailure(exc); }
       try {
-        for (const item of await libraryItems(false)) {
+        /* Fresh, not the cached copy: a release pinned elsewhere (another
+         * tab, the rig) must appear in the filter. */
+        for (const item of await libraryItems(true)) {
           if (item.experiment && item.experiment.id) names.set(item.experiment.id, item.experiment.title || item.experiment.id);
         }
       } catch (exc) { noteFailure(exc); }
@@ -2010,6 +2027,13 @@ const HubApp = (() => {
           experimentNames(),
         ]);
         if (!got || ctx.epoch !== state.epoch) return;
+        /* The sessions themselves name their experiment (experiment_title is
+         * the server's authorised label), so an experiment you collected
+         * data for is offered even when it is neither yours nor pinned. */
+        for (const item of (got.ok && got.value && got.value.items) || []) {
+          if (item.experiment_id && !names.has(item.experiment_id)) names.set(item.experiment_id, item.experiment_title || item.experiment_id);
+        }
+        if (r.experiment && !names.has(r.experiment)) names.set(r.experiment, r.experiment);
         for (const [id, title] of names) {
           const opt = h('option', {value: id}, title);
           if (id === r.experiment) opt.selected = true;
@@ -2223,16 +2247,37 @@ const HubApp = (() => {
       }
       const declared = (got.value && Array.isArray(got.value.columns) && got.value.columns.length) ? got.value.columns
         : (Array.isArray(serverColumns) && serverColumns.length ? serverColumns : null);
-      const columns = declared ? declared.slice(0, 40).map(String) : C.trialColumns(rows);
-      const table = h('table', {class: 'table table-dense'},
-        h('caption', {class: 'visually-hidden'}, 'Trials'),
-        h('thead', null, h('tr', null, ...columns.map((c) => h('th', {scope: 'col', class: 'mono'}, c)))));
-      const tbody = h('tbody');
-      for (const row of rows) tbody.appendChild(h('tr', null, ...columns.map((c) => h('td', {class: 'mono'}, C.cellText(row[c])))));
-      table.appendChild(tbody);
-      trials.fill(h('div', {class: 'table-wrap table-scroll', tabindex: '0', role: 'region', 'aria-label': 'Trial rows'}, table),
+      const table = trialTable(rows, declared);
+      const single = [...new Set(rows.map((item) => C.trialRow(item).source).filter(Boolean))];
+      trials.fill(single.length === 1 ? h('p', {class: 'muted small mono'}, 'From ' + single[0]) : null,
+        h('div', {class: 'table-wrap table-scroll', tabindex: '0', role: 'region', 'aria-label': 'Trial rows'}, table),
         pager(offset, rows.length, got.value.next_offset,
           (o) => Object.assign({}, back, {session: sessionId, toffset: o}), 'trials'));
+    }
+
+    /** A page of derived trial rows as a table. Each item is the server's
+     *  {ordinal, source_path, values}: the declared columns are read from
+     *  `values`; the row's position and (when a session has several trial
+     *  tables) its source file are shown in their own columns. */
+    function trialTable(items, declaredColumns) {
+      const rows = items.map((item) => C.trialRow(item));
+      const columns = declaredColumns ? declaredColumns.slice(0, 40).map(String) : C.trialColumns(rows.map((r) => r.values));
+      const sources = new Set(rows.map((r) => r.source).filter(Boolean));
+      const showSource = sources.size > 1;
+      const head = [h('th', {scope: 'col', class: 'mono num', title: 'Row in the trial index'}, '#')];
+      if (showSource) head.push(h('th', {scope: 'col', class: 'mono'}, 'source'));
+      const table = h('table', {class: 'table table-dense'},
+        h('caption', {class: 'visually-hidden'}, 'Trials' + (sources.size === 1 ? ' from ' + [...sources][0] : '')),
+        h('thead', null, h('tr', null, ...head, ...columns.map((c) => h('th', {scope: 'col', class: 'mono'}, c)))));
+      const tbody = h('tbody');
+      for (const row of rows) {
+        const cells = [h('td', {class: 'mono num muted'}, row.ordinal === null ? '' : String(row.ordinal + 1))];
+        if (showSource) cells.push(h('td', {class: 'mono'}, row.source || ''));
+        for (const c of columns) cells.push(h('td', {class: 'mono'}, C.cellText(row.values[c])));
+        tbody.appendChild(h('tr', null, ...cells));
+      }
+      table.appendChild(tbody);
+      return table;
     }
 
     /* ---- this rig ------------------------------------------------------------ */

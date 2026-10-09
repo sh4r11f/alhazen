@@ -22,7 +22,7 @@
  *   sameOriginPath, HubError, errorFromResponse, createApi, validateHubUrl,
  *   validatePython, validatePackageMetadata, parseList, parseTags,
  *   formatBytes, formatDate, shortHash, hardwareList, platformsText,
- *   trialColumns, cellText, jobState, indexState, uploadTotals, firstHttpsUrl,
+ *   trialColumns, trialRow, cellText, jobState, indexState, uploadTotals, firstHttpsUrl,
  *   readToken, seg, nextOffsetLabel}
  */
 'use strict';
@@ -523,6 +523,20 @@ const HubCore = (() => {
     return columns;
   }
 
+  /** One derived trial row as the server sends it ({ordinal, source_path,
+   *  values}) -> {ordinal, source, values}. An item without a `values`
+   *  object is read as the values themselves (older flat rows). */
+  function trialRow(item) {
+    const it = item && typeof item === 'object' ? item : {};
+    const nested = it.values && typeof it.values === 'object' && !Array.isArray(it.values);
+    const ordinal = Number.isInteger(it.ordinal) && it.ordinal >= 0 ? it.ordinal : null;
+    return {
+      ordinal: nested ? ordinal : null,
+      source: nested && typeof it.source_path === 'string' ? it.source_path : '',
+      values: nested ? it.values : it,
+    };
+  }
+
   /** One table cell as text: numbers and words as they are, objects as
    *  compact JSON, missing values blank. Long values are cut. */
   function cellText(value) {
@@ -644,7 +658,7 @@ const HubCore = (() => {
     API_PREFIX, VIEWS, PRIVATE_VIEWS, RIG_TABS, EXPERIMENT_TABS, parseRoute, formatRoute, safeNext, sameOriginPath,
     HubError, errorFromResponse, createApi, seg, readToken, validateHubUrl, validatePython, validatePassword,
     validatePackageMetadata, parseList, parseTags, formatBytes, formatDate, shortHash,
-    hardwareList, platformsText, trialColumns, cellText, jobState, indexState, uploadTotals, firstHttpsUrl,
+    hardwareList, platformsText, trialColumns, trialRow, cellText, jobState, indexState, uploadTotals, firstHttpsUrl,
     nextOffsetLabel,
   };
 })();
