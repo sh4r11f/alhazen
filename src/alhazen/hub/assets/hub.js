@@ -1187,7 +1187,9 @@ const HubApp = (() => {
       }
       box.appendChild(h('div', {class: 'callout callout-warn'},
         h('p', {class: 'callout-title'}, 'This release is Python code from its author.'),
-        h('p', null, 'Trusting it lets alhazen import and run it as your operating-system user, with your access to files, '
+        /* The rig's own statement when it gives one (rig-contract: trust_statement). */
+        h('p', null, local.trust_statement ? String(local.trust_statement)
+          : 'Trusting it lets alhazen import and run it as your operating-system user, with your access to files, '
           + 'collected data, saved credentials and connected devices. A virtual environment is not a sandbox. Install only code whose author you trust.'),
         h('p', null, 'Installing downloads the archive, checks its SHA-256 and every file against the manifest, and extracts it into a new folder. '
           + 'Existing experiments and checkouts are not changed, and nothing is installed into the interpreter.')));
@@ -2174,6 +2176,7 @@ const HubApp = (() => {
           h('span', null, local.base_url || 'not connected'))],
         ['State', linkState.sentence],
         ['Operator', local.user ? (local.user.display_name || local.user.username) + ' (@' + local.user.username + ')' : 'nobody signed in'],
+        ['Signed in until', local.user && local.expires_at ? C.formatDate(local.expires_at) : null],
         ['Hub said', state.config && state.config.server_error ? state.config.server_error.message : null],
       ]));
       const url = input({type: 'url', name: 'hub', value: local.base_url || '', autocomplete: 'url', spellcheck: 'false',
@@ -2341,7 +2344,7 @@ const HubApp = (() => {
         }
         const table = h('table', {class: 'table'},
           h('caption', {class: 'visually-hidden'}, 'Sessions on this rig'),
-          h('thead', null, h('tr', null, ...['Session', 'Folder', 'Task', 'State', ''].map((t) => h('th', {scope: 'col'}, t)))));
+          h('thead', null, h('tr', null, ...['Session', 'Date', 'Task', 'Mode', 'Folder', 'State', ''].map((t) => h('th', {scope: 'col'}, t)))));
         const tbody = h('tbody');
         let chosen = null;
         for (const s of items) {
@@ -2357,8 +2360,10 @@ const HubApp = (() => {
             : null;
           tbody.appendChild(h('tr', {class: selected ? 'row-current' : null},
             h('td', {class: 'mono'}, 'sub-' + (s.subject || '?') + ' \u00b7 ses ' + (s.session ?? '?') + ' \u00b7 run ' + (s.run ?? '?')),
-            h('td', null, s.root_name || s.root_kind || ''),
+            h('td', null, s.date ? C.formatDate(s.date, false) : ''),
             h('td', null, s.task || ''),
+            h('td', null, s.mode || ''),
+            h('td', null, s.root_name || s.root_kind || ''),
             h('td', null, word),
             h('td', null, action)));
         }
@@ -2527,8 +2532,12 @@ const HubApp = (() => {
         numbers.textContent = parts.join(' \u00b7 ');
         detail.replaceChildren();
         if (js.error) detail.appendChild(h('p', {class: 'note note-' + (js.status === 'paused' ? 'warn' : 'err')}, js.error));
-        if (job.error && job.error.code === 'auth_context_changed') {
+        if (job.error && ['auth_context_changed', 'signed_out', 'unauthenticated'].includes(job.error.code)) {
           detail.appendChild(h('p', {class: 'muted small'}, 'It continues only when the account it was approved for is signed in to the same hub.'));
+        }
+        if (js.needsPreview && job.project_id && job.root_id && job.run_id) {
+          detail.appendChild(link({view: 'rig', tab: 'upload', project: job.project_id, root: job.root_id, run: job.run_id},
+            'Preview this session again', {class: 'btn btn-line'}));
         }
         if (js.ok) {
           detail.appendChild(h('p', {class: 'note note-ok'}, 'The hub verified every file and recorded the session. The originals stay on this rig.'));

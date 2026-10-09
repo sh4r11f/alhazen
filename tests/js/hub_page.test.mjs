@@ -369,11 +369,11 @@ test('install needs an interpreter and trust in this exact release, then shows t
   const p = await mount({path: '/hub', hash: '#token=' + TOKEN, search: '?view=experiment&id=e1', routes: rigRoutes({
     'GET /experiments/e1': () => ({status: 200, body: {experiment: experiment(), versions: [release()]}}),
     'GET /local/status': () => ({status: 200, body: {state: 'signed_in', base_url: 'https://hub.example.org', user: ALICE, jobs: [], run_active: false, interpreters: [],
+      trust_statement: 'Trusted code runs as your operating-system user; a virtual environment is not a sandbox.',
       installed: installed ? [{sha256: release().sha256, experiment_id: 'e1', version_id: 'v1', version: '1.2.0', status: 'registered', workspace_url: '/?project=p9', error: null}] : []}}),
     'POST /local/install': () => { installed = true; return {status: 201, body: {install: {sha256: release().sha256, version: '1.2.0', status: 'registered', workspace_url: '/?project=p9', error: null}}}; },
   })});
-  assert.match(p.text(), /operating-system user/);
-  assert.match(p.text(), /not a sandbox/);
+  assert.match(p.text(), /Trusted code runs as your operating-system user; a virtual environment is not a sandbox\./);
   const form = p.find('form', 'Python interpreter');
   await p.submit(form);
   assert.equal(p.hub.calls.filter((c) => c.path.endsWith('/local/install')).length, 0);
@@ -465,17 +465,25 @@ test('a stale preview is previewed again instead of uploading under old consent'
   assert.doesNotMatch(p.loc.search, /job=/);
 });
 
-test('a paused transfer bound to another account offers Resume, and Resume is the rig\'s call', async () => {
-  let job = {id: 'j2', status: 'paused', bytes_done: 10, bytes_total: 100, error: {code: 'auth_context_changed', message: 'Signed in as someone else.', retryable: false}};
+test('a transfer paused for another account cannot be resumed here; an interrupted one can', async () => {
+  let job = {id: 'j2', status: 'paused', bytes_done: 10, bytes_total: 100, project_id: 'p1', root_id: 'r1', run_id: SESSION.run_id,
+    error: {code: 'auth_context_changed', message: 'Signed in as someone else.', retryable: false}};
   const p = await mount({path: '/hub', hash: '#token=' + TOKEN, search: '?view=rig&tab=upload&job=j2', routes: rigRoutes({
     'GET /local/jobs/j2': () => ({status: 200, body: {job}}),
     'POST /local/jobs/j2/resume': () => { job = Object.assign({}, job, {status: 'uploading', error: null}); return {status: 200, body: {job}}; },
   })});
   assert.match(p.text(), /Signed in as someone else/);
   assert.match(p.text(), /approved for/);
+  assert.equal(p.find('button', 'Resume'), undefined);
+  job = Object.assign({}, job, {error: {code: 'interrupted', message: 'Connection lost.', retryable: true}});
+  await p.tick();
   await p.click(p.find('button', 'Resume'));
   assert.ok(p.hub.calls.some((c) => c.path.endsWith('/local/jobs/j2/resume')));
   assert.match(p.text(), /Uploading/);
+  job = Object.assign({}, job, {status: 'failed', error: {code: 'local_changed', message: 'Files changed after the preview.', retryable: false}});
+  await p.tick();
+  assert.equal(p.find('a', 'Preview this session again').getAttribute('href'),
+    '/hub?view=rig&tab=upload&project=p1&root=r1&run=' + encodeURIComponent(SESSION.run_id));
 });
 
 test('publishing needs both acknowledgements and a confirmation, then sends exactly them', async () => {

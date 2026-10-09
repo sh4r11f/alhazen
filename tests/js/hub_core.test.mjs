@@ -257,8 +257,11 @@ test('job states: words, terminal states, resume only when it can resume', () =>
   assert.equal(s.terminal, true);
   assert.equal(s.canCancel, false);
   s = C.jobState({status: 'paused', error: {code: 'auth_context_changed', message: 'other account', retryable: false}});
-  assert.equal(s.canResume, true);
+  assert.equal(s.canResume, false, 'resume cannot help while another account is signed in');
   assert.equal(s.error, 'other account');
+  assert.equal(C.jobState({status: 'paused', error: {code: 'interrupted', retryable: true}}).canResume, true);
+  assert.equal(C.jobState({status: 'paused'}).canResume, true);
+  assert.equal(C.jobState({status: 'paused', error: {code: 'local_changed', retryable: false}}).needsPreview, true);
   s = C.jobState({status: 'failed', error: {code: 'x', message: 'disk', retryable: false}});
   assert.equal(s.canResume, false);
   assert.equal(C.jobState({status: 'failed', error: {retryable: true}}).canResume, true);

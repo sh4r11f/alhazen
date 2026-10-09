@@ -564,7 +564,12 @@ const HubCore = (() => {
       status, terminal, ok, fraction, retryable,
       running: ACTIVE.includes(status),
       word: JOB_WORDS[status] || status,
-      canResume: status === 'paused' || (status === 'failed' && retryable),
+      /* Resume only when the rig says it can help (error.retryable); a
+       * plain pause without an error can always be resumed. */
+      canResume: (status === 'paused' || status === 'failed') && (j.error ? retryable : status === 'paused'),
+      /* The selection changed or the job was cancelled: only a new preview
+       * and consent can send it (rig-contract: local_changed, preview_required). */
+      needsPreview: Boolean(j.error && typeof j.error === 'object' && ['local_changed', 'preview_required'].includes(j.error.code)),
       canCancel: !terminal,
       done: Number.isFinite(done) ? done : null,
       total: Number.isFinite(total) ? total : null,
