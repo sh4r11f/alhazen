@@ -55,7 +55,7 @@ from typing import Any
 from sqlalchemy import Connection, delete, func, insert, select, update
 from sqlalchemy.exc import IntegrityError
 
-from alhazen.hub import packages
+from alhazen.hub import packages, protocol
 from alhazen.hub.auth import Principal, audit
 from alhazen.hub.catalog import may_collect_with
 from alhazen.hub.context import Hub, new_id
@@ -70,7 +70,7 @@ log = logging.getLogger(__name__)
 
 _SHA = re.compile(r"^[0-9a-f]{64}$")
 _CLIENT_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
-METADATA_KEYS = {"subject_code": 64, "mode": 32, "rig_alias": 64, "started_at": 40}
+METADATA_KEYS = protocol.METADATA_LIMITS  # the four keys and their limits, one definition
 DURABILITY = "verified on the hub's primary storage; not an independent backup"
 MISSING = "the stored copy of this session is missing; an operator must restore it"
 EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
@@ -180,17 +180,12 @@ def parse_init(hub: Hub, body: dict[str, Any]) -> dict[str, Any]:
 
 
 def manifest_digest(parsed: dict[str, Any]) -> str:
-    """Canonical identity of an upload (docs/hub/server.md): sha256 of the
-    compact, key-sorted UTF-8 JSON of experiment_id, version_id, the files
-    sorted by path and the metadata."""
-    canonical = {
-        "experiment_id": parsed["experiment_id"],
-        "version_id": parsed["version_id"],
-        "files": parsed["files"],
-        "metadata": parsed["metadata"],
-    }
-    data = json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return hashlib.sha256(data.encode("utf-8")).hexdigest()
+    """Canonical identity of an upload: the shared protocol's definition
+    (alhazen.hub.protocol.manifest_sha256), the same function the rig uses
+    to check a receipt."""
+    return protocol.manifest_sha256(
+        parsed["experiment_id"], parsed["version_id"], parsed["files"], parsed["metadata"]
+    )
 
 
 # -- views --------------------------------------------------------------------
@@ -875,10 +870,12 @@ def _renewer(hub: Hub, session_id: str, token: str) -> Any:
     return renew
 
 
-def _release(hub: Hub, session_id: str, token: str) -> None:
+def _release(hub: Hub, session_id: str, token: str) -> bool:
     """Give up this sealer's claim so a retry can seal at once (only if it is
-    still ours). Best effort: if the database is unreachable the lease simply
-    runs out and reconciliation takes over."""
+    still ours). Returns False when the database could not be reached; the
+    claim's lease then runs out and reconciliation takes over, which is the
+    designed fallback, so callers only log it before re-raising their own
+    error."""
     try:
         with hub.db.transaction() as conn:
             conn.execute(
@@ -890,10 +887,14 @@ def _release(hub: Hub, session_id: str, token: str) -> None:
                 )
                 .values(seal_lease_until=None)
             )
-    except HubError as exc:
-        log.warning(
-            "session %s: could not release the seal claim (%s); it will lapse", session_id, exc.code
-        )
+    except HubError:
+        return False
+    return True
+
+
+def _release_or_note(hub: Hub, session_id: str, token: str) -> None:
+    if not _release(hub, session_id, token):
+        log.warning("session %s: the seal claim could not be released; it will lapse", session_id)
 
 
 def _settled(hub: Hub, session_id: str) -> dict[str, Any]:
@@ -935,7 +936,7 @@ def seal(hub: Hub, session_id: str, token: str, *, actor: str) -> dict[str, Any]
             "abort the upload and send it again, or ask an operator",
         ) from None
     except BaseException as exc:
-        _release(hub, session_id, token)
+        _release_or_note(hub, session_id, token)
         if isinstance(exc, OSError) and exc.errno in (errno.ENOSPC, errno.EDQUOT):
             raise HubError(
                 507, "insufficient_storage", "The hub ran out of space while sealing; retry later"
@@ -986,7 +987,7 @@ def seal(hub: Hub, session_id: str, token: str, *, actor: str) -> dict[str, Any]
                 )
                 outcome = "committed"
     except BaseException:
-        _release(hub, session_id, token)
+        _release_or_note(hub, session_id, token)
         raise
     if outcome is None:
         return _settled(hub, session_id)

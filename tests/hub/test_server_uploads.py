@@ -272,7 +272,6 @@ class TestSealing:
         hub.clock.advance(61)
         assert bob.post(f"/sessions/{session['id']}/complete").json()["status"] == "committed"
 
-
     def test_committed_session_refuses_chunks_and_abort(self, hub, tmp_path):
         _ada, bob, eid, vid = ready(hub, tmp_path)
         receipt = bob.upload_session(eid, vid, {"a": b"abcd"})

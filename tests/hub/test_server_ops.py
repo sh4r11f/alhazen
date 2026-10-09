@@ -10,7 +10,7 @@ from dataclasses import replace
 
 import pytest
 from sqlalchemy import create_engine, text
-from tests.hub.server_support import API, ORIGIN, make_settings
+from tests.hub.server_support import API, ORIGIN, Hub, make_bundle, make_settings
 
 from alhazen.hub import admin
 from alhazen.hub import app as hub_app
@@ -240,3 +240,78 @@ def test_settings_for_development_is_local_sqlite(tmp_path):
     settings = HubSettings.for_development(tmp_path)
     assert settings.is_sqlite and settings.public_origin == ORIGIN
     assert replace(settings, public_origin="https://x.org").secure_cookies
+
+
+class TestSchemaTwo:
+    def test_a_schema_one_database_migrates_without_losing_rows(self, tmp_path, clock):
+        from alhazen.hub.schema import data_sessions
+
+        settings = make_settings(tmp_path)
+        admin.init_database(settings)
+        service = Hub(settings, clock)
+        service.register("ada")
+        ada = service.browser("ada")
+        eid = ada.create_experiment()["id"]
+        vid = ada.upload_version(eid, make_bundle(tmp_path)).json()["version"]["id"]
+        receipt = ada.upload_session(eid, vid, {"a": b"abcd"})
+        service.app.state.hub.db.dispose()
+        engine = create_engine(
+            settings.database_url.replace("postgresql://", "postgresql+psycopg://")
+        )
+        with engine.begin() as conn:  # make it a schema-1 database again
+            for column in (
+                "seal_token",
+                "problem_code",
+                "problem_at",
+                "previous_attempt_id",
+                "retired_client_id",
+                "index_token",
+            ):
+                conn.exec_driver_sql(f"ALTER TABLE hub_sessions DROP COLUMN {column}")
+            conn.execute(text("UPDATE hub_schema SET value = '1' WHERE key = 'schema_version'"))
+        engine.dispose()
+        with pytest.raises(SchemaError, match="migrate"):
+            create_app(settings)
+        assert admin.migrate_database(settings) == SCHEMA_VERSION == 2
+        service = Hub(settings, clock)
+        with service.app.state.hub.db.transaction() as conn:
+            row = conn.execute(data_sessions.select()).one()
+        assert row.id == receipt["id"] and row.status == "committed" and row.seal_token is None
+        ada = service.browser("ada")
+        assert ada.post(f"/sessions/{receipt['id']}/complete").json()["status"] == "committed"
+
+
+class TestAdminCommandLine:
+    def test_operator_commands(self, tmp_path, capsys, monkeypatch):
+        import json as json_module
+
+        config = tmp_path / "hub.toml"
+        config.write_text(
+            '[server]\npublic_origin = "http://127.0.0.1:8750"\n'
+            '[database]\nurl = "sqlite:///hub.sqlite3"\n[storage]\nartifact_root = "art"\n',
+            encoding="utf-8",
+        )
+        run = lambda *args: admin.main(["--config", str(config), "--actor", "op", *args])  # noqa: E731
+        assert run("init-db") == 0
+        assert json_module.loads(capsys.readouterr().out)["schema_version"] == SCHEMA_VERSION
+        assert run("invite", "--note", "pilot", "--days", "3") == 0
+        invite = json_module.loads(capsys.readouterr().out)
+        assert invite["code"].startswith("inv-")
+        assert run("invites") == 0
+        listed = json_module.loads(capsys.readouterr().out)
+        assert listed[0]["id"] == invite["id"] and "code" not in listed[0]
+        assert run("reconcile") == 0
+        assert json_module.loads(capsys.readouterr().out)["missing_artifacts"] == 0
+        answers = iter(["a long new passphrase", "a different passphrase"])
+        monkeypatch.setattr("getpass.getpass", lambda prompt="": next(answers))
+        assert run("reset-password", "nobody") == 2
+        assert "differ" in capsys.readouterr().err
+        assert run("disable", "nobody") == 2
+        assert "no user" in capsys.readouterr().err
+
+
+def test_package_limits_above_the_format_maxima_fail_at_start(tmp_path):
+    from alhazen.hub.packages import DEFAULT_MAX_ARCHIVE_BYTES
+
+    with pytest.raises(SettingsError, match="max_package_bytes"):
+        make_settings(tmp_path, max_package_bytes=DEFAULT_MAX_ARCHIVE_BYTES + 1)

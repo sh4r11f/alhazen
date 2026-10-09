@@ -175,8 +175,12 @@ def index_session(hub: Hub, session_id: str, token: str) -> str:
     except (HubError, *_TRANSIENT) as exc:
         if isinstance(exc, HubError) and exc.code != "database_unavailable":
             raise
-        log.warning("indexing session %s deferred: the database is unavailable", session_id)
-        _defer(hub, session_id, token)
+        deferred = _defer(hub, session_id, token)
+        log.warning(
+            "indexing session %s deferred: the database is unavailable%s",
+            session_id,
+            "" if deferred else "; its claim will lapse",
+        )
         return "pending"
     with hub.db.transaction() as conn:
         if not _finish(conn, session_id, token, "failed", error, 0, []):
@@ -185,7 +189,10 @@ def index_session(hub: Hub, session_id: str, token: str) -> str:
     return "failed"
 
 
-def _defer(hub: Hub, session_id: str, token: str) -> None:
+def _defer(hub: Hub, session_id: str, token: str) -> bool:
+    """Return a claimed job to "pending"; False if the database is still
+    unreachable, in which case the claim lapses after CLAIM_MS and is retaken
+    (the designed fallback)."""
     try:
         with hub.db.transaction() as conn:
             conn.execute(
@@ -194,8 +201,8 @@ def _defer(hub: Hub, session_id: str, token: str) -> None:
                 .values(index_status="pending", index_claimed_until=None, index_token=None)
             )
     except HubError:
-        # Still unreachable: the claim lapses after CLAIM_MS and is retaken.
-        log.warning("indexing session %s: claim left to lapse", session_id)
+        return False
+    return True
 
 
 def _finish(
