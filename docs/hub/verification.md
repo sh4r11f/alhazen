@@ -8,8 +8,7 @@ experiment repin or real-participant-data transfer is implied by these checks.
 - Existing experiment core: **5,263 passed, 5 skipped, 5 display tests deselected** on an
   immutable integrated checkpoint, including the new launcher provenance path. Existing
   hardware/SDK-dependent skips were not introduced by this feature.
-- The complete frontend suite passed at the integrated checkpoint; the final exact count
-  is recorded below when the last pass completes. Browser checks used the actual server,
+- The complete frontend suite: **437 passed, 0 failed, 0 skipped**. Browser checks used the actual server,
   not an inline mock: sign-in, catalogue, experiment reading views, private data tables,
   trial columns and responsive layouts. Scientific content was checked against the runnable
   scaffold and the current framework APIs.
@@ -27,10 +26,18 @@ experiment repin or real-participant-data transfer is implied by these checks.
 
 ## Combined verification status
 
-Two concurrent combined test runs reached their overall 900-second budget without a final
-summary. They are **not counted as passes**. The final integrated QA pass is isolating the
-slow tests with per-test diagnostics; its exact result replaces this paragraph on completion.
-No assertion is removed or loosened to turn a timeout into a pass.
+**PASS: all 711 Hub tests pass on SQLite and all 711 pass on PostgreSQL**, with no failures
+or skips. Each backend passed alone and both passed concurrently. The verified Python
+snapshot is `25221928ecd99a5cd4529f6c0eb89951fcf5c5bc`; subsequent changes were documentation
+and frontend only. Sequential times were 423 seconds (SQLite) and 501 seconds (PostgreSQL);
+concurrent runs took 555 and 617 seconds. Per-test outcomes, timings and JUnit reports were
+retained. PostgreSQL peaked at six connections out of a limit of 100.
+
+Earlier 900-second timeouts were caused by one export-lifetime fixture sending a 21,719-byte
+CSV in 7-byte chunks: 3,103 durable writes per setup, measured at 86 seconds. The already
+integrated test-only fix `c8e80e8` uses 1 MiB chunks in that unrelated fixture, reducing setup
+to 1.6–2.8 seconds. No assertion was removed or loosened. Tiny-chunk protocol tests remain.
+The old timed-out runs are not treated as passes; the later complete runs establish the result.
 
 ## Integrity acknowledgements
 
