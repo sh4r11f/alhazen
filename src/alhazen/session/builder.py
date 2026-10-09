@@ -345,6 +345,7 @@ def build_session(
     command: Sequence[str] | None = None,
     experimenter: Experimenter | None = None,
     demographics: SubjectDemographics | None = None,
+    training_stage: dict[str, Any] | None = None,
 ) -> SessionRunner:
     """Wire one runnable session.
 
@@ -377,6 +378,11 @@ def build_session(
     (`session.identity.SubjectDemographics`), recorded in session.json and
     session.log, and in participants.tsv with a subject registered by this
     session; None records both as null.
+
+    ``training_stage`` is the training-ladder stage this session runs
+    (``alhazen.training.ladder.ResolvedStage.record``), recorded in
+    session.json as ``training`` and stamped on every row as
+    ``training_ladder``/``training_stage``; None for every other session.
 
     ``command`` is the command line the session was started with — the
     program, then the arguments exactly as its parser received them — which
@@ -637,6 +643,7 @@ def build_session(
         command=recorded_command(command, experiment.root) if command is not None else None,
         experimenter=experimenter,
         demographics=demographics,
+        training=dict(training_stage) if training_stage is not None else None,
     )
 
     # A database from before 2.0's schema is moved aside now (kept, renamed

@@ -594,6 +594,20 @@ def add_mode_arguments(parser: argparse.ArgumentParser) -> None:
         help="serve the live monitor without opening a browser window",
     )
     parser.add_argument("--curriculum", default=None, help="path to a curriculum YAML")
+    # training (alhazen.training.ladder): which stage of which ladder. The
+    # stage's own params file and overrides are the session's params, so
+    # --params is refused beside --stage.
+    parser.add_argument(
+        "--ladder",
+        default=None,
+        help="training, test and simulate: the training ladder — a label or name run.py's "
+        "LADDERS registers, or a ladder file (default: the one ladder run.py registers)",
+    )
+    parser.add_argument(
+        "--stage",
+        default=None,
+        help="training: the ladder stage to run (required); test and simulate: rehearse it",
+    )
     # test / simulate
     parser.add_argument(
         "--trials-per-condition",
@@ -725,6 +739,15 @@ def _run_session(
 
     mode = Mode(args.mode)
 
+    # A training stage decides the task and its params (--stage; the ladder
+    # file), so it is settled before anything reads either — the estimate
+    # included. A refusal is a usage error, before anything loads.
+    try:
+        task_class = _settle_training_stage(args, mode, task_class)
+    except ConfigError as e:
+        print(f"CANNOT RUN: {e}", file=sys.stderr)
+        return 2
+
     # The workspace's question before a launch: answered from the same
     # arguments, before anything here prompts, opens or writes.
     if getattr(args, "estimate_duration", False):
@@ -839,7 +862,12 @@ def _run_session(
         # from — the task's own when nobody named one — so the snapshot's
         # `sources`, the line printed before trial one and the params hook
         # all see the file that ran, not the flag that was typed.
-        params, args.params = _load_params(task_class, args.params)
+        if getattr(args, "training", None) is not None:
+            # The stage's params: its file with its overrides and its reward,
+            # already validated through the task's model (resolve_stage).
+            params = args.training.params
+        else:
+            params, args.params = _load_params(task_class, args.params)
     except ConfigError as e:
         print(f"INVALID: {e}", file=sys.stderr)
         return 1
@@ -940,6 +968,78 @@ def _either(options: list[str]) -> str:
     if len(options) <= 2:
         return " or ".join(options)
     return f"{', '.join(options[:-1])} or {options[-1]}"
+
+
+def _training_task_table(args: argparse.Namespace, task_class: Any) -> dict[str, Any]:
+    """run.py's TASKS table as ``run_experiment`` handed it on, else one
+    built from what this command can load: the task it was given, or the
+    installed task the stage names (``alhazen run``)."""
+    table = getattr(args, "tasks_table", None)
+    if table:
+        return dict(table)
+    from alhazen.cli.tasks import installed_tasks, load_task_class
+    from alhazen.task.task import default_params_path
+
+    if task_class is not None:
+        name = getattr(task_class, "name", task_class.__name__)
+        return {name: (task_class, default_params_path(task_class))}
+
+    class _Installed(dict):  # loads a task class the first time a stage names it
+        def __contains__(self, name: object) -> bool:
+            return isinstance(name, str) and name in installed_tasks()
+
+        def __getitem__(self, name: str) -> Any:
+            loaded = load_task_class(name)
+            return (loaded, default_params_path(loaded))
+
+        def __iter__(self) -> Any:
+            return iter(installed_tasks())
+
+    return _Installed()
+
+
+def _settle_training_stage(args: argparse.Namespace, mode: Mode, task_class: Any) -> Any:
+    """Resolve ``--stage`` (alhazen.training.ladder) into ``args.training``,
+    and return the task class the stage runs; ``task_class`` unchanged when
+    the command names no stage. Raises ConfigError for a refusal, in the
+    words the person at the rig needs."""
+    from alhazen.training.ladder import find_ladder, resolve_stage
+
+    stage = getattr(args, "stage", None)
+    args.training = None
+    if mode is Mode.TRAINING and not stage:
+        raise ConfigError(
+            "training mode runs one stage of the experiment's training ladder: name it with "
+            "--stage (and --ladder when the experiment registers several)"
+        )
+    if not stage:
+        if getattr(args, "ladder", None):
+            raise ConfigError("--ladder names a training ladder, but no --stage was given")
+        return task_class
+    if mode not in (Mode.TRAINING, Mode.TEST, Mode.SIMULATE):
+        raise ConfigError(
+            f"--stage runs a training stage in training mode, or rehearses it in test or "
+            f"simulate mode; {mode.value} mode does not take one"
+        )
+    if getattr(args, "params_explicit", False):
+        raise ConfigError(
+            "--params cannot be given with --stage: a training stage names its own params file "
+            "and overrides (the ladder file), and another file would run a stage nobody wrote"
+        )
+    label, path = find_ladder(getattr(args, "ladder", None) or "", getattr(args, "ladders", None))
+    resolved = resolve_stage(
+        path, stage, _training_task_table(args, task_class), ladder_label=label
+    )
+    named = getattr(args, "task", None)
+    if getattr(args, "task_explicit", False) and named not in (None, resolved.task_name):
+        raise ConfigError(
+            f"--task {named} disagrees with stage {stage!r}, which runs {resolved.task_name}; "
+            f"leave --task out with --stage"
+        )
+    args.training = resolved
+    args.task = resolved.task_name
+    args.params = str(resolved.params_file) if resolved.params_file is not None else None
+    return resolved.task_class
 
 
 def _load_params(task_class: Any, named: str | None) -> tuple[Any, str | None]:
@@ -1434,6 +1534,9 @@ def _trial_session(args: argparse.Namespace, rig: Any, task: Any, params: Any, m
             # parsed. A namespace built some other way has none, and the run
             # records null rather than a guess.
             command=getattr(args, "invocation", None),
+            # The training-ladder stage (--stage), resolved by _run_session;
+            # passed only when there is one.
+            **({"training": args.training} if getattr(args, "training", None) is not None else {}),
         )
     except (ConfigError, DataError, DisplayError) as e:
         # DataError: what is already on disk refuses the session — a used run
@@ -1679,6 +1782,15 @@ def _sim_sorter(args: argparse.Namespace) -> int:
     return 0
 
 
+def _with_explicit_flags(args: argparse.Namespace) -> argparse.Namespace:
+    """Mark which of --task and --params ``alhazen run`` was given, which a
+    training stage needs to know (_settle_training_stage): neither has a
+    default on that command, so given means not None."""
+    args.task_explicit = getattr(args, "task", None) is not None
+    args.params_explicit = getattr(args, "params", None) is not None
+    return args
+
+
 # Looked up by name at call time for `run` and `sim-sorter`, whose handlers
 # take other arguments; the rest are the functions themselves.
 _COMMANDS: dict[str, Handler] = {
@@ -1687,7 +1799,7 @@ _COMMANDS: dict[str, Handler] = {
     "rigs": _rigs,
     "preview": _preview,
     "new": _new,
-    "run": lambda args, parser: _run_session(args),
+    "run": lambda args, parser: _run_session(_with_explicit_flags(args)),
     "calibrate": _calibrate,
     "monitor": _monitor,
     "report": _report,

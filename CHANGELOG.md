@@ -25,6 +25,54 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+### Added
+
+- **The juice a monkey session delivered, trial by trial and in total.** Every
+  session that pays through the reward line (a training stage or an
+  experiment session) gets a live monitor panel, "Juice delivered": a bar per
+  paid trial, stacked by what it was paid for (the trial's outcome, a trial a
+  device cut short via `on_fault`, a manual `r`, a mid-trial drop, each its
+  own colour), and the cumulative total as a step line on a right-hand axis.
+  Amounts are in µL when the rig's reward calibration (`rig-<name>.reward.yaml`)
+  covers every pulse width delivered on that line at that voltage, in pulses
+  (with the valve-open time) otherwise; both axis titles say which. At
+  teardown session.json's `reward` gains `delivered` (unit, deliveries,
+  pulses, open_ms, volume_ul, trials_paid, failed, by_kind, ul_per_pulse),
+  counted from the same REWARD / REWARD_DELIVERED events. The workspace's
+  History session details draw the same plot. `alhazen.live_monitor.juice`.
+- **Training mode: a monkey's training ladder, one stage per session.** An
+  experiment registers its ladders in run.py beside `PARAMETERS`
+  (`LADDERS = {"Pursuit (monkey)": HERE / "configs" / "training-pursuit.yaml"}`,
+  handed to `run_experiment(..., ladders=LADDERS)`). A ladder file lists the
+  stages in order; each names its task (one of `TASKS`, or a training task
+  class by import path, `package.module:Class`, kept off `TASKS` and the
+  menus), the params file it
+  starts from, dotted-path overrides (re-validated through the task's model,
+  as a curriculum's are), the one outcome that is its success, what that pays
+  and, optionally, a criterion. `--mode training --stage <id>` (`--ladder`
+  when there are several) runs the stage on the rig as run mode drives it,
+  pays juice on the stage's success alone (plus the device-fault reward),
+  refuses a human's params, a development rig and a session without a stage,
+  and files the session under `<data_root>-training/<ladder>/<stage>/`, never
+  the experiment's data root; session.json records `mode: training` and the
+  stage (`training`), and every row `training_ladder`/`training_stage`. Test
+  and simulate take `--stage` to rehearse a stage, under
+  `<data_root>-training-rehearsal/`. Which stage runs is always the
+  operator's choice: a criterion is only shown as a recommendation. The
+  workspace offers Training in the Mode menu for a project whose run.py
+  registers a ladder: the Run page shows the ladder (stages in order, what
+  each pays, the chosen subject's sessions, finished trials and success rate
+  per stage, the criterion's recommendation, a rehearse switch, the duration
+  estimate), History adds a Training summary per stage with each session's
+  success rate, and the Data page lists each stage's folder. The live monitor
+  heads a training session with its stage and the stage's success count.
+  `alhazen.training` exports `Ladder`, `LadderStage`, `StageReward`,
+  `load_ladder`, `resolve_stage` and `ladder_history`; capability
+  `training-mode`. Design: docs/design/training-mode.md.
+
+
 ## 2.12.0 - 2026-10-08
 
 ### Added

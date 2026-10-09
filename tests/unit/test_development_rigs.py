@@ -319,9 +319,11 @@ class TestTheRule:
         return RigConfig(monitor=MONITOR, data_root=tmp_path, real_data=False)
 
     def test_only_run_mode_on_a_development_rig_is_refused(self, tmp_path):
+        # And training mode (2.13), which drives a real subject on the rig as
+        # run mode does.
         for mode in Mode:
             refused = real_data_refusal(mode, self.development(tmp_path)) is not None
-            assert refused is (mode is Mode.RUN), mode
+            assert refused is (mode in (Mode.RUN, Mode.TRAINING)), mode
             assert real_data_refusal(mode, self.collecting(tmp_path)) is None, mode
 
     def test_the_callers_lines_are_asked_for_only_when_it_refuses(self, tmp_path):

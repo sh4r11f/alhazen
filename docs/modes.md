@@ -508,6 +508,40 @@ has drifted is only visible by comparing two of them.
     Where a photodiode is configured the marker flips the patch too, so a
     simultaneous recording holds the ground truth for the display half.
 
+## `training` — one stage of a monkey's training ladder
+
+A monkey is shaped toward the experiment through a ladder of smaller tasks,
+each paid on its own success. An experiment ships each ladder as a YAML file
+and registers it in run.py beside `PARAMETERS`:
+
+```python
+LADDERS = {"Pursuit (monkey)": HERE / "configs" / "training-pursuit.yaml"}
+...
+run_experiment(tasks=TASKS, ladders=LADDERS, default_rig="laptop", argv=argv)
+```
+
+```
+python run.py --mode training --stage saccade --rig lab --sub m01 --ses 4 --initials MK
+python run.py --mode simulate --stage saccade --headless     # rehearse the stage
+```
+
+Training mode runs the stage the operator names, on the rig exactly as run
+mode drives it (a development rig is refused), at full length. The stage
+names its task (so `--task` may be left out) and its params (so `--params`
+is refused): its file, its overrides, and a reward policy that pays the
+stage's success outcome and nothing else, plus the device-fault reward. A
+stage whose params are not a monkey's is refused. The session is filed under
+`<data_root>-training/<ladder>/<stage>/` — never the experiment's data root —
+and session.json says `mode: training` and which stage (`training`); every
+row carries `training_ladder` and `training_stage`. Test and simulate take
+`--stage` to rehearse a stage, reduced, under
+`<data_root>-training-rehearsal/<ladder>/<stage>/`.
+
+Moving up a rung is the operator's decision. A stage may declare a
+criterion; the workspace shows what it says about the subject's latest
+trials at that stage as a recommendation and never acts on it. The design,
+and what a ladder file holds, is docs/design/training-mode.md.
+
 ## Test versus pilot, and using the two together
 
 These get confused because they can come out the same length by accident,

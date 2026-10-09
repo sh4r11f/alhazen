@@ -231,6 +231,20 @@ explains each.
     options:
       members: [register_metric, completed_rate, success_rate, mean_rt_ms]
 
+## Training ladders
+
+A ladder is the stages a monkey climbs to an experiment's final task, run
+one stage per session in training mode (`--mode training --stage <id>`);
+see docs/design/training-mode.md.
+
+::: alhazen.training.ladder
+    options:
+      members: [Ladder, LadderStage, StageReward, load_ladder, resolve_stage]
+
+::: alhazen.training.history
+    options:
+      members: [ladder_history]
+
 ## Configuration
 
 ::: alhazen.config.models

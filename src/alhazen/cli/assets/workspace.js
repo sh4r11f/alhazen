@@ -39,6 +39,13 @@ const MODES = {
     'Collect a real session using the selected rig and its data directory.',
   ],
   measure: ['Measure rig', 'Check the physical display, response keys and eye tracker.'],
+  // Offered only for a project whose run.py registers a training ladder and
+  // whose alhazen runs one (describe's `trains`; chooseProject).
+  training: [
+    'Training',
+    'Run one stage of the monkey training ladder: paid on that stage’s success alone, '
+      + 'filed apart from the experiment’s data.',
+  ],
 };
 
 /* The rule a subject's initials are held to, word for word as the command
@@ -66,7 +73,7 @@ const AGE_CHECK_DAYS = 365;
  * it, and prints it on its console, where the launcher reads it for the
  * history (workspace.py SEED_DRAWING_MODES). Demo and movie use seed 0 when
  * given none, the command line's own default; measure takes no seed. */
-const DRAWS_SEED = ['run', 'test', 'simulate'];
+const DRAWS_SEED = ['run', 'test', 'simulate', 'training'];
 /* What the seed field accepts, said when it holds anything else. */
 const SEED_RULE = 'The random seed must be a whole number of 0 or more, or empty for a new one';
 
@@ -271,6 +278,10 @@ function label(mode) {
  *  trials)" — or, for a run recorded before entries had labels, the task it
  *  ran when the experiment ships several — "Simulate · mt-tuning". */
 function title(run) {
+  if (run.training) {
+    const stage = `stage ${run.training.stage}${run.training.rehearse ? ' (rehearsal)' : ''}`;
+    return `${label(run.mode)} · ${stage}`;
+  }
   const what = run.parameter_set || run.task;
   return what ? `${label(run.mode)} · ${what}` : label(run.mode);
 }
@@ -627,6 +638,63 @@ function usesParameters() {
 }
 
 /* ------------------------------------------------------------------ */
+/* Training (workspace_training.js)                                    */
+/* ------------------------------------------------------------------ */
+
+/** The Training panel's controller, mounted once the page is up; null when
+ *  its script did not load. */
+let trainingPanel = null;
+/** How many finished Training launches the panel's history has seen. */
+let trainingRunsSeen = -1;
+
+/** Whether the form is a Training launch, and the panel's choice. */
+function isTraining() {
+  return $('mode').value === 'training';
+}
+
+function trainingChoice() {
+  return isTraining() && trainingPanel ? trainingPanel.selection() : null;
+}
+
+/** A Training launch that rehearses its stage (simulate mode, headless). */
+function rehearsing() {
+  return !!trainingChoice()?.rehearse;
+}
+
+/** The mode as the session will run: Training's rehearsal is a simulation. */
+function effectiveMode() {
+  return isTraining() && rehearsing() ? 'simulate' : $('mode').value;
+}
+
+/** Why a Training launch cannot go yet, or ''. */
+function trainingProblem() {
+  if (!isTraining()) return '';
+  if (!trainingPanel) return 'The Training panel did not load; reload the page.';
+  return trainingPanel.problem();
+}
+
+/** The modes that name a real subject in the chair: run, test, and Training
+ *  (unless it is only rehearsing the stage). */
+function namesSubject(mode) {
+  return ['run', 'test'].includes(mode) || (mode === 'training' && !rehearsing());
+}
+
+/** Read the open experiment's training history (GET /api/training) for the
+ *  Training panel: per stage, the sessions and the criterion's verdict. */
+async function loadTraining(id) {
+  const p = project();
+  if (!trainingPanel || !p || p.id !== id || !(p.ladders || []).length) return;
+  let answer;
+  try {
+    answer = await api(`/api/training?project=${encodeURIComponent(id)}`);
+  } catch (e) {
+    answer = {ladders: [], error: e.message};
+  }
+  if (selected !== id) return;
+  trainingPanel.setHistory(answer);
+}
+
+/* ------------------------------------------------------------------ */
 /* The launch form                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -648,6 +716,10 @@ function usesParameters() {
  */
 function psychopyNeeded(mode, backend, headless) {
   if (mode === 'demo' || mode === 'measure') return true;
+  if (mode === 'training') {
+    if (rehearsing()) return false;  // headless simulation
+    mode = 'run';
+  }
   if (!['test', 'run', 'simulate'].includes(mode)) return false;
   if (mode === 'simulate' && headless) return false;
   if (backend === undefined) return null;
@@ -687,6 +759,11 @@ function psychopyWarning(p, mode, backend, headless) {
  * this says so before the click.
  */
 function developmentRigWarning(mode, name) {
+  if (mode === 'training' && !rehearsing() && name) {
+    return `${label('training')} drives a real subject, and ${name} is a development rig `
+      + '(real_data: false): this launch will be refused before anything is written. Choose '
+      + 'the rig the monkey works on, or tick Rehearse to try the stage on this machine.';
+  }
   if (mode !== 'run' || !name) return null;
   return `${label('run')} records real data, and ${name} is a development rig `
     + '(real_data: false): this launch will be refused before anything is written. Choose '
@@ -715,10 +792,16 @@ function launchSummary() {
   const mode = $('mode').value;
   const parts = [label(mode)];
   if (usesParameters() && selectedSet()) parts.push(selectedSet().label);
+  const training = trainingChoice();
+  if (training) {
+    parts.push(training.label);
+    if (training.stage) parts.push(`stage ${training.stage.number} ${training.stage.title}`);
+    if (training.rehearse) parts.push('rehearsal');
+  }
   const rig = [...$('rig').querySelectorAll('option')]
     .find((o) => o.value === $('rig').value)?.textContent;
   if (rig) parts.push(rig);
-  if (['run', 'test', 'simulate'].includes(mode)) {
+  if (['run', 'test', 'simulate', 'training'].includes(mode)) {
     const subject = chosenSubject()?.code || $('subject').value.trim();
     if (subject) parts.push(`sub-${subject}`);
     parts.push(`ses ${$('session').value || 1}`);
@@ -726,7 +809,7 @@ function launchSummary() {
     const subject = chosenSubject()?.code || $('subject').value.trim();
     if (subject) parts.push(`sub-${subject}`);
   }
-  if (['run', 'test', 'simulate', 'measure'].includes(mode) && chosenExperimenter()) {
+  if (['run', 'test', 'simulate', 'measure', 'training'].includes(mode) && chosenExperimenter()) {
     parts.push(`by ${chosenExperimenter().name}`);
   }
   return parts.join(' · ');
@@ -825,7 +908,7 @@ function identityProblem() {
   if (measureNeed() === 'required' && !chosenSubject() && !$('subject').value.trim()) {
     return 'A ticked measurement is of the subject in the chair: choose the subject.';
   }
-  if (!['run', 'test'].includes(mode) || people?.error) return '';
+  if (!namesSubject(mode) || people?.error) return '';
   if (chosenSubject() && !chosenExperimenter()) {
     return 'Choose the experimenter who runs this session.';
   }
@@ -887,7 +970,11 @@ function identityChanged() {
   $('age').disabled = !!record;
   $('sex').disabled = !!record;
   subjectFacts(p, record);
-  const named = ['run', 'test'].includes(mode);
+  // The Training panel shows how the chosen subject has done at each stage.
+  if (trainingPanel && isTraining()) {
+    trainingPanel.render(p, record?.code || $('subject').value.trim());
+  }
+  const named = namesSubject(mode);
   const typedOpen = !!$('typed-identity').open;
   $('subject').required = (named || measureNeed() === 'required') && !record && typedOpen;
   $('initials').required = named && !record && typedOpen;
@@ -960,6 +1047,16 @@ function launchDraft() {
     // For every mode and script alike; the server splits and checks them.
     extra_args: $('extra-args').value,
   };
+  // Training: the ladder and the stage, and whether only to rehearse it. The
+  // stage names its task and its parameters, so neither is sent.
+  const training = trainingChoice();
+  if (training) {
+    draft.task = null;
+    draft.parameter_set = null;
+    draft.ladder = training.ladder;
+    draft.stage = training.stage?.id ?? null;
+    draft.rehearse = training.rehearse;
+  }
   // Measure rig's ticked measurements, in run order; the server checks them.
   if (usesMeasurements()) draft.measurements = MeasureChoice.selection(measureState);
   // What differs from the rig's calibration target, for run and test;
@@ -1006,9 +1103,11 @@ function updateLaunch() {
     || !!p?.tasks_error
     || !!calibrationProblem()
     || !!identityProblem()
+    || !!trainingProblem()
     || (usesMeasurements() && !!MeasureChoice.problem(measureState));
   if (launching) $('launch').textContent = 'Starting…';
   else if (state.active) $('launch').textContent = 'A run is in progress';
+  else if (isTraining() && rehearsing()) $('launch').textContent = '▶ Rehearse stage';
   else $('launch').textContent = `▶ ${label($('mode').value) || 'Start run'}`;
   const mode = $('mode').value;
   const backend = p ? rigBackend[`${p.id}:${$('rig').value}`] : undefined;
@@ -1029,6 +1128,8 @@ function updateLaunch() {
     note = calibrationProblem();
   } else if (identityProblem()) {
     note = identityProblem();
+  } else if (trainingProblem()) {
+    note = trainingProblem();
   } else if (usesMeasurements() && MeasureChoice.problem(measureState)) {
     note = MeasureChoice.problem(measureState);
   } else if (development) {
@@ -1041,6 +1142,9 @@ function updateLaunch() {
     note = psychopy;
   } else if (mode === 'run') {
     note = 'This mode records real subject data. Check the rig and subject ID before starting.';
+  } else if (mode === 'training' && !rehearsing()) {
+    note = 'Training drives the rig and pays juice on the stage’s success. Check the stage, the '
+      + 'rig and the subject before starting.';
   } else {
     note = 'Runs locally in your experiment’s Python environment.';
   }
@@ -1051,7 +1155,7 @@ function updateLaunch() {
   $('launch-note').classList.toggle(
     'launch-warning',
     note === development || note === psychopy || note === calibrationProblem()
-      || note === identityProblem(),
+      || note === identityProblem() || note === trainingProblem(),
   );
 }
 
@@ -1113,6 +1217,9 @@ function modeChanged() {
   $('measurements').hidden = !usesMeasurements();
   $('measurements').disabled = !usesMeasurements();
   renderMeasurements();
+  // Training's ladder, in Task parameters' place too: a stage names its own.
+  $('training-ladder-stage').hidden = mode !== 'training';
+  $('training-ladder-stage').disabled = mode !== 'training';
   // Measuring the rig draws nothing random, so it takes no seed; nor does an
   // experiment's own script, which the launcher passes no seed to — a field
   // shown for either would promise something the launch does not do.
@@ -1138,13 +1245,15 @@ function modeChanged() {
   // the subject in the chair (MeasureChoice.subjectNeed), and never for
   // initials or a session.
   const measureSubject = usesMeasurements() ? MeasureChoice.subjectNeed(measureState) : 'none';
-  $('identity').hidden = !['run', 'test', 'simulate'].includes(mode) && measureSubject === 'none';
+  $('identity').hidden = !['run', 'test', 'simulate', 'training'].includes(mode)
+    && measureSubject === 'none';
   for (const id of ['initials', 'session']) {
     const field = $(id).parentElement;
     if (field) field.hidden = mode === 'measure';
   }
   // Who runs it: for every session, and for Measure rig (who measured).
-  $('experimenter-field').hidden = !['run', 'test', 'simulate', 'measure'].includes(mode);
+  $('experimenter-field').hidden = !['run', 'test', 'simulate', 'measure', 'training']
+    .includes(mode);
   // The Subject & session stage goes with its fields: a mode that names
   // nobody (a preview, a movie) has no such stage, and the path renumbers.
   $('who-stage').hidden = $('identity').hidden && $('experimenter-field').hidden;
@@ -1154,11 +1263,13 @@ function modeChanged() {
   // registered subject. The initials are checked again on submit, with the
   // command line's words, by checkInitials.
   identityChanged();
-  $('trials-field').hidden = !['test', 'simulate'].includes(mode);
+  // A Training rehearsal is a simulation, and takes its trial count.
+  $('trials-field').hidden = !['test', 'simulate'].includes(effectiveMode());
   // Each option is shown for exactly the modes whose CLI accepts the flag.
   $('headless-field').hidden = mode !== 'simulate';
   $('mouse-field').hidden = mode !== 'test';
-  $('windowed-field').hidden = !['test', 'run', 'demo', 'measure', 'simulate'].includes(mode);
+  $('windowed-field').hidden = !['test', 'run', 'demo', 'measure', 'simulate', 'training']
+    .includes(mode);
   $('movie-options').hidden = mode !== 'movie';
   // The calibration target applies to run and test only (renderCalibration).
   if (calibration) renderCalibration();
@@ -1228,8 +1339,13 @@ async function chooseProject(id, nextView = null) {
   // it was sorted: on the project's "Preview images" (the quickest look at
   // the stimulus) when it has one, else on Simulate.
   const preview = p.scripts.find((s) => s.label === 'Preview images');
+  // Training only for an experiment that registers a ladder and whose
+  // alhazen runs one (describe's `trains`).
+  const offersTraining = !!p.trains && (p.ladders || []).length > 0;
   const modes = [
-    ...Object.entries(MODES).map(([value, [text]]) => [value, text]),
+    ...Object.entries(MODES)
+      .filter(([value]) => value !== 'training' || offersTraining)
+      .map(([value, [text]]) => [value, text]),
     ...p.scripts.map((s) => [s.id, s.label]),
   ].sort((a, b) => byName(a[1], b[1]));
   options($('mode'), modes, preview ? preview.id : 'simulate');
@@ -1246,11 +1362,14 @@ async function chooseProject(id, nextView = null) {
   runId = state.runs.find((r) => r.project === id)?.id || null;
   $('extra-args').value = '';
   $('parameter-search').value = '';
+  if (trainingPanel) {
+    trainingPanel.render(p, chosenSubject()?.code || $('subject').value.trim());
+  }
   modeChanged();
   renderState();
   // Each of these checks that the project is still selected before it
   // writes; the reader may click another project while they load.
-  await Promise.all([loadSchema(id), loadConfig(), loadRig(), loadPeople(id)]);
+  await Promise.all([loadSchema(id), loadConfig(), loadRig(), loadPeople(id), loadTraining(id)]);
   await refreshRun();
 }
 
@@ -1447,7 +1566,8 @@ function pageSeconds() {
 function calibrationApplies() {
   const mode = $('mode').value;
   return CalibrationChoice.CALIBRATING_MODES.includes(mode)
-    && !(mode === 'test' && $('mouse').checked);
+    && !(mode === 'test' && $('mouse').checked)
+    && !(mode === 'training' && rehearsing());
 }
 
 /** The launch's `calibration_target`: what differs from the rig, or null. */
@@ -2287,6 +2407,13 @@ function renderHistory() {
   const signature = JSON.stringify([runs, runId]);
   if (signature === historySignature) return;
   historySignature = signature;
+  // A Training launch that has finished wrote a session the Training panel
+  // counts: read its history again.
+  const trained = runs.filter((r) => r.training && r.status !== 'running').length;
+  if (trained !== trainingRunsSeen) {
+    trainingRunsSeen = trained;
+    loadTraining(selected);
+  }
   $('history-count').textContent = `${runs.length} RUN${runs.length === 1 ? '' : 'S'}`;
   $('history-all').href = addressOf(selected, 'history');
   const rows = runs.map((run) => {
@@ -2410,7 +2537,7 @@ function renderMonitor(run, active) {
 let uploadShown = null;
 /* The modes whose launch saves a session folder (to the rig's data folder,
  * or its rehearsal sibling). */
-const SAVES_SESSION = ['run', 'test', 'simulate'];
+const SAVES_SESSION = ['run', 'test', 'simulate', 'training'];
 
 /**
  * The Run page's Upload to the archive card (workspace_upload.js): mounted once per
@@ -2797,11 +2924,11 @@ $('launch-form').addEventListener('submit', guard(async (event) => {
   // subject. The initials, for the modes that show them: refused here in
   // the command line's own words before anything is sent (the server checks
   // again).
-  const identity = ['run', 'test', 'simulate'].includes(mode);
+  const identity = ['run', 'test', 'simulate', 'training'].includes(mode);
   // A measurement of the subject in the chair names its subject too.
   const named = identity || measureNeed() !== 'none';
   const record = named ? chosenSubject() : null;
-  const runner = ['run', 'test', 'simulate', 'measure'].includes(mode)
+  const runner = ['run', 'test', 'simulate', 'measure', 'training'].includes(mode)
     ? chosenExperimenter()
     : null;
   if (identityProblem()) {
@@ -2809,7 +2936,7 @@ $('launch-form').addEventListener('submit', guard(async (event) => {
     return;
   }
   const initials = identity && !record
-    ? checkInitials($('initials').value, ['run', 'test'].includes(mode))
+    ? checkInitials($('initials').value, namesSubject(mode))
     : {value: '', problem: ''};
   if (initials.problem) {
     error(initials.problem);
@@ -2882,6 +3009,12 @@ $('history-all').addEventListener('click', (event) => {
   event.preventDefault();
   guard(() => navigate(selected, 'history'))();
 });
+
+// The Training panel: a ladder's stages in Task parameters' place, for
+// Training mode (workspace_training.js). A choice on it redraws the form.
+if (window.TrainingLadder) {
+  trainingPanel = TrainingLadder.mount($('training-ladder'), {node, onChange: () => modeChanged()});
+}
 
 // The duration estimate beside the Start button: asked of the project's own
 // alhazen (POST /api/estimate) whenever the form changes what would run.

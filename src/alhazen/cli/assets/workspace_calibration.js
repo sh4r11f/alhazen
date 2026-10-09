@@ -19,7 +19,7 @@ const CalibrationChoice = (() => {
    * TARGET_DRAWING_BACKENDS). */
   const DRAWING_BACKENDS = ['eyelink', 'viewpixx'];
   /* The modes that calibrate the rig's own tracker (modes.flag_refusal). */
-  const CALIBRATING_MODES = ['run', 'test'];
+  const CALIBRATING_MODES = ['run', 'test', 'training'];
   const APPEARANCES = [
     ['standard', 'Standard'],
     ['images', 'Chosen pictures'],

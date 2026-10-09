@@ -33,6 +33,12 @@ describes the machine; the mode decides what to do with it (``rig_for_mode``):
 
 Every substitution is a line in ``describe()``, printed before trial one.
 
+Training mode (2.13) is a fourth set of arguments to the same path: a stage
+of the experiment's training ladder (``training=``, alhazen.training.ladder),
+on the rig as run mode drives it, at full length, filed under the stage's
+training root. Test and simulate take a stage too, to rehearse it: reduced,
+with their usual stand-ins, under the training root's rehearsal sibling.
+
 What the subject reads before trial one is the task's own
 (``Task.instructions``) in all three modes, shown by ``build_session``. Run
 mode alone also checks that the task has *said* — text, or None on purpose —
@@ -60,6 +66,7 @@ from alhazen.modes.simulation import Simulation
 from alhazen.session.runner import SessionRunner
 from alhazen.task.subject_kind import SubjectKind, subject_kind_of
 from alhazen.task.task import Task, declares_instructions
+from alhazen.training.ladder import ResolvedStage, training_root
 
 log = logging.getLogger(__name__)
 
@@ -303,7 +310,7 @@ def _stand_in_reward(mode: Mode, rig: RigConfig, task: Task, notes: list[str]) -
                 "opened and no trial or key pays"
             )
         return rig
-    if mode is Mode.RUN or rig.devices.reward is not None:
+    if mode.drives_subject or rig.devices.reward is not None:
         return rig
     if task.mid_trial_reward:
         notes.append(
@@ -369,6 +376,7 @@ def build_mode_session(
     experiment_version: str | None = None,
     experiment_name: str | None = None,
     initials: str | None = None,
+    training: ResolvedStage | None = None,
     **extra: Any,
 ) -> ModeSession:
     """Wire one session in the given mode.
@@ -395,11 +403,28 @@ def build_mode_session(
     (``run_experiment``'s ``instructions=``) and wins over the task's; None
     leaves it to ``Task.instructions``, which ``build_session`` asks.
 
+    ``training`` is a resolved stage of the experiment's training ladder
+    (alhazen.training.ladder.resolve_stage), whose params ``task`` already
+    carries. Required by training mode, accepted by test and simulate (a
+    rehearsal of the stage), refused by run: an experiment session is never
+    a training stage. The session is filed under the stage's training root
+    and records the stage in session.json and on every row.
+
     ``build_session`` is injectable only so tests can watch what this passes
     down without opening a window; production always gets the real one.
     """
     if not mode.runs_trials:
         raise ValueError(f"{mode.value} does not run trials — see alhazen.modes.{mode.value}")
+    if mode is Mode.TRAINING and training is None:
+        raise ConfigError(
+            "training mode runs one stage of the experiment's training ladder, and none was "
+            "chosen: name it with --stage (and --ladder when the experiment has several)"
+        )
+    if training is not None and mode is Mode.RUN:
+        raise ConfigError(
+            "a training stage runs in training mode (or is rehearsed in test or simulate "
+            "mode); run mode runs the experiment itself, so --stage is refused there"
+        )
     if build_session is None:
         from alhazen.session.builder import build_session as _real_build_session
 
@@ -426,6 +451,8 @@ def build_mode_session(
     if refusal is not None:
         raise ConfigError(refusal)
     rig = _stand_in_reward(mode, rig, task, notes)
+    if training is not None:
+        notes.append(training.describe())
 
     # The experiment the run is filed under, found from the task class the
     # caller handed in — before a rehearsal rebuilds the task around reduced
@@ -458,7 +485,7 @@ def build_mode_session(
     reductions: list[Reduction] = []
     simulation: Simulation | None = None
 
-    if mode is not Mode.RUN:
+    if not mode.drives_subject:
         params, reductions = shrink_params(
             params,
             n_per_condition=n_per_condition,
@@ -492,7 +519,19 @@ def build_mode_session(
         if simulation.task is not None:
             task = simulation.task
 
-    data_root = rig.data_root if mode.writes_real_data else rehearsal_root(rig.data_root)
+    if training is not None:
+        # Never the experiment's data root, nor its rehearsal root: a stage's
+        # sessions sit under their own, one folder per stage.
+        data_root = training_root(
+            rig.data_root,
+            training.ladder.name,
+            training.stage.id,
+            rehearsal=not mode.drives_subject,
+        )
+    elif mode.writes_real_data:
+        data_root = rig.data_root
+    else:
+        data_root = rehearsal_root(rig.data_root)
     if data_root != rig.data_root:
         rig = rig.model_copy(update={"data_root": data_root})
     run_number = (
@@ -501,6 +540,11 @@ def build_mode_session(
         else next_run(data_root, subject, session, experiment_version=experiment.version)
     )
 
+    # Only when there is one, so a build_session written before training mode
+    # (a test's stand-in) is called exactly as before.
+    stage_record: dict[str, Any] = (
+        {"training_stage": training.record()} if training is not None else {}
+    )
     runner = build_session(
         rig=rig,
         subject=subject,
@@ -530,6 +574,7 @@ def build_mode_session(
         experiment=experiment,
         mode=mode.value,
         initials=initials,
+        **stage_record,
         **extra,
     )
     built = ModeSession(

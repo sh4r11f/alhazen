@@ -158,12 +158,17 @@ def file_rig_name(path: Path) -> str:
 
 def _is_rig_file(path: Path) -> bool:
     """A ``rig-<name>.yaml`` file. A measured gamma is kept beside its rig as
-    ``rig-<name>_gamma.yaml`` (config/gamma.py), which matches the pattern
-    but is no rig, so it is left out by name."""
+    ``rig-<name>_gamma.yaml`` (config/gamma.py), and a reward calibration as
+    ``rig-<name>.reward.yaml`` (config/reward_calibration.py); both match the
+    pattern but are no rig, so they are left out by name. (Before this, a
+    measured calibration showed in the workspace's Rig menu as a rig named
+    ``<name>.reward``, and its Data and History pages said it had no
+    data_root.)"""
     return (
         path.name.startswith(FILE_PREFIX)
         and path.suffix in SUFFIXES
         and not path.name.endswith(GAMMA_FILENAME_SUFFIX)
+        and not path.name.endswith(".reward.yaml")
         and path.is_file()
     )
 

@@ -115,14 +115,17 @@ class DataRoot:
 
     id: str
     path: Path
-    kind: str  # "real" or "rehearsal"
+    kind: str  # "real", "rehearsal", "training" or "training-rehearsal"
     rigs: list[str] = field(default_factory=list)
 
     def as_json(self) -> dict[str, Any]:
+        training = self.kind.startswith("training")
         return {
             "id": self.id,
             "path": str(self.path),
-            "name": self.path.name,
+            # A stage folder is named by its ladder and stage, which is what
+            # tells two stages' folders apart in the picker.
+            "name": f"{self.path.parent.name}/{self.path.name}" if training else self.path.name,
             "kind": self.kind,
             "rigs": self.rigs,
         }
@@ -184,7 +187,11 @@ def data_roots(described: dict[str, Any]) -> tuple[list[DataRoot], list[DataRoot
         # Resolved so two spellings of one folder ("data", "./data") are one
         # entry, and so the id is the folder's, not the spelling's.
         real = real.resolve()
-        for path, kind in ((real, "real"), (rehearsal_root(real), "rehearsal")):
+        for path, kind in (
+            (real, "real"),
+            (rehearsal_root(real), "rehearsal"),
+            *_training_stage_roots(real),
+        ):
             root = found.setdefault((path, kind), DataRoot(_root_id(path), path, kind))
             if label not in root.rigs:
                 root.rigs.append(label)
@@ -192,6 +199,47 @@ def data_roots(described: dict[str, Any]) -> tuple[list[DataRoot], list[DataRoot
     existing = [root for root in roots if root.path.is_dir()]
     missing = [root for root in roots if not root.path.is_dir()]
     return existing, missing, problems
+
+
+def _training_stage_roots(real: Path) -> list[tuple[Path, str]]:
+    """The training stages' own data folders beside ``real`` that exist
+    (``<real>-training/<ladder>/<stage>/`` and its rehearsal sibling;
+    alhazen.training.ladder.training_root), each a data root of its own:
+    inside, the layout is the experiment's, so the Data page reads them as it
+    reads any other. Only folders already there: a stage nobody has run has
+    no data to show."""
+    from alhazen.training.ladder import TRAINING_SUFFIX
+
+    found: list[tuple[Path, str]] = []
+    for suffix, kind in (("", "training"), ("-rehearsal", "training-rehearsal")):
+        base = real.parent / f"{real.name}{TRAINING_SUFFIX}{suffix}"
+        if not base.is_dir():
+            continue
+        for ladder in sorted(p for p in base.iterdir() if p.is_dir()):
+            for stage in sorted(p for p in ladder.iterdir() if p.is_dir()):
+                found.append((stage, kind))
+    return found
+
+
+def _juice(folder: Path, card: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The juice panel for a saved run, from its events table and the µL per
+    pulse its session.json recorded (reward.delivered.ul_per_pulse); None
+    when the reward line was closed or the run has no events table."""
+    from alhazen.live_monitor.juice import juice_payload
+
+    reward = (card or {}).get("reward") or {}
+    if not reward.get("line_open"):
+        return None
+    tables = sorted(folder.glob("*_events.csv"))
+    if not tables:
+        return None
+    with tables[0].open(encoding="utf-8", newline="") as handle:
+        events = list(csv.DictReader(handle))
+    delivered = reward.get("delivered") or {}
+    ul = {int(k): float(v) for k, v in (delivered.get("ul_per_pulse") or {}).items()}
+    payload = juice_payload(events, ul)
+    payload["recorded_total"] = delivered or None
+    return payload
 
 
 def _run_folder(root: Path, run_id: str) -> Path:
@@ -445,6 +493,10 @@ class DataView:
             **row,
             "problems": problems,
             "path": str(folder),
+            # What the session paid through the reward line, trial by trial and
+            # in total (live_monitor/juice.py); None for a session that pays
+            # nothing (a human's, or a rig with no line).
+            "juice": _juice(folder, card),
             "card": card,
             "card_error": card_error,
             "files": files,

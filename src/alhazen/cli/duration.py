@@ -112,7 +112,12 @@ def _estimate(args: argparse.Namespace, task_class: Any, mode: Mode) -> dict[str
         return estimate.open_ended(mode)
     if mode is Mode.MOVIE:
         return estimate.movie()
-    params, source = _load_params(task_class, args.params)
+    if getattr(args, "training", None) is not None:
+        # A training stage's params: its file, its overrides and its reward
+        # (alhazen.cli.main._settle_training_stage resolved it already).
+        params, source = args.training.params, args.params
+    else:
+        params, source = _load_params(task_class, args.params)
     return estimate.estimate_trials(
         mode,
         task_class(params),

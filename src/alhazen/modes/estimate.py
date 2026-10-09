@@ -163,7 +163,7 @@ def estimate_trials(
     hz = float(rig.monitor.refresh_rate_hz)
     effective, _notes = rig_for_mode(mode, rig, headless=headless, mouse=mouse)
     reductions: list[str] = []
-    if mode is not Mode.RUN:
+    if not mode.drives_subject:
         params, changed = shrink_params(
             params,
             n_per_condition=trials_per_condition,
@@ -274,7 +274,7 @@ def estimate_trials(
                 + (", then a calibration validation)" if validate else ")")
             )
             plus.append(f"{n} manual {word}")
-    if getattr(task, "reward", None) is not None and mode is Mode.RUN:
+    if getattr(task, "reward", None) is not None and mode.drives_subject:
         reward = effective.devices.reward
         if reward is not None and reward.backend != "simulated":
             excluded.append("reward deliveries on paid trials (their length depends on outcomes)")

@@ -57,6 +57,13 @@ PAGE_ASSETS = {
     # workspace_estimate.py, answers it).
     "/workspace_duration.js": ("workspace_duration.js", "text/javascript; charset=utf-8"),
     "/workspace_duration.css": ("workspace_duration.css", "text/css; charset=utf-8"),
+    # The Training panel and History's training summary (workspace_training.js;
+    # GET /api/training).
+    "/workspace_training.js": ("workspace_training.js", "text/javascript; charset=utf-8"),
+    "/workspace_training.css": ("workspace_training.css", "text/css; charset=utf-8"),
+    # The juice a session delivered, on History's session details.
+    "/workspace_juice.js": ("workspace_juice.js", "text/javascript; charset=utf-8"),
+    "/workspace_juice.css": ("workspace_juice.css", "text/css; charset=utf-8"),
     "/workspace.css": ("workspace.css", "text/css; charset=utf-8"),
     "/favicon.svg": ("favicon.svg", "image/svg+xml"),
     "/fonts/Nunito-latin.woff2": ("fonts/Nunito-latin.woff2", "font/woff2"),
@@ -291,6 +298,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(
                     workspace.config(query.get("project", [""])[0], query.get("path", [""])[0])
                 )
+            elif path == "/api/training":
+                # The training ladders' history (Workspace.training): per
+                # stage its sessions and success rates, per subject the
+                # criterion's recommendation. For the Run and History pages.
+                self._json(workspace.training(query.get("project", [""])[0]))
             elif path == "/api/rig":
                 # The Rig menu's summary: the rig as it would run, merged when
                 # it extends a shared one (Workspace.rig). `rig` is the menu's

@@ -2178,6 +2178,14 @@ function drawEmpty(host, message, status) {
 
 function tableRows(data) {
   switch (data.form) {
+    case 'juice': {
+      const kinds = data.kinds || [];
+      return { head: ['Trial'].concat(kinds.map((k) => k.name + ' (' + data.unit + ')'), ['Cumulative (' + data.unit + ')']),
+        rows: (data.trials || []).map((t) => {
+          const upTo = (data.cumulative || []).filter((p) => p[0] <= t.x).pop();
+          return [String(t.x)].concat(kinds.map((k) => (t[k.key] ? fmt(t[k.key]) : '')), [upTo ? fmt(upTo[1]) : '']);
+        }) };
+    }
     case 'bars':
       return { head: ['Category', data.value_label || 'Count', 'Share'],
         rows: data.items.map((i) => [shown(i, 'label'), i.value.toLocaleString(), (i.share * 100).toFixed(1) + '%']) };
@@ -2316,7 +2324,7 @@ const EXPORT_DPI = 600;
 const EXPORT_FONT = 'Arial, Helvetica, "Liberation Sans", sans-serif';
 /* The forms drawn as SVG. A stat is a number and a camera image is a
  * photograph; neither is a chart to export. */
-const EXPORTABLE = new Set(['line', 'bars', 'histogram', 'scatter', 'vectors', 'dots', 'heatmap']);
+const EXPORTABLE = new Set(['juice', 'line', 'bars', 'histogram', 'scatter', 'vectors', 'dots', 'heatmap']);
 
 /* Presentation properties copied from the page's computed style onto each
  * exported element, so the file carries its own look instead of pointing at
@@ -2578,7 +2586,123 @@ function addExportActions(entry) {
   });
 }
 
+
+/* What each trial paid and the juice so far (live_monitor/juice.py): stacked
+ * bars per paid trial, one colour per reason it was paid (its outcome, a
+ * trial a device cut short, a manual press, a mid-trial drop), and the
+ * cumulative total as a step line on its own right-hand axis. The unit is
+ * the payload's: µL when the rig's reward calibration covers every pulse
+ * width delivered, pulses otherwise — both axis titles say which. */
+const JUICE_COLORS = {
+  outcome: 'var(--series-1)',
+  fault: 'var(--series-2)',
+  manual: 'var(--muted)',
+  mid_trial: 'var(--series-3)',
+};
+
+function drawJuice(legendHost, host, data) {
+  const trials = data.trials || [];
+  const cumulative = data.cumulative || [];
+  if (!trials.length && !(data.failures || []).length) return drawEmpty(host, 'No juice delivered yet');
+  const kinds = (data.kinds || []).map((k) => k.key);
+  const width = host.clientWidth || 380;
+  const height = chartHeight(width);
+  const xs = cumulative.map((p) => p[0]).concat(trials.map((t) => t.x));
+  const xLo = Math.min(...xs);
+  const xHi = Math.max(...xs, xLo + 1);
+  const perMax = Math.max(...trials.map((t) => kinds.reduce((sum, k) => sum + (t[k] || 0), 0)), 0);
+  const yTicks = niceDomain(0, perMax || 1, 4, data.unit !== 'µL');
+  const total = Math.max(data.total || 0, 0);
+  const y2Ticks = niceDomain(0, total || 1, 4, data.unit !== 'µL');
+  /* Room on the right for the cumulative axis's ticks and its title. */
+  const right = Math.max(PAD.right, 14 + textWidth(tickText(y2Ticks.hi, y2Ticks.ticks)) + 30);
+  const box = { x0: leftPad(yTicks.ticks), x1: width - right, y0: PAD.top, y1: height - PAD.bottom };
+  /* A trial of room at each end, so no bar sits on an axis. */
+  const xTicks = niceDomain(xLo - 1, xHi + 1, 6, true);
+  const xScale = (x) => box.x0 + ((x - xTicks.lo) / (xTicks.hi - xTicks.lo || 1)) * (box.x1 - box.x0);
+  const yScale = (y) => box.y1 - (y / (yTicks.hi || 1)) * (box.y1 - box.y0);
+  const y2Scale = (y) => box.y1 - (y / (y2Ticks.hi || 1)) * (box.y1 - box.y0);
+  const svg = svgEl('svg', { width: width, height: height }, host);
+  drawFrame(svg, box, {
+    yTicks: yTicks.ticks, yScale: yScale, xTicks: xTicks.ticks, xScale: xScale,
+    xLabel: data.x_label, yLabel: data.y_label,
+  });
+  /* The right axis: the cumulative total, in the line's own colour. */
+  svgEl('line', { x1: box.x1, x2: box.x1, y1: box.y0, y2: box.y1, class: 'spine' }, svg);
+  y2Ticks.ticks.forEach((value) => {
+    const y = y2Scale(value);
+    svgEl('line', { x1: box.x1, x2: box.x1 + 5, y1: y, y2: y, class: 'tick-mark' }, svg);
+    svgEl('text', { x: box.x1 + 9, y: y + 4, class: 'tick-text' }, svg).textContent =
+      tickText(value, y2Ticks.ticks);
+  });
+  if (data.y2_label) {
+    const y = (box.y0 + box.y1) / 2;
+    const x = width - 10;
+    svgEl('text', {
+      x: x, y: y, class: 'axis-text', 'text-anchor': 'middle',
+      transform: 'rotate(90 ' + x + ' ' + y + ')',
+    }, svg).textContent = data.y2_label;
+  }
+  /* Bars: one per paid trial, stacked by kind, square ends. */
+  const span = Math.max(1, xTicks.hi - xTicks.lo);
+  const barWidth = Math.max(1.5, Math.min(14, ((box.x1 - box.x0) / span) * 0.7));
+  trials.forEach((trial) => {
+    let base = 0;
+    kinds.forEach((kind) => {
+      const value = trial[kind] || 0;
+      if (!value) return;
+      const yTop = yScale(base + value);
+      const attrs = {
+        x: xScale(trial.x) - barWidth / 2, y: yTop, width: barWidth,
+        height: Math.max(0.5, yScale(base) - yTop),
+        style: kind === 'manual'
+          ? 'fill:var(--surface);stroke:' + JUICE_COLORS[kind] + ';stroke-width:1.2'
+          : 'fill:' + JUICE_COLORS[kind],
+      };
+      attrs['data-kind'] = kind;
+      svgEl('rect', attrs, svg);
+      base += value;
+    });
+    const hit = svgEl('rect', {
+      x: xScale(trial.x) - Math.max(barWidth, 6) / 2, y: box.y0, width: Math.max(barWidth, 6),
+      height: box.y1 - box.y0, class: 'hit',
+    }, svg);
+    hit.addEventListener('pointermove', (event) => {
+      const rect = svg.getBoundingClientRect();
+      const rows = kinds.filter((k) => trial[k]).map((k) => ({
+        name: (data.kinds.find((x) => x.key === k) || {}).name || k,
+        value: fmt(trial[k]) + ' ' + data.unit, color: JUICE_COLORS[k],
+      }));
+      const upTo = cumulative.filter((p) => p[0] <= trial.x).pop();
+      if (upTo) rows.push({ name: 'so far', value: fmt(upTo[1]) + ' ' + data.unit });
+      showTip(host, event.clientX - rect.left, event.clientY - rect.top, 'trial ' + trial.x, rows);
+    });
+    hit.addEventListener('pointerleave', () => hideTip(host));
+  });
+  /* The cumulative total: a step, because juice arrives at a delivery. */
+  if (cumulative.length) {
+    let path = '';
+    cumulative.forEach((point, index) => {
+      const x = xScale(point[0]);
+      const y = y2Scale(point[1]);
+      if (index === 0) path += 'M' + x + ',' + y;
+      else path += 'H' + x + 'V' + y;
+    });
+    svgEl('path', { d: path, style: 'fill:none;stroke:var(--axis);stroke-width:1.6', class: 'juice-total' }, svg);
+  }
+  (data.failures || []).forEach((trial) => {
+    const x = xScale(trial);
+    svgEl('line', { x1: x, x2: x, y1: box.y0, y2: box.y1, style: 'stroke:var(--critical);stroke-dasharray:3 3' }, svg);
+  });
+  const present = kinds.filter((k) => trials.some((t) => t[k]));
+  drawLegend(legendHost, present.map((k) => ({
+    name: (data.kinds.find((x) => x.key === k) || {}).name || k,
+    color: JUICE_COLORS[k], shape: k === 'manual' ? 'outline' : 'bar',
+  })).concat([{ name: 'cumulative', color: 'var(--axis)', shape: 'line' }]), 'Paid for');
+}
+
 const DRAW = {
+  juice: drawJuice,
   line: drawLineChart,
   bars: drawBars,
   histogram: drawHistogram,
@@ -2695,6 +2819,23 @@ function renderSections(entries) {
   });
 }
 
+/** The training stage this session runs, for the header: which rung of the
+ * ladder, and how often the stage's success outcome has come up among the
+ * trials the subject finished. Null for a session that is not a stage. A
+ * curriculum's stamp (stage name only) is shown by its name. */
+function trainingLine(training) {
+  if (!training || !training.stage) return null;
+  const rung = training.stage_number && training.stage_count
+    ? `stage ${training.stage_number}/${training.stage_count} ` : 'stage ';
+  const label = 'training ' + rung + (training.stage_title || training.stage);
+  if (!training.success) return label;
+  const finished = Number(training.finished) || 0;
+  if (!finished) return `${label} · pays ${training.success}`;
+  const hits = Number(training.successes) || 0;
+  return `${label} · ${training.success} ${hits}/${finished}`
+    + ` (${Math.round((100 * hits) / finished)}%)`;
+}
+
 function render() {
   if (!state) return;
   const identity = state.identity || {};
@@ -2703,6 +2844,7 @@ function render() {
     identity.subject && 'sub-' + identity.subject,
     identity.session && 'ses-' + String(identity.session).padStart(3, '0'),
     identity.run && 'run-' + String(identity.run).padStart(2, '0'),
+    trainingLine(state.training),
   ].filter(Boolean).join(' · ');
 
   const status = byId('status');

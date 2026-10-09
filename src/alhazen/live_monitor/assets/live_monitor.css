@@ -378,6 +378,8 @@ main { flex: 1 1 auto; min-width: 0; padding: 22px 28px 56px; }
 }
 /* An unfilled square: a region outlined on the plot, not a datum. */
 .legend i.outline { width: 11px; height: 11px; border: 1.2px solid; }
+/* A solid bar's swatch (the juice panel): the bar's own colour, at full ink. */
+.legend i.bar { width: 9px; height: 11px; }
 /* A heatmap's out-of-range warning: the arrow-head its colourbar grows at
  * the end some cells went past, pointing the way they went. */
 .legend i.below { width: 9px; height: 10px; clip-path: polygon(100% 0, 0 50%, 100% 100%); }

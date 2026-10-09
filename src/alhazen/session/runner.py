@@ -52,6 +52,7 @@ from typing import Any
 import numpy as np
 
 from alhazen.config.models import DEFAULT_MAX_CONSECUTIVE_DROPOUTS, SessionConfig
+from alhazen.config.reward_calibration import load_reward_calibration
 from alhazen.core.clock import Clock
 from alhazen.core.commands import Command, CommandSource
 from alhazen.core.engine import QuitRequested, TrialEngine, TrialResult
@@ -79,13 +80,14 @@ from alhazen.display.backend import DisplayBackend
 from alhazen.display.frames import FrameMonitor
 from alhazen.display.screen import Screen
 from alhazen.errors import ConfigError
+from alhazen.live_monitor.juice import juice_payload, juice_totals, ul_by_width
 from alhazen.live_monitor.panels import frame_intervals_panel
 from alhazen.live_monitor.runtime import LiveMonitorController, live_monitor_state
 from alhazen.live_monitor.spec import LiveMonitorSpec
 from alhazen.paradigms.base import Condition, TrialSource
 from alhazen.session.database import ExperimentDatabase, FrameInputBuffer
 from alhazen.session.eyetracker import PROCEDURE_STATUS, EyeTrackerMonitor, eye_markers
-from alhazen.session.identity import RunIdentity, write_run_identity
+from alhazen.session.identity import RunIdentity, record_reward_delivered, write_run_identity
 from alhazen.session.pause import PauseMenu
 from alhazen.session.pause_control import PauseController
 from alhazen.session.recorder import DataRecorder
@@ -99,6 +101,7 @@ from alhazen.task.live import LiveAnalysis
 from alhazen.task.plan import BuildTrial, TrialSetup
 from alhazen.task.reward_policy import RewardPolicy
 from alhazen.task.subject_kind import subject_kind_of
+from alhazen.training.history import stage_tally
 from alhazen.training.supervisor import TrainingSupervisor
 
 log = logging.getLogger(__name__)
@@ -229,6 +232,12 @@ class SessionRunner:
         self._cfg = cfg
         kind = subject_kind_of(cfg.task_params)
         self._subject_kind = kind.value if kind is not None else None
+        stage = identity.training
+        self._training_stage_columns: dict[str, Any] = (
+            {"training_ladder": stage["ladder"], "training_stage": stage["stage"]}
+            if stage is not None
+            else {}
+        )
         # The external recorder this run belongs to (devices.recording), or
         # None. Its pointer file is written once the snapshot is, in run():
         # a run directory says which recording it pairs with even if the
@@ -323,6 +332,19 @@ class SessionRunner:
         # their *lifecycle* — per-trial recording segments and teardown.
         self._tracker = tracker
         self._reward = reward
+        # µL per pulse for each width the rig's reward calibration measured on
+        # this session's line and voltage (live_monitor/juice.py): what the
+        # juice panel and session.json's reward.delivered count volumes in.
+        # Empty with no reward line, no rig file or no calibration: the
+        # amounts are then in pulses, and say so.
+        self._juice_ul: dict[int, float] = {}
+        hardware = cfg.rig.devices.reward
+        if reward is not None and hardware is not None and identity.rig_file is not None:
+            self._juice_ul = ul_by_width(
+                load_reward_calibration(identity.rig_file.path),
+                line=f"{hardware.device}/{hardware.channel}",
+                voltage=hardware.voltage,
+            )
         self._sync = sync
         # The pay rule and its delivery at the end of each trial
         # (session/reward_payer.py): what each outcome earns under
@@ -810,6 +832,9 @@ class SessionRunner:
             # when the params say, so a run of undeclared params writes the
             # same columns it always did.
             **({"subject_kind": self._subject_kind} if self._subject_kind is not None else {}),
+            # The training-ladder stage this session runs (core/trial.py
+            # TRIAL_RECORD_COLUMNS); only on a training stage's rows.
+            **self._training_stage_columns,
             # Stage and ramp values first, so a task that records a column of
             # the same name wins — the task's own measurement is never
             # shadowed by bookkeeping.
@@ -1082,6 +1107,16 @@ class SessionRunner:
         # between trials and somebody is looking (paused, or a procedure
         # running), and the pixels stay out of the copy written to disk.
         extra_panels: list[dict[str, Any]] = [self._frame_timing_panel()]
+        # A session that pays through the reward line (a monkey's, training
+        # or experiment): what each trial paid and the juice so far.
+        if self._reward is not None:
+            extra_panels.append(
+                {
+                    "title": "Juice delivered",
+                    "section": "Reward",
+                    "data": juice_payload(self._recorder.events, self._juice_ul),
+                }
+            )
         if self._live is not None:
             extra_panels += self._live.panels()
         if self._eyetracker is not None:
@@ -1101,7 +1136,11 @@ class SessionRunner:
             events=self._recorder.events,
             spec=self._live_monitor_spec,
             condition_fields=self._condition_fields,
-            training=self._training.stamp() if self._training is not None else None,
+            training=(
+                self._training.stamp()
+                if self._training is not None
+                else self._live_training_stage()
+            ),
             message=message,
             max_rows=None if full else self._cfg.rig.live_monitor.max_rows,
             extra_panels=extra_panels,
@@ -1114,6 +1153,16 @@ class SessionRunner:
         self._live_monitor_message = message
         self._live_monitor.publish(state)
         return state
+
+    def _live_training_stage(self) -> dict[str, Any] | None:
+        """The training-ladder stage, for the live monitor's header; None
+        when this session is not a training stage."""
+        stage = self._identity.training
+        if stage is None:
+            return None
+        keys = ("ladder", "ladder_title", "stage", "stage_title", "stage_number", "stage_count")
+        tally = stage_tally(self._recorder.trials, str(stage.get("success")))
+        return {**{key: stage.get(key) for key in keys}, "success": stage.get("success"), **tally}
 
     def _report_invalid_panel(self, title: str, problem: str) -> None:
         """One ERROR line in session.log for a live monitor panel that could
@@ -1269,6 +1318,16 @@ class SessionRunner:
             last_ctx = self._last_ctx
             step("reward.settle", lambda: self._engine.settle_rewards(last_ctx))
         record_step("recorder.write", self._recorder.write)
+        # What reached the valve, in session.json (reward.delivered): written
+        # from the same events the live monitor's juice panel draws.
+        if self._reward is not None:
+            record_step(
+                "reward.summary",
+                lambda: record_reward_delivered(
+                    self._paths.session_json_path,
+                    juice_totals(self._recorder.events, self._juice_ul),
+                ),
+            )
         # Its own step, and early: a subject's place in its curriculum is
         # weeks of work, and must be written even if something later in
         # teardown fails.
