@@ -77,6 +77,19 @@ class HubLimits:
     max_csv_row_bytes: int = 1 * MIB
     max_csv_cell_bytes: int = 64 * 1024
     max_indexed_file_bytes: int = 512 * MIB
+    # Request-body admission (auth-review finding 2). One owner may run at
+    # most this many body-carrying uploads (chunks, packages) at once, so no
+    # single account can hold every transfer slot.
+    max_transfers_per_owner: int = 2
+    # A request body must keep arriving: at most this long between two
+    # received parts, else 408 and the slot is released.
+    body_idle_seconds: int = 30
+    # And it must finish within base + expected bytes / floor rate, where the
+    # expected size is the declared Content-Length (or the route's limit).
+    # Defaults: an 8 MiB chunk gets 60 s + 128 s, a 256 MiB package 60 s +
+    # about 68 min, a 1 MiB JSON body 60 s + 16 s.
+    body_base_seconds: int = 60
+    body_min_bytes_per_second: int = 64 * 1024
 
     def public(self) -> dict[str, int]:
         """The limits a client may need, for GET /config."""
@@ -111,6 +124,9 @@ class AuthPolicy:
     min_password_length: int = 12
     max_password_length: int = 1024
     invite_days: int = 14
+    # Ended (expired or revoked) sign-in sessions are deleted this long after
+    # they ended by the hourly housekeeping (auth-review finding 8).
+    session_retention_seconds: int = 7 * 24 * 3600
 
 
 @dataclass(frozen=True)

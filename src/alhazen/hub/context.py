@@ -65,6 +65,46 @@ class Gate:
             self._slots.release()
 
 
+class OwnerGate:
+    """At most ``per_owner`` slots held by one owner at once (auth-review
+    finding 2): checked BEFORE the shared `Gate`, so a single account can
+    never hold every transfer slot, however slowly it sends. Refuses with
+    429 at once, never queues."""
+
+    def __init__(self, name: str, per_owner: int) -> None:
+        self.name = name
+        self.per_owner = per_owner
+        self._held: dict[str, int] = {}
+        self._lock = threading.Lock()
+
+    def held(self, owner: str) -> int:
+        with self._lock:
+            return self._held.get(owner, 0)
+
+    @contextmanager
+    def slot(self, owner: str) -> Iterator[None]:
+        with self._lock:
+            count = self._held.get(owner, 0)
+            if count >= self.per_owner:
+                raise HubError(
+                    429,
+                    "owner_transfer_limit",
+                    f"You already have {count} {self.name} running, the most one account may "
+                    "run at once; retry when one finishes",
+                    headers={"Retry-After": "5"},
+                )
+            self._held[owner] = count + 1
+        try:
+            yield
+        finally:
+            with self._lock:
+                left = self._held.get(owner, 1) - 1
+                if left > 0:
+                    self._held[owner] = left
+                else:
+                    self._held.pop(owner, None)
+
+
 @dataclass
 class Hub:
     settings: HubSettings
@@ -74,10 +114,12 @@ class Hub:
     transfers: Gate = field(init=False)
     exports: Gate = field(init=False)
     hashes: Gate = field(init=False)
+    owner_transfers: OwnerGate = field(init=False)
 
     def __post_init__(self) -> None:
         limits = self.settings.limits
         self.transfers = Gate("transfers", limits.max_concurrent_transfers)
+        self.owner_transfers = OwnerGate("uploads", limits.max_transfers_per_owner)
         self.exports = Gate("exports", limits.max_concurrent_exports)
         # A sign-in waits briefly for one of the few hashing slots instead of
         # failing on a momentary overlap; the per-minute admission count
