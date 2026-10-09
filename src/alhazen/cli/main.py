@@ -9,6 +9,7 @@
     alhazen calibrate ...     verify the monitor's geometry and gamma
     alhazen monitor ...       tell PsychoPy about this rig's monitor
     alhazen report --run      what happened, and does the data check out?
+    alhazen hub ...           the Experiment Hub: connect, sign in, install, upload
 
 Each command does one thing an experimenter needs, and each does it through
 the same code a session would: ``check-rig`` constructs the real device
@@ -115,6 +116,16 @@ def main(argv: list[str] | None = None) -> int:
     dashboard.add_argument(
         "--no-browser", action="store_true", help="print the URL without opening it"
     )
+    dashboard.add_argument(
+        "--hub",
+        action="store_true",
+        help="open the Experiment Hub page (/hub) instead of the workspace",
+    )
+    # `alhazen hub ...` (alhazen.hub.cli): its parser is stdlib-only, so
+    # adding it costs nothing for a plain install.
+    from alhazen.hub.cli import add_parser as add_hub_parser
+
+    add_hub_parser(sub)
     calibrate = sub.add_parser("calibrate", help="check a monitor's geometry and gamma")
     calibrate_sub = calibrate.add_subparsers(dest="calibration")
     ruler = calibrate_sub.add_parser(
@@ -248,6 +259,13 @@ def _dashboard(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int
     except (OSError, ValueError) as exc:
         print(f"CANNOT OPEN DASHBOARD: {exc}", file=sys.stderr)
         return 1
+
+
+def _hub(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    from alhazen.cli.workspace_hub import cli_install
+    from alhazen.hub.cli import run
+
+    return run(args, install=cli_install)
 
 
 def _experiment_root(task_class: Any = None) -> Callable[[], Path]:
@@ -1795,6 +1813,7 @@ def _with_explicit_flags(args: argparse.Namespace) -> argparse.Namespace:
 # take other arguments; the rest are the functions themselves.
 _COMMANDS: dict[str, Handler] = {
     "dashboard": _dashboard,
+    "hub": _hub,
     "validate": _validate,
     "rigs": _rigs,
     "preview": _preview,
