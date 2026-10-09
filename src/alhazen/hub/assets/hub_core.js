@@ -22,7 +22,7 @@
  *   sameOriginPath, HubError, errorFromResponse, createApi, validateHubUrl,
  *   validatePython, validatePackageMetadata, parseList, parseTags,
  *   formatBytes, formatDate, shortHash, hardwareList, platformsText,
- *   trialColumns, trialRow, cellText, jobState, indexState, uploadTotals, firstHttpsUrl,
+ *   trialColumns, trialRow, cellText, jobState, indexState, uploadState, uploadState, uploadTotals, firstHttpsUrl,
  *   readToken, seg, nextOffsetLabel}
  */
 'use strict';
@@ -624,6 +624,31 @@ const HubCore = (() => {
     };
   }
 
+  /* An unfinished remote upload (GET /sessions; server states staging ->
+   * sealing -> committed, or aborted / expired). Only staging can be
+   * discarded: sealing is the hub verifying and installing it, and a
+   * committed session is kept. */
+  const UPLOAD_WORDS = {
+    staging: 'Waiting for the rest of its files',
+    sealing: 'Being verified and sealed by the hub',
+    committed: 'Received',
+    aborted: 'Discarded',
+    expired: 'Expired',
+  };
+
+  /** -> {status, word, received, total, canDiscard, whyNot}. */
+  function uploadState(upload) {
+    const u = upload || {};
+    const status = String(u.status || '').toLowerCase();
+    const received = Number.isFinite(Number(u.received_bytes)) && u.received_bytes !== null && u.received_bytes !== undefined ? Number(u.received_bytes) : null;
+    const total = Number.isFinite(Number(u.total_bytes)) && u.total_bytes !== null && u.total_bytes !== undefined ? Number(u.total_bytes) : null;
+    const canDiscard = status === 'staging';
+    let whyNot = '';
+    if (status === 'sealing') whyNot = 'The hub is verifying and sealing it; it cannot be discarded now. It finishes or fails on its own.';
+    else if (!canDiscard) whyNot = 'Only an upload that is still receiving files can be discarded.';
+    return {status, word: UPLOAD_WORDS[status] || (status || 'state not reported'), received, total: total === null ? received : total, canDiscard, whyNot};
+  }
+
   /** Files and bytes of an upload or package preview. */
   function uploadTotals(files, declaredTotal) {
     const list = Array.isArray(files) ? files : [];
@@ -658,7 +683,7 @@ const HubCore = (() => {
     API_PREFIX, VIEWS, PRIVATE_VIEWS, RIG_TABS, EXPERIMENT_TABS, parseRoute, formatRoute, safeNext, sameOriginPath,
     HubError, errorFromResponse, createApi, seg, readToken, validateHubUrl, validatePython, validatePassword,
     validatePackageMetadata, parseList, parseTags, formatBytes, formatDate, shortHash,
-    hardwareList, platformsText, trialColumns, trialRow, cellText, jobState, indexState, uploadTotals, firstHttpsUrl,
+    hardwareList, platformsText, trialColumns, trialRow, cellText, jobState, indexState, uploadState, uploadTotals, firstHttpsUrl,
     nextOffsetLabel,
   };
 })();

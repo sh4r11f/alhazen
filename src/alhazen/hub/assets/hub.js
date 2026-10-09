@@ -1189,6 +1189,8 @@ const HubApp = (() => {
         result.appendChild(h('p', {class: 'note note-' + (ok ? 'ok' : 'warn'), role: 'status'},
           ok ? 'Installed and registered in the workspace (' + versionLabel(record) + ').'
             : 'Files installed and verified, but not registered: ' + ((record.error && record.error.message) || 'choose an interpreter below.')));
+        const durability = durabilityNote(record);
+        if (durability) result.appendChild(durability);
         const open = workspaceLink(record, 'Open it in the workspace');
         if (open) result.appendChild(open);
       };
@@ -2019,6 +2021,7 @@ const HubApp = (() => {
       section.appendChild(form);
       const area = region('your sessions');
       section.appendChild(area.el);
+      section.appendChild(unfinishedUploads(ctx));
       const offset = r.offset || 0;
       (async () => {
         const [got, names] = await Promise.all([
@@ -2067,6 +2070,112 @@ const HubApp = (() => {
             (o) => ({view: 'data', experiment: r.experiment, subject: r.subject, mode: r.mode, offset: o}), 'data'));
       })();
       return section;
+    }
+
+    /* ---- unfinished uploads ------------------------------------------------ */
+
+    const UNFINISHED_PAGE = 20;
+
+    /** The signed-in account's uploads the hub has not committed (GET
+     *  /sessions: staging or sealing, caller-owned only). They hold quota
+     *  until they finish, expire or are discarded. Discard (POST
+     *  /sessions/{id}/abort) removes only the hub's partial copy; the list is
+     *  always read again from the hub afterwards, never edited locally. */
+    function unfinishedUploads(ctx) {
+      const block = h('section', {class: 'block unfinished', 'aria-label': 'Unfinished uploads'});
+      const area = region('unfinished uploads');
+      const flash = h('p', {class: 'form-status', role: 'status', hidden: true, tabindex: '-1', 'data-focus': 'unfinished-status'});
+      block.append(h('h2', {class: 'block-title'}, 'Unfinished uploads'), flash, area.el);
+      const say = (text, tone) => {
+        flash.className = 'form-status form-status-' + (tone || 'info');
+        flash.setAttribute('role', tone === 'err' ? 'alert' : 'status');
+        flash.textContent = text;
+        flash.hidden = !text;
+      };
+      const load = async (focusKey) => {
+        const got = await screenRequest(ctx.epoch, 'GET', '/sessions', {query: {limit: UNFINISHED_PAGE, offset: 0}});
+        if (!got) return;
+        if (!got.ok) return area.fail(got.error, () => { say(''); load(); });
+        const items = ((got.value && got.value.items) || []).filter((u) => u && u.status !== 'committed');
+        if (!items.length) {
+          area.fill(h('p', {class: 'muted small'}, 'None. Every upload the hub started for this account has finished or been closed.'));
+        } else {
+          area.fill(h('p', {class: 'muted small'}, 'The hub keeps space reserved for each until it finishes, expires or is discarded.'),
+            h('ul', {class: 'unfinished-list'}, items.map((u) => unfinishedRow(ctx, u, say, load))),
+            got.value.next_offset !== null && got.value.next_offset !== undefined
+              ? h('p', {class: 'muted small'}, `Showing the first ${items.length}. Discard or finish some to see the rest.`) : null);
+        }
+        if (focusKey) {
+          state.pendingFocus = focusKey;
+          settleFocus(true);
+        }
+      };
+      load();
+      return block;
+    }
+
+    function unfinishedRow(ctx, u, say, reload) {
+      const st = C.uploadState(u);
+      const m = u.metadata || {};
+      const what = [m.subject_code ? 'Subject ' + m.subject_code : null, m.mode, m.rig_alias, C.formatDate(m.started_at || u.created_at)]
+        .filter(Boolean).join(' \u00b7 ');
+      const row = h('li', {class: 'unfinished-row'},
+        h('div', {class: 'unfinished-main'},
+          h('p', {class: 'unfinished-what'}, what || String(u.id)),
+          h('p', {class: 'muted small'}, st.word + (st.received !== null ? ' \u00b7 ' + C.formatBytes(st.received) + ' of ' + C.formatBytes(st.total) + ' received' : '')
+            + (u.file_count ? ' \u00b7 ' + u.file_count + ' files' : '')),
+          u.error ? h('p', {class: 'note note-warn small'}, typeof u.error === 'object' ? String(u.error.message || u.error.code || '') : String(u.error)) : null,
+          h('p', {class: 'mono small muted'}, 'Upload ' + u.id + (u.updated_at ? ' \u00b7 last change ' + C.formatDate(u.updated_at) : ''))));
+      const actions = h('div', {class: 'unfinished-actions'});
+      row.appendChild(actions);
+      if (!st.canDiscard) {
+        actions.appendChild(h('button', {type: 'button', class: 'btn btn-line btn-small', disabled: true,
+          'aria-describedby': 'why-' + u.id}, 'Discard'));
+        actions.appendChild(h('p', {class: 'muted small', id: 'why-' + u.id}, st.whyNot));
+        return row;
+      }
+      const discard = h('button', {type: 'button', class: 'btn btn-line btn-small', 'data-focus': 'discard-' + u.id}, 'Discard\u2026');
+      const confirmRow = h('div', {class: 'confirm', hidden: true},
+        h('p', null, 'Discard this unfinished upload on the hub? Only the hub\u2019s partial copy is removed, which frees the space it reserves. '
+          + 'The session\u2019s files on the rig stay exactly as they are, and sessions the hub has already received are never removed. '
+          + 'To send it again later, start a new upload from the rig.'));
+      const yes = h('button', {type: 'button', class: 'btn btn-danger'}, 'Discard the partial upload');
+      const no = h('button', {type: 'button', class: 'btn btn-quiet'}, 'Keep it');
+      confirmRow.append(yes, no);
+      actions.append(discard, confirmRow);
+      discard.addEventListener('click', () => { confirmRow.hidden = false; discard.hidden = true; yes.focus(); });
+      no.addEventListener('click', () => { confirmRow.hidden = true; discard.hidden = false; discard.focus(); });
+      yes.addEventListener('click', async () => {
+        yes.disabled = true;
+        no.disabled = true;
+        yes.textContent = 'Discarding\u2026';
+        try {
+          const answer = await api('POST', '/sessions/' + C.seg(u.id) + '/abort', {json: {}});
+          if (ctx.epoch !== state.epoch) return;
+          const status = answer && (answer.status || (answer.session && answer.session.status));
+          say(status === 'aborted' || status === 'expired'
+            ? 'Discarded on the hub. Its reserved space is released; the rig\u2019s files are unchanged.'
+            : 'The hub answered without confirming the discard (status ' + String(status || 'not given') + '). The list below is the hub\u2019s current state.',
+          status === 'aborted' || status === 'expired' ? 'ok' : 'err');
+          reload('unfinished-status');
+        } catch (exc) {
+          if (ctx.epoch !== state.epoch) return;
+          noteFailure(exc);
+          if (exc.status === 409 || exc.status === 410 || exc.kind === 'not_found') {
+            /* It changed on the hub meanwhile (being sealed, committed,
+             * expired or already closed): say so in its words and show the
+             * hub's current list. */
+            say(exc.message, 'err');
+            reload('unfinished-status');
+            return;
+          }
+          say('Not discarded: ' + exc.message, 'err');
+          yes.disabled = false;
+          no.disabled = false;
+          yes.textContent = 'Discard the partial upload';
+        }
+      });
+      return row;
     }
 
     function screenSession(ctx) {
@@ -2388,6 +2497,18 @@ const HubApp = (() => {
       drawChrome();
     }
 
+    /** An install whose files the rig verified but could not confirm were
+     *  flushed to disk (durable === false: the folder sync is unsupported on
+     *  this system, e.g. Windows, or failed). A storage fact, not a verdict
+     *  on the code. Null when durable or not reported. */
+    function durabilityNote(record) {
+      if (!record || record.durable !== false) return null;
+      return h('p', {class: 'muted small durability'},
+        'The files are installed and verified, but this computer could not confirm they were written through to disk'
+        + (record.durability_note ? ' (' + String(record.durability_note) + ')' : '')
+        + '. This is about storage, not about the code. After a power loss or crash, check the install again before running it.');
+    }
+
     function rigInstalled() {
       const list = (state.local && Array.isArray(state.local.installed)) ? state.local.installed : [];
       const block = h('section', {class: 'panel'}, h('h2', {class: 'panel-title'}, 'Installed from the hub'));
@@ -2408,7 +2529,7 @@ const HubApp = (() => {
         tbody.appendChild(h('tr', null,
           h('td', null, link({view: 'experiment', id: i.experiment_id, version: i.version_id}, i.title || i.name || String(i.experiment_id))),
           h('td', {class: 'mono', title: String(i.sha256 || '')}, versionLabel(i) + ' \u00b7 ' + C.shortHash(i.sha256)),
-          h('td', null, word),
+          h('td', null, h('span', null, word), durabilityNote(i)),
           h('td', null, C.formatDate(i.installed_at)),
           h('td', null, workspaceLink(i, 'Open'))));
       }
