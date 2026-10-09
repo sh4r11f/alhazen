@@ -1217,8 +1217,14 @@ const HubDocs = (() => {
       item.appendChild(top);
       const facts = el(c, 'div', 'hd-mode-facts');
       facts.appendChild(badge(c, mode.runs_trials ? 'runs trials' : 'no trials', mode.runs_trials));
-      facts.appendChild(badge(c, mode.drives_subject ? 'real subject' : 'no subject driven', mode.drives_subject));
-      facts.appendChild(badge(c, mode.writes_real_data ? 'real data' : 'no real data', mode.writes_real_data));
+      if (mode.id === 'simulate') facts.appendChild(badge(c, 'simulated subject', false));
+      else if (mode.id === 'test') facts.appendChild(badge(c, 'subject rehearsal', false));
+      else if (mode.drives_subject) facts.appendChild(badge(c, 'real subject', true));
+      const dataLabel = mode.id === 'training' ? 'separate training records'
+        : mode.writes_real_data ? 'experiment records'
+        : (mode.id === 'test' || mode.id === 'simulate') ? 'separate rehearsal records'
+        : mode.runs_trials ? 'see output below' : 'no trial records';
+      facts.appendChild(badge(c, dataLabel, mode.writes_real_data || mode.id === 'training'));
       if (mode.refuses_development_rig) facts.appendChild(badge(c, 'refuses development rigs', true));
       const flags = [];
       if (mode.accepts.headless) flags.push('--headless');

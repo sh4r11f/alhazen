@@ -273,3 +273,15 @@ test('stimulus schematics keep their authored label size in a focusable narrow-p
   assert.ok(Number(drawing.getAttribute('width')) >= 400);
   assert.match(figure.querySelector('.hd-scroll-note').textContent, /Swipe or scroll sideways/);
 });
+
+
+test('mode labels do not call training or rehearsal records unreal', () => {
+  const view = HubDocs.renderGlobalGuide(GUIDE, options());
+  const modes = new Map(view.querySelectorAll('li.hd-mode').map((item) => [item.querySelector('code.hd-mode-name').textContent, item.textContent]));
+  assert.match(modes.get('training'), /real subject.*separate training records/);
+  assert.match(modes.get('test'), /subject rehearsal.*separate rehearsal records/);
+  assert.match(modes.get('simulate'), /simulated subject.*separate rehearsal records/);
+  assert.match(modes.get('run'), /real subject.*experiment records/);
+  assert.ok(!view.textContent.includes('no real data'));
+  assert.ok(!view.textContent.includes('no subject driven'));
+});
