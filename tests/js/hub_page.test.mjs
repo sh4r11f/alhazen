@@ -180,7 +180,7 @@ test('central visitor: the landing page says what is real, with an honest empty 
   assert.match(p.text(), /Nothing is published yet/);
   assert.match(p.text(), /Experiment.*Rig.*Data/s);
   const nav = p.document.getElementById('primary-nav').textContent;
-  assert.match(nav, /Catalogue/);
+  assert.match(nav, /Marketplace/);
   assert.doesNotMatch(nav, /This rig/);
   assert.match(p.document.getElementById('account').textContent, /Sign in.*Register/);
   assert.match(p.document.getElementById('role-badge').textContent, /Hub/);
@@ -297,7 +297,8 @@ test('Back and Forward redraw the screen and drop answers for the screen left be
   assert.match(p.text(), /Your experiment hub/);
   assert.equal(p.document.activeElement.getAttribute('data-heading'), '');
   await p.back('/?view=catalog');
-  assert.match(p.text(), /Published experiments/);
+  assert.match(p.text(), /Marketplace/);
+  assert.match(p.text(), /The marketplace is empty/);
 });
 
 test('experiment page: release sheet, citations as text with an https link, download only on central', async () => {

@@ -132,6 +132,8 @@ const HubApp = (() => {
       pendingFocus: null,   // data-focus key to restore after a draw, or 'heading'
       flash: null,          // one-shot message for the next screen {text, tone, username}
       library: null,        // cached GET /library items for this account (null: not loaded)
+      catalog: null,        // {q, at, items}: the whole published catalogue for one search, kept a minute
+      createDraft: {prompt: '', provider: 'anthropic', fork: ''},  // the Create form's text (never the key)
       polls: [],
       booted: false,
     };
@@ -165,7 +167,7 @@ const HubApp = (() => {
     function drawNav() {
       const nav = $('primary-nav');
       const items = [
-        ['catalog', 'Catalogue'],
+        ['catalog', 'Marketplace'],
         ['library', 'Library'],
         ['mine', 'My experiments'],
         ['data', 'Data'],
@@ -174,7 +176,7 @@ const HubApp = (() => {
       const list = h('ul', {class: 'nav-list'});
       for (const [view, label] of items) {
         const current = state.route.view === view
-          || (view === 'catalog' && state.route.view === 'experiment');
+          || (view === 'catalog' && (state.route.view === 'experiment' || state.route.view === 'create'));
         const a = link({view}, label, {class: 'nav-link', 'aria-current': current ? 'page' : null});
         list.appendChild(h('li', null, a));
       }
@@ -224,17 +226,21 @@ const HubApp = (() => {
         el.replaceChildren();
         return;
       }
+      const create = state.role === 'server'
+        ? link({view: 'create'}, null, {class: 'btn btn-create', 'aria-current': state.route.view === 'create' ? 'page' : null})
+        : null;
+      if (create) create.append(sparkGlyph(), h('span', null, 'Create'), h('span', {class: 'create-tail'}, ' with AI'));
       if (state.user) {
         const who = h('span', {class: 'who'},
           h('span', {class: 'who-label'}, state.role === 'rig' ? 'Operator' : 'Signed in as'),
           h('span', {class: 'who-name'}, state.user.display_name || state.user.username),
           h('span', {class: 'who-handle'}, '@' + state.user.username));
         const out = h('button', {type: 'button', class: 'btn btn-quiet', on: {click: signOut}}, 'Sign out');
-        el.replaceChildren(who, out);
+        el.replaceChildren(...[create, who, out].filter(Boolean));
       } else {
-        el.replaceChildren(
+        el.replaceChildren(...[create,
           link({view: 'signin', next: currentNext()}, 'Sign in', {class: 'btn btn-quiet'}),
-          link({view: 'register'}, 'Register', {class: 'btn btn-line'}));
+          link({view: 'register'}, 'Register', {class: 'btn btn-line'})].filter(Boolean));
       }
     }
 
@@ -815,23 +821,177 @@ const HubApp = (() => {
       return h('a', {class: 'btn btn-primary', href}, label || 'Open in the workspace');
     }
 
-    /** A catalogue or library entry: {experiment, version}. */
-    function listing(item, extra) {
+    /** A catalogue or library entry: {experiment, version}. A card: the
+     *  stimulus picture drawn from its tags, title (the card's link), one
+     *  line, author, what it needs, version and licence. */
+    function listing(item, extra, opts) {
+      const o = opts || {};
       const experiment = (item && item.experiment) || {};
       const version = (item && item.version) || null;
-      const card = h('article', {class: 'listing'});
-      const head = h('header', {class: 'listing-head'},
-        h('h3', {class: 'listing-title'},
-          link({view: 'experiment', id: experiment.id, version: version ? version.id : undefined}, experiment.title || 'Untitled experiment')),
-        version ? h('span', {class: 'chip chip-version mono'}, versionLabel(version)) : null);
-      card.appendChild(head);
-      const by = ownerLine(experiment);
-      if (by) card.appendChild(by);
-      if (experiment.summary) card.appendChild(h('p', {class: 'listing-summary'}, experiment.summary));
-      // Hardware, licence and platforms live on the experiment page's release
-      // sheet; a card stays title, author, one line and version.
+      const manifest = (version && version.manifest) || {};
+      const card = h('article', {class: 'card' + (o.featured ? ' card-featured' : '')});
+      card.appendChild(h('div', {class: 'card-art', 'aria-hidden': 'true'},
+        schematic(C.schematicKind(experiment.tags), experiment.id || experiment.title, o.featured ? 'wide' : 'strip')));
+      const body = h('div', {class: 'card-body'});
+      body.appendChild(h('h3', {class: 'card-title'},
+        link({view: 'experiment', id: experiment.id, version: version ? version.id : undefined}, experiment.title || 'Untitled experiment',
+          {class: 'card-link'})));
+      if (experiment.summary) body.appendChild(h('p', {class: 'card-summary'}, experiment.summary));
+      const o_ = experiment.owner;
+      if (o_) body.appendChild(h('p', {class: 'card-by'}, o_.display_name || o_.username));
+      card.appendChild(body);
+      const needs = h('ul', {class: 'card-needs', 'aria-label': 'Needs'});
+      const keys = item ? C.hardwareKeys(item) : [];
+      for (const key of keys) {
+        const label = key === 'eye_tracker' ? 'Eye tracker' : key === 'reward' ? 'Reward line' : 'Display only';
+        needs.appendChild(h('li', {class: 'card-need', title: label},
+          h('span', {class: 'card-need-glyph', 'aria-hidden': 'true'}, glyph(key)),
+          h('span', {class: key === 'display' || o.featured ? 'card-need-word' : 'visually-hidden'}, label)));
+      }
+      const subjects = item ? C.subjectKeys(item) : [];
+      const meta = [version ? versionLabel(version) : '', experiment.license || manifest.license || ''].filter(Boolean).join(' \u00b7 ');
+      card.appendChild(h('div', {class: 'card-foot'}, needs,
+        subjects.length ? h('span', {class: 'card-subject'}, subjects.map((s) => s === 'human' ? 'Human' : 'Monkey').join(' \u00b7 ')) : null,
+        h('span', {class: 'card-meta'}, meta)));
+      if (o.owned) card.appendChild(h('p', {class: 'card-owned'}, checkGlyph(), h('span', null, 'In your library')));
       if (extra) card.appendChild(extra);
       return card;
+    }
+
+    /* ---- stimulus pictures ---------------------------------------------------
+     * A small diagram of the stimulus a listing names in its tags (a Gabor,
+     * random dots, a grid, rings, inducers, a target step, a disc, a fixation
+     * point). Inline SVG, every colour a token through its class. It is an
+     * index picture, not the experiment's stimulus. */
+
+    function schematic(kind, seed, shape) {
+      const wide = shape === 'wide';
+      const W_ = wide ? 360 : 240;
+      const H_ = wide ? 150 : 100;
+      const box = svg('svg', {viewBox: `0 0 ${W_} ${H_}`, class: 'sch sch-' + kind, focusable: 'false', preserveAspectRatio: 'xMidYMid slice'});
+      box.appendChild(svg('rect', {x: '0', y: '0', width: String(W_), height: String(H_), class: 'sch-bg'}));
+      const cx = W_ / 2;
+      const cy = H_ / 2;
+      const s = H_ / 100;
+      const rand = C.seededRandom(seed);
+      const fix = (x, y, r) => svg('circle', {cx: f(x), cy: f(y), r: f(r || 2.6 * s), class: 'sch-accent'});
+      const f = (n) => String(Math.round(n * 10) / 10);
+      const gabor = (x, y, r, angle, id) => {
+        const g = svg('g', {transform: `rotate(${angle} ${f(x)} ${f(y)})`});
+        const period = r / 2.6;
+        for (let k = -6; k <= 6; k += 1) {
+          const off = k * period;
+          if (Math.abs(off) > r) continue;
+          const half = Math.sqrt(r * r - off * off);
+          const env = Math.exp(-(off * off) / (2 * (r / 2.2) * (r / 2.2)));
+          g.appendChild(svg('line', {x1: f(x + off), y1: f(y - half * 0.92), x2: f(x + off), y2: f(y + half * 0.92),
+            class: 'sch-stroke', 'stroke-width': f(period * 0.5), 'stroke-linecap': 'round', opacity: f(0.12 + 0.78 * env)}));
+        }
+        return g;
+      };
+      if (kind === 'gabor') {
+        box.appendChild(gabor(cx + 26 * s, cy, 34 * s, 28));
+        box.appendChild(svg('circle', {cx: f(cx - 52 * s), cy: f(cy), r: f(12 * s), class: 'sch-ring'}));
+        box.appendChild(fix(cx - 52 * s, cy));
+      } else if (kind === 'rivalry') {
+        box.appendChild(gabor(cx - 42 * s, cy, 28 * s, 45));
+        box.appendChild(gabor(cx + 42 * s, cy, 28 * s, -45));
+        box.appendChild(svg('rect', {x: f(cx - 76 * s), y: f(cy - 36 * s), width: f(68 * s), height: f(72 * s), rx: f(4 * s), class: 'sch-ring'}));
+        box.appendChild(svg('rect', {x: f(cx + 8 * s), y: f(cy - 36 * s), width: f(68 * s), height: f(72 * s), rx: f(4 * s), class: 'sch-ring'}));
+      } else if (kind === 'dots') {
+        const R = 38 * s;
+        box.appendChild(svg('circle', {cx: f(cx), cy: f(cy), r: f(R), class: 'sch-ring sch-dash'}));
+        for (let i = 0; i < 46; i += 1) {
+          const a = rand() * Math.PI * 2;
+          const d = Math.sqrt(rand()) * (R - 4 * s);
+          const x = cx + Math.cos(a) * d;
+          const y = cy + Math.sin(a) * d;
+          if (Math.hypot(x - cx, y - cy) < 6 * s) continue;
+          const coherent = rand() < 0.55;
+          if (coherent) {
+            box.appendChild(svg('line', {x1: f(x - 6 * s), y1: f(y), x2: f(x), y2: f(y), class: 'sch-trail', 'stroke-width': f(1.6 * s), 'stroke-linecap': 'round'}));
+          }
+          box.appendChild(svg('circle', {cx: f(x), cy: f(y), r: f(1.9 * s), class: 'sch-ink'}));
+        }
+        box.appendChild(fix(cx, cy));
+      } else if (kind === 'grid') {
+        const cols = wide ? 7 : 5;
+        const rows = 3;
+        const sq = 22 * s;
+        const gap = 8 * s;
+        const w0 = cols * sq + (cols - 1) * gap;
+        const h0 = rows * sq + (rows - 1) * gap;
+        for (let r = 0; r < rows; r += 1) for (let c = 0; c < cols; c += 1) {
+          box.appendChild(svg('rect', {x: f(cx - w0 / 2 + c * (sq + gap)), y: f(cy - h0 / 2 + r * (sq + gap)), width: f(sq), height: f(sq), class: 'sch-ink'}));
+        }
+        box.appendChild(fix(cx - w0 / 2 + 2 * (sq + gap) - gap / 2, cy - h0 / 2 + (sq + gap) - gap / 2, 2.2 * s));
+      } else if (kind === 'rings') {
+        const ring = (x, n, dist, rr) => {
+          for (let i = 0; i < n; i += 1) {
+            const a = (i / n) * Math.PI * 2;
+            box.appendChild(svg('circle', {cx: f(x + Math.cos(a) * dist), cy: f(cy + Math.sin(a) * dist), r: f(rr), class: 'sch-mid'}));
+          }
+          box.appendChild(svg('circle', {cx: f(x), cy: f(cy), r: f(8 * s), class: 'sch-accent'}));
+        };
+        ring(cx - 48 * s, 6, 27 * s, 11 * s);
+        ring(cx + 52 * s, 8, 15 * s, 4 * s);
+      } else if (kind === 'inducers') {
+        const R = 30 * s;
+        const r = 10 * s;
+        for (let i = 0; i < 3; i += 1) {
+          const a = -Math.PI / 2 + (i / 3) * Math.PI * 2;
+          const x = cx + Math.cos(a) * R;
+          const y = cy + 4 * s + Math.sin(a) * R;
+          const toward = Math.atan2(cy + 4 * s - y, cx - x);
+          const a1 = toward - Math.PI / 6;
+          const a2 = toward + Math.PI / 6;
+          box.appendChild(svg('path', {class: 'sch-ink', d: `M${f(x)} ${f(y)}L${f(x + Math.cos(a2) * r)} ${f(y + Math.sin(a2) * r)}`
+            + `A${f(r)} ${f(r)} 0 1 1 ${f(x + Math.cos(a1) * r)} ${f(y + Math.sin(a1) * r)}Z`}));
+        }
+        box.appendChild(fix(cx - 96 * s, cy));
+      } else if (kind === 'step') {
+        const x0 = cx - 70 * s;
+        const x1 = cx + 46 * s;
+        box.appendChild(fix(x0, cy, 3.2 * s));
+        box.appendChild(svg('path', {d: `M${f(x0 + 10 * s)} ${f(cy)}H${f(x1 - 10 * s)}`, class: 'sch-trail sch-dash', 'stroke-width': f(1.6 * s)}));
+        box.appendChild(svg('path', {d: `M${f(x1 - 16 * s)} ${f(cy - 5 * s)}L${f(x1 - 9 * s)} ${f(cy)}L${f(x1 - 16 * s)} ${f(cy + 5 * s)}`, class: 'sch-trail', 'stroke-width': f(1.6 * s), fill: 'none'}));
+        box.appendChild(svg('circle', {cx: f(x1), cy: f(cy), r: f(4.5 * s), class: 'sch-ring'}));
+        box.appendChild(svg('circle', {cx: f(x1 + 22 * s), cy: f(cy), r: f(4.5 * s), class: 'sch-ink'}));
+        box.appendChild(svg('path', {d: `M${f(x1 + 16 * s)} ${f(cy - 12 * s)}h${f(-10 * s)}`, class: 'sch-trail', 'stroke-width': f(1.6 * s)}));
+      } else if (kind === 'disc') {
+        box.appendChild(svg('circle', {cx: f(cx), cy: f(cy), r: f(40 * s), class: 'sch-soft'}));
+        box.appendChild(svg('circle', {cx: f(cx), cy: f(cy), r: f(26 * s), class: 'sch-mid', opacity: '0.35'}));
+        box.appendChild(fix(cx, cy));
+      } else {
+        box.appendChild(svg('circle', {cx: f(cx), cy: f(cy), r: f(24 * s), class: 'sch-ring sch-dash'}));
+        let x = cx;
+        let y = cy;
+        for (let i = 0; i < 14; i += 1) {
+          x += (rand() - 0.5) * 7 * s;
+          y += (rand() - 0.5) * 7 * s;
+          box.appendChild(svg('circle', {cx: f(x), cy: f(y), r: f(1.3 * s), class: 'sch-mid'}));
+        }
+        box.appendChild(fix(cx, cy, 3.2 * s));
+      }
+      return box;
+    }
+
+    function checkGlyph() {
+      const box = svg('svg', {viewBox: '0 0 20 20', width: '16', height: '16', class: 'glyph glyph-check', focusable: 'false', 'aria-hidden': 'true'});
+      box.appendChild(svg('path', {d: 'M4.5 10.5l3.5 3.5 7.5-8', fill: 'none', stroke: 'currentColor', 'stroke-width': '2', 'stroke-linecap': 'round', 'stroke-linejoin': 'round'}));
+      return box;
+    }
+
+    function sparkGlyph() {
+      const box = svg('svg', {viewBox: '0 0 20 20', width: '16', height: '16', class: 'glyph glyph-spark', focusable: 'false', 'aria-hidden': 'true'});
+      box.appendChild(svg('path', {d: 'M10 2.5l1.7 4.6 4.6 1.7-4.6 1.7L10 15.1l-1.7-4.6-4.6-1.7 4.6-1.7zM15.5 13.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z', fill: 'currentColor'}));
+      return box;
+    }
+
+    function filterGlyph() {
+      const box = svg('svg', {viewBox: '0 0 20 20', width: '16', height: '16', class: 'glyph', focusable: 'false', 'aria-hidden': 'true'});
+      box.appendChild(svg('path', {d: 'M3 5h14M6 10h8M8.5 15h3', fill: 'none', stroke: 'currentColor', 'stroke-width': '1.8', 'stroke-linecap': 'round'}));
+      return box;
     }
 
     /* ---- home ------------------------------------------------------------ */
@@ -955,40 +1115,260 @@ const HubApp = (() => {
 
     /* ---- catalogue ----------------------------------------------------- */
 
+    /** The whole published catalogue for one search (the server's own
+     *  search), page by page, kept a minute so ticking a filter is instant. */
+    async function catalogItems(ctx, q) {
+      const key = q || '';
+      const now = Date.now();
+      if (state.catalog && state.catalog.q === key && now - state.catalog.at < 60000) return {ok: true, value: state.catalog.items};
+      const items = [];
+      let offset = 0;
+      for (let page = 0; page < 10; page += 1) {
+        const got = await screenRequest(ctx.epoch, 'GET', '/catalog', {query: {query: q, limit: 100, offset: offset || undefined}});
+        if (!got) return null;
+        if (!got.ok) return got;
+        const batch = (got.value && got.value.items) || [];
+        items.push(...batch);
+        const next = got.value ? got.value.next_offset : null;
+        if (next === null || next === undefined || !batch.length) break;
+        offset = next;
+      }
+      state.catalog = {q: key, at: now, items};
+      return {ok: true, value: items};
+    }
+
+    /** Whether filters should apply as they are ticked (a wide page) or wait
+     *  for "Show" in the phone's sheet. */
+    function wideLayout() {
+      const w = env.window;
+      if (!w || typeof w.matchMedia !== 'function') return true;
+      return w.matchMedia('(min-width: 900px)').matches;
+    }
+
+    function catalogRoute(r, over) {
+      const base = {view: 'catalog', q: r.q, cat: r.cat, hw: r.hw, who: r.who, os: r.os, lic: r.lic, sort: r.sort};
+      return Object.assign(base, over || {});
+    }
+
     function screenCatalog(ctx) {
       const r = ctx.route;
-      const section = screenShell('Catalogue', 'Published experiments',
-        'Pinned releases, published by their authors.');
-      const q = input({type: 'search', name: 'q', value: r.q || '', autocomplete: 'off', maxlength: '200', 'data-focus': 'catalog-q'});
-      const form = h('form', {class: 'search', role: 'search'},
-        field('Search the catalogue', q),
+      const section = h('section', {class: 'screen screen-store'});
+      const flash = flashNode();
+      /* The store's head: title, the search bar, the category chips. */
+      const q = input({type: 'search', name: 'q', value: r.q || '', autocomplete: 'off', maxlength: '200',
+        placeholder: 'Search experiments, authors, tags', 'data-focus': 'catalog-q', 'aria-label': 'Search the marketplace'});
+      const form = h('form', {class: 'store-search', role: 'search'},
+        h('span', {class: 'store-search-icon', 'aria-hidden': 'true'}, searchGlyph()), q,
         h('button', {type: 'submit', class: 'btn btn-primary', 'data-focus': 'catalog-go'}, 'Search'));
       form.addEventListener('submit', (event) => {
         prevent(event);
-        go({view: 'catalog', q: q.value}, {focus: 'catalog-q'});
+        go(catalogRoute(r, {q: q.value, offset: undefined}), {focus: 'catalog-q'});
       });
-      section.appendChild(form);
-      const results = region('the catalogue');
-      section.appendChild(results.el);
+      const chips = h('nav', {class: 'store-cats', 'aria-label': 'Categories'});
+      section.appendChild(h('header', {class: 'store-head'},
+        h('div', {class: 'store-head-row'},
+          h('div', null,
+            h('h1', {class: 'screen-title', tabindex: '-1', 'data-heading': ''}, 'Marketplace'),
+            h('p', {class: 'lede'}, 'Experiments their authors publish as pinned releases. Add one to your library and install it on a rig.')),
+          state.role === 'server' ? link({view: 'create'}, 'Create with AI', {class: 'btn btn-line store-create'}) : null),
+        form, chips));
+      if (flash) section.appendChild(flash);
+      const layout = h('div', {class: 'store-layout'});
+      const filters = h('aside', {class: 'store-filters', id: 'store-filters', 'aria-label': 'Filters'});
+      const results = region('the marketplace', 'store-results');
+      layout.append(filters, results.el);
+      section.appendChild(layout);
       const offset = r.offset || 0;
       (async () => {
-        const got = await screenRequest(ctx.epoch, 'GET', '/catalog', {query: {query: r.q, limit: PAGE, offset}});
+        const got = await catalogItems(ctx, r.q);
         if (!got) return;
         if (!got.ok) return results.fail(got.error, retryCurrent);
-        const items = (got.value && got.value.items) || [];
-        if (!items.length) {
-          return results.fill(r.q
+        const all = got.value;
+        const owned = new Set();
+        const list = C.filterCatalog(all, r);
+        const filtered = Boolean(r.cat || C.activeFilters(r) || r.q);
+        const parts = [];
+        if (all.length) {
+          drawCategories(chips, r, all);
+          drawFilters(filters, r, all);
+          parts.push(storeToolbar(r, all, list));
+        } else {
+          filters.hidden = true;
+          layout.classList.add('store-layout-empty');
+        }
+        if (!all.length) {
+          parts.push(r.q
             ? emptyState(`No published experiment matches \u201c${r.q}\u201d.`, 'Try fewer or different words.',
               link({view: 'catalog'}, 'Show everything', {class: 'btn btn-line'}))
-            : emptyState('The catalogue is empty.',
+            : emptyState('The marketplace is empty.',
               'Nothing has been published yet. An author publishes one release at a time, with a licence, after checking it holds no participant data.'));
+          return results.fill(parts);
         }
-        results.fill(
-          h('p', {class: 'count mono'}, C.nextOffsetLabel(offset, items.length)),
-          h('div', {class: 'listing-grid'}, items.map((item) => listing(item))),
-          pager(offset, items.length, got.value.next_offset, (o) => ({view: 'catalog', q: r.q, offset: o}), 'catalog'));
+        if (!list.length) {
+          parts.push(emptyState('No experiment fits these filters.', 'Remove a filter or choose another category.',
+            link(catalogRoute(r, {cat: undefined, hw: undefined, who: undefined, os: undefined, lic: undefined}), 'Clear filters', {class: 'btn btn-line'})));
+          return results.fill(parts);
+        }
+        let page = list.slice(offset, offset + PAGE);
+        const cards = [];
+        const featured = !filtered && !offset && r.sort !== 'name' && list.length >= 6;
+        if (featured) {
+          /* The first page leads with the three newest, larger; the grid
+           * continues from the fourth, so a page still holds PAGE listings. */
+          const top = list.slice(0, 3);
+          page = list.slice(3, PAGE);
+          const row = h('div', {class: 'featured-grid'});
+          for (const item of top) cards.push([item, row.appendChild(listing(item, null, {featured: true}))]);
+          parts.push(h('section', {class: 'store-block', 'aria-label': 'Latest releases'},
+            h('h2', {class: 'store-block-title'}, 'Latest releases'), row));
+        }
+        const grid = h('div', {class: 'card-grid'});
+        for (const item of page) cards.push([item, grid.appendChild(listing(item))]);
+        parts.push(h('section', {class: 'store-block', 'aria-label': filtered ? 'Results' : 'All experiments'},
+          h('h2', {class: 'store-block-title'}, filtered ? 'Results' : (featured ? 'More experiments' : 'All experiments')),
+          grid,
+          pager(offset, featured ? PAGE : page.length, offset + PAGE < list.length ? offset + PAGE : null, (o) => catalogRoute(r, {offset: o}), 'catalog')));
+        results.fill(parts);
+        /* Mark what this account already has, once the library answers. */
+        if (state.user) {
+          libraryItems(false).then((items) => {
+            if (ctx.epoch !== state.epoch) return;
+            for (const i of items) if (i && i.experiment) owned.add(i.experiment.id);
+            for (const [item, card] of cards) {
+              if (owned.has(item.experiment && item.experiment.id) && !card.querySelector('.card-owned')) {
+                card.appendChild(h('p', {class: 'card-owned'}, checkGlyph(), h('span', null, 'In your library')));
+              }
+            }
+          }).catch((exc) => { noteFailure(exc); });
+        }
       })();
       return section;
+    }
+
+    function searchGlyph() {
+      const box = svg('svg', {viewBox: '0 0 20 20', width: '18', height: '18', class: 'glyph', focusable: 'false'});
+      box.appendChild(svg('circle', {cx: '8.5', cy: '8.5', r: '5.5', fill: 'none', stroke: 'currentColor', 'stroke-width': '1.8'}));
+      box.appendChild(svg('path', {d: 'M12.8 12.8L17 17', fill: 'none', stroke: 'currentColor', 'stroke-width': '1.8', 'stroke-linecap': 'round'}));
+      return box;
+    }
+
+    function drawCategories(nav, r, all) {
+      const counts = C.catalogFacets(all, r).cat;
+      const list = h('ul', {class: 'cat-list'});
+      const total = C.filterCatalog(all, Object.assign({}, r, {cat: undefined})).length;
+      const all_ = link(catalogRoute(r, {cat: undefined, offset: undefined}), null,
+        {class: 'cat-chip', 'aria-current': !r.cat ? 'true' : null, 'data-focus': 'cat-all', 'data-focus-next': 'cat-all'});
+      all_.append(h('span', null, 'All'), h('span', {class: 'cat-count'}, String(total)));
+      list.appendChild(h('li', null, all_));
+      for (const [key, label] of C.CATEGORIES) {
+        const a = link(catalogRoute(r, {cat: r.cat === key ? undefined : key, offset: undefined}), null,
+          {class: 'cat-chip', 'aria-current': r.cat === key ? 'true' : null, 'data-focus': 'cat-' + key, 'data-focus-next': 'cat-' + key});
+        a.append(h('span', null, label), h('span', {class: 'cat-count'}, String(counts[key] || 0)));
+        list.appendChild(h('li', null, a));
+      }
+      nav.replaceChildren(list);
+    }
+
+    function storeToolbar(r, all, list) {
+      const bar = h('div', {class: 'store-toolbar'});
+      const n = list.length;
+      bar.appendChild(h('p', {class: 'store-count', role: 'status'},
+        n === all.length ? `${n} experiment${n === 1 ? '' : 's'}` : `${n} of ${all.length} experiments`));
+      const pills = h('ul', {class: 'store-pills', 'aria-label': 'Active filters'});
+      const names = {hw: C.FACETS.hw, who: C.FACETS.who, os: C.FACETS.os};
+      for (const name of ['hw', 'who', 'os', 'lic']) {
+        for (const key of C.facetList(r[name])) {
+          const label = name === 'lic' ? key : ((names[name].find(([k]) => k === key) || [key, key])[1]);
+          const a = link(catalogRoute(r, {[name]: C.toggleFacet(r[name], key), offset: undefined}), null,
+            {class: 'pill', 'aria-label': 'Remove filter ' + label});
+          a.append(h('span', null, label), h('span', {class: 'pill-x', 'aria-hidden': 'true'}, '\u00d7'));
+          pills.appendChild(h('li', null, a));
+        }
+      }
+      if (pills.children.length) bar.appendChild(pills);
+      const spacer = h('span', {class: 'store-spacer'});
+      bar.appendChild(spacer);
+      const count = C.activeFilters(r);
+      const open = h('button', {type: 'button', class: 'btn btn-line store-filter-open', 'aria-controls': 'store-filters', 'aria-expanded': 'false', 'data-focus': 'filters-open'},
+        filterGlyph(), h('span', null, count ? `Filters (${count})` : 'Filters'));
+      open.addEventListener('click', () => openSheet(open));
+      bar.appendChild(open);
+      const sortId = nextId('sort');
+      const sort = select(C.SORTS.map(([key, label]) => [key, label]), r.sort || 'newest', {id: sortId, 'data-focus': 'catalog-sort'});
+      sort.addEventListener('change', () => go(catalogRoute(r, {sort: sort.value, offset: undefined}), {focus: 'catalog-sort', replace: true}));
+      bar.appendChild(h('div', {class: 'store-sort'}, h('label', {for: sortId, class: 'store-sort-label'}, 'Sort'), sort));
+      return bar;
+    }
+
+    function openSheet(opener) {
+      const sheet = doc.getElementById('store-filters');
+      if (!sheet) return;
+      sheet.classList.add('is-open');
+      sheet.setAttribute('role', 'dialog');
+      sheet.setAttribute('aria-modal', 'true');
+      opener.setAttribute('aria-expanded', 'true');
+      const first = sheet.querySelector('input, button');
+      if (first && typeof first.focus === 'function') first.focus();
+    }
+
+    function closeSheet() {
+      const sheet = doc.getElementById('store-filters');
+      if (!sheet) return;
+      sheet.classList.remove('is-open');
+      sheet.removeAttribute('role');
+      sheet.removeAttribute('aria-modal');
+      const opener = $('main').querySelector('.store-filter-open');
+      if (opener) {
+        opener.setAttribute('aria-expanded', 'false');
+        if (typeof opener.focus === 'function') opener.focus();
+      }
+    }
+
+    /** The filter column (a sheet on a phone): hardware, subject, platform,
+     *  licence, each choice with how many it would show. */
+    function drawFilters(aside, r, all) {
+      const facets = C.catalogFacets(all, r);
+      let pending = Object.assign({}, r);
+      const showButton = h('button', {type: 'button', class: 'btn btn-primary btn-block'});
+      const paintShow = () => {
+        const n = C.filterCatalog(all, pending).length;
+        showButton.textContent = `Show ${n} experiment${n === 1 ? '' : 's'}`;
+      };
+      const groups = [
+        ['hw', 'Hardware', C.FACETS.hw],
+        ['who', 'Subject', C.FACETS.who],
+        ['os', 'Platform', C.FACETS.os],
+        ['lic', 'Licence', Object.keys(facets.lic).sort().map((k) => [k, k])],
+      ];
+      const head = h('div', {class: 'sheet-head'}, h('h2', {class: 'filters-title'}, 'Filters'),
+        h('button', {type: 'button', class: 'btn btn-quiet btn-small sheet-close', on: {click: closeSheet}}, 'Close'));
+      const body = h('div', {class: 'filters-body'});
+      for (const [name, title, options] of groups) {
+        if (!options.length) continue;
+        const set = h('fieldset', {class: 'facet'}, h('legend', {class: 'facet-title'}, title));
+        for (const [key, label] of options) {
+          const id = nextId('f-' + name);
+          const box = h('input', {type: 'checkbox', id, class: 'facet-box', checked: C.facetList(r[name]).includes(key),
+            'data-focus': 'f-' + name + '-' + key});
+          box.addEventListener('change', () => {
+            pending = Object.assign({}, pending, {[name]: C.toggleFacet(pending[name], key), offset: undefined});
+            if (wideLayout()) go(catalogRoute(pending), {focus: 'f-' + name + '-' + key, replace: true});
+            else paintShow();
+          });
+          set.appendChild(h('div', {class: 'facet-row'}, box,
+            h('label', {for: id, class: 'facet-label'}, h('span', null, label),
+              h('span', {class: 'facet-count'}, String(facets[name][key] || 0)))));
+        }
+        body.appendChild(set);
+      }
+      const any = C.activeFilters(r);
+      if (any) body.appendChild(link(catalogRoute(r, {hw: undefined, who: undefined, os: undefined, lic: undefined, offset: undefined}),
+        'Clear filters', {class: 'btn btn-quiet btn-small filters-clear'}));
+      showButton.addEventListener('click', () => go(catalogRoute(pending), {focus: 'filters-open', replace: true}));
+      paintShow();
+      const foot = h('div', {class: 'sheet-foot'}, showButton);
+      aside.addEventListener('keydown', (event) => { if (event && event.key === 'Escape' && aside.classList.contains('is-open')) closeSheet(); });
+      aside.replaceChildren(head, body, foot);
     }
 
     /* ---- one experiment ------------------------------------------------------ */
@@ -1013,7 +1393,7 @@ const HubApp = (() => {
       if (flash) section.appendChild(flash);
       section.appendChild(body.el);
       if (!r.id) {
-        body.fill(emptyState('No experiment chosen.', null, link({view: 'catalog'}, 'Open the catalogue', {class: 'btn btn-line'})));
+        body.fill(emptyState('No experiment chosen.', null, link({view: 'catalog'}, 'Open the marketplace', {class: 'btn btn-line'})));
         return section;
       }
       (async () => {
@@ -1024,7 +1404,7 @@ const HubApp = (() => {
             return body.fill(h('div', {class: 'screen-head'},
               h('h1', {class: 'screen-title', tabindex: '-1', 'data-heading': ''}, 'Experiment not found'),
               h('p', {class: 'lede'}, 'It does not exist, is not published, or is private to its author.'),
-              link({view: 'catalog'}, 'Back to the catalogue', {class: 'btn btn-line'})));
+              link({view: 'catalog'}, 'Back to the marketplace', {class: 'btn btn-line'})));
           }
           return body.fail(got.error, retryCurrent);
         }
@@ -1032,8 +1412,13 @@ const HubApp = (() => {
         const versions = sortVersions(got.value && got.value.versions);
         const version = chooseVersion(experiment, versions, r.version);
         const tab = r.tab || 'overview';
-        body.fill(experimentHead(experiment, version, versions), experimentTabs(r, tab, versions.length),
+        const main = h('div', {class: 'exp-main'},
+          experimentHead(experiment, version, versions), experimentTabs(r, tab, versions.length),
           experimentTab(ctx, tab, experiment, version, versions));
+        body.fill(h('nav', {class: 'crumbs', 'aria-label': 'You are here'},
+          link({view: 'catalog'}, 'Marketplace'), h('span', {class: 'crumb-sep', 'aria-hidden': 'true'}, '/'),
+          h('span', {'aria-current': 'page'}, experiment.title || 'Untitled experiment')),
+        h('div', {class: 'exp-layout'}, main, releaseSheet(ctx, experiment, version, versions)));
       })();
       return section;
     }
@@ -1043,15 +1428,19 @@ const HubApp = (() => {
       let status;
       if (version && published && version.id === published) status = h('span', {class: 'chip chip-public'}, 'Public release');
       else if (isOwner(experiment)) status = h('span', {class: 'chip chip-private'}, 'Private: only you can see this version');
-      return h('header', {class: 'screen-head exp-head'},
-        h('p', {class: 'eyebrow mono'}, link({view: 'catalog'}, 'Catalogue'), h('span', {'aria-hidden': 'true'}, ' / '),
-          h('span', null, version ? versionLabel(version) : 'no release')),
-        h('h1', {class: 'screen-title', tabindex: '-1', 'data-heading': ''}, experiment.title || 'Untitled experiment'),
-        ownerLine(experiment),
-        experiment.summary ? h('p', {class: 'lede'}, experiment.summary) : null,
-        h('div', {class: 'chips'}, status,
-          ...(Array.isArray(experiment.tags) ? experiment.tags.slice(0, 12).map((t) => h('span', {class: 'chip chip-tag'}, t)) : []),
-          versions.length > 1 ? h('span', {class: 'chip'}, versions.length + ' versions visible to you') : null));
+      const cats = new Map(C.CATEGORIES);
+      const tags = Array.isArray(experiment.tags) ? experiment.tags.slice(0, 12) : [];
+      return h('header', {class: 'exp-hero'},
+        h('div', {class: 'exp-art', 'aria-hidden': 'true'}, schematic(C.schematicKind(tags), experiment.id || experiment.title, 'wide')),
+        h('div', {class: 'exp-hero-text'},
+          h('h1', {class: 'screen-title', tabindex: '-1', 'data-heading': ''}, experiment.title || 'Untitled experiment'),
+          ownerLine(experiment),
+          experiment.summary ? h('p', {class: 'lede'}, experiment.summary) : null,
+          h('div', {class: 'chips'}, status,
+            ...tags.map((t) => cats.has(t)
+              ? link({view: 'catalog', cat: t}, cats.get(t), {class: 'chip chip-tag chip-link'})
+              : h('span', {class: 'chip chip-tag'}, t)),
+            versions.length > 1 ? h('span', {class: 'chip'}, versions.length + ' versions visible to you') : null)));
     }
 
     function experimentTabs(r, tab, versionCount) {
@@ -1071,13 +1460,61 @@ const HubApp = (() => {
       return overviewTab(ctx, experiment, version);
     }
 
+    /** Overview: what it is, a Methods excerpt and the task list (from the
+     *  release's own documentation, when it has some), the release details
+     *  and citations. */
     function overviewTab(ctx, experiment, version) {
-      const grid = h('div', {class: 'exp-grid'});
+      const r = ctx.route;
       const reading = h('div', {class: 'exp-reading'});
       reading.appendChild(h('h2', {class: 'block-title'}, 'About'));
       reading.appendChild(experiment.description
         ? h('div', {class: 'prose'}, ...String(experiment.description).split(/\n{2,}/).map((p) => h('p', null, p)))
         : h('p', {class: 'muted'}, 'The author has not written a description.'));
+      if (version) {
+        const docsArea = h('div', {class: 'exp-docs', 'aria-live': 'polite', 'aria-busy': 'true'});
+        reading.appendChild(docsArea);
+        (async () => {
+          const got = await screenRequest(ctx.epoch, 'GET',
+            '/experiments/' + C.seg(experiment.id) + '/versions/' + C.seg(version.id) + '/documentation');
+          if (!got) return;
+          docsArea.setAttribute('aria-busy', 'false');
+          const documentation = got.ok && got.value ? got.value.documentation : null;
+          const methods = documentation && documentation.methods ? documentation.methods.markdown : '';
+          const tasks = documentation && Array.isArray(documentation.tasks) ? documentation.tasks : [];
+          const parts = [h('h2', {class: 'block-title'}, 'Methods')];
+          const excerpt = C.methodsExcerpt(methods, 460);
+          if (excerpt) {
+            parts.push(h('div', {class: 'prose prose-excerpt'}, ...excerpt.split(/\n{2,}/).map((p) => h('p', null, p))),
+              link({view: 'experiment', id: r.id, version: r.version, tab: 'methods'}, 'Read the full Methods', {class: 'more-link'}));
+          } else {
+            parts.push(h('p', {class: 'muted'}, got.ok ? 'This release has no Methods document.' : 'The Methods could not be read: ' + got.error.message));
+          }
+          parts.push(h('h2', {class: 'block-title'}, 'Tasks'));
+          if (tasks.length) {
+            parts.push(h('ul', {class: 'task-cards'}, ...tasks.map((t) => h('li', {class: 'task-card'},
+              h('h3', {class: 'task-card-title'}, link({view: 'experiment', id: r.id, version: r.version, tab: 'tasks', task: t.id}, t.title || t.id)),
+              t.summary ? h('p', {class: 'task-card-text'}, t.summary) : null,
+              Array.isArray(t.parameters) ? h('p', {class: 'task-card-meta'}, t.parameters.length + ' documented parameters') : null))));
+          } else {
+            parts.push(h('p', {class: 'muted'}, 'This release does not document its tasks.'));
+          }
+          docsArea.replaceChildren(...parts);
+          settleFocus(screenSettled());
+        })();
+      }
+      if (version) {
+        const m = version.manifest || {};
+        reading.appendChild(h('h2', {class: 'block-title'}, 'Release details'));
+        reading.appendChild(spec([
+          ['Python', m.python_min ? '\u2265 ' + m.python_min : null, {mono: true}],
+          ['alhazen', m.alhazen_min ? '\u2265 ' + m.alhazen_min : null, {mono: true}],
+          ['Entry point', m.entrypoint, {mono: true}],
+          ['Files', Array.isArray(m.files) ? String(m.files.length) : null],
+          ['Archive', C.formatBytes(version.size)],
+          ['Released', C.formatDate(version.created_at)],
+          ['SHA-256', digest(version.sha256)],
+        ]));
+      }
       reading.appendChild(h('h2', {class: 'block-title'}, 'Citations'));
       const citations = Array.isArray(experiment.citations) && experiment.citations.length
         ? experiment.citations : (version && version.manifest && version.manifest.citations) || [];
@@ -1092,13 +1529,13 @@ const HubApp = (() => {
       } else {
         reading.appendChild(h('p', {class: 'muted'}, 'No citations listed. Cite the release by its version and SHA-256.'));
       }
-      grid.appendChild(reading);
-      grid.appendChild(releaseSheet(ctx, experiment, version));
-      return grid;
+      return reading;
     }
 
-    function releaseSheet(ctx, experiment, version) {
-      const aside = h('aside', {class: 'sheet', 'aria-label': 'Release'});
+    /** The action card beside the experiment (sticky on a wide page): the
+     *  library action first, then download, the version, licence, hardware. */
+    function releaseSheet(ctx, experiment, version, versions) {
+      const aside = h('aside', {class: 'sheet action-card', 'aria-label': 'Release'});
       if (!version) {
         aside.appendChild(h('h2', {class: 'sheet-title'}, 'No release yet'));
         aside.appendChild(h('p', {class: 'muted'}, isOwner(experiment)
@@ -1107,22 +1544,33 @@ const HubApp = (() => {
         return aside;
       }
       const m = version.manifest || {};
-      aside.appendChild(h('h2', {class: 'sheet-title'}, h('span', null, 'Release'), h('span', {class: 'mono sheet-version'}, versionLabel(version))));
-      aside.appendChild(spec([
-        ['Licence', experiment.license || m.license || 'not stated'],
-        ['Needs', hardwareLamps(m)],
-        ['Runs on', C.platformsText(m)],
-        ['Python', m.python_min ? '\u2265 ' + m.python_min : null, {mono: true}],
-        ['alhazen', m.alhazen_min ? '\u2265 ' + m.alhazen_min : null, {mono: true}],
-        ['Entry point', m.entrypoint, {mono: true}],
-        ['Files', Array.isArray(m.files) ? String(m.files.length) : null],
-        ['Archive', C.formatBytes(version.size)],
-        ['Released', C.formatDate(version.created_at)],
-        ['SHA-256', digest(version.sha256)],
-      ]));
+      const list = versions || [version];
+      const head = h('div', {class: 'action-head'});
+      if (list.length > 1) {
+        const id = nextId('version');
+        const pick = select(list.map((v) => [v.id, versionLabel(v) + (v.id === experiment.published_version_id ? ' (public)' : '')]), version.id, {id, 'data-focus': 'version-pick'});
+        pick.addEventListener('change', () => go({view: 'experiment', id: experiment.id, version: pick.value, tab: ctx.route.tab}, {focus: 'version-pick'}));
+        head.appendChild(h('div', {class: 'action-version'}, h('label', {for: id, class: 'action-key'}, 'Version'), pick));
+      } else {
+        head.appendChild(h('p', {class: 'action-version'}, h('span', {class: 'action-key'}, 'Version'),
+          h('span', {class: 'mono action-version-value'}, versionLabel(version))));
+      }
+      head.appendChild(h('p', {class: 'action-date'}, 'Released ' + C.formatDate(version.created_at, false)));
+      aside.appendChild(head);
       aside.appendChild(libraryAction(ctx, experiment, version));
       if (state.role === 'rig') aside.appendChild(installPanel(experiment, version));
       else aside.appendChild(downloadAction(experiment, version));
+      const subjects = C.subjectKeys({experiment}).map((s) => s === 'human' ? 'Human' : 'Monkey').join(', ');
+      aside.appendChild(spec([
+        ['Licence', experiment.license || m.license || 'not stated'],
+        ['Needs', hardwareLamps(m)],
+        ['Subjects', subjects || null],
+        ['Runs on', C.platformsText(m)],
+        ['SHA-256', h('span', {class: 'mono', title: String(version.sha256 || '')}, C.shortHash(version.sha256) + '\u2026')],
+      ]));
+      if (state.role === 'server') {
+        aside.appendChild(h('p', {class: 'sheet-variant'}, link({view: 'create', fork: experiment.id}, 'Start a variant with AI', {class: 'btn btn-quiet btn-small'})));
+      }
       if (isOwner(experiment)) {
         aside.appendChild(h('p', {class: 'sheet-owner'}, link({view: 'mine', id: experiment.id}, 'Manage this experiment', {class: 'btn btn-quiet'})));
       }
@@ -1130,38 +1578,49 @@ const HubApp = (() => {
     }
 
     function libraryAction(ctx, experiment, version) {
-      const box = h('div', {class: 'sheet-block'});
+      const box = h('div', {class: 'sheet-block library-action'});
       if (!state.user) {
-        box.appendChild(h('p', {class: 'muted'}, 'Sign in to pin this release in your library.'));
-        box.appendChild(link({view: 'signin', next: currentNext()}, 'Sign in', {class: 'btn btn-line'}));
+        box.appendChild(link({view: 'signin', next: currentNext()}, 'Add to library', {class: 'btn btn-primary btn-block'}));
+        box.appendChild(h('p', {class: 'muted small'}, 'Sign in to add it to your library.'));
         return box;
       }
       const status = statusLine();
-      const button = h('button', {type: 'button', class: 'btn btn-line', 'data-focus': 'pin'}, 'Pin ' + versionLabel(version) + ' in my library');
-      const pinned = h('p', {class: 'pin-state'});
+      const button = h('button', {type: 'button', class: 'btn btn-primary btn-block', 'data-focus': 'pin'}, 'Add to library');
+      const pinned = h('div', {class: 'pin-state', hidden: true});
       box.append(pinned, button, status.el);
       const paint = (items) => {
         const entry = items.find((i) => i && i.experiment && i.experiment.id === experiment.id);
         const pinnedId = entry && entry.version ? entry.version.id : null;
         if (pinnedId === version.id) {
-          pinned.textContent = 'In your library, pinned to ' + versionLabel(version) + '.';
+          pinned.replaceChildren(h('p', {class: 'owned'}, checkGlyph(), h('span', null, 'In your library')),
+            h('p', {class: 'muted small'}, 'Pinned to ' + versionLabel(version) + '. Newer versions are not followed automatically.'),
+            link({view: 'library'}, 'Open your library', {class: 'btn btn-line btn-block', 'data-focus': 'open-library'}));
+          pinned.hidden = false;
           button.hidden = true;
+        } else if (entry) {
+          pinned.replaceChildren(h('p', {class: 'muted small'}, 'Your library pins ' + versionLabel(entry.version) + '.'));
+          pinned.hidden = false;
+          button.textContent = 'Pin ' + versionLabel(version) + ' instead';
+          button.hidden = false;
         } else {
-          pinned.textContent = entry ? 'Your library pins ' + versionLabel(entry.version) + '.' : 'Not in your library.';
+          pinned.hidden = true;
+          button.textContent = 'Add to library';
           button.hidden = false;
         }
       };
       libraryItems(false).then((items) => { if (ctx.epoch === state.epoch) paint(items); })
-        .catch((exc) => { if (ctx.epoch === state.epoch) { noteFailure(exc); pinned.textContent = 'Your library could not be read: ' + exc.message; } });
+        .catch((exc) => { if (ctx.epoch === state.epoch) { noteFailure(exc); pinned.hidden = false; pinned.textContent = 'Your library could not be read: ' + exc.message; } });
       button.addEventListener('click', async () => {
         button.disabled = true;
-        status.show('Pinning\u2026', 'info');
+        status.show('Adding\u2026', 'info');
         try {
           await api('POST', '/library', {json: {experiment_id: experiment.id, version_id: version.id}});
           const items = await libraryItems(true);
           if (ctx.epoch !== state.epoch) return;
           paint(items);
-          status.show('Pinned ' + versionLabel(version) + '. Other versions are not followed automatically.', 'ok');
+          status.show('Added ' + versionLabel(version) + ' to your library.', 'ok');
+          const open = box.querySelector('[data-focus="open-library"]');
+          if (open && typeof open.focus === 'function') open.focus();
         } catch (exc) {
           noteFailure(exc);
           status.show(exc.message, 'err');
@@ -1175,8 +1634,8 @@ const HubApp = (() => {
     function downloadAction(experiment, version) {
       const href = state.api.url('/experiments/' + C.seg(experiment.id) + '/versions/' + C.seg(version.id) + '/download');
       return h('div', {class: 'sheet-block'},
-        h('a', {class: 'btn btn-line', href, download: ''}, 'Download the release archive'),
-        h('p', {class: 'muted small'}, 'The hub never runs experiments. To run this one, install it from your library on a rig '
+        h('a', {class: 'btn btn-line btn-block', href, download: ''}, 'Download the release archive'),
+        h('p', {class: 'muted small'}, 'The hub never runs experiments. Install it on a rig from your library '
           + '(alhazen dashboard --hub).'));
     }
 
@@ -1582,8 +2041,15 @@ const HubApp = (() => {
     /* ---- library -------------------------------------------------------- */
 
     function screenLibrary(ctx) {
-      const section = screenShell('Library', 'Your library',
-        'Releases you pinned. Nothing upgrades on its own.');
+      const section = h('section', {class: 'screen screen-library'});
+      section.appendChild(h('header', {class: 'store-head store-head-plain'},
+        h('div', {class: 'store-head-row'},
+          h('div', null,
+            h('h1', {class: 'screen-title', tabindex: '-1', 'data-heading': ''}, 'Your library'),
+            h('p', {class: 'lede'}, 'Releases you added, each pinned to one version. Nothing upgrades on its own.')),
+          link({view: 'catalog'}, 'Browse the marketplace', {class: 'btn btn-line'}))));
+      const flash = flashNode();
+      if (flash) section.appendChild(flash);
       const area = region('your library');
       section.appendChild(area.el);
       (async () => {
@@ -1598,29 +2064,254 @@ const HubApp = (() => {
         if (ctx.epoch !== state.epoch) return;
         if (!items.length) {
           return area.fill(emptyState('Your library is empty.',
-            'Open an experiment in the catalogue and pin the release you want. '
+            'Open an experiment in the marketplace and add the release you want. '
             + (state.role === 'rig' ? 'You can then install it on this rig.' : 'A rig signed in to this account can then install it.'),
-            link({view: 'catalog'}, 'Browse the catalogue', {class: 'btn btn-primary'})));
+            link({view: 'catalog'}, 'Browse the marketplace', {class: 'btn btn-primary'})));
         }
-        area.fill(h('div', {class: 'listing-grid'}, items.map((item) => listing(item, libraryExtra(item)))));
+        area.fill(h('p', {class: 'store-count'}, `${items.length} experiment${items.length === 1 ? '' : 's'}`),
+          h('div', {class: 'card-grid card-grid-library'}, items.map((item) => listing(item, libraryExtra(ctx, item)))));
       })();
       return section;
     }
 
-    function libraryExtra(item) {
+    /** A library card's own part: the pinned version (and a newer public
+     *  one, when there is), Install or Download, and Remove. */
+    function libraryExtra(ctx, item) {
       const experiment = item.experiment || {};
       const version = item.version || {};
+      const panel = h('div', {class: 'card-library'});
+      const pin = h('p', {class: 'card-pin'}, h('span', {class: 'card-pin-key'}, 'Pinned'),
+        h('span', {class: 'mono'}, versionLabel(version)),
+        h('span', {class: 'mono card-pin-hash', title: String(version.sha256 || '')}, 'SHA-256 ' + C.shortHash(version.sha256)));
+      panel.appendChild(pin);
+      const update = h('div', {class: 'card-update', hidden: true});
+      panel.appendChild(update);
       const row = h('div', {class: 'listing-actions'});
-      row.appendChild(h('span', {class: 'small muted', title: String(version.sha256 || '')}, 'SHA-256 ', h('span', {class: 'mono'}, C.shortHash(version.sha256))));
       if (state.role === 'rig') {
         const record = installFor(version.sha256);
         const open = record && record.status === 'registered' && !record.error ? workspaceLink(record, 'Open in the workspace') : null;
-        row.appendChild(open || link({view: 'experiment', id: experiment.id, version: version.id}, record ? 'Finish installing' : 'Install on this rig', {class: 'btn btn-line'}));
+        row.appendChild(open || link({view: 'experiment', id: experiment.id, version: version.id}, record ? 'Finish installing' : 'Install on this rig', {class: 'btn btn-primary btn-small'}));
       } else if (experiment.id && version.id) {
-        row.appendChild(h('a', {class: 'btn btn-line', download: '',
+        row.appendChild(h('a', {class: 'btn btn-line btn-small', download: '',
           href: state.api.url('/experiments/' + C.seg(experiment.id) + '/versions/' + C.seg(version.id) + '/download')}, 'Download'));
       }
-      return row;
+      row.appendChild(h('button', {type: 'button', class: 'btn btn-quiet btn-small', disabled: true,
+        title: 'The hub cannot remove a library entry yet; it can only pin another version.'}, 'Remove'));
+      panel.appendChild(row);
+      /* A newer public release than the pinned one: offer it, never follow it. */
+      if (experiment.id && version.id) {
+        (async () => {
+          const got = await screenRequest(ctx.epoch, 'GET', '/experiments/' + C.seg(experiment.id));
+          if (!got || !got.ok) return;
+          const detail = got.value || {};
+          const published = (detail.experiment || {}).published_version_id;
+          const newer = sortVersions(detail.versions).find((v) => v.id === published);
+          if (!newer || newer.id === version.id) return;
+          const status = statusLine();
+          const button = h('button', {type: 'button', class: 'btn btn-line btn-small'}, 'Pin ' + versionLabel(newer));
+          button.addEventListener('click', async () => {
+            button.disabled = true;
+            try {
+              await api('POST', '/library', {json: {experiment_id: experiment.id, version_id: newer.id}});
+              await libraryItems(true);
+              if (ctx.epoch === state.epoch) retryCurrent();
+            } catch (exc) {
+              noteFailure(exc);
+              status.show(exc.message, 'err');
+              button.disabled = false;
+            }
+          });
+          update.replaceChildren(h('span', null, versionLabel(newer) + ' is the public release.'), button, status.el);
+          update.hidden = false;
+        })();
+      }
+      return panel;
+    }
+
+    /* ---- create with AI (the next phase's flow; generation not connected) ---- */
+
+    const EXAMPLE_PROMPTS = [
+      'A two-interval contrast detection task for a Gabor at four eccentricities, with a QUEST+ threshold for each and fixation control.',
+      'A saccade task where the target steps during the eye movement, to adapt saccade gain over 300 trials in a monkey, with juice for accurate landings.',
+      'Ebbinghaus size matching by adjustment: large or small inducers, three gaps, keyboard responses, no eye tracker.',
+    ];
+    const PROVIDERS = [['anthropic', 'Anthropic'], ['openai', 'OpenAI'], ['google', 'Google'], ['openrouter', 'OpenRouter']];
+
+    function createSteps(current) {
+      const steps = [['describe', 'Describe'], ['plan', 'Review the plan'], ['draft', 'Save as a private draft']];
+      const ol = h('ol', {class: 'steps', 'aria-label': 'Steps'});
+      steps.forEach(([key, label], i) => {
+        ol.appendChild(h('li', {class: 'step' + (key === current ? ' is-current' : ''), 'aria-current': key === current ? 'step' : null},
+          h('span', {class: 'step-n'}, String(i + 1)), h('span', null, label)));
+      });
+      return ol;
+    }
+
+    function screenCreate(ctx) {
+      const r = ctx.route;
+      if (r.step === 'plan') return screenCreatePlan(ctx);
+      const draft = state.createDraft;
+      if (r.fork) draft.fork = r.fork;
+      const section = h('section', {class: 'screen screen-create'});
+      section.appendChild(h('header', {class: 'create-head'},
+        h('h1', {class: 'screen-title', tabindex: '-1', 'data-heading': ''}, 'Create an experiment with AI'),
+        h('p', {class: 'lede'}, 'Describe the experiment in plain language. A model drafts a plan you review, then a private draft under My experiments.'),
+        createSteps('describe')));
+      const flash = flashNode();
+      if (flash) section.appendChild(flash);
+      const promptId = nextId('prompt');
+      const prompt = textarea({id: promptId, name: 'prompt', rows: '7', class: 'input textarea prompt-box', maxlength: '4000',
+        placeholder: 'What should the experiment measure, in whom, with which stimuli and responses?', 'data-focus': 'create-prompt'}, draft.prompt);
+      prompt.addEventListener('input', () => { draft.prompt = prompt.value; });
+      const examples = h('ul', {class: 'prompt-examples', 'aria-label': 'Example descriptions'});
+      for (const text of EXAMPLE_PROMPTS) {
+        examples.appendChild(h('li', null, h('button', {type: 'button', class: 'example-chip', on: {click: () => {
+          prompt.value = text;
+          draft.prompt = text;
+          prompt.focus();
+        }}}, text)));
+      }
+      const describe = h('div', {class: 'create-card'},
+        h('h2', {class: 'create-card-title'}, h('span', {class: 'create-n'}, '1'), h('span', null, 'Describe it')),
+        h('label', {class: 'field-label', for: promptId}, 'Description'), prompt,
+        h('p', {class: 'field-hint'}, 'Or start from an example:'), examples);
+      /* Fork from a published release (or start empty). */
+      const forkId = nextId('fork');
+      const fork = select([['', 'Start from scratch']], '', {id: forkId, name: 'fork', 'data-focus': 'create-fork'});
+      const forkCard = h('div', {class: 'fork-preview'});
+      const paintFork = (items) => {
+        const chosen = items.find((i) => i.experiment && i.experiment.id === draft.fork);
+        forkCard.replaceChildren();
+        if (!chosen) return;
+        forkCard.append(h('span', {class: 'fork-art', 'aria-hidden': 'true'}, schematic(C.schematicKind(chosen.experiment.tags), chosen.experiment.id, 'strip')),
+          h('span', {class: 'fork-text'}, h('span', {class: 'fork-title'}, chosen.experiment.title || 'Untitled experiment'),
+            h('span', {class: 'fork-meta'}, [versionLabel(chosen.version), chosen.experiment.license].filter(Boolean).join(' \u00b7 ')
+              + ' \u00b7 the draft keeps its licence and cites it')));
+      };
+      fork.addEventListener('change', () => { draft.fork = fork.value; paintFork(forkItems); });
+      let forkItems = [];
+      (async () => {
+        const got = await catalogItems(ctx, '');
+        if (!got || !got.ok) return;
+        forkItems = got.value;
+        for (const item of C.filterCatalog(forkItems, {sort: 'name'})) {
+          const opt = h('option', {value: item.experiment.id}, (item.experiment.title || 'Untitled') + ' \u00b7 ' + versionLabel(item.version));
+          if (item.experiment.id === draft.fork) opt.selected = true;
+          fork.appendChild(opt);
+        }
+        fork.value = draft.fork || '';
+        paintFork(forkItems);
+      })();
+      const forkBlock = h('div', {class: 'create-card'},
+        h('h2', {class: 'create-card-title'}, h('span', {class: 'create-n'}, '2'), h('span', null, 'Fork from\u2026')),
+        field('Starting point', fork, 'Optional. The plan then changes a published release instead of starting empty.'), forkCard);
+      /* Provider and key: the key lives in this field only. */
+      const providerId = nextId('provider');
+      const provider = select(PROVIDERS, draft.provider, {id: providerId, name: 'provider'});
+      provider.addEventListener('change', () => { draft.provider = provider.value; });
+      const key = input({type: 'password', name: 'api-key', autocomplete: 'off', spellcheck: 'false', placeholder: 'Paste your API key', 'data-focus': 'create-key'});
+      const keyBlock = h('div', {class: 'create-card'},
+        h('h2', {class: 'create-card-title'}, h('span', {class: 'create-n'}, '3'), h('span', null, 'Model and key')),
+        h('div', {class: 'create-pair'}, field('Provider', provider), field('API key', key, 'Your own key. It will be stored encrypted for your account and never shown again.')),
+        h('p', {class: 'key-status'}, h('span', {class: 'lamp lamp-idle', 'aria-hidden': 'true'}),
+          h('span', null, 'Not connected yet: this version neither saves nor sends a key.')));
+      const status = statusLine();
+      const generate = h('button', {type: 'submit', class: 'btn btn-primary'}, sparkGlyph(), h('span', null, 'Generate plan'));
+      const form = h('form', {class: 'create-form'}, describe, forkBlock, keyBlock,
+        h('div', {class: 'create-actions'}, generate,
+          link({view: 'create', step: 'plan', fork: draft.fork || undefined}, 'See an example plan', {class: 'btn btn-line'})),
+        status.el);
+      form.addEventListener('submit', (event) => {
+        prevent(event);
+        key.value = '';
+        if (!prompt.value.trim()) return status.show('Describe the experiment first.', 'err');
+        status.show('Generation is not connected yet, so nothing was sent and no plan was made. The key field has been cleared. '
+          + '\u201cSee an example plan\u201d shows what a plan will look like.', 'info');
+      });
+      section.appendChild(form);
+      return section;
+    }
+
+    /* A static example of a generated plan, so the screen can be judged. */
+    const EXAMPLE_PLAN = {
+      title: 'Contrast detection at four eccentricities',
+      paradigm: 'Two-interval forced choice; a QUEST+ threshold per eccentricity, interleaved',
+      subjects: 'Human',
+      hardware: 'Display, eye tracker (fixation control)',
+      stimuli: [
+        ['Gabor target', 'Vertical, 4 c/deg, envelope \u03c3 0.3 deg, on the horizontal meridian'],
+        ['Fixation point', '0.15 deg disc at the screen centre, gaze window 1.5 deg'],
+        ['Interval cues', 'Two tones, 50 ms, mark the intervals'],
+      ],
+      measures: ['Contrast threshold at 75% correct, per eccentricity', 'Proportion correct per contrast', 'Response time', 'Fixation breaks per block'],
+      parameters: [
+        ['ecc_dva', '2, 4, 8, 12', 'deg', 'Target eccentricities'],
+        ['sf_cpd', '4', 'c/deg', 'Carrier spatial frequency'],
+        ['sigma_dva', '0.3', 'deg', 'Gaussian envelope'],
+        ['interval_ms', '200', 'ms', 'Each stimulus interval'],
+        ['isi_ms', '500', 'ms', 'Gap between intervals'],
+        ['n_per_ecc', '80', 'trials', 'QUEST+ trials per eccentricity'],
+        ['fix_window_dva', '1.5', 'deg', 'Gaze window radius'],
+      ],
+      timeline: [['Fixation', 500], ['Interval 1', 200], ['Gap', 500], ['Interval 2', 200], ['Response', 2000], ['ITI', 700]],
+      tests: [
+        ['Parameters', 'Bounds and the condition table (pytest)'],
+        ['Simulate', '40 trials per eccentricity with a simulated observer; threshold recovered within 0.1 log units'],
+        ['Timing', 'Frame counts for 200 ms at 60, 120 and 144 Hz'],
+        ['Package', 'alhazen hub pack lists every file; no data folder'],
+      ],
+    };
+
+    function screenCreatePlan(ctx) {
+      const plan = EXAMPLE_PLAN;
+      const draft = state.createDraft;
+      const section = h('section', {class: 'screen screen-create screen-plan'});
+      section.appendChild(h('header', {class: 'create-head'},
+        h('h1', {class: 'screen-title', tabindex: '-1', 'data-heading': ''}, 'Review the plan'),
+        h('p', {class: 'lede'}, 'Check what the model proposes before anything is written. You can change the description and generate again.'),
+        createSteps('plan')));
+      section.appendChild(h('div', {class: 'callout callout-info plan-notice', role: 'note'},
+        h('p', {class: 'callout-title'}, 'Example plan'),
+        h('p', null, 'Generation is not connected yet, so this is a fixed example of the screen, not a plan made from your description.')));
+      const stack = h('div', {class: 'plan-stack'});
+      const card = (title, ...children) => h('section', {class: 'plan-card'}, h('h2', {class: 'plan-card-title'}, title), ...children);
+      stack.appendChild(h('section', {class: 'plan-card plan-card-lead'},
+        h('div', {class: 'plan-lead-art', 'aria-hidden': 'true'}, schematic('gabor', 'example-plan', 'wide')),
+        h('div', null,
+          h('p', {class: 'plan-kicker'}, 'Proposed experiment'),
+          h('h2', {class: 'plan-title'}, plan.title),
+          spec([['Paradigm', plan.paradigm], ['Subjects', plan.subjects], ['Hardware', plan.hardware],
+            ['Starting point', draft.fork ? 'Fork of the release chosen on the previous step' : 'New experiment']]))));
+      stack.appendChild(card('Stimuli', h('ul', {class: 'plan-list'},
+        ...plan.stimuli.map(([name, text]) => h('li', null, h('span', {class: 'plan-term'}, name), h('span', null, text))))));
+      stack.appendChild(card('Measures', h('ul', {class: 'plan-list plan-list-plain'}, ...plan.measures.map((m) => h('li', null, m)))));
+      const table = h('table', {class: 'table'},
+        h('caption', {class: 'visually-hidden'}, 'Parameters'),
+        h('thead', null, h('tr', null, ...['Parameter', 'Default', 'Unit', 'Meaning'].map((t) => h('th', {scope: 'col'}, t)))),
+        h('tbody', null, ...plan.parameters.map(([n, v, u, m]) => h('tr', null,
+          h('td', {class: 'mono'}, n), h('td', {class: 'mono num'}, v), h('td', null, u), h('td', null, m)))));
+      stack.appendChild(card('Parameters', h('div', {class: 'table-wrap'}, table)));
+      const total = plan.timeline.reduce((n, [, ms]) => n + ms, 0);
+      const bar = h('ol', {class: 'timeline', 'aria-label': 'One trial, ' + total + ' ms at most'});
+      for (const [name, ms] of plan.timeline) {
+        const seg = h('li', {class: 'timeline-seg' + (/Interval/.test(name) ? ' is-stim' : '')},
+          h('span', {class: 'timeline-name'}, name), h('span', {class: 'timeline-ms mono'}, (name === 'Response' ? '\u2264 ' : '') + ms + ' ms'));
+        seg.dataset.span = String(Math.max(1, Math.round((ms / total) * 24)));
+        bar.appendChild(seg);
+      }
+      stack.appendChild(card('Trial timeline', bar));
+      stack.appendChild(card('Tests to run before use', h('ul', {class: 'plan-tests'},
+        ...plan.tests.map(([name, text]) => h('li', null, h('span', {class: 'plan-test-state'}, 'Not run'),
+          h('span', {class: 'plan-term'}, name), h('span', null, text))))));
+      stack.appendChild(h('section', {class: 'plan-card plan-card-dest'},
+        h('h2', {class: 'plan-card-title'}, 'Where it goes'),
+        h('p', null, 'A private draft under My experiments: ', h('strong', null, plan.title), ', version 0.1.0. Only you see it until you publish a release.'),
+        h('div', {class: 'actions'},
+          h('button', {type: 'button', class: 'btn btn-primary', disabled: true}, 'Save as private draft'),
+          link({view: 'create', fork: draft.fork || undefined}, 'Edit the description', {class: 'btn btn-line'}),
+          link({view: 'mine'}, 'My experiments', {class: 'btn btn-quiet'}))));
+      section.appendChild(stack);
+      return section;
     }
 
     /* ---- my experiments -------------------------------------------------- */
@@ -2941,7 +3632,7 @@ const HubApp = (() => {
     const SCREENS = {
       home: screenHome, catalog: screenCatalog, experiment: screenExperiment, guide: screenGuide,
       signin: screenSignin, register: screenRegister, library: screenLibrary, mine: screenMine,
-      data: screenData, rig: screenRig,
+      data: screenData, rig: screenRig, create: screenCreate,
     };
 
     /* Links drawn by the documentation viewer (task links) are plain anchors
