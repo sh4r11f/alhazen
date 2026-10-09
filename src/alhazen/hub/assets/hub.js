@@ -1431,16 +1431,15 @@ const HubApp = (() => {
     }
 
     function screenRegister() {
-      const section = screenShell('Account', 'Register',
-        'Registration needs an invite code from the hub\u2019s operator. No e-mail is sent; you sign in straight after.');
+      const section = screenShell('Account', 'Register', state.role === 'rig'
+        ? 'Create your hub account on the hub, then sign in on this rig.'
+        : 'Registration needs an invite code from the hub\u2019s operator. No e-mail is sent; you sign in straight after.');
       if (state.user) {
         section.appendChild(h('p', {class: 'note note-info'}, 'You are already signed in as ' + (state.user.display_name || state.user.username) + '.'));
         return section;
       }
-      if (state.role === 'rig' && state.local && state.local.state === 'not_configured') {
-        section.appendChild(h('div', {class: 'callout callout-info'},
-          h('p', null, 'Connect this rig to a hub first; the account is created there.'),
-          link({view: 'rig', tab: 'connection'}, 'Connect this rig', {class: 'btn btn-primary'})));
+      if (state.role === 'rig') {
+        section.appendChild(rigRegistration());
         return section;
       }
       const username = input({type: 'text', name: 'username', autocomplete: 'username', autocapitalize: 'none', spellcheck: 'false', required: true, maxlength: '64'});
@@ -1484,6 +1483,34 @@ const HubApp = (() => {
       });
       section.appendChild(form);
       return section;
+    }
+
+    /** Registration on a rig. An account is created on the hub's own page:
+     *  the rig refuses to relay registration (409 register_on_hub) because
+     *  it must not speak for the hub page's origin. So no form here, only a
+     *  link to `<hub>/?view=register`, built from the rig's configured hub
+     *  address after the same check the Connect form applies (never from an
+     *  address in an error message). Without a usable address: connect first. */
+    function rigRegistration() {
+      const rig = state.config && state.config.rig ? state.config.rig : {};
+      const configured = (state.local && state.local.base_url) || rig.base_url || '';
+      const checked = configured && !(state.local && state.local.state === 'not_configured')
+        ? C.validateHubUrl(configured) : {ok: false};
+      if (!checked.ok) {
+        return h('div', {class: 'callout callout-info'},
+          h('p', {class: 'callout-title'}, 'Connect this rig first'),
+          h('p', null, 'Accounts are created on the hub itself. Connect this rig to a hub, register on that hub\u2019s page, then sign in here.'),
+          link({view: 'rig', tab: 'connection'}, 'Connect this rig', {class: 'btn btn-primary'}));
+      }
+      const href = checked.url + '/?view=register';
+      return h('div', {class: 'callout callout-info'},
+        h('p', {class: 'callout-title'}, 'Register on the hub'),
+        h('p', null, 'Accounts are created on the hub\u2019s own page, not through this rig. Registration there needs an invite code from the hub\u2019s operator.'),
+        h('div', {class: 'actions'},
+          h('a', {class: 'btn btn-primary', href, target: '_blank', rel: 'noopener noreferrer'}, 'Register on ' + hostOf(checked.url)),
+          h('span', {class: 'muted small mono'}, checked.url)),
+        h('p', null, 'It opens in a new tab. When your account exists, come back and ',
+          link({view: 'signin'}, 'sign in on this rig'), '.'));
     }
 
     /* ---- library -------------------------------------------------------- */
