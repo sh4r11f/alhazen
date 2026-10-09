@@ -136,6 +136,20 @@ class HubSettings:
             _check_origin(origin)
         if self.limits.max_chunk_bytes > CHUNK_CEILING or self.limits.max_chunk_bytes < 1:
             raise SettingsError(f"limits.max_chunk_bytes must be between 1 and {CHUNK_CEILING}")
+        # The package format's own maxima (alhazen.hub.packages refuses larger
+        # limits); a configuration above them fails here at start, not as a
+        # 500 on the first upload.
+        from alhazen.hub import packages
+
+        for name, ceiling in (
+            ("max_package_bytes", packages.DEFAULT_MAX_ARCHIVE_BYTES),
+            ("max_package_expanded_bytes", packages.DEFAULT_MAX_EXPANDED_BYTES),
+            ("max_package_files", packages.DEFAULT_MAX_FILES),
+        ):
+            if getattr(self.limits, name) > ceiling:
+                raise SettingsError(
+                    f"limits.{name} may be at most {ceiling} (the package format's maximum)"
+                )
         for name, value in dataclasses.asdict(self.limits).items():
             if not isinstance(value, int) or isinstance(value, bool) or value < 1:
                 raise SettingsError(f"limits.{name} must be a positive integer")

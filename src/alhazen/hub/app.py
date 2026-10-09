@@ -24,6 +24,7 @@ Write checks (review gate M1):
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -71,6 +72,9 @@ PAGE_CSP = (
 )
 API_CSP = "default-src 'none'; frame-ancestors 'none'; sandbox"
 _ID = re.compile(r"^[0-9a-f]{32}$")
+# How long POST .../complete waits for its seal before answering 202 (below
+# the rig client's 20 s request timeout).
+COMPLETE_WAIT_SECONDS = 10.0
 _MAX_OFFSET = 10_000_000
 
 
@@ -359,11 +363,15 @@ def create_app(
             and not problems
             and not maintenance.last_error
         )
+        # Counts only: the identifiers stay in the operator's report and logs.
+        public_report = (
+            {k: v for k, v in report.items() if not k.endswith("_ids")} if report else None
+        )
         body = {
             "status": "ready" if ready else "not_ready",
             "database": "ok" if db_ok else "unavailable",
             "artifacts": "ok" if store_ok else "unwritable",
-            "reconciliation": report,
+            "reconciliation": public_report,
             "maintenance_error": maintenance.last_error,
         }
         return JSONResponse(body, status_code=200 if ready else 503)
@@ -641,10 +649,44 @@ def create_app(
                 uploads.put_chunk, hub, principal, session_id, path, offset, data_bytes, chunk_sha
             )
 
+    @app.get(f"{API}/sessions")
+    async def unfinished_uploads(request: Request) -> dict[str, Any]:
+        principal = await member(request)
+        limit, offset = _page(request)
+        return await call(uploads.list_unfinished, hub, principal, limit, offset)
+
+    def _sealing(view: dict[str, Any]) -> JSONResponse:
+        return JSONResponse(
+            {**view, "status": "sealing", "retry_after": 5},
+            status_code=202,
+            headers={"Retry-After": "5"},
+        )
+
     @app.post(API + "/sessions/{session_id}/complete")
-    async def complete(request: Request, session_id: str) -> dict[str, Any]:
+    async def complete(request: Request, session_id: str) -> Any:
+        """200 with the committed receipt, or 202 {status: "sealing"} while the
+        seal runs (poll by calling complete again, or GET .../upload)."""
         principal = await writer(request)
-        result = await call(uploads.complete, hub, principal, _id(session_id, "Upload not found"))
+        session_id = _id(session_id, "Upload not found")
+        state, value = await call(uploads.begin_complete, hub, principal, session_id)
+        if state == "done":
+            return value
+        if state == "busy":
+            assert isinstance(value, dict)
+            return _sealing(value)
+        future = maintenance.submit_seal(
+            uploads.seal, hub, session_id, value, actor=f"user:{principal.user_id}"
+        )
+        try:
+            result = await asyncio.wait_for(
+                asyncio.shield(asyncio.wrap_future(future)), COMPLETE_WAIT_SECONDS
+            )
+        except asyncio.TimeoutError:
+            return _sealing(await call(uploads.progress, hub, principal, session_id))
+        except HubError as exc:
+            if exc.code != "sealing_in_progress":
+                raise
+            return _sealing(await call(uploads.progress, hub, principal, session_id))
         maintenance.wake()
         return result
 
@@ -693,10 +735,10 @@ def create_app(
         index = {"status": row.index_status, "rows": int(row.index_rows), "error": row.index_error}
         if row.index_status != "indexed":
             return {"items": [], "next_offset": None, "columns": columns, "index": index}
-        items, more = await call(trials.page, hub, row.id, limit, offset)
+        items, next_offset = await call(trials.page, hub, row.id, limit, offset)
         return {
             "items": items,
-            "next_offset": offset + limit if more else None,
+            "next_offset": next_offset,
             "columns": columns,
             "index": index,
         }
@@ -721,13 +763,9 @@ def create_app(
                 slot.__exit__(None, None, None)
 
         try:
-            if fmt == "csv":
-                sources = await call(_source_count, row.id)
-                stream = trials.export_csv(hub, row.id, columns, sources > 1)
-                media = "text/csv; charset=utf-8"
-            else:
-                stream = trials.export_json(hub, row.id, columns)
-                media = "application/json"
+            # Header, columns and rows come from one snapshot (trials.py).
+            stream = await call(trials.open_export, hub, row.id, fmt)
+            media = "text/csv; charset=utf-8" if fmt == "csv" else "application/json"
         except BaseException:
             slot.__exit__(None, None, None)
             raise
@@ -741,20 +779,6 @@ def create_app(
                 "Cache-Control": "private, no-store",
             },
         )
-
-    def _source_count(session_id: str) -> int:
-        from sqlalchemy import func, select
-
-        from alhazen.hub.schema import trial_rows
-
-        with database.transaction() as conn:
-            return int(
-                conn.execute(
-                    select(func.count(func.distinct(trial_rows.c.source_path))).where(
-                        trial_rows.c.session_id == session_id
-                    )
-                ).scalar_one()
-            )
 
     @app.get(API + "/data/sessions/{session_id}/files")
     async def session_file(request: Request, session_id: str) -> FileResponse:

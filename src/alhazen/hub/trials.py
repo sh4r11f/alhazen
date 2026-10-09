@@ -20,15 +20,19 @@ from __future__ import annotations
 
 import csv
 import io
+import itertools
 import json
 import logging
 import re
+import secrets
 from collections.abc import Iterator
 from typing import Any
 
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import delete, func, insert, select, update
+from sqlalchemy.exc import OperationalError
 
 from alhazen.hub.context import Hub
+from alhazen.hub.errors import HubError
 from alhazen.hub.schema import data_sessions, session_files, trial_rows
 
 log = logging.getLogger(__name__)
@@ -53,56 +57,74 @@ def safe_cell(value: Any) -> str:
 # -- indexing -----------------------------------------------------------------
 
 
-def claim_next(hub: Hub, session_id: str | None = None) -> str | None:
-    """Claim one session whose index is due (or the given one); None if none."""
-    now = hub.clock()
-    with hub.db.transaction() as conn:
-        query = select(data_sessions.c.id).where(
-            data_sessions.c.status == "committed",
-            (data_sessions.c.index_status == "pending")
-            | (
-                (data_sessions.c.index_status == "indexing")
-                & (data_sessions.c.index_claimed_until <= now)
-            ),
+class _Superseded(Exception):
+    """This index job's token was replaced (rebuild requested or claim taken over)."""
+
+
+def _due() -> Any:
+    return lambda now: (
+        (data_sessions.c.index_status == "pending")
+        | (
+            (data_sessions.c.index_status == "indexing")
+            & (data_sessions.c.index_claimed_until <= now)
         )
+    )
+
+
+def claim_next(hub: Hub, session_id: str | None = None) -> tuple[str, str] | None:
+    """Claim one session whose index is due (or the given one).
+
+    Returns (session_id, token) or None. The token fences the job: every
+    write it makes later is conditional on still holding it.
+    """
+    now = hub.clock()
+    due = _due()(now)
+    with hub.db.transaction() as conn:
+        query = select(data_sessions.c.id).where(data_sessions.c.status == "committed", due)
         if session_id is not None:
             query = query.where(data_sessions.c.id == session_id)
         row = conn.execute(query.order_by(data_sessions.c.completed_at).limit(1)).first()
         if row is None:
             return None
+        token = secrets.token_hex(16)
         taken = conn.execute(
             update(data_sessions)
-            .where(
-                data_sessions.c.id == row.id,
-                (data_sessions.c.index_status == "pending")
-                | (
-                    (data_sessions.c.index_status == "indexing")
-                    & (data_sessions.c.index_claimed_until <= now)
-                ),
-            )
-            .values(index_status="indexing", index_claimed_until=now + CLAIM_MS)
+            .where(data_sessions.c.id == row.id, due)
+            .values(index_status="indexing", index_claimed_until=now + CLAIM_MS, index_token=token)
         ).rowcount
-        return str(row.id) if taken else None
+        return (str(row.id), token) if taken else None
 
 
-def request_reindex(hub: Hub, owner_id: str | None, session_id: str) -> bool:
-    """Mark a committed session's index for rebuilding. Idempotent."""
+def request_reindex(hub: Hub, owner_id: str | None, session_id: str) -> str | None:
+    """Ask for a committed session's index to be rebuilt; return the new
+    status ("pending"), or None if there is no such committed session.
+
+    Idempotent, and effective even while a job runs: the running job's token
+    is cleared, so its result is discarded and the rebuild runs after it.
+    """
     with hub.db.transaction() as conn:
         query = update(data_sessions).where(
-            data_sessions.c.id == session_id,
-            data_sessions.c.status == "committed",
-            data_sessions.c.index_status.in_(("indexed", "failed", "none", "pending")),
+            data_sessions.c.id == session_id, data_sessions.c.status == "committed"
         )
         if owner_id is not None:
             query = query.where(data_sessions.c.owner_id == owner_id)
         changed = conn.execute(
-            query.values(index_status="pending", index_claimed_until=None)
+            query.values(index_status="pending", index_claimed_until=None, index_token=None)
         ).rowcount
-    return bool(changed)
+    return "pending" if changed else None
 
 
-def index_session(hub: Hub, session_id: str) -> str:
-    """Build the derived rows of one claimed session; return the new status."""
+_TRANSIENT = (OperationalError,)
+
+
+def index_session(hub: Hub, session_id: str, token: str) -> str:
+    """Build the derived rows of one claimed session; return its new status.
+
+    Budget breaches and unreadable tables fail the index visibly and keep no
+    rows. A transient database problem returns the job to "pending" for a
+    later attempt instead of failing it. A job whose token was replaced
+    meanwhile changes nothing ("superseded").
+    """
     limits = hub.settings.limits
     with hub.db.transaction() as conn:
         row = conn.execute(select(data_sessions).where(data_sessions.c.id == session_id)).one()
@@ -114,14 +136,12 @@ def index_session(hub: Hub, session_id: str) -> str:
             if is_trials_table(f.path)
         ]
     tables.sort()
-    status, error, count = "indexed", None, 0
     columns: list[str] = []
+    count = 0
     try:
-        if not tables:
-            status = "none"
-        else:
-            with hub.db.transaction() as conn:
-                conn.execute(delete(trial_rows).where(trial_rows.c.session_id == session_id))
+        with hub.db.transaction() as conn:
+            conn.execute(delete(trial_rows).where(trial_rows.c.session_id == session_id))
+            if tables:
                 batch: list[dict[str, Any]] = []
                 for source, values in _rows(hub, row.experiment_id, session_id, tables, columns):
                     if count >= limits.max_indexed_rows:
@@ -142,33 +162,69 @@ def index_session(hub: Hub, session_id: str) -> str:
                         batch = []
                 if batch:
                     conn.execute(insert(trial_rows), batch)
-                _finish(conn, session_id, "indexed", None, count, columns)
-            return "indexed"
+            status = "indexed" if tables else "none"
+            if not _finish(conn, session_id, token, status, None, count, columns):
+                raise _Superseded(session_id)
+        return status
+    except _Superseded:
+        return "superseded"
     except IndexBudget as exc:
-        status, error, count, columns = "failed", str(exc)[:500], 0, []
-    except Exception:
-        log.exception("indexing session %s failed", session_id)
-        status, error, count, columns = "failed", "the trial table could not be indexed", 0, []
+        error = str(exc)[:500]
+    except FileNotFoundError:
+        error = "a stored trial table is missing; an operator must restore the session's files"
+    except (HubError, *_TRANSIENT) as exc:
+        if isinstance(exc, HubError) and exc.code != "database_unavailable":
+            raise
+        log.warning("indexing session %s deferred: the database is unavailable", session_id)
+        _defer(hub, session_id, token)
+        return "pending"
     with hub.db.transaction() as conn:
+        if not _finish(conn, session_id, token, "failed", error, 0, []):
+            return "superseded"
         conn.execute(delete(trial_rows).where(trial_rows.c.session_id == session_id))
-        _finish(conn, session_id, status, error, count, columns)
-    return status
+    return "failed"
+
+
+def _defer(hub: Hub, session_id: str, token: str) -> None:
+    try:
+        with hub.db.transaction() as conn:
+            conn.execute(
+                update(data_sessions)
+                .where(data_sessions.c.id == session_id, data_sessions.c.index_token == token)
+                .values(index_status="pending", index_claimed_until=None, index_token=None)
+            )
+    except HubError:
+        # Still unreachable: the claim lapses after CLAIM_MS and is retaken.
+        log.warning("indexing session %s: claim left to lapse", session_id)
 
 
 def _finish(
-    conn: Any, session_id: str, status: str, error: str | None, count: int, columns: list[str]
-) -> None:
-    conn.execute(
+    conn: Any,
+    session_id: str,
+    token: str,
+    status: str,
+    error: str | None,
+    count: int,
+    columns: list[str],
+) -> bool:
+    """Record the job's result, only if it still holds its token."""
+    changed = conn.execute(
         update(data_sessions)
-        .where(data_sessions.c.id == session_id)
+        .where(
+            data_sessions.c.id == session_id,
+            data_sessions.c.index_token == token,
+            data_sessions.c.index_status == "indexing",
+        )
         .values(
             index_status=status,
             index_error=error,
             index_rows=count,
             index_columns=json.dumps(columns) if columns else None,
             index_claimed_until=None,
+            index_token=None,
         )
-    )
+    ).rowcount
+    return bool(changed)
 
 
 def is_trials_table(path: str) -> bool:
@@ -239,8 +295,17 @@ def _bounded_lines(handle: io.TextIOBase, limit: int, source: str) -> Iterator[s
 
 # -- reading and export -------------------------------------------------------
 
+# A trial page carries at most this many bytes of row values, so a page of
+# wide rows stays far below any client's JSON cap (the rig's is 16 MiB);
+# next_offset continues where the page stopped.
+PAGE_BYTES = 4 * 1024 * 1024
 
-def page(hub: Hub, session_id: str, limit: int, offset: int) -> tuple[list[dict[str, Any]], bool]:
+
+def page(
+    hub: Hub, session_id: str, limit: int, offset: int
+) -> tuple[list[dict[str, Any]], int | None]:
+    """Up to ``limit`` rows from ``offset`` within PAGE_BYTES (always at least
+    one row); returns (items, next_offset or None)."""
     with hub.db.transaction() as conn:
         rows = conn.execute(
             select(trial_rows)
@@ -248,48 +313,75 @@ def page(hub: Hub, session_id: str, limit: int, offset: int) -> tuple[list[dict[
             .order_by(trial_rows.c.ordinal)
             .limit(limit + 1)
         ).all()
-    items = [
-        {
-            "ordinal": int(r.ordinal),
-            "source_path": r.source_path,
-            "values": json.loads(r.row_values),
-        }
-        for r in rows[:limit]
-    ]
-    return items, len(rows) > limit
+    items: list[dict[str, Any]] = []
+    used = 0
+    for r in rows[:limit]:
+        if items and used + len(r.row_values) > PAGE_BYTES:
+            break
+        used += len(r.row_values)
+        items.append(
+            {
+                "ordinal": int(r.ordinal),
+                "source_path": r.source_path,
+                "values": json.loads(r.row_values),
+            }
+        )
+    more = len(items) < len(rows)
+    return items, (int(items[-1]["ordinal"]) + 1 if more and items else None)
 
 
-def _batches(hub: Hub, session_id: str) -> Iterator[list[Any]]:
-    after = -1
-    while True:
-        with hub.db.transaction() as conn:
-            rows = conn.execute(
-                select(trial_rows)
-                .where(trial_rows.c.session_id == session_id, trial_rows.c.ordinal > after)
-                .order_by(trial_rows.c.ordinal)
-                .limit(_BATCH)
-            ).all()
-        if not rows:
-            return
-        yield list(rows)
-        after = int(rows[-1].ordinal)
+class IndexChanged(RuntimeError):
+    """The trial index was not in the indexed state in the export's snapshot;
+    the stream stops (and the client sees an incomplete download) rather than
+    end as if complete."""
 
 
-def export_csv(
-    hub: Hub, session_id: str, columns: list[str], multiple_sources: bool
-) -> Iterator[bytes]:
-    header = (["source_file"] if multiple_sources else []) + columns
-    yield _csv_line([safe_cell(h) for h in header])
-    for rows in _batches(hub, session_id):
+def _snapshot_rows(hub: Hub, session_id: str) -> Iterator[tuple[list[str], bool, Iterator[Any]]]:
+    """One consistent view of a session's index: its columns, whether rows
+    come from several files, and the rows, all read in one snapshot so a
+    rebuild committing meanwhile cannot mix two index generations."""
+    with hub.db.snapshot() as conn:
+        state = conn.execute(
+            select(data_sessions.c.index_status, data_sessions.c.index_columns).where(
+                data_sessions.c.id == session_id
+            )
+        ).one()
+        if state.index_status not in ("indexed", "pending", "indexing") or not state.index_columns:
+            raise IndexChanged(session_id)
+        columns = json.loads(state.index_columns)
+        sources = conn.execute(
+            select(func.count(func.distinct(trial_rows.c.source_path))).where(
+                trial_rows.c.session_id == session_id
+            )
+        ).scalar_one()
+        result = conn.execution_options(stream_results=True, yield_per=_BATCH).execute(
+            select(trial_rows)
+            .where(trial_rows.c.session_id == session_id)
+            .order_by(trial_rows.c.ordinal)
+        )
+        yield columns, int(sources) > 1, iter(result)
+
+
+def export_csv(hub: Hub, session_id: str) -> Iterator[bytes]:
+    """The index as CSV, streamed from one snapshot."""
+    for columns, multiple, rows in _snapshot_rows(hub, session_id):
+        header = (["source_file"] if multiple else []) + columns
+        yield _csv_line([safe_cell(h) for h in header])
         buffer = io.StringIO()
         writer = csv.writer(buffer, lineterminator="\r\n")
+        pending = 0
         for r in rows:
             values = json.loads(r.row_values)
-            cells = ([r.source_path] if multiple_sources else []) + [
-                values.get(c, "") for c in columns
-            ]
+            cells = ([r.source_path] if multiple else []) + [values.get(c, "") for c in columns]
             writer.writerow([safe_cell(c) for c in cells])
-        yield buffer.getvalue().encode("utf-8")
+            pending += 1
+            if pending >= _BATCH:
+                yield buffer.getvalue().encode("utf-8")
+                buffer.seek(0)
+                buffer.truncate(0)
+                pending = 0
+        if pending:
+            yield buffer.getvalue().encode("utf-8")
 
 
 def _csv_line(cells: list[str]) -> bytes:
@@ -298,17 +390,18 @@ def _csv_line(cells: list[str]) -> bytes:
     return buffer.getvalue().encode("utf-8")
 
 
-def export_json(hub: Hub, session_id: str, columns: list[str]) -> Iterator[bytes]:
-    yield (
-        '{"session_id":'
-        + json.dumps(session_id)
-        + ',"columns":'
-        + json.dumps(columns, ensure_ascii=False)
-        + ',"rows":['
-    ).encode("utf-8")
-    first = True
-    for rows in _batches(hub, session_id):
-        parts = []
+def export_json(hub: Hub, session_id: str) -> Iterator[bytes]:
+    """The index as one JSON document, streamed from one snapshot."""
+    for columns, _multiple, rows in _snapshot_rows(hub, session_id):
+        yield (
+            '{"session_id":'
+            + json.dumps(session_id)
+            + ',"columns":'
+            + json.dumps(columns, ensure_ascii=False)
+            + ',"rows":['
+        ).encode("utf-8")
+        first = True
+        parts: list[str] = []
         for r in rows:
             item = {
                 "ordinal": int(r.ordinal),
@@ -316,7 +409,28 @@ def export_json(hub: Hub, session_id: str, columns: list[str]) -> Iterator[bytes
                 "values": json.loads(r.row_values),
             }
             parts.append(json.dumps(item, ensure_ascii=False))
-        chunk = ",".join(parts)
-        yield (chunk if first else "," + chunk).encode("utf-8")
-        first = False
-    yield b"]}"
+            if len(parts) >= _BATCH:
+                chunk = ",".join(parts)
+                yield (chunk if first else "," + chunk).encode("utf-8")
+                first, parts = False, []
+        if parts:
+            chunk = ",".join(parts)
+            yield (chunk if first else "," + chunk).encode("utf-8")
+        yield b"]}"
+
+
+def open_export(hub: Hub, session_id: str, fmt: str) -> Iterator[bytes]:
+    """Start an export and return its stream, with the first part already
+    read, so a session whose index is not ready is refused (409) before any
+    response starts instead of ending a 200 download early."""
+    stream = export_csv(hub, session_id) if fmt == "csv" else export_json(hub, session_id)
+    try:
+        first = next(stream)
+    except IndexChanged:
+        raise HubError(
+            409,
+            "index_not_ready",
+            "This session's trial index is being rebuilt or is not available; its original "
+            "files remain downloadable",
+        ) from None
+    return itertools.chain([first], stream)

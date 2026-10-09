@@ -31,7 +31,7 @@ import os
 import re
 import secrets
 import shutil
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO
 
@@ -43,11 +43,21 @@ class StorageError(RuntimeError):
     """The archive is unusable or an operation broke one of its rules."""
 
 
-def sha256_file(path: Path) -> str:
+_PROGRESS_EVERY = 256 * 1024 * 1024
+
+
+def sha256_file(path: Path, on_progress: Callable[[], None] | None = None) -> str:
+    """The file's SHA-256, read in blocks; ``on_progress`` is called after every
+    256 MiB (a long seal renews its lease there and stops if it was taken over)."""
     digest = hashlib.sha256()
+    since = 0
     with path.open("rb") as handle:
         for block in iter(lambda: handle.read(_READ), b""):
             digest.update(block)
+            since += len(block)
+            if on_progress is not None and since >= _PROGRESS_EVERY:
+                on_progress()
+                since = 0
     return digest.hexdigest()
 
 
@@ -155,6 +165,16 @@ class ArtifactStore:
         if created:
             self._sync_parents(target, self.staging_dir(session_id))
 
+    def create_empty(self, session_id: str, rel: str) -> None:
+        """Create (or truncate) an empty staged file, durably: an empty file of a
+        manifest is complete from the start and never receives a chunk."""
+        target = self.staging_file(session_id, rel)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("wb") as handle:
+            handle.flush()
+            os.fsync(handle.fileno())
+        self._sync_parents(target, self.staging_dir(session_id))
+
     def reset_file(self, session_id: str, rel: str) -> None:
         target = self.staging_file(session_id, rel)
         if target.exists():
@@ -231,6 +251,23 @@ class ArtifactStore:
                 for session in sorted(experiment.iterdir()):
                     if session.is_dir():
                         yield experiment.name, session.name
+
+    def staging_session_ids(self) -> list[str]:
+        base = self.root / "staging"
+        return sorted(p.name for p in base.iterdir() if p.is_dir()) if base.exists() else []
+
+    def stale_temps(self, older_than_s: float, now_s: float) -> list[Path]:
+        """Interrupted package uploads: received (*.part) and staged
+        (.package-*.zip) copies nobody refers to any more."""
+        base = self.root / "tmp"
+        candidates = [*base.glob("*.part"), *base.glob(".package-*.zip")]
+        return [p for p in candidates if p.is_file() and now_s - p.stat().st_mtime > older_than_s]
+
+    def release_keys(self) -> list[str]:
+        base = self.root / "releases"
+        return sorted(
+            f"releases/{p.parent.name}/{p.name}" for p in base.glob("*/*.zip") if p.is_file()
+        )
 
     # -- helpers ----------------------------------------------------------
 
