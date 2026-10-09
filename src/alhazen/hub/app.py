@@ -185,7 +185,11 @@ def create_app(
     settings: HubSettings, *, clock: Clock = system_clock, start_maintenance: bool = True
 ) -> FastAPI:
     database = Database(settings)
-    database.check_schema()
+    try:
+        database.check_schema()
+    except BaseException:
+        database.dispose()
+        raise
     hub = Hub(
         settings=settings, db=database, store=ArtifactStore(settings.artifact_root), clock=clock
     )
