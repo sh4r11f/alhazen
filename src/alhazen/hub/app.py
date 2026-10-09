@@ -930,10 +930,12 @@ def create_app(
         try:
             if fmt == "csv":
                 sources = await call(_source_count, row.id)
-                stream = trials.export_csv(hub, row.id, columns, sources > 1)
+                stream = await _open_stream(
+                    lambda: trials.export_csv(hub, row.id, columns, sources > 1)
+                )
                 media = "text/csv; charset=utf-8"
             else:
-                stream = trials.export_json(hub, row.id, columns)
+                stream = await _open_stream(lambda: trials.export_json(hub, row.id, columns))
                 media = "application/json"
             name = f"session-{row.id}-trials.{fmt}"
             response = PermitStreamingResponse(
@@ -953,6 +955,40 @@ def create_app(
                     await call(GuardedStream(stream).close)
             raise
         return response
+
+    async def _open_stream(factory: Callable[[], Any]) -> Any:
+        """Create an export stream in a worker thread and hand it back, or
+        close it if this request is cancelled meanwhile.
+
+        A stream may hold a database snapshot from the moment it exists (the
+        export module primes the first part). If the request is cancelled
+        while the worker thread creates it, the result would be dropped. So
+        the thread records what it opened; whichever side comes second (this
+        handler's cancellation, or the thread finishing after it) closes it,
+        never on the event loop and never left to the garbage collector.
+        """
+        lock = threading.Lock()
+        state: dict[str, Any] = {"stream": None, "abandoned": False}
+
+        def create() -> Any:
+            stream = factory()
+            with lock:
+                abandoned = state["abandoned"]
+                state["stream"] = stream
+            if abandoned:  # the request is gone already: close it right here
+                GuardedStream(stream).close()
+            return stream
+
+        try:
+            return await call(create)
+        except BaseException:
+            with lock:
+                state["abandoned"] = True
+                opened = state["stream"]
+            if opened is not None:
+                with anyio.CancelScope(shield=True):
+                    await call(GuardedStream(opened).close)
+            raise
 
     def _source_count(session_id: str) -> int:
         from sqlalchemy import func, select

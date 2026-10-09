@@ -687,6 +687,53 @@ class TestExportStreamClose:
         assert events.index("close") > held_end
         assert events[events.index("close") + 1 :].count("next-start") == 0
 
+    def test_cancellation_while_the_stream_is_being_opened_closes_it(self, tmp_hub, monkeypatch):
+        import asyncio
+
+        rig, session_id = indexed_session(tmp_hub)
+        svc = service(tmp_hub)
+        pool = svc.db.engine.pool
+        streams: list[HeldSnapshotStream] = []
+        opening = threading.Event()
+
+        def slow_factory() -> HeldSnapshotStream:
+            opening.set()
+            time.sleep(0.5)  # priming the first part in the worker thread
+            streams.append(HeldSnapshotStream(svc.db.engine, parts=5))
+            return streams[-1]
+
+        serve_stream(monkeypatch, slow_factory)
+        baseline = pool.checkedout()
+
+        async def receive() -> dict[str, Any]:
+            await asyncio.sleep(3600)
+            return {"type": "http.disconnect"}
+
+        async def send(_message: dict[str, Any]) -> None:
+            return None
+
+        async def run() -> None:
+            task = asyncio.ensure_future(
+                tmp_hub.app(export_scope(session_id, rig.token), receive, send)
+            )
+            while not opening.is_set():
+                await asyncio.sleep(0.01)
+            task.cancel()  # the server is shutting the request down
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        gc.disable()
+        try:
+            asyncio.run(run())
+            # Native cancellation abandons the worker thread; when it finishes
+            # opening, it finds the request gone and closes the stream itself.
+            assert wait_for(lambda: streams and "close" in streams[0].events)
+        finally:
+            gc.enable()
+        assert len(streams) == 1 and streams[0].events.count("close") == 1
+        assert wait_for(lambda: pool.checkedout() == baseline)
+        assert svc.exports._slots._value == tmp_hub.settings.limits.max_concurrent_exports
+
     def test_guarded_stream_closes_once_and_then_ends(self):
         closed: list[int] = []
 
