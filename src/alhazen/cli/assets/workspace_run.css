@@ -1,0 +1,457 @@
+/* Alhazen experiment workspace — the Run page (Composite, 2026-10-09).
+ *
+ * Loaded last (after workspace_split.css). Split keeps the shell: the icon
+ * rail, the type, the palette and every other page. This file lays out the
+ * Run page as Bench did, with Console's session clock:
+ *
+ *   - two panes, Setup and Output, switched by #run-panes
+ *     (workspace_bench.js puts data-pane on #workspace);
+ *   - Setup: the form as a grid of plain sections (Mode with Subject &
+ *     session | Run options | Rig, then Task parameters, the training
+ *     ladder or the measurements the full width, fields in two columns),
+ *     over a launch bar held at the window's bottom with the session
+ *     estimate, the one-line summary and the button; during a run the bar
+ *     shows the clock in the estimate's place;
+ *   - Output: the session summary (the large elapsed clock, the status
+ *     lamp, amber while running, the start and the run line) on Split's
+ *     instrument surface, the output tabs with the live monitor framed full
+ *     width at 78 % of the window, then the recent runs with the upload card
+ *     beside them.
+ *
+ * Colours are tokens only (workspace.css :root and its dark copies).
+ */
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---- The panes ---- */
+.run-panes {
+  margin: 0 0 20px;
+}
+
+.run-panes button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.pane-lamp { display: none; }
+
+.pane-lamp.running, .pane-lamp.stopping, .pane-lamp.completed,
+.pane-lamp.failed, .pane-lamp.interrupted {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.pane-lamp.running, .pane-lamp.stopping { background: var(--run-ink); }
+.pane-lamp.completed { background: var(--ok-ink); }
+.pane-lamp.failed, .pane-lamp.interrupted { background: var(--bad-ink); }
+
+:root .workspace-grid {
+  display: block;
+  margin: 0;
+  border: 0;
+}
+
+#workspace[data-pane=setup] .results-column,
+#workspace[data-pane=output] .configuration {
+  display: none;
+}
+
+/* ---- Setup: the form as a grid of plain sections ---- */
+:root .configuration,
+:root .configuration.card {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0;
+  overflow: visible;
+}
+
+:root .configuration form {
+  counter-reset: none;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0 40px;
+  align-items: start;
+}
+
+:root .configuration .stage,
+:root .configuration .form-section,
+:root .configuration #task-parameters.stage {
+  margin: 0;
+  padding: 18px 0 26px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  min-width: 0;
+}
+
+/* No numbered markers or rail: the grid is the order. */
+:root .configuration .stage::before,
+:root .configuration .stage::after {
+  content: none;
+  display: none;
+}
+
+.bench-col { min-width: 0; }
+
+:root #task-parameters,
+:root #training-ladder-stage,
+:root #measurements {
+  grid-column: 1 / -1;
+}
+
+:root .configuration .stage-title,
+:root .configuration .section-title,
+:root .configuration .section-title label {
+  display: block;
+  margin: 0 0 14px;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.4;
+  color: var(--ink);
+}
+
+.parameters-heading {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 6px;
+}
+
+:root .parameters-heading .section-title { margin: 0; white-space: nowrap; }
+.parameters-heading select { max-width: 360px; }
+#task-parameters .editor-switch { margin: 8px 12px 10px 0; vertical-align: middle; }
+#parameter-search { max-width: 360px; }
+#parameter-fields { margin-top: 12px; column-gap: 40px; }
+
+@media (min-width: 900px) {
+  :root #parameter-fields { columns: 2; display: block; }
+  #parameter-fields > * { break-inside: avoid; }
+}
+
+/* ---- The launch bar: held at the window's bottom on Setup ---- */
+:root .launch-footer {
+  grid-column: 1 / -1;
+  position: sticky;
+  bottom: 0;
+  z-index: 15;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "estimate button"
+    "summary button"
+    "note note";
+  align-items: center;
+  column-gap: 24px;
+  margin: 8px -32px 0;
+  padding: 12px 32px 14px;
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+  box-shadow: 0 -6px 18px var(--shadow);
+}
+
+:root .launch-footer::before { display: none; }
+
+#workspace[data-pane=output] .launch-footer { display: none; }
+
+#duration-estimate, .bar-session { grid-area: estimate; }
+:root .launch-summary { grid-area: summary; }
+#launch-note { grid-area: note; margin: 6px 0 0; }
+#launch-note:empty { display: none; }
+:root .launch { grid-area: button; width: auto; min-width: 200px; min-height: 44px; font-size: 15px; }
+
+:root .launch-summary {
+  margin: 2px 0 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+/* During a run: the clock in the estimate's place. */
+.bar-session {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.bar-lamp {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--run-ink);
+  flex: none;
+}
+
+.bar-session-text { font-size: 14px; font-weight: 650; color: var(--run-ink); }
+
+.bar-elapsed {
+  font-size: 22px;
+  font-weight: 750;
+  letter-spacing: -.01em;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+
+.bar-session .quiet { padding: 5px 12px; font-size: 13.5px; }
+
+/* ---- Output ---- */
+:root .results-column {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-areas:
+    "output output"
+    "history upload";
+  gap: 28px 40px;
+  padding: 0;
+  position: static;
+  height: auto;
+  max-height: none;
+  overflow: visible;
+}
+
+:root .output-card { grid-area: output; }
+:root .history-card { grid-area: history; }
+:root #upload-card { grid-area: upload; }
+.results-column:has(#upload-card[hidden]) .history-card { grid-column: 1 / -1; }
+
+:root .output-card,
+:root .history-card,
+:root .upload-card {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  overflow: visible;
+  padding: 0;
+  min-height: 0;
+}
+
+:root .history-card .card-heading {
+  min-height: 0;
+  padding: 0 0 12px;
+  border-bottom: 1px solid var(--line);
+  justify-content: flex-start;
+  gap: 14px;
+}
+
+:root .history-card .card-heading a {
+  margin-left: auto;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+:root #history { max-height: none; overflow: visible; }
+
+:root .upload-card {
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+/* The session summary (Console's clock), on Split's instrument surface. */
+.session-summary {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  padding: 16px 22px;
+  margin-bottom: 6px;
+  background: var(--instrument);
+  color: var(--instrument-ink);
+  border: 1px solid var(--instrument-line);
+  border-radius: 12px;
+}
+
+.session-clock {
+  display: flex;
+  flex-direction: column;
+  min-width: 150px;
+}
+
+.readout-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--instrument-muted);
+}
+
+.readout-value {
+  font-size: 40px;
+  font-weight: 750;
+  line-height: 1.1;
+  letter-spacing: -.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.session-summary[data-active=true] .readout-value { color: var(--run-ink); }
+
+.session-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding-left: 28px;
+  border-left: 1px solid var(--instrument-line);
+}
+
+.session-meta-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 20px;
+}
+
+.session-started {
+  font-size: 13.5px;
+  color: var(--instrument-muted);
+}
+
+#session-started {
+  font-weight: 650;
+  color: var(--instrument-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+:root .session-meta .run-info {
+  padding: 0;
+  font-size: 13.5px;
+  color: var(--instrument-ink);
+  overflow-wrap: anywhere;
+}
+
+:root .session-meta .run-info:empty { display: none; }
+
+/* The status: a lamp and a word, amber while running. */
+:root .output-card .status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font: 650 14px var(--sans);
+  text-transform: lowercase;
+  color: var(--instrument-muted);
+  background: transparent;
+  border: 0;
+  padding: 0;
+}
+
+:root .output-card .status::first-letter { text-transform: uppercase; }
+
+:root .output-card .status::before {
+  content: "";
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--instrument-muted);
+}
+
+:root .output-card .status.running,
+:root .output-card .status.stopping { color: var(--run-ink); }
+:root .output-card .status.running::before,
+:root .output-card .status.stopping::before { background: var(--run-ink); }
+:root .output-card .status.completed { color: var(--ok-ink); }
+:root .output-card .status.completed::before { background: var(--ok-ink); }
+:root .output-card .status.failed,
+:root .output-card .status.interrupted { color: var(--bad-ink); }
+:root .output-card .status.failed::before,
+:root .output-card .status.interrupted::before { background: var(--bad-ink); }
+
+@media (prefers-reduced-motion: no-preference) {
+  .session-summary[data-active=true] .status::before,
+  .bar-lamp {
+    animation: run-lamp 1.6s ease-in-out infinite;
+  }
+  @keyframes run-lamp {
+    50% { opacity: .35; }
+  }
+}
+
+:root .output-toolbar {
+  min-height: 46px;
+  padding: 0;
+  border-bottom: 1px solid var(--line);
+}
+
+:root .output-tabs { gap: 24px; }
+:root .output-tabs button { font-size: 14px; font-weight: 650; color: var(--muted); }
+:root .output-tabs button.selected { color: var(--ink); border-bottom: 2px solid var(--accent); }
+
+:root .output-actions a { font-size: 13.5px; font-weight: 600; color: var(--accent); }
+
+:root .output-empty {
+  min-height: 220px;
+  display: grid;
+  place-content: center;
+  text-align: center;
+  gap: 6px;
+  background: transparent;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  margin: 0;
+}
+
+:root #media-panel, :root #console-panel, :root #monitor-panel { margin: 0; padding-top: 16px; }
+
+/* The live monitor, embedded full width at 78 % of the window. */
+:root #monitor-frame {
+  width: 100%;
+  height: 78vh;
+  min-height: 520px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+:root #console { max-height: 70vh; border-radius: 10px; }
+:root #gallery { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+/* ---- Narrower windows ---- */
+@media (max-width: 1180px) {
+  :root .configuration form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  :root #rig-section { grid-column: 1 / -1; }
+}
+
+@media (max-width: 860px) {
+  :root .configuration form { grid-template-columns: minmax(0, 1fr); }
+  :root #rig-section { grid-column: auto; }
+  :root .launch-footer {
+    grid-template-areas: "estimate button";
+    margin: 8px -16px 0;
+    padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+  }
+  :root .launch-footer .launch-summary, :root .launch-footer #launch-note { display: none; }
+  :root .launch { min-width: 0; padding: 9px 16px; }
+  :root .launch-footer .duration-value { font-size: 15px; }
+  :root .launch-footer .duration-counts { display: none; }
+  .bar-session .quiet, .bar-session-text { display: none; }
+  :root .results-column {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "upload" "output" "history";
+  }
+  .session-summary { flex-direction: column; align-items: stretch; gap: 10px; padding: 14px 16px; }
+  .session-meta { padding-left: 0; border-left: 0; padding-top: 10px; border-top: 1px solid var(--instrument-line); }
+  .readout-value { font-size: 34px; }
+  :root .output-toolbar { flex-wrap: wrap; row-gap: 4px; }
+  :root .output-actions { margin-left: auto; }
+  :root #gallery { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  :root #monitor-frame { height: 78vh; min-height: 480px; }
+}
+
+/* ---- Measure rig in the sidebar (workspace_bench.js) ---- */
+.nav-item.nav-measure { --icon: url("/icon-measure.svg"); }

@@ -76,6 +76,11 @@ PAGE_ASSETS = {
     "/icon-run.svg": ("icon-run.svg", "image/svg+xml"),
     "/icon-data.svg": ("icon-data.svg", "image/svg+xml"),
     "/icon-history.svg": ("icon-history.svg", "image/svg+xml"),
+    "/icon-measure.svg": ("icon-measure.svg", "image/svg+xml"),
+    # The Composite Run page (Bench's Setup / Output panes, Console's
+    # session clock) and its script; loaded after the Split layer.
+    "/workspace_run.css": ("workspace_run.css", "text/css; charset=utf-8"),
+    "/workspace_bench.js": ("workspace_bench.js", "text/javascript; charset=utf-8"),
     # The Data view (workspace_data.py serves its reads).
     "/workspace_data.js": ("workspace_data.js", "text/javascript; charset=utf-8"),
     "/workspace_data.css": ("workspace_data.css", "text/css; charset=utf-8"),

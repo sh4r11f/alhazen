@@ -6,11 +6,8 @@
  *   1. The sidebar is an icon rail (64 px) that opens over the page on
  *      hover or keyboard focus, labels and all, and stays open on wide
  *      windows (1500 px and up). The Penrose lockup heads it.
- *   2. The Run page is two panes, always: the settings on the left (the
- *      paper surface), the session on the right — the instrument, on the
- *      darker --instrument surface, held in the window while the form
- *      scrolls. Before a run it shows the last session; during one, the
- *      live monitor; after it, media, console and upload.
+ *   2. (Run page: replaced in the Composite design by Bench's Setup /
+ *      Output panes, workspace_run.css.)
  *   3. One voice: Manrope everywhere, mono only for identifiers (paths,
  *      hashes, seeds, parameter keys, the console). The mono uppercase
  *      labels and eyebrows of the earlier design are set in plain type or
@@ -287,199 +284,9 @@ main { padding: 0 32px; max-width: none; }
 
 .quiet { font-weight: 600; }
 
-/* ---- The Run page: settings | instrument ---- */
-.workspace-grid {
-  gap: 0;
-  align-items: stretch;
-  border-top: 1px solid var(--line);
-}
-
-@media (min-width: 861px) {
-  .workspace-grid {
-    grid-template-columns: minmax(380px, 460px) minmax(0, 1fr);
-    margin-right: -32px;
-  }
-}
-
-@media (max-width: 860px) {
-  .workspace-grid { grid-template-columns: minmax(0, 1fr); }
-}
-
-/* The settings pane: no card, on the paper. */
-.configuration.card {
-  background: transparent;
-  border: 0;
-  border-radius: 0;
-  box-shadow: none;
-  padding-right: 28px;
-}
-
-.configuration > .card-heading {
-  min-height: 0;
-  padding: 18px 0 4px;
-  border: 0;
-}
-
-.configuration > .card-heading h2 { font-size: 15px; font-weight: 700; }
-
-/* The steps: a small numbered marker per stage on a hairline, sans. */
-.configuration form { padding: 10px 0 0; }
-
-.stage,
-.form-section.stage,
-#task-parameters.stage {
-  padding: 0 0 18px 36px;
-  margin: 0;
-}
-
-.stage::before {
-  width: 22px;
-  height: 22px;
-  top: 1px;
-  font-size: 12px;
-  font-weight: 700;
-  border-radius: 50%;
-  color: var(--node-ink);
-  background: var(--node);
-  border: 1px solid var(--line);
-  content: counter(stage);
-}
-
-.stage::after { left: 10.5px; top: 28px; width: 1px; background: var(--line); }
-
-.stage:focus-within::before {
-  color: var(--on-accent);
-  background: var(--accent);
-  border-color: var(--accent);
-}
-
-.stage:focus-within::after { background: var(--line); }
-
-.stage-title,
-.stage .section-title label {
-  font-size: 14.5px;
-  font-weight: 700;
-  line-height: 24px;
-  margin: 0 0 8px;
-}
-
-.rig-summary {
-  background: var(--surface-2);
-  border: 0;
-  border-radius: 8px;
-}
-
-.rig-facts dd { font-size: 13.5px; }
-
-/* The launch bar: the end of the settings, held at the window's bottom
- * while the form is longer than the window. */
-.launch-footer {
-  margin: 0 -28px 0 0;
-  padding: 14px 28px 16px 0;
-  background: var(--paper);
-  border-top: 1px solid var(--line);
-  position: sticky;
-  bottom: 0;
-  z-index: 2;
-}
-
-.launch-footer::before { display: none; }
-
-.launch-summary {
-  font-size: 13.5px;
-  font-weight: 650;
-  color: var(--ink);
-  margin: 2px 0 4px;
-}
-
-.launch { width: 100%; min-height: 44px; font-size: 15px; }
-
-/* The instrument pane: the session, on the darker surface, in view all
- * the time; each part scrolls inside it. */
-.instrument-pane {
-  --surface: var(--instrument);
-  --surface-2: var(--instrument-2);
-  --line: var(--instrument-line);
-  min-width: 0;
-  background: var(--instrument);
-  color: var(--instrument-ink);
-  border-left: 1px solid var(--instrument-line);
-}
-
-.results-column {
-  padding: 18px 28px 24px;
-  gap: 0;
-}
-
-.results-column .card {
-  background: transparent;
-  border: 0;
-  border-radius: 0;
-  box-shadow: none;
-}
-
-.results-column .card + .card { border-top: 1px solid var(--instrument-line); }
-
-.results-column .card-heading { min-height: 46px; padding: 0; border: 0; }
-.results-column .card-heading h2 { font-size: 15px; font-weight: 700; }
-
-/* Session first, then upload (once a session has ended), then the runs. */
-.output-card { order: 0; }
-#upload-card { order: 1; padding: 16px 0; }
-.history-card { order: 2; }
-
-.run-info { padding: 0 0 10px; font-size: 13.5px; color: var(--instrument-muted); }
-
-.output-toolbar { padding: 0; border-bottom: 1px solid var(--instrument-line); }
-.output-tabs button { font-size: 14px; font-weight: 650; color: var(--instrument-muted); }
-.output-tabs button.selected { color: var(--instrument-ink); border-bottom: 2px solid var(--accent); }
-
-#media-panel, #console-panel, #monitor-panel { margin-top: 14px; }
-
-.output-empty {
-  background: var(--instrument-2);
-  border-radius: 10px;
-  border: 0;
-  min-height: 260px;
-  display: grid;
-  place-content: center;
-  text-align: center;
-  gap: 6px;
-  padding: 24px;
-}
-
-.output-empty h3 { font-size: 16px; font-weight: 700; color: var(--instrument-ink); }
-.output-empty p { font-size: 13.5px; color: var(--instrument-muted); }
-
-#console { border-radius: 10px; }
-#monitor-frame { border-radius: 10px; border: 1px solid var(--instrument-line); }
-.monitor-note { color: var(--instrument-muted); font-size: 13.5px; }
-
-.status {
-  padding: 0;
-  background: transparent !important;
-  border: 0 !important;
-}
-
-#history .history-text strong { font-weight: 700; }
-
-@media (min-width: 861px) {
-  .results-column {
-    position: sticky;
-    top: 0;
-    height: 100vh;
-    max-height: 100vh;
-    overflow-y: auto;
-  }
-  .output-card { flex: 1 0 auto; min-height: 380px; }
-  .history-card { flex: 0 0 auto; }
-  #history { max-height: 260px; overflow: auto; }
-  #monitor-frame { min-height: calc(100vh - 220px); }
-}
-
-@media (min-width: 861px) and (max-height: 719px) {
-  .results-column { position: static; height: auto; max-height: none; }
-}
+/* ---- The Run page ----
+ * The Composite design replaced Split's settings | instrument panes with
+ * Bench's Setup / Output panes: workspace_run.css, loaded after this file. */
 
 /* ---- Home, General, Data, History: one pane, same language ---- */
 .home, .manage-page, #data-view { max-width: 1180px; padding-bottom: 40px; }
@@ -519,21 +326,6 @@ main { padding: 0 32px; max-width: none; }
   .nav-item { min-height: 38px; padding: 0 10px; gap: 8px; font-size: 14px; }
   .sidebar-bottom { display: none; }
   main { padding: 0 16px; }
-  .workspace-grid { margin-right: 0; border-top: 0; }
-  .configuration.card { padding-right: 0; }
-  .launch-footer { margin: 0; padding: 14px 0 16px; position: sticky; bottom: 0; }
-  .instrument-pane {
-    margin: 18px -16px 0;
-    border-left: 0;
-    border-top: 1px solid var(--instrument-line);
-  }
-  .results-column {
-    display: flex;
-    flex-direction: column;
-    padding: 16px;
-  }
-  .output-card { min-height: 0; }
-  #monitor-frame { min-height: 560px; }
   .page-heading { padding: 16px 0 12px; }
   .page-heading h1, .home-heading h1 { font-size: 22px; }
   .m-panel { padding: 16px; }
@@ -545,14 +337,3 @@ main { padding: 0 32px; max-width: none; }
 .up-dest .up-run { font-family: var(--mono); font-size: 12.5px; }
 .up-title { font-size: 15px; font-weight: 700; }
 
-/* The live monitor gets the pane's height; the column scrolls past it to
- * the recent runs. */
-@media (min-width: 861px) {
-  #monitor-panel:not([hidden]) { flex: 1 0 auto; overflow: visible; }
-  #monitor-frame { height: calc(100vh - 210px); min-height: 520px; }
-}
-
-@media (max-width: 860px) {
-  .output-toolbar { flex-wrap: wrap; row-gap: 4px; }
-  .output-actions { margin-left: auto; }
-}

@@ -2585,6 +2585,12 @@ async function refreshRun() {
     if (run.error) info += ' · ' + run.error;
   }
   $('run-info').textContent = info;
+  // The session clock (workspace_bench.js) reads these: when the selected
+  // run started, when it finished (empty while it runs) and whether it is
+  // the active one.
+  $('run-info').dataset.started = run?.started || '';
+  $('run-info').dataset.finished = active ? '' : (run?.finished || '');
+  $('run-info').dataset.active = String(active);
   // Only the active run can be stopped; while it stops, the button waits.
   $('stop').hidden = !run || run.id !== state.active;
   $('stop').disabled = run?.status === 'stopping';
