@@ -25,6 +25,31 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+### Changed
+
+- **BREAKING (run-directory layout): a run's data files no longer repeat the
+  task in their names.** `sub-01_ses-001_run-01_task-saccade-bias_20260928_trials.csv`
+  is now `sub-01_ses-001_run-01_20260928_trials.csv`; the run folder
+  (`run-01_task-saccade-bias/`) is unchanged and still names the task. The
+  repeated name made paths too long for a Windows machine without long paths
+  switched on (260 characters), where the tables could not be written at the
+  end of a session. Runs recorded before this keep their names and are still
+  read; nothing in alhazen needed changing to read both, because every reader
+  finds a table by its ending. `alhazen.data.naming.base_name` lost its
+  `task_name` argument. By the policy above this is a major version; the
+  migration is [docs/data.md](docs/data.md) §7.
+
+### Added
+
+- **A run folder too deep for Windows is refused before the session starts.**
+  On a Windows machine without long paths, `SessionPaths.create` raises a
+  `DataError` when the longest file the run can write would have a path of
+  260 characters or more. It names the path, its length and how much shorter
+  the data root must be, and creates nothing. Before, the session ran to the
+  end and then failed to write its trials.
+
 ## 2.13.0 - 2026-10-08
 
 ### Added

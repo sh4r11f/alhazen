@@ -4,19 +4,27 @@ from __future__ import annotations
 
 import csv
 import json
+from pathlib import Path
 
 import pytest
 import yaml
 
 from alhazen.core.events import Event
 from alhazen.data import naming
+from alhazen.data import paths as paths_module
 from alhazen.data.manifest import add_to_manifest, verify_manifest, write_manifest
 from alhazen.data.participants import (
     check_participant,
     ensure_participant,
     participants_path,
 )
-from alhazen.data.paths import RunFolder, SessionPaths, find_runs
+from alhazen.data.paths import (
+    LONGEST_FILE_ENDING,
+    RunFolder,
+    SessionPaths,
+    find_runs,
+    windows_path_limit,
+)
 from alhazen.errors import DataError
 from alhazen.session.recorder import DataRecorder, ordered_trial_columns
 
@@ -50,9 +58,101 @@ class TestSessionPaths:
             tmp_path, "M1", 3, 2, "mib-quest", "20260826", experiment_version="0.1.0"
         )
         assert paths.run_dir == tmp_path / "v0.1.0" / "sub-M1" / "ses-003" / "run-02_task-mib-quest"
-        assert paths.trials_path.name == "sub-M1_ses-003_run-02_task-mib-quest_20260826_trials.csv"
+        # The task is in the folder's name only: said again in every file
+        # name (as before 3.0), it made paths too long for Windows.
+        assert paths.trials_path.name == "sub-M1_ses-003_run-02_20260826_trials.csv"
         assert paths.figures_dir.is_dir()
         assert paths.snapshot_path.parent == paths.run_dir
+
+
+class TestARunFolderTooDeepForWindows:
+    """A path of 260 characters or more cannot be opened on a Windows machine
+    without long paths switched on. A run's tables are written when the
+    session ends, so the refusal has to come before it starts."""
+
+    @staticmethod
+    def create(data_root, limit, monkeypatch):
+        # The limit is the machine's (None off Windows, and on a Windows
+        # machine with long paths on), so the tests set it rather than
+        # depend on where they happen to run.
+        monkeypatch.setattr(paths_module, "windows_path_limit", lambda: limit)
+        return SessionPaths.create(
+            data_root, "M1", 3, 2, "mib-quest", "20260826", experiment_version="0.1.0"
+        )
+
+    @staticmethod
+    def longest(data_root):
+        """The absolute path of the longest file the run above can write."""
+        run_dir = data_root / "v0.1.0" / "sub-M1" / "ses-003" / "run-02_task-mib-quest"
+        return str(run_dir / f"sub-M1_ses-003_run-02_20260826{LONGEST_FILE_ENDING}")
+
+    def test_a_path_one_short_of_the_limit_is_accepted(self, tmp_path, monkeypatch):
+        limit = len(self.longest(tmp_path)) + 1
+        paths = self.create(tmp_path, limit, monkeypatch)
+        assert paths.run_dir.is_dir()
+
+    def test_a_path_at_the_limit_is_refused_with_the_numbers(self, tmp_path, monkeypatch):
+        longest = self.longest(tmp_path)
+        with pytest.raises(DataError) as refusal:
+            self.create(tmp_path, len(longest), monkeypatch)
+        message = str(refusal.value)
+        # The path, its length, the limit and how much shorter it must get:
+        # what a person needs to fix it without counting characters.
+        assert longest in message
+        assert f"is {len(longest)} characters" in message
+        assert f"refuses {len(longest)} or more" in message
+        assert "at least 1 character(s) shorter" in message
+
+    def test_a_refusal_creates_nothing(self, tmp_path, monkeypatch):
+        data_root = tmp_path / "data"
+        with pytest.raises(DataError):
+            self.create(data_root, 10, monkeypatch)
+        assert not data_root.exists()
+
+    def test_a_relative_data_root_is_measured_from_the_working_directory(
+        self, tmp_path, monkeypatch
+    ):
+        # The file is opened relative to the working directory, so that is
+        # the length Windows sees; the relative path alone would pass.
+        monkeypatch.chdir(tmp_path)
+        relative = Path("data")
+        absolute_length = len(self.longest(tmp_path / "data"))
+        assert len(self.longest(relative)) < absolute_length
+        with pytest.raises(DataError):
+            self.create(relative, absolute_length, monkeypatch)
+
+    def test_no_limit_means_no_refusal(self, tmp_path, monkeypatch):
+        deep = tmp_path / ("d" * 100)
+        assert self.create(deep, None, monkeypatch).run_dir.is_dir()
+
+    def test_no_file_of_a_run_is_longer_than_the_one_measured(self, tmp_path):
+        # The refusal measures one name. Every name SessionPaths gives out,
+        # and the live monitor's two files under figures/, must fit in it.
+        from alhazen.live_monitor.runtime import SAVED_PAGE, SAVED_STATE
+
+        # The shortest base there can be (a one-letter subject), since the
+        # fixed names do not shrink with it.
+        base = naming.base_name("a", 1, 1, "20260826")
+        paths = SessionPaths(run_dir=tmp_path, base=base)
+        measured = len(f"{base}{LONGEST_FILE_ENDING}")
+        names = [
+            getattr(paths, name).relative_to(tmp_path).as_posix()
+            for name in dir(SessionPaths)
+            if name.endswith(("_path", "_dir")) and name != "run_dir"
+        ]
+        names += [f"figures/{SAVED_STATE}", f"figures/{SAVED_PAGE}"]
+        assert len(names) > 12
+        too_long = [name for name in names if len(name) > measured]
+        assert not too_long
+
+    def test_the_limit_is_none_off_windows_and_260_or_none_on_it(self):
+        import sys
+
+        limit = windows_path_limit()
+        if sys.platform == "win32":
+            assert limit in (None, 260)
+        else:
+            assert limit is None
 
     def test_refuses_overwriting_recorded_run(self, tmp_path):
         paths = SessionPaths.create(

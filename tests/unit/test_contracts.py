@@ -164,6 +164,18 @@ class TestRunLayout:
             "migration: every script that walks a data root to find runs depends on them."
         )
 
+    def test_what_a_runs_data_files_start_with_is_unchanged(self, tmp_path):
+        # `{base}` in the names above. 3.0 took the task out of it (the run
+        # folder names the task), so that a run's paths fit Windows' limit of
+        # 260 characters; docs/data.md has the migration.
+        paths = SessionPaths.create(
+            tmp_path, "M1", 3, 2, "mib-quest", "20260826", experiment_version="0.4.0"
+        )
+        assert paths.base == BASELINE["run_file_base"], (
+            "What a run's data files start with changed. File names change only in a major "
+            "version, with a migration."
+        )
+
 
 class TestTrialRecordColumns:
     """The names the framework writes into a trial record.

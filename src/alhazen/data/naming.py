@@ -2,7 +2,10 @@
 
 BIDS-inspired, not BIDS-compliant:
 ``v<version>/sub-<ID>/ses-<NNN>/run-<NN>_task-<name>/`` with per-file
-basenames ``sub-<ID>_ses-<NNN>_run-<NN>_task-<name>_<YYYYMMDD>``. The first
+basenames ``sub-<ID>_ses-<NNN>_run-<NN>_<YYYYMMDD>``. The task is in the run
+folder's name and not in the file names (it was in both before 3.0): saying it
+twice made a run's paths long enough to pass Windows' 260-character limit, and
+a file over that limit cannot be written at all. The first
 level is the experiment's version (alhazen 2.0): data recorded by two
 versions of an experiment's protocol never share a folder. Before 2.0 the
 layout started at ``sub-<ID>/``; `parse_version_dirname` is what lets a reader
@@ -86,5 +89,14 @@ def parse_run_task(name: str) -> str | None:
     return match.group(2) if match else None
 
 
-def base_name(subject: str, session: int, run: int, task_name: str, date_yyyymmdd: str) -> str:
-    return f"sub-{subject}_ses-{session:03d}_run-{run:02d}_task-{task_name}_{date_yyyymmdd}"
+def base_name(subject: str, session: int, run: int, date_yyyymmdd: str) -> str:
+    """What every data file of one run starts with: ``sub-M1_ses-003_run-02_20260826``.
+
+    The task is left out on purpose. The run folder these files sit in
+    already names it (`run_dirname`), and repeating it here cost its whole
+    length a second time in every path. Before 3.0 the name was
+    ``sub-<ID>_ses-<NNN>_run-<NN>_task-<name>_<YYYYMMDD>``; readers find a
+    run's files by their ending (``*_trials.csv``) and its date by the last
+    ``_`` segment, so they read both forms.
+    """
+    return f"sub-{subject}_ses-{session:03d}_run-{run:02d}_{date_yyyymmdd}"

@@ -62,7 +62,7 @@ def write_run(
                 / naming.session_dirname(session)
                 / naming.run_dirname(run, task)
             ),
-            base=naming.base_name(subject, session, run, task, date),
+            base=naming.base_name(subject, session, run, date),
         )
     else:
         paths = SessionPaths.create(
