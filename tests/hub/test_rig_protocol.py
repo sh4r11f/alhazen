@@ -13,7 +13,12 @@ from alhazen.hub import protocol
 FILES = [
     {"path": "z/trials.csv", "size": 12, "sha256": "b" * 64},
     {"path": "session.json", "size": 3, "sha256": "a" * 64},
-    {"path": "figures/émotion naïve.png", "size": 0, "sha256": "c" * 64},
+    # An empty file declares the empty digest (the hub refuses anything else).
+    {
+        "path": "figures/émotion naïve.png",
+        "size": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    },
 ]
 META = {"subject_code": "01", "mode": "run", "rig_alias": "läb", "started_at": None}
 
