@@ -625,7 +625,7 @@ class Handler(BaseHTTPRequestHandler):
         sandboxing CSP, with a sanitised name and an allowlisted type."""
         from alhazen.cli.workspace_hub import _filename, stream_type
 
-        with stream.open() as response:
+        with stream.connect() as response:
             length = response.headers.get("Content-Length")
             self.send_response(200)
             self.send_header("Content-Type", stream_type(response))

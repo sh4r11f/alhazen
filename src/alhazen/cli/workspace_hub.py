@@ -50,7 +50,6 @@ from alhazen.hub.installation import (
     InstallStore,
     check_identifier,
     check_sha256,
-    compatibility_problems,
 )
 from alhazen.hub.source import pack_and_upload
 from alhazen.hub.source import preview as source_preview
@@ -93,10 +92,10 @@ class HubRouteError(Exception):
 
 @dataclass
 class ProxyStream:
-    """A download to relay: ``open()`` yields the hub's response (HubError
+    """A download to relay: ``connect()`` yields the hub's response (HubError
     before any byte is sent), ``filename`` is the attachment's name."""
 
-    open: Callable[[], AbstractContextManager[HTTPResponse]]
+    connect: Callable[[], AbstractContextManager[HTTPResponse]]
     filename: str
 
 
@@ -326,7 +325,7 @@ class HubAdapter:
         if spec.kind == "stream":
             client = self._client_for(self._signed_in())
             return ProxyStream(
-                open=lambda: self._open_stream(client, path, query), filename=spec.filename
+                connect=lambda: self._open_stream(client, path, query), filename=spec.filename
             )
         if spec.kind == "zip":
             if upload is None:
@@ -354,7 +353,7 @@ class HubAdapter:
         """The hub's response for a download; a rejected bearer is forgotten."""
         with ExitStack() as stack:
             try:
-                response = stack.enter_context(client.open("GET", path, query=query))
+                response = stack.enter_context(client.stream("GET", path, query=query))
             except HubError as exc:
                 if exc.status == 401:
                     self.state.clear_credential()
@@ -434,7 +433,9 @@ class HubAdapter:
         count = 0
         for job in self.outbox.visible(credential.base, credential.user_id):
             if job.get("status") in ACTIVE:
-                self.uploader.pause(job["id"])
+                self.uploader.pause(
+                    job["id"], "signed_out", "Signed out of the hub; sign in again to resume"
+                )
                 count += 1
         return count
 
@@ -452,6 +453,7 @@ class HubAdapter:
             "installed": [self._install_public(r) for r in self.installs.records()],
             "jobs": [public_job(j) for j in jobs],
             "run_active": self.busy(),
+            "outbox_problems": self.outbox.problems(),
             "interpreters": [{"path": p, "label": label} for p, label in interpreters.items()],
             "trust_statement": TRUST_STATEMENT,
         }
@@ -567,7 +569,16 @@ class HubAdapter:
                 sha256, intact=True, error={"code": "interpreter_unusable", "message": str(exc)}
             )
             raise InstallError(400, "interpreter_unusable", str(exc)) from exc
-        problems = compatibility_problems(record, probe)
+        if _python_release(probe.get("python_version")) is None:
+            raise InstallError(
+                400, "interpreter_unusable", "The interpreter did not report its Python version"
+            )
+        problems = self.packages().compatibility_problems(
+            record,
+            python_version=_python_release(probe.get("python_version")),
+            alhazen_version=str(probe.get("alhazen_version") or ""),
+            platform=sys.platform,
+        )
         if problems:
             message = "This interpreter cannot run the release: " + "; ".join(problems)
             self.installs.update(
@@ -781,7 +792,9 @@ class HubAdapter:
                 "install_sha256": binding["install_sha256"],
                 "files": None,
                 "files_digest": None,
-                "session_id": (existing or {}).get("session_id"),
+                # Always re-initialised: the hub answers the same session for the
+                # same files and refuses different content under this identity.
+                "session_id": None,
                 "bytes_done": 0,
                 "bytes_total": sum(f["size"] for f in binding["listing"]),
                 "files_done": 0,
@@ -848,6 +861,14 @@ class HubAdapter:
                 error={"code": "cancelled", "message": "Cancelled", "retryable": True},
             )
         return {"job": public_job(job)}
+
+
+def _python_release(text: Any) -> tuple[int, int] | None:
+    """``(3, 11)`` from the probe's ``sys.version`` text; None when unreadable
+    (the package module then judges against this interpreter, so an
+    unreadable answer is refused below rather than guessed)."""
+    match = re.match(r"\s*(\d+)\.(\d+)", str(text or ""))
+    return (int(match.group(1)), int(match.group(2))) if match else None
 
 
 LocalHandler = Callable[[HubAdapter, dict[str, str], dict[str, Any]], tuple[int, Any]]

@@ -43,8 +43,6 @@ INSTALLS_FILE = "installs.json"
 MAX_RELEASE_BYTES = 256 * 1024 * 1024
 SHA256 = re.compile(r"[0-9a-f]{64}")
 IDENTIFIER = re.compile(r"[A-Za-z0-9_-]{1,128}")
-SLUG = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
-SIMPLE_VERSION = re.compile(r"[0-9]+(\.[0-9]+){0,3}([A-Za-z0-9.+-]*)")
 # Shown before the operator trusts a release, and recorded with the trust.
 TRUST_STATEMENT = (
     "Installing runs this experiment's code on this computer as your user account. "
@@ -61,6 +59,15 @@ class PackageModule(Protocol):
     PackageError: type[Exception]
 
     def inspect_bundle(self, path: Path) -> Any: ...
+
+    def compatibility_problems(
+        self,
+        manifest: Any,
+        *,
+        python_version: tuple[int, int] | None = None,
+        alhazen_version: str | None = None,
+        platform: str | None = None,
+    ) -> list[str]: ...
 
     def extract_bundle(self, path: Path, destination: Path) -> Any: ...
 
@@ -89,39 +96,6 @@ def check_sha256(value: Any) -> str:
     if not isinstance(value, str) or not SHA256.fullmatch(value):
         raise InstallError(400, "invalid_request", "sha256 must be 64 lowercase hex digits")
     return value
-
-
-def version_tuple(text: Any) -> tuple[int, ...]:
-    """The leading numeric release of a version string, ``2.13.0rc1`` ->
-    ``(2, 13, 0)``; ``()`` when it has none."""
-    match = re.match(r"\s*([0-9]+(?:\.[0-9]+)*)", str(text or ""))
-    return tuple(int(part) for part in match.group(1).split(".")) if match else ()
-
-
-def _at_least(actual: tuple[int, ...], minimum: tuple[int, ...]) -> bool:
-    width = max(len(actual), len(minimum))
-    return actual + (0,) * (width - len(actual)) >= minimum + (0,) * (width - len(minimum))
-
-
-def compatibility_problems(manifest: dict[str, Any], probe: dict[str, Any]) -> list[str]:
-    """Why an interpreter (``workspace.probe_interpreter``'s answer) cannot run
-    a release, from the manifest's declared minimums. Empty: compatible."""
-    problems = []
-    python = version_tuple((str(probe.get("python_version") or "").split() or [""])[0])
-    needed = version_tuple(manifest.get("python_min"))
-    if needed and (not python or not _at_least(python, needed)):
-        problems.append(
-            f"needs Python {manifest.get('python_min')} or newer; this interpreter is "
-            f"{probe.get('python_version', 'unknown')}"
-        )
-    alhazen = version_tuple(probe.get("alhazen_version"))
-    needed = version_tuple(manifest.get("alhazen_min"))
-    if needed and (not alhazen or not _at_least(alhazen, needed)):
-        problems.append(
-            f"needs alhazen {manifest.get('alhazen_min')} or newer; this interpreter has "
-            f"{probe.get('alhazen_version', 'none')}"
-        )
-    return problems
 
 
 def sha256_file(path: Path) -> str:
@@ -372,19 +346,15 @@ class InstallStore:
     ) -> None:
         if info.sha256 != sha256:
             raise InstallError(409, "hash_mismatch", "The package's digest differs")
-        name, number = manifest.get("name"), manifest.get("version")
-        if not isinstance(name, str) or not SLUG.fullmatch(name):
-            raise InstallError(422, "invalid_package", "The package's name is not a slug")
-        if not isinstance(number, str) or not SIMPLE_VERSION.fullmatch(number):
-            raise InstallError(422, "invalid_package", "The package's version is not valid")
+        # inspect_bundle has validated the manifest (name a slug, version
+        # MAJOR.MINOR.PATCH, entry point run.py), so both are path-safe here.
+        name, number = manifest["name"], manifest["version"]
         raw = version.get("manifest")
         listed: dict[str, Any] = raw if isinstance(raw, dict) else {}
         if version.get("version", number) != number or listed.get("name", name) != name:
             raise InstallError(
                 409, "conflict", "The package's name or version differs from the hub's record"
             )
-        if manifest.get("entrypoint", "run.py") != "run.py":
-            raise InstallError(422, "invalid_package", "The package's entry point is not run.py")
         platforms = manifest.get("platforms")
         if isinstance(platforms, list) and platform not in platforms:
             raise InstallError(

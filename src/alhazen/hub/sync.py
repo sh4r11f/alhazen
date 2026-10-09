@@ -294,6 +294,7 @@ class Outbox:
         self.directory = directory
         self.directory.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self._problems: list[str] = []
 
     def _path(self, job_id: str) -> Path:
         if not job_id.isalnum():
@@ -327,17 +328,30 @@ class Outbox:
             return self.save(job)
 
     def all(self) -> list[dict[str, Any]]:
+        """Every readable job, newest first. An unreadable record is left on
+        disk untouched and named in :meth:`problems` (shown on the page),
+        so one damaged file never hides the others."""
         jobs = []
+        problems = []
         with self._lock:
             for path in sorted(self.directory.glob("*.json")):
                 try:
                     value = json.loads(path.read_text(encoding="utf-8"))
                 except (OSError, ValueError) as exc:
-                    log.error("Skipping unreadable upload job %s: %s", path.name, exc)
+                    problems.append(f"Upload job record {path.name} cannot be read: {exc}")
                     continue
                 if isinstance(value, dict):
                     jobs.append(value)
+                else:
+                    problems.append(f"Upload job record {path.name} is not an object")
+            self._problems = problems
         return sorted(jobs, key=lambda j: str(j.get("created_at", "")), reverse=True)
+
+    def problems(self) -> list[str]:
+        """Records the last listing could not read."""
+        self.all()
+        with self._lock:
+            return list(self._problems)
 
     def visible(self, base: str | None, user_id: str | None) -> list[dict[str, Any]]:
         """The jobs bound to exactly this hub and account."""
@@ -407,7 +421,7 @@ class Uploader:
         self._queue: queue.Queue[str] = queue.Queue()
         self._stop = threading.Event()
         self._cancel: set[str] = set()
-        self._pause: set[str] = set()
+        self._pause: dict[str, tuple[str, str]] = {}
         self._flags = threading.Lock()
         self._thread = threading.Thread(target=self._loop, name="hub-uploader", daemon=True)
         self._thread.start()
@@ -421,16 +435,20 @@ class Uploader:
     def submit(self, job_id: str) -> None:
         with self._flags:
             self._cancel.discard(job_id)
-            self._pause.discard(job_id)
+            self._pause.pop(job_id, None)
         self._queue.put(job_id)
 
     def cancel(self, job_id: str) -> None:
         with self._flags:
             self._cancel.add(job_id)
 
-    def pause(self, job_id: str) -> None:
+    def pause(
+        self, job_id: str, code: str = "paused", message: str = "Paused by the operator"
+    ) -> None:
+        """Stop a job at its next unit of work, as ``paused`` with ``code``
+        (one of RESUMABLE_PAUSES lets the same account's sign-in resume it)."""
         with self._flags:
-            self._pause.add(job_id)
+            self._pause[job_id] = (code, message)
 
     def resume_for(self, base: str, user_id: str) -> int:
         """Queue this account's jobs that paused for sign-in reasons."""
@@ -470,7 +488,7 @@ class Uploader:
                 if job["id"] in self._cancel:
                     raise _Cancelled()
                 if job["id"] in self._pause:
-                    raise _Paused("paused", "Paused by the operator")
+                    raise _Paused(*self._pause.pop(job["id"]))
             if self._stop.is_set():
                 raise _Paused("interrupted", "The dashboard is stopping")
             if not self.busy():
@@ -523,8 +541,9 @@ class Uploader:
         except _Fenced as exc:
             self._finish(job_id, "paused", exc.code, str(exc), True)
         except SyncError as exc:
+            # A changed session needs a new preview and consent: never resumable.
             status = "paused" if exc.code == "local_changed" else "failed"
-            self._finish(job_id, status, exc.code, exc.message, exc.code == "local_changed")
+            self._finish(job_id, status, exc.code, exc.message, False)
         except HubError as exc:
             if exc.status == 401:
                 self.state.clear_credential()

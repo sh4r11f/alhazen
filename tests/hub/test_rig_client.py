@@ -8,8 +8,8 @@ import json
 import os
 import stat
 import sys
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 from tests.hub.rig_support import FakeHub
