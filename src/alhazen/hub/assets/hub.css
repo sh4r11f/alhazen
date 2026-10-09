@@ -736,7 +736,7 @@ a:hover { color: var(--accent-ink); text-decoration-thickness: 2px; }
   .hero { padding: 16px 0 0; }
   .hero .lede { font-size: 1.1rem; margin-top: 18px; }
   .hero .actions { margin-top: 28px; width: 100%; }
-  .hero .actions .btn { flex: 1 1 140px; }
+  .hero .actions .btn { flex: 1 1 100%; }
   .block { margin-top: 44px; }
   .features { grid-template-columns: minmax(0, 1fr); gap: 24px; margin-top: 48px; }
   .preview { margin-top: 44px; }
