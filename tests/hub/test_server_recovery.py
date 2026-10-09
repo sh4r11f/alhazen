@@ -604,3 +604,57 @@ class TestExportStreamLifetime:
         while pool.checkedout() and time.monotonic() < deadline:
             time.sleep(0.05)
         assert pool.checkedout() == 0
+
+
+def test_long_seal_over_real_http(hub, tmp_path, monkeypatch):
+    """Review MA2 over a real socket: uvicorn serving the app, an httpx client
+    with the rig's 20 s timeout. complete answers 202 well inside it while a
+    slow seal runs, and the receipt arrives once the seal ends."""
+    import socket
+
+    import httpx
+    import uvicorn
+
+    from alhazen.hub import app as hub_app
+
+    ada, bob, eid, vid = ready(hub, tmp_path)
+    session = bob.upload_session(eid, vid, {"a": b"abcd"}, complete=False)
+    release = threading.Event()
+    store = service(hub).store
+    real_install = store.install_session
+
+    def slow_install(*args, **kwargs):
+        release.wait(15)
+        return real_install(*args, **kwargs)
+
+    monkeypatch.setattr(store, "install_session", slow_install)
+    monkeypatch.setattr(hub_app, "COMPLETE_WAIT_SECONDS", 0.3)
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    server = uvicorn.Server(
+        uvicorn.Config(hub.app, host="127.0.0.1", port=port, log_level="warning")
+    )
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    try:
+        deadline = time.monotonic() + 10
+        while not server.started and time.monotonic() < deadline:
+            time.sleep(0.05)
+        url = f"http://127.0.0.1:{port}/api/hub/v1/sessions/{session['id']}/complete"
+        with httpx.Client(timeout=20.0) as client:
+            started = time.monotonic()
+            first = client.post(url, headers=bob.headers())
+            assert first.status_code == 202 and time.monotonic() - started < 5
+            assert first.json()["status"] == "sealing" and first.headers["retry-after"] == "5"
+            release.set()
+            for _ in range(100):
+                done = client.post(url, headers=bob.headers())
+                if done.status_code == 200:
+                    break
+                time.sleep(0.05)
+        assert done.status_code == 200 and done.json()["status"] == "committed"
+    finally:
+        release.set()
+        server.should_exit = True
+        thread.join(10)

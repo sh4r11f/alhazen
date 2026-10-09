@@ -870,10 +870,12 @@ def _renewer(hub: Hub, session_id: str, token: str) -> Any:
     return renew
 
 
-def _release(hub: Hub, session_id: str, token: str) -> None:
+def _release(hub: Hub, session_id: str, token: str) -> bool:
     """Give up this sealer's claim so a retry can seal at once (only if it is
-    still ours). Best effort: if the database is unreachable the lease simply
-    runs out and reconciliation takes over."""
+    still ours). Returns False when the database could not be reached; the
+    claim's lease then runs out and reconciliation takes over, which is the
+    designed fallback, so callers only log it before re-raising their own
+    error."""
     try:
         with hub.db.transaction() as conn:
             conn.execute(
@@ -885,10 +887,14 @@ def _release(hub: Hub, session_id: str, token: str) -> None:
                 )
                 .values(seal_lease_until=None)
             )
-    except HubError as exc:
-        log.warning(
-            "session %s: could not release the seal claim (%s); it will lapse", session_id, exc.code
-        )
+    except HubError:
+        return False
+    return True
+
+
+def _release_or_note(hub: Hub, session_id: str, token: str) -> None:
+    if not _release(hub, session_id, token):
+        log.warning("session %s: the seal claim could not be released; it will lapse", session_id)
 
 
 def _settled(hub: Hub, session_id: str) -> dict[str, Any]:
@@ -930,7 +936,7 @@ def seal(hub: Hub, session_id: str, token: str, *, actor: str) -> dict[str, Any]
             "abort the upload and send it again, or ask an operator",
         ) from None
     except BaseException as exc:
-        _release(hub, session_id, token)
+        _release_or_note(hub, session_id, token)
         if isinstance(exc, OSError) and exc.errno in (errno.ENOSPC, errno.EDQUOT):
             raise HubError(
                 507, "insufficient_storage", "The hub ran out of space while sealing; retry later"
@@ -981,7 +987,7 @@ def seal(hub: Hub, session_id: str, token: str, *, actor: str) -> dict[str, Any]
                 )
                 outcome = "committed"
     except BaseException:
-        _release(hub, session_id, token)
+        _release_or_note(hub, session_id, token)
         raise
     if outcome is None:
         return _settled(hub, session_id)
