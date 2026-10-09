@@ -159,7 +159,9 @@ def wait_for(predicate: Any, seconds: float = 10.0) -> bool:
 def tight_hub(tmp_path: Path, clock: Any, **limits: Any) -> Hub:
     settings = make_settings(tmp_path, **limits)
     admin.init_database(settings)
-    return Hub(settings, clock)
+    made = Hub(settings, clock)
+    _EXTRA_HUBS.append(made)
+    return made
 
 
 def staging_upload(hub: Hub, owner: Any, size: int, client_id: str) -> tuple[str, bytes]:
@@ -172,6 +174,23 @@ def staging_upload(hub: Hub, owner: Any, size: int, client_id: str) -> tuple[str
     )
     assert response.status_code == 201, response.text
     return response.json()["id"], payload
+
+
+_EXTRA_HUBS: list[Hub] = []
+
+
+@pytest.fixture(autouse=True)
+def _dispose_engines(request: Any) -> Iterator[None]:
+    """Return every test hub's database connections after the test (on
+    PostgreSQL an undisposed pool per test exhausts max_connections)."""
+    yield
+    hubs = list(_EXTRA_HUBS)
+    _EXTRA_HUBS.clear()
+    used = getattr(request.node, "funcargs", {}).get("hub")
+    if used is not None:
+        hubs.append(used)
+    for each in hubs:
+        service(each).db.dispose()
 
 
 @pytest.fixture
