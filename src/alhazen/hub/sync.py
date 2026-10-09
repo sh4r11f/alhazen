@@ -294,6 +294,7 @@ class Outbox:
         self.directory = directory
         self.directory.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self._problems: list[str] = []
 
     def _path(self, job_id: str) -> Path:
         if not job_id.isalnum():
@@ -327,17 +328,30 @@ class Outbox:
             return self.save(job)
 
     def all(self) -> list[dict[str, Any]]:
+        """Every readable job, newest first. An unreadable record is left on
+        disk untouched and named in :meth:`problems` (shown on the page),
+        so one damaged file never hides the others."""
         jobs = []
+        problems = []
         with self._lock:
             for path in sorted(self.directory.glob("*.json")):
                 try:
                     value = json.loads(path.read_text(encoding="utf-8"))
                 except (OSError, ValueError) as exc:
-                    log.error("Skipping unreadable upload job %s: %s", path.name, exc)
+                    problems.append(f"Upload job record {path.name} cannot be read: {exc}")
                     continue
                 if isinstance(value, dict):
                     jobs.append(value)
+                else:
+                    problems.append(f"Upload job record {path.name} is not an object")
+            self._problems = problems
         return sorted(jobs, key=lambda j: str(j.get("created_at", "")), reverse=True)
+
+    def problems(self) -> list[str]:
+        """Records the last listing could not read."""
+        self.all()
+        with self._lock:
+            return list(self._problems)
 
     def visible(self, base: str | None, user_id: str | None) -> list[dict[str, Any]]:
         """The jobs bound to exactly this hub and account."""
@@ -527,8 +541,9 @@ class Uploader:
         except _Fenced as exc:
             self._finish(job_id, "paused", exc.code, str(exc), True)
         except SyncError as exc:
+            # A changed session needs a new preview and consent: never resumable.
             status = "paused" if exc.code == "local_changed" else "failed"
-            self._finish(job_id, status, exc.code, exc.message, exc.code == "local_changed")
+            self._finish(job_id, status, exc.code, exc.message, False)
         except HubError as exc:
             if exc.status == 401:
                 self.state.clear_credential()

@@ -18,6 +18,7 @@ only shape that leaves this module towards the page.
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import secrets
@@ -67,9 +68,9 @@ def write_private(path: Path, text: str) -> None:
     """Replace ``path`` with ``text``, created owner-only (0600) before any
     byte is written, flushed to disk, then renamed over the target."""
     temporary = path.with_name(f"{path.name}.{secrets.token_hex(4)}.tmp")
-    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    private = functools.partial(os.open, mode=0o600)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        with open(temporary, "x", encoding="utf-8", opener=private) as stream:
             stream.write(text)
             stream.flush()
             os.fsync(stream.fileno())

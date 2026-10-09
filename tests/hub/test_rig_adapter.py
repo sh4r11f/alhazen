@@ -627,6 +627,8 @@ class TestUpload:
         job = wait_job(call, job["id"])
         assert job["status"] == "paused" and job["error"]["code"] == "local_changed"
         assert hub.sessions == {}
+        status, answer = call(f"{API}/local/jobs/{job['id']}/resume", {})
+        assert status == 409 and answer["error"]["code"] == "preview_required"
 
     def test_cancel_keeps_local_files(self, http, hub, workspace):
         call, _ = http
@@ -688,3 +690,13 @@ def test_interrupted_jobs_resume_after_a_restart(tmp_path, workspace, hub):
     finally:
         again.close()
         server.server_close()
+
+
+def test_a_damaged_job_record_is_reported_not_hidden(http, workspace):
+    call, _ = http
+    outbox = workspace.directory / "hub" / "outbox"
+    (outbox / "abc123.json").write_text("{not json")
+    status, out = call(f"{API}/local/status")
+    assert status == 200
+    assert any("abc123.json" in p for p in out["outbox_problems"])
+    assert (outbox / "abc123.json").read_text() == "{not json"

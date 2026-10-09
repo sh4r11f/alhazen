@@ -92,10 +92,10 @@ class HubRouteError(Exception):
 
 @dataclass
 class ProxyStream:
-    """A download to relay: ``open()`` yields the hub's response (HubError
+    """A download to relay: ``connect()`` yields the hub's response (HubError
     before any byte is sent), ``filename`` is the attachment's name."""
 
-    open: Callable[[], AbstractContextManager[HTTPResponse]]
+    connect: Callable[[], AbstractContextManager[HTTPResponse]]
     filename: str
 
 
@@ -325,7 +325,7 @@ class HubAdapter:
         if spec.kind == "stream":
             client = self._client_for(self._signed_in())
             return ProxyStream(
-                open=lambda: self._open_stream(client, path, query), filename=spec.filename
+                connect=lambda: self._open_stream(client, path, query), filename=spec.filename
             )
         if spec.kind == "zip":
             if upload is None:
@@ -353,7 +353,7 @@ class HubAdapter:
         """The hub's response for a download; a rejected bearer is forgotten."""
         with ExitStack() as stack:
             try:
-                response = stack.enter_context(client.open("GET", path, query=query))
+                response = stack.enter_context(client.stream("GET", path, query=query))
             except HubError as exc:
                 if exc.status == 401:
                     self.state.clear_credential()
@@ -453,6 +453,7 @@ class HubAdapter:
             "installed": [self._install_public(r) for r in self.installs.records()],
             "jobs": [public_job(j) for j in jobs],
             "run_active": self.busy(),
+            "outbox_problems": self.outbox.problems(),
             "interpreters": [{"path": p, "label": label} for p, label in interpreters.items()],
             "trust_statement": TRUST_STATEMENT,
         }
@@ -791,7 +792,9 @@ class HubAdapter:
                 "install_sha256": binding["install_sha256"],
                 "files": None,
                 "files_digest": None,
-                "session_id": (existing or {}).get("session_id"),
+                # Always re-initialised: the hub answers the same session for the
+                # same files and refuses different content under this identity.
+                "session_id": None,
                 "bytes_done": 0,
                 "bytes_total": sum(f["size"] for f in binding["listing"]),
                 "files_done": 0,

@@ -194,7 +194,9 @@ class HubClient:
         self.base = base
         self.token = token
         self.timeout = timeout
-        self._opener = opener or build_opener()
+        # The opener's request method (OpenerDirector.open), bound once: an
+        # HTTP request, not a file, so it has no text encoding to name.
+        self._send = (opener or build_opener()).open
 
     def url(self, path: str, query: Mapping[str, str] | None = None) -> str:
         if not path.startswith("/") or "?" in path or "#" in path or "\\" in path:
@@ -205,7 +207,7 @@ class HubClient:
         return text
 
     @contextmanager
-    def open(
+    def stream(
         self,
         method: str,
         path: str,
@@ -244,7 +246,7 @@ class HubClient:
             self.url(path, query), data=body, headers=sent, method=method
         )
         try:
-            response = self._opener.open(request, timeout=self.timeout)
+            response = self._send(request, timeout=self.timeout)
         except urllib.error.HTTPError as exc:
             with exc:
                 retry_after = exc.headers.get("Retry-After") if exc.headers else None
@@ -278,7 +280,7 @@ class HubClient:
 
     def json(self, method: str, path: str, **kwargs: Any) -> Any:
         """A request whose answer is JSON (an empty 204 is None)."""
-        with self.open(method, path, **kwargs) as response:
+        with self.stream(method, path, **kwargs) as response:
             try:
                 body = response.read(MAX_JSON_BYTES + 1)
             except (OSError, TimeoutError) as exc:
@@ -306,7 +308,7 @@ class HubClient:
         # opened, so the cleanup below only ever removes this call's own.
         out = destination.open("xb")
         try:
-            with out, self.open("GET", path) as response:
+            with out, self.stream("GET", path) as response:
                 declared = response.headers.get("Content-Length")
                 if declared is not None and declared.isdigit() and int(declared) > max_bytes:
                     raise HubError(413, "too_large", "The release is larger than allowed")
