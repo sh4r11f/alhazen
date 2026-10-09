@@ -136,6 +136,41 @@
     --shadow: #00000066;
 }
 
+/* ---- the documentation viewer (hub_docs.css) in the dark theme ----
+ * hub_docs.css has its own light defaults; in dark it reads these
+ * variables (documentation-contract). Both copies stay identical, like the
+ * palettes; the stimulus panel stays physical grey. */
+/* HD-DARK-AUTO */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme=light]) .hd-doc {
+    --hd-ink: var(--ink);
+    --hd-muted: var(--muted);
+    --hd-faint: var(--lamp-idle);
+    --hd-paper: var(--surface);
+    --hd-soft: var(--surface-2);
+    --hd-rule: var(--line);
+    --hd-accent: var(--accent);
+    --hd-accent-soft: var(--accent-soft);
+    --hd-fail: var(--bad-ink);
+    --hd-abort: var(--warn-ink);
+    --hd-ok: var(--ok-ink);
+  }
+}
+/* HD-DARK-EXPLICIT */
+:root[data-theme=dark] .hd-doc {
+  --hd-ink: var(--ink);
+  --hd-muted: var(--muted);
+  --hd-faint: var(--lamp-idle);
+  --hd-paper: var(--surface);
+  --hd-soft: var(--surface-2);
+  --hd-rule: var(--line);
+  --hd-accent: var(--accent);
+  --hd-accent-soft: var(--accent-soft);
+  --hd-fail: var(--bad-ink);
+  --hd-abort: var(--warn-ink);
+  --hd-ok: var(--ok-ink);
+}
+
 /* ---- base ---- */
 *, *::before, *::after { box-sizing: border-box; }
 html { background: var(--paper); }

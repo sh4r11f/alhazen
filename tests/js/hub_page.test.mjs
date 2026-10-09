@@ -159,6 +159,15 @@ test('the two dark palettes are identical and rules name tokens, not colours', (
     return CSS.slice(open + 1, CSS.indexOf('}', open)).replace(/\s+/g, ' ').trim();
   };
   assert.equal(block('DARK-AUTO'), block('DARK-EXPLICIT'));
+  const hd = (marker, selector) => {
+    const open = CSS.indexOf('{', CSS.indexOf(selector, CSS.indexOf(marker)));
+    return CSS.slice(open + 1, CSS.indexOf('}', open)).replace(/\s+/g, ' ').trim();
+  };
+  const hdAuto = hd('HD-DARK-AUTO', ':root:not([data-theme=light]) .hd-doc');
+  assert.equal(hdAuto, hd('HD-DARK-EXPLICIT', ':root[data-theme=dark] .hd-doc'));
+  for (const name of ['ink', 'muted', 'faint', 'paper', 'soft', 'rule', 'accent', 'accent-soft', 'fail', 'abort', 'ok']) {
+    assert.match(hdAuto, new RegExp('--hd-' + name + ': var\\(--'), name);
+  }
   const firstRule = CSS.indexOf('/* ---- base ---- */');
   assert.doesNotMatch(CSS.slice(firstRule), /#[0-9a-fA-F]{3,8}\b|rgb\(|hsl\(/);
 });
@@ -530,32 +539,123 @@ test('an unreachable hub on a rig says local work is unaffected and offers Retry
   assert.match(p.text(), /The hub did not answer/);
 });
 
+/* Shapes as the server writes them (hub/uploads.py session_row_view and
+ * receipt, hub/data.py session_detail, app.py trials). */
+function sessionView(over) {
+  return Object.assign({
+    id: 's1', experiment_id: 'e1', version_id: 'v1', client_session_id: 'c1', status: 'committed',
+    metadata: {subject_code: 'S01', mode: 'run', rig_alias: 'lab', started_at: '2026-10-09T09:00:00Z'},
+    created_at: '2026-10-09T09:30:00Z', completed_at: '2026-10-09T09:31:00Z', manifest_sha256: 'ef'.repeat(32),
+    total_bytes: 1010, file_count: 2, index: {status: 'indexed', rows: 1, error: null}, experiment_title: 'Fixation demo',
+  }, over || {});
+}
+function sessionDetail(view) {
+  return {session: view, receipt: {id: view.id, status: view.status, manifest_sha256: view.manifest_sha256,
+    durability: "verified on the hub's primary storage; not an independent backup", index: view.index},
+  artifacts: [{path: 'session.json', size: 10, sha256: '34'.repeat(32)}, {path: 'trials.csv', size: 1000, sha256: '12'.repeat(32)}],
+  columns: view.index.status === 'indexed' ? ['trial', 'rt'] : []};
+}
+const ALICE_ROUTES = {
+  'GET /config': () => SERVER_CONFIG,
+  'GET /auth/me': () => ({status: 200, body: {user: ALICE, csrf_token: 'c1'}}),
+  'GET /experiments': () => ({status: 200, body: {items: []}}),
+  'GET /library': () => ({status: 200, body: {items: []}}),
+};
+
 test('data: filters become the address, sessions link to their detail, exports are authorised links', async () => {
-  const p = await mount({search: '?view=data', routes: {
-    'GET /config': () => SERVER_CONFIG,
-    'GET /auth/me': () => ({status: 200, body: {user: ALICE, csrf_token: 'c1'}}),
-    'GET /experiments': () => ({status: 200, body: {items: [experiment({owner: ALICE})]}}),
-    'GET /library': () => ({status: 200, body: {items: []}}),
-    'GET /data/sessions': (req) => ({status: 200, body: {items: req.query.get('subject_code') === 'S01'
-      ? [{id: 's1', experiment_id: 'e1', status: 'committed', index_status: 'indexed', metadata: {subject_code: 'S01', mode: 'run', rig_alias: 'lab', started_at: '2026-10-09T09:00:00Z'}}] : [], next_offset: null}}),
-    'GET /data/sessions/s1': () => ({status: 200, body: {session: {id: 's1', experiment_id: 'e1', status: 'committed', index_status: 'failed', index_error: {message: 'bad row 3'}, metadata: {subject_code: 'S01'}, manifest_sha256: 'ef'.repeat(32)}, artifacts: [{path: 'trials.csv', size: 10, sha256: '12'.repeat(32)}]}}),
-    'GET /data/sessions/s1/trials': () => ({status: 200, body: {items: [{trial: 1, rt: 0.31}], next_offset: null}}),
-  }});
+  const p = await mount({search: '?view=data', routes: Object.assign({}, ALICE_ROUTES, {
+    'GET /data/sessions': (req) => ({status: 200, body: {items: req.query.get('subject_code') === 'S01' ? [sessionView()] : [], next_offset: null}}),
+    'GET /data/sessions/s1': () => ({status: 200, body: sessionDetail(sessionView())}),
+    'GET /data/sessions/s1/trials': () => ({status: 200, body: {items: [{ordinal: 0, source_path: 'trials.csv', values: {rt: '0.31', trial: '1', outcome: 'FIXATED'}}], next_offset: null, columns: ['trial', 'rt'], index: {status: 'indexed', rows: 1, error: null}}}),
+  })});
   assert.match(p.text(), /No sessions uploaded yet/);
   const form = p.main.querySelector('form');
   form.querySelectorAll('input')[0].value = 'S01';
   await p.submit(form);
   assert.equal(p.loc.search, '?view=data&subject=S01');
-  assert.match(p.text(), /Fixation demo/);
+  assert.match(p.text(), /Fixation demo/, 'the server\'s experiment_title labels the row');
+  assert.match(p.text(), /trial rows indexed/);
   await p.click(p.main.querySelector('td').querySelector('a'));
   assert.equal(p.loc.search, '?view=data&subject=S01&session=s1');
   const t = p.text();
-  assert.match(t, /bad row 3/);
-  assert.match(t, /raw files are kept/);
-  assert.match(t, /not a backup/);
+  assert.match(t, /not an independent backup/);
+  assert.match(t, /1 trial rows indexed/);
   assert.match(t, /0\.31/);
+  const headers = p.main.querySelectorAll('th').map((th) => th.textContent);
+  assert.ok(headers.indexOf('trial') < headers.indexOf('rt'), 'columns in the server\'s declared order');
+  for (const internal of ['values', 'ordinal', 'source_path', 'outcome']) assert.ok(!headers.includes(internal), internal);
+  assert.match(t, /From trials\.csv/);
+  assert.match(p.document.title, /^Session S01 · .* · Alhazen Experiment Hub$/);
   assert.equal(p.find('a', 'CSV').getAttribute('href'), '/api/hub/v1/data/sessions/s1/export?format=csv');
   assert.equal(p.find('a', 'trials.csv').getAttribute('href'), '/api/hub/v1/data/sessions/s1/files?path=trials.csv');
+  assert.equal(p.find('button', 'Rebuild trial index'), undefined, 'no rebuild offered for a ready index');
+});
+
+test('a failed trial index keeps files readable and offers Rebuild; queued, then ready after polling', async () => {
+  let current = sessionView({index: {status: 'failed', rows: 0, error: 'more than 100000 trial rows (the index budget)'}});
+  let reindexCalls = 0;
+  const p = await mount({search: '?view=data&session=s1', routes: Object.assign({}, ALICE_ROUTES, {
+    'GET /data/sessions/s1': () => ({status: 200, body: sessionDetail(current)}),
+    'POST /data/sessions/s1/reindex': () => {
+      reindexCalls += 1;
+      current = sessionView({index: {status: 'pending', rows: 0, error: null}});
+      return {status: 202, body: sessionDetail(current)};
+    },
+    'GET /data/sessions/s1/trials': () => ({status: 200, body: {items: [{ordinal: 0, source_path: 'trials.csv', values: {trial: '1', rt: '0.5'}}], next_offset: null, columns: ['trial', 'rt'], index: current.index}}),
+  })});
+  let t = p.text();
+  assert.match(t, /the index budget/);
+  assert.match(t, /raw files are kept/);
+  assert.equal(p.find('a', 'trials.csv').getAttribute('href'), '/api/hub/v1/data/sessions/s1/files?path=trials.csv');
+  assert.equal(p.find('a', 'CSV'), undefined, 'no export while the index is not ready');
+  assert.equal(p.hub.calls.filter((c) => c.path.endsWith('/trials')).length, 0);
+  await p.click(p.find('button', 'Rebuild trial index'));
+  assert.equal(reindexCalls, 1);
+  const post = p.hub.calls.find((c) => c.path.endsWith('/reindex'));
+  assert.equal(post.init.method, 'POST');
+  assert.equal(post.init.headers['X-CSRF-Token'], 'c1');
+  t = p.text();
+  assert.match(t, /queued for rebuilding/);
+  assert.doesNotMatch(t, /0\.5/, 'no rows before the server says indexed');
+  assert.equal(p.find('button', 'Rebuild trial index'), undefined);
+  // The hub is still working: the page checks again and keeps waiting.
+  current = sessionView({index: {status: 'indexing', rows: 0, error: null}});
+  await p.tick();
+  assert.match(p.text(), /being rebuilt/);
+  current = sessionView({index: {status: 'indexed', rows: 1, error: null}});
+  await p.tick();
+  t = p.text();
+  assert.match(t, /1 trial rows indexed/);
+  assert.match(t, /0\.5/);
+  assert.equal(p.find('a', 'CSV').getAttribute('href'), '/api/hub/v1/data/sessions/s1/export?format=csv');
+  const polls = p.hub.calls.filter((c) => c.path === '/api/hub/v1/data/sessions/s1').length;
+  await p.tick();
+  assert.equal(p.hub.calls.filter((c) => c.path === '/api/hub/v1/data/sessions/s1').length, polls, 'polling stops once ready');
+});
+
+test('a rebuild that fails again, or is refused, is said plainly and can be retried', async () => {
+  let current = sessionView({index: {status: 'failed', rows: 0, error: 'the trial table could not be indexed'}});
+  let refuse = true;
+  const p = await mount({search: '?view=data&session=s1', routes: Object.assign({}, ALICE_ROUTES, {
+    'GET /data/sessions/s1': () => ({status: 200, body: sessionDetail(current)}),
+    'POST /data/sessions/s1/reindex': () => {
+      if (refuse) return {status: 429, body: {error: {code: 'rate_limited', message: 'Too many rebuilds; try later.'}}};
+      current = sessionView({index: {status: 'pending', rows: 0, error: null}});
+      return {status: 202, body: sessionDetail(current)};
+    },
+  })});
+  await p.click(p.find('button', 'Rebuild trial index'));
+  assert.match(p.text(), /The rebuild was not started: Too many rebuilds; try later\./);
+  const button = p.find('button', 'Rebuild trial index');
+  assert.ok(!button.disabled, 'the button is usable again');
+  refuse = false;
+  await p.click(button);
+  assert.match(p.text(), /queued for rebuilding/);
+  current = sessionView({index: {status: 'failed', rows: 0, error: 'still unreadable'}});
+  await p.tick();
+  assert.match(p.text(), /still unreadable/);
+  assert.ok(p.find('button', 'Rebuild trial index'), 'Rebuild offered again after a second failure');
+  assert.doesNotMatch(p.text(), /trial rows indexed/);
 });
 
 test('rig connection: plain http to this computer is sent with its explicit allowance', async () => {
@@ -621,4 +721,54 @@ test('a session of a project not installed from the hub is recorded against a re
   await p.click(p.find('button', 'Use this release'));
   assert.deepEqual(previews[1], {project_id: 'p1', root_id: 'r1', run_id: SESSION.run_id, experiment_id: 'e1', version_id: 'v1'});
   assert.match(p.text(), /recorded against Fixation demo v1\.2\.0/);
+});
+
+test('trial rows: the real {ordinal, source_path, values} items under the declared columns, paged', async () => {
+  /* As hub/trials.py page() and app.py session_trials write them (repro:
+   * first-e2e-proof.json, the scaffold experiment's trial table). */
+  const columns = ['trial_index', 'attempt', 'outcome', 'completed', 'success', 'fault', 'acquire_latency_s'];
+  const item = (n, source) => ({ordinal: n, source_path: source,
+    values: {trial_index: String(n + 1), attempt: '1', outcome: n % 2 ? 'NO_FIXATION' : 'FIXATED', completed: 'True', success: n % 2 ? 'False' : 'True', fault: '', acquire_latency_s: '0.41', extra_field: 'x'}});
+  const pages = {
+    0: {items: Array.from({length: 20}, (_, i) => item(i, i < 10 ? 'sub-01/run-1/trials.csv' : 'sub-01/run-2/trials.csv')), next_offset: 20},
+    20: {items: [item(20, 'sub-01/run-2/trials.csv')], next_offset: null},
+  };
+  const p = await mount({search: '?view=data&session=s1', routes: Object.assign({}, ALICE_ROUTES, {
+    'GET /data/sessions/s1': () => ({status: 200, body: Object.assign(sessionDetail(sessionView({index: {status: 'indexed', rows: 21, error: null}})), {columns})}),
+    'GET /data/sessions/s1/trials': (req) => ({status: 200, body: Object.assign({columns, index: {status: 'indexed', rows: 21, error: null}}, pages[Number(req.query.get('offset') || 0)])}),
+  })});
+  const table = p.main.querySelector('table.table-dense');
+  const headers = table.querySelectorAll('th').map((th) => th.textContent);
+  assert.deepEqual(headers, ['#', 'source', ...columns], 'declared columns only, plus row number and source (two trial tables)');
+  const first = table.querySelector('tbody').querySelectorAll('tr')[0].querySelectorAll('td').map((td) => td.textContent);
+  assert.deepEqual(first, ['1', 'sub-01/run-1/trials.csv', '1', '1', 'FIXATED', 'True', 'True', '', '0.41']);
+  assert.doesNotMatch(table.textContent, /\{|"trial_index"/, 'no JSON blobs in cells');
+  assert.equal(p.hub.calls.find((c) => c.path.endsWith('/trials')).query.get('limit'), '20');
+  await p.click(p.find('a', 'Next'));
+  assert.equal(p.loc.search, '?view=data&session=s1&toffset=20');
+  assert.equal(p.hub.calls.filter((c) => c.path.endsWith('/trials')).pop().query.get('offset'), '20');
+  const rows = p.main.querySelector('table.table-dense').querySelector('tbody').querySelectorAll('tr');
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].querySelectorAll('td')[0].textContent, '21');
+  assert.equal(p.document.activeElement.textContent, 'Previous');
+});
+
+test('the experiment filter offers pinned and collected-on experiments, not only authored ones', async () => {
+  const collector = {id: 'u3', username: 'carol', display_name: 'Carol C'};
+  const p = await mount({search: '?view=data', routes: {
+    'GET /config': () => SERVER_CONFIG,
+    'GET /auth/me': () => ({status: 200, body: {user: collector, csrf_token: 'c3'}}),
+    'GET /experiments': () => ({status: 200, body: {items: [], next_offset: null}}),
+    'GET /library': () => ({status: 200, body: {items: [{experiment: experiment({id: 'e1', title: 'Public fixation'}), version: release(), added_at: '2026-10-09T00:00:00Z', available: true}], next_offset: null}}),
+    'GET /data/sessions': (req) => ({status: 200, body: {items: req.query.get('experiment_id') === 'e1' || !req.query.get('experiment_id')
+      ? [sessionView({experiment_id: 'e2', experiment_title: 'Unpinned since', id: 's2'})] : [], next_offset: null}}),
+  }});
+  const choice = p.main.querySelector('select');
+  const options = choice.querySelectorAll('option').map((o) => [o.value, o.textContent]);
+  assert.deepEqual(options, [['', 'All experiments'], ['e1', 'Public fixation'], ['e2', 'Unpinned since']]);
+  choice.value = 'e1';
+  await p.submit(p.main.querySelector('form'));
+  assert.equal(p.loc.search, '?view=data&experiment=e1');
+  assert.equal(p.hub.calls.filter((c) => c.path.endsWith('/data/sessions')).pop().query.get('experiment_id'), 'e1');
+  assert.equal(p.main.querySelector('select').value, 'e1', 'the filter shows the chosen experiment after the reload');
 });

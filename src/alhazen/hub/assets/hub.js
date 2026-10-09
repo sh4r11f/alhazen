@@ -537,9 +537,16 @@ const HubApp = (() => {
       const ctx = {epoch: state.epoch, route};
       const node = screen(ctx);
       main.replaceChildren(node);
-      const title = node.querySelector('[data-heading]');
-      doc.title = (title ? title.textContent + ' · ' : '') + 'Alhazen Experiment Hub';
+      titleFromHeading();
       settleFocus(false);
+    }
+
+    /** The tab title names the screen by its heading, also when the heading
+     *  arrives with the screen's data (an experiment, a session). */
+    function titleFromHeading() {
+      const heading = $('main').querySelector('[data-heading]');
+      const text = heading ? heading.textContent.replace(/\s+/g, ' ').trim() : '';
+      doc.title = (text ? text + ' · ' : '') + 'Alhazen Experiment Hub';
     }
 
     function flashNode() {
@@ -571,14 +578,23 @@ const HubApp = (() => {
         fill(...nodes) {
           el.setAttribute('aria-busy', 'false');
           el.replaceChildren(...nodes.flat().filter(Boolean));
-          settleFocus(true);
+          titleFromHeading();
+          settleFocus(screenSettled());
         },
         fail(error, retry) {
           el.setAttribute('aria-busy', 'false');
           el.replaceChildren(errorBox(error, retry));
-          settleFocus(true);
+          titleFromHeading();
+          settleFocus(screenSettled());
         },
       };
+    }
+
+    /** Whether every region of the screen has answered: only then may a
+     *  missing focus target fall back to the heading (a pager arrives with
+     *  the last region, after the session's own data). */
+    function screenSettled() {
+      return !$('main').querySelector('[aria-busy="true"]');
     }
 
     function errorBox(error, retry) {
@@ -1007,7 +1023,6 @@ const HubApp = (() => {
         const tab = r.tab || 'overview';
         body.fill(experimentHead(experiment, version, versions), experimentTabs(r, tab, versions.length),
           experimentTab(ctx, tab, experiment, version, versions));
-        doc.title = (experiment.title || 'Experiment') + ' · Alhazen Experiment Hub';
       })();
       return section;
     }
@@ -1959,11 +1974,8 @@ const HubApp = (() => {
     }
 
     function indexWords(s) {
-      const status = s.index_status || '';
-      if (!status) return '';
-      if (status === 'indexed' || status === 'complete' || status === 'completed') return 'trials indexed';
-      if (status === 'failed' || status === 'error') return 'trial index failed';
-      return 'trials ' + status;
+      const st = C.indexState(s);
+      return st.status ? st.word.toLowerCase() : '';
     }
 
     async function experimentNames() {
@@ -1978,7 +1990,9 @@ const HubApp = (() => {
         }
       } catch (exc) { noteFailure(exc); }
       try {
-        for (const item of await libraryItems(false)) {
+        /* Fresh, not the cached copy: a release pinned elsewhere (another
+         * tab, the rig) must appear in the filter. */
+        for (const item of await libraryItems(true)) {
           if (item.experiment && item.experiment.id) names.set(item.experiment.id, item.experiment.title || item.experiment.id);
         }
       } catch (exc) { noteFailure(exc); }
@@ -2013,6 +2027,13 @@ const HubApp = (() => {
           experimentNames(),
         ]);
         if (!got || ctx.epoch !== state.epoch) return;
+        /* The sessions themselves name their experiment (experiment_title is
+         * the server's authorised label), so an experiment you collected
+         * data for is offered even when it is neither yours nor pinned. */
+        for (const item of (got.ok && got.value && got.value.items) || []) {
+          if (item.experiment_id && !names.has(item.experiment_id)) names.set(item.experiment_id, item.experiment_title || item.experiment_id);
+        }
+        if (r.experiment && !names.has(r.experiment)) names.set(r.experiment, r.experiment);
         for (const [id, title] of names) {
           const opt = h('option', {value: id}, title);
           if (id === r.experiment) opt.selected = true;
@@ -2034,7 +2055,7 @@ const HubApp = (() => {
           const m = s.metadata || {};
           tbody.appendChild(h('tr', null,
             h('td', null, link({view: 'data', experiment: r.experiment, subject: r.subject, mode: r.mode, offset: r.offset, session: s.id}, sessionWhen(s) || String(s.id))),
-            h('td', null, names.get(s.experiment_id) || String(s.experiment_id || '')),
+            h('td', null, s.experiment_title || names.get(s.experiment_id) || String(s.experiment_id || '')),
             h('td', {class: 'mono'}, m.subject_code || ''),
             h('td', null, m.mode || ''),
             h('td', null, m.rig_alias || ''),
@@ -2063,43 +2084,132 @@ const HubApp = (() => {
         const m = s.metadata || {};
         const receipt = answer.receipt || s.receipt || null;
         const artifacts = answer.artifacts || s.artifacts || [];
-        const base = '/data/sessions/' + C.seg(s.id || r.session);
+        const sessionId = s.id || r.session;
+        const base = '/data/sessions/' + C.seg(sessionId);
+        const indexBox = h('div', {class: 'index-state'});
+        const exportsBox = h('div', {class: 'sheet-block'});
         const trials = region('trials');
         area.fill(
           h('header', {class: 'screen-head'},
-            h('p', {class: 'eyebrow mono'}, link(back, 'Your sessions'), h('span', {'aria-hidden': 'true'}, ' / '), h('span', null, String(s.id || r.session))),
+            h('p', {class: 'eyebrow mono'}, link(back, 'Your sessions'), h('span', {'aria-hidden': 'true'}, ' / '), h('span', null, String(sessionId))),
             h('h1', {class: 'screen-title', tabindex: '-1', 'data-heading': ''}, 'Session ' + (m.subject_code ? m.subject_code + ' \u00b7 ' : '') + (sessionWhen(s) || '')),
-            h('p', {class: 'lede'}, 'Raw files as the rig recorded them, verified on arrival. Trial rows below are derived from them and can be rebuilt.')),
+            h('p', {class: 'lede'}, 'Raw files as the rig recorded them, verified on arrival. Trial rows are derived from them and can be rebuilt.')),
           h('div', {class: 'exp-grid'},
             h('div', {class: 'exp-reading'},
               h('h2', {class: 'block-title'}, 'Trials'),
-              s.index_status === 'failed' || s.index_status === 'error'
-                ? h('p', {class: 'note note-warn'}, 'The trial table could not be indexed' + (s.index_error ? ': ' + (s.index_error.message || s.index_error) : '') + '. The raw files are kept and can be downloaded below.')
-                : null,
+              indexBox,
               trials.el,
               h('h2', {class: 'block-title'}, 'Files'),
               artifactTable(base, artifacts)),
             h('aside', {class: 'sheet'},
               h('h2', {class: 'sheet-title'}, 'Session'),
               spec([
+                ['Experiment', s.experiment_title || null],
                 ['Status', s.status],
                 ['Subject', m.subject_code, {mono: true}],
                 ['Mode', m.mode],
                 ['Rig', m.rig_alias],
                 ['Started', C.formatDate(m.started_at)],
                 ['Received', C.formatDate(s.completed_at)],
+                ['Files', s.file_count !== undefined ? s.file_count + ' \u00b7 ' + C.formatBytes(s.total_bytes) : null, {mono: true}],
                 ['Release', s.version_id, {mono: true}],
                 ['Manifest SHA-256', digest(s.manifest_sha256 || (receipt && receipt.manifest_sha256))],
               ]),
-              h('p', {class: 'muted small'}, 'The receipt means the hub\u2019s primary storage verified every file. It is not a backup; keep the rig\u2019s originals.'),
-              h('div', {class: 'sheet-block'},
-                h('h3', {class: 'sub-title'}, 'Export the trial table'),
-                h('div', {class: 'actions'},
-                  h('a', {class: 'btn btn-line', download: '', href: state.api.url(base + '/export', {format: 'csv'})}, 'CSV'),
-                  h('a', {class: 'btn btn-line', download: '', href: state.api.url(base + '/export', {format: 'json'})}, 'JSON'))))));
-        loadTrials(ctx, base, trials, back, s.id || r.session);
+              h('p', {class: 'muted small'}, receipt && receipt.durability
+                ? 'Receipt: ' + receipt.durability + '. Keep the rig\u2019s originals.'
+                : 'The receipt means the hub\u2019s primary storage verified every file. It is not a backup; keep the rig\u2019s originals.'),
+              exportsBox)));
+        showIndex(ctx, {s, base, sessionId, back, indexBox, exportsBox, trials, columns: answer.columns});
       })();
       return section;
+    }
+
+    /** The session's trial index, its exports and its rows, from the state
+     *  the server reports. A failed index offers Rebuild (owner-only POST
+     *  …/reindex, 202); queued and running rebuilds are polled until the
+     *  server says indexed, failed or none. Nothing is shown as ready that
+     *  the server has not said is ready; the files above stay downloadable. */
+    function showIndex(ctx, view) {
+      const {base, indexBox, exportsBox, trials} = view;
+      const st = C.indexState(view.s);
+      indexBox.replaceChildren();
+      exportsBox.replaceChildren(h('h3', {class: 'sub-title'}, 'Export the trial table'));
+      if (st.ready) {
+        exportsBox.appendChild(h('div', {class: 'actions'},
+          h('a', {class: 'btn btn-line', download: '', href: state.api.url(base + '/export', {format: 'csv'})}, 'CSV'),
+          h('a', {class: 'btn btn-line', download: '', href: state.api.url(base + '/export', {format: 'json'})}, 'JSON')));
+        if (st.rows !== null) indexBox.appendChild(h('p', {class: 'muted small mono'}, st.rows + ' trial rows indexed'));
+        loadTrials(ctx, base, trials, view.back, view.sessionId, view.columns);
+        return;
+      }
+      exportsBox.appendChild(h('p', {class: 'muted small'}, st.status === 'none'
+        ? 'There is no trial table to export; download the original files instead.'
+        : 'Exports become available once the trial index is ready. The original files can be downloaded now.'));
+      if (st.status === 'none') {
+        indexBox.appendChild(h('p', {class: 'muted'}, 'This session has no trial table the hub indexes. Its files are listed below.'));
+        trials.fill();
+        return;
+      }
+      if (st.busy) {
+        indexBox.appendChild(h('p', {class: 'note note-info', role: 'status'}, h('span', {class: 'spinner', 'aria-hidden': 'true'}),
+          st.word + '. Trial rows appear here when the hub finishes; this page checks again on its own.'));
+        trials.fill();
+        pollIndex(ctx, view, POLL_MS);
+        return;
+      }
+      if (st.failed) {
+        const status = statusLine();
+        const button = h('button', {type: 'button', class: 'btn btn-primary', 'data-focus': 'reindex'}, 'Rebuild trial index');
+        indexBox.appendChild(h('div', {class: 'callout callout-warn', role: 'alert'},
+          h('p', {class: 'callout-title'}, 'The trial index could not be built.'),
+          st.error ? h('p', null, st.error) : null,
+          h('p', null, 'The raw files are kept and can be downloaded below. Rebuilding reads them again; it changes no file.'),
+          h('div', {class: 'actions'}, button), status.el));
+        button.addEventListener('click', async () => {
+          button.disabled = true;
+          status.show('Asking the hub to rebuild the index\u2026', 'info');
+          try {
+            const answer = await api('POST', base + '/reindex', {json: {}});
+            if (ctx.epoch !== state.epoch) return;
+            const fresh = (answer && answer.session) || null;
+            view.s = fresh || Object.assign({}, view.s, {index: {status: 'pending', rows: 0, error: null}, index_status: 'pending'});
+            if (answer && answer.columns) view.columns = answer.columns;
+            showIndex(ctx, view);
+          } catch (exc) {
+            if (ctx.epoch !== state.epoch) return;
+            noteFailure(exc);
+            status.show('The rebuild was not started: ' + exc.message, 'err');
+            button.disabled = false;
+          }
+        });
+        trials.fill();
+        return;
+      }
+      indexBox.appendChild(h('p', {class: 'muted'}, st.word + '.'));
+      trials.fill();
+    }
+
+    function pollIndex(ctx, view, delay) {
+      state.polls.push(timers.set(async () => {
+        const got = await screenRequest(ctx.epoch, 'GET', '/data/sessions/' + C.seg(view.sessionId));
+        if (!got) return;
+        if (!got.ok) {
+          view.indexBox.appendChild(h('p', {class: 'form-status form-status-err', role: 'alert'},
+            'Checking the index failed: ' + got.error.message + ' Trying again.'));
+          pollIndex(ctx, view, Math.min(POLL_MAX_MS, delay * 2));
+          return;
+        }
+        const answer = got.value || {};
+        const before = C.indexState(view.s).status;
+        view.s = answer.session || answer;
+        if (answer.columns) view.columns = answer.columns;
+        const now = C.indexState(view.s);
+        if (now.busy && now.status === before) {
+          pollIndex(ctx, view, Math.min(POLL_MAX_MS, delay * 2));
+          return;
+        }
+        showIndex(ctx, view);  // a new state (queued -> rebuilding -> indexed/failed/none) is drawn
+      }, delay));
     }
 
     function artifactTable(base, artifacts) {
@@ -2120,26 +2230,54 @@ const HubApp = (() => {
       return h('div', {class: 'table-wrap'}, table);
     }
 
-    async function loadTrials(ctx, base, trials, back, sessionId) {
+    async function loadTrials(ctx, base, trials, back, sessionId, serverColumns) {
       const r = ctx.route;
       const offset = r.toffset || 0;
       const got = await screenRequest(ctx.epoch, 'GET', base + '/trials', {query: {limit: PAGE, offset}});
       if (!got) return;
       if (!got.ok) return trials.fail(got.error, retryCurrent);
       const rows = (got.value && got.value.items) || [];
-      if (!rows.length) {
-        return trials.fill(h('p', {class: 'muted'}, offset ? 'No more trials.' : 'No trial rows: this session has no supported trials.csv, or indexing has not finished.'));
+      const index = got.value && got.value.index ? C.indexState({index: got.value.index}) : null;
+      if (index && !index.ready) {
+        /* The index changed since the session was read (a rebuild started). */
+        return trials.fill(h('p', {class: 'muted'}, index.word + (index.error ? ': ' + index.error : '') + '. Reload this page to see its current state.'));
       }
-      const columns = C.trialColumns(rows);
-      const table = h('table', {class: 'table table-dense'},
-        h('caption', {class: 'visually-hidden'}, 'Trials'),
-        h('thead', null, h('tr', null, ...columns.map((c) => h('th', {scope: 'col', class: 'mono'}, c)))));
-      const tbody = h('tbody');
-      for (const row of rows) tbody.appendChild(h('tr', null, ...columns.map((c) => h('td', {class: 'mono'}, C.cellText(row[c])))));
-      table.appendChild(tbody);
-      trials.fill(h('div', {class: 'table-wrap table-scroll', tabindex: '0', role: 'region', 'aria-label': 'Trial rows'}, table),
+      if (!rows.length) {
+        return trials.fill(h('p', {class: 'muted'}, offset ? 'No more trials.' : 'The trial index holds no rows for this session.'));
+      }
+      const declared = (got.value && Array.isArray(got.value.columns) && got.value.columns.length) ? got.value.columns
+        : (Array.isArray(serverColumns) && serverColumns.length ? serverColumns : null);
+      const table = trialTable(rows, declared);
+      const single = [...new Set(rows.map((item) => C.trialRow(item).source).filter(Boolean))];
+      trials.fill(single.length === 1 ? h('p', {class: 'muted small mono'}, 'From ' + single[0]) : null,
+        h('div', {class: 'table-wrap table-scroll', tabindex: '0', role: 'region', 'aria-label': 'Trial rows'}, table),
         pager(offset, rows.length, got.value.next_offset,
           (o) => Object.assign({}, back, {session: sessionId, toffset: o}), 'trials'));
+    }
+
+    /** A page of derived trial rows as a table. Each item is the server's
+     *  {ordinal, source_path, values}: the declared columns are read from
+     *  `values`; the row's position and (when a session has several trial
+     *  tables) its source file are shown in their own columns. */
+    function trialTable(items, declaredColumns) {
+      const rows = items.map((item) => C.trialRow(item));
+      const columns = declaredColumns ? declaredColumns.slice(0, 40).map(String) : C.trialColumns(rows.map((r) => r.values));
+      const sources = new Set(rows.map((r) => r.source).filter(Boolean));
+      const showSource = sources.size > 1;
+      const head = [h('th', {scope: 'col', class: 'mono num', title: 'Row in the trial index'}, '#')];
+      if (showSource) head.push(h('th', {scope: 'col', class: 'mono'}, 'source'));
+      const table = h('table', {class: 'table table-dense'},
+        h('caption', {class: 'visually-hidden'}, 'Trials' + (sources.size === 1 ? ' from ' + [...sources][0] : '')),
+        h('thead', null, h('tr', null, ...head, ...columns.map((c) => h('th', {scope: 'col', class: 'mono'}, c)))));
+      const tbody = h('tbody');
+      for (const row of rows) {
+        const cells = [h('td', {class: 'mono num muted'}, row.ordinal === null ? '' : String(row.ordinal + 1))];
+        if (showSource) cells.push(h('td', {class: 'mono'}, row.source || ''));
+        for (const c of columns) cells.push(h('td', {class: 'mono'}, C.cellText(row.values[c])));
+        tbody.appendChild(h('tr', null, ...cells));
+      }
+      table.appendChild(tbody);
+      return table;
     }
 
     /* ---- this rig ------------------------------------------------------------ */

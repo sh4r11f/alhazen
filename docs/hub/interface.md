@@ -48,8 +48,8 @@ parameter can only name one of the page's own screens.
 | `view=signin&next=`, `view=register` | Sign in; register with an invite code (password 12 to 1024 characters). | `POST /auth/login`, `POST /auth/register` |
 | `view=library` | Pinned releases; install or open in the workspace (rig), download (central). | `GET /library` |
 | `view=mine`, `&new=1`, `&id=` | My experiments: create, edit details, versions, add a version (upload a `.zip` on central; pack a registered project on a rig after reviewing every file and the manifest), publish with two acknowledgements and a confirmation, unpublish with a confirmation. | `GET|POST /experiments`, `PATCH /experiments/{id}`, `POST …/versions`, `POST …/publish|unpublish`, `GET /local/projects`, `POST /local/package-preview|package-upload` |
-| `view=data&experiment=&subject=&mode=&offset=` | Uploaded sessions, filtered. | `GET /data/sessions` |
-| `…&session=&toffset=` | One session: metadata, manifest digest, files with downloads, trial rows (paged), CSV/JSON export. A failed trial index is shown with its reason; the raw files stay downloadable. | `GET /data/sessions/{id}`, `…/trials`, `…/export`, `…/files` |
+| `view=data&experiment=&subject=&mode=&offset=` | Uploaded sessions, filtered. The Experiment filter offers your own experiments, your library's (read fresh) and those the listed sessions name (`experiment_title`, the server's authorised label); it never lists anyone else's. | `GET /data/sessions`, `GET /experiments`, `GET /library` |
+| `…&session=&toffset=` | One session: metadata, manifest digest, receipt durability, files with downloads, and the trial index from `session.index` (`status`, `rows`, `error`). Indexed: trial rows (20 per page) read from each item's `values` under the server's declared `columns`, with the row number and, when a session has several trial tables, the source file in their own columns; CSV/JSON export. Queued or rebuilding: said so, polled until the server reports a final state. Failed: the reason and **Rebuild trial index**. No trial table: said so. The raw files stay downloadable in every state. | `GET /data/sessions/{id}`, `…/trials`, `…/export`, `…/files`, `POST …/reindex` |
 | `view=rig&tab=connection|installed|upload&project=&root=&run=&job=` | Rig only: connect or disconnect a hub; installed releases; choose a finished session, review it and opt in; follow a transfer. | `/local/*` |
 
 Private screens (library, mine, data) send a signed-out reader to sign in and back afterwards.
@@ -64,6 +64,7 @@ Private screens (library, mine, data) send a signed-out reader to sign in and ba
   rig reports the hub's receipt.
 - **Stale answers are dropped.** Each draw has an epoch and an `AbortController`; an answer for a
   screen the reader has left is ignored and its request aborted. Polling stops on navigation.
+- **Titles.** The tab title is the screen's heading, also when the heading arrives with the data.
 - **Focus.** A navigation focuses the new screen's heading once it has loaded; an in-screen step
   (pager, filter, tab) keeps focus on the control that made it. Sign-in errors, refusals and progress
   are announced through `role=alert` / `role=status`.
@@ -91,6 +92,16 @@ Private screens (library, mine, data) send a signed-out reader to sign in and ba
 - **Publishing** needs a licence, two acknowledgements and a second confirmation; the page says that
   downloads cannot be recalled and that later versions stay private.
 
+## Rebuilding a trial index (contract gate B1)
+
+Trial rows are derived from the raw files. When the server reports `session.index.status = "failed"`, the
+session page shows the server's reason and a **Rebuild trial index** button. It sends
+`POST /api/hub/v1/data/sessions/{id}/reindex` (owner only; the server answers 202 with the session detail):
+while waiting the button is disabled; a refusal is shown in the server's words and the button comes back;
+on acceptance the page shows the queued state and checks `GET /data/sessions/{id}` about once a second
+(backing off to 8 s) until the index is `indexed` (rows and exports appear), `failed` again (reason and
+the button again) or `none`. Rows and exports are never shown before the server says the index is ready.
+
 ## Look
 
 Light first, with an equally composed dark palette (the workspace's dark theme), switched by
@@ -98,7 +109,8 @@ Auto/Light/Dark in the footer (remembered under the workspace's theme key). The 
 the workspace's "Instrument": cool paper, white panels, one signal blue for action and selection,
 mono for labels, digests and readouts, status as a lamp plus a word. The hub's own signature is the
 landing page's signal rail: experiment, rig and data as three stations, with one amber pulse running
-along it (none under reduced motion). Controls are at least 40 px tall; below 640 px the navigation
+along it (none under reduced motion). In the dark theme `hub.css` sets the documentation viewer's
+`--hd-*` variables from the page's own tokens, so Methods, task guides and the Guide follow it. Controls are at least 40 px tall; below 640 px the navigation
 scrolls sideways and every grid becomes one column.
 
 ## Tests
@@ -111,7 +123,7 @@ node --test tests/js/hub_core.test.mjs tests/js/hub_page.test.mjs
 rig adapter's codes), timeouts and offline, input checks and formatting. `hub_page.test.mjs` mounts
 the page on `tests/js/fake_dom.mjs` with a fake hub and covers both roles' bootstrap, hostile text,
 sign-in and registration, Back/Forward with stale answers, the experiment page and documentation
-tabs, install trust, upload consent and transfer polling, stale previews, publishing, session expiry,
+tabs, install trust, upload consent and transfer polling, trial index rebuild (refusal, retry, queued, rebuilding, ready, failed again), stale previews, publishing, session expiry,
 offline banners, data filters and exports, hub connection checks and focus. Not covered here: real
 rendering, layout at 390 px and desktop widths, real keyboard and touch behaviour, and the real
 server and rig adapter.
