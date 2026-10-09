@@ -190,9 +190,10 @@ const HubApp = (() => {
           h('span', {class: 'role-word'}, 'Rig'), h('span', {class: 'role-detail'}, hub.where));
         el.setAttribute('title', 'This page is served by this rig\u2019s dashboard. ' + hub.sentence);
       } else if (state.role === 'server') {
-        el.replaceChildren(h('span', {class: 'lamp lamp-ok', 'aria-hidden': 'true'}),
-          h('span', {class: 'role-word'}, 'Hub'), h('span', {class: 'role-detail'}, 'catalogue and accounts'));
-        el.setAttribute('title', 'The central hub. It never runs experiments or rig hardware.');
+        // The central hub needs no visible badge (the masthead already says
+        // Experiment Hub); assistive technology still hears which host this is.
+        el.replaceChildren(h('span', {class: 'visually-hidden'}, 'Hub'));
+        el.removeAttribute('title');
       } else {
         el.replaceChildren();
       }
@@ -225,7 +226,7 @@ const HubApp = (() => {
       }
       if (state.user) {
         const who = h('span', {class: 'who'},
-          h('span', {class: 'who-label'}, state.role === 'rig' ? 'Operator' : 'Signed in'),
+          h('span', {class: 'who-label'}, state.role === 'rig' ? 'Operator' : 'Signed in as'),
           h('span', {class: 'who-name'}, state.user.display_name || state.user.username),
           h('span', {class: 'who-handle'}, '@' + state.user.username));
         const out = h('button', {type: 'button', class: 'btn btn-quiet', on: {click: signOut}}, 'Sign out');
@@ -556,10 +557,11 @@ const HubApp = (() => {
       return h('p', {class: 'note note-' + (f.tone || 'info'), role: 'status'}, f.text);
     }
 
-    function screenShell(eyebrow, title, lede) {
+    /* The first argument names the screen's section; it is no longer drawn
+     * above the heading (the navigation already says where you are). */
+    function screenShell(section_, title, lede) {
       const section = h('section', {class: 'screen'});
       const head = h('header', {class: 'screen-head'},
-        eyebrow ? h('p', {class: 'eyebrow'}, eyebrow) : null,
         h('h1', {class: 'screen-title', tabindex: '-1', 'data-heading': ''}, title),
         lede ? h('p', {class: 'lede'}, lede) : null);
       section.appendChild(head);
@@ -817,7 +819,6 @@ const HubApp = (() => {
     function listing(item, extra) {
       const experiment = (item && item.experiment) || {};
       const version = (item && item.version) || null;
-      const manifest = (version && version.manifest) || {};
       const card = h('article', {class: 'listing'});
       const head = h('header', {class: 'listing-head'},
         h('h3', {class: 'listing-title'},
@@ -827,89 +828,100 @@ const HubApp = (() => {
       const by = ownerLine(experiment);
       if (by) card.appendChild(by);
       if (experiment.summary) card.appendChild(h('p', {class: 'listing-summary'}, experiment.summary));
-      const meta = h('div', {class: 'listing-meta'},
-        hardwareLamps(manifest, true),
-        h('span', {class: 'meta-item'}, h('span', {class: 'meta-key'}, 'Licence'),
-          h('span', {class: 'meta-val'}, experiment.license || manifest.license || 'not stated')),
-        manifest.platforms ? h('span', {class: 'meta-item'}, h('span', {class: 'meta-key'}, 'Runs on'),
-          h('span', {class: 'meta-val'}, C.platformsText(manifest))) : null);
-      card.appendChild(meta);
+      // Hardware, licence and platforms live on the experiment page's release
+      // sheet; a card stays title, author, one line and version.
       if (extra) card.appendChild(extra);
       return card;
     }
 
     /* ---- home ------------------------------------------------------------ */
 
+    /* Line icons for the landing page's three facts (SVG, nothing the CSP
+     * would refuse). */
     function pathGlyph(kind) {
-      const box = svg('svg', {viewBox: '0 0 48 48', width: '40', height: '40', class: 'path-glyph', focusable: 'false', 'aria-hidden': 'true'});
-      const line = {fill: 'none', stroke: 'currentColor', 'stroke-width': '2', 'stroke-linecap': 'round', 'stroke-linejoin': 'round'};
+      const box = svg('svg', {viewBox: '0 0 24 24', width: '20', height: '20', class: 'path-glyph', focusable: 'false', 'aria-hidden': 'true'});
+      const line = {fill: 'none', stroke: 'currentColor', 'stroke-width': '1.6', 'stroke-linecap': 'round', 'stroke-linejoin': 'round'};
       if (kind === 'experiment') {
-        box.appendChild(svg('path', Object.assign({d: 'M24 5l16 9v20l-16 9-16-9V14z'}, line)));
-        box.appendChild(svg('path', Object.assign({d: 'M8 14l16 9 16-9M24 23v20'}, line)));
+        box.appendChild(svg('path', Object.assign({d: 'M12 2.8l8 4.6v9.2l-8 4.6-8-4.6V7.4z'}, line)));
+        box.appendChild(svg('path', Object.assign({d: 'M4 7.4l8 4.6 8-4.6M12 12v9.2'}, line)));
       } else if (kind === 'rig') {
-        box.appendChild(svg('rect', Object.assign({x: '6', y: '8', width: '36', height: '24', rx: '3'}, line)));
-        box.appendChild(svg('path', Object.assign({d: 'M18 40h12M24 32v8'}, line)));
-        box.appendChild(svg('circle', Object.assign({cx: '24', cy: '20', r: '5'}, line)));
-        box.appendChild(svg('circle', {cx: '24', cy: '20', r: '1.8', fill: 'currentColor'}));
+        box.appendChild(svg('rect', Object.assign({x: '3', y: '4', width: '18', height: '12.5', rx: '1.8'}, line)));
+        box.appendChild(svg('path', Object.assign({d: 'M9 20.5h6M12 16.5v4'}, line)));
+        box.appendChild(svg('circle', Object.assign({cx: '12', cy: '10.2', r: '2.6'}, line)));
       } else {
-        box.appendChild(svg('rect', Object.assign({x: '7', y: '8', width: '34', height: '32', rx: '3'}, line)));
-        box.appendChild(svg('path', Object.assign({d: 'M7 17h34M7 26h34M7 35h34M19 8v32'}, line)));
+        box.appendChild(svg('ellipse', Object.assign({cx: '12', cy: '5.5', rx: '7.5', ry: '2.7'}, line)));
+        box.appendChild(svg('path', Object.assign({d: 'M4.5 5.5v13c0 1.5 3.4 2.7 7.5 2.7s7.5-1.2 7.5-2.7v-13M4.5 12c0 1.5 3.4 2.7 7.5 2.7s7.5-1.2 7.5-2.7'}, line)));
       }
       return box;
     }
 
-    /* The page's one signature: the path a study takes, as three stations on
-     * a signal rail. The words are the hub's actual guarantees. */
-    function signalPath() {
-      const stages = [
-        ['experiment', '01', 'Experiment',
-          'Published as an immutable release: manifest, licence, citations and a SHA-256 for every file.'],
-        ['rig', '02', 'Rig',
-          'Installed only after you trust its code, run with your own interpreter, calibration and rig file. The hub never runs it.'],
-        ['data', '03', 'Data',
-          'Sessions stay on the rig. You preview one and opt in; the hub verifies every file before it counts as received.'],
+    /* The hub's three guarantees, one short line each. */
+    function features() {
+      const rows = [
+        ['experiment', 'Experiments are pinned releases', 'Immutable, checksummed and versioned, with licence and citations.'],
+        ['rig', 'Rigs run them offline', 'A rig installs only the release it trusts. The hub never runs code.'],
+        ['data', 'Data leaves only on upload', 'Sessions stay on the rig until you preview and opt in.'],
       ];
-      const list = h('ol', {class: 'signal', 'aria-label': 'How an experiment travels'});
-      for (const [kind, n, name, text] of stages) {
-        list.appendChild(h('li', {class: 'station station-' + kind},
-          h('span', {class: 'station-node'}, pathGlyph(kind)),
-          h('span', {class: 'station-num mono'}, n),
-          h('span', {class: 'station-name'}, name),
-          h('span', {class: 'station-text'}, text)));
-      }
-      return h('figure', {class: 'signal-figure'}, h('span', {class: 'signal-rail', 'aria-hidden': 'true'},
-        h('span', {class: 'signal-pulse'})), list);
+      return h('ul', {class: 'features', 'aria-label': 'How the hub works'},
+        ...rows.map(([kind, name, text]) => h('li', {class: 'feature'},
+          h('span', {class: 'feature-icon'}, pathGlyph(kind)),
+          h('h2', {class: 'feature-name'}, name),
+          h('p', {class: 'feature-text'}, text))));
+    }
+
+    /** The landing page's latest releases as one table: a row each, the
+     *  title its link, then version, hardware, licence and platforms. */
+    function releaseTable(items, caption) {
+      const heads = ['Experiment', 'Version', 'Needs', 'Licence', 'Runs on'];
+      const table = h('table', {class: 'table table-list'},
+        h('caption', {class: 'visually-hidden'}, caption),
+        h('thead', null, h('tr', null,
+          ...heads.map((t, i) => h('th', {scope: 'col', class: i === 0 ? 'col-main' : null}, t)))));
+      const tbody = h('tbody');
+      for (const item of items) tbody.appendChild(releaseRow(item));
+      table.appendChild(tbody);
+      return h('div', {class: 'table-wrap'}, table);
+    }
+
+    function releaseRow(item) {
+      const experiment = (item && item.experiment) || {};
+      const version = (item && item.version) || null;
+      const manifest = (version && version.manifest) || {};
+      const o = experiment.owner;
+      const main = h('td', {class: 'col-main'},
+        h('h3', {class: 'list-title'},
+          link({view: 'experiment', id: experiment.id, version: version ? version.id : undefined}, experiment.title || 'Untitled experiment')),
+        experiment.summary ? h('p', {class: 'list-summary'}, experiment.summary) : null,
+        o ? h('p', {class: 'list-by'}, o.display_name || o.username) : null);
+      return h('tr', null, main,
+        h('td', {class: 'list-version'}, version ? versionLabel(version) : ''),
+        h('td', null, hardwareLamps(manifest, true)),
+        h('td', {class: 'list-meta'}, experiment.license || manifest.license || 'Not stated'),
+        h('td', {class: 'list-meta'}, manifest.platforms ? C.platformsText(manifest) : ''));
     }
 
     function screenHome(ctx) {
       const section = h('section', {class: 'screen screen-home'});
       const actions = h('div', {class: 'actions'});
       actions.appendChild(link({view: 'catalog'}, 'Browse the catalogue', {class: 'btn btn-primary'}));
-      if (state.user) {
-        actions.appendChild(link({view: 'library'}, 'Your library', {class: 'btn btn-line'}));
-        actions.appendChild(link({view: 'mine'}, 'My experiments', {class: 'btn btn-line'}));
-      } else {
-        actions.appendChild(link({view: 'signin'}, 'Sign in', {class: 'btn btn-line'}));
-        actions.appendChild(link({view: 'register'}, 'Register with an invite', {class: 'btn btn-quiet'}));
-      }
-      actions.appendChild(link({view: 'guide'}, 'How alhazen runs a session', {class: 'btn btn-quiet'}));
+      if (state.user) actions.appendChild(link({view: 'library'}, 'Your library', {class: 'btn btn-line'}));
+      else actions.appendChild(link({view: 'signin'}, 'Sign in', {class: 'btn btn-line'}));
       section.appendChild(h('div', {class: 'hero'},
-        h('p', {class: 'eyebrow mono'}, 'Alhazen · Experiment Hub'),
-        h('h1', {class: 'hero-title', tabindex: '-1', 'data-heading': ''}, 'Share the experiment. Keep the rig and the data yours.'),
-        h('p', {class: 'lede'}, 'A catalogue of vision-science experiments as pinned, checksummed code. '
-          + 'Rigs install the exact release they trust and run it locally; collected sessions leave a rig only when you choose.'),
+        h('h1', {class: 'hero-title', tabindex: '-1', 'data-heading': ''}, 'Your experiment hub'),
+        h('p', {class: 'lede'}, 'Pinned releases your rigs install and run offline.'),
         actions));
       const flash = flashNode();
       if (flash) section.appendChild(flash);
-      section.appendChild(signalPath());
       if (state.role === 'rig') section.appendChild(rigStrip());
 
-      const recent = region('the latest releases');
-      section.appendChild(h('section', {class: 'block'},
-        h('div', {class: 'block-head'},
-          h('h2', {class: 'block-title'}, 'Recently published'),
-          link({view: 'catalog'}, 'Whole catalogue', {class: 'block-link'})),
+      /* The catalogue itself, live: the landing page's picture. */
+      const recent = region('the latest releases', 'preview-body');
+      section.appendChild(h('section', {class: 'preview', 'aria-label': 'Latest releases'},
+        h('div', {class: 'preview-bar'},
+          h('h2', {class: 'preview-title'}, 'Latest releases'),
+          link({view: 'catalog'}, 'View all', {class: 'btn btn-quiet btn-small'})),
         recent.el));
+      section.appendChild(features());
       (async () => {
         const got = await screenRequest(ctx.epoch, 'GET', '/catalog', {query: {limit: 6}});
         if (!got) return;
@@ -917,11 +929,10 @@ const HubApp = (() => {
         const items = (got.value && got.value.items) || [];
         if (!items.length) {
           return recent.fill(emptyState('Nothing is published yet.',
-            'Releases appear here only after their author publishes one explicitly, with a licence and a check that no participant data is inside. '
-            + 'Private experiments and every collected session stay out of the catalogue.',
+            'Releases appear here once their author publishes one.',
             state.user ? link({view: 'mine'}, 'Publish one of yours', {class: 'btn btn-line'}) : null));
         }
-        recent.fill(h('div', {class: 'listing-grid'}, items.map((item) => listing(item))));
+        recent.fill(releaseTable(items, 'Latest releases'));
       })();
       return section;
     }
@@ -947,7 +958,7 @@ const HubApp = (() => {
     function screenCatalog(ctx) {
       const r = ctx.route;
       const section = screenShell('Catalogue', 'Published experiments',
-        'Every entry is one pinned release its author chose to publish. Search titles, summaries, tags and authors.');
+        'Pinned releases, published by their authors.');
       const q = input({type: 'search', name: 'q', value: r.q || '', autocomplete: 'off', maxlength: '200', 'data-focus': 'catalog-q'});
       const form = h('form', {class: 'search', role: 'search'},
         field('Search the catalogue', q),
@@ -1104,8 +1115,8 @@ const HubApp = (() => {
         ['Python', m.python_min ? '\u2265 ' + m.python_min : null, {mono: true}],
         ['alhazen', m.alhazen_min ? '\u2265 ' + m.alhazen_min : null, {mono: true}],
         ['Entry point', m.entrypoint, {mono: true}],
-        ['Files', Array.isArray(m.files) ? String(m.files.length) : null, {mono: true}],
-        ['Archive', C.formatBytes(version.size), {mono: true}],
+        ['Files', Array.isArray(m.files) ? String(m.files.length) : null],
+        ['Archive', C.formatBytes(version.size)],
         ['Released', C.formatDate(version.created_at)],
         ['SHA-256', digest(version.sha256)],
       ]));
@@ -1165,8 +1176,8 @@ const HubApp = (() => {
       const href = state.api.url('/experiments/' + C.seg(experiment.id) + '/versions/' + C.seg(version.id) + '/download');
       return h('div', {class: 'sheet-block'},
         h('a', {class: 'btn btn-line', href, download: ''}, 'Download the release archive'),
-        h('p', {class: 'muted small'}, 'This hub stores and lists code; it never runs experiments or touches rig hardware. '
-          + 'To run this one, open the hub page on a rig computer (alhazen dashboard --hub), sign in and install it from your library.'));
+        h('p', {class: 'muted small'}, 'The hub never runs experiments. To run this one, install it from your library on a rig '
+          + '(alhazen dashboard --hub).'));
     }
 
     /** Trust and install a release on this rig (rig only). */
@@ -1206,7 +1217,7 @@ const HubApp = (() => {
         h('p', {class: 'callout-title'}, 'This release is Python code from its author.'),
         /* The rig's own statement when it gives one (rig-contract: trust_statement). */
         h('p', null, local.trust_statement ? String(local.trust_statement)
-          : 'Trusting it lets alhazen import and run it as your operating-system user, with your access to files, '
+          : 'Trusting it lets Alhazen import and run it as your operating-system user, with your access to files, '
           + 'collected data, saved credentials and connected devices. A virtual environment is not a sandbox. Install only code whose author you trust.'),
         h('p', null, 'Installing downloads the archive, checks its SHA-256 and every file against the manifest, and extracts it into a new folder. '
           + 'Existing experiments and checkouts are not changed, and nothing is installed into the interpreter.')));
@@ -1355,8 +1366,8 @@ const HubApp = (() => {
     }
 
     function screenGuide(ctx) {
-      const section = screenShell('Guide', 'How alhazen runs an experiment',
-        'Modes, protections and what each choice records, taken from the alhazen version this '
+      const section = screenShell('Guide', 'How Alhazen runs an experiment',
+        'Modes, protections and what each choice records, taken from the Alhazen version this '
         + (state.role === 'rig' ? 'rig runs. Readable offline.' : 'hub runs.'));
       const area = region('the guide');
       section.appendChild(area.el);
@@ -1373,20 +1384,74 @@ const HubApp = (() => {
 
     /* ---- sign in, register ------------------------------------------------- */
 
+    /** Sign-in and registration share one split card: the form on the left,
+     *  on wide screens a quiet panel with what an account gives you. Returns
+     *  {section, body}; screens append their form to body. */
+    function authShell(title, lede) {
+      const section = h('section', {class: 'screen screen-auth'});
+      const body = h('div', {class: 'auth-main'},
+        h('p', {class: 'auth-brand'}, brandMark(), h('span', {class: 'auth-brand-word'}, 'Alhazen')),
+        h('header', {class: 'screen-head'},
+          h('h1', {class: 'screen-title', tabindex: '-1', 'data-heading': ''}, title),
+          lede ? h('p', {class: 'lede'}, lede) : null));
+      const flash = flashNode();
+      if (flash) body.appendChild(flash);
+      const points = [
+        ['Library', 'Pin the releases you trust.'],
+        ['Rigs', 'Install them on any rig you sign in to.'],
+        ['Data', 'Upload sessions privately, when you choose.'],
+      ];
+      const aside = h('aside', {class: 'auth-aside', 'aria-label': 'What an account gives you'},
+        h('p', {class: 'auth-aside-title'}, 'One account for your experiments, rigs and data.'),
+        h('ul', {class: 'auth-points'}, points.map(([name, text]) => h('li', {class: 'auth-point'},
+          h('span', {class: 'auth-point-name'}, name), h('span', {class: 'auth-point-text'}, text)))));
+      section.appendChild(h('div', {class: 'auth'}, body, aside));
+      return {section, body};
+    }
+
+    /** The Alhazen mark (the Penrose "impossible A"): ink paths plus one
+     *  accent face, coloured by CSS tokens. Built as SVG nodes. */
+    const MARK_INK = 'M7.83 56.61L11.81 49.72L11.98 49.52L12.21 49.35L12.38 49.28L12.64 49.24L20.6 49.24L16.62 42.35L16.55 42.2L16.51 42.01L16.5 41.82L16.53 41.64L16.62 41.39L26.31 24.61L26.49 24.39L26.73 24.23L26.92 24.16L27.12 24.13L27.41 24.16L27.6 24.23L27.77 24.33L27.92 24.47L28.02 24.61L37.41 40.87L44.77 40.87L27.17 10.39L4.15 50.24ZM55.59 57.61L59.27 51.24L13.24 51.24L9.57 57.61ZM26.59 40.87L30.85 33.5L27.17 27.13L19.23 40.87Z';
+    const MARK_FACE = 'M22.91 49.24L59.27 49.24L36.26 9.39L28.9 9.39L47.38 41.39L47.45 41.55L47.49 41.75L47.5 41.95L47.46 42.14L47.34 42.41L47.14 42.64L46.89 42.79L46.7 42.85L46.52 42.87L19.23 42.87Z';
+    function brandMark() {
+      const box = svg('svg', {viewBox: '0 0 64 64', width: '28', height: '28', class: 'brand-mark', focusable: 'false', 'aria-hidden': 'true'});
+      box.appendChild(svg('path', {class: 'mark-ink', d: MARK_INK}));
+      box.appendChild(svg('path', {class: 'mark-face', d: MARK_FACE}));
+      return box;
+    }
+
+    /** A password field with a Show/Hide switch inside it. */
+    function passwordField(label, pw, hint) {
+      const id = pw.getAttribute('id');
+      const toggle = h('button', {type: 'button', class: 'pw-toggle', 'aria-controls': id,
+        'aria-pressed': 'false', 'aria-label': 'Show password'}, 'Show');
+      toggle.addEventListener('click', () => {
+        const reveal = pw.getAttribute('type') === 'password';
+        pw.setAttribute('type', reveal ? 'text' : 'password');
+        toggle.setAttribute('aria-pressed', String(reveal));
+        toggle.textContent = reveal ? 'Hide' : 'Show';
+      });
+      const parts = [h('label', {class: 'field-label', for: id}, label), h('div', {class: 'pw'}, pw, toggle)];
+      if (hint) {
+        pw.setAttribute('aria-describedby', id + '-hint');
+        parts.push(h('p', {class: 'field-hint', id: id + '-hint'}, hint));
+      }
+      return h('div', {class: 'field'}, ...parts);
+    }
+
     function screenSignin(ctx) {
       const r = ctx.route;
       const flash = state.flash;
-      const section = screenShell(state.role === 'rig' ? 'This rig' : 'Account', 'Sign in',
-        state.role === 'rig'
-          ? 'Sign in to the hub this rig is connected to. The rig keeps the sign-in in a private file; this page never sees it.'
-          : 'Sign in to keep a library, upload experiments and see the sessions you collected.');
+      const {section, body} = authShell('Sign in', state.role === 'rig'
+        ? 'Use your account on the hub this rig is connected to.'
+        : 'Welcome back. Use your Experiment Hub account.');
       if (state.user) {
-        section.appendChild(h('p', {class: 'note note-info'}, 'You are signed in as ' + (state.user.display_name || state.user.username) + '.'));
-        section.appendChild(link({view: 'home'}, 'Go to the start page', {class: 'btn btn-line'}));
+        body.appendChild(h('p', {class: 'note note-info'}, 'You are signed in as ' + (state.user.display_name || state.user.username) + '.'));
+        body.appendChild(link({view: 'home'}, 'Go to the start page', {class: 'btn btn-line'}));
         return section;
       }
       if (state.role === 'rig' && state.local && state.local.state === 'not_configured') {
-        section.appendChild(h('div', {class: 'callout callout-info'},
+        body.appendChild(h('div', {class: 'callout callout-info'},
           h('p', null, 'Connect this rig to a hub first; then sign in to it.'),
           link({view: 'rig', tab: 'connection'}, 'Connect this rig', {class: 'btn btn-primary'})));
         return section;
@@ -1396,8 +1461,8 @@ const HubApp = (() => {
       const password = input({type: 'password', name: 'password', autocomplete: 'current-password', required: true, maxlength: '1024'});
       const status = statusLine();
       const button = h('button', {type: 'submit', class: 'btn btn-primary'}, 'Sign in');
-      const form = h('form', {class: 'form form-narrow'}, field('Username', username), field('Password', password), button, status.el,
-        h('p', {class: 'muted small'}, 'No account? ', link({view: 'register'}, 'Register with an invite code')));
+      const form = h('form', {class: 'form form-narrow'}, field('Username', username), passwordField('Password', password), button, status.el,
+        h('p', {class: 'auth-alt'}, 'No account? ', link({view: 'register'}, 'Register with an invite')));
       form.addEventListener('submit', async (event) => {
         prevent(event);
         if (!username.value.trim() || !password.value) return status.show('Enter your username and password.', 'err');
@@ -1426,20 +1491,20 @@ const HubApp = (() => {
           button.disabled = false;
         }
       });
-      section.appendChild(form);
+      body.appendChild(form);
       return section;
     }
 
     function screenRegister() {
-      const section = screenShell('Account', 'Register', state.role === 'rig'
-        ? 'Create your hub account on the hub, then sign in on this rig.'
-        : 'Registration needs an invite code from the hub\u2019s operator. No e-mail is sent; you sign in straight after.');
+      const {section, body} = authShell('Create an account', state.role === 'rig'
+        ? 'Create your account on the hub, then sign in on this rig.'
+        : 'You need an invite code from the hub\u2019s operator.');
       if (state.user) {
-        section.appendChild(h('p', {class: 'note note-info'}, 'You are already signed in as ' + (state.user.display_name || state.user.username) + '.'));
+        body.appendChild(h('p', {class: 'note note-info'}, 'You are already signed in as ' + (state.user.display_name || state.user.username) + '.'));
         return section;
       }
       if (state.role === 'rig') {
-        section.appendChild(rigRegistration());
+        body.appendChild(rigRegistration());
         return section;
       }
       const username = input({type: 'text', name: 'username', autocomplete: 'username', autocapitalize: 'none', spellcheck: 'false', required: true, maxlength: '64'});
@@ -1452,10 +1517,11 @@ const HubApp = (() => {
       const form = h('form', {class: 'form form-narrow'},
         field('Username', username, 'Shown publicly beside anything you publish.'),
         field('Display name', display),
-        field('Password', password, '12 to 1024 characters.'),
-        field('Repeat the password', repeat),
+        passwordField('Password', password, 'At least 12 characters.'),
+        passwordField('Repeat the password', repeat),
         field('Invite code', invite),
-        button, status.el);
+        button, status.el,
+        h('p', {class: 'auth-alt'}, 'Have an account? ', link({view: 'signin'}, 'Sign in')));
       form.addEventListener('submit', async (event) => {
         prevent(event);
         if (!username.value.trim() || !display.value.trim() || !invite.value.trim()) {
@@ -1481,7 +1547,7 @@ const HubApp = (() => {
           button.disabled = false;
         }
       });
-      section.appendChild(form);
+      body.appendChild(form);
       return section;
     }
 
@@ -1517,7 +1583,7 @@ const HubApp = (() => {
 
     function screenLibrary(ctx) {
       const section = screenShell('Library', 'Your library',
-        'Releases you pinned. A pin stays on its version until you choose another; nothing upgrades on its own.');
+        'Releases you pinned. Nothing upgrades on its own.');
       const area = region('your library');
       section.appendChild(area.el);
       (async () => {
@@ -1545,7 +1611,7 @@ const HubApp = (() => {
       const experiment = item.experiment || {};
       const version = item.version || {};
       const row = h('div', {class: 'listing-actions'});
-      row.appendChild(h('span', {class: 'mono small', title: String(version.sha256 || '')}, 'SHA-256 ' + C.shortHash(version.sha256)));
+      row.appendChild(h('span', {class: 'small muted', title: String(version.sha256 || '')}, 'SHA-256 ', h('span', {class: 'mono'}, C.shortHash(version.sha256))));
       if (state.role === 'rig') {
         const record = installFor(version.sha256);
         const open = record && record.status === 'registered' && !record.error ? workspaceLink(record, 'Open in the workspace') : null;
@@ -1564,7 +1630,7 @@ const HubApp = (() => {
       if (r.new) return screenMineNew();
       if (r.id) return screenMineOne(ctx);
       const section = screenShell('Author', 'My experiments',
-        'Everything here is private until you publish a release. Collected data is never part of an experiment.');
+        'Private until you publish a release.');
       section.appendChild(h('div', {class: 'actions'}, link({view: 'mine', new: '1'}, 'New experiment', {class: 'btn btn-primary'})));
       const area = region('your experiments');
       section.appendChild(area.el);
@@ -1704,7 +1770,7 @@ const HubApp = (() => {
 
     function zipPanel(experiment) {
       const block = h('section', {class: 'panel'}, h('h2', {class: 'panel-title'}, 'Add a version'),
-        h('p', {class: 'muted'}, 'Upload a release archive made with alhazen (alhazen-package.json inside). '
+        h('p', {class: 'muted'}, 'Upload a release archive made with Alhazen (alhazen-package.json inside). '
           + 'Its version comes from the manifest and cannot be replaced later. It stays private.'));
       const file = input({type: 'file', name: 'archive', accept: '.zip,application/zip'});
       const status = statusLine();
@@ -2032,7 +2098,7 @@ const HubApp = (() => {
       if (ctx.route.session) return screenSession(ctx);
       const r = ctx.route;
       const section = screenShell('Data', 'Your sessions',
-        'Sessions you uploaded and the hub verified. Only you can see them; an experiment\u2019s author has no access to your data.');
+        'Sessions you uploaded. Only you can see them.');
       const experimentChoice = select([['', 'All experiments']], r.experiment || '', {'data-focus': 'data-exp'});
       const subject = input({type: 'text', value: r.subject || '', maxlength: '200', autocomplete: 'off', spellcheck: 'false'});
       const mode = input({type: 'text', value: r.mode || '', maxlength: '200', autocomplete: 'off', list: 'data-modes'});
@@ -2274,7 +2340,7 @@ const HubApp = (() => {
         exportsBox.appendChild(h('div', {class: 'actions'},
           h('a', {class: 'btn btn-line', download: '', href: state.api.url(base + '/export', {format: 'csv'})}, 'CSV'),
           h('a', {class: 'btn btn-line', download: '', href: state.api.url(base + '/export', {format: 'json'})}, 'JSON')));
-        if (st.rows !== null) indexBox.appendChild(h('p', {class: 'muted small mono'}, st.rows + ' trial rows indexed'));
+        if (st.rows !== null) indexBox.appendChild(h('p', {class: 'muted small'}, st.rows + ' trial rows indexed'));
         loadTrials(ctx, base, trials, view.back, view.sessionId, view.columns);
         return;
       }
@@ -2385,7 +2451,7 @@ const HubApp = (() => {
         : (Array.isArray(serverColumns) && serverColumns.length ? serverColumns : null);
       const table = trialTable(rows, declared);
       const single = [...new Set(rows.map((item) => C.trialRow(item).source).filter(Boolean))];
-      trials.fill(single.length === 1 ? h('p', {class: 'muted small mono'}, 'From ' + single[0]) : null,
+      trials.fill(single.length === 1 ? h('p', {class: 'muted small'}, 'From ', h('span', {class: 'mono'}, single[0])) : null,
         h('div', {class: 'table-wrap table-scroll', tabindex: '0', role: 'region', 'aria-label': 'Trial rows'}, table),
         pager(offset, rows.length, got.value.next_offset,
           (o) => Object.assign({}, back, {session: sessionId, toffset: o}), 'trials'));
