@@ -7,11 +7,10 @@ import sys
 import types
 import zipfile
 from dataclasses import replace
-from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, text
-from tests.hub.server_support import API, ORIGIN, Hub, make_settings
+from tests.hub.server_support import API, ORIGIN, make_settings
 
 from alhazen.hub import admin
 from alhazen.hub import app as hub_app
@@ -91,7 +90,7 @@ class TestSchema:
         assert admin.init_database(settings) == SCHEMA_VERSION
         assert admin.init_database(settings) == SCHEMA_VERSION  # idempotent at the version
         assert admin.migrate_database(settings) == SCHEMA_VERSION
-        create_app(settings, start_maintenance=False)
+        create_app(settings, start_maintenance=False).state.hub.db.dispose()
 
     def test_a_newer_schema_is_refused_untouched(self, tmp_path):
         settings = make_settings(tmp_path)
@@ -118,20 +117,19 @@ class TestReadiness:
         body = hub.client.get(f"{API}/readyz").json()
         assert body["status"] == "ready" and body["database"] == "ok"
 
-    def test_database_outage_is_a_typed_503(self, tmp_path, clock):
-        if "postgresql" in make_settings(tmp_path).database_url:
-            pytest.skip("simulated by replacing the SQLite file")
-        settings = make_settings(tmp_path)
-        admin.init_database(settings)
-        service = Hub(settings, clock)
-        db_file = Path(settings.database_url.removeprefix("sqlite:///"))
-        service.app.state.hub.db.engine.dispose()
-        db_file.rename(db_file.with_suffix(".moved"))
-        db_file.mkdir()
-        response = service.client.get(f"{API}/catalog")
+    def test_database_outage_is_a_typed_503(self, hub, tmp_path):
+        # Any unreachable database: here an engine whose file cannot be opened.
+        unreachable = tmp_path / "gone"
+        unreachable.mkdir()
+        database = hub.app.state.hub.db
+        database.engine.dispose()
+        database.engine = create_engine(f"sqlite:///{unreachable.as_posix()}")
+        response = hub.client.get(f"{API}/catalog")
         assert response.status_code == 503
         assert response.json()["error"]["code"] == "database_unavailable"
-        assert service.client.get(f"{API}/readyz").status_code == 503
+        assert response.headers["retry-after"]
+        assert str(tmp_path) not in response.text
+        assert hub.client.get(f"{API}/readyz").status_code == 503
 
 
 class TestInterface:

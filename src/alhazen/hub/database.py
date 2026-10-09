@@ -14,16 +14,19 @@ leaves no partial rows.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
 from sqlalchemy import Connection, Engine, create_engine, event
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 
 from alhazen.hub.errors import HubError
-from alhazen.hub.schema import check_version
+from alhazen.hub.schema import SchemaError, check_version
 from alhazen.hub.settings import HubSettings
+
+log = logging.getLogger(__name__)
 
 
 def engine_url(settings: HubSettings) -> str:
@@ -87,12 +90,14 @@ class Database:
             check_version(conn)
 
     def ping(self) -> bool:
+        """Whether the database answers at the expected schema (for /readyz)."""
         try:
             with self.engine.connect() as conn:
                 check_version(conn)
-            return True
-        except Exception:  # noqa: BLE001 - readiness reports any failure as not ready
+        except (SQLAlchemyError, SchemaError) as exc:
+            log.warning("hub database not ready: %s", type(exc).__name__)
             return False
+        return True
 
     def dispose(self) -> None:
         self.engine.dispose()

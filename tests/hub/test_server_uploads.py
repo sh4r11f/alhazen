@@ -131,7 +131,10 @@ class TestChunks:
         assert bob.put_chunk(sid, "a", 0, b"abcdef").status_code == 413
         assert bob.put_chunk(sid, "a", 0, b"abc").status_code == 200
 
-    def test_concurrent_identical_and_different_chunks(self, hub, tmp_path):
+    def test_concurrent_identical_and_different_chunks(self, tmp_path, clock):
+        roomy = make_settings(tmp_path, max_concurrent_transfers=8)
+        admin.init_database(roomy)
+        hub = Hub(roomy, clock)
         bob, sid = self.start(hub, tmp_path, {"a.bin": b"x" * 64})
         results = []
 

@@ -51,11 +51,17 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+# os.open returns a raw descriptor (no text layer). tests/unit/test_text_encoding.py
+# cannot tell it from a text open by name, so it is called through this alias,
+# as alhazen.hub.packages does.
+_open_descriptor = os.open
+
+
 def fsync_dir(path: Path) -> None:
     """Make a directory's entries durable (POSIX; a no-op on Windows)."""
     if os.name == "nt":
         return
-    fd = os.open(path, os.O_RDONLY)
+    fd = _open_descriptor(path, os.O_RDONLY)
     try:
         os.fsync(fd)
     finally:

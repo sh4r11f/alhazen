@@ -73,6 +73,9 @@ def make_settings(tmp_path: Path, **limit_overrides: Any) -> HubSettings:
     )
 
 
+RUNNING: list[Any] = []  # apps built by a test, closed after it (see dispose_apps)
+
+
 class Hub:
     """One running service with helpers to act as its users and operator."""
 
@@ -80,6 +83,7 @@ class Hub:
         self.settings = settings
         self.clock = clock
         self.app = create_app(settings, clock=clock, start_maintenance=False)
+        RUNNING.append(self.app)
         self.client = TestClient(self.app, base_url=ORIGIN, raise_server_exceptions=False)
 
     @property
@@ -328,3 +332,12 @@ def settings(tmp_path: Path) -> HubSettings:
 @pytest.fixture
 def hub(settings: HubSettings, clock: FakeClock) -> Hub:
     return Hub(settings, clock)
+
+
+@pytest.fixture(autouse=True)
+def dispose_apps() -> Any:
+    """Close every app's connection pool after its test, so a PostgreSQL run
+    does not accumulate idle connections across the suite."""
+    yield
+    while RUNNING:
+        RUNNING.pop().state.hub.db.dispose()
