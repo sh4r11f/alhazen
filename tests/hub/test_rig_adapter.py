@@ -149,11 +149,26 @@ class TestRoutes:
         assert server.token not in json.dumps(out)
 
     def test_hub_page_is_a_fixed_table(self, http):
+        import re
+
+        from alhazen.cli.dashboard import HUB_ASSETS, HUB_ASSETS_DIR
+
         call, _ = http
-        status, _ = call("/hub", token=False)
-        assert status in (200, 503)  # 503 until the shared page ships
+        status, headers, body = call("/hub", token=False, raw=True)
+        assert status == 200 and headers["Content-Type"].startswith("text/html")
+        # Every file the page ships, and every asset the page refers to, is
+        # in the table; nothing else is served.
+        served = {name for name, _ in HUB_ASSETS.values()}
+        shipped = {
+            p.relative_to(HUB_ASSETS_DIR).as_posix()
+            for p in HUB_ASSETS_DIR.rglob("*")
+            if p.is_file()
+        }
+        assert shipped <= served
+        referenced = set(re.findall(r'(?:href|src)="(/hub/assets/[^"]+)"', body.decode()))
+        assert referenced <= set(HUB_ASSETS)
         for path in ("/hub/assets/../dashboard.py", "/hub/assets/secret.js", "/hub/x"):
-            assert call(path, token=False)[0] == 404
+            assert call(path, token=False, raw=True)[0] == 404
 
     def test_api_needs_the_token_host_and_origin(self, http):
         call, server = http
@@ -190,7 +205,8 @@ class TestRoutes:
         assert status == 503 and out["error"]["code"] == "not_available"
         fake = types.SimpleNamespace(global_guide=lambda: {"modes": [{"name": "run"}]})
         monkeypatch.setitem(sys.modules, "alhazen.hub.documentation", fake)
-        assert call(f"{API}/guide") == (200, {"modes": [{"name": "run"}]})
+        # The frozen contract shape: {guide: global_guide()}, as central GET /guide.
+        assert call(f"{API}/guide") == (200, {"guide": {"modes": [{"name": "run"}]}})
 
 
 # -- connection and sign-in ---------------------------------------------------------
@@ -700,3 +716,72 @@ def test_a_damaged_job_record_is_reported_not_hidden(http, workspace):
     assert status == 200
     assert any("abc123.json" in p for p in out["outbox_problems"])
     assert (outbox / "abc123.json").read_text() == "{not json"
+
+
+def test_reindex_is_an_allowlisted_bearer_write(http, hub, workspace):
+    call, _ = http
+    run_folder(workspace)
+    connect(call, hub)
+    body, out = preview(call, workspace)
+    job = wait_job(call, start(call, body, out)["id"])
+    session_id = job["session_id"]
+    status, answer = call(f"{API}/data/sessions/{session_id}/reindex", {})
+    assert status == 202 and answer["index"]["status"] == "pending"
+    sent = hub.requests[-1]
+    assert sent["method"] == "POST" and sent["auth"].startswith("Bearer ")
+    assert sent["cookie"] is None and "X-Alhazen-Token" not in sent["headers"]
+    # Not a GET, and not without a sign-in.
+    assert call(f"{API}/data/sessions/{session_id}/reindex")[0] == 404
+    call(f"{API}/auth/logout", {})
+    status, answer = call(f"{API}/data/sessions/{session_id}/reindex", {})
+    assert status == 401 and answer["error"]["code"] == "unauthenticated"
+
+
+class TestReceipts:
+    @pytest.mark.parametrize(
+        "override",
+        [
+            {"manifest_sha256": "0" * 64},
+            {"total_bytes": 1},
+            {"file_count": 99},
+            {"client_session_id": "rig-someone-else"},
+            {"version_id": "v-other"},
+        ],
+    )
+    def test_a_receipt_for_anything_else_is_not_completion(self, http, hub, workspace, override):
+        call, _ = http
+        run_folder(workspace)
+        connect(call, hub)
+        hub.receipt_override = override
+        body, out = preview(call, workspace)
+        job = wait_job(call, start(call, body, out)["id"])
+        assert job["status"] == "failed", job
+        assert job["error"]["code"] == "receipt_mismatch"
+        assert job["receipt"] is None
+        field = next(iter(override))
+        assert field in job["error"]["message"]
+
+    def test_the_receipt_matches_the_shared_digest(self, http, hub, workspace):
+        from alhazen.hub import protocol
+
+        call, _ = http
+        run_folder(workspace)
+        connect(call, hub)
+        body, out = preview(call, workspace)
+        job = wait_job(call, start(call, body, out)["id"])
+        assert job["status"] == "completed", job
+        stored = next(iter(hub.sessions.values()))
+        assert set(stored["metadata"]) == set(protocol.METADATA_KEYS)
+        assert job["receipt"]["manifest_sha256"] == protocol.manifest_sha256(
+            "e1", "v1", stored["files"], out["metadata"]
+        )
+
+    def test_sealing_in_progress_is_retried(self, http, hub, workspace):
+        call, _ = http
+        run_folder(workspace)
+        connect(call, hub)
+        hub.seal_busy = 2
+        body, out = preview(call, workspace)
+        job = wait_job(call, start(call, body, out)["id"])
+        assert job["status"] == "completed", job
+        assert hub.seal_busy == 0

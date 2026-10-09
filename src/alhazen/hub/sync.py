@@ -48,6 +48,7 @@ import yaml
 from alhazen.data.atomic import replace_atomically
 from alhazen.hub.client import HubClient, HubError, api_path
 from alhazen.hub.credentials import Credential, RigState
+from alhazen.hub.protocol import COMMITTED, canonical_metadata, receipt_problems, usable_metadata
 
 log = logging.getLogger(__name__)
 
@@ -61,7 +62,6 @@ ACTIVE = ("queued", "waiting", "hashing", "uploading", "completing")
 TERMINAL = ("completed", "failed", "cancelled")
 # Codes after which the same account signing in again may resume a job.
 RESUMABLE_PAUSES = ("signed_out", "auth_context_changed", "interrupted", "unauthenticated")
-COMMITTED = ("committed", "complete", "completed")
 IN_PROGRESS = ("staging", "sealing")
 # The fields of session.json that identify a person or this machine, named in
 # the preview's privacy warning when present.
@@ -151,18 +151,21 @@ def _card(folder: Path) -> dict[str, Any]:
 
 
 def session_metadata(folder: Path, run_id: str) -> dict[str, Any]:
-    """The contract's session metadata, from the run id and session.json."""
+    """The contract's session metadata, from the run id and session.json:
+    always the four keys, a value the hub would refuse (too long, control
+    characters) sent as None. The files themselves keep every value."""
     card = _card(folder)
     parts = run_id.split("/")
-    subject = parts[-3].removeprefix("sub-") if len(parts) >= 3 else None
     raw = card.get("rig")
     rig: dict[str, Any] = raw if isinstance(raw, dict) else {}
-    return {
-        "subject_code": subject,
-        "mode": card.get("mode") if isinstance(card.get("mode"), str) else None,
-        "rig_alias": rig.get("name") if isinstance(rig.get("name"), str) else None,
-        "started_at": card.get("created") if isinstance(card.get("created"), str) else None,
-    }
+    return usable_metadata(
+        {
+            "subject_code": parts[-3].removeprefix("sub-") if len(parts) >= 3 else None,
+            "mode": card.get("mode"),
+            "rig_alias": rig.get("name"),
+            "started_at": card.get("created"),
+        }
+    )
 
 
 def privacy_fields(folder: Path) -> list[str]:
@@ -279,6 +282,7 @@ PUBLIC_JOB_FIELDS = (
     "session_id",
     "files_digest",
     "manifest_digest",
+    "release_source",
 )
 
 
@@ -626,7 +630,7 @@ class Uploader:
                 "version_id": job["version_id"],
                 "client_session_id": job["client_session_id"],
                 "files": files,
-                "metadata": job["metadata"],
+                "metadata": canonical_metadata(job["metadata"]),
                 "consent": True,
             }
             session = _unwrap(
@@ -637,6 +641,13 @@ class Uploader:
                 ),
                 "session",
             )
+            answered = session.get("client_session_id")
+            if answered is not None and answered != job["client_session_id"]:
+                raise SyncError(
+                    502,
+                    "receipt_mismatch",
+                    "The hub answered for another upload identity; nothing was sent",
+                )
             self._set(job, session_id=str(session["id"]))
         progress = _unwrap(
             self._call(
@@ -657,7 +668,7 @@ class Uploader:
             bytes_done=done,
             files_done=sum(received.get(f["path"], 0) >= f["size"] for f in files),
         )
-        if str(progress.get("status")) not in COMMITTED:
+        if str(progress.get("status")) != COMMITTED:
             for entry in files:
                 offset = received.get(entry["path"], 0)
                 while offset < entry["size"]:
@@ -671,24 +682,27 @@ class Uploader:
                     )
         self._set(job, status="completing")
         for attempt in range(len(self.backoff_s) + 1):
-            receipt = _unwrap(
-                self._call(
-                    job,
-                    epoch,
-                    lambda c: c.json("POST", api_path("sessions", job["session_id"], "complete")),
-                ),
-                "receipt",
-            )
-            status = str(receipt.get("status"))
-            if status in COMMITTED:
-                self._set(
-                    job,
-                    status="completed",
-                    receipt=receipt,
-                    error=None,
-                    bytes_done=job["bytes_total"],
-                    files_done=len(files),
+            try:
+                receipt = _unwrap(
+                    self._call(
+                        job,
+                        epoch,
+                        lambda c: c.json(
+                            "POST", api_path("sessions", job["session_id"], "complete")
+                        ),
+                    ),
+                    "receipt",
                 )
+            except HubError as exc:
+                # Another request holds the seal: the same call later.
+                if exc.code != "sealing_in_progress" or attempt >= len(self.backoff_s):
+                    raise
+                if self._stop.wait(self.backoff_s[attempt]):
+                    raise _Paused("interrupted", "The dashboard is stopping") from None
+                continue
+            status = str(receipt.get("status"))
+            if status == COMMITTED:
+                self._accept(job, receipt)
                 return
             if status not in IN_PROGRESS or attempt >= len(self.backoff_s):
                 raise HubError(
@@ -696,6 +710,34 @@ class Uploader:
                 )
             if self._stop.wait(self.backoff_s[attempt]):
                 raise _Paused("interrupted", "The dashboard is stopping")
+
+    def _accept(self, job: dict[str, Any], receipt: dict[str, Any]) -> None:
+        """Completed only for a receipt that certifies exactly the bound
+        upload (alhazen.hub.protocol.receipt_problems)."""
+        problems = receipt_problems(
+            receipt,
+            session_id=job["session_id"],
+            client_session_id=job["client_session_id"],
+            experiment_id=job["experiment_id"],
+            version_id=job["version_id"],
+            files=job["files"],
+            metadata=job["metadata"],
+        )
+        if problems:
+            self._set(job, rejected_receipt=receipt)
+            raise SyncError(
+                502,
+                "receipt_mismatch",
+                "The hub's receipt does not match this upload: " + "; ".join(problems[:4]),
+            )
+        self._set(
+            job,
+            status="completed",
+            receipt=receipt,
+            error=None,
+            bytes_done=job["bytes_total"],
+            files_done=len(job["files"]),
+        )
 
     def _chunk(
         self,

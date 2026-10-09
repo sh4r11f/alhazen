@@ -34,7 +34,8 @@ from typing import IO, Any
 
 from alhazen.cli import workspace as workspace_module
 from alhazen.cli.workspace import Workspace
-from alhazen.cli.workspace_data import DataView, _run_folder
+from alhazen.cli.workspace_data import DataView, _run_folder, data_roots
+from alhazen.cli.workspace_manage import _console_run_folder
 from alhazen.hub.client import (
     DEFAULT_TIMEOUT_S,
     HubClient,
@@ -137,6 +138,9 @@ PROXY_ROUTES = (
     _route("GET", "/data/sessions/{id}/trials", PAGE),
     _route("GET", "/data/sessions/{id}/export", ("format",), kind="stream", filename="trials"),
     _route("GET", "/data/sessions/{id}/files", ("path",), kind="stream"),
+    # Rebuild a session's derived trial index (owner only on the hub, 202);
+    # the raw files are never touched by it.
+    _route("POST", "/data/sessions/{id}/reindex"),
 )
 SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -331,20 +335,20 @@ class HubAdapter:
             if upload is None:
                 raise HubRouteError(400, "invalid_request", "Send the package as application/zip")
             stream, length = upload
-            answer = self._authed(
-                lambda c: c.json(
+            return self._authed(
+                lambda c: c.json_with_status(
                     method, path, data=stream, length=length, content_type="application/zip"
                 )
             )
-            return 201, answer
         json_body = body if method in ("POST", "PATCH") else None
         if not spec.auth:
-            answer = self._anonymous().json(
+            return self._anonymous().json_with_status(
                 method, path, query=query, json_body=json_body, authenticated=False
             )
-        else:
-            answer = self._authed(lambda c: c.json(method, path, query=query, json_body=json_body))
-        return (201 if method == "POST" else 200), answer
+        # The hub's own status passes through (201 created, 202 accepted).
+        return self._authed(
+            lambda c: c.json_with_status(method, path, query=query, json_body=json_body)
+        )
 
     @contextmanager
     def _open_stream(
@@ -394,7 +398,7 @@ class HubAdapter:
             raise HubRouteError(
                 503, "not_available", "The offline guide is not available in this install"
             ) from exc
-        return 200, documentation.global_guide()
+        return 200, {"guide": documentation.global_guide()}
 
     def login(self, args: dict[str, str], body: dict[str, Any]) -> tuple[int, Any]:
         username = _text(body, "username", 256)
@@ -680,28 +684,66 @@ class HubAdapter:
         root = self.data._root(project_id, root_id)
         return project_id, root_id, run_id, _run_folder(root.path, run_id), project
 
-    def _release_for(self, project: dict[str, Any], body: dict[str, Any]) -> tuple[str, str, Any]:
+    def _recorded_release(self, project_id: str, folder: Path) -> dict[str, Any] | None:
+        """The hub release the workspace recorded at launch for the run that
+        wrote ``folder`` (run.json ``hub_release``), found through the run's
+        console as the Run page finds its session; None when no recorded run
+        of this project wrote it (an older run, or one from another tool)."""
+        existing, _, _ = data_roots(self.workspace.describe(project_id))
+        target = str(folder.resolve())
+        with self.workspace.lock:
+            runs = [
+                dict(r)
+                for r in self.workspace.runs.values()
+                if r.get("project") == project_id and r.get("hub_release")
+            ]
+        for run in runs:
+            console = Path(run["directory"]) / "console.log"
+            if _console_run_folder(console, existing, run.get("mode")) == target:
+                return dict(run["hub_release"])
+        return None
+
+    def _release_for(
+        self, project: dict[str, Any], folder: Path, body: dict[str, Any], base: str
+    ) -> tuple[str, str, dict[str, Any] | None, str]:
+        """``(experiment_id, version_id, install, source)`` for an upload.
+
+        The release recorded with the run at launch wins; else the folder's
+        install record; else the operator's choice. A choice that differs
+        from a recorded identity, or a release from another hub, is refused."""
         install = self.installs.for_path(project["path"])
-        experiment_id = body.get("experiment_id") or (install or {}).get("experiment_id")
-        version_id = body.get("version_id") or (install or {}).get("version_id")
+        recorded = self._recorded_release(project["id"], folder)
+        pinned, source = (recorded, "run_record") if recorded else (install, "install_record")
+        experiment_id = body.get("experiment_id") or (pinned or {}).get("experiment_id")
+        version_id = body.get("version_id") or (pinned or {}).get("version_id")
         check_identifier(experiment_id, "experiment_id")
         check_identifier(version_id, "version_id")
-        if install and (
-            install.get("experiment_id") != experiment_id or install.get("version_id") != version_id
-        ):
+        if pinned is None:
+            return str(experiment_id), str(version_id), install, "operator"
+        if pinned.get("base_url") != base:
             raise HubRouteError(
                 409,
                 "conflict",
-                "This experiment was installed from another hub release; its sessions are "
-                "uploaded under that release",
+                "This session's experiment was installed from another hub; it can only be "
+                "uploaded there",
             )
-        return str(experiment_id), str(version_id), install
+        if pinned.get("experiment_id") != experiment_id or pinned.get("version_id") != version_id:
+            what = "recorded with this run" if recorded else "this experiment was installed from"
+            raise HubRouteError(
+                409,
+                "conflict",
+                f"The release {what} differs from the one chosen; sessions are uploaded under "
+                "the release that ran them",
+            )
+        return str(experiment_id), str(version_id), install, source
 
     def upload_preview(self, args: dict[str, str], body: dict[str, Any]) -> tuple[int, Any]:
         self._refuse_if_busy()
         credential = self._signed_in()
         project_id, root_id, run_id, folder, project = self._session(body)
-        experiment_id, version_id, install = self._release_for(project, body)
+        experiment_id, version_id, install, release_source = self._release_for(
+            project, folder, body, credential.base
+        )
         listing = session_files(folder)
         session_key = client_session_id(self.state.rig_id(), folder)
         manifest_sha = file_sha256(folder / "manifest.yaml")
@@ -720,6 +762,7 @@ class HubAdapter:
             "folder": str(folder),
             "metadata": metadata,
             "install_sha256": (install or {}).get("sha256"),
+            "release_source": release_source,
         }
         preview_id = self.previews.create(binding)
         return 200, {
@@ -731,6 +774,7 @@ class HubAdapter:
             "recipient": {"base_url": credential.base, "user": dict(credential.user)},
             "experiment_id": experiment_id,
             "version_id": version_id,
+            "release_source": release_source,
             "metadata": metadata,
             "privacy": {"fields": privacy_fields(folder), "warning": PRIVACY_WARNING},
             "install": self._install_public(install) if install else None,
@@ -790,6 +834,7 @@ class HubAdapter:
                 "listing": binding["listing"],
                 "metadata": binding["metadata"],
                 "install_sha256": binding["install_sha256"],
+                "release_source": binding["release_source"],
                 "files": None,
                 "files_digest": None,
                 # Always re-initialised: the hub answers the same session for the

@@ -23,6 +23,7 @@ harmless; trusted code runs as the operator's OS user.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -69,7 +70,7 @@ class PackageModule(Protocol):
         platform: str | None = None,
     ) -> list[str]: ...
 
-    def extract_bundle(self, path: Path, destination: Path) -> Any: ...
+    def extract_bundle(self, path: Path, destination: Path, **kwargs: Any) -> Any: ...
 
 
 class InstallError(ValueError):
@@ -192,6 +193,37 @@ class InstallStore:
             )
         return record
 
+    def provenance(self, path: str, *, verify_up_to: int = 64 * 1024 * 1024) -> dict[str, Any]:
+        """The pinned release a launch of the project folder ``path`` runs,
+        for the run record: hub base (never a credential), experiment and
+        version ids, the source ZIP's SHA-256, and whether the declared files
+        still match it (``files_verified``: True/False, or None for a release
+        larger than ``verify_up_to`` bytes, not hashed at launch). Raises
+        InstallError when the folder is a hub install whose trusted record is
+        missing: a run of it must not start without its provenance."""
+        record = self.for_path(path)
+        if record is None:
+            raise InstallError(
+                409,
+                "install_unrecorded",
+                "This experiment folder is inside the hub's installs but has no install record",
+            )
+        trusted = self.trusted_record(record["sha256"])
+        size = sum(int(f["size"]) for f in trusted.get("files", []))
+        verified: bool | None = None
+        if size <= verify_up_to:
+            verified = not self.verify(trusted)
+        return {
+            "base_url": trusted.get("base_url"),
+            "experiment_id": trusted.get("experiment_id"),
+            "version_id": trusted.get("version_id"),
+            "sha256": trusted["sha256"],
+            "name": trusted.get("name"),
+            "version": trusted.get("version"),
+            "trusted_at": (trusted.get("trust") or {}).get("at"),
+            "files_verified": verified,
+        }
+
     def verify(self, record: dict[str, Any]) -> list[str]:
         """Declared files of an install that are missing or changed since it
         was unpacked (by SHA-256). Files the experiment added (data, caches)
@@ -277,7 +309,7 @@ class InstallStore:
                     )
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 try:
-                    packages.extract_bundle(bundle, destination)
+                    _extract(packages, bundle, destination, sha256)
                 except packages.PackageError as exc:
                     raise InstallError(
                         422, "invalid_package", f"The release could not be unpacked: {exc}"
@@ -362,6 +394,17 @@ class InstallStore:
                 "unsupported_platform",
                 f"This release supports {', '.join(map(str, platforms))}, not {platform}",
             )
+
+
+def _extract(packages: PackageModule, bundle: Path, destination: Path, sha256: str) -> None:
+    """Unpack, handing the reviewed digest to a package module that checks
+    it against its own verified copy before writing (expected_sha256, the
+    contract's addition); an older module gets the digest checked above."""
+    parameters = inspect.signature(packages.extract_bundle).parameters
+    if "expected_sha256" in parameters:
+        packages.extract_bundle(bundle, destination, expected_sha256=sha256)
+    else:
+        packages.extract_bundle(bundle, destination)
 
 
 def _public_user(user: dict[str, Any]) -> dict[str, str]:

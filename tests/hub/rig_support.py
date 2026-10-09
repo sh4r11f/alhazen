@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-from alhazen.hub import packages
+from alhazen.hub import packages, protocol
 
 MANIFEST = "alhazen-package.json"
 
@@ -72,6 +72,10 @@ class FakeHub(ThreadingHTTPServer):
         self.fail_puts = 0
         self.redirect = False
         self.receipt_status = "committed"
+        # Fields forced into the next receipts (a lying or confused hub).
+        self.receipt_override: dict = {}
+        # How many /complete calls answer 409 sealing_in_progress first.
+        self.seal_busy = 0
         self._lock = threading.Lock()
         self._counter = 0
         self.thread = threading.Thread(target=self.serve_forever, daemon=True)
@@ -239,6 +243,12 @@ class _HubHandler(BaseHTTPRequestHandler):
                 kind="application/zip",
                 extra={"Content-Disposition": 'attachment; filename="../../evil name.zip"'},
             )
+        m = re.fullmatch(rf"/data/sessions/({ID})/reindex", path)
+        if m and method == "POST":
+            s = hub.sessions.get(m.group(1))
+            if s is None or s["owner"] != who:
+                return self._error(404, "not_found")
+            return self._send(202, {"id": s["id"], "index": {"status": "pending"}})
         m = re.fullmatch(rf"/data/sessions/({ID})/export", path)
         if m and method == "GET":
             return self._send(
@@ -296,16 +306,32 @@ class _HubHandler(BaseHTTPRequestHandler):
                 for f in s["files"]:
                     if hashlib.sha256(bytes(s["data"][f["path"]])).hexdigest() != f["sha256"]:
                         return self._error(409, "incomplete")
+                if hub.seal_busy > 0:
+                    hub.seal_busy -= 1
+                    return self._error(409, "sealing_in_progress")
                 s["status"] = hub.receipt_status
-                return self._send(
-                    200, {"id": s["id"], "status": s["status"], "manifest_sha256": "x"}
-                )
+                receipt = {
+                    "id": s["id"],
+                    "status": s["status"],
+                    "experiment_id": s["experiment_id"],
+                    "version_id": s["version_id"],
+                    "client_session_id": s["client_session_id"],
+                    "manifest_sha256": protocol.manifest_sha256(
+                        s["experiment_id"], s["version_id"], s["files"], s["metadata"]
+                    ),
+                    "file_count": len(s["files"]),
+                    "total_bytes": sum(f["size"] for f in s["files"]),
+                    "durability": "verified on primary storage; not an independent backup",
+                }
+                receipt.update(hub.receipt_override)
+                return self._send(200, receipt)
         return self._error(404, "not_found")
 
     def _progress(self, s: dict) -> dict:
         return {
             "id": s["id"],
             "status": s["status"],
+            "client_session_id": s["client_session_id"],
             "files": [{**f, "received": len(s["data"][f["path"]])} for f in s["files"]],
         }
 
