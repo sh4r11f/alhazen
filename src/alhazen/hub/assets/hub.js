@@ -1555,7 +1555,7 @@ const HubApp = (() => {
       const experiment = item.experiment || {};
       const version = item.version || {};
       const row = h('div', {class: 'listing-actions'});
-      row.appendChild(h('span', {class: 'mono small', title: String(version.sha256 || '')}, 'SHA-256 ' + C.shortHash(version.sha256)));
+      row.appendChild(h('span', {class: 'small muted', title: String(version.sha256 || '')}, 'SHA-256 ', h('span', {class: 'mono'}, C.shortHash(version.sha256))));
       if (state.role === 'rig') {
         const record = installFor(version.sha256);
         const open = record && record.status === 'registered' && !record.error ? workspaceLink(record, 'Open in the workspace') : null;
@@ -2284,7 +2284,7 @@ const HubApp = (() => {
         exportsBox.appendChild(h('div', {class: 'actions'},
           h('a', {class: 'btn btn-line', download: '', href: state.api.url(base + '/export', {format: 'csv'})}, 'CSV'),
           h('a', {class: 'btn btn-line', download: '', href: state.api.url(base + '/export', {format: 'json'})}, 'JSON')));
-        if (st.rows !== null) indexBox.appendChild(h('p', {class: 'muted small mono'}, st.rows + ' trial rows indexed'));
+        if (st.rows !== null) indexBox.appendChild(h('p', {class: 'muted small'}, st.rows + ' trial rows indexed'));
         loadTrials(ctx, base, trials, view.back, view.sessionId, view.columns);
         return;
       }
@@ -2395,7 +2395,7 @@ const HubApp = (() => {
         : (Array.isArray(serverColumns) && serverColumns.length ? serverColumns : null);
       const table = trialTable(rows, declared);
       const single = [...new Set(rows.map((item) => C.trialRow(item).source).filter(Boolean))];
-      trials.fill(single.length === 1 ? h('p', {class: 'muted small mono'}, 'From ' + single[0]) : null,
+      trials.fill(single.length === 1 ? h('p', {class: 'muted small'}, 'From ', h('span', {class: 'mono'}, single[0])) : null,
         h('div', {class: 'table-wrap table-scroll', tabindex: '0', role: 'region', 'aria-label': 'Trial rows'}, table),
         pager(offset, rows.length, got.value.next_offset,
           (o) => Object.assign({}, back, {session: sessionId, toffset: o}), 'trials'));

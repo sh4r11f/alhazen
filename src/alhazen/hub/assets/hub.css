@@ -150,7 +150,7 @@
   :root:not([data-theme=light]) .hd-doc {
     --hd-ink: var(--ink);
     --hd-muted: var(--muted);
-    --hd-faint: var(--lamp-idle);
+    --hd-faint: var(--muted);
     --hd-paper: var(--surface);
     --hd-soft: var(--surface-2);
     --hd-rule: var(--line);
@@ -165,7 +165,7 @@
 :root[data-theme=dark] .hd-doc {
   --hd-ink: var(--ink);
   --hd-muted: var(--muted);
-  --hd-faint: var(--lamp-idle);
+  --hd-faint: var(--muted);
   --hd-paper: var(--surface);
   --hd-soft: var(--surface-2);
   --hd-rule: var(--line);
@@ -339,8 +339,8 @@ a:hover { color: var(--accent-hover); }
 .btn:disabled { opacity: 0.55; cursor: progress; }
 .btn-primary { background: var(--accent); color: var(--on-accent); }
 .btn-primary:hover { background: var(--accent-hover); color: var(--on-accent); }
-.btn-line { border-color: var(--line-strong); background: var(--surface); color: var(--ink); }
-.btn-line:hover { border-color: var(--field-border); background: var(--hover-bg); color: var(--ink); }
+.btn-line { border-color: var(--field-border); background: var(--surface); color: var(--ink); }
+.btn-line:hover { border-color: var(--ink); background: var(--hover-bg); color: var(--ink); }
 .btn-quiet { color: var(--ink); }
 .btn-quiet:hover { background: var(--hover-bg); color: var(--ink); }
 .btn-danger { background: var(--bad-ink); color: var(--surface); }
@@ -408,6 +408,9 @@ a:hover { color: var(--accent-hover); }
 .auth-main .lede { font-size: 1rem; }
 .auth-main .form { max-width: 380px; }
 .auth-main .btn-primary { width: 100%; min-height: 48px; font-size: 1rem; }
+.auth-main .note { max-width: 380px; margin: 0 0 20px; background: var(--surface-2); }
+.auth-main .note-ok { background: var(--ok-bg); }
+.auth-main .note-err { background: var(--bad-bg); }
 .auth-alt { margin: 4px 0 0; color: var(--muted); font-size: 0.95rem; }
 .auth-aside {
   background: var(--panel); color: var(--panel-ink); padding: 64px 56px;
@@ -559,7 +562,10 @@ a:hover { color: var(--accent-hover); }
 .table td { padding: 10px 16px; border-bottom: 1px solid var(--line); vertical-align: top; }
 .table tr:last-child td { border-bottom: 0; }
 .table tbody tr:hover td { background: var(--surface-2); }
-.table td a { display: inline-flex; align-items: center; min-height: 32px; }
+.table td { overflow-wrap: break-word; }
+.table td a { display: inline-flex; align-items: center; min-height: 32px; overflow-wrap: anywhere; text-decoration: none; }
+.table td a:hover { text-decoration: underline; }
+.table .num, .table td.mono:not(:first-child) { white-space: nowrap; }
 .row-current td, .table tbody tr.row-current:hover td { background: var(--accent-soft); }
 .table-dense td { padding: 6px 12px; white-space: nowrap; font-size: 0.8125rem; }
 .table-scroll { max-height: 60vh; overflow: auto; }
@@ -573,7 +579,7 @@ a:hover { color: var(--accent-hover); }
 .main .hd-doc {
   --hd-ink: var(--ink);
   --hd-muted: var(--muted);
-  --hd-faint: var(--lamp-idle);
+  --hd-faint: var(--muted);
   --hd-paper: var(--surface);
   --hd-soft: var(--surface-2);
   --hd-rule: var(--line);
