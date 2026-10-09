@@ -20,6 +20,8 @@ and the pre-2.0 one, which started at ``sub-<ID>/``.
 from __future__ import annotations
 
 import logging
+import os
+import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import date
@@ -54,7 +56,7 @@ class SessionPaths:
     directories are made."""
 
     run_dir: Path
-    base: str  # sub-.._ses-.._run-.._task-.._YYYYMMDD
+    base: str  # sub-.._ses-.._run-.._YYYYMMDD (naming.base_name)
     # The folders `create` made because they did not exist yet, deepest
     # first: the run folder's `figures`, the run folder, and each level above
     # it that was missing (ses-, sub-, v<version>, even the data root). What
@@ -85,8 +87,11 @@ class SessionPaths:
         run_dir = session_dir(data_root, experiment_version, subject, session) / (
             naming.run_dirname(run, task_name)
         )
-        base = naming.base_name(subject, session, run, task_name, stamp)
+        base = naming.base_name(subject, session, run, stamp)
         _refuse_a_used_run_dir(run_dir)
+        # Before any folder is made, so a refusal leaves the data root as it
+        # was found. The limit is None wherever paths have no such limit.
+        _refuse_a_run_dir_too_deep(run_dir, base, limit=windows_path_limit())
         figures = run_dir / "figures"
         # Noted before they are made: every level up to the first one that
         # already exists. A session refused after this (a window the wrong
@@ -232,6 +237,70 @@ def _refuse_a_used_run_dir(run_dir: Path) -> None:
     raise DataError(
         f"refusing to overwrite existing run data in {run_dir} ({names}{more}) — "
         f"use the next run number"
+    )
+
+
+# The longest ending any writer puts after a run's base name: the ViewPixx
+# tracker's messages table (devices/eyetracker/viewpixx.py). Every other file
+# of a run is shorter, the fixed names (``config_snapshot.yaml``) and the live
+# monitor's files under ``figures/`` included, so a run folder with room for
+# this name has room for all of them. tests/unit/test_data.py checks that
+# against the names `SessionPaths` gives out.
+LONGEST_FILE_ENDING = "_gaze-messages.csv"
+
+# Windows refuses a path of 260 characters or more (its MAX_PATH, which
+# counts the terminating NUL, so 259 is the longest that works) unless long
+# paths were switched on machine-wide.
+_WINDOWS_MAX_PATH = 260
+_LONG_PATHS_KEY = r"SYSTEM\CurrentControlSet\Control\FileSystem"
+
+
+def windows_path_limit() -> int | None:
+    """The path length this machine refuses at and beyond, or None for no limit.
+
+    None on anything that is not Windows, and on a Windows machine whose
+    registry has ``LongPathsEnabled`` set to 1. That setting is off by
+    default and needs an administrator, so most Windows machines answer 260.
+    """
+    if sys.platform != "win32":
+        return None
+    import winreg
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _LONG_PATHS_KEY) as key:
+            enabled, _kind = winreg.QueryValueEx(key, "LongPathsEnabled")
+    except FileNotFoundError:
+        # The value (or the key) does not exist: long paths were never
+        # switched on, which is the same as off.
+        return _WINDOWS_MAX_PATH
+    return None if enabled == 1 else _WINDOWS_MAX_PATH
+
+
+def _refuse_a_run_dir_too_deep(run_dir: Path, base: str, *, limit: int | None) -> None:
+    """Refuse a run folder whose files this machine could not write.
+
+    A path at or over ``limit`` fails at `open` with "No such file or
+    directory" — and the run's tables are written at the END of a session, so
+    without this check the failure arrived after the subject's work was done
+    and took the trials with it. Checked here, before the session starts and
+    before a folder is made, the same problem costs nothing.
+
+    The length that counts is the absolute path of the longest file the run
+    can write (`LONGEST_FILE_ENDING`), since a relative data root is resolved
+    against the working directory when the file is opened.
+    """
+    if limit is None:
+        return
+    longest = os.path.abspath(run_dir / f"{base}{LONGEST_FILE_ENDING}")
+    if len(longest) < limit:
+        return
+    over = len(longest) - (limit - 1)
+    raise DataError(
+        f"this run's files would have paths too long for this computer: {longest} is "
+        f"{len(longest)} characters, and Windows refuses {limit} or more. Nothing was "
+        f"created. Move the data root (or the experiment's folder) somewhere at least "
+        f"{over} character(s) shorter, or have an administrator switch on Windows long "
+        f"paths (LongPathsEnabled)."
     )
 
 
