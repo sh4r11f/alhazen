@@ -595,3 +595,22 @@ test('focus: a new screen focuses its heading once it has loaded; a pager keeps 
   assert.equal(active.getAttribute('data-heading'), '');
   assert.equal(active.textContent, 'Fixation demo');
 });
+
+test('a session of a project not installed from the hub is recorded against a release the operator picks', async () => {
+  const previews = [];
+  const p = await mount({path: '/hub', hash: '#token=' + TOKEN, search: '?view=rig&tab=upload&project=p1&root=r1&run=' + encodeURIComponent(SESSION.run_id), routes: rigRoutes({
+    'GET /local/projects': () => ({status: 200, body: {items: [{id: 'p1', title: 'Local study'}]}}),
+    'GET /local/sessions': () => ({status: 200, body: {items: [SESSION], problems: []}}),
+    'GET /library': () => ({status: 200, body: {items: [{experiment: experiment(), version: release()}]}}),
+    'POST /local/upload-preview': (req) => {
+      previews.push(req.json);
+      return req.json.experiment_id
+        ? {status: 200, body: Object.assign({}, PREVIEW, {install: null})}
+        : {status: 400, body: {error: {code: 'invalid_request', message: 'This project has no hub release.'}}};
+    },
+  })});
+  assert.match(p.text(), /This project has no hub release/);
+  await p.click(p.find('button', 'Use this release'));
+  assert.deepEqual(previews[1], {project_id: 'p1', root_id: 'r1', run_id: SESSION.run_id, experiment_id: 'e1', version_id: 'v1'});
+  assert.match(p.text(), /recorded against Fixation demo v1\.2\.0/);
+});

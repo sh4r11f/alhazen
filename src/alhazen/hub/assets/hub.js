@@ -184,11 +184,11 @@ const HubApp = (() => {
     function drawRoleBadge() {
       const el = $('role-badge');
       if (state.role === 'rig') {
-        const link = rigLink();
-        const lamp = link.state === 'connected' ? 'ok' : (link.state === 'unreachable' ? 'err' : 'idle');
+        const hub = rigLink();
+        const lamp = hub.state === 'connected' ? 'ok' : (hub.state === 'unreachable' ? 'err' : 'idle');
         el.replaceChildren(h('span', {class: 'lamp lamp-' + lamp, 'aria-hidden': 'true'}),
-          h('span', {class: 'role-word'}, 'Rig'), h('span', {class: 'role-detail'}, link.where));
-        el.setAttribute('title', 'This page is served by this rig\u2019s dashboard. ' + link.sentence);
+          h('span', {class: 'role-word'}, 'Rig'), h('span', {class: 'role-detail'}, hub.where));
+        el.setAttribute('title', 'This page is served by this rig\u2019s dashboard. ' + hub.sentence);
       } else if (state.role === 'server') {
         el.replaceChildren(h('span', {class: 'lamp lamp-ok', 'aria-hidden': 'true'}),
           h('span', {class: 'role-word'}, 'Hub'), h('span', {class: 'role-detail'}, 'catalogue and accounts'));
@@ -659,14 +659,19 @@ const HubApp = (() => {
       return {box, el: h('label', {class: 'check-row', for: box.getAttribute('id')}, box, h('span', null, label))};
     }
 
+    /** A <select> of [value, label] pairs showing `value`, or the first
+     *  option when `value` is not one of them (a browser would otherwise
+     *  show the first while reporting no value). */
     function select(options, value, attrs) {
       const el = h('select', Object.assign({id: nextId('s'), class: 'input select'}, attrs));
+      const known = options.some(([v]) => String(v) === String(value));
+      const shown = known ? String(value) : (options[0] ? String(options[0][0]) : '');
       for (const [v, label] of options) {
         const opt = h('option', {value: v}, label);
-        if (String(v) === String(value)) opt.selected = true;
+        if (String(v) === shown) opt.selected = true;
         el.appendChild(opt);
       }
-      el.value = value === undefined || value === null ? (options[0] ? options[0][0] : '') : String(value);
+      el.value = shown;
       return el;
     }
 
@@ -2376,11 +2381,11 @@ const HubApp = (() => {
       const runPreview = async () => {
         previewArea.replaceChildren(h('p', {class: 'loading'}, h('span', {class: 'spinner', 'aria-hidden': 'true'}), 'Listing the session\u2019s files\u2026'));
         const body = {project_id: project.id, root_id: session.root_id, run_id: session.run_id};
-        if (release) Object.assign(body, release);
+        if (release) Object.assign(body, {experiment_id: release.experiment_id, version_id: release.version_id});
         try {
           const preview = await api('POST', '/local/upload-preview', {json: body, timeoutMs: 120000});
           if (ctx.epoch !== state.epoch) return;
-          previewArea.replaceChildren(consentForm(ctx, project, session, preview, status, runPreview));
+          previewArea.replaceChildren(consentForm(ctx, project, session, preview, status, runPreview, release ? release.label : ''));
         } catch (exc) {
           if (ctx.epoch !== state.epoch) return;
           noteFailure(exc);
@@ -2410,7 +2415,8 @@ const HubApp = (() => {
         const button = h('button', {type: 'button', class: 'btn btn-line'}, 'Use this release');
         button.addEventListener('click', () => {
           const [experiment_id, version_id] = String(choice.value).split('|');
-          if (experiment_id && version_id) onPick({experiment_id, version_id});
+          const item = usable.find((i) => i.experiment.id === experiment_id && i.version.id === version_id);
+          if (item) onPick({experiment_id, version_id, label: (item.experiment.title || experiment_id) + ' ' + versionLabel(item.version)});
         });
         wrap.replaceChildren(field('Record against', choice), button, status.el);
       }).catch((exc) => { noteFailure(exc); wrap.replaceChildren(errorBox(exc)); });
@@ -2421,7 +2427,7 @@ const HubApp = (() => {
      * recorded against, exactly which files (and their manifest digest),
      * what personal information they can hold. It names this preview_id;
      * a change to any of these needs a new preview (rig-contract B2). */
-    function consentForm(ctx, project, session, preview, status, again) {
+    function consentForm(ctx, project, session, preview, status, again, pickedLabel) {
       const p = preview || {};
       const recipient = p.recipient || {};
       const user = recipient.user || {};
@@ -2432,7 +2438,7 @@ const HubApp = (() => {
       const meta = p.metadata || {};
       const privacy = p.privacy || {};
       const releaseName = install ? (install.title || install.name || p.experiment_id) + ' ' + versionLabel(install)
-        : String(p.experiment_id || '') + ' / ' + String(p.version_id || '');
+        : pickedLabel || String(p.experiment_id || '') + ' / ' + String(p.version_id || '');
       const form = h('form', {class: 'form'});
       form.appendChild(spec([
         ['Recipient', h('span', null, h('span', {class: 'mono'}, recipient.base_url || '(unknown hub)'), h('span', null, ' \u00b7 account '),
