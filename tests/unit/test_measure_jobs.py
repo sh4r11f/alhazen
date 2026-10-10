@@ -854,9 +854,9 @@ class TestMonitorJobs:
 
     def test_guided_luminance_asks_for_every_level_in_cd_m2(self, tmp_path, monkeypatch):
         shown = []
-        monkeypatch.setattr(builtin, "show_patch", lambda display, level: shown.append(level))
+        monkeypatch.setattr(builtin, "patch_holder", lambda display: shown.append)
         readings = [0.5 + 100 * (i / 4) ** 2.0 for i in range(5)]
-        operator = Operator(readings)
+        operator = Operator(readings, confirms=[True])
         report = run(
             [builtin_job("monitor.luminance")],
             tmp_path,
@@ -867,6 +867,68 @@ class TestMonitorJobs:
         assert shown == [0.0, 0.25, 0.5, 0.75, 1.0]
         assert report.records[0].detail["fit"]["gamma"] == pytest.approx(2.0, rel=1e-6)
         assert report.records[0].detail["operator_inputs"]["level_2"]["unit"] == "cd/m²"
+
+    def test_each_patch_is_held_before_its_reading_is_asked_for(self, tmp_path, monkeypatch):
+        # The patch used to be drawn and then at once replaced by the prompt
+        # for its reading, so there was never a patch to point the meter at.
+        order = []
+        monkeypatch.setattr(
+            builtin, "patch_holder", lambda display: lambda level: order.append(("patch", level))
+        )
+
+        class Recording(Operator):
+            def ask_number(self, key, prompt, *, unit, low, high):
+                order.append(("ask", key))
+                return super().ask_number(key, prompt, unit=unit, low=low, high=high)
+
+        run(
+            [builtin_job("monitor.luminance")],
+            tmp_path,
+            operator=Recording([1.0, 20.0, 100.0], confirms=[True]),
+            devices=Devices({"display": lambda stack: "window"}),
+            inputs={"monitor.luminance.levels": "3"},
+        )
+        assert order == [
+            ("patch", 0.0),
+            ("ask", "monitor.luminance.level_0"),
+            ("patch", 0.5),
+            ("ask", "monitor.luminance.level_1"),
+            ("patch", 1.0),
+            ("ask", "monitor.luminance.level_2"),
+        ]
+
+    def test_an_operator_who_is_not_ready_cancels_before_any_patch(self, tmp_path, monkeypatch):
+        shown = []
+        monkeypatch.setattr(builtin, "patch_holder", lambda display: shown.append)
+        report = run(
+            [builtin_job("monitor.luminance")],
+            tmp_path,
+            operator=Operator(confirms=[False]),
+            devices=Devices({"display": lambda stack: "window"}),
+        )
+        assert report.records[0].state == CANCELLED
+        assert shown == []
+
+    def test_a_held_patch_is_redrawn_until_space_and_esc_cancels(self, monkeypatch):
+        import sys
+        import types
+
+        presses = iter([[], [], ["space"], [], ["escape"]])
+        event = types.SimpleNamespace(
+            clearEvents=lambda: None, getKeys=lambda keyList: next(presses)
+        )
+        monkeypatch.setitem(sys.modules, "psychopy", types.SimpleNamespace(event=event))
+        monkeypatch.setitem(sys.modules, "psychopy.event", event)
+        drawn = []
+        monkeypatch.setattr(builtin, "show_patch", lambda display, level: drawn.append(level))
+        hold = builtin.patch_holder("window")
+
+        hold(0.5)
+        # Drawn on every frame it was held: twice with no key, once more on
+        # the frame SPACE arrived.
+        assert drawn == [0.5, 0.5, 0.5]
+        with pytest.raises(OperatorCancelled):
+            hold(1.0)
 
     def test_colour_is_said_to_be_unsupported(self, tmp_path):
         report = run([builtin_job("monitor.colour")], tmp_path)
