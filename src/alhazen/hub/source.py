@@ -52,6 +52,7 @@ METADATA_FIELDS = (
     "documentation",
 )
 DEFAULT_PLATFORMS = ["linux", "darwin", "win32"]
+DOCUMENTATION_DESCRIPTOR = "docs/experiment.json"
 
 
 class PackageBuilder(Protocol):
@@ -172,7 +173,7 @@ def suggest_metadata(root: Path) -> dict[str, Any]:
     licence = project.get("license")
     if isinstance(licence, dict):
         licence = licence.get("text") or ""
-    return {
+    suggestion: dict[str, Any] = {
         "name": slug,
         "version": str(project.get("version") or "0.1.0"),
         "title": naming.title,
@@ -185,6 +186,11 @@ def suggest_metadata(root: Path) -> dict[str, Any]:
         "platforms": list(DEFAULT_PLATFORMS),
         "entrypoint": "run.py",
     }
+    # The documentation descriptor's conventional place; without the pointer
+    # the hub shows a documented package as undocumented.
+    if (root / DOCUMENTATION_DESCRIPTOR).is_file():
+        suggestion["documentation"] = DOCUMENTATION_DESCRIPTOR
+    return suggestion
 
 
 def preview(root: Path, packages: PackageBuilder) -> dict[str, Any]:

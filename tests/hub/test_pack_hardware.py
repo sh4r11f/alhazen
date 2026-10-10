@@ -50,3 +50,10 @@ def test_unreadable_files_are_skipped(tmp_path: Path) -> None:
     _write(tmp_path, "list.yaml", "- 1\n- 2\n")
     (tmp_path / "configs" / "bad.yml").write_bytes(b"\xff\xfe\x00")
     assert declared_hardware(tmp_path)["reward"] is False
+
+
+def test_documentation_pointer_suggested_only_when_present(tmp_path: Path) -> None:
+    assert "documentation" not in suggest_metadata(tmp_path)
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "experiment.json").write_text("{}", encoding="utf-8")
+    assert suggest_metadata(tmp_path)["documentation"] == "docs/experiment.json"
