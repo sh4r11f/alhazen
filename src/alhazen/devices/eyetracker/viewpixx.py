@@ -80,10 +80,6 @@ from alhazen.core.commands import DEFAULT_KEYMAP, Command
 from alhazen.devices.eyetracker.calibration_targets import CalibrationTargets, TargetPresenter
 from alhazen.devices.eyetracker.guide import GUIDE_TITLE, calibration_guide
 from alhazen.devices.eyetracker.procedures import ABORT_KEY, ACCEPT_KEYS, REDO_KEY
-from alhazen.devices.vpixx import HOST_DEVICE as HOST_DEVICE
-from alhazen.devices.vpixx import LOCK_TIMEOUT_S as LINK_LOCK_TIMEOUT_S
-from alhazen.devices.vpixx import DpxLink, dpx_link
-from alhazen.devices.vpixx import dpx_fault as dpx_fault
 from alhazen.devices.eyetracker.protocol import (
     CalibrationResult,
     CalibrationTarget,
@@ -93,6 +89,10 @@ from alhazen.devices.eyetracker.protocol import (
     HostShape,
     ProgressHook,
 )
+from alhazen.devices.vpixx import HOST_DEVICE as HOST_DEVICE
+from alhazen.devices.vpixx import LOCK_TIMEOUT_S as LINK_LOCK_TIMEOUT_S
+from alhazen.devices.vpixx import DpxLink, dpx_link
+from alhazen.devices.vpixx import dpx_fault as dpx_fault
 from alhazen.display.backend import DisplayBackend
 from alhazen.display.palette import TERMINAL_GREEN
 from alhazen.display.screen import Screen

@@ -16,14 +16,22 @@ three things have to be decided once, here, rather than by each backend:
   closes it (:meth:`DpxLink.release` says which one that is). A tracker shut
   down before the reward gate no longer pulls the device out from under it.
 - **Which DOUT bits belong to whom.** The digital-output register is one
-  24-bit word; :meth:`DpxLink.reserve` records which bits a holder drives and
-  the level they must rest at, overlapping reservations are refused, and
-  every other holder's register write re-asserts those resting levels
-  (:meth:`DpxLink.resting`), so a sync pulse can never latch the reward gate
-  into its active level.
+  24-bit word; :meth:`DpxLink.reserve` records which bits a holder drives
+  and refuses overlapping reservations. A holder that plays a DOUT
+  *schedule* (the reward gate) owns the whole port while it is open: VPixx
+  documents that a schedule writes 16-bit words onto DOUT 0-15 as a whole,
+  and does not document whether DOUT 16-23 stay independent of it, so no
+  other DOUT holder may share the port with it.
+- **Which device is selected.** pypixxlib's own objects select other devices
+  (TRACKPixx3() selects the TRACKPixx; a VIEWPixx may be on the same USB),
+  so every locked operation starts with :meth:`DpxLink.select`. Selecting
+  clears libdpx's sticky error (pypixxlib's DPxSelectDevice calls
+  DPxClearError first), so a fault some other caller left unread is logged
+  first rather than lost, and each caller reads its own fault before it
+  releases the lock.
 
 The decision this module hides: libdpx's global state and its lifetime.
-Callers learn a lock, open/release, reserve/resting. The price is one
+Callers learn a lock, select, open/release, reserve. The price is one
 process-wide lock: a gaze read (2 ms typical, 20–40 ms worst measured on the
 rig) can delay a reward start or a sync pulse by that much. What callers
 must not rely on: anything about the selected device other than
@@ -42,19 +50,14 @@ import threading
 import weakref
 from typing import Any
 
+from alhazen.config.models import DATAPIXX_DEVICE
+
 log = logging.getLogger(__name__)
 
 # libdpx addresses one device at a time (``DPxSelectDevice``). The TRACKPixx3's
 # registers, the digital outputs and their schedule all live on the DATAPixx3
 # that hosts the camera, so that is the device every call must find selected.
-HOST_DEVICE = "DATAPIXX3"
-
-# pypixxlib's TRACKPixx3 records its samples into this ring of DATAPixx3 RAM
-# (pypixxlib.tracker.TRACKPixx3: buffer_base_addr 0x12000000, buffer_size
-# 0x18000000). Nothing else may be written there while a tracker records; the
-# reward gate's schedule buffer is checked against it before any write.
-TRACKPIXX_RING_BASE = 0x12000000
-TRACKPIXX_RING_SIZE = 0x18000000
+HOST_DEVICE = DATAPIXX_DEVICE
 
 # How long a caller waits for the link before it calls the device stuck: the
 # same bound, and the same reason, as the tracker's LOCK_TIMEOUT_S (a normal
@@ -105,8 +108,9 @@ class DpxLink:
         # Every holder, by identity. A holder is the device object itself.
         self._holders: list[object] = []
         self._opened = False
-        # holder -> (mask, resting value) of the DOUT bits it drives.
-        self._reserved: dict[int, tuple[object, int, int]] = {}
+        # holder id -> (holder, mask of the DOUT bits it drives, whether it
+        # plays DOUT schedules and so owns the whole port).
+        self._reserved: dict[int, tuple[object, int, bool]] = {}
 
     # ------------------------------------------------------------------
     # Lifetime. Every method below expects the caller to hold ``lock``.
@@ -129,6 +133,26 @@ class DpxLink:
             fault = dpx_fault(libdpx)
             if fault is not None:
                 raise RuntimeError(f"DPxOpen failed: {fault}")
+        self._opened = True
+        self.select()
+        self.hold(holder)
+
+    def select(self) -> None:
+        """Select the DATAPixx3 for the operation about to run; raise
+        RuntimeError when it does not answer. The caller holds ``lock``.
+
+        A sticky fault already pending was left by a caller that did not
+        read it; DPxSelectDevice would clear it silently, so it is logged
+        here first.
+        """
+        libdpx = self.libdpx
+        pending = dpx_fault(libdpx)
+        if pending is not None:
+            log.warning(
+                "a libdpx fault was pending before a DATAPixx3 operation, left unread by an "
+                "earlier call: %s",
+                pending,
+            )
         if not libdpx.DPxSelectDevice(HOST_DEVICE):
             fault = dpx_fault(libdpx)
             raise RuntimeError(
@@ -136,8 +160,6 @@ class DpxLink:
                 + (f" ({fault})" if fault is not None else "")
                 + ": is it powered, connected by USB, and free of other VPixx software?"
             )
-        self._opened = True
-        self.hold(holder)
 
     def adopt(self, holder: object) -> None:
         """Register ``holder`` for a device a vendor object already opened.
@@ -178,30 +200,31 @@ class DpxLink:
     # DOUT bit ownership
     # ------------------------------------------------------------------
 
-    def reserve(self, holder: object, mask: int, resting: int) -> None:
-        """Record that ``holder`` drives the DOUT bits in ``mask`` and that
-        they rest at ``resting``. Refuses (ValueError) bits another holder
-        already drives: two owners of one line is a wiring mistake that no
-        timing can make safe. The caller holds ``lock``."""
-        for key, (other, other_mask, _) in self._reserved.items():
-            if key != id(holder) and other_mask & mask:
+    def reserve(self, holder: object, mask: int, *, schedules: bool = False) -> None:
+        """Record that ``holder`` drives the DOUT bits in ``mask``.
+
+        Refuses (ValueError) bits another holder already drives — two owners
+        of one line is a wiring mistake no timing can make safe — and any
+        sharing of the port with a holder that plays DOUT schedules
+        (``schedules``), whichever of the two came first. The caller holds
+        ``lock``."""
+        for key, (other, other_mask, other_schedules) in self._reserved.items():
+            if key == id(holder):
+                continue
+            if schedules or other_schedules:
+                raise ValueError(
+                    f"the {HOST_DEVICE}'s digital outputs are already used by "
+                    f"{type(other).__name__} (DOUT {_bits(other_mask)}), and a reward gate's "
+                    f"DOUT schedule cannot share the port: it writes DOUT 0-15 as a whole "
+                    f"while it plays, and VPixx does not document whether DOUT 16-23 stay "
+                    f"independent of it"
+                )
+            if other_mask & mask:
                 raise ValueError(
                     f"DOUT bits {_bits(other_mask & mask)} are already driven by "
                     f"{type(other).__name__}; one line cannot have two owners"
                 )
-        self._reserved[id(holder)] = (holder, mask, resting & mask)
-
-    def resting(self, *, excluding: object) -> tuple[int, int]:
-        """(mask, value) of every OTHER holder's reserved bits at rest: what
-        a register write by ``excluding`` must also write, so that it can
-        never leave another holder's line (the reward gate) at a level its
-        owner did not set."""
-        mask = value = 0
-        for key, (_, other_mask, other_value) in self._reserved.items():
-            if key != id(excluding):
-                mask |= other_mask
-                value |= other_value
-        return mask, value
+        self._reserved[id(holder)] = (holder, mask, schedules)
 
     def acquire(self, doing: str, error: type[Exception]) -> None:
         """Take ``lock`` within LOCK_TIMEOUT_S or raise ``error`` saying what

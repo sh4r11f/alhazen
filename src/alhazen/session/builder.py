@@ -39,7 +39,7 @@ from alhazen.config.models import (
     SessionInfo,
     resolve_refresh,
 )
-from alhazen.config.reward_calibration import load_reward_calibration, ul_per_pulse
+from alhazen.config.reward_calibration import load_reward_calibration, ul_per_pulse_on
 from alhazen.core.clock import Clock, MonotonicClock
 from alhazen.core.commands import CommandSource, KeyboardCommands, NullCommands
 from alhazen.core.engine import TrialEngine
@@ -224,12 +224,7 @@ def reward_in_pulses(
     def measured(width: int) -> float | None:
         if hardware is None:
             return None
-        entry = ul_per_pulse(
-            calibration,
-            pulse_ms=width,
-            line=f"{hardware.device}/{hardware.channel}",
-            voltage=hardware.voltage,
-        )
+        entry = ul_per_pulse_on(calibration, pulse_ms=width, hardware=hardware)
         return None if entry is None else float(entry["ul_per_pulse"])
 
     try:

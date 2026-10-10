@@ -2721,4 +2721,20 @@ describe('the Rig summary\'s Reward line', () => {
       [['Reward', ['Dev1/ao0 at 5 V', 'volume not measured (Measure rig, Reward)']]]);
     assert.deepEqual(plain(app.run('rewardFact(undefined, null)')), []);
   });
+
+  it('counts a DATAPixx3 gate\'s widths only at its own polarity and pump settings', () => {
+    const app = loadWorkspace();
+    const pump = { model: 'WPI SP220i', syringe_diameter_mm: 14.5, rate_ul_per_min: 3000 };
+    const gate = { backend: 'datapixx', channel: 'dout0', polarity: 'active_low', pump };
+    const fact = plain(app.run(`rewardFact(${JSON.stringify(gate)}, ${JSON.stringify({
+      50: { ul_per_pulse: 2.5, line: 'DATAPIXX3/dout0', voltage: 5, polarity: 'active_low', pump },
+      100: { ul_per_pulse: 9, line: 'DATAPIXX3/dout0', voltage: 5, polarity: 'active_low',
+        pump: { ...pump, rate_ul_per_min: 6000 } },
+      200: { ul_per_pulse: 118, line: 'Dev1/ao0', voltage: 5 },
+    })})`));
+    assert.deepEqual(fact, [['Reward', [
+      'DATAPIXX3/dout0, active_low gate, pump 3000 µL/min, 14.5 mm syringe',
+      '2.5 µL per 50 ms pulse',
+    ]]]);
+  });
 });

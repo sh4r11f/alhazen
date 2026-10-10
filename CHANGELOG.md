@@ -25,6 +25,40 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+### Added
+- Reward backend `datapixx`: a pump's TTL gate (e.g. a WPI SP220i's Gate
+  input) driven from a DATAPixx3 digital output (`channel: dout0`-`dout15`)
+  by a finite, hardware-timed DOUT schedule. `polarity` (`active_low` rests
+  HIGH and holds LOW to dispense) and `pump` (`model`, `syringe_diameter_mm`,
+  `rate_ul_per_min`, as set on the pump) are required; `dout_buffer_address`
+  defaults to 8000000. Refused before any write: Pixel Mode, Pixel Mode GB,
+  Pixel Mode B, DOUT button schedules, the backlight pulse, a DOUT schedule
+  already running, a buffer on the TRACKPixx3's RAM regions. Only the gate's
+  bit is ever written; its register is set to rest and read back at open,
+  before and after every train and at close. A fault stops the schedule,
+  writes rest once and reports the delivery as uncertain; it is never
+  retried. Not verified on hardware: see docs/datapixx-reward.md.
+- Sync backend `datapixx`: active-high pulses on DATAPixx3 digital outputs
+  (`DATAPIXX3/dout<N>`), refused on bits a Pixel Mode, button schedules or
+  the backlight pulse drive. It cannot be combined with a `datapixx` reward
+  on the same rig (the reward schedule writes DOUT 0-15 as a whole and VPixx
+  does not document whether DOUT 16-23 stay independent).
+- `alhazen.devices.vpixx`: one DATAPixx3 link per process. The TRACKPixx3
+  tracker, the reward gate and sync lines share its lock and select the
+  DATAPixx3 before each operation; the device is closed only by its last
+  holder, so a tracker shut down first no longer closes it under the gate.
+- Reward calibrations of a gated line record and match its polarity and
+  pump settings: an NI-DAQ calibration, or one made at another pump rate or
+  syringe, never counts for it. `RewardHwConfig.line` and
+  `RewardHwConfig.calibration_identity()`; `ul_per_pulse(identity=...)`.
+
+### Changed
+- A dumped `RewardHwConfig` carries `polarity`, `pump` and
+  `dout_buffer_address` (None, None and the default on an NI-DAQ line).
+- check-rig closes the reward line after a failed `--pulse` as well.
+
 ## 2.15.0 - 2026-10-09
 
 ### Added

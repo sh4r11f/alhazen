@@ -606,14 +606,27 @@ function rigFacts(facts) {
  */
 function rewardFact(reward, calibration) {
   if (!reward) return [];
-  const line = `${reward.device || 'Dev1'}/${reward.channel || 'ao0'}`;
+  // A DATAPixx3 gate's device has one right answer, which the rig file may
+  // leave out; its gate polarity and the pump settings declared beside it are
+  // part of what a calibration must match (config/reward_calibration.py).
+  const gated = reward.backend === 'datapixx' || reward.polarity != null;
+  const device = reward.device || (gated ? 'DATAPIXX3' : 'Dev1');
+  const line = `${device}/${reward.channel || 'ao0'}`;
   const voltage = reward.voltage ?? 5.0;
-  const parts = [reward.backend === 'simulated' ? 'simulated' : `${line} at ${voltage} V`];
+  const polarity = reward.polarity ?? null;
+  const pump = reward.pump ?? null;
+  const samePump = (entry) => JSON.stringify(entry.pump ?? null) === JSON.stringify(pump);
+  const where = gated
+    ? `${line}, ${polarity} gate`
+      + (pump ? `, pump ${pump.rate_ul_per_min} µL/min, ${pump.syringe_diameter_mm} mm syringe` : '')
+    : `${line} at ${voltage} V`;
+  const parts = [reward.backend === 'simulated' ? 'simulated' : where];
   if (typeof calibration === 'string') {
     parts.push(`calibration ${calibration}`);
   } else {
     const measured = Object.entries(calibration || {})
-      .filter(([, entry]) => entry.line === line && Number(entry.voltage) === Number(voltage))
+      .filter(([, entry]) => entry.line === line && Number(entry.voltage) === Number(voltage)
+        && (entry.polarity ?? null) === polarity && samePump(entry))
       .map(([width, entry]) => `${Number(entry.ul_per_pulse).toFixed(1)} µL per ${width} ms pulse`
         + (entry.measured_at ? ` (${String(entry.measured_at).slice(0, 10)})` : ''));
     parts.push(...(measured.length ? measured : ['volume not measured (Measure rig, Reward)']));

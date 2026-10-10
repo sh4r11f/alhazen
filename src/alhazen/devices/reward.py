@@ -1,10 +1,13 @@
-"""Reward delivery: a pure waveform builder plus simulated and NI-DAQ backends.
+"""Reward delivery: pure waveform builders plus simulated, NI-DAQ and
+DATAPixx3 backends.
 
-The rig drives a juice/water solenoid from an analog-output line on its
-NI-DAQ. :func:`build_reward_waveform` turns a pulse spec into the exact
-sample buffer written to that line — pure, so the timing that controls how
-much the subject receives is testable on any machine — and the backends only
-play it out.
+A rig drives its juice/water line one of two ways. An NI-DAQ analog output
+drives a solenoid (or a pump's driver) with an active-high waveform:
+:func:`build_reward_waveform`. A DATAPixx3 digital output drives a pump's
+own TTL gate — a WPI SP220i runs while its Gate input is held LOW — with a
+hardware-timed DOUT schedule: :func:`build_gate_words`. Both builders are
+pure, so the timing that controls how much the subject receives is testable
+on any machine, and the backends only play it out.
 
 Reward *policy* (which outcome earns what) is not here: it lives in
 ``alhazen.task.reward_policy``, so a backend never decides what a trial
@@ -24,14 +27,24 @@ from __future__ import annotations
 import logging
 import queue
 import threading
+import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 import numpy as np
 
-from alhazen.config.models import RewardHwConfig, RewardPulses
+from alhazen.config.models import (
+    DATAPIXX_DOUT_BUFFER_BYTES,
+    DATAPIXX_SCHEDULE_BITS,
+    TRACKPIXX_IMAGE_BASE,
+    TRACKPIXX_IMAGE_SIZE,
+    RewardHwConfig,
+    RewardPulses,
+    dout_bit_of,
+)
 from alhazen.core.trial import RewardCompletion, RewardRequest
+from alhazen.devices.vpixx import HOST_DEVICE, dpx_fault, dpx_link, load_libdpx
 from alhazen.errors import RewardError
 
 log = logging.getLogger(__name__)
@@ -71,6 +84,48 @@ def build_reward_waveform(
     if waveform[-1] != 0.0:
         waveform = np.append(waveform, 0.0)
     return waveform
+
+
+def build_gate_words(
+    pulses: RewardPulses,
+    *,
+    bit: int,
+    polarity: Literal["active_high", "active_low"],
+    port_value: int,
+    rate_hz: int = SAMPLE_RATE_HZ,
+) -> list[int]:
+    """The DATAPixx3 DOUT schedule words for one reward train on ``bit``.
+
+    One 16-bit word per ``1/rate_hz`` seconds. The device plays each word
+    onto DOUT 0-15 *as a whole* for the length of the schedule (VPixx:
+    DPxWriteDoutBuffer takes values 0-65535, one per sample), so every bit
+    other than the gate carries ``port_value``'s level for that bit — the
+    static register as read just before the train — and is left exactly as
+    it was: the train never pulses, clears or resets another line.
+
+    The words start with one word at rest, then hold the gate at its active
+    level for ``pulse_ms`` and at rest for ``inter_pulse_ms``, ``n_pulses``
+    times, and end with one more word at rest whatever came before it. VPixx
+    documents that when a schedule ends the port returns to the static
+    register "almost immediately", replacing the last word, and recommends
+    one extra frame; the gate's static bit is held at rest (DatapixxReward),
+    so the line rests after the train either way, and a train never ends on
+    an active word (the reason build_reward_waveform ends at 0 V).
+    """
+    if pulses.pulse_ms < 1 or pulses.n_pulses < 1:
+        raise ValueError(
+            f"cannot build reward gate words from {pulses!r}: n_pulses and pulse_ms must be "
+            f">= 1 (a zero-length or zero-count delivery never opens the gate)"
+        )
+    if not 0 <= bit < DATAPIXX_SCHEDULE_BITS:
+        raise ValueError(f"a DOUT schedule word carries bits 0-15, not bit {bit}")
+    mask = 1 << bit
+    others = port_value & 0xFFFF & ~mask
+    rest = others | (mask if polarity == "active_low" else 0)
+    active = others | (0 if polarity == "active_low" else mask)
+    on = round(pulses.pulse_ms * rate_hz / 1000)
+    off = round(pulses.inter_pulse_ms * rate_hz / 1000)
+    return [rest, *([active] * on + [rest] * off) * pulses.n_pulses, rest]
 
 
 class SimulatedReward:
@@ -144,6 +199,499 @@ class NidaqReward:
         # there is nothing held between deliveries. Defined for symmetry with
         # NidaqSync, which does hold its tasks.
         return
+
+
+# How often the reward worker asks the DATAPixx3 whether a train's schedule
+# has finished, once the train's own length has nearly passed. Detection
+# only: the gate's length is the hardware schedule's, never this.
+_SCHEDULE_POLL_S = 0.002
+# How long before a train's own end the polling starts.
+_SCHEDULE_POLL_LEAD_S = 0.005
+# How long past its own length a schedule may still report running before
+# the train counts as stuck: far past any USB delay, short enough that a
+# stuck gate is stopped by hand quickly.
+_SCHEDULE_SLACK_S = 1.0
+
+_UNCERTAIN = (
+    "LINE STATE UNCERTAIN — the gate could not be confirmed at rest, so the pump may still be "
+    "running: stop it at the pump (its front panel, or switch it off) and check the wiring "
+    "before the next delivery"
+)
+
+
+def read_gate_state(lib: Any, cfg: RewardHwConfig) -> dict[str, Any]:
+    """Read, never write, everything that decides whether a reward gate on
+    ``cfg``'s line is safe to drive. The caller holds the DATAPixx3 link's
+    lock with the DATAPixx3 selected; a device fault raises RewardError."""
+    bit = dout_bit_of(cfg.channel)
+    mask = 1 << (bit if bit is not None else 0)
+    lib.DPxUpdateRegCache()
+    pixel_b = getattr(lib, "DPxIsDoutPixelModeB", None)
+    base, size = int(lib.TPxGetBuffBaseAddr()), int(lib.TPxGetBuffSize())
+    value = int(lib.DPxGetDoutValue())
+    state: dict[str, Any] = {
+        "pixel_mode": bool(lib.DPxIsDoutPixelMode()),
+        "pixel_mode_gb": bool(lib.DPxIsDoutPixelModeGB()),
+        # None: this pypixxlib cannot say (Pixel Mode B needs DATAPixx3
+        # firmware 27 and a pypixxlib that knows it).
+        "pixel_mode_b": bool(pixel_b()) if pixel_b is not None else None,
+        "button_schedules": bool(lib.DPxIsDoutButtonSchedules()),
+        "backlight_pulse": bool(lib.DPxIsDoutBacklightPulse()),
+        "dout_schedule_running": bool(lib.DPxIsDoutSchedRunning()),
+        # The static register as libdpx reads it back: register evidence,
+        # not a measurement of the pins.
+        "dout_value": value,
+        "gate_level_before": "HIGH" if value & mask else "LOW",
+        "ram_bytes": int(lib.DPxGetRamSize()),
+        "trackpixx_ring": [base, size],
+    }
+    fault = dpx_fault(lib)
+    if fault is not None:
+        raise RewardError(f"reward gate {cfg.line}: the {HOST_DEVICE} reported {fault}")
+    return state
+
+
+def gate_refusal(state: dict[str, Any], cfg: RewardHwConfig) -> str | None:
+    """Why a reward gate must not be driven in this device state, or None.
+
+    Any other output mode that owns a bit the schedule writes (DOUT 0-15) or
+    a bit VPixx does not document the schedule leaving alone (16-23), a DOUT
+    schedule already running, and a buffer outside the RAM or on the
+    TRACKPixx3's own regions."""
+    address = cfg.dout_buffer_address
+    end = address + DATAPIXX_DOUT_BUFFER_BYTES
+    base, size = state["trackpixx_ring"]
+    if state["pixel_mode"]:
+        return (
+            "Pixel Mode is on: every DOUT follows the screen's top-left pixel, so the gate "
+            "would open and close with the stimulus"
+        )
+    if state["pixel_mode_gb"]:
+        return (
+            "Pixel Mode GB is on: DOUT 8-23 follow the screen's top-left pixel, and the "
+            "reward schedule writes DOUT 0-15 as a whole while it plays"
+        )
+    if state["pixel_mode_b"]:
+        return (
+            "Pixel Mode B is on: DOUT 16-23 follow the screen's top-left pixel, and VPixx "
+            "does not document whether a DOUT schedule leaves DOUT 16-23 alone"
+        )
+    if state["button_schedules"]:
+        return (
+            "DOUT button schedules are on: a button press would play a stored waveform "
+            "onto the port, gate included"
+        )
+    if state["backlight_pulse"]:
+        return (
+            "the backlight pulse is on: DOUT 15 gates the display backlight, and the "
+            "reward schedule writes DOUT 0-15 as a whole while it plays"
+        )
+    if state["dout_schedule_running"]:
+        return "a DOUT schedule is already running (another program, or a train not ended)"
+    if end > state["ram_bytes"]:
+        return (
+            f"the schedule buffer {address:#x}-{end:#x} runs past the device's RAM "
+            f"({state['ram_bytes']:#x} bytes)"
+        )
+    for name, start, length in (
+        ("sample ring", base, size),
+        ("camera image", TRACKPIXX_IMAGE_BASE, TRACKPIXX_IMAGE_SIZE),
+    ):
+        if length > 0 and address < start + length and end > start:
+            return (
+                f"the schedule buffer {address:#x}-{end:#x} overlaps the TRACKPixx3 {name} "
+                f"({start:#x}-{start + length:#x})"
+            )
+    return None
+
+
+def probe_datapixx_gate(cfg: RewardHwConfig) -> dict[str, Any]:
+    """The Measure rig's connection check for a DATAPixx3 gate: open the
+    DATAPixx3, read what decides whether the gate is safe, and release it —
+    without writing anything, not even the rest level. Returns the state
+    read and ``refusal`` (None when a gate could be opened on it). Raises
+    RewardError when pypixxlib or the device is missing."""
+    try:
+        libdpx = load_libdpx()
+    except ImportError as e:
+        raise RewardError(
+            "pypixxlib is not installed — it ships with VPixx's Software Tools installer, "
+            "not PyPI (docs/eye-tracker.md says how to install it on the rig)"
+        ) from e
+    link = dpx_link(libdpx)
+    probe = object()  # a holder of its own, so the link's count stays honest
+    link.acquire(f"reading the {HOST_DEVICE}'s digital outputs", RewardError)
+    try:
+        try:
+            link.open(probe)
+            state = read_gate_state(libdpx, cfg)
+        except RuntimeError as e:
+            raise RewardError(f"reward gate {cfg.line}: {e}") from e
+        finally:
+            if link.release(probe):
+                libdpx.DPxClose()
+    finally:
+        link.lock.release()
+    return {**state, "refusal": gate_refusal(state, cfg)}
+
+
+class DatapixxReward:
+    """Delivers reward by holding a pump's TTL gate from a DATAPixx3 digital
+    output, timed by the device's own DOUT schedule.
+
+    Built for the WPI SP220i's Gate input (TTL I/O pin 4 against ground on
+    pin 3): ``polarity: active_low`` rests the line HIGH and holds it LOW
+    while dispensing. The pump runs at the rate and syringe set on its own
+    panel for as long as the gate is held, so the dose is rate × gate time:
+    the rig declares both (``RewardHwConfig.pump``) and a reward calibration
+    is valid only for the settings it was measured at.
+
+    What a delivery proves: the DATAPixx3 accepted and played the schedule,
+    and the gate's static register bit read back at rest before and after
+    it. A register read-back is not a measurement of the pin's voltage, and
+    nothing here shows the pump ran or liquid flowed (the pump's Run output
+    is not read): the delivery is *commanded*; the volume is the reward
+    calibration's.
+
+    Safety, in order of what can be promised:
+
+    - **Refused before any write.** Every condition that would make the gate
+      unsafe or the train wrong is read first (``preflight``): any other
+      output mode on the digital outputs — Pixel Mode (DOUT 0-23), Pixel
+      Mode GB (8-23, inside the schedule's 0-15), Pixel Mode B (16-23: VPixx
+      does not document whether a schedule leaves them alone), DOUT button
+      schedules (they play stored waveforms from this buffer region), the
+      backlight pulse (DOUT 15, inside the schedule word) — another DOUT
+      schedule already running, a buffer that would overwrite the
+      TRACKPixx3's sample ring or camera image or run past the RAM. alhazen
+      never turns any of those off: a recording may rely on them.
+    - **Only its own bit.** Every static write has the gate's bit, and only
+      it, in its mask; a train's words carry every other low bit at the
+      level the static register already holds.
+    - **Rest first.** The gate's static bit is set to rest and read back at
+      open and before every train, and read back again after it; a train
+      is started only on a confirmed rest.
+    - **Hardware-timed and finite.** One schedule of fixed length with
+      countdown, never wrapping; it ends on the device even if this process
+      dies mid-train. Python only waits to ask whether it has ended.
+    - **Faults:** the schedule is stopped (``DPxStopDoutSched``, never
+      ``DPxStopAllScheds``), rest written and read back once, and a
+      RewardError says what failed — ``LINE STATE UNCERTAIN`` when rest
+      could not be confirmed. A failed delivery is never retried.
+    - **What software cannot promise:** the line's level when the DATAPixx3
+      powers up, resets, loses USB or power, or before this process first
+      opens it. The bench protocol (docs/datapixx-reward.md) covers powering
+      the pump only after rest is set, and the physical stop.
+
+    Every libdpx call runs under the DATAPixx3 link's lock with the
+    DATAPixx3 selected first (devices/vpixx.py), shared with a TRACKPixx3
+    tracker; the lock is released between completion polls, and the device
+    is closed only by the link's last holder. While open, the gate owns the
+    whole digital-output port: no DATAPixx3 sync line may share it.
+    """
+
+    def __init__(self, cfg: RewardHwConfig) -> None:
+        bit = dout_bit_of(cfg.channel)
+        if cfg.backend != "datapixx" or bit is None or cfg.polarity is None:
+            raise RewardError(f"not a DATAPixx3 reward line: {cfg!r}")  # config validates this
+        try:
+            libdpx = load_libdpx()
+        except ImportError as e:
+            # Loud at construction, never a silent no-op backend (NidaqReward).
+            raise RewardError(
+                "pypixxlib is not installed — it ships with VPixx's Software Tools installer, "
+                "not PyPI (docs/eye-tracker.md says how to install it on the rig); or use "
+                "reward backend 'simulated'"
+            ) from e
+        self._cfg = cfg
+        self._lib = libdpx
+        self._link = dpx_link(libdpx)
+        self._bit = bit
+        self._mask = 1 << bit
+        self._rest = self._mask if cfg.polarity == "active_low" else 0
+        self._closed = False
+        # The last read-only look at the port (check-rig's evidence) and the
+        # last train's numbers (what was played, and when it was seen done).
+        self.preflight: dict[str, Any] = {}
+        self.last_train: dict[str, Any] | None = None
+        self._link.acquire(f"opening the reward gate on {cfg.line}", RewardError)
+        try:
+            try:
+                self._link.open(self)
+            except RuntimeError as e:
+                raise RewardError(f"reward gate {cfg.line}: {e}") from e
+            try:
+                self.preflight = self._preflight()
+                self._link.reserve(self, self._mask, schedules=True)
+                problem = self._write_rest()
+                if problem is not None:
+                    raise RewardError(
+                        f"reward gate {cfg.line}: could not set its rest level ({problem}). "
+                        f"{_UNCERTAIN}"
+                    )
+            except ValueError as e:
+                self._release()
+                raise RewardError(f"reward gate {cfg.line}: {e}") from e
+            except BaseException:
+                self._release()
+                raise
+        finally:
+            self._link.lock.release()
+        before = self.preflight["gate_level_before"]
+        if before != self._level_name(self._rest):
+            log.warning(
+                "reward gate %s read %s when opened — the ACTIVE level for a %s gate: anything "
+                "already wired to it may have been running. Its register now reads at rest.",
+                cfg.line,
+                before,
+                cfg.polarity,
+            )
+        log.info(
+            "reward gate on %s %s (%s, rests %s); pump declared as %s",
+            HOST_DEVICE,
+            cfg.channel,
+            cfg.polarity,
+            self._level_name(self._rest),
+            cfg.pump,
+        )
+
+    # ------------------------------------------------------------------
+
+    def deliver(self, pulses: RewardPulses) -> None:
+        if self._closed:
+            raise RewardError("reward delivery requested after the reward gate was closed")
+        if pulses.n_pulses == 0 or pulses.pulse_ms == 0:
+            # As NidaqReward: deliberately empty, a logged no-op.
+            log.info("reward delivery skipped: %s delivers nothing", pulses)
+            return
+        line = self._cfg.line
+        words: list[int] = []
+        start_error: BaseException | None = None
+        self._link.acquire(f"starting a reward train on {line}", RewardError)
+        try:
+            # Refusals and a rest that will not read back raise from here
+            # with nothing played: the train starts only on a confirmed rest.
+            state = self._preflight()
+            problem = self._write_rest()
+            if problem is not None:
+                raise RewardError(
+                    f"reward train on {line} not started: the gate's rest level could not be "
+                    f"confirmed before it ({problem}). {_UNCERTAIN}"
+                )
+            words = build_gate_words(
+                pulses,
+                bit=self._bit,
+                polarity=self._cfg.polarity or "active_low",
+                port_value=state["dout_value"],
+            )
+            if len(words) * 2 > DATAPIXX_DOUT_BUFFER_BYTES:
+                raise RewardError(
+                    f"a reward train of {len(words)} ms is longer than the "
+                    f"{DATAPIXX_DOUT_BUFFER_BYTES // 2} ms the gate's schedule buffer holds"
+                )
+            try:
+                self._start_schedule(words)
+            except BaseException as e:  # reported below, with the line's state
+                start_error = e
+        finally:
+            self._link.lock.release()
+        if start_error is not None:
+            self._fail(f"starting the train on {line}", start_error)
+        started = time.monotonic()
+        length_s = len(words) / SAMPLE_RATE_HZ
+        try:
+            self._wait_for_schedule(length_s, started)
+        except BaseException as e:  # a fault, a stuck schedule, or an interrupt
+            self._fail(f"waiting for the train on {line} to finish", e)
+        done_s = time.monotonic() - started
+        self._link.acquire(f"checking the reward gate on {line} after a train", RewardError)
+        try:
+            try:
+                self._select()
+                problem = self._write_rest()
+            except RewardError as e:
+                problem = str(e)
+        finally:
+            self._link.lock.release()
+        if problem is not None:
+            raise RewardError(
+                f"the reward train on {line} finished, but the gate's register did not read "
+                f"back at rest ({problem}). {_UNCERTAIN}"
+            )
+        self.last_train = {
+            "samples": len(words),
+            "train_s": length_s,
+            "seen_done_after_s": round(done_s, 4),
+        }
+
+    def close(self) -> None:
+        """Leave the gate at rest, read it back, and release the DATAPixx3 —
+        closing it only as the link's last holder. Raises RewardError when
+        the rest level could not be confirmed (after releasing)."""
+        if self._closed:
+            return
+        self._closed = True
+        if not self._link.lock.acquire(timeout=_LINK_TIMEOUT_S):
+            raise RewardError(
+                f"the reward gate on {self._cfg.line} could not be closed: another call into "
+                f"the {HOST_DEVICE} has not returned. {_UNCERTAIN}"
+            )
+        problem: str | None = None
+        try:
+            try:
+                self._select()
+                self._lib.DPxUpdateRegCache()
+                if self._lib.DPxIsDoutSchedRunning():
+                    self._lib.DPxStopDoutSched()
+                problem = self._write_rest()
+            except Exception as e:  # pypixxlib's exception type cannot be named off the rig
+                problem = f"{type(e).__name__}: {e}"
+            finally:
+                self._release()
+        finally:
+            self._link.lock.release()
+        if problem is not None:
+            raise RewardError(f"reward gate {self._cfg.line} at close: {problem}. {_UNCERTAIN}")
+
+    # ------------------------------------------------------------------
+    # Under the link's lock
+    # ------------------------------------------------------------------
+
+    def _select(self) -> None:
+        try:
+            self._link.select()
+        except RuntimeError as e:
+            raise RewardError(f"reward gate {self._cfg.line}: {e}") from e
+
+    def _preflight(self) -> dict[str, Any]:
+        """Select the DATAPixx3, then read — never write — what decides
+        whether a train is safe; refuse (RewardError) with the reason if it
+        is not. The caller holds the link's lock."""
+        self._select()
+        state = read_gate_state(self._lib, self._cfg)
+        refusal = gate_refusal(state, self._cfg)
+        if refusal is not None:
+            raise RewardError(
+                f"reward gate {self._cfg.line} refused before anything was written: {refusal}. "
+                f"alhazen does not change this setting for you — another program or the "
+                f"recording may rely on it"
+            )
+        if state["pixel_mode_b"] is None:
+            log.warning(
+                "this pypixxlib cannot report Pixel Mode B (DOUT 16-23); if your setup uses "
+                "it, the reward schedule's effect on those lines is undocumented"
+            )
+        return state
+
+    def _start_schedule(self, words: list[int]) -> None:
+        """Load the words and start the finite schedule. The caller holds
+        the link's lock with the DATAPixx3 selected. The calls are VPixx's
+        documented DOUT schedule sequence (docs.vpixx.com, "Send a digital
+        output trigger on VSync"): DPxWriteRam, DPxSetDoutBuff (a buffer of
+        exactly the words, so the schedule never wraps), DPxSetDoutSched
+        with a count (count > 0 enables the countdown: the schedule stops
+        itself after that many words), DPxStartDoutSched, DPxUpdateRegCache."""
+        lib, address = self._lib, self._cfg.dout_buffer_address
+        lib.DPxWriteRam(address, words)
+        lib.DPxSetDoutBuff(address, len(words) * 2)
+        lib.DPxSetDoutSched(0, SAMPLE_RATE_HZ, "hz", len(words))
+        lib.DPxStartDoutSched()
+        lib.DPxUpdateRegCache()
+        fault = dpx_fault(lib)
+        if fault is not None:
+            raise RewardError(f"the {HOST_DEVICE} reported {fault}")
+
+    def _wait_for_schedule(self, length_s: float, started: float) -> None:
+        """Return once the device reports the schedule ended; raise if it
+        reports a fault or is still running long past its length. Sleeps are
+        for when to ask, never for how long the gate is held; the link's
+        lock is taken for each question and released between them."""
+        lead = length_s - _SCHEDULE_POLL_LEAD_S
+        if lead > 0:
+            time.sleep(lead)
+        deadline = started + length_s + _SCHEDULE_SLACK_S
+        while True:
+            self._link.acquire("asking whether the reward train has finished", RewardError)
+            try:
+                self._select()
+                self._lib.DPxUpdateRegCache()
+                running = bool(self._lib.DPxIsDoutSchedRunning())
+                fault = dpx_fault(self._lib)
+            finally:
+                self._link.lock.release()
+            if fault is not None:
+                raise RewardError(f"the {HOST_DEVICE} reported {fault}")
+            if not running:
+                return
+            if time.monotonic() > deadline:
+                raise RewardError(
+                    f"the schedule was still running {_SCHEDULE_SLACK_S:g} s after the train's "
+                    f"own {length_s:g} s"
+                )
+            time.sleep(_SCHEDULE_POLL_S)
+
+    def _write_rest(self) -> str | None:
+        """Write the gate's static bit — only it — to rest and read the
+        register back. None when it reads at rest, else what went wrong. The
+        caller holds the lock with the DATAPixx3 selected."""
+        lib = self._lib
+        lib.DPxSetDoutValue(self._rest, self._mask)
+        lib.DPxUpdateRegCache()
+        level = int(lib.DPxGetDoutValue()) & self._mask
+        fault = dpx_fault(lib)
+        if fault is not None:
+            return f"the {HOST_DEVICE} reported {fault}"
+        if level != self._rest:
+            now, wanted = self._level_name(level), self._level_name(self._rest)
+            return f"it reads {now} after being set {wanted}"
+        return None
+
+    def _release(self) -> None:
+        """Leave the link; close the device if this was its last holder. The
+        caller holds the lock."""
+        if self._link.release(self):
+            self._lib.DPxClose()
+
+    # ------------------------------------------------------------------
+
+    def _fail(self, doing: str, error: BaseException) -> None:
+        """Stop the schedule once, write rest once, and raise RewardError
+        saying what failed and whether the register read back at rest. The
+        delivery is uncertain, never retried."""
+        settled: str | None
+        if self._link.lock.acquire(timeout=_LINK_TIMEOUT_S):
+            try:
+                try:
+                    self._select()
+                    self._lib.DPxStopDoutSched()
+                    self._lib.DPxUpdateRegCache()
+                    settled = self._write_rest()
+                except Exception as e:  # pypixxlib's exception type cannot be named off the rig
+                    settled = f"{type(e).__name__}: {e}"
+            finally:
+                self._link.lock.release()
+        else:
+            settled = f"the {HOST_DEVICE} link stayed busy"
+        outcome = (
+            "the schedule was stopped and the gate's register read back at rest. The delivery "
+            "is UNCERTAIN (some of the train may have run) and is NOT retried"
+            if settled is None
+            else f"stopping it failed too ({settled}). The delivery is UNCERTAIN. {_UNCERTAIN}"
+        )
+        message = f"reward failed while {doing}: {type(error).__name__}: {error}; {outcome}"
+        if isinstance(error, (KeyboardInterrupt, SystemExit)):
+            log.error(message)
+            raise error
+        raise RewardError(message) from error
+
+    def _level_name(self, level: int) -> str:
+        return "HIGH" if level else "LOW"
+
+
+# How long DatapixxReward waits for the DATAPixx3 link when it must reach the
+# device to make the line safe (close, or after a failure): the link's own
+# bound (devices/vpixx.py).
+_LINK_TIMEOUT_S = 2.0
 
 
 # How long a wait for the reward worker goes before it says so in the log.
@@ -531,4 +1079,6 @@ def make_reward(cfg: RewardHwConfig) -> RewardDispenser:
     ``check-rig`` so a clean check exercises the real constructor."""
     if cfg.backend == "nidaq":
         return NidaqReward(cfg)
+    if cfg.backend == "datapixx":
+        return DatapixxReward(cfg)
     return SimulatedReward()

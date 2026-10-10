@@ -18,8 +18,9 @@ import time
 from collections.abc import Callable
 from typing import Any, Protocol, runtime_checkable
 
-from alhazen.config.models import SyncHwConfig
+from alhazen.config.models import SyncHwConfig, datapixx_sync_bit
 from alhazen.core.events import Event
+from alhazen.devices.vpixx import HOST_DEVICE, dout_bits, dpx_fault, dpx_link, load_libdpx
 from alhazen.errors import SyncError
 
 log = logging.getLogger(__name__)
@@ -155,6 +156,183 @@ class NidaqSync:
         self._tasks.clear()
 
 
+class DatapixxSync:
+    """Sync lines on a DATAPixx3's digital outputs, pulsed on demand.
+
+    Active high, like NidaqSync: each line rests LOW and a pulse holds it
+    HIGH for ``pulse_ms``, timed the same way (a register write, a sleep,
+    a register write), so a pulse's width carries the host's scheduling
+    jitter exactly as NidaqSync's does. Every write masks this backend's own
+    bits only, under the DATAPixx3 link's lock with the DATAPixx3 selected
+    first (devices/vpixx.py).
+
+    Shared hardware and its limits, said rather than hidden:
+
+    - Any other output mode on a sync bit is refused at setup, before the
+      lines are touched: a Pixel Mode (the line would carry the stimulus),
+      DOUT button schedules on DOUT 0-15, the backlight pulse on DOUT 15.
+      alhazen never turns any of them off.
+    - Not with a DATAPixx3 reward gate: its DOUT schedule writes DOUT 0-15
+      as a whole while it plays and VPixx does not document whether DOUT
+      16-23 stay independent of it, so the rig config refuses the pair and
+      the link refuses it again at run time.
+    - The link's lock is shared with a TRACKPixx3's gaze reader: a pulse can
+      start up to one gaze read late (2 ms typical, 20-40 ms worst measured
+      on the rig) — measure it on the bench before aligning neural data to
+      these lines rather than NI-DAQ ones.
+    """
+
+    def __init__(self, cfg: SyncHwConfig) -> None:
+        bits = {line: datapixx_sync_bit(line) for line in sorted(set(cfg.event_lines.values()))}
+        if any(bit is None for bit in bits.values()):
+            raise SyncError(f"not DATAPixx3 sync lines: {sorted(bits)}")  # config validates this
+        try:
+            libdpx = load_libdpx()
+        except ImportError as e:
+            # Loud, never a silent no-op (NidaqSync says why).
+            raise SyncError(
+                "pypixxlib is not installed — it ships with VPixx's Software Tools installer, "
+                "not PyPI (docs/eye-tracker.md); or use sync backend 'simulated' / 'none'"
+            ) from e
+        self._lib = libdpx
+        self._link = dpx_link(libdpx)
+        self._pulse_s = cfg.pulse_ms / 1000.0
+        self._bits: dict[str, int] = {
+            line: int(bit) for line, bit in bits.items() if bit is not None
+        }
+        self._mask = 0
+        for bit in self._bits.values():
+            self._mask |= 1 << bit
+        self._closed = False
+        self._link.acquire("opening the DATAPixx3 sync lines", SyncError)
+        try:
+            try:
+                self._link.open(self)
+            except RuntimeError as e:
+                raise SyncError(f"sync lines on the {HOST_DEVICE}: {e}") from e
+            try:
+                self._preflight()
+                self._link.reserve(self, self._mask)
+                # Drive low at setup (NidaqSync's rule: a line left high looks
+                # like a spurious pulse to the recording system).
+                self._write(0)
+            except ValueError as e:
+                self._release()
+                raise SyncError(f"sync lines on the {HOST_DEVICE}: {e}") from e
+            except BaseException:
+                self._release()
+                raise
+        finally:
+            self._link.lock.release()
+
+    def pulse(self, line: str) -> None:
+        bit = self._bits.get(line)
+        if bit is None:
+            raise SyncError(
+                f"no sync line {line!r} was configured; configured lines: {sorted(self._bits)}"
+            )
+        if self._closed:
+            raise SyncError(f"sync pulse on {line!r} after the sync lines were closed")
+        self._locked_write(1 << bit, f"starting a sync pulse on {line}")
+        time.sleep(self._pulse_s)
+        self._locked_write(0, f"ending the sync pulse on {line}")
+
+    def close(self) -> None:
+        """Zero every line, then release the DATAPixx3 (closing it only as
+        the link's last holder). Never raises: teardown may be unwinding
+        something more important (NidaqSync.close)."""
+        if self._closed:
+            return
+        self._closed = True
+        if not self._link.lock.acquire(timeout=_LINK_TIMEOUT_S):
+            log.error("sync: the %s did not answer; its sync lines were not zeroed", HOST_DEVICE)
+            return
+        try:
+            try:
+                self._write(0)  # selects the DATAPixx3 first
+            except Exception as e:  # pypixxlib's exception type cannot be named off the rig
+                log.error(
+                    "sync: could not zero DOUT %s before closing: %s", dout_bits(self._mask), e
+                )
+            try:
+                self._release()
+            except Exception as e:  # pypixxlib's exception type cannot be named off the rig
+                log.error("sync: could not close the %s: %s", HOST_DEVICE, e)
+        finally:
+            self._link.lock.release()
+
+    # ------------------------------------------------------------------
+
+    def _locked_write(self, value: int, doing: str) -> None:
+        self._link.acquire(doing, SyncError)
+        try:
+            self._write(value)
+        finally:
+            self._link.lock.release()
+
+    def _select(self) -> None:
+        try:
+            self._link.select()
+        except RuntimeError as e:
+            raise SyncError(f"sync lines on the {HOST_DEVICE}: {e}") from e
+
+    def _write(self, value: int) -> None:
+        """Select the DATAPixx3 and write this backend's bits — only them —
+        as ``value``; raise SyncError on a device fault. The caller holds the
+        lock."""
+        self._select()
+        self._lib.DPxSetDoutValue(value & self._mask, self._mask)
+        self._lib.DPxUpdateRegCache()
+        fault = dpx_fault(self._lib)
+        if fault is not None:
+            raise SyncError(f"sync write to DOUT {dout_bits(self._mask)} failed: {fault}")
+
+    def _preflight(self) -> None:
+        lib = self._lib
+        self._select()
+        lib.DPxUpdateRegCache()
+        pixel = bool(lib.DPxIsDoutPixelMode())
+        pixel_gb = bool(lib.DPxIsDoutPixelModeGB())
+        read_b = getattr(lib, "DPxIsDoutPixelModeB", None)
+        pixel_b = bool(read_b()) if read_b is not None else False
+        buttons = bool(lib.DPxIsDoutButtonSchedules())
+        backlight = bool(lib.DPxIsDoutBacklightPulse())
+        fault = dpx_fault(lib)
+        if fault is not None:
+            raise SyncError(f"sync lines on the {HOST_DEVICE}: it reported {fault}")
+        driven = 0
+        if pixel:
+            driven |= 0xFFFFFF
+        if pixel_gb:
+            driven |= 0xFFFF00
+        if pixel_b:
+            driven |= 0xFF0000
+        if driven & self._mask:
+            raise SyncError(
+                f"sync lines on DOUT {dout_bits(driven & self._mask)} refused: a Pixel Mode "
+                f"drives them from the screen's top-left pixel. alhazen does not turn it off; "
+                f"move the sync lines or disable that Pixel Mode in your own setup"
+            )
+        if buttons and self._mask & 0xFFFF:
+            raise SyncError(
+                f"sync lines on DOUT {dout_bits(self._mask & 0xFFFF)} refused: DOUT button "
+                f"schedules are on, and a button press plays a stored waveform onto DOUT 0-15"
+            )
+        if backlight and self._mask & (1 << 15):
+            raise SyncError(
+                "sync line on DOUT 15 refused: the backlight pulse is on and DOUT 15 gates the "
+                "display backlight"
+            )
+
+    def _release(self) -> None:
+        if self._link.release(self):
+            self._lib.DPxClose()
+
+
+# How long DatapixxSync waits for the DATAPixx3 link at close (devices/vpixx.py).
+_LINK_TIMEOUT_S = 2.0
+
+
 def make_sync_subscriber(sync: SyncOutput, event_lines: dict[str, str]) -> Callable[[Event], None]:
     """Bus subscriber that pulses the line an event is mapped to.
 
@@ -182,6 +360,8 @@ def make_sync(cfg: SyncHwConfig) -> SyncOutput:
     """
     if cfg.backend == "nidaq":
         return NidaqSync(cfg)
+    if cfg.backend == "datapixx":
+        return DatapixxSync(cfg)
     if cfg.backend == "none":
         return NullSync()
     return SimulatedSync(cfg.event_lines)

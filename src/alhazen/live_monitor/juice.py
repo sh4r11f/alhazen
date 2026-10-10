@@ -56,15 +56,23 @@ def _trial(event: Mapping[str, Any]) -> int:
 
 
 def ul_by_width(
-    calibration: dict[str, Any] | None, *, line: str, voltage: float
+    calibration: dict[str, Any] | None,
+    *,
+    line: str,
+    voltage: float,
+    identity: Mapping[str, Any] | None = None,
 ) -> dict[int, float]:
     """µL per pulse for every width the calibration measured on this line at
-    this voltage (config/reward_calibration.py ``ul_per_pulse``'s rule)."""
+    this voltage, and with this gate polarity and pump settings when
+    ``identity`` gives them (config/reward_calibration.py ``ul_per_pulse``'s
+    rule)."""
     from alhazen.config.reward_calibration import ul_per_pulse
 
     found: dict[int, float] = {}
     for width in (calibration or {}).get("widths", {}):
-        entry = ul_per_pulse(calibration, pulse_ms=int(width), line=line, voltage=voltage)
+        entry = ul_per_pulse(
+            calibration, pulse_ms=int(width), line=line, voltage=voltage, identity=identity
+        )
         if entry and entry.get("ul_per_pulse"):
             found[int(width)] = float(entry["ul_per_pulse"])
     return found

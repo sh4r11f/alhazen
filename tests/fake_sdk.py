@@ -328,6 +328,7 @@ class FakeLibdpx:
         # functions carry on without raising — the gaze read leaves its
         # buffers untouched, the register cache keeps its last values.
         self.unplugged = False
+        self._init_dout()
 
     def unplug(self) -> None:
         """The device goes away (see ``unplugged``)."""
@@ -375,6 +376,7 @@ class FakeLibdpx:
 
     def TPxSetBuff(self, base: int, size: int) -> None:  # noqa: N802 - vendor's name
         self.buffer_base = base
+        self.buffer_size = size
         self.arms += 1
 
     def TPxEnableFreeRun(self) -> None:  # noqa: N802 - vendor's name
@@ -409,8 +411,10 @@ class FakeLibdpx:
             raw[index] = value
         return 0.0
 
-    def DPxSelectDevice(self, name: str) -> None:  # noqa: N802 - vendor's name
+    def DPxSelectDevice(self, name: str) -> int:  # noqa: N802 - vendor's name
+        # libdpx answers non-zero when the device exists (pypixxlib docs).
         self.selected = name
+        return 1 if name in self.present else 0
 
     def TPxHideOverlay(self) -> None:  # noqa: N802 - vendor's name
         self.overlay_hidden = True
@@ -420,7 +424,15 @@ class FakeLibdpx:
 
     def DPxUpdateRegCache(self) -> None:  # noqa: N802 - vendor's name
         self.cache_updates += 1
-        self._transfer_failed()
+        if self._transfer_failed():
+            return
+        if "DPxUpdateRegCache" in self.fault_on or "DPxUpdateRegCache" in self.raise_on:
+            self._call("DPxUpdateRegCache")
+        self._advance_dout()
+        if not self.dout_running:
+            last = self.port_history[-1] if self.port_history else None
+            if last != ("register", self.dout_register):
+                self.port_history.append(("register", self.dout_register))
 
     def DPxGetError(self) -> str:  # noqa: N802 - vendor's name
         return self.error
@@ -430,6 +442,163 @@ class FakeLibdpx:
 
     def DPxClearError(self) -> None:  # noqa: N802 - vendor's name
         self.error = "DPX_SUCCESS"
+
+    # -----------------------------------------------------------------------
+    # The DATAPixx3's digital outputs (reward gate, sync lines) and the rest
+    # of libdpx's open/close. A model of what alhazen's DOUT code assumes,
+    # written from VPixx's documentation (devices/reward.py cites it), not a
+    # recording: a schedule plays 16-bit words onto DOUT 0-15 and the port
+    # returns to the register value when it ends; DPxGetDoutValue reads the
+    # register; a started schedule begins at the next register write.
+    # -----------------------------------------------------------------------
+
+    def _init_dout(self) -> None:
+        self.present = {"DATAPIXX3", "TRACKPIXX"}
+        self.opens = 0
+        self.closes = 0
+        self.buffer_size = 0
+        self.ram_size = 1 << 31
+        # What DPxSetDoutValue latched (24 bits), every write as (value, mask),
+        # and the port's story in order: ("register", value) whenever the
+        # register is written or a schedule ends, ("train", words) when one
+        # starts playing.
+        self.dout_register = 0
+        self.dout_writes: list[tuple[int, int]] = []
+        self.port_history: list[tuple[str, Any]] = []
+        self.ram: dict[int, list[int]] = {}
+        self.dout_buff: tuple[int, int] = (0, 0)
+        self.dout_sched: tuple[int, int, str, int] | None = None
+        self.dout_running = False
+        self.dout_start_pending = False
+        self.dout_stops = 0
+        self.trains: list[list[int]] = []
+        # How many register round trips a started schedule reports running
+        # for before it ends; None: it never ends by itself (a stuck one).
+        self.polls_until_done: int | None = 1
+        # None until a schedule is started here: a schedule some other program
+        # left running (dout_running set by a test) never ends by itself.
+        self._polls_left: int | None = None
+        self.pixel_mode = False
+        self.pixel_mode_gb = False
+        self.pixel_mode_b = False
+        self.button_schedules = False
+        self.backlight_pulse = False
+        # function name -> sticky error code that call leaves (fault injection)
+        self.fault_on: dict[str, str] = {}
+        # function name -> exception that call raises (a wrapper that throws)
+        self.raise_on: dict[str, BaseException] = {}
+        self.tracker_close_steps: list[str] = []
+
+    def _call(self, name: str) -> None:
+        if name in self.raise_on:
+            raise self.raise_on[name]
+        if name in self.fault_on:
+            self.error = self.fault_on[name]
+            self.error_string = f"{name} failed"
+        self._transfer_failed()
+
+    def port(self) -> int:
+        """What DOUT 0-23 show now: the register, unless a schedule is
+        playing (then its last-loaded train's words own DOUT 0-15)."""
+        return self.dout_register
+
+    def gate_trains(self, bit: int) -> list[list[int]]:
+        """Each played train as the levels of one bit, sample by sample."""
+        return [[(word >> bit) & 1 for word in train] for train in self.trains]
+
+    def DPxOpen(self) -> None:  # noqa: N802 - vendor's name
+        self.opens += 1
+        self._call("DPxOpen")
+
+    def DPxClose(self) -> None:  # noqa: N802 - vendor's name
+        self.closes += 1
+        self._call("DPxClose")
+
+    def DPxIsDoutPixelMode(self) -> int:  # noqa: N802 - vendor's name
+        self._call("DPxIsDoutPixelMode")
+        return int(self.pixel_mode)
+
+    def DPxIsDoutPixelModeGB(self) -> int:  # noqa: N802 - vendor's name
+        return int(self.pixel_mode_gb)
+
+    def DPxIsDoutPixelModeB(self) -> int:  # noqa: N802 - vendor's name
+        return int(self.pixel_mode_b)
+
+    def DPxIsDoutButtonSchedules(self) -> int:  # noqa: N802 - vendor's name
+        return int(self.button_schedules)
+
+    def DPxIsDoutBacklightPulse(self) -> int:  # noqa: N802 - vendor's name
+        return int(self.backlight_pulse)
+
+    def DPxIsDoutSchedRunning(self) -> int:  # noqa: N802 - vendor's name
+        self._call("DPxIsDoutSchedRunning")
+        return int(self.dout_running)
+
+    def DPxGetDoutValue(self) -> int:  # noqa: N802 - vendor's name
+        self._call("DPxGetDoutValue")
+        return self.dout_register
+
+    def DPxSetDoutValue(self, value: int, mask: int) -> None:  # noqa: N802 - vendor's name
+        self._call("DPxSetDoutValue")
+        self.dout_writes.append((value, mask))
+        self.dout_register = (self.dout_register & ~mask) | (value & mask)
+
+    def DPxGetRamSize(self) -> int:  # noqa: N802 - vendor's name
+        return self.ram_size
+
+    def TPxGetBuffSize(self) -> int:  # noqa: N802 - vendor's name
+        return self.buffer_size
+
+    def DPxWriteRam(self, address: int, words: list[int]) -> None:  # noqa: N802 - vendor's name
+        self._call("DPxWriteRam")
+        assert address % 2 == 0, "VPixx RAM addresses are even"
+        assert all(0 <= int(word) <= 0xFFFF for word in words), "DOUT words are 16-bit"
+        self.ram[address] = [int(word) for word in words]
+
+    def DPxSetDoutBuff(self, address: int, size: int) -> None:  # noqa: N802 - vendor's name
+        self._call("DPxSetDoutBuff")
+        self.dout_buff = (address, size)
+
+    def DPxSetDoutSched(self, onset: int, rate: int, units: str, count: int) -> None:  # noqa: N802
+        self._call("DPxSetDoutSched")
+        self.dout_sched = (onset, rate, units, count)
+
+    def DPxStartDoutSched(self) -> None:  # noqa: N802 - vendor's name
+        self._call("DPxStartDoutSched")
+        self.dout_start_pending = True
+
+    def DPxStopDoutSched(self) -> None:  # noqa: N802 - vendor's name
+        self._call("DPxStopDoutSched")
+        self.dout_stops += 1
+        self.dout_start_pending = False
+        if self.dout_running:
+            self.dout_running = False
+            self.port_history.append(("register", self.dout_register))
+
+    def _advance_dout(self) -> None:
+        """One register round trip: a pending start begins playing, a
+        playing schedule counts down towards its end."""
+        if self.dout_start_pending:
+            self.dout_start_pending = False
+            address, size = self.dout_buff
+            count = self.dout_sched[3] if self.dout_sched is not None else 0
+            words = self.ram.get(address, [])[: min(size // 2, count)]
+            self.trains.append(words)
+            self.port_history.append(("train", words))
+            self.dout_running = True
+            self._polls_left = self.polls_until_done
+            return
+        if self.dout_running and self._polls_left is not None:
+            self._polls_left -= 1
+            if self._polls_left <= 0:
+                self.dout_running = False
+                self.port_history.append(("register", self.dout_register))
+
+    def TPxUninitialize(self) -> None:  # noqa: N802 - vendor's name
+        self.tracker_close_steps.append("TPxUninitialize")
+
+    def TPxSetSleepPictureRequest(self) -> None:  # noqa: N802 - vendor's name
+        self.tracker_close_steps.append("TPxSetSleepPictureRequest")
 
 
 class FakeTrackPixx:
@@ -510,6 +679,7 @@ class FakeTrackPixx:
         self.samples_file = data_dir / "TPx_2026-08-27_09-00-00.csv"
         # Mirrors the real one's TPxSetBuff + TPxEnableFreeRun.
         self.libdpx.buffer_base = self.buffer_base_addr
+        self.libdpx.buffer_size = self.buffer_size
         self.libdpx.freerun = True
         self.last_read_addr = self.buffer_base_addr
         return str(self.samples_file)
@@ -558,3 +728,15 @@ def install_fake_pypixxlib(monkeypatch: Any) -> FakeTrackPixx:
     monkeypatch.setitem(sys.modules, "pypixxlib", package)
     monkeypatch.setitem(sys.modules, "pypixxlib.tracker", tracker_module)
     return device
+
+
+def install_fake_libdpx(monkeypatch: Any) -> FakeLibdpx:
+    """A pypixxlib with only its libdpx wrapper, for a DATAPixx3 reward gate
+    or sync line with no tracker; returns that libdpx. With a tracker too,
+    use install_fake_pypixxlib and its ``device.libdpx``: one library, one
+    link (devices/vpixx.py)."""
+    libdpx = FakeLibdpx()
+    package = types.ModuleType("pypixxlib")
+    package._libdpx = libdpx  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "pypixxlib", package)
+    return libdpx

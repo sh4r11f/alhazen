@@ -41,10 +41,11 @@ from pathlib import Path
 from typing import Any
 
 from alhazen.config.gamma import fit_gamma, gamma_path, load_gamma, read_measurements
-from alhazen.config.models import RewardPulses, RigConfig
+from alhazen.config.models import RewardHwConfig, RewardPulses, RigConfig
 from alhazen.config.reward_calibration import record_reward_calibration
 from alhazen.display.ruler import draw_ruler_on
 from alhazen.display.screen import Screen
+from alhazen.errors import RewardError
 from alhazen.modes import measure_stats as stats
 from alhazen.modes.measure import (
     DEFAULT_ACCURACY_TARGETS_DVA,
@@ -466,9 +467,50 @@ def mouse_dragger(display: Any) -> Callable[[str], float]:
     return drag
 
 
+def _datapixx_connection(cfg: RewardHwConfig) -> Measurement:
+    """Read-only, like the NI-DAQ check: the DATAPixx3 is opened, its
+    digital-output modes and the gate's register are read, and it is
+    released. Not even the rest level is written."""
+    from alhazen.devices.reward import probe_datapixx_gate
+
+    detail: dict[str, Any] = {
+        "backend": cfg.backend,
+        "line": cfg.line,
+        "polarity": cfg.polarity,
+        "pump": cfg.pump.model_dump() if cfg.pump is not None else None,
+        "notes": [
+            "Read only: nothing was written to the DATAPixx3, not even the gate's rest level. "
+            "Register values are what libdpx reads back, not voltages on the pins.",
+            "Whether the pump runs, and how much it delivers, is reward.volume's question.",
+        ],
+    }
+    try:
+        state = probe_datapixx_gate(cfg)
+    except RewardError as error:
+        return Measurement("reward connection", str(error), False, {**detail, "error": str(error)})
+    detail["state"] = state
+    refusal = state["refusal"]
+    if refusal is not None:
+        return Measurement(
+            "reward connection",
+            f"{cfg.line} answers, but a gate would be refused: {refusal}",
+            False,
+            detail,
+        )
+    return Measurement(
+        "reward connection",
+        f"{cfg.line} answers; gate register reads {state['gate_level_before']} "
+        f"({cfg.polarity}: rests {'HIGH' if cfg.polarity == 'active_low' else 'LOW'})",
+        True,
+        detail,
+    )
+
+
 def _reward_connection(ctx: JobContext) -> Measurement:
     cfg = ctx.rig.devices.reward
     assert cfg is not None  # unavailable() refused a rig without one
+    if cfg.backend == "datapixx":
+        return _datapixx_connection(cfg)
     try:
         import nidaqmx.system
     except ImportError as error:
@@ -558,7 +600,21 @@ def _reward_volume(ctx: JobContext) -> Measurement:
             f"limit is {MAX_TOTAL_OPEN_S:g} s — use fewer or shorter pulses"
         )
     pulses = RewardPulses(n_pulses=n_pulses, pulse_ms=pulse_ms, inter_pulse_ms=gap_ms)
-    line = f"{hardware.device}/{hardware.channel}"
+    line = hardware.line
+    # A DATAPixx3 gate: the pump's own settings decide the volume, so the arm
+    # prompt states them and the calibration records them (gate_identity).
+    gate_identity: dict[str, Any] = (
+        {"backend": hardware.backend, **hardware.calibration_identity()}
+        if hardware.polarity is not None
+        else {}
+    )
+    where = (
+        f"{line} ({hardware.polarity} gate; pump {hardware.pump.model}, "
+        f"{hardware.pump.rate_ul_per_min:g} µL/min, {hardware.pump.syringe_diameter_mm:g} mm "
+        f"syringe — as set on the pump)"
+        if hardware.pump is not None
+        else f"{line} at {hardware.voltage:g} V"
+    )
     train_s = n_pulses * (pulse_ms + gap_ms) / 1000.0
     plan = {
         "trains": trains,
@@ -569,13 +625,14 @@ def _reward_volume(ctx: JobContext) -> Measurement:
         "inter_train_s": INTER_TRAIN_S,
         "line": line,
         "voltage": hardware.voltage,
+        **gate_identity,
         "total_open_s": open_s,
         "run_s": trains * train_s + (trains - 1) * INTER_TRAIN_S,
     }
     armed = ctx.confirm(
         "arm",
-        f"ARM THE VALVE? {trains} train(s) of {n_pulses} pulses × {pulse_ms} ms on {line} at "
-        f"{hardware.voltage:g} V (valve open {open_s:g} s in total, about {plan['run_s']:.0f} s). "
+        f"ARM THE VALVE? {trains} train(s) of {n_pulses} pulses × {pulse_ms} ms on {where} "
+        f"(valve open {open_s:g} s in total, about {plan['run_s']:.0f} s). "
         "An empty beaker must be under the spout. Y delivers once; N or ESC cancels.",
     )
     if not armed:
@@ -631,6 +688,7 @@ def _reward_volume(ctx: JobContext) -> Measurement:
                     "ul_per_pulse": round(result["ul_per_pulse"], 3),
                     "line": line,
                     "voltage": hardware.voltage,
+                    **gate_identity,
                     "measured_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                     "trains": trains,
                     "pulses_per_train": n_pulses,

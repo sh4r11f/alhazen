@@ -342,8 +342,9 @@ class SessionRunner:
         if reward is not None and hardware is not None and identity.rig_file is not None:
             self._juice_ul = ul_by_width(
                 load_reward_calibration(identity.rig_file.path),
-                line=f"{hardware.device}/{hardware.channel}",
+                line=hardware.line,
                 voltage=hardware.voltage,
+                identity=hardware.calibration_identity(),
             )
         self._sync = sync
         # The pay rule and its delivery at the end of each trial

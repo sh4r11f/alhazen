@@ -800,14 +800,200 @@ class EyeTrackerConfig(Model):
             )
 
 
-class RewardHwConfig(Model):
-    """The reward line: ``nidaq`` drives a real pump/solenoid through an
-    NI-DAQ analog output; ``simulated`` records deliveries instead."""
+# The VPixx device that carries the digital outputs a DATAPixx3 reward gate or
+# sync line uses — the one that also hosts a TRACKPixx3 (devices/vpixx.py).
+DATAPIXX_DEVICE = "DATAPIXX3"
+# pypixxlib's TRACKPixx3 records into this ring of DATAPixx3 RAM
+# (pypixxlib.tracker.TRACKPixx3: buffer_base_addr, buffer_size). Kept here so
+# a rig whose reward schedule buffer would overwrite it is refused when the
+# rig file is read, before any device is touched.
+TRACKPIXX_RING_BASE = 0x12000000
+TRACKPIXX_RING_SIZE = 0x18000000
+# pypixxlib's TRACKPixx3 reads its camera image here (pypixxlib.tracker:
+# address 0x75EEC000, 1280 x 512 16-bit words).
+TRACKPIXX_IMAGE_BASE = 0x75EEC000
+TRACKPIXX_IMAGE_SIZE = 1280 * 512 * 2
+# The DATAPixx3 RAM a reward gate's schedule may use, from its
+# dout_buffer_address: 1 MiB is 524,288 one-millisecond samples (over 8
+# minutes of train), far past any reward; a longer train is refused.
+DATAPIXX_DOUT_BUFFER_BYTES = 1 << 20
+# VPixx's own demos put DOUT schedule buffers here (DPxWriteDoutBuffer's
+# default address), clear of the TRACKPixx3 ring.
+DATAPIXX_DOUT_BUFFER_ADDRESS = 8_000_000
+# A DATAPixx3 has 24 digital outputs; its DOUT schedule plays 16-bit words,
+# so only DOUT 0-15 can carry a hardware-timed reward gate (the schedule word
+# is the low 16 bits of the port: DPxWriteDoutBuffer takes values 0-65535).
+DATAPIXX_DOUT_BITS = 24
+DATAPIXX_SCHEDULE_BITS = 16
+_DOUT_CHANNEL = re.compile(r"^dout(\d{1,2})$")
 
-    backend: Literal["nidaq", "simulated"]
-    device: str = "Dev1"  # NI-DAQ device name as enumerated by NI-MAX
-    channel: str = "ao0"  # analog-output channel the pump driver listens on
+
+def dout_bit_of(channel: str) -> int | None:
+    """The DOUT bit a DATAPixx3 channel name means ("dout0" -> 0), or None
+    for anything that is not one."""
+    match = _DOUT_CHANNEL.match(channel)
+    if match is None:
+        return None
+    bit = int(match.group(1))
+    return bit if bit < DATAPIXX_DOUT_BITS else None
+
+
+def datapixx_sync_bit(line: str) -> int | None:
+    """The DOUT bit of a DATAPixx3 sync line ("DATAPIXX3/dout17" -> 17)."""
+    device, _, channel = line.partition("/")
+    return dout_bit_of(channel) if device == DATAPIXX_DEVICE else None
+
+
+class RewardPumpConfig(Model):
+    """What a gated pump is set to, as the operator set it on its own panel.
+
+    A pump driven through its gate input (a WPI SP220i on a DATAPixx3
+    digital output) delivers at the rate and syringe it was set to for as
+    long as the gate is held; alhazen cannot read either (the pump's RS232
+    is not used), so they are declared here. A reward calibration is valid
+    only for the settings it was measured at (config/reward_calibration.py),
+    and every session records them. Keep them true: a wrong number here is a
+    volume nobody measured.
+    """
+
+    model: str
+    syringe_diameter_mm: float
+    rate_ul_per_min: float
+
+    @model_validator(mode="after")
+    def _valid(self) -> RewardPumpConfig:
+        if not self.model.strip():
+            raise ValueError("pump model must name the pump (e.g. 'WPI SP220i')")
+        for name in ("syringe_diameter_mm", "rate_ul_per_min"):
+            value = getattr(self, name)
+            if not (math.isfinite(value) and value > 0):
+                raise ValueError(f"pump {name} must be a number > 0")
+        return self
+
+
+class RewardHwConfig(Model):
+    """The reward line.
+
+    - ``nidaq`` drives a pump/solenoid through an NI-DAQ analog output with an
+      active-high waveform at ``voltage``;
+    - ``datapixx`` drives a pump's TTL gate from a DATAPixx3 digital output
+      (``channel: dout<N>``, N 0-15) with a hardware-timed DOUT schedule,
+      resting at the inactive level ``polarity`` names (``active_low``: rest
+      HIGH, LOW while dispensing — the WPI SP220i's Gate). ``pump`` declares
+      the pump's own settings, which set the volume;
+    - ``simulated`` records deliveries instead.
+
+    ``polarity``, ``pump`` and ``dout_buffer_address`` belong to ``datapixx``
+    and are refused on ``nidaq`` (unless left at their defaults, as a dumped
+    config carries them). A ``simulated`` line may keep them: test
+    and simulate modes stand a real line down by changing only its backend.
+    """
+
+    backend: Literal["nidaq", "simulated", "datapixx"]
+    device: str = "Dev1"  # NI-DAQ device name as enumerated by NI-MAX; DATAPIXX3 for datapixx
+    channel: str = "ao0"  # analog-output channel (nidaq), or dout<N> (datapixx)
     voltage: float = 5.0
+    polarity: Literal["active_high", "active_low"] | None = None
+    pump: RewardPumpConfig | None = None
+    dout_buffer_address: int = DATAPIXX_DOUT_BUFFER_ADDRESS
+
+    @model_validator(mode="before")
+    @classmethod
+    def _datapixx_device(cls, data: Any) -> Any:
+        # The device a datapixx line is on has one right answer; the NI
+        # default ("Dev1") would only produce a confusing refusal.
+        if isinstance(data, dict) and data.get("backend") == "datapixx" and "device" not in data:
+            return {**data, "device": DATAPIXX_DEVICE}
+        return data
+
+    @model_validator(mode="after")
+    def _valid(self) -> RewardHwConfig:
+        if self.backend == "nidaq":
+            # Set to something other than their defaults, not merely present:
+            # a dumped NI-DAQ config (a session snapshot) carries them at
+            # their defaults and must load again.
+            named = sorted(
+                name
+                for name in ("polarity", "pump", "dout_buffer_address")
+                if getattr(self, name) != type(self).model_fields[name].default
+            )
+            if named:
+                raise ValueError(
+                    f"reward backend 'nidaq' ignores {', '.join(named)} (DATAPixx3 gate "
+                    f"settings) — remove {'them' if len(named) > 1 else 'it'}, or use backend "
+                    f"'datapixx'"
+                )
+        if self.backend == "datapixx":
+            self._valid_datapixx()
+        return self
+
+    def _valid_datapixx(self) -> None:
+        if self.device != DATAPIXX_DEVICE:
+            raise ValueError(
+                f"reward backend 'datapixx' drives the {DATAPIXX_DEVICE}'s digital outputs; "
+                f"device must be {DATAPIXX_DEVICE!r} (or left out), not {self.device!r}"
+            )
+        bit = dout_bit_of(self.channel)
+        if "channel" not in self.model_fields_set or bit is None:
+            raise ValueError(
+                "reward backend 'datapixx' needs channel: dout<N> — the DATAPixx3 digital "
+                "output wired to the pump's gate (dout0 is DB25 pin 1). There is no default: "
+                "the line is a fact of the wiring"
+            )
+        if bit >= DATAPIXX_SCHEDULE_BITS:
+            raise ValueError(
+                f"reward channel {self.channel} cannot carry a hardware-timed reward: the "
+                f"DATAPixx3's DOUT schedule plays 16-bit words, so only dout0-dout15 can be "
+                f"timed by the device. Wire the gate to one of those"
+            )
+        if self.polarity is None:
+            raise ValueError(
+                "reward backend 'datapixx' needs polarity: active_low (rest HIGH, LOW while "
+                "dispensing — a WPI SP220i's Gate input) or active_high. There is no default: "
+                "the wrong one runs the pump whenever it should be stopped"
+            )
+        if self.pump is None:
+            raise ValueError(
+                "reward backend 'datapixx' needs pump: {model, syringe_diameter_mm, "
+                "rate_ul_per_min}, as set on the pump's own panel — they decide the volume "
+                "a gate of a given width delivers, and alhazen cannot read them"
+            )
+        if "voltage" in self.model_fields_set and self.voltage != 5.0:
+            raise ValueError(
+                "reward backend 'datapixx' has no voltage setting: its digital outputs are "
+                "5 V TTL. Remove voltage"
+            )
+        address = self.dout_buffer_address
+        end = address + DATAPIXX_DOUT_BUFFER_BYTES
+        if address < 0 or address % 2:
+            raise ValueError("dout_buffer_address must be an even byte address >= 0")
+        for name, base, size in (
+            ("sample ring", TRACKPIXX_RING_BASE, TRACKPIXX_RING_SIZE),
+            ("camera image", TRACKPIXX_IMAGE_BASE, TRACKPIXX_IMAGE_SIZE),
+        ):
+            if address < base + size and end > base:
+                raise ValueError(
+                    f"dout_buffer_address {address:#x}-{end:#x} overlaps the TRACKPixx3 {name} "
+                    f"({base:#x}-{base + size:#x}): a reward would overwrite tracker data. "
+                    f"Leave it out (default {DATAPIXX_DOUT_BUFFER_ADDRESS})"
+                )
+
+    @property
+    def line(self) -> str:
+        """The line as calibrations and records name it: "Dev1/ao0",
+        "DATAPIXX3/dout0"."""
+        return f"{self.device}/{self.channel}"
+
+    def calibration_identity(self) -> dict[str, Any]:
+        """Everything besides the line and voltage that a reward calibration
+        must have been measured at to be valid for this line
+        (config/reward_calibration.py): the gate polarity and the pump's
+        declared settings. None for both on an NI-DAQ line, whose recorded
+        calibrations carry neither."""
+        return {
+            "polarity": self.polarity,
+            "pump": self.pump.model_dump() if self.pump is not None else None,
+        }
 
 
 class SyncHwConfig(Model):
@@ -821,7 +1007,7 @@ class SyncHwConfig(Model):
     EventSchema when the session is built (session/builder.py).
     """
 
-    backend: Literal["nidaq", "simulated", "none"]
+    backend: Literal["nidaq", "simulated", "none", "datapixx"]
     pulse_ms: float = 2.0
     event_lines: dict[str, str] = {}
 
@@ -829,6 +1015,15 @@ class SyncHwConfig(Model):
     def _valid(self) -> SyncHwConfig:
         if self.pulse_ms <= 0:
             raise ValueError("pulse_ms must be > 0")
+        if self.backend == "datapixx":
+            wrong = sorted(
+                line for line in set(self.event_lines.values()) if datapixx_sync_bit(line) is None
+            )
+            if wrong:
+                raise ValueError(
+                    f"sync backend 'datapixx' lines are {DATAPIXX_DEVICE}/dout<N>, N 0-"
+                    f"{DATAPIXX_DOUT_BITS - 1}; not {', '.join(map(repr, wrong))}"
+                )
         return self
 
 
@@ -1069,6 +1264,30 @@ class DevicesConfig(Model):
     sync: SyncHwConfig | None = None
     recording: RecordingConfig | None = None
     spikes: SpikeSourceConfig | None = None
+
+    @model_validator(mode="after")
+    def _datapixx_port_has_one_owner(self) -> DevicesConfig:
+        """A DATAPixx3 reward gate and DATAPixx3 sync lines would share one
+        digital-output port, and that is refused when the rig file is read.
+
+        The gate's DOUT schedule plays 16-bit words onto DOUT 0-15 as a
+        whole for the length of every train, so a sync pulse on any of those
+        bits would be overwritten. Whether DOUT 16-23 stay independent of a
+        running schedule VPixx does not document; until a bench test on the
+        rig shows it, no combination is offered (devices/vpixx.py refuses it
+        again at run time). Sync on an NI-DAQ, or a DATAPixx3 sync with no
+        DATAPixx3 reward, is unaffected."""
+        reward, sync = self.reward, self.sync
+        if reward is None or sync is None:
+            return self
+        if reward.backend != "datapixx" or sync.backend != "datapixx":
+            return self
+        raise ValueError(
+            f"reward backend 'datapixx' and sync backend 'datapixx' cannot share the "
+            f"{DATAPIXX_DEVICE}'s digital outputs: the reward's DOUT schedule writes DOUT 0-15 "
+            f"as a whole during every train, and VPixx does not document whether DOUT 16-23 "
+            f"stay independent of it. Use sync backend 'nidaq' (or none) on this rig"
+        )
 
 
 class RigConfig(Model):
