@@ -1038,6 +1038,7 @@ a:hover { color: var(--accent-ink); text-decoration-thickness: 2px; }
   /* A phone's masthead keeps the brand, the account and the menu; Create
    * moves into the marketplace head. */
   .account .btn-create { display: none; }
+  .create-tail { display: none; }
   .store-toolbar .store-count { flex-basis: 100%; }
   .store-search { min-height: 52px; padding-left: 12px; }
   .store-search .btn { padding: 0 14px; }

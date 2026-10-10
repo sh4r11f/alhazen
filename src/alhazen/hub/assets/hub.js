@@ -229,7 +229,7 @@ const HubApp = (() => {
       const create = state.role === 'server'
         ? link({view: 'create'}, null, {class: 'btn btn-create', 'aria-current': state.route.view === 'create' ? 'page' : null})
         : null;
-      if (create) create.append(sparkGlyph(), h('span', null, 'Create'), h('span', {class: 'create-tail'}, ' with AI'));
+      if (create) create.append(sparkGlyph(), h('span', {class: 'create-label'}, h('span', null, 'Create'), h('span', {class: 'create-tail'}, ' with AI')));
       if (state.user) {
         const who = h('span', {class: 'who'},
           h('span', {class: 'who-label'}, state.role === 'rig' ? 'Operator' : 'Signed in as'),
