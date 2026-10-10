@@ -161,7 +161,9 @@ def make_source(root: Path) -> Path:
     }.items():
         target = source / name
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(text, encoding="utf-8")
+        # Bytes, not text: Windows' text mode would write CRLF and change the
+        # digests the tests compare with (found by CI on Windows).
+        target.write_bytes(text.encode("utf-8"))
     return source
 
 

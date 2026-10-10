@@ -67,12 +67,22 @@ def link_names(components: Iterable[str]) -> list[str]:
     return names
 
 
+# Windows: a junction is a directory reparse point with this tag; Python
+# before 3.12 has no os.path.isjunction, so it is read off lstat.
+_REPARSE_POINT = 0x400  # stat.FILE_ATTRIBUTE_REPARSE_POINT
+_MOUNT_POINT = 0xA0000003  # stat.IO_REPARSE_TAG_MOUNT_POINT
+
+
 def _is_link(path: Path) -> bool:
     """A symbolic link, or on Windows a junction."""
     if path.is_symlink():
         return True
-    is_junction = getattr(os.path, "isjunction", None)  # Python 3.12+
-    return bool(is_junction and is_junction(path))
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return False
+    attributes = getattr(info, "st_file_attributes", 0)
+    return bool(attributes & _REPARSE_POINT) and getattr(info, "st_reparse_tag", 0) == _MOUNT_POINT
 
 
 def _points_at(link: Path, target: Path) -> bool:
