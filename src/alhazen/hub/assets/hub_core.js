@@ -228,6 +228,7 @@ const HubCore = (() => {
     preview_stale: 'The files, recipient or release changed since the preview. Preview again before uploading.',
     auth_context_changed: 'The signed-in account or hub changed, so this transfer is paused. It only continues for the account it was approved for.',
     server: 'The hub failed to answer this request.',
+    ai: 'The AI provider or the model could not complete the request.',
     bad_response: 'The hub sent an answer this page cannot read.',
   };
 

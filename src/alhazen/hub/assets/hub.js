@@ -2291,7 +2291,7 @@ const HubApp = (() => {
       let replacing = false;
       async function save() {
         const provider = getProvider();
-        const value = key.value.trim();
+        const value = String(key.value || '').trim();
         key.value = '';
         if (!value) { status.show('Paste a key first.', 'err'); return null; }
         status.show('Saving\u2026', 'info');
@@ -2356,7 +2356,7 @@ const HubApp = (() => {
             h('span', {'data-key-state': 'none'}, saved ? 'The new key replaces the saved one.' : 'No ' + name + ' key saved for this account.')),
           status.el);
       }
-      return {el: box, render, save, field: key, pending: () => key.value.trim().length > 0};
+      return {el: box, render, save, field: key, pending: () => String(key.value || '').trim().length > 0};
     }
 
     function screenCreate(ctx) {
