@@ -740,6 +740,7 @@ class GazeReader:
         interval_s: float = 0.004,
         check: Callable[[], str | None] | None = None,
         check_every_s: float = 0.05,
+        read_fault: Callable[[], str | None] | None = None,
     ) -> None:
         self._read = read
         self._clock = clock
@@ -747,6 +748,15 @@ class GazeReader:
         self._interval = interval_s
         self._check = check
         self._check_every_s = check_every_s
+        # Asked right after each read, in the same hold of the lock: what the
+        # read left in libdpx's sticky error, if anything. Read there and
+        # nowhere later, because the lock is shared with the DATAPixx3
+        # reward gate and sync lines, whose next DPxSelectDevice clears any
+        # error left unread (devices/vpixx.py). A fault found this way is
+        # kept, as (what, when), until a fresh device answer replaces it
+        # (note_check) or the reader is restarted.
+        self._read_fault = read_fault
+        self._gaze_fault: tuple[str, float] | None = None
         self._latest: tuple[DeviceGaze, float] | None = None
         # The device's latest answer to `check` — None (recording) or what is
         # wrong — and the session time it was asked; None before the first.
@@ -805,9 +815,12 @@ class GazeReader:
         try:
             with self._lock:
                 report = self._read()
+                fault = self._read_fault() if self._read_fault is not None else None
         except Exception as e:  # pypixxlib's exception type cannot be named off the rig
             self._fault = e
             raise TrackerError(f"the TRACKPixx3 stopped answering: {e}") from e
+        if fault is not None and self._gaze_fault is None:
+            self._gaze_fault = (fault, self._clock.now())
         self._latest = (report, self._clock.now())
         checked = self._checked
         if self._check is not None and (
@@ -839,8 +852,12 @@ class GazeReader:
         """Keep an answer the caller got from the device on its own thread
         (start_trial asks before a trial relies on the recording), so a
         verdict from before it is never read as the device's latest. Call it
-        with the device lock still held, for the reason check_now gives."""
+        with the device lock still held, for the reason check_now gives.
+
+        It also replaces a gaze-read fault kept from before it: start_trial's
+        own question to the device is the answer that stands from then on."""
         self._checked = (verdict, self._clock.now())
+        self._gaze_fault = None
 
     @property
     def fault(self) -> BaseException | None:
@@ -852,8 +869,21 @@ class GazeReader:
     def device_check(self) -> tuple[str | None, float] | None:
         """The device's latest answer about its recording — None while it
         records, else what is wrong — with the session time it was asked;
-        None before the first answer."""
-        return self._checked
+        None before the first answer.
+
+        A fault a gaze read left (``read_fault``) is a wrong answer too, and
+        the first fault found is the one reported: a gaze read that failed
+        before the recording check asked is what stopped first. Kept apart
+        from the check because the check runs in a separate hold of the
+        shared lock, by which time another libdpx user (the DATAPixx3 reward
+        gate's DPxSelectDevice) may have cleared the read's error."""
+        checked = self._checked
+        gaze_fault = self._gaze_fault
+        if gaze_fault is not None and (
+            checked is None or checked[0] is None or gaze_fault[1] <= checked[1]
+        ):
+            return gaze_fault
+        return checked
 
     @property
     def newest_read_t(self) -> float | None:
@@ -875,6 +905,7 @@ class GazeReader:
         self.stop()
         self._fault = None
         self._checked = None
+        self._gaze_fault = None
         self.read_now()
         if background:
             self.start()
@@ -1154,6 +1185,17 @@ class ViewPixxTracker:
         # between (devices/vpixx.py).
         link.acquire("opening the TRACKPixx3", TrackerError)
         try:
+            if link.opened_by_link_for_others(self):
+                # pypixxlib's TRACKPixx3() calls DPxOpen on a library a
+                # DATAPixx3 reward gate or sync line already opened, which
+                # VPixx does not document. Refused before that call; the
+                # session builder connects the tracker first for this reason.
+                raise TrackerError(
+                    "the TRACKPixx3 must be connected before the DATAPixx3 reward gate or "
+                    "sync lines open the same DATAPixx3: pypixxlib's TRACKPixx3() would open "
+                    "the device a second time, which VPixx does not document. Close them, "
+                    "connect the tracker, then open them again"
+                )
             try:
                 self._tracker = TRACKPixx3()
                 self._libdpx = libdpx
@@ -1257,6 +1299,7 @@ class ViewPixxTracker:
             self._device_lock,
             check=self._check_recording,
             check_every_s=self._max_gap_s / 2,
+            read_fault=self._gaze_read_fault,
         )
         if self._background_gaze:
             self._reader.start()
@@ -2122,6 +2165,16 @@ class ViewPixxTracker:
         if problem is not None:
             return f"stopped recording samples into the session's buffer: {problem}"
         return None
+
+    def _gaze_read_fault(self) -> str | None:
+        """What the gaze read just left in libdpx's sticky error, in words, or
+        None. Called by the reader in the read's own hold of the lock
+        (GazeReader read_fault): the read is a USB transfer like any other,
+        and a device that went away mid-session shows here first."""
+        fault = dpx_fault(self._libdpx)
+        if fault is None:
+            return None
+        return f"did not answer a gaze read ({fault}): the USB link or the DATAPixx3 stopped responding"
 
     def simulate_dropout(self) -> str:
         """Optional capability (protocol.py), for ``alhazen check-rig`` only:

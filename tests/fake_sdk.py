@@ -412,7 +412,11 @@ class FakeLibdpx:
         return 0.0
 
     def DPxSelectDevice(self, name: str) -> int:  # noqa: N802 - vendor's name
-        # libdpx answers non-zero when the device exists (pypixxlib docs).
+        # As pypixxlib's _libdpx.DPxSelectDevice: it calls DPxClearError()
+        # first ("work around where a selectdevice breaks the table"), so a
+        # sticky error nobody read is gone after it; then libdpx answers
+        # non-zero when the device exists.
+        self.DPxClearError()
         self.selected = name
         return 1 if name in self.present else 0
 
@@ -465,7 +469,12 @@ class FakeLibdpx:
         self.dout_register = 0
         self.dout_writes: list[tuple[int, int]] = []
         self.port_history: list[tuple[str, Any]] = []
-        self.ram: dict[int, list[int]] = {}
+        # DATAPixx3 RAM, one 16-bit word per even byte address; what was never
+        # written reads back as 0 (a real device's RAM holds whatever was
+        # there before, which is no better).
+        self.ram: dict[int, int] = {}
+        self.ram_write_calls: list[int] = []  # words handed to each DPxWriteRam
+        self.firmware_rev = 27
         self.dout_buff: tuple[int, int] = (0, 0)
         self.dout_sched: tuple[int, int, str, int] | None = None
         self.dout_running = False
@@ -549,11 +558,34 @@ class FakeLibdpx:
     def TPxGetBuffSize(self) -> int:  # noqa: N802 - vendor's name
         return self.buffer_size
 
-    def DPxWriteRam(self, address: int, words: list[int]) -> None:  # noqa: N802 - vendor's name
+    def DPxWriteRam(self, address: int, words: Any) -> None:  # noqa: N802 - vendor's name
+        """As pypixxlib's _libdpx.DPxWriteRam: the byte count goes to the C
+        call as ``ctypes.c_ushort(2 * len(words))``, so only that many bytes
+        reach the device — 32,768 words become 0 bytes, 40,002 become 7,234
+        words — with no error. VPixx's own DPxWriteDoutBuffer never hands it
+        more than 0xFFF0 // 4 = 16,380 words at a time."""
         self._call("DPxWriteRam")
+        words = [int(word) for word in words]
+        self.ram_write_calls.append(len(words))
         assert address % 2 == 0, "VPixx RAM addresses are even"
-        assert all(0 <= int(word) <= 0xFFFF for word in words), "DOUT words are 16-bit"
-        self.ram[address] = [int(word) for word in words]
+        assert all(0 <= word <= 0xFFFF for word in words), "DOUT words are 16-bit"
+        transferred = ctypes.c_ushort(2 * len(words)).value // 2
+        for index, word in enumerate(words[:transferred]):
+            self.ram[address + 2 * index] = word
+
+    def DPxReadRam(self, address: int, length: int) -> np.ndarray:  # noqa: N802 - vendor's name
+        """As pypixxlib's _libdpx.DPxReadRam: ``length`` is in WORDS (its
+        byte count is a c_uint, so no 16-bit wrap), and it returns a numpy
+        array of unsigned 16-bit words."""
+        self._call("DPxReadRam")
+        assert address % 2 == 0, "VPixx RAM addresses are even"
+        return np.array(
+            [self.ram.get(address + 2 * index, 0) for index in range(int(length))],
+            dtype=np.uint16,
+        )
+
+    def DPxGetFirmwareRev(self) -> int:  # noqa: N802 - vendor's name
+        return self.firmware_rev
 
     def DPxSetDoutBuff(self, address: int, size: int) -> None:  # noqa: N802 - vendor's name
         self._call("DPxSetDoutBuff")
@@ -582,7 +614,8 @@ class FakeLibdpx:
             self.dout_start_pending = False
             address, size = self.dout_buff
             count = self.dout_sched[3] if self.dout_sched is not None else 0
-            words = self.ram.get(address, [])[: min(size // 2, count)]
+            length = min(size // 2, count)
+            words = [self.ram.get(address + 2 * index, 0) for index in range(length)]
             self.trains.append(words)
             self.port_history.append(("train", words))
             self.dout_running = True
@@ -664,7 +697,17 @@ class FakeTrackPixx:
         self.opened = True
 
     def close(self) -> None:
-        self.closed = True
+        # As pypixxlib's TRACKPixx3.close(): TPxUninitialize,
+        # TPxSetSleepPictureRequest, DPxUpdateRegCache, then DpxDevice.close
+        # -> DPxClose for the whole process, then DPxClearError.
+        try:
+            self.libdpx.TPxUninitialize()
+            self.libdpx.TPxSetSleepPictureRequest()
+            self.libdpx.DPxUpdateRegCache()
+            self.libdpx.DPxClose()
+            self.closed = True
+        finally:
+            self.libdpx.DPxClearError()
 
     def setLEDintensity(self, value: int) -> None:  # noqa: N802 - vendor's name
         self.led_intensity = value
@@ -721,7 +764,15 @@ def install_fake_pypixxlib(monkeypatch: Any) -> FakeTrackPixx:
     """
     device = FakeTrackPixx()
     tracker_module = types.ModuleType("pypixxlib.tracker")
-    tracker_module.TRACKPixx3 = lambda: device  # type: ignore[attr-defined]
+
+    def construct() -> FakeTrackPixx:
+        # As pypixxlib: TRACKPixx3() runs DpxDevice.__init__, which calls
+        # DPxOpen and then DPxSelectDevice('TRACKPixx').
+        device.libdpx.DPxOpen()
+        device.libdpx.DPxSelectDevice("TRACKPIXX")
+        return device
+
+    tracker_module.TRACKPixx3 = construct  # type: ignore[attr-defined]
     package = types.ModuleType("pypixxlib")
     package.tracker = tracker_module  # type: ignore[attr-defined]
     package._libdpx = device.libdpx  # type: ignore[attr-defined]

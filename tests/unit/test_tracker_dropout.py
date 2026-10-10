@@ -434,7 +434,11 @@ class TestATrackPixx3ThatStopsRecording:
 
         (row,) = rows(harness)
         assert (row["outcome"], row["fault"]) == ("ABORTED", FAULT_TRACKER_STOPPED)
-        assert "did not answer a register read" in row["fault_detail"]
+        # The first transfer to fail is the gaze read, and its fault is now
+        # read in the read's own hold of the device lock (GazeReader
+        # read_fault), so it is what the row names; before, the same unplug
+        # surfaced only at the later recording check, as a register read.
+        assert "did not answer a gaze read (DPX_ERR_USB_REQ_FAILED" in row["fault_detail"]
         warnings = "\n".join(log_lines(harness))
         assert "left out of the message record" in warnings
         errors = "\n".join(log_lines(harness, "ERROR"))

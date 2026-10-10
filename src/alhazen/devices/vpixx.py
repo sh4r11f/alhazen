@@ -108,6 +108,10 @@ class DpxLink:
         # Every holder, by identity. A holder is the device object itself.
         self._holders: list[object] = []
         self._opened = False
+        # True when this link's own DPxOpen opened the device (connect), not
+        # a vendor object's constructor (adopt): a pypixxlib TRACKPixx3()
+        # built on top would open it a second time.
+        self._opened_by_link = False
         # holder id -> (holder, mask of the DOUT bits it drives, whether it
         # plays DOUT schedules and so owns the whole port).
         self._reserved: dict[int, tuple[object, int, bool]] = {}
@@ -128,13 +132,23 @@ class DpxLink:
         own device error. The caller holds ``lock``.
         """
         libdpx = self.libdpx
+        opened_here = False
         if not self._opened:
             libdpx.DPxOpen()
             fault = dpx_fault(libdpx)
             if fault is not None:
                 raise RuntimeError(f"DPxOpen failed: {fault}")
-        self._opened = True
-        self.select()
+            self._opened = opened_here = True
+            self._opened_by_link = True
+        try:
+            self.select()
+        except RuntimeError:
+            # Opened here and nobody holds it: close it again, so no open is
+            # left behind with no holder to close it.
+            if opened_here and not self._holders:
+                self._opened = self._opened_by_link = False
+                libdpx.DPxClose()
+            raise
         self.hold(holder)
 
     def select(self) -> None:
@@ -190,11 +204,22 @@ class DpxLink:
             return False
         if self._holders:
             return False
-        self._opened = False
+        self._opened = self._opened_by_link = False
         return True
 
     def holders(self) -> int:
         return len(self._holders)
+
+    def opened_by_link_for_others(self, holder: object) -> bool:
+        """Whether this link's own DPxOpen opened the device and someone
+        other than ``holder`` still holds it — the state in which a vendor
+        constructor that calls DPxOpen again must not run. The caller holds
+        ``lock``."""
+        return (
+            self._opened
+            and self._opened_by_link
+            and any(existing is not holder for existing in self._holders)
+        )
 
     # ------------------------------------------------------------------
     # DOUT bit ownership
