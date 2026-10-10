@@ -477,3 +477,27 @@ def test_forget_hub_login_removes_the_bearer_and_keeps_the_hub(tmp_path, capsys)
     with pytest.raises(SystemExit):
         main(["dashboard", "--help"])
     assert "--forget-hub-login" in capsys.readouterr().out
+
+
+def test_an_unfinished_install_gets_no_data_links(http, hub, workspace, tmp_path):  # noqa: F811
+    """An install still recorded as installing (interrupted) is refused at
+    launch before anything is linked into its folder, so its recovery still
+    finds exactly the release's files (tests/hub/test_rig_failures.py)."""
+    call, _ = http
+    connect(call, hub)
+    install = _install(call, hub, workspace, tmp_path, "0.6.0")
+    folder = Path(install["path"])
+    for name in link_names(["data"]):
+        (folder / name).unlink()
+        (folder.parent / name).rmdir()
+    records = json.loads((workspace.directory / "hub" / "installs.json").read_text("utf-8"))
+    for record in records:
+        record["status"] = "installing"
+    (workspace.directory / "hub" / "installs.json").write_text(json.dumps(records), "utf-8")
+    with pytest.raises(ValueError, match="did not finish"):
+        workspace.share_hub_data(workspace.project(install["project_id"]))
+    with pytest.raises(ValueError, match="did not finish"):
+        workspace.start(
+            Launch(project=install["project_id"], mode="movie", rig="configs/rig-sim.yaml")
+        )
+    assert not any((folder / name).exists() for name in link_names(["data"]))

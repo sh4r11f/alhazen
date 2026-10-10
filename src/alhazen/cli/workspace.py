@@ -2852,8 +2852,24 @@ class Workspace:
         if not root.is_relative_to(installs) or root.parent == installs:
             return None
         from alhazen.cli.workspace_data import relative_data_components
+        from alhazen.hub.installation import InstallError, InstallStore
         from alhazen.hub.shared_data import SharedDataConflict, link_names, share
 
+        # Only a release whose install finished and whose code was trusted:
+        # an interrupted install's folder must hold exactly what its
+        # recovery expects, so nothing is linked into it.
+        installs_store = InstallStore(self.directory / "hub")
+        record = installs_store.for_path(str(root))
+        try:
+            if record is None:
+                raise InstallError(
+                    409,
+                    "install_unrecorded",
+                    "This experiment folder is inside the hub's installs but has no install record",
+                )
+            installs_store.trusted_record(record["sha256"])
+        except InstallError as exc:
+            raise ValueError(f"Cannot start {project['name']}: {exc.message}") from exc
         components, problems = relative_data_components(self.describe(project["id"]))
         try:
             links = share(root, root.parent, link_names(components))
