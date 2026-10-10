@@ -1351,19 +1351,17 @@ def _on_simulated_branch(node: ast.AST, parents: Mapping[ast.AST, ast.AST]) -> b
     while parent is not None:
         if isinstance(parent, (ast.If, ast.IfExp)) and child is not parent.test:
             test = parent.test
-            simulated = (
+            body = parent.body if isinstance(parent.body, list) else [parent.body]
+            if (
                 isinstance(test, ast.Compare)
                 and len(test.ops) == 1
+                and isinstance(test.ops[0], ast.Eq)
                 and isinstance(test.left, ast.Attribute)
                 and test.left.attr == "kind"
                 and isinstance(test.comparators[0], ast.Constant)
                 and test.comparators[0].value == "simulated"
-            )
-            in_body = any(
-                child is item
-                for item in (parent.body if isinstance(parent.body, list) else [parent.body])
-            )
-            if simulated and in_body and isinstance(test.ops[0], ast.Eq):
+                and any(child is item for item in body)
+            ):
                 return True
         child, parent = parent, parents.get(parent)
     return False
