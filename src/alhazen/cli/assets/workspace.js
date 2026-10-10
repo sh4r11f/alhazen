@@ -656,9 +656,16 @@ function trainingChoice() {
   return isTraining() && trainingPanel ? trainingPanel.selection() : null;
 }
 
-/** A Training launch that rehearses its stage (simulate mode, headless). */
+/** A Training launch that rehearses its stage (simulate mode; in a window
+ * unless the Headless box is ticked). */
 function rehearsing() {
   return !!trainingChoice()?.rehearse;
+}
+
+/** Whether the Headless box applies: a simulation, which is also what a
+ * Training rehearsal is. Unticked, the session opens a window to watch. */
+function takesHeadless(mode) {
+  return mode === 'simulate' || (mode === 'training' && rehearsing());
 }
 
 /** The mode as the session will run: Training's rehearsal is a simulation. */
@@ -717,8 +724,8 @@ async function loadTraining(id) {
 function psychopyNeeded(mode, backend, headless) {
   if (mode === 'demo' || mode === 'measure') return true;
   if (mode === 'training') {
-    if (rehearsing()) return false;  // headless simulation
-    mode = 'run';
+    // A rehearsal is a simulation, and needs a window unless it is headless.
+    mode = rehearsing() ? 'simulate' : 'run';
   }
   if (!['test', 'run', 'simulate'].includes(mode)) return false;
   if (mode === 'simulate' && headless) return false;
@@ -1042,7 +1049,7 @@ function launchDraft() {
     trials: Number($('trials').value),
     // Options are sent only for the mode that shows them: a hidden checkbox
     // keeps its state across mode changes and must not leak into a launch.
-    headless: mode === 'simulate' && $('headless').checked,
+    headless: takesHeadless(mode) && $('headless').checked,
     mouse: mode === 'test' && $('mouse').checked,
     // For every mode and script alike; the server splits and checks them.
     extra_args: $('extra-args').value,
@@ -1111,7 +1118,7 @@ function updateLaunch() {
   else $('launch').textContent = `▶ ${label($('mode').value) || 'Start run'}`;
   const mode = $('mode').value;
   const backend = p ? rigBackend[`${p.id}:${$('rig').value}`] : undefined;
-  const headless = mode === 'simulate' && $('headless').checked;
+  const headless = takesHeadless(mode) && $('headless').checked;
   const psychopy = psychopyWarning(p, mode, backend, headless);
   const development = developmentRigWarning(
     mode, p ? rigDevelopment[`${p.id}:${$('rig').value}`] : null,
@@ -1266,7 +1273,7 @@ function modeChanged() {
   // A Training rehearsal is a simulation, and takes its trial count.
   $('trials-field').hidden = !['test', 'simulate'].includes(effectiveMode());
   // Each option is shown for exactly the modes whose CLI accepts the flag.
-  $('headless-field').hidden = mode !== 'simulate';
+  $('headless-field').hidden = !takesHeadless(mode);
   $('mouse-field').hidden = mode !== 'test';
   $('windowed-field').hidden = !['test', 'run', 'demo', 'measure', 'simulate', 'training']
     .includes(mode);

@@ -140,13 +140,28 @@ class TestCommand:
         assert args.sub == "m01" and args.initials == "MK"
         assert not args.headless
 
-    def test_a_rehearsal_is_a_headless_simulation_of_the_stage(self, workspace):
+    def test_a_rehearsal_is_a_simulation_of_the_stage_in_a_window(self, workspace):
+        # In a window unless asked otherwise: it used to be headless always,
+        # so there was no way to watch a stage without a monkey.
         command = workspace._command(
             launch(workspace, rehearse=True, trials=2), workspace.directory / "job"
         )
         args = parsed(command)
-        assert args.mode == "simulate" and args.headless
+        assert args.mode == "simulate" and not args.headless
         assert args.stage == "look" and args.trials_per_condition == 2
+
+    def test_a_rehearsal_is_headless_when_the_form_says_so(self, workspace):
+        command = workspace._command(
+            launch(workspace, rehearse=True, headless=True), workspace.directory / "job"
+        )
+        assert parsed(command).headless
+
+    def test_a_real_training_session_is_never_headless(self, workspace):
+        # The box belongs to the rehearsal; left ticked, it must not reach a
+        # session with a monkey in the chair.
+        command = workspace._command(launch(workspace, headless=True), workspace.directory / "job")
+        args = parsed(command)
+        assert args.mode == "training" and not args.headless
 
     @pytest.mark.parametrize(
         ("change", "words"),
@@ -279,6 +294,7 @@ class TestEstimate:
                 stage="look",
                 rehearse=True,
                 trials=2,
+                headless=True,
             )
         )
         training, rehearsal = asked

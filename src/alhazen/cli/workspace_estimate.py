@@ -189,10 +189,13 @@ class DurationEstimator:
                 ),
             )
             training = (ladder_name, stage_id)
-            # A rehearsal of the stage is a headless simulation.
+            # A rehearsal of the stage is a simulation, headless or not as
+            # the form says (Workspace._command builds the launch the same
+            # way). A real training session never is.
             if request.rehearse:
                 mode = Mode.SIMULATE
-                request = request.model_copy(update={"headless": True})
+            else:
+                request = request.model_copy(update={"headless": False})
         refusal = flag_refusal(
             mode,
             headless=request.headless,
