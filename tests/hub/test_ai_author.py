@@ -1011,3 +1011,47 @@ def test_the_old_valid_fixture_had_a_movie_mode_bug_the_api_check_finds():
     live = json.loads(live_exchanges()[3]["text"])["task_module"]
     found = api_problems(live, "src/fixation_flash_hold/task.py")
     assert any("setup is a MovieSetup, which has no 'refresh_rate_hz'" in p for p in found)
+
+
+GPT41 = FIXTURES / "live-gpt41"
+
+
+def test_gpt41_round_record():
+    exchanges = json.loads((GPT41 / "exchanges.json").read_text("utf-8"))
+    assert [(e["step"], e["attempt"]) for e in exchanges] == [
+        ("plan", 1),
+        ("source", 1),
+        ("source", 2),
+    ]
+    assert all(e["model"].startswith("gpt-4.1") for e in exchanges)
+    assert (GPT41 / "prompt.txt").read_text("utf-8") == (DRAW_DISC / "prompt.txt").read_text(
+        "utf-8"
+    )
+
+
+def test_gpt41_round_replays(ctx):
+    """The plan is accepted; both source answers are refused, by `api` only
+    in the end, on every line the live run refused (and nothing else)."""
+    exchanges = json.loads((GPT41 / "exchanges.json").read_text("utf-8"))
+    plan = author.Plan.from_dict(json.loads(exchanges[0]["text"]))
+    assert plan.to_dict() == json.loads((GPT41 / "plan.json").read_text("utf-8"))
+    provider = FakeProvider(source_queue=[exchanges[1]["text"], exchanges[2]["text"]])
+    with pytest.raises(author.SourceInvalid) as raised:
+        author.generate_source(provider, plan, ctx)
+    report = raised.value.report
+    assert [check.name for check in report.checks if not check.ok] == ["api"]
+    recorded = json.loads((GPT41 / "source-report.json").read_text("utf-8"))
+    recorded_api = next(c for c in recorded["checks"] if c["name"] == "api")["problems"]
+
+    def located(lines: list[str]) -> set[str]:
+        return {re.match(r"api: (\S+:\d+):", f"api: {line}").group(1) for line in lines}
+
+    now_api = next(c for c in report.checks if c.name == "api").problems
+    assert located(list(now_api)) == located(recorded_api)
+    assert any("HoldFixation keeps it private as _on_break" in line for line in now_api)
+    assert any("takes no argument 'duration'; closest: duration_s" in line for line in now_api)
+
+
+def test_listing_names_the_phase_protocol():
+    text = surface.api_text()
+    assert "class Phase" in text and "a new phase implements Phase" in text

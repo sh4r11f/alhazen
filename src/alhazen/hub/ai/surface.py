@@ -73,7 +73,10 @@ _LISTING: tuple[tuple[str, tuple[tuple[str, tuple[str, ...]], ...]], ...] = (
             ("alhazen.stimuli.fixation", ("make_fixation", "FixationPoint")),
         ),
     ),
-    ("Trial phases (alhazen.task.phases)", (("alhazen.task.phases", ()),)),
+    (
+        "Trial phases (alhazen.task.phases; a new phase implements Phase with its own state)",
+        (("alhazen", ("Phase",)), ("alhazen.task.phases", ())),
+    ),
     (
         "Declaring a task",
         (
@@ -759,6 +762,31 @@ class _Checker:
                 return
             known = self._user_members(user)
             public = sorted(n for n in known if not n.startswith("_"))
+            own = self._user_own_names(user)
+            hidden = self._alhazen_bases(user)
+            private = [b.__name__ for b in hidden if f"_{node.attr}" in members(b)]
+            if node.attr not in known and private:
+                self.problems.append(
+                    f"{self._where(node)}: {shown} is a {user.name}, which has no "
+                    f"{node.attr!r}: {private[0]} keeps it private as _{node.attr}. Do not "
+                    "subclass a provided phase to reach its state: compose the provided "
+                    "phases, or write your own Phase (on_enter, on_frame) with its own "
+                    "attributes"
+                )
+                return
+            if (
+                node.attr in known
+                and node.attr.startswith("_")
+                and not node.attr.startswith("__")
+                and node.attr not in own
+                and not self.is_test
+            ):
+                owner = next((b.__name__ for b in hidden if node.attr in members(b)), "alhazen")
+                self.problems.append(
+                    f"{self._where(node)}: {shown}.{node.attr} is private to {owner}; a "
+                    "subclass may not rely on it"
+                )
+                return
             if node.attr not in known:
                 self.problems.append(
                     f"{self._where(node)}: {shown} is a {user.name}, which has no "
@@ -773,6 +801,23 @@ class _Checker:
             and (base not in self.classes or self._open(self.classes[base], seen | {user.name}))
             for base in user.bases
         )
+
+    def _user_own_names(self, user: _UserClass) -> set[str]:
+        """Names the module's own classes define, along ``user``'s bases."""
+        names = set(user.names)
+        for base in user.bases:
+            if isinstance(base, str) and base in self.classes:
+                names |= self._user_own_names(self.classes[base])
+        return names
+
+    def _alhazen_bases(self, user: _UserClass) -> list[type]:
+        found: list[type] = []
+        for base in user.bases:
+            if isinstance(base, str) and base in self.classes:
+                found += self._alhazen_bases(self.classes[base])
+            elif isinstance(base, type):
+                found.append(base)
+        return found
 
     def _user_members(self, user: _UserClass) -> set[str]:
         known = set(user.names) | set(dir(object))

@@ -117,6 +117,14 @@ Drawing:
   `NullStimulus` anywhere else, and `alhazen.testing`, are test stand-ins and never belong in
   task.py.
 
+Trial logic:
+- Compose the provided phases. A stimulus shown during part of a hold is a sequence of
+  HoldFixation phases (before; during, with `concurrent=[key]` and an `onset_event`; after),
+  each with its own `duration_record_key`.
+- Only if no provided phase does what is needed, write a class implementing the Phase
+  protocol (`name`, `on_enter(ctx)`, `on_frame(ctx)`) that keeps its own state. Never subclass
+  a provided phase to reach its private attributes, and never call methods it does not list.
+
 Getting the science right:
 - While gaze must stay in a window, show stimuli with `HoldFixation(..., concurrent=[keys])`:
   it checks gaze on every frame. `Feedback` and `Blank` draw without checking gaze.

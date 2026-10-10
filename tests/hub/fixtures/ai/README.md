@@ -1,5 +1,10 @@
 # AI authoring fixtures
 
+Folders: `live/` + `valid/` (gpt-4.1-mini, the first round, below);
+`live-gpt41-draw-disc/` (the coordinator's gpt-4.1 package that failed at run time on
+`display.draw_disc`); `live-gpt41/` (one gpt-4.1 round after the `api` check). Each has a
+README.
+
 One real authoring round, recorded on 2026-10-09 so the tests never need the
 network. Prompt (`prompt.txt`): "A fixation-hold task with a brief peripheral flash on half the trials; measure whether fixation survives the flash", no start-from.
 
