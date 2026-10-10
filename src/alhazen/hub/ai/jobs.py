@@ -111,10 +111,16 @@ def to_plain(value: Any) -> Any:
 @dataclass
 class AuthorKit:
     module: Any
+    # The licenses a generated package may carry (schemas.LICENSES), if known.
+    licenses: tuple[str, ...] | None = None
 
     @classmethod
     def default(cls) -> AuthorKit:
-        return cls(importlib.import_module("alhazen.hub.ai.author"))
+        schemas = importlib.import_module("alhazen.hub.ai.schemas")
+        return cls(
+            importlib.import_module("alhazen.hub.ai.author"),
+            tuple(getattr(schemas, "LICENSES", ())) or None,
+        )
 
     def start_from(self, title: str, version: str, files: dict[str, str]) -> Any:
         return self.module.StartFrom(experiment_title=title, version=version, files=files)
@@ -151,9 +157,7 @@ class AuthorKit:
         files = dict(files)
         license_text = getattr(self.module, "license_text", None)
         if metadata.get("license") != old_license and callable(license_text):
-            known = getattr(self.module, "LICENSES", None) or getattr(
-                getattr(self.module, "schemas", None), "LICENSES", None
-            )
+            known = self.licenses
             if known is not None and metadata["license"] not in known:
                 raise packages.PackageError(
                     f"license must be one of {', '.join(known)} for a generated package"
@@ -218,8 +222,12 @@ class GuardedClient:
             max_tokens=min(max_tokens, cap),
             temperature=temperature,
         )
-        for name in ("input_tokens", "output_tokens"):
-            self.usage[name] += int(result.usage.get(name, 0) or 0)
+        usage = result.usage or {}
+        for name, alias in (
+            ("input_tokens", "prompt_tokens"),
+            ("output_tokens", "completion_tokens"),
+        ):
+            self.usage[name] += int(usage.get(name, usage.get(alias, 0)) or 0)
         self.models.append(result.model)
         return result
 
