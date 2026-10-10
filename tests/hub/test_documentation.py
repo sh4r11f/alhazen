@@ -85,8 +85,13 @@ def make_package(
 
 
 def fixture_files() -> dict[str, bytes]:
+    """The fixture's files (all text) with the line endings they were
+    committed with. Git on Windows checks text out with CRLF by default
+    (core.autocrlf), which changes each file's bytes and so the SHA-256 the
+    resolved fixture records for it: the same checkout passed on Linux and
+    failed on Windows."""
     return {
-        str(path.relative_to(FIXTURE).as_posix()): path.read_bytes()
+        str(path.relative_to(FIXTURE).as_posix()): path.read_bytes().replace(b"\r\n", b"\n")
         for path in sorted(FIXTURE.rglob("*"))
         if path.is_file()
     }

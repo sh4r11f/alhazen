@@ -147,6 +147,27 @@ def test_link_names_cover_rehearsal_and_training_roots():
     ]
 
 
+def _foreign_link(link: Path, target: Path) -> None:
+    """A directory link made by something other than share(). On Windows a
+    junction: what the hub's own links are there, and it needs no privilege,
+    while a symbolic link needs one most accounts do not hold."""
+    if sys.platform == "win32":
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+    else:
+        link.symlink_to(target, target_is_directory=True)
+
+
+def _remove_link(link: Path) -> None:
+    """Remove a directory link, never what it leads to. Windows removes a
+    junction as the folder it looks like; POSIX removes a symlink as a file."""
+    if sys.platform == "win32":
+        os.rmdir(link)
+    else:
+        link.unlink()
+
+
 def _release(home: Path, version: str) -> Path:
     folder = home / f"{version}-0123456789ab"
     folder.mkdir(parents=True)
@@ -196,10 +217,11 @@ def test_share_refuses_a_foreign_link_or_a_file(tmp_path):
     release = _release(home, "0.6.0")
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
-    (release / "data").symlink_to(elsewhere, target_is_directory=True)
+    _foreign_link(release / "data", elsewhere)
     with pytest.raises(SharedDataConflict, match="not to the experiment's shared"):
         share(release, home, ["data"])
-    (release / "data").unlink()
+    _remove_link(release / "data")
+    assert elsewhere.is_dir()  # the link went, not the folder it led to
     (release / "data").write_text("x", encoding="utf-8")
     with pytest.raises(SharedDataConflict, match="is a file"):
         share(release, home, ["data"])

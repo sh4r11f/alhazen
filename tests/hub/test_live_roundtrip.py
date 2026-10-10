@@ -20,15 +20,17 @@ worker; the collector queries the indexed trials, exports CSV and JSON and
 downloads every original file, each checked against the rig's own bytes; the
 author and an anonymous caller are refused the collector's data.
 
-Portable by default (SQLite, all paths under ``tmp_path``, loopback only, no
-browser, no hardware, synthetic users and data). Set
+Portable by default (SQLite, all paths in pytest's temporary folders, loopback
+only, no browser, no hardware, synthetic users and data). The rig's state has
+a temporary folder of its own with a short name (see ``stack``), so that the
+session's files fit Windows' 260-character limit. Set
 ``ALHAZEN_HUB_TEST_POSTGRES_URL`` to an EMPTY disposable PostgreSQL database
 (the convention of tests/hub/server_support.py) to run the hub on it: the test
 gets its own schema and passes the URL to the service through the
 environment, never through a file.
 
-Tokens, passwords and process logs are never printed; logs stay in
-``tmp_path`` for a failing run.
+Tokens, passwords and process logs are never printed; logs stay in the
+temporary folders for a failing run.
 """
 
 from __future__ import annotations
@@ -237,7 +239,7 @@ class Rig:
     (server.json), the way the browser page gets it; it is never printed."""
 
     def __init__(self, root: Path) -> None:
-        root.mkdir(parents=True)
+        root.mkdir(parents=True, exist_ok=True)
         self.state = root / "rig-state"
         self.log = root / "dashboard.log"
         self.process: subprocess.Popen[bytes] | None = None
@@ -368,7 +370,9 @@ def scaffold_package(root: Path, version: str) -> tuple[Path, dict[str, Any]]:
 
 
 @pytest.fixture
-def stack(tmp_path: Path) -> Iterator[tuple[CentralHub, Rig]]:
+def stack(
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+) -> Iterator[tuple[CentralHub, Rig]]:
     # Both children (and the interpreter the rig probes and runs) must import
     # this checkout, not whatever alhazen happens to be installed.
     probe = subprocess.run(
@@ -381,7 +385,13 @@ def stack(tmp_path: Path) -> Iterator[tuple[CentralHub, Rig]]:
     )
     assert Path(probe.stdout).resolve().is_relative_to(SOURCE), "children import another alhazen"
     hub = CentralHub(tmp_path / "hub")
-    rig = Rig(tmp_path / "rig")
+    # The rig's folder is the start of every path its session writes:
+    # <rig>/rig-state/hub/experiments/<name>/<version>-<sha12>/<data root>/...
+    # Under tmp_path, whose name repeats this test's, the longest of them was
+    # 278 characters, and a Windows without long paths refuses 260: the
+    # session was refused at its start (alhazen 2.14's check). A temporary
+    # folder with a short name leaves the room a real rig has.
+    rig = Rig(tmp_path_factory.mktemp("rig"))
     try:
         hub.start()
         rig.start()

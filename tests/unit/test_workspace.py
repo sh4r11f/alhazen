@@ -1423,18 +1423,39 @@ class TestInterpreters:
         base = [str(root / "src"), str(root)]
         env = workspace_module._child_env({"path": str(root), "python": str(other)})
         assert env["PYTHONPATH"].split(os.pathsep) == [*base, "FIRST", "LAST"]
-        # A virtual environment's python is a symlink to the base interpreter:
-        # still another interpreter, with its own site-packages.
-        venv_python = tmp_path / "venv2" / "bin" / "python"
-        venv_python.parent.mkdir(parents=True)
-        venv_python.symlink_to(Path(sys.executable).resolve())
-        env = workspace_module._child_env({"path": str(root), "python": str(venv_python)})
-        assert env["PYTHONPATH"].split(os.pathsep) == [*base, "FIRST", "LAST"]
         env = workspace_module._child_env({"path": str(root), "python": sys.executable})
         assert env["PYTHONPATH"].split(os.pathsep) == [*base, "FIRST", launcher, "LAST"]
         # No interpreter recorded (an old registry entry): treated as another one.
         env = workspace_module._child_env({"path": str(root)})
         assert launcher not in env["PYTHONPATH"].split(os.pathsep)
+
+    def test_a_virtual_environments_python_is_another_interpreter(self, tmp_path, monkeypatch):
+        """A virtual environment's python is a symlink to the base interpreter:
+        still another interpreter, with its own site-packages, so it loses
+        the launcher's entry like any other. Its own test: making the symlink
+        needs a privilege many Windows accounts lack, and as part of the test
+        above it took that test's other cases down with it."""
+        launcher = str(workspace_module._launcher_root())
+        monkeypatch.setenv("PYTHONPATH", os.pathsep.join(["FIRST", launcher, "LAST"]))
+        root = tmp_path / "exp"
+        venv_python = tmp_path / "venv2" / "bin" / "python"
+        venv_python.parent.mkdir(parents=True)
+        try:
+            venv_python.symlink_to(Path(sys.executable).resolve())
+        except OSError as exc:
+            # ERROR_PRIVILEGE_NOT_HELD (1314), as in
+            # test_traversal_and_symlink_media; CI runners have the privilege,
+            # so this runs there. Any other error is a real one.
+            if getattr(exc, "winerror", None) != 1314:
+                raise
+            pytest.skip("symlink creation needs a privilege this account lacks")
+        env = workspace_module._child_env({"path": str(root), "python": str(venv_python)})
+        assert env["PYTHONPATH"].split(os.pathsep) == [
+            str(root / "src"),
+            str(root),
+            "FIRST",
+            "LAST",
+        ]
 
     def test_another_interpreter_loses_exactly_the_launcher_entry(self, tmp_path, monkeypatch):
         """A dashboard started from a source checkout (PYTHONPATH=src) put
