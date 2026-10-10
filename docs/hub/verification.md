@@ -39,6 +39,37 @@ integrated test-only fix `c8e80e8` uses 1 MiB chunks in that unrelated fixture, 
 to 1.6–2.8 seconds. No assertion was removed or loosened. Tiny-chunk protocol tests remain.
 The old timed-out runs are not treated as passes; the later complete runs establish the result.
 
+## Design and AI authoring (added after the first verification)
+
+The hub, the operator dashboard and the marketplace were redesigned on this branch from
+compared alternatives (Manrope, the Penrose mark, the warm palette). Each merge re-ran the
+JavaScript suite, the asset-table tests and the static checks; the full Hub matrix was
+re-run after the AI authoring integration: **932 passed on SQLite and 932 on PostgreSQL**, no
+failures or skips, with the JavaScript suite at 472 and mypy, ruff and the import-layer
+contract clean.
+
+AI-assisted authoring (`docs/hub/ai.md`) was exercised live on the development preview
+with GPT-4.1 through an OpenAI-compatible gateway, as a non-privileged user:
+
+- Plan, then source: a fixation-hold task with a peripheral flash. The generated package
+  passed all static checks (answer, schema, files, syntax, safety, imports, api, structure,
+  defaults, package, documentation), was accepted as a private version, was invisible to
+  anonymous and other users and absent from the catalogue, installed on a rig with matching
+  provenance, and **ran to completion as a headless simulation** (12 trials, three
+  conditions, outcomes and latencies recorded under the rehearsal root).
+- Before the `api` check existed, an earlier generation passed the then-current checks and
+  failed on the rig (`DisplayBackend` has no `draw_disc`). That failure's run log was then
+  sent through `POST /ai/drafts/{id}/repair`: one redaction (a live-monitor URL), a
+  repaired package that passed every check, acceptance as version 0.1.1 beside the untouched
+  0.1.0, and a completed headless run of the repaired version.
+
+What this does and does not establish: the pipeline produces executable packages and
+catches the runtime-API class of error statically; it does not validate the scientific
+design of what the model proposes (the author reviews the plan and Methods), and model
+behaviour varies between runs and providers (an earlier GPT-4.1 round needed the repair
+round twice). Anthropic, Google and OpenRouter clients are tested only against recorded
+transports. Nothing generated is ever executed on the hub.
+
 ## Integrity acknowledgements
 
 The software-design checker is run against the original main commit. The following new
