@@ -2613,6 +2613,20 @@ class Workspace:
             ),
         }
 
+    def _ladder_record(self, project: dict[str, Any], training: dict[str, Any]) -> dict[str, Any]:
+        """A training stage's parameters are its ladder file's: that file and
+        its SHA-256, for run.json's ``params``."""
+        ladders = self.describe(project["id"])["ladders"]
+        ladder = next((x for x in ladders if x["name"] == training["ladder"]), None)
+        file = ladder.get("file") if ladder else None
+        path = path_inside(Path(project["path"]), file) if file else None
+        known = path is not None and path.is_file()
+        return {
+            "source": "training stage",
+            "file": file if known else None,
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest() if known else None,
+        }
+
     def start(self, request: Launch) -> dict[str, Any]:
         with self.lock:
             if self.active:
@@ -2777,7 +2791,11 @@ class Workspace:
                 "measurements": list(request.measurements) if request.measurements else None,
                 # The parameters it ran: their source and the SHA-256 of their
                 # bytes (params.yaml, or the task's default file).
-                "params": self._params_record(project, task, text, params_file),
+                "params": (
+                    self._ladder_record(project, training)
+                    if training is not None
+                    else self._params_record(project, task, text, params_file)
+                ),
                 # A hub-installed release's identity (hub base, experiment and
                 # version ids, source ZIP SHA-256), as launch.json holds it.
                 **pinned,

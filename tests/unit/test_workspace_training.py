@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -175,6 +176,15 @@ class TestCommand:
         run = workspace.start(request)
         workspace.worker.join(timeout=10)
         assert run["initials"] is None and run["training"]["rehearse"] is True
+        # Its parameters are the ladder file's (import round decision 5).
+        assert run["params"]["source"] == "training stage"
+        ladder = workspace.describe(run["project"])["ladders"][0]["file"]
+        shipped = Path(workspace.projects[0]["path"], ladder).read_bytes()
+        assert run["params"] == {
+            "source": "training stage",
+            "file": ladder,
+            "sha256": hashlib.sha256(shipped).hexdigest(),
+        }
         with pytest.raises(ValueError, match="initials are required for training"):
             workspace._command(launch(workspace, initials=""), workspace.directory / "job2")
 
