@@ -86,6 +86,9 @@ max_staging_sessions = 3
 
 [auth]                                    # all optional; defaults in settings.AuthPolicy
 browser_idle_seconds = 3600
+
+[ai]                                      # optional; AI authoring is off without a key_secret
+key_secret_env = "ALHAZEN_HUB_AI_KEY"     # 32 random bytes, base64; see docs/hub/ai.md
 ```
 
 `HubSettings` hides the database URL from `repr`. Prefer `url_env` so the file
@@ -103,7 +106,10 @@ update, seals and index jobs are claimed with leases. What is per process:
   default 4), exports (2) and password hashes (2), each refusing with `429`
   and `Retry-After` rather than queueing;
 - one maintenance thread: reconciliation, expiry of stale uploads, throttle
-  pruning and the trial index queue (so at most one index job at a time).
+  pruning and the trial index queue (so at most one index job at a time);
+- when `[ai]` is enabled, `ai.workers` threads (default 2) that run AI jobs
+  (provider calls of up to `ai.read_timeout_seconds` each); jobs are claimed
+  with leases and fencing tokens in the database (docs/hub/ai.md).
 
 Running several processes would multiply those bounds; it is not the
 supported pilot configuration.
@@ -115,7 +121,10 @@ live SQLite database on shared or network storage.
 
 ## Schema and migrations
 
-`schema.METADATA` always describes the newest schema (`SCHEMA_VERSION`, now 2).
+`schema.METADATA` always describes the newest schema (`SCHEMA_VERSION`, now 3).
+Schema 3 (AI authoring) adds the tables `hub_ai_keys`, `hub_ai_drafts`,
+`hub_ai_jobs` and the nullable column `hub_versions.ai_draft_id`
+(docs/hub/ai.md); migrate a schema-2 database the same way as below.
 Schema 2 (data review fixes) adds nullable `hub_sessions` columns:
 `seal_token`, `problem_code`, `problem_at`, `previous_attempt_id`,
 `retired_client_id`, `index_token`. To bring a schema-1 database forward:
@@ -295,7 +304,10 @@ exceptions. Codes clients branch on: `not_authenticated` 401, `csrf_failed` /
 `version_limit` / `experiment_limit` 413, `unsupported_media_type` 415,
 `invalid_package` / `invalid_documentation` 422, `rate_limited` / `server_busy` /
 `upload_limit` 429, `database_unavailable` / `documentation_unavailable` 503,
-`insufficient_storage` 507.
+`insufficient_storage` 507. AI authoring adds `ai_disabled` 403, `key_required` /
+`already_accepted` / `not_generated` / `plan_required` / `draft_*` / `job_finished`
+409, `key_rejected` / `invalid_key` / `unknown_provider` / `prompt_too_long` 400,
+`ai_jobs_busy` / `ai_daily_limit` 429, and job-level codes listed in docs/hub/ai.md.
 
 ## Backup and restore (operator guidance; no drill has been run)
 

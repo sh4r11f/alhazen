@@ -40,7 +40,7 @@ from sqlalchemy import (
     select,
 )
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 ID = 32  # opaque random identifiers: 32 lowercase hex characters
 
 METADATA = MetaData()
@@ -144,6 +144,9 @@ versions = Table(
     Column("manifest", Text, nullable=False),
     Column("storage_key", String(300), nullable=False),
     Column("created_at", BigInteger, nullable=False),
+    # The AI draft (hub_ai_drafts.id) whose accepted source created this
+    # version; NULL for an ordinary upload (schema 3). Shown to the owner only.
+    Column("ai_draft_id", String(ID), nullable=True),
     UniqueConstraint("experiment_id", "version", name="uq_hub_versions_version"),
 )
 
@@ -269,6 +272,80 @@ trial_rows = Table(
 )
 
 
+# -- AI-assisted authoring (schema 3; docs/hub/ai.md) --------------------------
+
+# One encrypted provider key per (user, provider). ``ciphertext`` is a Fernet
+# token under the operator's wrapping key ([ai] key_secret) whose plaintext
+# also names its owner and provider, so a row copied to another user or
+# provider fails to decrypt. Never returned by any route.
+ai_keys = Table(
+    "hub_ai_keys",
+    METADATA,
+    Column("user_id", String(ID), ForeignKey("hub_users.id"), nullable=False),
+    Column("provider", String(16), nullable=False),
+    Column("ciphertext", Text, nullable=False),
+    Column("key_hint", String(8), nullable=False),  # last 4 characters
+    Column("created_at", BigInteger, nullable=False),
+    Column("rotated_at", BigInteger, nullable=False),
+    PrimaryKeyConstraint("user_id", "provider"),
+)
+
+# Drafts: one private authoring workspace per request. status:
+# describing (no valid plan) | planning | planned | generating | generated |
+# accepted | discarded. The experiment row exists only once source is
+# accepted (experiment_id, version_id set then).
+ai_drafts = Table(
+    "hub_ai_drafts",
+    METADATA,
+    Column("id", String(ID), primary_key=True),
+    Column("user_id", String(ID), ForeignKey("hub_users.id"), nullable=False),
+    Column("experiment_id", String(ID), nullable=True),
+    Column("start_experiment_id", String(ID), nullable=True),
+    Column("start_version_id", String(ID), nullable=True),
+    Column("provider", String(16), nullable=False),
+    Column("model", String(100), nullable=False),
+    Column("prompt", Text, nullable=False),
+    Column("plan_json", Text, nullable=True),
+    Column("plan_job_id", String(ID), nullable=True),
+    Column("source_job_id", String(ID), nullable=True),
+    Column("version_id", String(ID), nullable=True),
+    Column("status", String(16), nullable=False),
+    Column("created_at", BigInteger, nullable=False),
+    Column("updated_at", BigInteger, nullable=False),
+    Index("ix_hub_ai_drafts_user", "user_id", "created_at"),
+)
+
+# Provider calls run as jobs claimed by the AI worker with a lease and a
+# fencing token, like trial indexing: only the holder of ``token`` may record
+# a result, so a cancelled or taken-over job can never write.
+ai_jobs = Table(
+    "hub_ai_jobs",
+    METADATA,
+    Column("id", String(ID), primary_key=True),
+    Column("user_id", String(ID), ForeignKey("hub_users.id"), nullable=False),
+    Column("draft_id", String(ID), ForeignKey("hub_ai_drafts.id"), nullable=False),
+    Column("kind", String(8), nullable=False),  # "plan" | "source"
+    # queued | running | done | failed | cancelled
+    Column("status", String(12), nullable=False),
+    Column("provider", String(16), nullable=False),
+    Column("model", String(100), nullable=False),
+    Column("request_json", Text, nullable=False),
+    Column("result_json", Text, nullable=True),
+    Column("error_code", String(32), nullable=True),
+    Column("error_message", String(500), nullable=True),
+    Column("usage_json", Text, nullable=True),
+    Column("disclosed_json", Text, nullable=True),
+    Column("attempts", Integer, nullable=False),
+    Column("created_at", BigInteger, nullable=False),
+    Column("started_at", BigInteger, nullable=True),
+    Column("finished_at", BigInteger, nullable=True),
+    Column("lease_until", BigInteger, nullable=True),
+    Column("token", String(64), nullable=True),
+    Index("ix_hub_ai_jobs_status", "status", "created_at"),
+    Index("ix_hub_ai_jobs_user", "user_id", "created_at"),
+)
+
+
 def _v1_to_v2(conn: Connection) -> None:
     """Schema 2: seal tokens, problem marks, retried attempts and index tokens.
 
@@ -286,8 +363,20 @@ def _v1_to_v2(conn: Connection) -> None:
         conn.exec_driver_sql(f"ALTER TABLE hub_sessions ADD COLUMN {name} {kind}")
 
 
+def _v2_to_v3(conn: Connection) -> None:
+    """Schema 3: AI-assisted authoring.
+
+    Three new tables (created from their definitions, which is portable) and
+    one nullable column marking versions created from an accepted AI draft.
+    Nothing existing changes meaning.
+    """
+    for table in (ai_keys, ai_drafts, ai_jobs):
+        table.create(conn)
+    conn.exec_driver_sql("ALTER TABLE hub_versions ADD COLUMN ai_draft_id VARCHAR(32)")
+
+
 # Steps that upgrade an existing database from version N to N+1, keyed by N.
-MIGRATIONS: dict[int, Callable[[Connection], None]] = {1: _v1_to_v2}
+MIGRATIONS: dict[int, Callable[[Connection], None]] = {1: _v1_to_v2, 2: _v2_to_v3}
 
 
 class SchemaError(RuntimeError):

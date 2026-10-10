@@ -268,11 +268,15 @@ class TestSchemaTwo:
                 "index_token",
             ):
                 conn.exec_driver_sql(f"ALTER TABLE hub_sessions DROP COLUMN {column}")
+            # ... and undo schema 3 (AI authoring) too.
+            for table in ("hub_ai_jobs", "hub_ai_drafts", "hub_ai_keys"):
+                conn.exec_driver_sql(f"DROP TABLE {table}")
+            conn.exec_driver_sql("ALTER TABLE hub_versions DROP COLUMN ai_draft_id")
             conn.execute(text("UPDATE hub_schema SET value = '1' WHERE key = 'schema_version'"))
         engine.dispose()
         with pytest.raises(SchemaError, match="migrate"):
             create_app(settings)
-        assert admin.migrate_database(settings) == SCHEMA_VERSION == 2
+        assert admin.migrate_database(settings) == SCHEMA_VERSION == 3
         service = Hub(settings, clock)
         with service.app.state.hub.db.transaction() as conn:
             row = conn.execute(data_sessions.select()).one()

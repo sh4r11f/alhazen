@@ -15,6 +15,7 @@ environment variable so the file itself can be shared with no secret in it.
 
 from __future__ import annotations
 
+import base64
 import dataclasses
 import os
 import re
@@ -133,6 +134,104 @@ class AuthPolicy:
     session_retention_seconds: int = 7 * 24 * 3600
 
 
+# Providers the hub can talk to on a user's behalf (docs/hub/ai.md). The
+# client code and default endpoints live in alhazen.hub.ai.providers; this
+# list is here so a configuration can be checked without the [hub] extra.
+AI_PROVIDERS = ("openai", "anthropic", "google", "openrouter")
+
+
+@dataclass(frozen=True)
+class AIProviderSettings:
+    """Operator overrides for one provider; empty means the built-in default."""
+
+    base_url: str = ""
+    models: tuple[str, ...] = ()
+    default_model: str = ""
+
+
+@dataclass(frozen=True)
+class AISettings:
+    """AI-assisted authoring ([ai]). Disabled unless ``key_secret`` is set.
+
+    ``key_secret`` is the operator's wrapping key for users' stored provider
+    keys: 32 random bytes, base64 (standard or URL-safe alphabet). It is a
+    secret like the database password: never shown in ``repr`` or errors,
+    and it may come from an environment variable (``key_secret_env``).
+    Losing it makes every stored key unreadable (users enter them again);
+    it cannot be rotated in place in this version.
+    """
+
+    key_secret: str = field(default="", repr=False)
+    providers: Mapping[str, AIProviderSettings] = field(default_factory=dict)
+    # Jobs (queued or running) one user may have at once, and jobs one user
+    # may start in any 24 hours (each job is one or two paid provider calls).
+    max_active_jobs_per_user: int = 3
+    max_jobs_per_day: int = 20
+    # Provider-call worker threads in this process.
+    workers: int = 2
+    # A running job's claim; renewed before every provider call. A job whose
+    # claim lapses (process died) is retried once, then failed.
+    job_lease_seconds: int = 900
+    max_attempts: int = 2
+    max_prompt_chars: int = 8000
+    # Bytes of a start-from version's source files disclosed to a provider.
+    max_context_bytes: int = 512 * 1024
+    max_context_file_bytes: int = 128 * 1024
+    # Provider HTTP budgets.
+    connect_timeout_seconds: int = 10
+    read_timeout_seconds: int = 120
+    max_response_bytes: int = 8 * MIB
+    max_output_tokens: int = 16_000
+
+    def __post_init__(self) -> None:
+        if self.key_secret:
+            wrapping_key(self.key_secret)
+        unknown = sorted(set(self.providers) - set(AI_PROVIDERS))
+        if unknown:
+            raise SettingsError(f"unknown AI provider(s) in [ai.providers]: {', '.join(unknown)}")
+        for name, provider in self.providers.items():
+            if provider.base_url and not re.match(
+                r"^https?://[^\s/]+(/[^\s]*)?$", provider.base_url
+            ):
+                raise SettingsError(f"ai.providers.{name}.base_url must be an http(s) URL")
+            if provider.base_url.startswith("http://"):
+                host = urlsplit(provider.base_url).hostname
+                if host not in ("127.0.0.1", "localhost", "::1"):
+                    raise SettingsError(
+                        f"ai.providers.{name}.base_url uses plain http on a non-loopback host"
+                    )
+            if (
+                provider.default_model
+                and provider.models
+                and (provider.default_model not in provider.models)
+            ):
+                raise SettingsError(f"ai.providers.{name}.default_model is not in its models")
+        for f in dataclasses.fields(self):
+            value = getattr(self, f.name)
+            if f.type == "int" and (
+                not isinstance(value, int) or isinstance(value, bool) or value < 1
+            ):
+                raise SettingsError(f"ai.{f.name} must be a positive integer")
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.key_secret)
+
+
+def wrapping_key(secret: str) -> bytes:
+    """The 32-byte wrapping key from its base64 text, or SettingsError."""
+    text = secret.strip().rstrip("=")
+    if re.fullmatch(r"[A-Za-z0-9_-]{43}", text):
+        raw = base64.urlsafe_b64decode(text + "=")
+    elif re.fullmatch(r"[A-Za-z0-9+/]{43}", text):
+        raw = base64.standard_b64decode(text + "=")
+    else:
+        raw = b""
+    if len(raw) != 32:
+        raise SettingsError("ai.key_secret must be 32 random bytes in base64 (44 characters)")
+    return raw
+
+
 @dataclass(frozen=True)
 class HubSettings:
     """Everything the service needs to start, validated once."""
@@ -147,6 +246,7 @@ class HubSettings:
     min_free_bytes: int = 1 * GIB
     limits: HubLimits = field(default_factory=HubLimits)
     auth: AuthPolicy = field(default_factory=AuthPolicy)
+    ai: AISettings = field(default_factory=AISettings)
 
     def __post_init__(self) -> None:
         _check_database_url(self.database_url)
@@ -231,7 +331,7 @@ def load_settings(config_path: Path, environ: Mapping[str, str] | None = None) -
         raise SettingsError(f"hub configuration not found: {path}") from None
     except tomllib.TOMLDecodeError as exc:
         raise SettingsError(f"hub configuration is not valid TOML: {exc}") from None
-    _only(raw, {"server", "database", "storage", "limits", "auth"}, "top level")
+    _only(raw, {"server", "database", "storage", "limits", "auth", "ai"}, "top level")
     server = _table(raw, "server")
     database = _table(raw, "database")
     storage = _table(raw, "storage")
@@ -272,12 +372,51 @@ def load_settings(config_path: Path, environ: Mapping[str, str] | None = None) -
         kwargs["min_free_bytes"] = storage["min_free_bytes"]
     kwargs["limits"] = _dataclass_from(HubLimits, _table(raw, "limits"), "[limits]")
     kwargs["auth"] = _dataclass_from(AuthPolicy, _table(raw, "auth"), "[auth]")
+    kwargs["ai"] = _ai_settings(_table(raw, "ai"), environ)
     try:
         return HubSettings(**kwargs)
     except SettingsError:
         raise
     except (TypeError, ValueError) as exc:
         raise SettingsError(f"invalid hub configuration: {exc}") from None
+
+
+def _ai_settings(values: dict[str, Any], environ: Mapping[str, str]) -> AISettings:
+    values = dict(values)
+    if "key_secret" in values and "key_secret_env" in values:
+        raise SettingsError("[ai] takes key_secret or key_secret_env, not both")
+    if "key_secret_env" in values:
+        name = values.pop("key_secret_env")
+        if not isinstance(name, str) or not name.strip():
+            raise SettingsError("ai.key_secret_env must name an environment variable")
+        secret = environ.get(name.strip(), "")
+        if not secret:
+            raise SettingsError(f"environment variable {name} (ai.key_secret_env) is not set")
+        values["key_secret"] = secret
+    if "key_secret" in values and not isinstance(values["key_secret"], str):
+        raise SettingsError("ai.key_secret must be a string")
+    raw_providers = values.pop("providers", {})
+    if not isinstance(raw_providers, dict):
+        raise SettingsError("[ai.providers] must be a table")
+    providers: dict[str, AIProviderSettings] = {}
+    for name, table in raw_providers.items():
+        if not isinstance(table, dict):
+            raise SettingsError(f"[ai.providers.{name}] must be a table")
+        _only(table, {"base_url", "models", "default_model"}, f"[ai.providers.{name}]")
+        models = table.get("models", [])
+        if not isinstance(models, list) or not all(isinstance(m, str) and m for m in models):
+            raise SettingsError(f"ai.providers.{name}.models must be a list of model names")
+        base_url = table.get("base_url", "")
+        default_model = table.get("default_model", "")
+        if not isinstance(base_url, str) or not isinstance(default_model, str):
+            raise SettingsError(f"ai.providers.{name}: base_url and default_model are strings")
+        providers[name] = AIProviderSettings(
+            base_url=base_url.rstrip("/"), models=tuple(models), default_model=default_model
+        )
+    values["providers"] = providers
+    names = {f.name for f in dataclasses.fields(AISettings)}
+    _only(values, names, "[ai]")
+    return AISettings(**values)
 
 
 def _dataclass_from(kind: Any, values: dict[str, Any], where: str) -> Any:

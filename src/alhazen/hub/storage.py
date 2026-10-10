@@ -11,6 +11,8 @@ itself is never stored or shown):
     releases/<experiment_id>/<version_id>.zip
     staging/<session_id>/files/<path>       session upload in progress
     sessions/<experiment_id>/<session_id>/  committed session: files/ + manifest.json
+    ai-drafts/<draft_id>/<job_id>.zip       generated source awaiting acceptance (private,
+                                            removed when its draft is discarded)
 
 Guarantees: a release or session directory is created once and never
 overwritten or modified; staging and final directories are on the same
@@ -78,17 +80,18 @@ def fsync_dir(path: Path) -> None:
         os.close(fd)
 
 
+AREAS = ("tmp", "releases", "staging", "sessions", "ai-drafts")
+
+
 class ArtifactStore:
     def __init__(self, root: Path) -> None:
         self.root = root
-        for name in ("tmp", "releases", "staging", "sessions"):
+        for name in AREAS:
             (root / name).mkdir(parents=True, exist_ok=True)
-        devices = {
-            (root / name).stat().st_dev for name in ("tmp", "releases", "staging", "sessions")
-        }
+        devices = {(root / name).stat().st_dev for name in AREAS}
         if len(devices) != 1:
             raise StorageError(
-                "the artifact root's tmp, releases, staging and sessions folders must be on one "
+                "the artifact root's folders (" + ", ".join(AREAS) + ") must be on one "
                 "filesystem, so that installs are atomic renames"
             )
 
@@ -108,6 +111,22 @@ class ArtifactStore:
     @staticmethod
     def session_key(experiment_id: str, session_id: str) -> str:
         return f"sessions/{experiment_id}/{session_id}"
+
+    @staticmethod
+    def ai_bundle_key(draft_id: str, job_id: str) -> str:
+        return f"ai-drafts/{draft_id}/{job_id}.zip"
+
+    def install_ai_bundle(self, temp: Path, key: str) -> None:
+        """Move a generated, validated package into its draft's area, durably.
+        Same rules as a release: written once, never overwritten."""
+        self.install_release(temp, key)
+
+    def remove_ai_draft(self, draft_id: str) -> None:
+        """Remove every generated package of one draft (discard)."""
+        folder = self.path(f"ai-drafts/{draft_id}")
+        if folder.is_dir():
+            shutil.rmtree(folder)
+            fsync_dir(folder.parent)
 
     def writable(self) -> bool:
         probe = self.root / "tmp" / f".probe-{secrets.token_hex(4)}"

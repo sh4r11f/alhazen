@@ -38,6 +38,22 @@ ZIP root `alhazen-package.json` contains schema_version=1, name (slug), version 
 - GET `/data/sessions/{id}/export?format=csv|json` -> safe download of trial table.
 - GET `/data/sessions/{id}/files?path=...` -> forced attachment (sandbox headers for active formats), owner checked.
 - GET `/healthz`: readiness without private paths, GET `/readyz` DB readiness.
+- DELETE `/library/{experiment_id}` -> 204: unpin from the caller's library (idempotent; the experiment is untouched).
+
+### AI authoring (schema 3; docs/hub/ai.md)
+Cookie or bearer auth; cookie writes need Origin + `X-CSRF-Token`. Another user's draft or job answers 404.
+- GET `/ai/status` -> `{enabled, providers:[{id,name,models,default_model}], keys:[{provider,hint,set:true,created_at,rotated_at}], limits:{max_prompt_chars,max_active_jobs,max_jobs_per_day}}`. Anonymous callers get `keys: []`. `enabled:false` when the operator set no `[ai] key_secret`.
+- PUT `/ai/keys/{provider}` `{key, verify?:bool}` -> `{provider,hint,set,created_at,rotated_at, verified?, verify_error?}`; provider is `openai|anthropic|google|openrouter`. Shape check only unless `verify:true` (one cheap list-models call; a refused key is not stored: 400 `key_rejected`). DELETE -> 204 (404 when none).
+- POST `/ai/drafts` `{prompt (<= max_prompt_chars), provider, model?, start_from: {experiment_id, version_id} | null}` -> 202 `{draft, job}` (draft `planning`, plan job `queued`). 409 `key_required`; 404 when start_from is not readable by the caller.
+- GET `/ai/drafts?limit=&offset=` -> `{items:[draft], next_offset}` (discarded drafts omitted). GET `/ai/drafts/{id}` -> `{draft, plan|null, jobs:[job]}`. DELETE -> 204 (cancels jobs, removes generated packages; an accepted version is kept).
+- POST `/ai/drafts/{id}/plan` `{prompt?}` -> 202 `{job}`: plan again (409 `draft_busy`, `draft_accepted`, `draft_discarded`).
+- POST `/ai/drafts/{id}/generate` `{plan_edits?:{title?,notes?}}` -> 202 `{job}` (409 `plan_required` without a plan).
+- POST `/ai/drafts/{id}/accept` `{title?, summary?, license?}` (default title/summary from the plan) -> `{experiment, version}`; version carries `ai_assisted:true, ai_draft_id`. Runs the upload pipeline (package, documentation, quota, version rules). 409 `already_accepted` (with experiment_id, version_id), `not_generated`, `generation_invalid`.
+- GET `/ai/jobs/{id}` -> `{job}`; POST `/ai/jobs/{id}/cancel` -> `{job}` (idempotent for cancelled; 409 `job_finished`).
+- Draft: `{id,status,prompt,provider,model,start_from,plan_job_id,source_job_id,experiment_id,version_id,created_at,updated_at}`; status `describing|planning|planned|generating|generated|accepted|discarded`.
+- Job: `{id,draft_id,kind:"plan"|"source",status:"queued"|"running"|"done"|"failed"|"cancelled",provider,model,error:{code,status,message}|null,result,usage:{input_tokens,output_tokens}|null,disclosed,attempts,created_at,started_at,finished_at}`. Plan result `{plan}`; source result `{valid:true, files:[{path,size,sha256}], manifest (without files), report, bundle:{sha256,size}}`; `generation_invalid` result `{report, package_error?}`.
+- Admission: 429 `ai_jobs_busy` (active jobs per user, default 3) and `ai_daily_limit` (default 20 per rolling 24 h), with Retry-After. 403 `ai_disabled`.
+- Owner experiment detail versions (and the accept response) also carry `ai_assisted`, `ai_draft_id`, and `manifest.ai_assisted: true` for AI-created versions; the stored package manifest is unchanged (provenance is in the package's `docs/ai-provenance.json`).
 
 User public shape `{id,username,display_name}`. Experiment core fields `{id,title,summary,description,owner:{id,username,display_name},license,citations,tags,published_version_id,created_at}`. Version core fields `{id,experiment_id,version,sha256,size,manifest,created_at}`. Catalogue/library items should include `{experiment,version}` rather than incompatible flattened records. Metadata POST/PATCH response wraps `{experiment}`; detail `{experiment,versions}`; lists wrap `items`. Session row has `{id,experiment_id,version_id,client_session_id,status,metadata,created_at,completed_at,manifest_sha256}`.
 
