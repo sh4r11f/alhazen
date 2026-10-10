@@ -2,8 +2,7 @@
 
 Status: feature branch, not released. Owner modules: `alhazen.hub.documentation`
 (validation, resolution, the guide), `src/alhazen/hub/assets/hub_docs.js` and
-`hub_docs.css` (the reading views). Contract summary for the other hub workers:
-`/workspace/alhazen-hub-work/documentation-contract.md` during development; this file is canonical.
+`hub_docs.css` (the reading views). This file is the canonical contract.
 
 An experiment version can carry a methods section, and for each task a parameter
 reference, a trial timeline and a stimulus schematic. They are written by the

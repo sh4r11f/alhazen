@@ -5,8 +5,8 @@ provider** for a plan, then for source; the user reviews and accepts, and the
 accepted source becomes a **private version** of a new experiment through the
 same pipeline as an upload. This page is the operator and integrator
 reference; the shared contract between the server, the authoring kit and the
-interface is `/workspace/alhazen-hub-work/ai-authoring/CONTRACT.md` during
-development and is folded into this page and api-contract.md.
+interface was a development contract outside the repository and is folded into
+this page and api-contract.md.
 
 ## What the hub does and never does
 
@@ -157,8 +157,8 @@ provider's response body.
 
 ## Seam with the authoring kit
 
-`alhazen.hub.ai.jobs.AuthorKit` adapts `alhazen.hub.ai.author` (kit notes:
-`/workspace/alhazen-hub-work/ai-authoring/AUTHOR-KIT.md` during development).
+`alhazen.hub.ai.jobs.AuthorKit` adapts `alhazen.hub.ai.author` (its development notes were
+kept outside the repository).
 The worker uses the kit's own `GeneratedBundle.archive` when present (re-read
 with `inspect_bundle` and the documentation check before it is stored) and
 folds `ctx.disclosure(kind)` (context item sizes, start-from files actually

@@ -1,6 +1,6 @@
 # Hub auth and admission review: fixes
 
-Source review: `/workspace/alhazen-hub-work/auth-review.md`, done on 9f0bd02. These fixes are on
+Source review (kept outside the repository), done on 9f0bd02. These fixes are on
 the branch `fix/experiment-hub-auth-review`, starting from e0fdc0f. Each fix has a regression
 test in `tests/hub/test_auth_review_regressions.py`. Every test there failed on e0fdc0f, apart
 from the ones that only pin existing behaviour (noted in the status file). The tests run on SQLite

@@ -79,7 +79,7 @@ Documentation worker owns `documentation.py`, `hub/assets/hub_docs.js`, `hub/ass
 - `DocumentationError(ValueError)`
 - `read_documentation(bundle_path: Path, manifest: dict) -> dict | None`: parse, validate and resolve only declared in-package documentation, never imports code, evaluates expressions or follows external/absolute links for images. None means absent.
 - `global_guide() -> dict`: factual structured guide to modes/capabilities, sourced from alhazen APIs.
-- descriptor schema and renderer contract documented early in `/workspace/alhazen-hub-work/documentation-contract.md`.
+- descriptor schema and renderer contract: docs/hub/documentation.md.
 
 Server adds GET `/experiments/{id}/versions/{version_id}/documentation` -> `{documentation: object|null}` with the EXACT same ACL as version download. Metadata must not leak unpublished documentation to public readers. The server validates a present descriptor on version upload, before accepting it, using read_documentation. GET `/guide` -> structured factual guide, public. Rig adapter proxies documentation reads; serves `/guide` locally for offline use from the same module. UI worker imports documentation renderer/helpers from hub_docs.js; full filenames will be served through `/hub/assets`. It provides dedicated experiment Methods and Tasks & parameters views and a top-level Guide, keeping Run/monitor separate. Do not fabricate data or parameter defaults absent from source.
 
