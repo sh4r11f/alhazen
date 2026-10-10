@@ -24,6 +24,7 @@ import re
 import tempfile
 import textwrap
 import typing
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -735,10 +736,17 @@ def test_live_source_failure_mode_reproduces(the_plan, ctx):
     assert any("redeclares subject_kind" in p for p in now)
 
 
-def test_valid_fixture_is_what_the_kit_builds(the_plan, ctx):
+def test_valid_fixture_is_what_the_kit_builds(the_plan):
     live_model = live_exchanges()[3]["model"]
-    bundle = author.generate_source(FakeProvider(model=live_model), the_plan, ctx)
     recorded = FIXTURES / "valid" / "package.zip"
+    # The kit writes the alhazen version it ran with into docs/ai-provenance.json,
+    # so the rebuild uses the version the fixture was recorded with (2.13.0);
+    # against the running version the comparison broke at every release
+    # (found when main moved to 2.15.0). Same inputs, same files.
+    with zipfile.ZipFile(recorded) as archive:
+        provenance = json.loads(archive.read("docs/ai-provenance.json"))
+    ctx = author.build_context(provenance["alhazen_version"])
+    bundle = author.generate_source(FakeProvider(model=live_model), the_plan, ctx)
     with tempfile.TemporaryDirectory() as folder:
         path = Path(folder) / "p.zip"
         path.write_bytes(recorded.read_bytes())
