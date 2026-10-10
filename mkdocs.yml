@@ -62,4 +62,5 @@ nav:
       - Calibration targets: design/calibration-targets.md
       - Experiment management: design/experiment-management.md
       - Rig measurements: design/rig-measurements.md
+      - Simulation as a choice: design/simulate-as-a-choice.md
   - API reference: reference.md

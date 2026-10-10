@@ -200,15 +200,71 @@ The reduced params are re-validated through the task's own model, so a
 reduction that breaks the experiment's rules fails here, with the model's own
 complaint — not halfway into the session it was meant to rehearse.
 
+## Simulating a device: `--simulate` and `--gaze`
+
+Any mode that runs trials (`run`, `test`, `training`) can stand in for the
+devices you name, whether or not they are connected:
+
+```bash
+# watch a training stage work itself, in a window
+python run.py --mode training --stage fixate --simulate all --gaze autopilot
+
+# the same with no window, for CI or ssh
+python run.py --mode training --stage fixate --simulate all --gaze autopilot --headless
+
+# play the task yourself: the mouse cursor is your eye, the rest is the rig's
+python run.py --mode test --simulate tracker --gaze mouse
+
+# the full session on the real rig, but with the pump logged and not fired
+python run.py --mode run --simulate reward
+```
+
+`--simulate` takes names separated by commas, or `all`:
+
+| Name | What stands in | Who supplies it |
+| --- | --- | --- |
+| `tracker` | the task's autopilot, or the mouse cursor (`--gaze`) | the task (`Task.simulation`); alhazen (mouse) |
+| `reward` | deliveries are logged, no valve opens | alhazen |
+| `sync` | pulses are logged, no line is driven | alhazen |
+| `recording` | the run is marked as having no recording attached | alhazen |
+| `spikes` | the task's simulated neurons (`Simulation.spikes`); none if it has none | the task |
+
+`--gaze autopilot` or `--gaze mouse` says who supplies gaze when the tracker
+is simulated. It is required then and has no default: the task playing
+itself and you playing it are different things to want. With the autopilot
+nobody is in the chair, so nobody is asked for a subject or waited for at a
+break, and `--headless` is allowed.
+
+Four rules:
+
+1. **Nothing is simulated unless it is named.** A device that fails to
+   connect stops the launch, in every mode.
+2. **Any stand-in makes the session a rehearsal.** Its data goes to the
+   [rehearsal root](#the-rehearsal-root), run mode's refusal of a development
+   rig does not apply, and `session.json` records what was simulated
+   ([data on disk](data.md)).
+3. **The mode keeps its meaning.** `run` and `training` stay full-length;
+   `test` stays the reduced session.
+4. **A device the rig does not have is left alone.** Naming it is not an
+   error; there is nothing to switch off.
+
+`simulate` mode and test mode's `--mouse` are the older ways to say two of
+these: `--mode test --simulate all --gaze autopilot`, and
+`--mode test --simulate tracker --gaze mouse`. Both still work. Where this is
+going — rig measurements with simulated versions, one Simulate panel in the
+workspace, and the old spellings retired — is in
+[the design note](design/simulate-as-a-choice.md).
+
 ## The rehearsal root
 
-`test` and `simulate` write real files in real formats. That is the point:
+`test` and `simulate` write real files in real formats, and so does any
+session with a stand-in (`--simulate`). That is the point:
 you want to run the analysis over them. It is also exactly why they must not
 land where the analysis looks for subjects.
 
 ```
 data/            <- run
-data-rehearsal/  <- test, simulate
+data-rehearsal/  <- test, simulate, and any mode with --simulate
 ```
 
 A sibling of the rig's `data_root`, not a subdirectory. An analysis walking

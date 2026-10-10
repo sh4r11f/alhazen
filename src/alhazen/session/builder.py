@@ -346,6 +346,7 @@ def build_session(
     experimenter: Experimenter | None = None,
     demographics: SubjectDemographics | None = None,
     training_stage: dict[str, Any] | None = None,
+    simulated: dict[str, Any] | None = None,
 ) -> SessionRunner:
     """Wire one runnable session.
 
@@ -644,6 +645,7 @@ def build_session(
         experimenter=experimenter,
         demographics=demographics,
         training=dict(training_stage) if training_stage is not None else None,
+        simulated=dict(simulated) if simulated is not None else None,
     )
 
     # A database from before 2.0's schema is moved aside now (kept, renamed
