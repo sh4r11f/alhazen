@@ -93,6 +93,7 @@ owner's quota.
 ## Draft and job states
 
 ```
+accepted | generated --(repair job)--> generating --done--> generated --accept--> accepted (next version)
 describing --(plan job)--> planning --done--> planned --(source job)--> generating --done--> generated --accept--> accepted
      ^                        |failed/cancelled            ^                  |failed/cancelled
      +------------------------+                            +------------------+
@@ -108,6 +109,34 @@ result. The lease is renewed before each provider call and the call is
 refused if the job was cancelled meanwhile (a call already in flight is not
 interrupted; its answer is discarded). A job whose lease lapses is retried
 once, then failed with `lease_lost`.
+
+## Repair from a run
+
+Static checks cannot see every runtime fault (the first live proof called
+`self.display.draw_disc`, which alhazen's display does not have). When a
+version fails on a rig, `POST /ai/drafts/{id}/repair {log, notes?}` queues a
+`repair` job: the kit receives the package that was run (the accepted
+version's stored release; before acceptance, the generated package) as a
+bundle (`files`, `manifest`, `archive`, `sha256`, `report: None`), the run
+log and the person's notes, and answers with a repaired package
+(`author.repair_from_run(client, bundle, log, ctx)`; notes go as `notes=`
+when the kit accepts it, otherwise ahead of the log). The result passes the
+same packaging and documentation checks and the same acceptance; accepting
+it adds the NEXT version to the same experiment (patch + 1 over the newest,
+or the package's own higher number). Earlier versions are never touched.
+A failed or cancelled repair (or regeneration) returns the draft to its
+previous state and package.
+
+The log is limited to 64 KiB, cleaned (line endings, terminal colour codes,
+control characters) and scrubbed (`alhazen.hub.ai.redact`): token-bearing
+URLs, URL credentials, Bearer/Basic authorization, JWTs, common API key
+formats (OpenAI, Google, GitHub, Hugging Face, Slack, AWS), private key
+blocks, `password=`/`api_key:`-style settings, and the requester's own stored
+provider keys wherever they appear. Digests, paths and numbers are kept. The
+job records `disclosed.repair = {base: {version_id | draft_id+job_id,
+version, files[{path, bytes}], bytes}, log_bytes, log_redactions,
+log_keys_not_checked, notes_chars}` (`log_keys_not_checked`: stored keys that no
+longer decrypt, so they could not be matched); only the scrubbed log is stored.
 
 ## Failure codes (job `error.code`, with the HTTP status it corresponds to)
 
@@ -135,6 +164,7 @@ with `inspect_bundle` and the documentation check before it is stored) and
 folds `ctx.disclosure(kind)` (context item sizes, start-from files actually
 sent and omitted) into the job's `disclosed` record. Seam:
 `build_context(alhazen_version, start)`, `plan(client, prompt, ctx)`,
+`repair_from_run(client, bundle, log, ctx)`,
 `generate_source(client, plan, ctx)` (returning `files: dict[str, bytes]`,
 `manifest`, `report`), `StartFrom(experiment_title, version, files)`,
 `PlanInvalid(report)`, `SourceInvalid(report)`, and a plan constructor

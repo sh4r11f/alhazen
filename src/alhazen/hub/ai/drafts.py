@@ -27,6 +27,7 @@ from alhazen.hub import catalog, packages
 from alhazen.hub.ai import keys
 from alhazen.hub.ai.jobs import ERROR_STATUS, Runner, revert_draft
 from alhazen.hub.ai.providers import ProviderError
+from alhazen.hub.ai.redact import clean_log, redact
 from alhazen.hub.auth import Principal, audit, has_hidden_characters
 from alhazen.hub.context import Hub, new_id
 from alhazen.hub.errors import HubError, conflict, invalid, not_found
@@ -40,6 +41,7 @@ ACTIVE = ("queued", "running")
 DAY_MS = 24 * 3600 * 1000
 MAX_PLAN_TITLE = 120
 MAX_PLAN_NOTES = 4000
+MAX_LOG_BYTES = 64 * 1024
 
 
 # -- views ---------------------------------------------------------------------
@@ -202,6 +204,18 @@ def _enqueue(
     now: int,
 ) -> str:
     _admit(conn, hub, draft.user_id, now)
+    if kind != "plan":
+        # The versions this draft already made: anything else of the draft's
+        # found at acceptance came from this job (see accept).
+        request = {
+            **request,
+            "known_versions": [
+                r.id
+                for r in conn.execute(
+                    select(versions.c.id).where(versions.c.ai_draft_id == draft.id)
+                ).all()
+            ],
+        }
     job_id = new_id()
     conn.execute(
         insert(ai_jobs).values(
@@ -364,10 +378,26 @@ def get_draft(hub: Hub, principal: Principal, draft_id: str) -> dict[str, Any]:
             .where(ai_jobs.c.draft_id == draft_id)
             .order_by(ai_jobs.c.created_at, ai_jobs.c.id)
         ).all()
+        made = conn.execute(
+            select(
+                versions.c.id, versions.c.experiment_id, versions.c.version, versions.c.created_at
+            )
+            .where(versions.c.ai_draft_id == draft_id)
+            .order_by(versions.c.created_at, versions.c.id)
+        ).all()
     return {
         "draft": draft_view(row),
         "plan": json.loads(row.plan_json) if row.plan_json else None,
         "jobs": [job_view(j) for j in jobs],
+        "versions": [
+            {
+                "id": v.id,
+                "experiment_id": v.experiment_id,
+                "version": v.version,
+                "created_at": iso(v.created_at),
+            }
+            for v in sorted(made, key=lambda v: (v.created_at, _release(v.version)))
+        ],
     }
 
 
@@ -433,8 +463,100 @@ def generate(hub: Hub, principal: Principal, draft_id: str, body: dict[str, Any]
                 .where(ai_drafts.c.id == draft_id)
                 .values(plan_json=json.dumps(plan))
             )
-        job_id = _enqueue(conn, hub, row, "source", {"plan": plan}, now)
+        request = {
+            "plan": plan,
+            "previous_status": row.status,
+            "previous_source_job_id": row.source_job_id,
+        }
+        job_id = _enqueue(conn, hub, row, "source", request, now)
         return {"job": _job(conn, job_id)}
+
+
+def repair(hub: Hub, principal: Principal, draft_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    """Ask for a repaired package from a rig's run log (a runtime failure no
+    static check caught). The base is the accepted version (what was run)
+    or, before acceptance, the generated package. The log is cleaned and
+    scrubbed of secrets before it is stored or sent; accepting the result
+    creates the NEXT version of the same experiment."""
+    keys.require_enabled(hub)
+    unknown = sorted(set(body) - {"log", "notes"})
+    if unknown:
+        raise invalid(f"unknown field(s): {', '.join(unknown)}", "unknown_field")
+    raw = body.get("log")
+    if not isinstance(raw, str) or not raw.strip():
+        raise invalid("log is required: the run log or traceback from the rig")
+    if len(raw.encode("utf-8")) > MAX_LOG_BYTES:
+        raise invalid(f"log may be at most {MAX_LOG_BYTES} bytes", "log_too_large")
+    notes = body.get("notes", "")
+    if not isinstance(notes, str) or len(notes) > MAX_PLAN_NOTES:
+        raise invalid(f"notes must be text of at most {MAX_PLAN_NOTES} characters")
+    notes = _lines(notes).strip()
+    if has_hidden_characters(notes, multiline=True):
+        raise invalid("notes contain control or invisible characters")
+    stored_keys, unreadable_keys = _own_keys(hub, principal.user_id)
+    log_text, found = redact(clean_log(raw), stored_keys)
+    notes, found_in_notes = redact(notes, stored_keys)
+    now = hub.clock()
+    with hub.db.transaction() as conn:
+        row = _draft(conn, principal, draft_id, lock=True)
+        if row.status == "accepted" and row.version_id:
+            owned = conn.execute(
+                select(versions.c.id).where(
+                    versions.c.id == row.version_id, versions.c.ai_draft_id == row.id
+                )
+            ).first()
+            if owned is None:
+                raise conflict("repair_unavailable", "This draft's version is no longer available")
+            base: dict[str, Any] = {"version_id": row.version_id}
+        elif row.status == "generated" and row.source_job_id:
+            base = {"draft_id": row.id, "job_id": row.source_job_id}
+        else:
+            raise conflict(
+                "repair_unavailable",
+                "Only a generated or accepted draft can be repaired from a run log",
+            )
+        if not keys.has_key(conn, principal.user_id, row.provider):
+            raise keys.key_required(row.provider)
+        request = {
+            "base": base,
+            "log": log_text,
+            "log_bytes": len(log_text.encode("utf-8")),
+            "log_redactions": found + found_in_notes,
+            "log_keys_not_checked": unreadable_keys,
+            "notes": notes,
+            "previous_status": row.status,
+            "previous_source_job_id": row.source_job_id,
+        }
+        job_id = _enqueue(conn, hub, row, "repair", request, now)
+        audit(
+            conn,
+            now,
+            f"user:{principal.user_id}",
+            "ai.draft.repair",
+            f"ai-draft:{draft_id}",
+            {
+                "base": base,
+                "log_bytes": request["log_bytes"],
+                "redactions": request["log_redactions"],
+            },
+        )
+        return {"job": _job(conn, job_id)}
+
+
+def _own_keys(hub: Hub, user_id: str) -> tuple[list[str], int]:
+    """The requester's stored provider keys, removed from a log if pasted in,
+    and how many could not be read (no longer decryptable: they cannot be
+    matched, and the job records that they were not scrubbed)."""
+    found: list[str] = []
+    unreadable = 0
+    with hub.db.transaction() as conn:
+        providers = [k["provider"] for k in keys.list_keys(conn, user_id)]
+    for provider in providers:
+        try:
+            found.append(keys.reveal(hub, user_id, provider))
+        except HubError:
+            unreadable += 1
+    return found, unreadable
 
 
 def discard(hub: Hub, principal: Principal, draft_id: str) -> None:
@@ -499,6 +621,16 @@ def cancel_job(hub: Hub, principal: Principal, job_id: str) -> dict[str, Any]:
 # -- acceptance ------------------------------------------------------------------
 
 
+def _release(version: str) -> tuple[int, int, int]:
+    match = re.match(r"^(\d+)\.(\d+)\.(\d+)", version)
+    return (int(match[1]), int(match[2]), int(match[3])) if match else (0, 0, 0)
+
+
+def _next_patch(version: str) -> str:
+    major, minor, patch = _release(version)
+    return f"{major}.{minor}.{patch + 1}"
+
+
 def _relabelled(runner: Runner, stored: Path, changes: dict[str, str]) -> bytes:
     """The stored generated package rebuilt with the person's title,
     description or license (through the kit, so LICENSE follows a new
@@ -519,7 +651,10 @@ def accept(
     hub: Hub, runner: Runner, principal: Principal, draft_id: str, body: dict[str, Any]
 ) -> dict[str, Any]:
     """Create the private experiment (once) and a version from the draft's
-    validated generated package, through the upload pipeline.
+    validated generated package, through the upload pipeline. After a
+    repair, the same experiment gets the next version (patch + 1 over its
+    newest, unless the package already carries a higher one); the accepted
+    earlier version is never touched.
 
     Order: (1) lock the draft, check it, create its experiment if it has
     none and remember it on the draft; (2) `catalog.accept_version` with a
@@ -597,6 +732,35 @@ def accept(
             )
         source_job_id = row.source_job_id
         key = hub.store.ai_bundle_key(draft_id, source_job_id)
+        existing = {
+            r.version: r
+            for r in conn.execute(
+                select(versions).where(versions.c.experiment_id == experiment_id)
+            ).all()
+        }
+        # A version this very job already became (an earlier accept that
+        # stored it but did not get to mark the draft): finish that one.
+        known = set(json.loads(job.request_json or "{}").get("known_versions", []))
+        done = [r for r in existing.values() if r.ai_draft_id == draft_id and r.id not in known]
+        if done:
+            ver = max(done, key=lambda r: (r.created_at, r.id))
+            conn.execute(
+                update(ai_drafts)
+                .where(ai_drafts.c.id == draft_id)
+                .values(status="accepted", version_id=ver.id, updated_at=now)
+            )
+            exp = conn.execute(select(experiments).where(experiments.c.id == experiment_id)).one()
+            return {
+                "experiment": catalog.private_view(conn, exp),
+                "version": catalog.owner_version_view(ver),
+            }
+    # A repaired package becomes the NEXT version: never the number of a
+    # stored one, never lower than the newest (the kit may bump it itself).
+    if existing:
+        newest = max(existing, key=_release)
+        own = str(package.get("version", ""))
+        if own in existing or _release(own) <= _release(newest):
+            relabel["version"] = _next_patch(newest)
     stored = hub.store.path(key)
     if not stored.is_file():
         raise HubError(

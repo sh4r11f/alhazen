@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import dataclasses
 import importlib
+import inspect
 import json
 import logging
 import secrets
@@ -50,7 +51,7 @@ from alhazen.hub.ai.providers import (
 )
 from alhazen.hub.context import Hub
 from alhazen.hub.errors import HubError
-from alhazen.hub.schema import ai_drafts, ai_jobs
+from alhazen.hub.schema import ai_drafts, ai_jobs, versions
 
 log = logging.getLogger(__name__)
 
@@ -78,8 +79,8 @@ _PROVIDER_CODES = {
     "other": "provider_error",
 }
 # What a draft returns to when its job ends without a result.
-_DRAFT_ON_FAILURE = {"plan": "describing", "source": "planned"}
-_DRAFT_ON_SUCCESS = {"plan": "planned", "source": "generated"}
+_DRAFT_ON_FAILURE = {"plan": "describing", "source": "planned", "repair": "accepted"}
+_DRAFT_ON_SUCCESS = {"plan": "planned", "source": "generated", "repair": "generated"}
 
 ClientFactory = Callable[[ProviderInfo, str, str], ProviderClient]
 
@@ -146,9 +147,38 @@ class AuthorKit:
         return data
 
     def disclosure(self, ctx: Any, kind: str) -> dict[str, Any] | None:
-        """The kit's own account of what a request sends, if it keeps one."""
+        """The kit's own account of what a request sends, if it keeps one
+        (a repair sends the source request's context)."""
         method = getattr(ctx, "disclosure", None)
-        return to_plain(method(kind)) if callable(method) else None
+        if not callable(method):
+            return None
+        return to_plain(method("source" if kind == "repair" else kind))
+
+    def stored_bundle(
+        self, files: dict[str, bytes], manifest: dict[str, Any], archive: bytes, sha256: str
+    ) -> Any:
+        """A package the hub stored, in the kit's bundle shape (``report`` is
+        None: it is not a fresh validation)."""
+        kind = getattr(self.module, "GeneratedBundle", None)
+        if kind is None:
+            return StoredBundle(files, manifest, archive, sha256)
+        return kind(files=files, manifest=manifest, report=None, archive=archive, sha256=sha256)
+
+    def repair_from_run(
+        self, client: ProviderClient, bundle: Any, log: str, ctx: Any, notes: str
+    ) -> Any:
+        """``author.repair_from_run(client, bundle, log, ctx)``; the person's
+        notes go as ``notes=`` when the kit takes them, else ahead of the log."""
+        repair = self.module.repair_from_run
+        try:
+            takes_notes = "notes" in inspect.signature(repair).parameters
+        except (TypeError, ValueError):
+            takes_notes = False
+        if takes_notes:
+            return repair(client, bundle, log, ctx, notes=notes)
+        if notes:
+            log = f"Notes from the person who ran it:\n{notes}\n\nRun log:\n{log}"
+        return repair(client, bundle, log, ctx)
 
     def relabel(self, files: dict[str, bytes], metadata: dict[str, Any], old_license: str) -> bytes:
         """The package rebuilt with edited metadata (title, description,
@@ -184,6 +214,17 @@ class AuthorKit:
     def is_source_invalid(self, exc: BaseException) -> bool:
         kind = getattr(self.module, "SourceInvalid", None)
         return kind is not None and isinstance(exc, kind)
+
+
+@dataclass(frozen=True)
+class StoredBundle:
+    """A stored package handed to a kit without its own bundle type."""
+
+    files: dict[str, bytes]
+    manifest: dict[str, Any]
+    archive: bytes
+    sha256: str
+    report: Any = None
 
 
 # -- the guarded client ---------------------------------------------------------
@@ -309,9 +350,22 @@ def claim_next(hub: Hub, job_id: str | None = None) -> tuple[str, str] | None:
 
 
 def revert_draft(conn: Connection, job: Any, now: int) -> None:
-    """A job ended without a result: its draft goes back one step, if the
-    draft still points at this job."""
+    """A job ended without a result: its draft goes back to where it was
+    before the job, if the draft still points at this job. A source or
+    repair job records that state (``previous_status``,
+    ``previous_source_job_id``) when it is queued, so a failed regeneration
+    or repair leaves the earlier valid package acceptable."""
     pointer = ai_drafts.c.plan_job_id if job.kind == "plan" else ai_drafts.c.source_job_id
+    values: dict[str, Any] = {"status": _DRAFT_ON_FAILURE[job.kind], "updated_at": now}
+    if job.kind != "plan":
+        request = json.loads(job.request_json or "{}")
+        if request.get("previous_status"):
+            values["status"] = request["previous_status"]
+        if request.get("previous_source_job_id"):
+            # Back to the earlier valid package (a failed regeneration or
+            # repair); with none, the pointer stays on this failed job so its
+            # error is what the draft shows.
+            values["source_job_id"] = request["previous_source_job_id"]
     conn.execute(
         update(ai_drafts)
         .where(
@@ -319,7 +373,7 @@ def revert_draft(conn: Connection, job: Any, now: int) -> None:
             pointer == job.id,
             ai_drafts.c.status == ("planning" if job.kind == "plan" else "generating"),
         )
-        .values(status=_DRAFT_ON_FAILURE[job.kind], updated_at=now)
+        .values(**values)
     )
 
 
@@ -389,6 +443,7 @@ class Runner:
             "model": job.model,
             "prompt_chars": len(draft.prompt),
             "plan": job.kind == "source",
+            "repair": None,
             "authoring_context": {
                 "alhazen_version": _alhazen_version(),
                 "items": [
@@ -447,6 +502,19 @@ class Runner:
                     guarded,
                 )
             request = json.loads(job.request_json)
+            if job.kind == "repair":
+                base, base_disclosed = self._repair_base(request)
+                disclosed["repair"] = {
+                    "base": base_disclosed,
+                    "log_bytes": request["log_bytes"],
+                    "log_redactions": request["log_redactions"],
+                    "log_keys_not_checked": request.get("log_keys_not_checked", 0),
+                    "notes_chars": len(request.get("notes", "")),
+                }
+                bundle = kit.repair_from_run(
+                    guarded, base, request["log"], ctx, request.get("notes", "")
+                )
+                return self._package(job, bundle), guarded
             plan = kit.plan_from_dict(request["plan"])
             bundle = kit.generate_source(guarded, plan, ctx)
             return self._package(job, bundle), guarded
@@ -474,6 +542,32 @@ class Runner:
                 ),
                 guarded,
             )
+
+    def _repair_base(self, request: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
+        """The package being repaired: the accepted version's stored release
+        (what the person ran), or the draft's generated package. Both are
+        the requester's own; their files go to the provider and are listed."""
+        hub = self.hub
+        base = request["base"]
+        if base.get("version_id"):
+            with hub.db.transaction() as conn:
+                row = conn.execute(
+                    select(versions.c.storage_key).where(versions.c.id == base["version_id"])
+                ).one()
+            path = hub.store.path(row.storage_key)
+        else:
+            path = hub.store.path(hub.store.ai_bundle_key(base["draft_id"], base["job_id"]))
+        archive = path.read_bytes()
+        info = packages.inspect_bundle(path)
+        with zipfile.ZipFile(path) as opened:
+            files = {e["path"]: opened.read(e["path"]) for e in info.manifest["files"]}
+        disclosed = {
+            **base,
+            "version": info.manifest.get("version"),
+            "files": [{"path": p, "bytes": len(d)} for p, d in sorted(files.items())],
+            "bytes": sum(len(d) for d in files.values()),
+        }
+        return self.kit.stored_bundle(files, info.manifest, archive, info.sha256), disclosed
 
     def _start(self, draft: Any) -> tuple[Any | None, dict[str, Any] | None]:
         """The start-from version's text files, re-checked against the

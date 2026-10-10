@@ -148,3 +148,56 @@ def test_start_from_disclosure_matches_what_the_kit_sent(kh: KitHub, tmp_path: P
     assert "own-source-17" in sent
     for item in disclosed["files"]:
         assert item["path"] in sent
+
+
+def test_repair_through_the_real_kit_seam(kh: KitHub, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``author.repair_from_run(client, bundle, log, ctx)`` is stubbed (the
+    kit's version lands separately) on top of the real kit's bundle type and
+    packaging, so the server's half is exercised against the real shapes."""
+    from alhazen.hub.ai import author
+
+    seen: dict[str, Any] = {}
+
+    def repair_from_run(client: Any, bundle: Any, log: str, ctx: Any) -> Any:
+        seen["bundle"], seen["log"] = bundle, log
+        client.complete(
+            [{"role": "user", "content": "repair:\n" + log}],
+            json_schema={"title": "alhazen_source", "type": "object"},
+            max_tokens=100,
+        )
+        files = dict(bundle.files)
+        files["README.md"] = files.get("README.md", b"") + b"\nRepaired after a run.\n"
+        metadata = {
+            k: v for k, v in bundle.manifest.items() if k not in ("files", "schema_version")
+        }
+        metadata["version"] = "0.1.1"
+        archive, info = author.bundle_archive(files, metadata)
+        return author.GeneratedBundle(
+            files=files,
+            manifest=info.manifest,
+            report=bundle.report,
+            archive=archive,
+            sha256=info.sha256,
+        )
+
+    monkeypatch.setattr(author, "repair_from_run", repair_from_run, raising=False)
+    ada = user(kh)
+    created = start(ada)
+    kh.drain()
+    ada.post(f"/ai/drafts/{created['draft']['id']}/generate", {})
+    kh.drain()
+    first = ada.post(f"/ai/drafts/{created['draft']['id']}/accept", {}).json()
+    log = "AttributeError: 'SimulatedDisplay' object has no attribute 'draw_disc'"
+    assert ada.post(f"/ai/drafts/{created['draft']['id']}/repair", {"log": log}).status_code == 202
+    kh.drain()
+    assert isinstance(seen["bundle"], author.GeneratedBundle)
+    assert "docs/ai-provenance.json" in seen["bundle"].files and seen["log"] == log
+    second = ada.post(f"/ai/drafts/{created['draft']['id']}/accept", {})
+    assert second.status_code == 200, second.text
+    version = second.json()["version"]
+    assert version["version"] == "0.1.1"
+    assert second.json()["experiment"]["id"] == first["experiment"]["id"]
+    docs = ada.get(
+        f"/experiments/{first['experiment']['id']}/versions/{version['id']}/documentation"
+    )
+    assert docs.status_code == 200
