@@ -1106,3 +1106,56 @@ test('experiment page: Fork with AI opens Create with this experiment as the sta
   assert.equal(radios[1].checked, true, 'Fork a catalogue listing is chosen');
   assert.equal(p.main.querySelector('select[name="from"]').value, 'e1');
 });
+
+
+/* Import round 2026-10-09 (decisions 3 and 6), with the real renderer. */
+function realDocs() {
+  /* As tests/js/hub_docs.test.mjs: fake_dom has no text nodes; a browser does. */
+  if (!FakeDocument.prototype.createTextNode) {
+    FakeDocument.prototype.createTextNode = function createTextNode(text) {
+      const node = this.createElement('#text');
+      node.textContent = text;
+      return node;
+    };
+  }
+  const context = vm.createContext({});
+  vm.runInContext(readFileSync(new URL('hub_docs.js', ASSETS), 'utf8') + '\nthis.HubDocs = HubDocs;', context);
+  return context.HubDocs;
+}
+
+test('overview: the description is Markdown as elements, [[param:]] resolves in the excerpt, release and protocol both shown', async () => {
+  const documentation = {
+    methods: {markdown: '## Design\n\nA field of [[param:dots]] dots, **always** on.'},
+    tasks: [{id: 'pursuit', title: 'Pursuit', summary: 's', parameters: [
+      {name: 'dots', label: 'Dots', has_default: true, default_text: '90'}]}],
+  };
+  const v = release({version: '0.5.2', manifest: {...release().manifest, version: '0.5.2', protocol_version: '0.5.0'}});
+  const p = await mount({docs: realDocs(), search: '?view=experiment&id=e1', routes: {
+    'GET /config': () => SERVER_CONFIG, 'GET /auth/me': signedOut,
+    'GET /experiments/e1': () => ({status: 200, body: {experiment: experiment({
+      description: 'The **cylinder** is seen in depth.\n\n<script>alert(1)</script> [link](https://example.org/x) ![img](https://e.org/i.png)'}),
+      versions: [v]}}),
+    'GET /experiments/e1/versions/v1/documentation': () => ({status: 200, body: {documentation}}),
+  }});
+  const about = p.main.querySelector('.exp-reading').querySelector('.prose');
+  assert.ok(about.querySelectorAll('strong').some((s) => s.textContent === 'cylinder'), 'bold is an element');
+  assert.doesNotMatch(about.textContent, /\*\*/);
+  assert.equal(about.querySelectorAll('script').length, 0, 'markup in the text stays text');
+  assert.match(about.textContent, /<script>alert\(1\)<\/script>/);
+  assert.equal(about.querySelectorAll('img').length, 0, 'images are not loaded');
+  const excerpt = p.main.querySelector('.prose-excerpt');
+  assert.doesNotMatch(excerpt.textContent, /\[\[param:/);
+  assert.match(excerpt.textContent, /A field of 90 dots/);
+  assert.match(p.text(), /Release\s*0\.5\.2/);
+  assert.match(p.text(), /Protocol\s*0\.5\.0 \(data filed under v0\.5\.0\)/);
+});
+
+test('a release numbered apart from its protocol is labelled with both', async () => {
+  const v = release({version: '0.6.1', manifest: {...release().manifest, version: '0.6.1', protocol_version: '0.6.0'}});
+  const p = await mount({search: '?view=experiment&id=e1&tab=versions', routes: {
+    'GET /config': () => SERVER_CONFIG, 'GET /auth/me': signedOut,
+    'GET /experiments/e1': () => ({status: 200, body: {experiment: experiment(), versions: [v, release({id: 'v0', version: '0.6.0'})]}}),
+  }});
+  assert.match(p.text(), /release 0\.6\.1, protocol 0\.6\.0/);
+  assert.match(p.text(), /v0\.6\.0/);
+});
