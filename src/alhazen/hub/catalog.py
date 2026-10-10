@@ -168,6 +168,16 @@ def version_view(row: Any) -> dict[str, Any]:
     }
 
 
+def owner_version_view(row: Any) -> dict[str, Any]:
+    """A version as its owner sees it: also whether it came from an accepted
+    AI draft (schema 3). Visitors never see this."""
+    return {
+        **version_view(row),
+        "ai_assisted": row.ai_draft_id is not None,
+        "ai_draft_id": row.ai_draft_id,
+    }
+
+
 def _version_stats(conn: Connection, experiment_id: str) -> tuple[int, str | None]:
     count = conn.execute(
         select(func.count()).select_from(versions).where(versions.c.experiment_id == experiment_id)
@@ -188,36 +198,46 @@ def create_experiment(hub: Hub, principal: Principal, body: dict[str, Any]) -> d
     fields = parse_metadata(body, partial=False)
     now = hub.clock()
     with hub.db.transaction() as conn:
-        lock_owner(conn, principal.user_id)
-        owned = conn.execute(
-            select(func.count())
-            .select_from(experiments)
-            .where(experiments.c.owner_id == principal.user_id)
-        ).scalar_one()
-        if owned >= hub.settings.limits.max_experiments_per_owner:
-            raise too_large(
-                f"You already own {owned} experiments, the limit for one account",
-                "experiment_limit",
-            )
-        experiment_id = new_id()
-        conn.execute(
-            insert(experiments).values(
-                id=experiment_id,
-                owner_id=principal.user_id,
-                title=fields["title"],
-                summary=fields["summary"],
-                description=fields["description"],
-                license=fields["license"],
-                citations=json.dumps(fields["citations"]),
-                tags=json.dumps(fields["tags"]),
-                package_name=None,
-                created_at=now,
-                updated_at=now,
-            )
+        experiment_id = insert_experiment(
+            conn, principal.user_id, fields, now, hub.settings.limits.max_experiments_per_owner
         )
-        audit(conn, now, f"user:{principal.user_id}", "experiment.create", experiment_id, {})
         row = conn.execute(select(experiments).where(experiments.c.id == experiment_id)).one()
         return {"experiment": private_view(conn, row)}
+
+
+def insert_experiment(
+    conn: Connection, owner_id: str, fields: dict[str, Any], now: int, max_experiments: int
+) -> str:
+    """Create one private experiment from parsed metadata inside the caller's
+    transaction (the owner's experiment limit is checked under the owner
+    lock); returns its id. Shared by POST /experiments and AI draft acceptance."""
+    lock_owner(conn, owner_id)
+    owned = conn.execute(
+        select(func.count()).select_from(experiments).where(experiments.c.owner_id == owner_id)
+    ).scalar_one()
+    if owned >= max_experiments:
+        raise too_large(
+            f"You already own {owned} experiments, the limit for one account",
+            "experiment_limit",
+        )
+    experiment_id = new_id()
+    conn.execute(
+        insert(experiments).values(
+            id=experiment_id,
+            owner_id=owner_id,
+            title=fields["title"],
+            summary=fields["summary"],
+            description=fields["description"],
+            license=fields["license"],
+            citations=json.dumps(fields["citations"]),
+            tags=json.dumps(fields["tags"]),
+            package_name=None,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    audit(conn, now, f"user:{owner_id}", "experiment.create", experiment_id, {})
+    return experiment_id
 
 
 def list_own(hub: Hub, principal: Principal, limit: int, offset: int) -> dict[str, Any]:
@@ -265,7 +285,7 @@ def get_experiment(hub: Hub, principal: Principal | None, experiment_id: str) ->
             ).all()
             return {
                 "experiment": private_view(conn, row),
-                "versions": [version_view(v) for v in all_versions],
+                "versions": [owner_version_view(v) for v in all_versions],
                 "publication": public_view(row, pub) if pub is not None else None,
                 "can_edit": True,
             }
@@ -329,7 +349,14 @@ def precheck_version_upload(hub: Hub, principal: Principal, experiment_id: str) 
 
 
 def accept_version(
-    hub: Hub, principal: Principal, experiment_id: str, temp: Path, sha256: str, size: int
+    hub: Hub,
+    principal: Principal,
+    experiment_id: str,
+    temp: Path,
+    sha256: str,
+    size: int,
+    *,
+    ai_draft_id: str | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """Validate a received package and store it as a new immutable version.
 
@@ -352,7 +379,7 @@ def accept_version(
         if info.sha256 != sha256 or info.size != size:
             raise HubError(500, "internal", "Package digest disagreement; nothing was stored")
         manifest = info.manifest
-        _check_documentation(staged, manifest)
+        check_documentation(staged, manifest)
         name = str(manifest.get("name", ""))
         version = str(manifest.get("version", ""))
         now = hub.clock()
@@ -397,6 +424,7 @@ def accept_version(
                     manifest=json.dumps(manifest, sort_keys=True),
                     storage_key=key,
                     created_at=now,
+                    ai_draft_id=ai_draft_id,
                 )
             )
             if row.package_name is None:
@@ -465,7 +493,8 @@ def documentation_module() -> Any:
         ) from None
 
 
-def _check_documentation(temp: Path, manifest: dict[str, Any]) -> None:
+def check_documentation(temp: Path, manifest: dict[str, Any]) -> None:
+    """422 invalid_documentation unless the package's documentation reads."""
     if not manifest.get("documentation"):
         return
     documentation = documentation_module()
@@ -479,6 +508,13 @@ def _visible_version(
     conn: Connection, principal: Principal | None, experiment_id: str, version_id: str
 ) -> tuple[Any, Any]:
     """(experiment row, version row) the caller may download, or a 404."""
+    viewer = principal.user_id if principal is not None else None
+    return _visible_to(conn, viewer, experiment_id, version_id)
+
+
+def _visible_to(
+    conn: Connection, viewer_id: str | None, experiment_id: str, version_id: str
+) -> tuple[Any, Any]:
     exp = conn.execute(select(experiments).where(experiments.c.id == experiment_id)).first()
     ver = conn.execute(
         select(versions).where(
@@ -487,11 +523,20 @@ def _visible_version(
     ).first()
     if exp is None or ver is None:
         raise not_found("Version not found")
-    if principal is not None and exp.owner_id == principal.user_id:
+    if viewer_id is not None and exp.owner_id == viewer_id:
         return exp, ver
     if _published_id(conn, experiment_id) == version_id:
         return exp, ver
     raise not_found("Version not found")
+
+
+def readable_version(
+    conn: Connection, user_id: str, experiment_id: str, version_id: str
+) -> tuple[Any, Any]:
+    """(experiment row, version row) if ``user_id`` may read that version
+    (owner, or the published version), else 404: the download rule, for
+    callers that hold a user id rather than a request principal."""
+    return _visible_to(conn, user_id, experiment_id, version_id)
 
 
 def version_download(
@@ -687,6 +732,18 @@ def library_add(hub: Hub, principal: Principal, body: dict[str, Any]) -> dict[st
             "added_at": iso(now),
             "available": True,
         }
+
+
+def library_remove(hub: Hub, principal: Principal, experiment_id: str) -> bool:
+    """Unpin an experiment from the caller's library; True if it was there.
+    Removes only the caller's pin: the experiment and its versions are untouched."""
+    with hub.db.transaction() as conn:
+        removed = conn.execute(
+            delete(library).where(
+                library.c.user_id == principal.user_id, library.c.experiment_id == experiment_id
+            )
+        ).rowcount
+    return bool(removed)
 
 
 def library_list(hub: Hub, principal: Principal, limit: int, offset: int) -> dict[str, Any]:

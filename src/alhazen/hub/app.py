@@ -54,6 +54,9 @@ from starlette.requests import ClientDisconnect
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from alhazen.hub import auth, catalog, data, trials, uploads
+from alhazen.hub.ai.jobs import AIWorker, Runner
+from alhazen.hub.ai.routes import RouteKit
+from alhazen.hub.ai.routes import add_routes as add_ai_routes
 from alhazen.hub.auth import BEARER_KIND, COOKIE_KIND, Principal
 from alhazen.hub.context import Clock, Hub, system_clock
 from alhazen.hub.database import Database
@@ -386,6 +389,7 @@ def create_app(
         settings=settings, db=database, store=ArtifactStore(settings.artifact_root), clock=clock
     )
     maintenance = Maintenance(hub)
+    ai_worker = AIWorker(Runner(hub))
     cookie = cookie_name(settings)
     allowed = set(settings.allowed_origins)
 
@@ -393,9 +397,12 @@ def create_app(
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         if start_maintenance:
             maintenance.start()
+            if settings.ai.enabled:
+                ai_worker.start()
         try:
             yield
         finally:
+            ai_worker.stop()
             maintenance.stop()
             database.dispose()
 
@@ -408,6 +415,7 @@ def create_app(
     )
     app.state.hub = hub
     app.state.maintenance = maintenance
+    app.state.ai_worker = ai_worker
     app.add_middleware(SecurityHeaders)
 
     def call(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Awaitable[Any]:
@@ -1050,6 +1058,23 @@ def create_app(
         await call(trials.request_reindex, hub, principal.user_id, session_id)
         maintenance.wake()
         return await call(data.session_detail, hub, principal, session_id)
+
+    # -- AI-assisted authoring (alhazen.hub.ai.routes) ---------------------------
+
+    add_ai_routes(
+        app,
+        hub,
+        ai_worker,
+        RouteKit(
+            reader=reader,
+            member=member,
+            writer=writer,
+            read_json=_json,
+            ident=_id,
+            page=_page,
+            call=call,
+        ),
+    )
 
     # -- web interface ----------------------------------------------------------
 
