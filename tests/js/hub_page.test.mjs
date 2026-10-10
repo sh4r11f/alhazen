@@ -187,6 +187,24 @@ test('central visitor: the landing page says what is real, with an honest empty 
   assert.equal(p.hub.calls.find((c) => c.path.endsWith('/catalog')).query.get('limit'), '6');
 });
 
+test('landing: the headline and the one Murmuration drawing, decorative and the same at any address', async () => {
+  const routes = {
+    'GET /config': () => SERVER_CONFIG, 'GET /auth/me': signedOut,
+    'GET /catalog': () => ({status: 200, body: {items: [], next_offset: null}}),
+  };
+  for (const search of ['', '?hero=arbor']) {
+    const p = await mount({routes, search});
+    assert.equal(p.main.querySelector('.hero-title').textContent, 'Run Experiments Now');
+    const art = p.main.querySelectorAll('svg');
+    const hero = art.filter((el) => (el.getAttribute('class') || '').split(' ').includes('hero-art'));
+    assert.equal(hero.length, 1, 'exactly one hero drawing');
+    assert.equal(hero[0].getAttribute('class'), 'hero-art');
+    assert.equal(hero[0].getAttribute('aria-hidden'), 'true');
+    assert.equal(hero[0].getAttribute('viewBox'), '0 0 480 480');
+    assert.ok(hero[0].querySelectorAll('circle').length > 500, 'the kinematogram dots are drawn');
+  }
+});
+
 test('server text is shown as text: a hostile title creates no elements', async () => {
   const evil = '<img src=x onerror=alert(1)>';
   const p = await mount({routes: {
@@ -294,7 +312,7 @@ test('Back and Forward redraw the screen and drop answers for the screen left be
   releaseSlow();
   await settleAll();
   assert.doesNotMatch(p.text(), /STALE/);
-  assert.match(p.text(), /Your experiment hub/);
+  assert.match(p.text(), /Run Experiments Now/);
   assert.equal(p.document.activeElement.getAttribute('data-heading'), '');
   await p.back('/?view=catalog');
   assert.match(p.text(), /Marketplace/);
