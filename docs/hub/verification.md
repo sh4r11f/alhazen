@@ -70,6 +70,36 @@ behaviour varies between runs and providers (an earlier GPT-4.1 round needed the
 round twice). Anthropic, Google and OpenRouter clients are tested only against recorded
 transports. Nothing generated is ever executed on the hub.
 
+## Import round (2026-10-09): the four real experiments
+
+All four coded experiments (amodal-averaging, kde-vergence, mbri, attention-clamp) were packed
+from their repositories, uploaded as private releases, installed on rig-state copies and run
+headless in simulate mode, once on the sources of the first import and again on the latest
+sources (alhazen 2.15.0; amodal-averaging and kde-vergence moved to it). Each experiment ran
+in its own locked environment; every session records `alhazen.version` from that
+environment ("not a source checkout"), so the dashboard's own checkout never reached it.
+What the round changed:
+
+- The experiment's own `configs/rig-*.yaml` files ship (rig measurements do not), so an
+  installed `--rig lab-neural` resolves to the package's file as in the checkout.
+- One data folder per experiment, shared by its releases (`alhazen.hub.shared_data`):
+  a calibration recorded under one release unlocked the next release's cued block, and a
+  second release continued the same participant row and session (`run-02`). A release
+  folder holding its own data is moved on first use; two folders that both hold data are
+  refused, naming both, with nothing moved.
+- A release version separate from the protocol version (`hub pack --version`, manifest
+  `protocol_version`); the data stays under the protocol's folder.
+- alhazen floor 2.12.0; a Task parameters label without its file's contents is refused
+  unless `params: "default"`; run.json records the parameters' source and SHA-256.
+- Smaller: no initials for a training rehearsal; Markdown descriptions and resolved
+  `[[param:...]]` on the Overview; figures fit their column on a desktop; stacked
+  timeline labels; files probably not for the rig marked in `hub pack`; `alhazen
+  dashboard --forget-hub-login` for a copied state folder.
+
+Exact receipts (SHAs, counts, per-experiment runs) are in the pull request description.
+Not established: real displays, eye trackers and reward lines (simulated devices only),
+Windows directory junctions for the shared data folder, and the user's own machines.
+
 ## Integrity acknowledgements
 
 The software-design checker is run against the original main commit. The following new
