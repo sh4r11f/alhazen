@@ -201,4 +201,32 @@ describe('Training mode on the Run page', () => {
     assert.match(text(app.byId('launch-summary')), /rehearsal/);
     assert.equal(plain(app.run('launchDraft()')).rehearse, true);
   });
+
+  it('offers Headless for a rehearsal only, and sends it as ticked', async () => {
+    const app = await page();
+    chooseMode(app, 'training');
+    rungs(app).find((r) => r.dataset.stage === 'fixate').fire('click');
+    const tick = (function find(el) {
+      for (const child of el.children || []) {
+        if (child.id === 'training-rehearse') return child;
+        const inner = find(child);
+        if (inner) return inner;
+      }
+      return null;
+    })(app.byId('training-ladder'));
+    /* A real training session: no Headless box, and never headless, though
+     * the box itself starts ticked in the markup. */
+    assert.equal(app.byId('headless-field').hidden, true);
+    assert.equal(plain(app.run('launchDraft()')).headless, false);
+    tick.checked = true;
+    tick.fire('change');
+    /* A rehearsal shows the box and follows it. */
+    assert.equal(app.byId('headless-field').hidden, false);
+    assert.equal(plain(app.run('launchDraft()')).headless, true);
+    app.byId('headless').checked = false;
+    app.byId('headless').fire('change');
+    /* Unticked: the rehearsal opens a window to watch the stage in. */
+    assert.equal(plain(app.run('launchDraft()')).headless, false);
+    assert.equal(plain(app.run('launchDraft()')).rehearse, true);
+  });
 });

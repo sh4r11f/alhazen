@@ -25,6 +25,85 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## 2.15.0 - 2026-10-09
+
+### Added
+
+- **Simulation is a choice at launch: `--simulate` and `--gaze`.** Any mode
+  that runs trials (run, test, training) stands in for the devices named —
+  `--simulate tracker,reward` or `--simulate all`, from tracker, reward, sync,
+  recording and spikes — whether or not they are connected. With the tracker
+  simulated, `--gaze autopilot` (the task plays itself) or `--gaze mouse`
+  (you play it, the cursor as your eye) is required; there is no default. So
+  a training stage can be watched working itself in a window:
+  `--mode training --stage fixate --simulate all --gaze autopilot`, with
+  `--headless` to take the window away. Nothing is simulated that is not
+  named: a device that fails to connect still stops the launch. Any stand-in
+  makes the session a rehearsal — its data goes to the rehearsal root, run
+  mode's refusal of a development rig does not apply — and the mode keeps its
+  meaning: run and training stay full-length, test stays reduced. `simulate`
+  mode and test mode's `--mouse` still work and are now two spellings of this
+  choice. The first step of
+  [docs/design/simulate-as-a-choice.md](docs/design/simulate-as-a-choice.md);
+  [docs/modes.md](docs/modes.md) has the commands.
+- **`session.json` records what was simulated.** A new key, `simulated`:
+  `{devices: [...], gaze: "autopilot" | "mouse" | null}`, or null when every
+  device was the rig's own. Simulate mode and `--mouse` record it too. A new
+  key without a schema bump, like `training`.
+
+### Changed
+
+- **Workspace: a training rehearsal can be watched.** Training's "Rehearse this
+  stage" was always headless, so there was no way to see what a stage looks
+  like without a monkey. The Options' "Headless simulation" box now applies
+  to a rehearsal as it does to simulate mode: unticked, the stage opens in a
+  window, worked by the task's autopilot. A real training session is never
+  headless, whatever the box says.
+- **The refusal of `--headless` is reworded**, since a session with no window
+  is no longer simulate mode's alone: it names `--simulate all --gaze
+  autopilot` beside simulate mode.
+
+## 2.14.1 - 2026-10-09
+
+### Fixed
+
+- **Measure rig: the luminance patch stays on the screen.** Each grey level
+  was drawn and at once replaced by the prompt for its reading, so there was
+  never a patch to point the photometer at. Each level now fills the screen
+  with nothing written on it until SPACE, and the reading is typed after. The
+  job first says what is about to happen and asks whether the photometer is
+  ready.
+- **Measure rig: the mouse measurement says its ruler is a real one.** The
+  prompts spoke of sliding the mouse "along the ruler" without saying that it
+  is a ruler on the desk, and nothing is drawn on the screen.
+
+## 2.14.0 - 2026-10-09
+
+### Changed
+
+- **Run-directory layout, in a minor version: a run's data files no longer
+  repeat the task in their names.** `sub-01_ses-001_run-01_task-saccade-bias_20260928_trials.csv`
+  is now `sub-01_ses-001_run-01_20260928_trials.csv`; the run folder
+  (`run-01_task-saccade-bias/`) is unchanged and still names the task. The
+  repeated name made paths too long for a Windows machine without long paths
+  switched on (260 characters), where the tables could not be written at the
+  end of a session. Runs recorded before this keep their names and are still
+  read; nothing in alhazen needed changing to read both, because every reader
+  finds a table by its ending. `alhazen.data.naming.base_name` lost its
+  `task_name` argument. The policy above keeps file names for a major
+  version. This is the one exception so far, taken because it fixes lost data
+  and no reader had to change; the migration is
+  [docs/data.md](docs/data.md) §7.
+
+### Added
+
+- **A run folder too deep for Windows is refused before the session starts.**
+  On a Windows machine without long paths, `SessionPaths.create` raises a
+  `DataError` when the longest file the run can write would have a path of
+  260 characters or more. It names the path, its length and how much shorter
+  the data root must be, and creates nothing. Before, the session ran to the
+  end and then failed to write its trials.
+
 ## 2.13.0 - 2026-10-08
 
 ### Added

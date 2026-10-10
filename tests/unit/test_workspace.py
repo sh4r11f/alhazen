@@ -448,7 +448,7 @@ class TestLaunches:
         "args, message",
         [
             ({"mode": "run"}, "subject ID"),
-            ({"mode": "movie", "headless": True}, "only simulate"),
+            ({"mode": "movie", "headless": True}, "without a window only with"),
             ({"mode": "run", "mouse": True}, "only test"),
             ({"mode": "missing"}, "Unknown experiment"),
             ({"rig": "../outside.yaml"}, "inside"),

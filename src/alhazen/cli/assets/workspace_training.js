@@ -232,7 +232,8 @@ const TrainingLadder = (() => {
       tick.checked = !!choice.rehearse;
       tick.addEventListener('change', () => { choice.rehearse = tick.checked; changed(); });
       rehearse.append(tick, node('span', '', ' Rehearse this stage with a simulated monkey '
-        + '(simulate mode, no window, filed under the training rehearsal folder)'));
+        + '(simulate mode, filed under the training rehearsal folder). Untick “Headless '
+        + 'simulation” under Options to watch it in a window.'));
       box.append(rehearse);
       box.append(node('p', 'help tl-note', 'You choose the stage for every session. A stage’s '
         + 'criterion is shown as a recommendation; nothing moves a subject by itself. Each stage '

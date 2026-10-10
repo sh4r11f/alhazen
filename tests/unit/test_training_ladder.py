@@ -659,3 +659,66 @@ class TestCommandLine:
             (tmp_path / "data-training-rehearsal" / "shaping" / "saccade").rglob("session.json")
         )
         assert not (tmp_path / "data-training").exists()
+
+
+class TestAStageWithStandIns:
+    """Training mode with --simulate: the stage itself, at full length, with
+    the devices named stood in for — and so a rehearsal, filed beside the
+    real training data and never in it (docs/design/simulate-as-a-choice.md)."""
+
+    AUTOPILOT = ("--simulate", "all", "--gaze", "autopilot", "--headless")
+
+    @staticmethod
+    def card(tmp_path):
+        folder = tmp_path / "data-training-rehearsal" / "shaping" / "saccade"
+        (found,) = folder.rglob("session.json")
+        return json.loads(found.read_text(encoding="utf-8"))
+
+    def test_the_autopilot_works_the_stage_and_it_is_filed_as_a_rehearsal(self, tmp_path):
+        code = run_py(tmp_path, "--mode", "training", "--stage", "saccade", *self.AUTOPILOT)
+        assert code == 0
+        card = self.card(tmp_path)
+        # The mode is still the one asked for; what was simulated is beside it.
+        assert card["mode"] == "training"
+        assert card["simulated"] == {
+            "devices": ["tracker", "reward", "sync", "recording", "spikes"],
+            "gaze": "autopilot",
+        }
+        assert card["training"]["stage"] == "saccade"
+        assert not (tmp_path / "data-training").exists()
+
+    def test_nobody_is_asked_for_a_subject_when_the_autopilot_is_the_subject(self, tmp_path):
+        # No --sub, --ses or --initials, and stdin is not a terminal here: a
+        # real training session would be refused for that.
+        code = run_py(tmp_path, "--mode", "training", "--stage", "saccade", *self.AUTOPILOT)
+        assert code == 0
+        assert self.card(tmp_path)["subject"]["id"] == "sim"
+
+    def test_a_development_rig_takes_it(self, tmp_path):
+        from alhazen.cli.modes import run_experiment
+
+        ladder = write_ladder(tmp_path / "configs")
+        code = run_experiment(
+            tasks=TASKS,
+            ladders={"Shaping (monkey)": ladder},
+            default_rig=str(lab_rig_file(tmp_path, real_data=False)),
+            argv=["--mode", "training", "--stage", "saccade", *self.AUTOPILOT],
+        )
+        assert code == 0
+        assert self.card(tmp_path)["simulated"]["gaze"] == "autopilot"
+
+    @pytest.mark.parametrize(
+        "argv, words",
+        [
+            (["--simulate", "tracker"], "say who supplies gaze"),
+            (["--simulate", "pump"], "pump is not something a rig simulates"),
+            (["--simulate", "reward", "--gaze", "mouse"], "does not simulate it"),
+            (["--simulate", "reward", "--headless"], "needs the task's autopilot"),
+        ],
+    )
+    def test_a_choice_that_cannot_be_honoured_is_a_usage_error(self, tmp_path, capsys, argv, words):
+        code = run_py(tmp_path, "--mode", "training", "--stage", "saccade", *argv)
+        assert code == 2
+        assert words in capsys.readouterr().err
+        assert not (tmp_path / "data-training-rehearsal").exists()
+        assert not (tmp_path / "data-training").exists()

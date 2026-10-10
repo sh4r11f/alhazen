@@ -221,6 +221,10 @@ class RunIdentity:
     experimenter: Experimenter | None = None
     demographics: SubjectDemographics | None = None
     training: dict[str, Any] | None = None
+    # What the launch stood in for ({devices: [...], gaze: ...};
+    # alhazen.modes.simulation.SimulateChoice), or None when every device
+    # was the rig's own: the card's ``simulated`` is then null.
+    simulated: dict[str, Any] | None = None
 
 
 # How the alhazen console command is recorded: by its name, which is what a
@@ -423,6 +427,13 @@ def session_card(
         # schema bump, like ``command``: a new key, which a reader of schema 1
         # ignores.
         "training": identity.training,
+        # The devices this session stood in for and who supplied gaze
+        # ({devices: ["tracker", ...], gaze: "autopilot" | "mouse" | null}),
+        # or null when every device was the rig's own. Anything here means
+        # the run is a rehearsal, whatever ``mode`` says. Added in 2.15.0
+        # without a schema bump, like ``command``: a new key, which a reader
+        # of schema 1 ignores.
+        "simulated": identity.simulated,
         # Initials are recorded here and in the registry, never in a path.
         # Age (years, a number) and sex (a SUBJECT_SEXES code) beside them,
         # null when not recorded; added after 2.11.0 without a schema bump,

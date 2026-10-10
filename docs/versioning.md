@@ -104,6 +104,18 @@ in the same changes, with the folder levels pinned beside the file names
 runs recorded before 2.0 are still read, and what a script that globbed
 `data/sub-*` must change: [data on disk](data.md) §6.
 
+**2.14 shortened the file names, in a minor version, as an exception.** A run's data files no longer
+repeat the task that their folder already names
+(`sub-01_ses-001_run-01_20260928_trials.csv`, was
+`sub-01_ses-001_run-01_task-saccade-bias_20260928_trials.csv`), because the
+repeated name pushed real paths past Windows' limit of 260 characters, where
+a file cannot be written. The rule above would have made this a major
+version. It went out in a minor one because the old names lost a finished
+session's trials on an ordinary Windows machine, and because no reader had to
+change: all of them find a table by its ending. The baseline now pins what the names start with
+(`run_file_base`). Runs recorded before 2.14 keep their names and are still
+read: [data on disk](data.md) §7.
+
 ### On-disk schema versions
 
 Each format that a reader gates on carries its own integer. They are

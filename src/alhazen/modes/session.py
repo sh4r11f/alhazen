@@ -62,7 +62,14 @@ from alhazen.data.paths import session_dir
 from alhazen.errors import ConfigError
 from alhazen.modes import Mode, flag_refusal, real_data_refusal
 from alhazen.modes.rehearsal import Reduction, rehearsal_root, shrink_params
-from alhazen.modes.simulation import Simulation
+from alhazen.modes.simulation import (
+    GAZE_AUTOPILOT,
+    GAZE_MOUSE,
+    NOTHING_SIMULATED,
+    SIMULATABLE,
+    SimulateChoice,
+    Simulation,
+)
 from alhazen.session.runner import SessionRunner
 from alhazen.task.subject_kind import SubjectKind, subject_kind_of
 from alhazen.task.task import Task, declares_instructions
@@ -92,12 +99,28 @@ class ModeSession:
     # The experiment and version the run is filed under. None only for a
     # ModeSession built by hand; build_mode_session always sets it.
     experiment: Experiment | None = None
+    # What this launch stands in for (settled_choice). Anything at all makes
+    # it a rehearsal, whatever the mode.
+    simulate: SimulateChoice = NOTHING_SIMULATED
+
+    @property
+    def rehearsal(self) -> bool:
+        """Whether this session's data is kept out of the rig's real data:
+        every mode but run and training, and those two as well once any
+        device is a stand-in."""
+        return not self.mode.drives_subject or bool(self.simulate)
 
     def describe(self) -> str:
         """What is about to happen, for the experimenter to read before it
         does. Every line is something they might want to stop and change."""
         lines = [f"mode: {self.mode.value} — {self.mode.summary}"]
-        if not self.mode.writes_real_data:
+        if self.simulate:
+            who = f"; gaze from the {self.simulate.gaze}" if self.simulate.gaze else ""
+            lines.append(
+                f"simulated: {', '.join(self.simulate.names())}{who} — a rehearsal, so its data "
+                f"is kept out of the rig's own"
+            )
+        if not self.mode.writes_real_data or self.simulate:
             lines.append(f"data: {self.data_root}  (NOT the rig's data root)")
         else:
             lines.append(f"data: {self.data_root}")
@@ -165,10 +188,37 @@ def next_run(data_root: Path | str, subject: str, session: int, *, experiment_ve
 _STAND_INS = {"simulated", "mouse_sim", "scripted", "none"}
 
 
+def settled_choice(
+    mode: Mode, *, mouse: bool = False, simulate: SimulateChoice = NOTHING_SIMULATED
+) -> SimulateChoice:
+    """What a launch stands in for, with the two older spellings read as the
+    choices they always were: simulate mode is every device with the task's
+    autopilot as the subject, and test mode's ``--mouse`` is the tracker with
+    the mouse cursor as gaze. Anything else is ``simulate`` as given.
+
+    One function, so the rig, the data root and the session's record all
+    answer "what is simulated here?" the same way.
+    """
+    if mode is Mode.SIMULATE:
+        return SimulateChoice(frozenset(SIMULATABLE), GAZE_AUTOPILOT)
+    if mouse:
+        return SimulateChoice(frozenset({"tracker"}), GAZE_MOUSE)
+    return simulate
+
+
 def rig_for_mode(
-    mode: Mode, rig: RigConfig, *, headless: bool = False, mouse: bool = False
+    mode: Mode,
+    rig: RigConfig,
+    *,
+    headless: bool = False,
+    mouse: bool = False,
+    simulate: SimulateChoice = NOTHING_SIMULATED,
 ) -> tuple[RigConfig, list[str]]:
     """The rig as ``mode`` will drive it, and one line per thing it changed.
+
+    ``simulate`` names the devices this launch stands in for
+    (alhazen.modes.simulation.SimulateChoice). Only those are replaced:
+    nothing is simulated because a device is missing or fails to connect.
 
     Pure — the rig file is never rewritten, and the copy handed back is what
     ``build_session`` gets — so a test can ask what a mode would do to a rig
@@ -176,38 +226,73 @@ def rig_for_mode(
     printed by ``describe()``, because every one of them is a device the
     experimenter configured and is not getting.
     """
-    refusal = flag_refusal(mode, headless=headless, mouse=mouse)
+    refusal = flag_refusal(mode, headless=headless, mouse=mouse, simulate=simulate)
     if refusal is not None:
         raise ConfigError(refusal)
+    choice = settled_choice(mode, mouse=mouse, simulate=simulate)
     notes: list[str] = []
     devices = rig.devices
     display = rig.display
     live_monitor = rig.live_monitor
 
-    if mode is Mode.SIMULATE:
-        # Nobody is in the chair, so nothing that acts on a subject or reads
-        # one is driven. Each stand-in is the same one a purely simulated rig
-        # would have configured; what changes is that the rig file no longer
-        # has to say so, because the mode already knows.
-        if devices.eyetracker is not None and devices.eyetracker.backend not in _STAND_INS:
+    # --mouse is handled with test mode's own rules below, in the words it
+    # has always used; every other choice is handled here, device by device.
+    if choice and not mouse:
+        # Each stand-in is the same one a purely simulated rig would have
+        # configured; what changes is that the rig file does not have to say
+        # so, because the launch did. A device the rig does not configure, or
+        # one that is a stand-in already, is left as it is: there is nothing
+        # to switch off, and a note about it would be noise.
+        if "tracker" in choice.devices and choice.gaze == GAZE_MOUSE:
+            if headless or display.backend == "simulated":
+                raise ConfigError(
+                    "--gaze mouse needs a window for the cursor to move over, and this launch "
+                    "has none. Point --rig at a machine with a screen, or use --gaze autopilot."
+                )
+            was = (
+                f"{devices.eyetracker.backend} switched off (--simulate tracker)"
+                if devices.eyetracker is not None
+                else "this rig has none"
+            )
+            notes.append(f"eyetracker: the mouse cursor stands in for gaze — {was}")
+            devices = devices.model_copy(
+                update={"eyetracker": EyeTrackerConfig(backend="mouse_sim")}
+            )
+        elif (
+            "tracker" in choice.devices
+            and devices.eyetracker is not None
+            and devices.eyetracker.backend not in _STAND_INS
+        ):
             notes.append(
                 f"eyetracker: {devices.eyetracker.backend} stands down — "
                 f"the task's autopilot supplies gaze"
             )
             devices = devices.model_copy(update={"eyetracker": None})
-        if devices.reward is not None and devices.reward.backend not in _STAND_INS:
+        if (
+            "reward" in choice.devices
+            and devices.reward is not None
+            and devices.reward.backend not in _STAND_INS
+        ):
             notes.append(
                 f"reward: {devices.reward.backend} stands down — deliveries are logged, not pumped"
             )
             devices = devices.model_copy(
                 update={"reward": devices.reward.model_copy(update={"backend": "simulated"})}
             )
-        if devices.sync is not None and devices.sync.backend not in _STAND_INS:
+        if (
+            "sync" in choice.devices
+            and devices.sync is not None
+            and devices.sync.backend not in _STAND_INS
+        ):
             notes.append(f"sync: {devices.sync.backend} stands down — pulses are logged, not fired")
             devices = devices.model_copy(
                 update={"sync": devices.sync.model_copy(update={"backend": "simulated"})}
             )
-        if devices.recording is not None and devices.recording.backend not in _STAND_INS:
+        if (
+            "recording" in choice.devices
+            and devices.recording is not None
+            and devices.recording.backend not in _STAND_INS
+        ):
             notes.append(
                 f"recording: {devices.recording.backend} stands down — "
                 f"the run is marked as having no recording attached"
@@ -218,8 +303,14 @@ def rig_for_mode(
         # Spikes are dropped rather than simulated: a simulated spike source
         # needs a receptive field and a stimulus event to fire on, which only
         # an RF task declares. A task that wants simulated spikes configures
-        # them in its rig as `simulated`, and that passes through untouched.
-        if devices.spikes is not None and devices.spikes.backend not in _STAND_INS:
+        # them in its rig as `simulated`, and that passes through untouched —
+        # or supplies them itself (Simulation.spikes), which build_mode_session
+        # hands the builder in the rig's place.
+        if (
+            "spikes" in choice.devices
+            and devices.spikes is not None
+            and devices.spikes.backend not in _STAND_INS
+        ):
             notes.append(
                 f"spikes: {devices.spikes.backend} stands down — no spike source in a "
                 f"simulated session"
@@ -236,7 +327,9 @@ def rig_for_mode(
             display = display.model_copy(update={"backend": "simulated"})
             live_monitor = live_monitor.model_copy(update={"auto_open": False})
 
-    elif mode is Mode.TEST:
+    # Test mode's own rules for gaze: --mouse, and the mouse on a rig with no
+    # tracker. Not when --simulate has already settled who supplies it.
+    if mode is Mode.TEST and (mouse or "tracker" not in choice.devices):
         # A person is in the chair. Their gaze has to come from somewhere,
         # and on a machine with no tracker the mouse cursor is that
         # somewhere — which needs a window to move the cursor over.
@@ -289,8 +382,12 @@ def _named_rig(sources: dict[str, str] | None) -> RigRef | None:
     return RigRef(name, Path(path), "alhazen" if source == "alhazen" else "experiment")
 
 
-def _stand_in_reward(mode: Mode, rig: RigConfig, task: Task, notes: list[str]) -> RigConfig:
-    """What this mode does with the reward line, said as a note.
+def _stand_in_reward(rehearsal: bool, rig: RigConfig, task: Task, notes: list[str]) -> RigConfig:
+    """What this session does with the reward line, said as a note.
+
+    ``rehearsal`` is whether the session is one (`ModeSession.rehearsal`):
+    test and simulate mode always, run and training once any device is a
+    stand-in.
 
     A human session never opens it (task/subject_kind.py): said here, so the
     session's setup lines show it on every rig that has one. A task that pays
@@ -310,7 +407,7 @@ def _stand_in_reward(mode: Mode, rig: RigConfig, task: Task, notes: list[str]) -
                 "opened and no trial or key pays"
             )
         return rig
-    if mode.drives_subject or rig.devices.reward is not None:
+    if not rehearsal or rig.devices.reward is not None:
         return rig
     if task.mid_trial_reward:
         notes.append(
@@ -372,6 +469,7 @@ def build_mode_session(
     open_live_monitor: bool | None = None,
     headless: bool = False,
     mouse: bool = False,
+    simulate: SimulateChoice = NOTHING_SIMULATED,
     build_session: Callable[..., SessionRunner] | None = None,
     experiment_version: str | None = None,
     experiment_name: str | None = None,
@@ -381,12 +479,22 @@ def build_mode_session(
 ) -> ModeSession:
     """Wire one session in the given mode.
 
-    ``headless`` and ``mouse`` are the two flags that override the machine
-    (see :func:`alhazen.modes.flag_refusal`); a mode that cannot honour one
-    raises ``ConfigError`` before anything is wired. So does run mode on a
-    development rig, one whose settings say ``real_data: false``
+    ``simulate`` is the launch's choice of devices to stand in for, and of
+    who supplies gaze when the tracker is one of them (``--simulate``,
+    ``--gaze``; alhazen.modes.simulation.SimulateChoice). Only what it names
+    is replaced. Any stand-in at all makes the session a rehearsal, whatever
+    the mode: its data goes to the rehearsal root, the development-rig
+    refusal does not apply, and what was simulated is recorded in the run's
+    session.json. The mode keeps its own meaning: run and training stay
+    full-length, test stays reduced.
+
+    ``headless`` and ``mouse`` are the two older flags that override the
+    machine (see :func:`alhazen.modes.flag_refusal`); a mode that cannot
+    honour one raises ``ConfigError`` before anything is wired. So does run
+    mode on a development rig, one whose settings say ``real_data: false``
     (:func:`alhazen.modes.real_data_refusal`, docs/rigs.md §5), naming the
-    rig ``sources`` names when it names one.
+    rig ``sources`` names when it names one — unless something is simulated,
+    which is a rehearsal and what a development rig is for.
 
     The run is filed under its experiment's version — the one the
     ``pyproject.toml`` above ``task``'s class declares, unless
@@ -433,24 +541,33 @@ def build_mode_session(
     # The rig as this mode drives it — real hardware stood down for simulate,
     # the mouse standing in for a missing tracker in test — decided before
     # anything else, so a flag the mode refuses is refused first.
-    rig, notes = rig_for_mode(mode, rig, headless=headless, mouse=mouse)
+    rig, notes = rig_for_mode(mode, rig, headless=headless, mouse=mouse, simulate=simulate)
+    # What is simulated, with the older spellings read as choices, and so
+    # whether this is a rehearsal: every later decision asks these two, never
+    # the mode's name.
+    choice = settled_choice(mode, mouse=mouse, simulate=simulate)
+    rehearsal = not mode.drives_subject or bool(choice)
     # Then run mode on a development rig, before anything is found, numbered,
     # built or written. The command line refuses it earlier still, before the
     # params hook (alhazen.cli.main); this is the same rule for code that
     # starts a run-mode session itself, which no command line stands in
     # front of. docs/rigs.md §5.
-    refusal = real_data_refusal(
-        mode,
-        rig,
-        _named_rig(sources),
-        instead=lambda: [
-            "Start the session on a rig that collects real data, or rehearse it on this one "
-            "in test or simulate mode."
-        ],
+    refusal = (
+        None
+        if choice
+        else real_data_refusal(
+            mode,
+            rig,
+            _named_rig(sources),
+            instead=lambda: [
+                "Start the session on a rig that collects real data, or rehearse it on this "
+                "one: in test mode, or with --simulate."
+            ],
+        )
     )
     if refusal is not None:
         raise ConfigError(refusal)
-    rig = _stand_in_reward(mode, rig, task, notes)
+    rig = _stand_in_reward(rehearsal, rig, task, notes)
     if training is not None:
         notes.append(training.describe())
 
@@ -474,7 +591,12 @@ def build_mode_session(
     # whatever the task declares, and simulate has nobody to read anything.
     # A caller that passed its own text (run.py's `instructions=`) has
     # answered for the task, so there is nothing to warn about.
-    if mode is Mode.RUN and instructions is None and not declares_instructions(type(task)):
+    if (
+        mode is Mode.RUN
+        and not choice.autopilot
+        and instructions is None
+        and not declares_instructions(type(task))
+    ):
         log.warning(undeclared_instructions_warning(type(task)))
         notes.append(
             f"instructions: none — {type(task).__name__} does not declare instructions(), "
@@ -507,17 +629,29 @@ def build_mode_session(
     # subject. resolve_seed keeps a given seed as it is.
     seed = resolve_seed(seed)
 
-    if mode is Mode.SIMULATE:
+    # What the task itself stands in with. Its autopilot is the whole
+    # subject — gaze, answers, and a task that knows the right answer — and
+    # is asked for only when the autopilot was chosen. Its simulated neurons
+    # are asked for whenever the spikes are simulated, whoever the subject is.
+    sim_tracker = sim_response = sim_spikes = None
+    if choice.autopilot:
         simulation = task.simulation(seed)
         if simulation is None or simulation.is_empty():
             raise ConfigError(
                 f"simulate mode needs {type(task).__name__}.simulation() to return the "
                 f"stand-ins for a subject (see alhazen.modes.simulation.Simulation); it "
-                f"returned nothing. A gaze-contingent task with no simulated gaze ends "
+                f"returned nothing, so there is no autopilot to supply gaze (--gaze "
+                f"autopilot). A gaze-contingent task with no simulated gaze ends "
                 f"every trial NO_FIXATION, which is re-served, so the session never ends."
             )
         if simulation.task is not None:
             task = simulation.task
+        sim_tracker, sim_response = simulation.tracker, simulation.response
+        if "spikes" in choice.devices:
+            sim_spikes = simulation.spikes
+    elif "spikes" in choice.devices:
+        neurons = task.simulation(seed)
+        sim_spikes = neurons.spikes if neurons is not None else None
 
     if training is not None:
         # Never the experiment's data root, nor its rehearsal root: a stage's
@@ -526,9 +660,9 @@ def build_mode_session(
             rig.data_root,
             training.ladder.name,
             training.stage.id,
-            rehearsal=not mode.drives_subject,
+            rehearsal=rehearsal,
         )
-    elif mode.writes_real_data:
+    elif not rehearsal and mode.writes_real_data:
         data_root = rig.data_root
     else:
         data_root = rehearsal_root(rig.data_root)
@@ -545,6 +679,10 @@ def build_mode_session(
     stage_record: dict[str, Any] = (
         {"training_stage": training.record()} if training is not None else {}
     )
+    # Likewise what was simulated, for the run's session.json: passed only
+    # when something was.
+    if choice:
+        stage_record["simulated"] = {"devices": choice.names(), "gaze": choice.gaze}
     runner = build_session(
         rig=rig,
         subject=subject,
@@ -559,15 +697,16 @@ def build_mode_session(
         instructions=instructions,
         live_monitor=live_monitor,
         open_live_monitor=open_live_monitor,
-        tracker=simulation.tracker if simulation else None,
-        response=simulation.response if simulation else None,
+        tracker=sim_tracker,
+        response=sim_response,
         # The rig's own probe has already been stood down by rig_for_mode;
         # this is the simulated brain that runs in its place, and None
         # leaves the rig's spike source (a `simulated` one, or none) alone.
-        spikes=simulation.spikes if simulation else None,
-        # A simulated session has nobody to press SPACE at the instructions.
-        auto_start=mode is Mode.SIMULATE,
-        rest_resume_after_s=SIMULATION_REST_RESUME_S if mode is Mode.SIMULATE else None,
+        spikes=sim_spikes,
+        # With the autopilot as the subject there is nobody to press SPACE
+        # at the instructions, or at a break.
+        auto_start=choice.autopilot,
+        rest_resume_after_s=SIMULATION_REST_RESUME_S if choice.autopilot else None,
         # The experiment found above, handed down as it is, so the folder the
         # run was numbered in is the folder it is made in; and the mode, for
         # the run's session.json.
@@ -586,6 +725,7 @@ def build_mode_session(
         simulation=simulation,
         notes=notes,
         experiment=experiment,
+        simulate=choice,
     )
     # The same lines the experimenter reads before trial one go into the
     # session log after "session start": the run directory has to say for

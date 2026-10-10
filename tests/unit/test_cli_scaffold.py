@@ -831,7 +831,7 @@ class TestRunCommand:
         code = main(self.run_args(rig, "--mode", "test", "--headless", "--sub", "s", "--ses", "1"))
         assert code == 2
         err = capsys.readouterr().err
-        assert "CANNOT RUN: --headless: only simulate mode" in err
+        assert "CANNOT RUN: --headless: a session runs without a window only with" in err
         assert "test mode is for a person to sit through" in err
         assert not (tmp_path / "data").exists()
 

@@ -131,9 +131,9 @@ class TestSessionCard:
             # is no merged rig beside the copy (TestTheMergedRig has one).
             "rig_merged": None,
             "params": "params.yaml",
-            "trials": "sub-t01_ses-001_run-01_task-test-task_20260826_trials.csv",
-            "events": "sub-t01_ses-001_run-01_task-test-task_20260826_events.csv",
-            "frames": "sub-t01_ses-001_run-01_task-test-task_20260826_frames.csv",
+            "trials": "sub-t01_ses-001_run-01_20260826_trials.csv",
+            "events": "sub-t01_ses-001_run-01_20260826_events.csv",
+            "frames": "sub-t01_ses-001_run-01_20260826_frames.csv",
             "log": "session.log",
         }
 

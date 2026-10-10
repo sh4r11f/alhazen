@@ -323,7 +323,9 @@ the light theme; the dark theme is unchanged.
    interpreter runs an alhazen older than 2.0 does not know `--initials`: its
    run and test launches stop at once with that usage error in the console,
    and the fix is to move the project to alhazen 2.0. Only simulate accepts
-   headless, and only test accepts mouse gaze.
+   headless, and only test accepts mouse gaze. A Training launch with
+   **Rehearse this stage** ticked is a simulation too, so it shows the
+   Headless box: untick it to watch the stage in a window.
 6. Follow the console or view generated media. Images can be enlarged or saved.
    Movies appear once recording finishes, with native playback and seeking.
 

@@ -27,7 +27,7 @@ from alhazen.errors import ConfigError
 from alhazen.modes import Mode, flag_refusal
 from alhazen.modes.rehearsal import rehearsal_root
 from alhazen.modes.session import build_mode_session, next_run, rig_for_mode
-from alhazen.modes.simulation import Simulation
+from alhazen.modes.simulation import SIMULATABLE, SimulateChoice, Simulation
 from alhazen.paradigms.config import BlockConfig, SchedulerConfig
 from support import MONITOR, RunForFrames
 
@@ -181,7 +181,7 @@ class TestRunModeOnADevelopmentRig:
             "run mode records real data, and alhazen/laptop (alhazen's shared rig) is a "
             "development rig"
         )
-        assert "rehearse it on this one in test or simulate mode" in message
+        assert "rehearse it on this one: in test mode, or with --simulate" in message
 
     def test_without_sources_the_rig_is_refused_unnamed(self, tmp_path):
         with pytest.raises(ConfigError, match="and this rig is a development rig"):
@@ -422,7 +422,9 @@ class TestHeadless:
 
     @pytest.mark.parametrize("mode", [Mode.TEST, Mode.RUN])
     def test_the_other_trial_modes_refuse_it_by_name(self, tmp_path, mode):
-        with pytest.raises(ConfigError, match="--headless: only simulate mode"):
+        with pytest.raises(
+            ConfigError, match="--headless: a session runs without a window only with"
+        ):
             build(tmp_path, mode, headless=True)
 
 
@@ -486,7 +488,7 @@ class TestRigForMode:
         refusal = flag_refusal(mode, headless=True)
 
         assert refusal is not None
-        assert refusal.startswith("--headless: only simulate mode")
+        assert refusal.startswith("--headless: a session runs without a window only with")
         assert f"{mode.value} mode" in refusal
 
     @pytest.mark.parametrize("mode", [m for m in Mode if m is not Mode.TEST])
@@ -780,3 +782,252 @@ class TestTheBreaksValidationInEachMode:
                 subject="t01",
                 session=1,
             )
+
+
+# ----------------------------------------------------------------------
+# --simulate and --gaze: what to stand in for is a choice made at launch,
+# in any mode that runs trials (docs/design/simulate-as-a-choice.md)
+# ----------------------------------------------------------------------
+
+
+def chosen(simulate, gaze=None):
+    return SimulateChoice.parse(simulate, gaze)
+
+
+PSYCHOPY = DisplayConfig(backend="psychopy")
+
+
+class TestTheSimulateChoiceAsTyped:
+    def test_all_names_every_device_in_order(self):
+        assert chosen("all", "autopilot").names() == list(SIMULATABLE)
+
+    def test_names_are_comma_separated_and_forgiving_of_case_and_spaces(self):
+        assert chosen(" Reward , SYNC ").names() == ["reward", "sync"]
+
+    def test_nothing_typed_simulates_nothing(self):
+        assert not chosen(None)
+        assert not chosen("")
+
+    def test_an_unknown_device_is_refused_with_the_ones_there_are(self):
+        with pytest.raises(ValueError, match="pump is not something a rig simulates") as refused:
+            chosen("reward,pump")
+        assert "tracker, reward, sync, recording, spikes, or all" in str(refused.value)
+
+    @pytest.mark.parametrize("simulate", ["tracker", "all"])
+    def test_a_simulated_tracker_needs_someone_chosen_to_supply_gaze(self, simulate):
+        # No default on purpose: the task playing itself and a person playing
+        # it are different things to want.
+        with pytest.raises(ValueError, match="say who supplies gaze"):
+            chosen(simulate)
+
+    def test_gaze_without_a_simulated_tracker_is_refused(self):
+        with pytest.raises(ValueError, match="does not simulate it"):
+            chosen("reward", "mouse")
+
+    def test_a_gaze_source_that_is_not_one_is_refused(self):
+        with pytest.raises(ValueError, match="choose autopilot or mouse"):
+            chosen("tracker", "keyboard")
+
+
+class TestOnlyWhatIsNamedIsSimulated:
+    def test_naming_the_reward_leaves_every_other_device_the_rigs_own(self, tmp_path):
+        built, spy = build(tmp_path, Mode.TEST, devices=LAB_DEVICES, simulate=chosen("reward"))
+
+        devices = spy.kwargs["rig"].devices
+        assert devices.reward.backend == "simulated"
+        assert devices.eyetracker.backend == "eyelink"
+        assert devices.sync.backend == "nidaq"
+        assert devices.recording.backend == "spikeglx"
+        assert devices.spikes.backend == "spikeglx"
+        assert "reward: nidaq stands down" in built.describe()
+        assert "eyetracker" not in built.describe()
+
+    def test_nothing_named_simulates_nothing_even_in_test_mode(self, tmp_path):
+        _, spy = build(tmp_path, Mode.TEST, devices=LAB_DEVICES)
+        assert spy.kwargs["rig"].devices == LAB_DEVICES
+        assert "simulated" not in spy.kwargs
+
+    def test_all_with_the_autopilot_is_what_simulate_mode_does_to_a_rig(self, tmp_path):
+        _, new = build(
+            tmp_path / "new",
+            Mode.TEST,
+            task=SimTask(Params()),
+            devices=LAB_DEVICES,
+            simulate=chosen("all", "autopilot"),
+        )
+        _, old = build(tmp_path / "old", Mode.SIMULATE, task=SimTask(Params()), devices=LAB_DEVICES)
+        assert new.kwargs["rig"].devices == old.kwargs["rig"].devices
+
+    def test_a_device_the_rig_does_not_have_is_left_alone(self, tmp_path):
+        # A laptop: no pump, no sync lines. Naming them is not an error and
+        # says nothing, since there is nothing to switch off.
+        built, spy = build(tmp_path, Mode.TEST, simulate=chosen("sync,recording"))
+        assert spy.kwargs["rig"].devices.sync is None
+        assert "stands down" not in built.describe()
+
+
+class TestWhoSuppliesGaze:
+    def test_the_autopilot_is_the_tasks_own_and_nobody_is_waited_for(self, tmp_path):
+        _, spy = build(
+            tmp_path,
+            Mode.RUN,
+            task=SimTask(Params()),
+            devices=LAB_DEVICES,
+            simulate=chosen("tracker", "autopilot"),
+        )
+        assert spy.kwargs["rig"].devices.eyetracker is None
+        assert spy.kwargs["tracker"] is not None
+        assert spy.kwargs["auto_start"] is True
+        assert spy.kwargs["rest_resume_after_s"] is not None
+
+    def test_the_autopilot_needs_a_task_that_has_one(self, tmp_path):
+        with pytest.raises(ConfigError, match="no autopilot to supply gaze"):
+            build(tmp_path, Mode.TEST, simulate=chosen("tracker", "autopilot"))
+
+    def test_the_mouse_stands_in_and_a_person_starts_the_session(self, tmp_path):
+        built, spy = build(
+            tmp_path,
+            Mode.RUN,
+            task=SimTask(Params()),
+            devices=LAB_DEVICES,
+            display=PSYCHOPY,
+            simulate=chosen("tracker", "mouse"),
+        )
+        assert spy.kwargs["rig"].devices.eyetracker.backend == "mouse_sim"
+        # The task's autopilot is not asked: a person is playing.
+        assert spy.kwargs["tracker"] is None
+        assert spy.kwargs["auto_start"] is False
+        assert spy.kwargs["rest_resume_after_s"] is None
+        assert "the mouse cursor stands in for gaze — eyelink switched off" in built.describe()
+
+    def test_the_mouse_needs_a_window(self, tmp_path):
+        with pytest.raises(ConfigError, match="--gaze mouse needs a window"):
+            build(
+                tmp_path,
+                Mode.TEST,
+                display=DisplayConfig(backend="simulated"),
+                simulate=chosen("tracker", "mouse"),
+            )
+
+    def test_simulated_spikes_are_the_tasks_whoever_the_subject_is(self, tmp_path):
+        _, spy = build(
+            tmp_path,
+            Mode.TEST,
+            task=SimTaskWithSpikes(Params()),
+            devices=LAB_DEVICES,
+            simulate=chosen("spikes"),
+        )
+        assert spy.kwargs["rig"].devices.spikes is None
+        assert spy.kwargs["spikes"] is not None
+        # Only the neurons: the rig's tracker is still the subject's eye.
+        assert spy.kwargs["tracker"] is None
+        assert spy.kwargs["rig"].devices.eyetracker.backend == "eyelink"
+
+    def test_the_tasks_neurons_are_not_used_unless_the_spikes_are_simulated(self, tmp_path):
+        _, spy = build(
+            tmp_path,
+            Mode.TEST,
+            task=SimTaskWithSpikes(Params()),
+            devices=LAB_DEVICES,
+            simulate=chosen("tracker", "autopilot"),
+        )
+        assert spy.kwargs["spikes"] is None
+        assert spy.kwargs["rig"].devices.spikes.backend == "spikeglx"
+
+
+class TestAnyStandInMakesARehearsal:
+    @pytest.mark.parametrize("simulate", ["reward", "sync", "recording"])
+    def test_run_mode_with_a_stand_in_is_kept_out_of_the_real_data(self, tmp_path, simulate):
+        built, spy = build(tmp_path, Mode.RUN, devices=LAB_DEVICES, simulate=chosen(simulate))
+
+        assert built.rehearsal
+        assert built.data_root == rehearsal_root(tmp_path / "data")
+        assert spy.kwargs["rig"].data_root == rehearsal_root(tmp_path / "data")
+        assert "NOT the rig's data root" in built.describe()
+
+    def test_run_mode_with_nothing_simulated_still_writes_real_data(self, tmp_path):
+        built, _ = build(tmp_path, Mode.RUN, devices=LAB_DEVICES)
+        assert not built.rehearsal
+        assert built.data_root == tmp_path / "data"
+
+    def test_run_mode_keeps_its_full_trial_counts(self, tmp_path):
+        # Simulating a device does not change what the mode is: run is the
+        # full session, and only test turns the counts down.
+        built, spy = build(tmp_path, Mode.RUN, devices=LAB_DEVICES, simulate=chosen("reward"))
+        assert built.reductions == []
+        assert spy.kwargs["task"].params.paradigm.n_per_condition == 8
+
+    def test_it_is_recorded_for_session_json(self, tmp_path):
+        _, spy = build(
+            tmp_path,
+            Mode.RUN,
+            task=SimTask(Params()),
+            devices=LAB_DEVICES,
+            simulate=chosen("tracker,reward", "autopilot"),
+        )
+        assert spy.kwargs["simulated"] == {"devices": ["tracker", "reward"], "gaze": "autopilot"}
+        assert spy.kwargs["mode"] == "run"
+
+    def test_the_setup_lines_say_what_is_simulated(self, tmp_path):
+        built, _ = build(
+            tmp_path,
+            Mode.RUN,
+            task=SimTask(Params()),
+            devices=LAB_DEVICES,
+            simulate=chosen("tracker,reward", "autopilot"),
+        )
+        assert "simulated: tracker, reward; gaze from the autopilot" in built.describe()
+
+    def test_a_development_rig_takes_run_mode_once_something_is_simulated(self, tmp_path):
+        development = rig(tmp_path, LAB_DEVICES).model_copy(update={"real_data": False})
+        spy = Spy()
+        built = build_mode_session(
+            Mode.RUN,
+            rig=development,
+            task=ModeTask(Params()),
+            subject="t01",
+            session=1,
+            build_session=spy,
+            simulate=chosen("reward"),
+        )
+        assert built.data_root == rehearsal_root(tmp_path / "data")
+
+
+class TestTheSimulateFlagIsRefusedWhereItCannotBeHonoured:
+    @pytest.mark.parametrize("mode", [Mode.MEASURE, Mode.DEMO, Mode.MOVIE])
+    def test_a_mode_that_runs_no_trials_refuses_it(self, mode):
+        refusal = flag_refusal(mode, simulate=chosen("reward"))
+        assert refusal.startswith("--simulate: only a mode that runs trials")
+
+    def test_simulate_mode_is_told_to_say_it_one_way(self):
+        refusal = flag_refusal(Mode.SIMULATE, simulate=chosen("reward"))
+        assert "--mode test --simulate all --gaze autopilot" in refusal
+
+    def test_the_mouse_flag_is_told_to_say_it_one_way(self):
+        refusal = flag_refusal(Mode.TEST, mouse=True, simulate=chosen("reward"))
+        assert "--simulate tracker --gaze mouse" in refusal
+
+    @pytest.mark.parametrize("mode", [Mode.RUN, Mode.TEST, Mode.TRAINING])
+    def test_headless_goes_with_the_autopilot_in_any_trial_mode(self, mode):
+        assert flag_refusal(mode, headless=True, simulate=chosen("all", "autopilot")) is None
+
+    @pytest.mark.parametrize("simulate, gaze", [("tracker", "mouse"), ("reward", None)])
+    def test_headless_without_the_autopilot_is_refused(self, simulate, gaze):
+        refusal = flag_refusal(Mode.TEST, headless=True, simulate=chosen(simulate, gaze))
+        assert refusal.startswith("--headless: a session with no window needs the task's autopilot")
+
+    def test_a_calibration_target_is_refused_when_the_tracker_is_simulated(self):
+        refusal = flag_refusal(Mode.TEST, calibration=True, simulate=chosen("tracker", "mouse"))
+        assert "a stand-in has no calibration" in refusal
+
+    def test_headless_with_the_autopilot_takes_the_window_away(self, tmp_path):
+        built, spy = build(
+            tmp_path,
+            Mode.TEST,
+            task=SimTask(Params()),
+            display=PSYCHOPY,
+            headless=True,
+            simulate=chosen("all", "autopilot"),
+        )
+        assert spy.kwargs["rig"].display.backend == "simulated"
+        assert "display: none (--headless)" in built.describe()

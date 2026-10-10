@@ -1,7 +1,8 @@
 # Data on disk
 
 *Where a session's data goes, what each file in a run folder is for, how the
-experiment's version decides the folder, and what changed in alhazen 2.0.*
+experiment's version decides the folder, and what changed in alhazen 2.0 and
+2.14.*
 
 Every session that runs trials (`run`, `test`, `simulate`) writes one **run
 folder**. The run folder is the record: the database and the live monitor are
@@ -50,9 +51,9 @@ data/
                 ├── rig.yaml
                 ├── rig-merged.yaml             only for a rig file that extends a shared rig
                 ├── params.yaml
-                ├── sub-01_ses-001_run-01_task-saccade-bias_20260928_trials.csv
-                ├── sub-01_ses-001_run-01_task-saccade-bias_20260928_events.csv
-                ├── sub-01_ses-001_run-01_task-saccade-bias_20260928_frames.csv
+                ├── sub-01_ses-001_run-01_20260928_trials.csv
+                ├── sub-01_ses-001_run-01_20260928_events.csv
+                ├── sub-01_ses-001_run-01_20260928_frames.csv
                 ├── session.log
                 ├── figures/
                 └── manifest.yaml
@@ -182,9 +183,9 @@ schema versions in [versioning](versioning.md) §3); a reader gates on it.
     "rig": "rig.yaml",
     "rig_merged": "rig-merged.yaml",
     "params": "params.yaml",
-    "trials": "sub-01_ses-001_run-01_task-saccade-bias_20260928_trials.csv",
-    "events": "sub-01_ses-001_run-01_task-saccade-bias_20260928_events.csv",
-    "frames": "sub-01_ses-001_run-01_task-saccade-bias_20260928_frames.csv",
+    "trials": "sub-01_ses-001_run-01_20260928_trials.csv",
+    "events": "sub-01_ses-001_run-01_20260928_events.csv",
+    "frames": "sub-01_ses-001_run-01_20260928_frames.csv",
     "log": "session.log"
   }
 }
@@ -194,7 +195,8 @@ schema versions in [versioning](versioning.md) §3); a reader gates on it.
 | --- | --- |
 | `experiment.version_source` | Where the version was read: `pyproject.toml`, `installed metadata`, or `given to build_session` (§4). |
 | `experiment.git` | `git describe --always --dirty` of the experiment's repository — the snapshot's `experiment_git_sha`. `-dirty` means the commit alone does not reproduce what ran. |
-| `mode` | `run`, `test` or `simulate`; null for a session built with `build_session` directly. |
+| `mode` | `run`, `test`, `simulate` or `training`; null for a session built with `build_session` directly. |
+| `simulated` | The devices the session stood in for and who supplied gaze: `{"devices": ["tracker", "reward"], "gaze": "autopilot"}` (`gaze` is `autopilot`, `mouse`, or null when the tracker was the rig's own). Null when every device was the rig's own. Anything here means the run is a rehearsal, whatever `mode` says ([the six modes](modes.md)). Added in 2.15.0 without a schema bump; a card without the key is older. |
 | `subject.initials` | The subject's initials, uppercase; null when the session was not given them (`simulate`, a session started from code). |
 | `subject.age`, `subject.sex` | The subject's age in years (a number, at most one decimal) and sex (`female`, `male`, `other` or `prefer_not_to_say`), from `--age` and `--sex` — sent by the [experiment workspace](workspace.md) from a registered subject's record. `null` when not given: "not recorded". Also a line of `session.log`, and the `age`/`sex` columns of `participants.tsv` for a subject this session registers (an existing row is not rewritten, so its age is the age at its first session; `session.json` has each session's). Added after 2.11.0 without a schema bump; a card without the keys is older. |
 | `experimenter` | Who ran the session: `--experimenter NAME` and, from the [experiment workspace](workspace.md), `--experimenter-id` (its people-registry record). `null` when nobody said — "not recorded", never a guess; recorded, never in a path. Also a line of `session.log`. Added after 2.10.0 without a schema bump; a card without the key is older. |
@@ -321,3 +323,57 @@ come back.
   script reading the saved state of runs from both sides looks for the new
   name and falls back to the old one. The manifest covers whichever names a
   run has, and nothing in alhazen opens either file by name.
+
+## 7. Migrating to 2.14: shorter file names
+
+**What changed.** A run's data files no longer repeat the task, which the run
+folder already names:
+
+| | Run folder | A file in it |
+| --- | --- | --- |
+| before 2.14 | `run-01_task-saccade-bias/` | `sub-01_ses-001_run-01_task-saccade-bias_20260928_trials.csv` |
+| from 2.14 | `run-01_task-saccade-bias/` | `sub-01_ses-001_run-01_20260928_trials.csv` |
+
+The folders did not change, and no existing file is renamed: a run recorded
+before 2.14 keeps its names and is still read.
+
+**Why.** Windows refuses a path of 260 characters or more unless an
+administrator has switched on long paths, and most machines have not. The
+task appeared twice in every path, so an experiment with a long task name ran
+out of room:
+
+```mermaid
+graph LR
+    A["where the data root is<br/>(yours)"] --> B["v0.5.0 / sub-m01 / ses-001"]
+    B --> C["run-01_task-NAME<br/>(the task, once)"]
+    C --> D["before 2.14:<br/>sub-m01_ses-001_run-01_task-NAME_20261008_trials.csv<br/>(the task, a second time)"]
+    C --> E["from 2.14:<br/>sub-m01_ses-001_run-01_20261008_trials.csv"]
+```
+
+A file over the limit cannot be opened, and a run's tables are written when
+the session ends, so the failure arrived after the subject's work was done.
+Taking the task out of the file names gives its length back in every path.
+
+**A run folder that is still too deep is refused before the session starts.**
+On a Windows machine without long paths, `SessionPaths.create` works out the
+longest path the run can write and raises a `DataError` when it reaches 260
+characters. The message gives the path, its length, and how many characters
+shorter the data root has to be. Nothing is created. The two ways out are a
+shorter data root (or moving the experiment's folder nearer the drive's root)
+and switching on long paths (`LongPathsEnabled`), which needs an
+administrator.
+
+**Scripts and code that change:**
+
+- A script that finds a run's table by its ending (`*_trials.csv`,
+  `*_events.csv`, `*_frames.csv`) needs no change, and reads runs from both
+  sides. So does everything in alhazen: `load_run`, the workspace's data
+  page, the training history.
+- A script that built the file name from its parts, or matched
+  `sub-*_task-*_trials.csv`, finds no run recorded since the upgrade. Match
+  the ending, or read the names from the run's `session.json` (`files`, §3).
+- `alhazen.data.naming.base_name` no longer takes the task:
+  `base_name(subject, session, run, date_yyyymmdd)`.
+- The task of a run is in its folder's name
+  (`alhazen.data.naming.parse_run_task`), in `session.json` and in the trials
+  table, as before.
