@@ -963,10 +963,50 @@ const HubCore = (() => {
     return String(title || '').toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'draft';
   }
 
+  /** A parameter value as words: {ms: 50} -> "50 ms", {frames: 3} ->
+   *  "3 frames", a list joined with commas, anything else as text. */
+  function valueText(value) {
+    if (value === null || value === undefined) return '';
+    if (Array.isArray(value)) return value.map(valueText).join(', ');
+    if (typeof value === 'object') {
+      if (Number.isFinite(Number(value.ms)) && value.ms !== null && value.ms !== undefined) return Number(value.ms) + ' ms';
+      if (Number.isFinite(Number(value.frames)) && value.frames !== null && value.frames !== undefined) {
+        const n = Number(value.frames);
+        return n + (n === 1 ? ' frame' : ' frames');
+      }
+      return cellText(value);
+    }
+    return String(value);
+  }
+
+  /** A parameter's constraints as words: "0.1 to 1", "at least 0",
+   *  "one of: a, b", then the note. */
+  function constraintText(constraints) {
+    if (constraints === null || constraints === undefined) return '';
+    if (typeof constraints !== 'object' || Array.isArray(constraints)) return valueText(constraints);
+    const has = (v) => v !== null && v !== undefined && v !== '';
+    const parts = [];
+    if (has(constraints.min) && has(constraints.max)) parts.push(valueText(constraints.min) + ' to ' + valueText(constraints.max));
+    else if (has(constraints.min)) parts.push('at least ' + valueText(constraints.min));
+    else if (has(constraints.max)) parts.push('at most ' + valueText(constraints.max));
+    if (Array.isArray(constraints.choices) && constraints.choices.length) parts.push('one of: ' + constraints.choices.map(valueText).join(', '));
+    if (has(constraints.note)) parts.push(String(constraints.note));
+    return parts.join('; ');
+  }
+
+  /** A duration-like value in ms, or null ({ms}, a number of ms; frames
+   *  have no fixed length, so null). */
+  function msOf(value) {
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return value;
+    if (value && typeof value === 'object' && Number.isFinite(Number(value.ms)) && value.ms !== null) return Number(value.ms);
+    return null;
+  }
+
   /** A timeline duration: ms when numeric (a number, "600", "600 ms",
    *  "1.5 s"), else null with words for 'parameterized' / 'event-driven'. */
   function phaseDuration(value) {
     if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return {ms: value, text: value >= 1000 ? (value / 1000) + ' s' : value + ' ms'};
+    if (value && typeof value === 'object') return {ms: msOf(value), text: valueText(value)};
     const raw = String(value === null || value === undefined ? '' : value).trim();
     const m = /^(\d+(?:\.\d+)?)\s*(ms|s)?$/i.exec(raw);
     if (m) {
@@ -975,7 +1015,25 @@ const HubCore = (() => {
     }
     if (raw === 'parameterized') return {ms: null, text: 'Set by a parameter'};
     if (raw === 'event-driven') return {ms: null, text: 'Until an event'};
+    if (raw === 'instant') return {ms: 0, text: 'Instant'};
     return {ms: null, text: raw};
+  }
+
+  /** One timeline phase of the authoring kit's plan: a parameterized phase
+   *  takes the length its parameter's default gives ("50 ms"), an
+   *  event-driven one says what ends it. */
+  function planPhase(item, params) {
+    const d = phaseDuration(item.duration);
+    let {ms, text} = d;
+    if (item.duration === 'parameterized' && item.parameter) {
+      const p = params.find((x) => x && x.name === item.parameter);
+      const value = p ? valueText(p.default) : '';
+      ms = p ? msOf(p.default) : null;
+      text = value ? value + ' (' + item.parameter + ')' : 'Set by ' + item.parameter;
+    } else if (item.duration === 'event-driven' && item.until) {
+      text = 'Until ' + String(item.until).replace(/^until\s+/i, '');
+    }
+    return {label: cellText(item.phase), ms, time: text, note: cellText(item.note)};
   }
 
   /** The contract's Plan as the plan page draws it. Missing parts are
@@ -987,29 +1045,27 @@ const HubCore = (() => {
     const hardware = [['display', 'Display'], ['eye_tracker', 'Eye tracker'], ['reward', 'Reward line']]
       .filter(([k]) => hw[k] === true).map(([, label]) => label);
     const tasks = Array.isArray(p.tasks) ? p.tasks : [];
-    const timeline = (Array.isArray(p.timeline) ? p.timeline : []).map((t) => {
-      const item = t && typeof t === 'object' ? t : {phase: t};
-      const d = phaseDuration(item.duration);
-      return {label: cellText(item.phase), ms: d.ms, time: d.text, note: cellText(item.note)};
-    });
+    const timeline = (Array.isArray(p.timeline) ? p.timeline : []).map((t) => planPhase(t && typeof t === 'object' ? t : {phase: t}, params));
     const subject = p.subject_kind ? humanKey(p.subject_kind) : '';
     return {
       title: String(p.title || 'Untitled plan'),
-      slug: slugOf(p.title),
+      slug: p.slug ? String(p.slug) : slugOf(p.title),
       summary: String(p.summary || ''),
       paradigm: String(p.paradigm || ''),
+      license: String(p.license || ''),
       design: [
+        ...(Array.isArray(p.design) ? p.design : []).filter((x) => x && typeof x === 'object' && x.label)
+          .map((x) => [cellText(x.label), valueText(x.value)]),
         ['Subject', subject],
         ['Hardware', hardware.length ? hardware.join(', ') : (Object.keys(hw).length ? 'Display only' : '')],
         ['Tasks', tasks.length ? tasks.map((t) => cellText(t && typeof t === 'object' ? t.name : t)).join(', ') : ''],
-      ].filter(([, v]) => v),
+      ].filter(([k, v], i, all) => v && all.findIndex(([k2]) => k2 === k) === i),
       timeline,
       stimuli: itemTable(p.stimuli, 'Element', 4),
       measures: itemTable(p.measures, 'Measure', 4),
       parameters: params.map((x) => {
         const q = x && typeof x === 'object' ? x : {name: x};
-        const meaning = cellText(q.meaning) + (q.constraints ? ' (' + cellText(q.constraints) + ')' : '');
-        return [cellText(q.name), cellText(q.default), cellText(q.unit), meaning];
+        return [cellText(q.name), valueText(q.default), cellText(q.unit), constraintText(q.constraints), cellText(q.meaning)];
       }),
       tasks: tasks.map((t) => (t && typeof t === 'object' ? [cellText(t.name), cellText(t.description)] : [cellText(t), ''])),
       tests: (Array.isArray(p.tests) ? p.tests : []).map((t) => (t && typeof t === 'object' ? [cellText(t.name), cellText(t.how)] : [cellText(t), ''])),
@@ -1075,7 +1131,7 @@ const HubCore = (() => {
     nextOffsetLabel,
     CATEGORIES, FACETS, SORTS, facetList, toggleFacet, hardwareKeys, subjectKeys, filterCatalog, catalogFacets,
     activeFilters, schematicKind, seededRandom, methodsExcerpt,
-    AI_CODES, aiJob, aiAdvice, aiErrorCode, aiPlanView, aiValidation, aiDisclosed, aiDraftWord, phaseDuration, slugOf,
+    AI_CODES, aiJob, aiAdvice, aiErrorCode, aiPlanView, aiValidation, aiDisclosed, aiDraftWord, phaseDuration, slugOf, valueText, constraintText,
   };
 })();
 

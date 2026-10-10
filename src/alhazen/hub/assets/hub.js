@@ -2613,7 +2613,7 @@ const HubApp = (() => {
       if (view.timeline.length) parts.push(h('h2', {class: 'block-title'}, 'Trial timeline'), planTimeline(view.timeline));
       if (view.stimuli.rows.length) parts.push(h('h2', {class: 'block-title'}, 'Stimuli'), planTable('Stimuli', view.stimuli.heads, view.stimuli.rows));
       if (view.measures.rows.length) parts.push(h('h2', {class: 'block-title'}, 'Measures'), planTable('Measures', view.measures.heads, view.measures.rows));
-      if (view.parameters.length) parts.push(h('h2', {class: 'block-title'}, 'Parameters'), planTable('Parameters', ['Name', 'Default', 'Unit', 'Meaning'], view.parameters, true));
+      if (view.parameters.length) parts.push(h('h2', {class: 'block-title'}, 'Parameters'), planTable('Parameters', ['Name', 'Default', 'Unit', 'Allowed', 'Meaning'], view.parameters, true));
       if (view.tasks.length) parts.push(h('h2', {class: 'block-title'}, 'Tasks'), planTable('Tasks', ['Task', 'Description'], view.tasks, true));
       if (view.tests.length) {
         parts.push(h('h2', {class: 'block-title'}, 'Tests to run'),
@@ -2702,7 +2702,7 @@ const HubApp = (() => {
     function draftJob(detail, kind) {
       const d = detail.draft || {};
       const jobs = Array.isArray(detail.jobs) ? detail.jobs : [];
-      const wanted = kind === 'plan' ? d.plan_job_id : d.source_job_id;
+      const wanted = kind === 'plan' ? d.plan_job_id : (kind === 'source' ? d.source_job_id : d.repair_job_id);
       const byId = wanted ? jobs.find((j) => j && String(j.id) === String(wanted)) : null;
       if (byId) return byId;
       const ofKind = jobs.filter((j) => j && j.kind === kind).sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
@@ -2754,53 +2754,75 @@ const HubApp = (() => {
       const view = plan ? C.aiPlanView(plan) : null;
       const planJob = draftJob(detail, 'plan');
       const sourceJob = draftJob(detail, 'source');
+      const repairJob = draftJob(detail, 'repair');
       const pj = C.aiJob(planJob);
       const sj = sourceJob ? C.aiJob(sourceJob) : null;
+      const rj = repairJob ? C.aiJob(repairJob) : null;
+      const versions = sortVersions(Array.isArray(detail.versions) ? detail.versions : (Array.isArray(d.versions) ? d.versions : []));
       const status = String(d.status || '');
       const providerId = String(d.provider || (sourceJob && sourceJob.provider) || (planJob && planJob.provider) || '');
       const modelName = String(d.model || (sourceJob && sourceJob.model) || (planJob && planJob.model) || '');
-      const report = sourceJob && (sj.done || sj.code === 'generation_invalid')
-        ? C.aiValidation(sourceJob.result || sourceJob.result_json || detail.report || null) : null;
+      const reportOf = (job, j) => (job && (j.done || j.code === 'generation_invalid')
+        ? C.aiValidation(job.result || job.result_json || null) : null);
+      const sourceReport = reportOf(sourceJob, sj);
+      const repairReport = reportOf(repairJob, rj);
       const discarded = status === 'discarded';
-      const accepted = status === 'accepted' || Boolean(d.version_id);
+      const hasVersion = Boolean(d.version_id) || versions.length > 0;
 
-      /* Which stage the draft is in; the rail and the progress follow it. */
+      /* Which stage the draft is in; the rail and the progress follow it.
+       * After acceptance a repair job (kind 'repair') from a run log leads
+       * back to a validation report and the next version. */
       let stage;
       if (discarded) stage = 'discarded';
-      else if (accepted) stage = 'accepted';
+      else if (rj && rj.active) stage = 'repairing';
+      else if (rj && rj.done && status === 'generated' && repairReport && repairReport.ok) stage = 'repaired';
+      else if (status === 'accepted' || (hasVersion && status !== 'generated' && !(sj && sj.active))) stage = 'accepted';
       else if (!view && planJob && pj.active) stage = 'planning';
       else if (!view) stage = 'plan-failed';
       else if (sj && sj.active) stage = 'generating';
-      else if (sj && sj.done && report && report.ok) stage = 'generated';
+      else if (sj && sj.done && sourceReport && sourceReport.ok) stage = 'generated';
       else stage = 'planned';
+      const repairFailed = stage === 'accepted' && rj && (rj.failed || rj.cancelled);
+      const report = ['repairing', 'repaired'].includes(stage) || repairFailed ? repairReport : (stage === 'accepted' ? null : sourceReport);
 
       const title = view ? view.title : 'Draft';
       const lede = view ? view.summary : '';
       const word = stage === 'planning' ? 'Writing the plan' : stage === 'generating' ? 'Writing the source'
-        : stage === 'plan-failed' ? (pj.cancelled ? 'Cancelled' : 'Plan failed')
-          : stage === 'planned' && sj && (sj.failed || sj.cancelled) ? (sj.cancelled ? 'Cancelled' : 'Source failed') : C.aiDraftWord(status || stage);
+        : stage === 'repairing' ? 'Repairing from the run log' : stage === 'repaired' ? 'Repair ready'
+          : repairFailed ? (rj.cancelled ? 'Repair cancelled' : 'Repair failed')
+            : stage === 'plan-failed' ? (pj.cancelled ? 'Cancelled' : 'Plan failed')
+              : stage === 'planned' && sj && (sj.failed || sj.cancelled) ? (sj.cancelled ? 'Cancelled' : 'Source failed')
+                : stage === 'accepted' ? C.aiDraftWord('accepted') : C.aiDraftWord(status || stage);
       const chips = [h('span', {class: 'chip chip-private'}, 'Private draft')];
-      if (accepted) chips.push(h('span', {class: 'chip chip-public'}, 'Saved as a version'));
+      if (hasVersion) chips.push(h('span', {class: 'chip chip-public'}, 'Saved as a version'));
 
       /* main column */
       const main = h('div', {class: 'ix-plan'});
       if (stage === 'planning') {
         main.appendChild(quietProgress('Writing the plan from your description. This page updates on its own.'));
       }
+      if (stage === 'accepted') main.appendChild(repairSection(ctx, d, providerId, repairFailed ? rj : null));
+      if (stage === 'repairing') main.appendChild(quietProgress('Repairing the source from your run log. This page updates on its own.'));
       if (!view && d.prompt) {
         main.append(h('h2', {class: 'block-title'}, 'Your description'), h('p', {class: 'ix-plan-text ix-prompt'}, String(d.prompt)));
       }
-      if (report) main.append(validationBlock(report, sj));
+      if (report) main.append(validationBlock(report));
       if (stage === 'generating') main.appendChild(quietProgress('Writing the source files. This page updates on its own.'));
       if (view) main.append(...planSections(view));
 
       /* rail */
       const live = h('div', {class: 'sheet-block', 'data-ai-live': ''});
-      const lamp = ['planning', 'generating'].includes(stage) ? 'busy'
-        : stage === 'plan-failed' || (stage === 'planned' && sj && sj.failed) ? 'err'
-          : (['accepted', 'generated', 'planned'].includes(stage) ? 'ok' : 'idle');
+      const lamp = ['planning', 'generating', 'repairing'].includes(stage) ? 'busy'
+        : stage === 'plan-failed' || (stage === 'planned' && sj && sj.failed) || (repairFailed && rj.failed) ? 'err'
+          : (['accepted', 'generated', 'planned', 'repaired'].includes(stage) ? 'ok' : 'idle');
       const startFrom = (d.start_from && d.start_from.experiment_id) || d.start_experiment_id ? 'Fork of a listing' : 'Blank experiment';
-      const disclosed = C.aiDisclosed((sourceJob && sourceJob.disclosed) || (planJob && planJob.disclosed));
+      const disclosed = C.aiDisclosed((repairJob && repairJob.disclosed) || (sourceJob && sourceJob.disclosed) || (planJob && planJob.disclosed));
+      const eid = d.experiment_id;
+      const versionList = versions.length && eid
+        ? h('ul', {class: 'ix-versions'}, ...versions.map((v) => h('li', null,
+          link({view: 'experiment', id: eid, version: v.id}, versionLabel(v), {class: 'mono'}),
+          h('span', {class: 'muted small'}, ' ' + C.formatDate(v.created_at, false)))))
+        : '';
       const rail = h('aside', {class: 'sheet ix-rail', 'aria-label': 'Draft'},
         h('h2', {class: 'sheet-title'}, 'Draft'),
         spec([
@@ -2810,6 +2832,7 @@ const HubApp = (() => {
           ['Start', startFrom],
           ['Provider', providerId ? providerName(providerId) + (modelName ? ' \u00b7 ' + modelName : '') + ', your key' : ''],
           ['Sent', disclosed],
+          ['Versions', versionList],
           ['Parameters', view ? String(view.parameters.length) : ''],
           ['Tests to run', view ? String(view.tests.length) : ''],
         ]),
@@ -2818,9 +2841,10 @@ const HubApp = (() => {
       const discard = discardControl(ctx, d);
       const back = link({view: 'create', fork: r.fork}, 'Back to the description', {class: 'btn btn-quiet',
         on: {click: () => { const cd = createDraft(); if (d.prompt) cd.description = String(d.prompt); }}});
-      if (stage === 'planning' || stage === 'generating') {
-        const job = stage === 'planning' ? planJob : sourceJob;
-        live.append(cancelControl(ctx, job), discard);
+      const keyLink = () => link({view: 'create'}, 'Open Provider & key', {class: 'btn btn-line', 'data-focus-next': 'ai-key|ai-key-replace'});
+      if (stage === 'planning' || stage === 'generating' || stage === 'repairing') {
+        const job = stage === 'planning' ? planJob : (stage === 'generating' ? sourceJob : repairJob);
+        live.append(...[cancelControl(ctx, job), stage === 'repairing' ? null : discard].filter(Boolean));
         if (job && job.id) pollJob(ctx, job.id);
       } else if (stage === 'plan-failed') {
         const retry = link({view: 'create', fork: r.fork}, 'Back to the description', {class: 'btn btn-primary',
@@ -2831,14 +2855,16 @@ const HubApp = (() => {
       } else if (stage === 'planned') {
         if (sj && (sj.failed || sj.cancelled)) {
           live.appendChild(aiAdviceBox(sj.cancelled ? {kind: 'cancelled', message: ''} : {code: sj.code || 'error', kind: 'ai', message: sj.message},
-            providerId, [{node: link({view: 'create'}, 'Open Provider & key', {class: 'btn btn-line', 'data-focus-next': 'ai-key|ai-key-replace'}), when: 'key'}]));
+            providerId, [{node: keyLink(), when: 'key'}]));
         }
         live.append(generateControl(ctx, d, view, providerId), discard, back);
       } else if (stage === 'generated') {
-        live.append(acceptControl(ctx, d, view, sourceJob, providerId), discard);
+        live.append(acceptControl(ctx, d, view, sourceJob, providerId, 'Create private draft version'), discard);
+      } else if (stage === 'repaired') {
+        const latest = versions[0];
+        live.append(acceptControl(ctx, d, view, repairJob, providerId, 'Create version', latest));
       } else if (stage === 'accepted') {
-        const eid = d.experiment_id;
-        const vid = d.version_id;
+        const vid = (versions[0] && versions[0].id) || d.version_id;
         live.append(h('div', {class: 'ix-done', role: 'status'}, h('p', {class: 'ix-nc-title'}, 'Saved as a private version in My experiments.')),
           eid ? link({view: 'mine', id: eid}, 'Open in My experiments', {class: 'btn btn-primary', 'data-focus': 'ai-mine'}) : null,
           eid && vid ? h('a', {class: 'btn btn-line', download: '', href: state.api.url('/experiments/' + C.seg(eid) + '/versions/' + C.seg(vid) + '/download')}, 'Download') : null);
@@ -2846,6 +2872,40 @@ const HubApp = (() => {
         live.append(h('p', {class: 'muted'}, 'This draft was discarded.'), link({view: 'create'}, 'Start a new draft', {class: 'btn btn-line'}));
       }
       return [planHead(r, title, lede, chips), h('div', {class: 'exp-grid ix-plan-grid'}, main, rail)];
+    }
+
+    /** After acceptance: paste a run log or traceback from the rig and
+     *  repair the source from it (POST /ai/drafts/{id}/repair {log}); a
+     *  failed repair job's advice sits above the form. */
+    function repairSection(ctx, d, providerId, failedJob) {
+      const log = textarea({name: 'log', rows: '8', maxlength: '200000', spellcheck: 'false', 'data-focus': 'ai-repair-log',
+        class: 'input textarea mono ix-repair-log'});
+      const button = h('button', {type: 'submit', class: 'btn btn-primary', 'data-focus': 'ai-repair'}, 'Repair');
+      const out = h('div', {'aria-live': 'polite'});
+      const form = h('form', {class: 'form ix-repair', novalidate: true},
+        field('Paste the run log or traceback from your rig', log), h('div', {class: 'actions'}, button), out);
+      form.addEventListener('submit', async (event) => {
+        prevent(event);
+        const text = String(log.value || '').trim();
+        if (!text) { out.replaceChildren(h('p', {class: 'form-status form-status-err', role: 'alert'}, 'Paste the log first.')); log.focus(); return; }
+        button.disabled = true;
+        out.replaceChildren(quietProgress('Starting\u2026'));
+        try {
+          await api('POST', '/ai/drafts/' + C.seg(d.id) + '/repair', {json: {log: text}});
+        } catch (exc) {
+          if (ctx.epoch !== state.epoch) return;
+          noteFailure(exc);
+          button.disabled = false;
+          out.replaceChildren(aiAdviceBox(exc, providerId, [{node: link({view: 'create'}, 'Open Provider & key', {class: 'btn btn-line', 'data-focus-next': 'ai-key|ai-key-replace'}), when: 'key'}]));
+          return;
+        }
+        if (ctx.epoch === state.epoch) go(state.route, {replace: true, focus: 'ai-state'});
+      });
+      return h('section', {class: 'ix-repair-block', 'aria-label': 'Repair from a run'},
+        h('h2', {class: 'block-title'}, 'Repair from a run'),
+        h('p', {class: 'ix-plan-text'}, 'Install the version on a rig, run a simulation, paste the log here if it fails.'),
+        failedJob ? aiAdviceBox(failedJob.cancelled ? {kind: 'cancelled', message: ''} : {code: failedJob.code || 'error', kind: 'ai', message: failedJob.message}, providerId) : null,
+        form);
     }
 
     /** The generated source's validation report: files with sizes, then
@@ -2928,14 +2988,15 @@ const HubApp = (() => {
       return h('div', {class: 'ix-action'}, button, out);
     }
 
-    function acceptControl(ctx, d, view, sourceJob, providerId) {
+    function acceptControl(ctx, d, view, sourceJob, providerId, label, latest) {
       const result = (sourceJob && (sourceJob.result || sourceJob.result_json)) || {};
       const manifest = result.manifest && typeof result.manifest === 'object' ? result.manifest : {};
-      const title = input({type: 'text', name: 'title', required: true, maxlength: '160', value: (view && view.title) || ''});
-      const summary = input({type: 'text', name: 'summary', maxlength: '300', value: (view && view.summary) || ''});
-      const license = input({type: 'text', name: 'license', maxlength: '120', value: String(manifest.license || (view && view.license) || 'MIT')});
+      const prior = (latest && latest.manifest) || {};
+      const title = input({type: 'text', name: 'title', required: true, maxlength: '160', value: String(prior.title || (view && view.title) || '')});
+      const summary = input({type: 'text', name: 'summary', maxlength: '300', value: String(prior.summary || prior.description || (view && view.summary) || '')});
+      const license = input({type: 'text', name: 'license', maxlength: '120', value: String(manifest.license || prior.license || (view && view.license) || 'MIT')});
       const status = statusLine();
-      const button = h('button', {type: 'submit', class: 'btn btn-primary', 'data-focus': 'ai-accept'}, 'Create private draft version');
+      const button = h('button', {type: 'submit', class: 'btn btn-primary', 'data-focus': 'ai-accept'}, label || 'Create private draft version');
       const out = h('div', {'aria-live': 'polite'});
       const form = h('form', {class: 'form ix-accept'}, field('Title', title), field('Summary', summary), field('Licence', license), button, status.el, out);
       form.addEventListener('submit', async (event) => {

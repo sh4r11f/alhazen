@@ -82,10 +82,25 @@ test('core: a contract Plan becomes the plan page, nothing invented', () => {
   const v = C.aiPlanView(PLAN);
   assert.equal(v.title, PLAN.title);
   assert.equal(v.slug, 'saccade-adaptation-in-two-monkeys');
-  assert.deepEqual([...v.design.map((r) => [...r])], [['Subject', 'Monkey'], ['Hardware', 'Display, Eye tracker, Reward line'], ['Tasks', 'adapt']]);
-  assert.deepEqual([...v.parameters[0]], ['step_dva', '10', 'dva', 'Primary target step (5-15)']);
-  assert.deepEqual([...v.parameters[1]], ['backstep_dva', '2', 'dva', 'Intrasaccadic step']);
-  assert.deepEqual(v.timeline.map((t) => [t.label, t.ms, t.time]), [['Fixate', 500, '500 ms'], ['Saccade', null, 'Until an event'], ['ITI', null, 'Set by a parameter']]);
+  assert.deepEqual([...v.design.map((r) => [...r])], [['Trials', '500 in three blocks'], ['Subject', 'Monkey'], ['Hardware', 'Display, Eye tracker, Reward line'], ['Tasks', 'adapt']]);
+  assert.equal(v.license, 'BSD-3-Clause');
+  /* constraints and durations in words, never raw JSON */
+  assert.deepEqual(v.parameters.map((r) => [...r]), [
+    ['step_dva', '10', 'dva', '5 to 15', 'Primary target step'],
+    ['backstep_dva', '2', 'dva', 'one of: 1, 2, 3; Same sign as the step', 'Intrasaccadic step'],
+    ['flash', '50 ms', '', '0.1 to 1; Seconds on old rigs', 'Target flash'],
+    ['settle', '3 frames', '', 'at least 0', 'Frames to settle'],
+    ['iti', '700 ms', '', '', 'Blank interval'],
+  ]);
+  for (const row of v.parameters) for (const cell of row) assert.doesNotMatch(cell, /[{}]/, 'no JSON in a cell');
+  assert.deepEqual(v.timeline.map((t) => [t.label, t.ms, t.time]), [
+    ['Fixate', 50, '50 ms (flash)'], ['Saccade', null, 'Until the eye lands on the target'], ['Step', 0, 'Instant'], ['ITI', 700, '700 ms (iti)']]);
+  assert.equal(C.valueText({frames: 1}), '1 frame');
+  assert.equal(C.valueText([{ms: 10}, {ms: 20}]), '10 ms, 20 ms');
+  assert.equal(C.constraintText({min: null, max: 4, choices: null, note: null}), 'at most 4');
+  assert.equal(C.constraintText({min: null, max: null, choices: ['a', 'b'], note: null}), 'one of: a, b');
+  assert.equal(C.constraintText(null), '');
+  assert.equal(C.aiPlanView({title: 'T', timeline: [{phase: 'Hold', duration: 'parameterized', parameter: 'missing'}]}).timeline[0].time, 'Set by missing');
   assert.deepEqual([...v.stimuli.heads], ['Element', 'Size', 'Notes']);
   assert.deepEqual([...v.measures.rows[0]], ['Gain', 'ratio', 'Amplitude / target step']);
   const empty = C.aiPlanView({title: 'T'});
@@ -227,7 +242,9 @@ test('the whole flow: generate, poll the plan job, plan, generate source, report
   assert.match(p.main.querySelector('h1').textContent, /Saccade adaptation in two monkeys/);
   assert.match(p.text(), /Plan ready/);
   assert.match(p.text(), /backstep_dva/);
-  assert.match(p.text(), /Until an event/);
+  assert.match(p.text(), /Until the eye lands on the target/);
+  assert.match(p.text(), /flash50 ms0\.1 to 1; Seconds on old rigs/);
+  assert.doesNotMatch(p.text(), /\{"(ms|min|frames)"/, 'no raw JSON on the plan page');
   assert.match(p.text(), /OpenAI · gpt-test, your key/);
   assert.match(p.text(), /Description, authoring context/);
   assert.doesNotMatch(p.text(), /Example plan/);
@@ -243,7 +260,7 @@ test('the whole flow: generate, poll the plan job, plan, generate source, report
   assert.match(p.text(), /Python syntaxPassed/);
   const form = p.main.querySelectorAll('form').find((f) => f.className.includes('ix-accept'));
   const inputs = form.querySelectorAll('input');
-  assert.deepEqual(inputs.map((i) => i.value), [PLAN.title, PLAN.summary, 'MIT']);
+  assert.deepEqual(inputs.map((i) => i.value), [PLAN.title, PLAN.summary, 'MIT'], 'the manifest licence wins over the plan');
   await p.submit(form);
   assert.deepEqual(ai.state.accepted, [{title: PLAN.title, summary: PLAN.summary, license: 'MIT'}]);
   assert.match(p.text(), /Saved as a private version in My experiments/);
@@ -459,4 +476,87 @@ test('Library: Remove asks first, then DELETE /library/{id} and the list reloads
   assert.equal(ai.state.library.length, 0);
   assert.match(p.text(), /Removed Fixation demo from your library/);
   assert.match(p.text(), /Your library is empty/);
+});
+
+/* ---- repair from a run -------------------------------------------------- */
+
+async function acceptedDraft(options) {
+  const {p, ai} = await open('?view=create', Object.assign({keys: [{provider: 'openai', hint: 'abcd'}]}, options || {}));
+  await describe(p);
+  await p.submit(p.main.querySelector('form'));
+  await p.tick(2000); await p.tick(2000);
+  await p.click(p.find('button', 'Generate source'));
+  await p.tick(2000); await p.tick(2000);
+  await p.submit(p.main.querySelectorAll('form').find((f) => f.className.includes('ix-accept')));
+  return {p, ai};
+}
+const LOG = "Traceback (most recent call last):\n  File \"src/adapt/task.py\", line 88, in draw\n    self.display.draw_disc(x, y)\nAttributeError: 'SimulatedDisplay' object has no attribute 'draw_disc'";
+const repairForm = (p) => p.main.querySelectorAll('form').find((f) => f.className.includes('ix-repair'));
+
+test('repair from a run: after acceptance, paste the log, poll, report, Create version; the rail lists both versions', async () => {
+  const {p, ai} = await acceptedDraft();
+  assert.match(p.text(), /Repair from a run/);
+  assert.match(p.text(), /Install the version on a rig, run a simulation, paste the log here if it fails\./);
+  const rail = () => p.main.querySelector('aside').textContent;
+  assert.match(rail(), /Versionsv0\.1\.0/);
+  /* an empty log is refused here, nothing sent */
+  await p.submit(repairForm(p));
+  assert.match(p.text(), /Paste the log first/);
+  assert.equal(posts(p, 'POST /ai/drafts/d1/repair').length, 0);
+  const log = repairForm(p).querySelector('textarea');
+  log.value = LOG;
+  await p.submit(repairForm(p));
+  assert.deepEqual(posts(p, 'POST /ai/drafts/d1/repair')[0].json, {log: LOG});
+  assert.match(rail(), /Repairing from the run log/);
+  assert.match(p.text(), /Repairing the source from your run log/);
+  assert.equal(p.polls(2000), 1);
+  assert.ok(p.find('button', 'Cancel'));
+  await p.tick(2000); await p.tick(2000);
+  assert.match(rail(), /Repair ready/);
+  assert.match(p.text(), /3 files · 6\.9 KiB · 2 checks passed/);
+  assert.match(p.text(), /Alhazen names existPassed/);
+  assert.equal(repairForm(p), undefined, 'no second repair while one waits for acceptance');
+  const form = p.main.querySelectorAll('form').find((f) => f.className.includes('ix-accept'));
+  assert.equal(form.querySelector('button').textContent, 'Create version');
+  assert.deepEqual(form.querySelectorAll('input').map((i) => i.value), [PLAN.title, PLAN.summary, 'BSD-3-Clause']);
+  await p.submit(form);
+  assert.equal(ai.state.accepted.length, 2);
+  assert.match(rail(), /Saved as a version/);
+  assert.match(rail(), /v0\.1\.1.*v0\.1\.0/s, 'newest first');
+  const links = p.main.querySelector('aside').querySelectorAll('a').map((a) => a.getAttribute('href'));
+  assert.ok(links.includes('/?view=experiment&id=xe1&version=xv2'));
+  assert.ok(links.includes('/api/hub/v1/experiments/xe1/versions/xv2/download'), 'Download is the newest version');
+  assert.ok(repairForm(p), 'repair again after the next version');
+});
+
+test('repair failures: a provider error and an invalid repair keep the form, with the next step and the report', async () => {
+  let {p} = await acceptedDraft({repairOutcome: 'provider_timeout'});
+  repairForm(p).querySelector('textarea').value = LOG;
+  await p.submit(repairForm(p));
+  await p.tick(2000); await p.tick(2000);
+  assert.match(p.main.querySelector('aside').textContent, /StatusRepair failed/);
+  assert.match(p.text(), /OpenAI did not answer in time/);
+  assert.match(p.text(), /Provider said: provider_timeout/);
+  assert.ok(repairForm(p), 'the form stays for another try');
+
+  ({p} = await acceptedDraft({repairOutcome: 'invalid'}));
+  repairForm(p).querySelector('textarea').value = LOG;
+  await p.submit(repairForm(p));
+  await p.tick(2000); await p.tick(2000);
+  assert.match(p.text(), /The generated output failed validation/);
+  assert.match(p.text(), /Python syntaxFailed/);
+  assert.equal(p.main.querySelectorAll('form').filter((f) => f.className.includes('ix-accept')).length, 0);
+  assert.ok(repairForm(p));
+});
+
+test('a refused repair request: the advice under the button, the log kept', async () => {
+  const {p} = await acceptedDraft({fail: {'POST /ai/drafts/d1/repair': {status: 402, code: 'provider_quota'}}});
+  const log = repairForm(p).querySelector('textarea');
+  log.value = LOG;
+  await p.submit(repairForm(p));
+  assert.match(p.text(), /OpenAI says this key is out of credit/);
+  assert.ok(p.find('a', 'Open Provider & key'));
+  assert.equal(log.value, LOG);
+  assert.equal(repairForm(p).querySelector('button').disabled, false);
+  assert.doesNotMatch(p.document.getElementById('banner').textContent, /not reachable/);
 });
