@@ -54,7 +54,7 @@ const HubCore = (() => {
     mine: ['id', 'new'],
     data: ['experiment', 'subject', 'mode', 'offset', 'session', 'toffset'],
     rig: ['tab', 'project', 'root', 'run', 'job'],
-    create: ['fork', 'step'],
+    create: ['fork', 'step', 'version', 'draft'],
   };
   const RIG_TABS = ['connection', 'installed', 'upload'];
   /* An experiment's reading views (design: Overview / Methods / Tasks &
@@ -126,7 +126,7 @@ const HubCore = (() => {
       }
       case 'sort':
         return SORTS.some(([key]) => key === raw) && raw !== 'newest' ? raw : undefined;
-      case 'fork':
+      case 'fork': case 'draft':
         return ID.test(raw) ? raw : undefined;
       case 'step':
         return CREATE_STEPS.includes(raw) && raw !== 'describe' ? raw : undefined;
@@ -208,6 +208,7 @@ const HubCore = (() => {
     }
   }
 
+  const AI_CODES = ['ai_disabled', 'key_required', 'provider_quota', 'generation_invalid', 'provider_error', 'provider_timeout'];
   const KIND_BY_STATUS = {
     400: 'invalid', 401: 'unauthorized', 403: 'forbidden', 404: 'not_found', 409: 'conflict',
     413: 'too_large', 422: 'invalid', 429: 'rate_limited', 502: 'unavailable',
@@ -262,6 +263,9 @@ const HubCore = (() => {
     else if (code === 'preview_stale') kind = 'preview_stale';
     else if (code === 'auth_context_changed') kind = 'auth_context_changed';
     else if (code === 'unauthenticated') kind = 'unauthorized';
+    /* AI authoring (ai-authoring contract): the provider's or the model's
+     * failure, never the hub being down, so no offline banner. */
+    else if (AI_CODES.includes(code) || status === 402) kind = 'ai';
     const retryAfter = /^\d{1,6}$/.test(String(retryAfterHeader || '')) ? Number(retryAfterHeader) : 0;
     let text = message || DEFAULT_MESSAGE[kind];
     if (kind === 'rate_limited' && retryAfter) text += ` Try again in ${retryAfter} s.`;
@@ -856,6 +860,204 @@ const HubCore = (() => {
     return joined.length > max ? joined.slice(0, max).replace(/\s+\S*$/, '') + '\u2026' : joined;
   }
 
+
+  /* -- AI authoring (ai-authoring CONTRACT.md) ------------------------------ */
+
+  const AI_JOB_WORDS = {queued: 'Queued', running: 'Running', done: 'Done', failed: 'Failed', cancelled: 'Cancelled'};
+  const AI_DRAFT_WORDS = {
+    describing: 'Writing the plan', planning: 'Writing the plan', planned: 'Plan ready',
+    generated: 'Source ready', accepted: 'Saved as a version', discarded: 'Discarded',
+  };
+
+  function aiDraftWord(status) {
+    return AI_DRAFT_WORDS[String(status || '')] || String(status || 'Unknown');
+  }
+
+  /** A plan or source job: {id, kind, status, word, active, done, failed,
+   *  cancelled, code, message}. */
+  function aiJob(job) {
+    const j = job || {};
+    const status = String(j.status || 'queued').toLowerCase();
+    let code = String(j.error_code || '');
+    let message = String(j.error_message || '');
+    if (j.error && typeof j.error === 'object') {
+      code = code || String(j.error.code || '');
+      message = message || String(j.error.message || '');
+    } else if (typeof j.error === 'string') {
+      message = message || j.error;
+    }
+    return {
+      id: j.id ? String(j.id) : '', kind: String(j.kind || ''), status, word: AI_JOB_WORDS[status] || status,
+      active: status === 'queued' || status === 'running', done: status === 'done',
+      failed: status === 'failed', cancelled: status === 'cancelled', code, message,
+    };
+  }
+
+  /** What the page says about an AI failure: {title, next, action} where
+   *  action is 'key' (go to the key step), 'retry', 'reload' or null.
+   *  `code` is the contract's error code (or a HubError kind). */
+  function aiAdvice(code, provider) {
+    const p = provider || 'The provider';
+    switch (code) {
+      case 'ai_disabled':
+        return {title: 'AI authoring is not enabled on this hub', next: '', action: null};
+      case 'key_required':
+        return {title: 'No key saved for ' + p, next: 'Save one in Provider & key, then generate again.', action: 'key'};
+      case 'provider_quota':
+        return {title: p + ' says this key is out of credit', next: 'Add credit with ' + p + ' or save another key, then try again.', action: 'key'};
+      case 'generation_invalid':
+        return {title: 'The generated output failed validation', next: 'Try again; the report shows what failed.', action: 'retry'};
+      case 'rate_limited':
+        return {title: 'Too many AI jobs for this account', next: 'Wait for a running job to finish, then try again.', action: 'retry'};
+      case 'provider_error':
+        return {title: p + ' returned an error', next: 'Try again in a moment.', action: 'retry'};
+      case 'provider_timeout':
+        return {title: p + ' did not answer in time', next: 'Try again in a moment.', action: 'retry'};
+      case 'cancelled':
+        return {title: 'Cancelled', next: 'Start it again when you are ready.', action: 'retry'};
+      case 'conflict':
+        return {title: 'This draft changed on the hub', next: 'Reload to see where it stands.', action: 'reload'};
+      case 'invalid':
+        return {title: 'The hub refused the request', next: '', action: null};
+      case 'offline': case 'unavailable': case 'timeout':
+        return {title: 'The hub is not reachable right now', next: 'Try again when the connection is back.', action: 'retry'};
+      default:
+        return {title: 'The request failed', next: 'Try again.', action: 'retry'};
+    }
+  }
+
+  /** The code aiAdvice takes for a HubError from an AI route. */
+  function aiErrorCode(error) {
+    const e = error || {};
+    if (e.code && (AI_CODES.includes(e.code) || e.code === 'rate_limited')) return e.code;
+    if (e.status === 402) return 'provider_quota';
+    if (e.status === 429) return 'rate_limited';
+    if (e.status === 409 && e.code !== 'key_required') return 'conflict';
+    return e.kind || '';
+  }
+
+  function humanKey(key) {
+    const text = String(key).replace(/[_-]+/g, ' ').trim();
+    return text ? text[0].toUpperCase() + text.slice(1) : '';
+  }
+
+  /** Rows of a list of plan items (strings or flat objects) as a table:
+   *  {heads, rows}; the object keys become the columns (at most `max`). */
+  function itemTable(items, firstHead, max) {
+    const list = Array.isArray(items) ? items.filter((i) => i !== null && i !== undefined) : [];
+    if (!list.length) return {heads: [], rows: []};
+    if (list.every((i) => typeof i !== 'object')) return {heads: [firstHead], rows: list.map((i) => [cellText(i)])};
+    const keys = [];
+    for (const item of list) {
+      if (typeof item !== 'object') continue;
+      for (const k of Object.keys(item)) if (!keys.includes(k) && keys.length < (max || 4)) keys.push(k);
+    }
+    return {
+      heads: keys.map((k, i) => (i === 0 ? firstHead : humanKey(k))),
+      rows: list.map((i) => (typeof i === 'object' ? keys.map((k) => cellText(i[k])) : [cellText(i)].concat(keys.slice(1).map(() => '')))),
+    };
+  }
+
+  function slugOf(title) {
+    return String(title || '').toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'draft';
+  }
+
+  /** A timeline duration: ms when numeric (a number, "600", "600 ms",
+   *  "1.5 s"), else null with words for 'parameterized' / 'event-driven'. */
+  function phaseDuration(value) {
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return {ms: value, text: value >= 1000 ? (value / 1000) + ' s' : value + ' ms'};
+    const raw = String(value === null || value === undefined ? '' : value).trim();
+    const m = /^(\d+(?:\.\d+)?)\s*(ms|s)?$/i.exec(raw);
+    if (m) {
+      const ms = Number(m[1]) * (m[2] && m[2].toLowerCase() === 's' ? 1000 : 1);
+      return {ms, text: ms >= 1000 ? (ms / 1000) + ' s' : ms + ' ms'};
+    }
+    if (raw === 'parameterized') return {ms: null, text: 'Set by a parameter'};
+    if (raw === 'event-driven') return {ms: null, text: 'Until an event'};
+    return {ms: null, text: raw};
+  }
+
+  /** The contract's Plan as the plan page draws it. Missing parts are
+   *  empty, never invented. */
+  function aiPlanView(plan) {
+    const p = plan && typeof plan === 'object' ? plan : {};
+    const params = Array.isArray(p.parameters) ? p.parameters : [];
+    const hw = p.hardware && typeof p.hardware === 'object' ? p.hardware : {};
+    const hardware = [['display', 'Display'], ['eye_tracker', 'Eye tracker'], ['reward', 'Reward line']]
+      .filter(([k]) => hw[k] === true).map(([, label]) => label);
+    const tasks = Array.isArray(p.tasks) ? p.tasks : [];
+    const timeline = (Array.isArray(p.timeline) ? p.timeline : []).map((t) => {
+      const item = t && typeof t === 'object' ? t : {phase: t};
+      const d = phaseDuration(item.duration);
+      return {label: cellText(item.phase), ms: d.ms, time: d.text, note: cellText(item.note)};
+    });
+    const subject = p.subject_kind ? humanKey(p.subject_kind) : '';
+    return {
+      title: String(p.title || 'Untitled plan'),
+      slug: slugOf(p.title),
+      summary: String(p.summary || ''),
+      paradigm: String(p.paradigm || ''),
+      design: [
+        ['Subject', subject],
+        ['Hardware', hardware.length ? hardware.join(', ') : (Object.keys(hw).length ? 'Display only' : '')],
+        ['Tasks', tasks.length ? tasks.map((t) => cellText(t && typeof t === 'object' ? t.name : t)).join(', ') : ''],
+      ].filter(([, v]) => v),
+      timeline,
+      stimuli: itemTable(p.stimuli, 'Element', 4),
+      measures: itemTable(p.measures, 'Measure', 4),
+      parameters: params.map((x) => {
+        const q = x && typeof x === 'object' ? x : {name: x};
+        const meaning = cellText(q.meaning) + (q.constraints ? ' (' + cellText(q.constraints) + ')' : '');
+        return [cellText(q.name), cellText(q.default), cellText(q.unit), meaning];
+      }),
+      tasks: tasks.map((t) => (t && typeof t === 'object' ? [cellText(t.name), cellText(t.description)] : [cellText(t), ''])),
+      tests: (Array.isArray(p.tests) ? p.tests : []).map((t) => (t && typeof t === 'object' ? [cellText(t.name), cellText(t.how)] : [cellText(t), ''])),
+      notes: String(p.notes || ''),
+    };
+  }
+
+  function checkOk(c) {
+    if (typeof c.ok === 'boolean') return c.ok;
+    if (typeof c.passed === 'boolean') return c.passed;
+    return ['ok', 'pass', 'passed'].includes(String(c.status || '').toLowerCase());
+  }
+
+  /** A source job's validation report: {files:[{path,size}], bytes, checks:
+   *  [{name, ok, detail}], passed, failed, ok}. Reads result.report (or
+   *  result.validation) and result.files; tolerant of either list or map. */
+  function aiValidation(result) {
+    const r = result && typeof result === 'object' ? result : {};
+    const rep = (r.report && typeof r.report === 'object' ? r.report : null) || (r.validation && typeof r.validation === 'object' ? r.validation : null) || {};
+    let rawFiles = r.files || rep.files || [];
+    if (rawFiles && !Array.isArray(rawFiles) && typeof rawFiles === 'object') {
+      rawFiles = Object.entries(rawFiles).map(([path, v]) => ({path, size: v && typeof v === 'object' ? (v.size || v.bytes) : v}));
+    }
+    const files = (Array.isArray(rawFiles) ? rawFiles : []).map((f) => (typeof f === 'string' ? {path: f, size: null}
+      : {path: String(f.path || f.name || ''), size: Number.isFinite(Number(f.size !== undefined ? f.size : f.bytes)) ? Number(f.size !== undefined ? f.size : f.bytes) : null}))
+      .filter((f) => f.path).sort((a, b) => a.path.localeCompare(b.path));
+    const checks = (Array.isArray(rep.checks) ? rep.checks : []).map((c) => {
+      const o = c && typeof c === 'object' ? c : {name: c, ok: true};
+      return {name: cellText(o.name || o.check || o.id || 'Check'), ok: checkOk(o), detail: cellText(o.message || o.detail || '')};
+    });
+    for (const e of Array.isArray(rep.errors) ? rep.errors : []) {
+      const o = e && typeof e === 'object' ? e : {message: e};
+      checks.push({name: cellText(o.path || o.check || 'Error'), ok: false, detail: cellText(o.message || o.detail || '')});
+    }
+    const failed = checks.filter((c) => !c.ok).length;
+    const ok = typeof rep.ok === 'boolean' ? rep.ok && failed === 0 : (typeof rep.valid === 'boolean' ? rep.valid && failed === 0 : failed === 0);
+    return {files, bytes: files.reduce((n, f) => n + (f.size || 0), 0), checks, passed: checks.length - failed, failed, ok};
+  }
+
+  /** What went to the provider, in a few words, from a job's `disclosed`. */
+  function aiDisclosed(disclosed) {
+    const d = disclosed && typeof disclosed === 'object' ? disclosed : null;
+    if (!d) return '';
+    const files = Array.isArray(d.files) ? d.files.length : (Number.isFinite(Number(d.file_count)) ? Number(d.file_count) : 0);
+    const bytes = Number(d.bytes !== undefined ? d.bytes : d.total_bytes);
+    const tail = files ? ` and ${files} source file${files === 1 ? '' : 's'}` : '';
+    return 'Description, authoring context' + tail + (Number.isFinite(bytes) && bytes > 0 ? ' (' + formatBytes(bytes) + ')' : '');
+  }
+
   /** "Showing 51–100" for a page of a list. */
   function nextOffsetLabel(offset, count) {
     const start = (Number(offset) || 0) + 1;
@@ -870,6 +1072,7 @@ const HubCore = (() => {
     nextOffsetLabel,
     CATEGORIES, FACETS, SORTS, facetList, toggleFacet, hardwareKeys, subjectKeys, filterCatalog, catalogFacets,
     activeFilters, schematicKind, seededRandom, methodsExcerpt,
+    AI_CODES, aiJob, aiAdvice, aiErrorCode, aiPlanView, aiValidation, aiDisclosed, aiDraftWord, phaseDuration, slugOf,
   };
 })();
 
