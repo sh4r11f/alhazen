@@ -1128,9 +1128,10 @@ class Launch(BaseModel):
     parameter_set: str | None = None
     # A training launch (mode "training"): the ladder, by run.py's LADDERS
     # label, and the stage, by its id (project_ladders). `rehearse` runs the
-    # stage in simulate mode instead, headless, filed under the training
-    # root's rehearsal sibling: a dry run of the stage with nobody in the
-    # chair. None/False for every other launch.
+    # stage in simulate mode instead, filed under the training root's
+    # rehearsal sibling: a dry run of the stage with nobody in the chair, in
+    # a window unless `headless` says otherwise. None/False for every other
+    # launch.
     ladder: str | None = None
     stage: str | None = None
     rehearse: bool = False
@@ -2083,9 +2084,14 @@ class Workspace:
         base = [project["python"], "-u"]
         if training is not None:
             # The stage names its task (run_experiment reads it from the
-            # ladder) and its params; a rehearsal is simulate mode, headless.
+            # ladder) and its params; a rehearsal is simulate mode. It opens
+            # a window, so the stage can be watched, unless the form's
+            # Headless box is ticked. It used to be headless always, which
+            # left no way to see what a stage looks like without a monkey.
             mode = Mode.SIMULATE if request.rehearse else Mode.TRAINING
-            launched = request.model_copy(update={"headless": request.rehearse})
+            launched = request.model_copy(
+                update={"headless": request.rehearse and request.headless}
+            )
             rig = ref.spec if ref.source == "alhazen" else str(ref.path)
             return base + _mode_command(
                 mode,

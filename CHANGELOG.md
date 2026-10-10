@@ -53,6 +53,12 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ### Changed
 
+- **Workspace: a training rehearsal can be watched.** Training's "Rehearse this
+  stage" was always headless, so there was no way to see what a stage looks
+  like without a monkey. The Options' "Headless simulation" box now applies
+  to a rehearsal as it does to simulate mode: unticked, the stage opens in a
+  window, worked by the task's autopilot. A real training session is never
+  headless, whatever the box says.
 - **The refusal of `--headless` is reworded**, since a session with no window
   is no longer simulate mode's alone: it names `--simulate all --gaze
   autopilot` beside simulate mode.
