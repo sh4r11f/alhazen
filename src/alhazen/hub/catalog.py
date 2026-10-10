@@ -171,11 +171,13 @@ def version_view(row: Any) -> dict[str, Any]:
 def owner_version_view(row: Any) -> dict[str, Any]:
     """A version as its owner sees it: also whether it came from an accepted
     AI draft (schema 3). Visitors never see this."""
-    return {
-        **version_view(row),
-        "ai_assisted": row.ai_draft_id is not None,
-        "ai_draft_id": row.ai_draft_id,
-    }
+    view = version_view(row)
+    if row.ai_draft_id is not None:
+        # Also under manifest for the interface, in this response only: the
+        # stored package manifest has no such field (its format refuses
+        # unknown fields); the package carries docs/ai-provenance.json.
+        view["manifest"] = {**view["manifest"], "ai_assisted": True}
+    return {**view, "ai_assisted": row.ai_draft_id is not None, "ai_draft_id": row.ai_draft_id}
 
 
 def _version_stats(conn: Connection, experiment_id: str) -> tuple[int, str | None]:

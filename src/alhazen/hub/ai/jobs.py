@@ -139,6 +139,40 @@ class AuthorKit:
             return plan_type(**data)
         return data
 
+    def disclosure(self, ctx: Any, kind: str) -> dict[str, Any] | None:
+        """The kit's own account of what a request sends, if it keeps one."""
+        method = getattr(ctx, "disclosure", None)
+        return to_plain(method(kind)) if callable(method) else None
+
+    def relabel(self, files: dict[str, bytes], metadata: dict[str, Any], old_license: str) -> bytes:
+        """The package rebuilt with edited metadata (title, description,
+        license); a changed license also replaces LICENSE with the kit's text
+        for it. Returns the new ZIP bytes; PackageError if refused."""
+        files = dict(files)
+        license_text = getattr(self.module, "license_text", None)
+        if metadata.get("license") != old_license and callable(license_text):
+            known = getattr(self.module, "LICENSES", None) or getattr(
+                getattr(self.module, "schemas", None), "LICENSES", None
+            )
+            if known is not None and metadata["license"] not in known:
+                raise packages.PackageError(
+                    f"license must be one of {', '.join(known)} for a generated package"
+                )
+            files["LICENSE"] = license_text(metadata["license"], metadata["title"]).encode()
+        build = getattr(self.module, "bundle_archive", None)
+        if callable(build):
+            archive, _info = build(files, metadata)
+            return bytes(archive)
+        with tempfile.TemporaryDirectory(prefix="ai-relabel-") as folder:
+            root = Path(folder) / "source"
+            for rel, data in files.items():
+                target = root / Path(packages.safe_relative(rel))
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(data)
+            out = Path(folder) / "bundle.zip"
+            packages.build_bundle(root, out, metadata, sorted(files))
+            return out.read_bytes()
+
     def is_plan_invalid(self, exc: BaseException) -> bool:
         kind = getattr(self.module, "PlanInvalid", None)
         return kind is not None and isinstance(exc, kind)
@@ -396,6 +430,7 @@ class Runner:
         kit = self.kit
         try:
             ctx = kit.build_context(_alhazen_version(), start)
+            _merge_disclosure(disclosed, kit.disclosure(ctx, job.kind))
             if job.kind == "plan":
                 plan = kit.plan(guarded, draft.prompt, ctx)
                 plain = to_plain(plan)
@@ -470,13 +505,20 @@ class Runner:
         metadata = {k: v for k, v in manifest.items() if k not in ("files", "schema_version")}
         work = Path(tempfile.mkdtemp(prefix="ai-bundle-", dir=hub.store.root / "tmp"))
         try:
-            source = work / "source"
-            for rel, data in files.items():
-                target = source / Path(packages.safe_relative(rel))
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(data)
             out = work / "bundle.zip"
-            info = packages.build_bundle(source, out, metadata, sorted(files))
+            archive = getattr(bundle, "archive", None)
+            if archive:
+                # The kit packaged it already (author.bundle_archive); the
+                # hub re-reads the bytes with its own checks.
+                out.write_bytes(bytes(archive))
+                info = packages.inspect_bundle(out)
+            else:
+                source = work / "source"
+                for rel, data in files.items():
+                    target = source / Path(packages.safe_relative(rel))
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(data)
+                info = packages.build_bundle(source, out, metadata, sorted(files))
             catalog.check_documentation(out, info.manifest)
             key = hub.store.ai_bundle_key(job.draft_id, job.id)
             hub.store.install_ai_bundle(out, key)
@@ -565,6 +607,21 @@ class Runner:
         """A packaged bundle whose result was never recorded is unreachable."""
         if outcome.bundle_key is not None:
             self.hub.store.path(outcome.bundle_key).unlink(missing_ok=True)
+
+
+def _merge_disclosure(disclosed: dict[str, Any], kit: dict[str, Any] | None) -> None:
+    """Fold the kit's account of the request into the job's record: its
+    context items and sizes, and which start-from files it actually sent
+    (it may leave some of those the hub read out; both lists are kept)."""
+    if not kit:
+        return
+    disclosed["authoring_context"]["context"] = kit.get("context", [])
+    disclosed["authoring_context"]["bytes"] = kit.get("context_bytes")
+    start, sent = disclosed.get("start_from"), kit.get("start_from")
+    if start is not None and sent:
+        start["files"] = sent.get("files", start["files"])
+        start["bytes"] = sent.get("bytes", start["bytes"])
+        start["skipped"] = [*start.get("skipped", []), *sent.get("omitted", [])]
 
 
 def _published_title(conn: Connection, exp: Any) -> str:

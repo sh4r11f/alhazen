@@ -257,6 +257,11 @@ class TestDraftLifecycle:
         experiment, version = accepted["experiment"], accepted["version"]
         assert version["ai_assisted"] is True and version["ai_draft_id"] == created["draft"]["id"]
         assert experiment["title"] == "Gap task" and experiment["package_name"] == "gap-saccade"
+        # The person's summary was written into the package (rebuilt, re-validated);
+        # "AI-assisted" shows under manifest in the response only.
+        assert version["manifest"]["description"] == "Mine"
+        assert version["manifest"]["ai_assisted"] is True
+        assert experiment["license"] == version["manifest"]["license"] == "MIT"
         own = ada.get("/experiments").json()["items"]
         assert [e["id"] for e in own] == [experiment["id"]]
         detail = ada.get(f"/experiments/{experiment['id']}").json()

@@ -111,7 +111,7 @@ def add_routes(app: FastAPI, hub: Hub, worker: AIWorker, kit: RouteKit) -> None:
         principal = await kit.writer(request)
         body = await kit.read_json(request, limit)
         return await call(
-            drafts.accept, hub, principal, kit.ident(draft_id, "Draft not found"), body
+            drafts.accept, hub, runner, principal, kit.ident(draft_id, "Draft not found"), body
         )
 
     @app.get(API + "/ai/jobs/{job_id}")

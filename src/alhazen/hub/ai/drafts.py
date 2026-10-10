@@ -17,11 +17,13 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import zipfile
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import Connection, func, insert, select, update
 
-from alhazen.hub import catalog
+from alhazen.hub import catalog, packages
 from alhazen.hub.ai import keys
 from alhazen.hub.ai.jobs import ERROR_STATUS, Runner, revert_draft
 from alhazen.hub.ai.providers import ProviderError
@@ -497,7 +499,25 @@ def cancel_job(hub: Hub, principal: Principal, job_id: str) -> dict[str, Any]:
 # -- acceptance ------------------------------------------------------------------
 
 
-def accept(hub: Hub, principal: Principal, draft_id: str, body: dict[str, Any]) -> dict[str, Any]:
+def _relabelled(runner: Runner, stored: Path, changes: dict[str, str]) -> bytes:
+    """The stored generated package rebuilt with the person's title,
+    description or license (through the kit, so LICENSE follows a new
+    license). The result is validated again by accept_version."""
+    info = packages.inspect_bundle(stored)
+    with zipfile.ZipFile(stored) as archive:
+        files = {entry["path"]: archive.read(entry["path"]) for entry in info.manifest["files"]}
+    metadata = {k: v for k, v in info.manifest.items() if k not in ("files", "schema_version")}
+    old_license = str(metadata.get("license", ""))
+    metadata.update(changes)
+    try:
+        return runner.kit.relabel(files, metadata, old_license)
+    except packages.PackageError as exc:
+        raise HubError(422, "invalid_package", str(exc)) from None
+
+
+def accept(
+    hub: Hub, runner: Runner, principal: Principal, draft_id: str, body: dict[str, Any]
+) -> dict[str, Any]:
     """Create the private experiment (once) and a version from the draft's
     validated generated package, through the upload pipeline.
 
@@ -529,15 +549,29 @@ def accept(hub: Hub, principal: Principal, draft_id: str, body: dict[str, Any]) 
         if job.status != "done" or not result.get("valid"):
             raise conflict("generation_invalid", "The generated source did not pass validation")
         plan = json.loads(row.plan_json) if row.plan_json else {}
+        package = result.get("manifest") or {}
         fields = catalog.parse_metadata(
             {
-                "title": body.get("title", plan.get("title", "")),
+                "title": body.get("title", package.get("title", plan.get("title", ""))),
                 "summary": body.get("summary", str(plan.get("summary", ""))[:280]),
-                "license": body.get("license", ""),
+                "license": body.get("license", package.get("license", "")),
                 "description": str(plan.get("summary", ""))[:20_000],
             },
             partial=False,
         )
+        # What the package itself must say differently (title, description,
+        # license): only fields the person set explicitly.
+        relabel: dict[str, str] = {}
+        if "title" in body and fields["title"] != package.get("title"):
+            relabel["title"] = fields["title"]
+        if (
+            "summary" in body
+            and fields["summary"]
+            and fields["summary"] != package.get("description")
+        ):
+            relabel["description"] = fields["summary"]
+        if "license" in body and fields["license"] and fields["license"] != package.get("license"):
+            relabel["license"] = fields["license"]
         experiment_id = row.experiment_id
         if experiment_id is None:
             experiment_id = catalog.insert_experiment(
@@ -570,7 +604,10 @@ def accept(hub: Hub, principal: Principal, draft_id: str, body: dict[str, Any]) 
         )
     temp = hub.store.new_temp()
     try:
-        shutil.copyfile(stored, temp)
+        if relabel:
+            temp.write_bytes(_relabelled(runner, stored, relabel))
+        else:
+            shutil.copyfile(stored, temp)
         digest, size = sha256_file(temp), temp.stat().st_size
     except BaseException:
         temp.unlink(missing_ok=True)
