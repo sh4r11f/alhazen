@@ -1,0 +1,315 @@
+{
+  "schema": "alhazen-documentation",
+  "schema_version": 1,
+  "title": "Fixation demo (the alhazen new scaffold)",
+  "summary": "The experiment `alhazen new fixation_demo` writes: one gaze-contingent fixation task. It documents the scaffold's own code and parameters; it reports no data.",
+  "methods": "docs/methods.md",
+  "references": [
+    "alhazen-vision 2.13.0 or later, the toolkit this package is built on (https://github.com/sh4r11f/alhazen)."
+  ],
+  "tasks": [
+    {
+      "id": "fixation-demo",
+      "title": "Fixation hold",
+      "summary": "Look at the central point within a time limit, then keep looking at it for a fixed hold.",
+      "description": "docs/tasks/fixation-demo.md",
+      "parameters_file": "configs/task.yaml",
+      "parameters": [
+        {
+          "name": "fix_size_dva",
+          "label": "Fixation point size",
+          "group": "Stimulus",
+          "type": "number",
+          "unit": "dva",
+          "default": 0.3,
+          "meaning": "Diameter of the fixation point, a filled white circle at the screen centre (drawn with radius fix_size_dva / 2).",
+          "source": {
+            "model": "fixation_demo.task:FixationDemoTaskParams"
+          }
+        },
+        {
+          "name": "fix_window_dva",
+          "label": "Gaze window radius",
+          "group": "Gaze",
+          "type": "number",
+          "unit": "dva",
+          "default": 2.0,
+          "meaning": "Radius of the circular gaze window centred on the fixation point. Gaze must be inside it to acquire and to hold fixation; a lost sample (a blink, track loss) counts as outside.",
+          "interactions": "The window is a gaze criterion only; it is never drawn on the screen.",
+          "source": {
+            "model": "fixation_demo.task:FixationDemoTaskParams"
+          }
+        },
+        {
+          "name": "acquire_timeout",
+          "label": "Acquisition time limit",
+          "group": "Timing",
+          "type": "duration",
+          "unit": "ms",
+          "default": {
+            "ms": 2000
+          },
+          "constraints": {
+            "min": 0,
+            "note": "Give ms or frames; frames depend on the measured refresh rate."
+          },
+          "meaning": "How long the fixation point waits for gaze to enter the window. If gaze has not entered by then, the trial ends as NO_FIXATION. The time taken is recorded per trial as acquire_latency_s.",
+          "source": {
+            "model": "fixation_demo.task:FixationDemoTaskParams"
+          }
+        },
+        {
+          "name": "hold_duration",
+          "label": "Hold duration",
+          "group": "Timing",
+          "type": "duration",
+          "unit": "ms",
+          "default": {
+            "ms": 500
+          },
+          "constraints": {
+            "min": 0
+          },
+          "meaning": "How long gaze must then stay inside the window. Any sample outside ends the trial as FIX_BREAK. Recorded per trial as hold_duration_s (the scaffold uses no jitter).",
+          "source": {
+            "model": "fixation_demo.task:FixationDemoTaskParams"
+          }
+        },
+        {
+          "name": "iti",
+          "label": "Inter-trial interval",
+          "group": "Timing",
+          "type": "duration",
+          "unit": "ms",
+          "default": {
+            "ms": 500
+          },
+          "constraints": {
+            "min": 0
+          },
+          "meaning": "The interval the runner waits between trials. It is not part of a trial's own phases.",
+          "source": {
+            "model": "fixation_demo.task:FixationDemoTaskParams"
+          }
+        },
+        {
+          "name": "paradigm.kind",
+          "label": "Scheduler",
+          "group": "Design",
+          "type": "choice",
+          "default": "sequence",
+          "constraints": {
+            "choices": [
+              "sequence",
+              "constant",
+              "staircase",
+              "questplus",
+              "adjustment"
+            ],
+            "note": "staircase and questplus need their own blocks in the params file."
+          },
+          "meaning": "How conditions are served. The scaffold has one condition, served n_per_condition times.",
+          "source": {
+            "model": "alhazen.paradigms.config:SchedulerConfig"
+          }
+        },
+        {
+          "name": "paradigm.n_per_condition",
+          "label": "Trials per condition",
+          "group": "Design",
+          "type": "integer",
+          "default": 10,
+          "constraints": {
+            "min": 1
+          },
+          "meaning": "Presentations of each condition in run mode. With the scaffold's single condition this is the planned number of completed trials.",
+          "interactions": "Test and simulate turn trial counts down and print what they changed. A trial ending as FIX_BREAK is served again, so a session can take more attempts than this.",
+          "source": {
+            "model": "alhazen.paradigms.config:SchedulerConfig"
+          }
+        },
+        {
+          "name": "paradigm.shuffle",
+          "label": "Shuffle trial order",
+          "group": "Design",
+          "type": "boolean",
+          "default": true,
+          "meaning": "Whether trials are served in random order. With one condition it changes nothing. Not set in configs/task.yaml; this is the params model's default.",
+          "source": {
+            "file": null,
+            "model": "alhazen.paradigms.config:SchedulerConfig"
+          }
+        }
+      ],
+      "outcomes": [
+        {
+          "name": "FIXATED",
+          "completed": true,
+          "success": true,
+          "meaning": "Fixation was acquired and held for the whole hold."
+        },
+        {
+          "name": "NO_FIXATION",
+          "completed": true,
+          "success": false,
+          "meaning": "Gaze never entered the window before the acquisition limit. Counted as a trial without success."
+        },
+        {
+          "name": "FIX_BREAK",
+          "completed": false,
+          "meaning": "Gaze left the window (or was lost) during the hold. Not counted: the condition is served again."
+        }
+      ],
+      "events": [
+        {
+          "name": "FIX_ON",
+          "meaning": "The fixation point's first frame, stamped with that flip's time."
+        },
+        {
+          "name": "FIX_ACQUIRED",
+          "meaning": "Gaze first verified inside the window."
+        }
+      ],
+      "timeline": {
+        "caption": "One trial of the fixation hold. Acquisition waits on the subject, so its length is not drawn to scale; the hold is drawn at its default length.",
+        "phases": [
+          {
+            "id": "acquire",
+            "label": "Acquire fixation",
+            "timing": {
+              "kind": "event",
+              "until": "gaze is inside the window",
+              "max": {
+                "param": "acquire_timeout"
+              }
+            },
+            "start_events": [
+              "FIX_ON"
+            ],
+            "end_events": [
+              "FIX_ACQUIRED"
+            ]
+          },
+          {
+            "id": "hold",
+            "label": "Hold fixation",
+            "timing": {
+              "kind": "parameter",
+              "param": "hold_duration"
+            }
+          }
+        ],
+        "tracks": [
+          {
+            "label": "Fixation point",
+            "role": "stimulus",
+            "from": "acquire",
+            "to": "hold"
+          },
+          {
+            "label": "Gaze inside window",
+            "role": "requirement",
+            "from": "hold",
+            "to": "hold"
+          }
+        ],
+        "end": {
+          "outcome": "FIXATED",
+          "label": "Trial ends"
+        },
+        "branches": [
+          {
+            "from": "acquire",
+            "kind": "failure",
+            "when": "the acquisition limit runs out",
+            "outcome": "NO_FIXATION",
+            "effect": "trial ends; counted, without success"
+          },
+          {
+            "from": "hold",
+            "kind": "failure",
+            "when": "a gaze sample is outside the window or lost",
+            "outcome": "FIX_BREAK",
+            "effect": "trial ends; condition served again"
+          },
+          {
+            "from": "*",
+            "kind": "abort",
+            "when": "a device fails or the experimenter skips the trial",
+            "outcome": "ABORTED",
+            "effect": "trial ends; condition served again"
+          }
+        ],
+        "between_trials": {
+          "label": "Inter-trial interval",
+          "timing": {
+            "kind": "parameter",
+            "param": "iti"
+          }
+        }
+      },
+      "diagram": {
+        "caption": "The centre of the display at the default parameters, to scale in degrees of visual angle. Mid-grey background and white point as the scaffold draws them; the dashed gaze window is a criterion and is not shown to the subject.",
+        "unit": "dva",
+        "width": 6,
+        "height": 4.4,
+        "background": 0.5,
+        "elements": [
+          {
+            "type": "circle",
+            "cx": 0,
+            "cy": 0,
+            "r": {
+              "param": "fix_window_dva"
+            },
+            "role": "region",
+            "dashed": true,
+            "label": "Gaze window"
+          },
+          {
+            "type": "circle",
+            "cx": 0,
+            "cy": 0,
+            "r": {
+              "param": "fix_size_dva",
+              "factor": 0.5
+            },
+            "role": "stimulus",
+            "luminance": 1.0,
+            "label": "Fixation point"
+          },
+          {
+            "type": "dimension",
+            "x1": 0,
+            "y1": 0,
+            "x2": {
+              "param": "fix_window_dva"
+            },
+            "y2": 0,
+            "text": "window radius",
+            "value": {
+              "param": "fix_window_dva"
+            }
+          },
+          {
+            "type": "dimension",
+            "x1": {
+              "param": "fix_size_dva",
+              "factor": -0.5
+            },
+            "y1": -0.45,
+            "x2": {
+              "param": "fix_size_dva",
+              "factor": 0.5
+            },
+            "y2": -0.45,
+            "text": "point diameter",
+            "value": {
+              "param": "fix_size_dva"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
