@@ -50,6 +50,7 @@ METADATA_FIELDS = (
     "alhazen_min",
     "platforms",
     "documentation",
+    "protocol_version",
 )
 DEFAULT_PLATFORMS = ["linux", "darwin", "win32"]
 DOCUMENTATION_DESCRIPTOR = "docs/experiment.json"
@@ -84,6 +85,37 @@ def _reason(relative: str) -> str:
     if name.endswith((".sqlite3", ".db", ".edf", ".tsv")):
         return "data or registry file"
     return "not proposed (untracked or excluded)"
+
+
+_IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".tif", ".tiff")
+
+
+def not_for_the_rig(relative: str) -> str | None:
+    """Why a proposed file is probably not needed to RUN the experiment on a
+    rig (repository tooling, development records), or None. A suggestion
+    for the author's confirmation step only: such files are still included
+    unless the author drops them, and nothing is dropped silently (import
+    round 2026-10-09, decision 6)."""
+    parts = relative.split("/")
+    name = parts[-1]
+    folders = parts[:-1]
+    if folders and folders[0] == "tests" or "tests" in folders:
+        return "tests"
+    if name.endswith(".ipynb") or (folders and folders[0] == "notebooks"):
+        return "notebook"
+    if folders and folders[0] == "scripts":
+        return "development script"
+    if folders and folders[0] == ".github":
+        return "CI configuration"
+    if folders and folders[0] == ".githooks":
+        return "git hook"
+    if relative == "uv.lock":
+        return "lock file (the rig runs the experiment in an interpreter it already has)"
+    if any(p.startswith("data-rehearsal") for p in parts):
+        return "rehearsal data"
+    if "stimulus-check" in folders and name.lower().endswith(_IMAGE_SUFFIXES):
+        return "stimulus-check image"
+    return None
 
 
 def _excluded(root: Path, chosen: set[str]) -> tuple[list[dict[str, str]], int]:
@@ -258,12 +290,27 @@ def preview(root: Path, packages: PackageBuilder) -> dict[str, Any]:
         if path.is_file() and not path.is_symlink():
             files.append({"path": relative, "size": path.stat().st_size})
     excluded, excluded_count = _excluded(root, {str(f["path"]) for f in files})
+    notes: list[dict[str, str]] = []
+    metadata = suggest_metadata(root, [str(f["path"]) for f in files], notes)
+    protocol = protocol_version(root)
     return {
         "files": files,
         "total_bytes": sum(f["size"] for f in files),
         "excluded": excluded,
         "excluded_count": excluded_count,
-        "metadata": suggest_metadata(root, [str(f["path"]) for f in files]),
+        "metadata": metadata,
+        # The pyproject version, which the data is filed under; the release
+        # version may differ from it (decision 3).
+        "protocol_version": protocol,
+        # Proposed and included, but probably not for the rig: the author
+        # may drop them in the confirmation step (decision 6).
+        "not_for_rig": [
+            {"path": str(f["path"]), "reason": reason}
+            for f in files
+            if (reason := not_for_the_rig(str(f["path"]))) is not None
+        ],
+        # Configuration files the hardware suggestion could not read.
+        "notes": notes,
     }
 
 
@@ -287,10 +334,36 @@ def clean_metadata(metadata: Any) -> dict[str, Any]:
     clean.setdefault("citations", [])
     clean.setdefault("platforms", list(DEFAULT_PLATFORMS))
     clean.setdefault("python_min", "3.10")
-    clean.setdefault("alhazen_min", "2.13.0")
+    clean.setdefault("alhazen_min", "2.12.0")
     clean.setdefault("hardware", {"display": False, "eye_tracker": False, "reward": False})
     clean["entrypoint"] = "run.py"
     clean["schema_version"] = 1
+    return clean
+
+
+def protocol_version(root: Path) -> str | None:
+    """The experiment's own version (pyproject [project] version), which an
+    alhazen experiment files its data under (data/v<version>/): its protocol
+    version. None when pyproject.toml names none or cannot be read."""
+    try:
+        document = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    value = document.get("project", {}).get("version")
+    return str(value) if isinstance(value, str) and value.strip() else None
+
+
+def release_metadata(root: Path, metadata: Any) -> dict[str, Any]:
+    """``metadata`` as the manifest will hold it: cleaned, and with
+    ``protocol_version`` set to the pyproject version exactly when the
+    release version differs from it (a documentation-only release, or one
+    the author numbered separately; import round decision 3), never taken
+    from the caller."""
+    clean = clean_metadata(metadata)
+    clean.pop("protocol_version", None)
+    protocol = protocol_version(root)
+    if protocol is not None and protocol != clean["version"]:
+        clean["protocol_version"] = protocol
     return clean
 
 
@@ -314,7 +387,7 @@ def pack(
         )
     if "run.py" not in files:
         raise ValueError("run.py must be included")
-    return packages.build_bundle(root, output, clean_metadata(metadata), sorted(files))
+    return packages.build_bundle(root, output, release_metadata(root, metadata), sorted(files))
 
 
 def pack_and_upload(

@@ -281,7 +281,14 @@ _REQUIRED_KEYS = (
     "citations",
     "files",
 )
-_OPTIONAL_KEYS = ("documentation",)
+# protocol_version: the experiment's own pyproject version, recorded only
+# when the release version differs from it (import round, decision 3): the
+# data of a release is filed under its protocol version (data/v<protocol>/),
+# so a documentation-only release 0.6.1 of protocol 0.6.0 keeps its data
+# with 0.6.0's.
+_OPTIONAL_KEYS = ("documentation", "protocol_version")
+# What a pyproject [project] version may look like (PEP 440 characters).
+_PROTOCOL = re.compile(r"[0-9][0-9A-Za-z.+!_-]{0,31}")
 _MAX_TITLE = 200
 _MAX_DESCRIPTION = 20_000
 _MAX_LICENSE = 200
@@ -358,6 +365,17 @@ def _validate_manifest(value: object, *, max_files: int, max_expanded_bytes: int
     version = _text(value["version"], "version", max_chars=32)
     if not _SEMVER.fullmatch(version):
         raise PackageError(f"{_where('version')} {_shown(version)} must be MAJOR.MINOR.PATCH")
+    protocol: str | None = None
+    if "protocol_version" in value:
+        protocol = _text(value["protocol_version"], "protocol_version", max_chars=32)
+        if not _PROTOCOL.fullmatch(protocol):
+            raise PackageError(
+                f"{_where('protocol_version')} {_shown(protocol)} must be a version such as 0.6.0"
+            )
+        if protocol == version:
+            raise PackageError(
+                f"{_where('protocol_version')} is given only when it differs from version"
+            )
     title = _text(value["title"], "title", max_chars=_MAX_TITLE)
     description = _text(
         value["description"], "description", max_chars=_MAX_DESCRIPTION, multiline=True, empty=True
@@ -447,6 +465,7 @@ def _validate_manifest(value: object, *, max_files: int, max_expanded_bytes: int
         "schema_version": SCHEMA_VERSION,
         "name": name,
         "version": version,
+        **({"protocol_version": protocol} if protocol is not None else {}),
         "title": title,
         "description": description,
         "entrypoint": ENTRYPOINT,

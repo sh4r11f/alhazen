@@ -33,7 +33,7 @@ from typing import Any
 from alhazen.hub.client import HubClient, HubError, api_path, canonical_base, probe_hub
 from alhazen.hub.credentials import Connection, RigState, sign_in
 from alhazen.hub.installation import TRUST_STATEMENT, InstallStore
-from alhazen.hub.source import pack, suggest_metadata
+from alhazen.hub.source import not_for_the_rig, pack, protocol_version, suggest_metadata
 from alhazen.hub.sync import Outbox, public_job
 
 InstallFunction = Callable[..., dict[str, Any]]
@@ -67,6 +67,19 @@ def add_parser(sub: Any) -> None:
             "what the experiment needs, comma-separated from display, eye_tracker, reward "
             "(replaces the suggestion; 'none' for nothing)"
         ),
+    )
+    pack_cmd.add_argument(
+        "--version",
+        default=None,
+        help=(
+            "the release version (MAJOR.MINOR.PATCH), when it should differ from the "
+            "pyproject version; the data stays under the pyproject (protocol) version"
+        ),
+    )
+    pack_cmd.add_argument(
+        "--drop-not-for-rig",
+        action="store_true",
+        help="leave out the files listed as probably not for the rig (kept by default)",
     )
     push = commands.add_parser("push", help="upload a package as a new private release")
     push.add_argument("bundle", help="a .zip built by `alhazen hub pack`")
@@ -225,20 +238,45 @@ def _pack(args: argparse.Namespace, directory: Path) -> int:
     packages = importlib.import_module("alhazen.hub.packages")
     root = Path(args.project).expanduser().resolve()
     files = packages.suggest_files(root)
-    metadata = suggest_metadata(root, files)
+    notes: list[dict[str, str]] = []
+    metadata = suggest_metadata(root, files, notes)
     if args.license:
         metadata["license"] = args.license
     if args.hardware is not None:
         metadata["hardware"] = parse_hardware(args.hardware)
-    print(f"{metadata['name']} {metadata['version']}: {len(files)} files")
+    if args.version is not None:
+        metadata["version"] = args.version
+    protocol = protocol_version(root)
+    release = metadata["version"]
+    if protocol is not None and protocol != release:
+        print(f"{metadata['name']} release {release}, protocol {protocol}: {len(files)} files")
+        print(f"  data stays under the protocol's folder (v{protocol}/)")
+    else:
+        print(f"{metadata['name']} {release}: {len(files)} files")
     needs = [k for k, v in metadata["hardware"].items() if v] or ["nothing"]
     print(f"  hardware: {', '.join(needs)}")
+    for note in notes:
+        print(f"  not read for the hardware suggestion: {note['path']} ({note['reason']})")
     if metadata.get("documentation"):
         print(f"  documentation: {metadata['documentation']}")
+    unlikely = {name: reason for name in files if (reason := not_for_the_rig(name)) is not None}
     for name in files:
-        print(f"  {name}")
+        print(f"  {name}" + (f"   [probably not for the rig: {unlikely[name]}]" if name in unlikely else ""))
     if not metadata.get("license"):
         raise ValueError("Give the package a licence with --license")
+    if unlikely:
+        print(
+            f"{len(unlikely)} files are probably not for the rig (marked above); they are "
+            "included unless you drop them."
+        )
+        drop = args.drop_not_for_rig or (
+            not args.yes
+            and input("Drop the files marked 'probably not for the rig'? [y/N] ").strip().lower()
+            == "y"
+        )
+        if drop:
+            files = [name for name in files if name not in unlikely]
+            print(f"Dropped {len(unlikely)} files; {len(files)} remain.")
     if not args.yes and input("Include exactly these files? [y/N] ").strip().lower() != "y":
         print("Nothing built.")
         return 1

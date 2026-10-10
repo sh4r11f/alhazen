@@ -290,3 +290,153 @@ def test_a_conflict_refuses_the_launch_before_anything_is_written(
         workspace.start(Launch(project=install["project_id"], mode="movie", rig="configs/rig-sim.yaml"))
     assert set((workspace.directory / "runs").glob("*")) == runs_before
     assert (folder / "data" / "participants.tsv").read_text(encoding="utf-8") == "own\n"
+
+
+# -- decision 3: the release version is not the protocol version ---------------------
+
+
+def test_a_docs_release_records_its_protocol_and_keeps_the_data_folder(tmp_path):
+    from alhazen.hub.source import pack, release_metadata
+
+    checkout = _source(tmp_path / "amodal", "amodal-averaging", "0.6.0")
+    meta = {**META, "name": "amodal-averaging", "version": "0.6.1"}
+    assert release_metadata(checkout, meta)["protocol_version"] == "0.6.0"
+    # Never taken from the caller: the pyproject says what the protocol is.
+    assert release_metadata(checkout, {**meta, "protocol_version": "9.9.9"})[
+        "protocol_version"
+    ] == "0.6.0"
+    same = release_metadata(checkout, {**meta, "version": "0.6.0"})
+    assert "protocol_version" not in same
+    info = pack(checkout, packages, tmp_path / "a.zip", meta, packages.suggest_files(checkout))
+    assert info.manifest["version"] == "0.6.1"
+    assert info.manifest["protocol_version"] == "0.6.0"
+    assert packages.inspect_bundle(tmp_path / "a.zip").manifest == info.manifest
+
+
+def test_the_manifest_refuses_a_protocol_version_equal_to_the_release(tmp_path):
+    checkout = _source(tmp_path / "x", "x", "0.6.0")
+    files = packages.suggest_files(checkout)
+    meta = {**META, "name": "x", "version": "0.6.0"}
+    with pytest.raises(packages.PackageError, match="only when it differs"):
+        packages.build_bundle(checkout, tmp_path / "a.zip", {**meta, "protocol_version": "0.6.0"}, files)
+    with pytest.raises(packages.PackageError, match="protocol_version"):
+        packages.build_bundle(checkout, tmp_path / "b.zip", {**meta, "protocol_version": "v 1"}, files)
+    with pytest.raises(packages.PackageError, match="MAJOR.MINOR.PATCH"):
+        packages.build_bundle(checkout, tmp_path / "c.zip", {**meta, "version": "0.6.1a"}, files)
+
+
+def test_pack_cli_takes_a_release_version(tmp_path, capsys):
+    from alhazen.hub import cli
+
+    checkout = _source(tmp_path / "kde", "kde-vergence", "0.5.0")
+    args = cli_args(checkout, tmp_path / "kde.zip", version="0.5.1")
+    assert cli._pack(args, tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "kde-vergence release 0.5.1, protocol 0.5.0" in out
+    assert "v0.5.0/" in out
+    manifest = packages.inspect_bundle(tmp_path / "kde.zip").manifest
+    assert (manifest["version"], manifest["protocol_version"]) == ("0.5.1", "0.5.0")
+
+
+# -- decision 6: files probably not for the rig --------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("path", "reason"),
+    [
+        ("tests/test_task.py", "tests"),
+        ("src/pkg/tests/test_x.py", "tests"),
+        ("notebooks/inspect.ipynb", "notebook"),
+        ("analysis.ipynb", "notebook"),
+        ("scripts/ci_local.py", "development script"),
+        (".github/workflows/ci.yml", "CI configuration"),
+        (".githooks/pre-push", "git hook"),
+        ("uv.lock", "lock file"),
+        ("docs/stimulus-check/kanizsa-near.png", "stimulus-check image"),
+        ("docs/data-rehearsal-example/x.csv", "rehearsal data"),
+    ],
+)
+def test_not_for_the_rig(path, reason):
+    from alhazen.hub.source import not_for_the_rig
+
+    assert reason in (not_for_the_rig(path) or "")
+
+
+@pytest.mark.parametrize(
+    "path", ["run.py", "src/pkg/task.py", "configs/rig-lab.yaml", "docs/methods.md", "README.md"]
+)
+def test_needed_files_are_not_flagged(path):
+    from alhazen.hub.source import not_for_the_rig
+
+    assert not_for_the_rig(path) is None
+
+
+def cli_args(project, output, **over):
+    import argparse
+
+    values = {
+        "project": str(project),
+        "output": str(output),
+        "license": "MIT",
+        "yes": True,
+        "hardware": None,
+        "version": None,
+        "drop_not_for_rig": False,
+    }
+    values.update(over)
+    return argparse.Namespace(**values)
+
+
+def _with_tooling(root: Path) -> Path:
+    for name in ("tests/test_task.py", "scripts/ci_local.py", ".github/workflows/ci.yml"):
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text("x = 1\n", encoding="utf-8")
+    (root / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    return root
+
+
+def test_pack_keeps_flagged_files_by_default_and_says_so(tmp_path, capsys):
+    from alhazen.hub import cli
+
+    checkout = _with_tooling(_source(tmp_path / "e", "mbri", "0.4.0"))
+    assert cli._pack(cli_args(checkout, tmp_path / "keep.zip"), tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "4 files are probably not for the rig" in out
+    assert "tests/test_task.py   [probably not for the rig: tests]" in out
+    paths = {f["path"] for f in packages.inspect_bundle(tmp_path / "keep.zip").manifest["files"]}
+    assert {"tests/test_task.py", "uv.lock", "scripts/ci_local.py"} <= paths
+
+
+def test_pack_drops_flagged_files_when_asked(tmp_path, capsys, monkeypatch):
+    from alhazen.hub import cli
+
+    checkout = _with_tooling(_source(tmp_path / "e", "mbri", "0.4.0"))
+    assert cli._pack(cli_args(checkout, tmp_path / "a.zip", drop_not_for_rig=True), tmp_path) == 0
+    paths = {f["path"] for f in packages.inspect_bundle(tmp_path / "a.zip").manifest["files"]}
+    assert not paths & {"tests/test_task.py", "uv.lock", "scripts/ci_local.py"}
+    assert "configs/rig-lab.yaml" in paths
+    # Interactive: the author answers the drop question, then confirms.
+    answers = iter(["y", "y"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
+    assert cli._pack(cli_args(checkout, tmp_path / "b.zip", yes=False), tmp_path) == 0
+    assert "Dropped 4 files" in capsys.readouterr().out
+    answers = iter(["", "y"])  # Enter keeps them
+    assert cli._pack(cli_args(checkout, tmp_path / "c.zip", yes=False), tmp_path) == 0
+    paths = {f["path"] for f in packages.inspect_bundle(tmp_path / "c.zip").manifest["files"]}
+    assert "uv.lock" in paths
+
+
+def test_preview_lists_flagged_files_and_the_protocol(tmp_path):
+    from alhazen.hub.source import preview
+
+    checkout = _with_tooling(_source(tmp_path / "e", "mbri", "0.4.0"))
+    view = preview(checkout, packages)
+    assert view["protocol_version"] == "0.4.0"
+    assert {f["path"] for f in view["not_for_rig"]} == {
+        "tests/test_task.py",
+        "scripts/ci_local.py",
+        ".github/workflows/ci.yml",
+        "uv.lock",
+    }
+    assert view["metadata"]["hardware"]["eye_tracker"] is True
+
