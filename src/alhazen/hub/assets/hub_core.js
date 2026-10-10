@@ -32,10 +32,10 @@ const HubCore = (() => {
 
   /* The screens, by `view` in the address. `rig` exists only on a rig; the
    * page sends a central reader who types it to the landing page. */
-  const VIEWS = ['home', 'catalog', 'experiment', 'guide', 'signin', 'register', 'library', 'mine', 'data', 'rig'];
+  const VIEWS = ['home', 'catalog', 'experiment', 'guide', 'signin', 'register', 'library', 'mine', 'data', 'rig', 'create'];
   /* Screens that need a signed-in account: a signed-out reader is sent to
    * sign in, and back here afterwards. */
-  const PRIVATE_VIEWS = ['library', 'mine', 'data'];
+  const PRIVATE_VIEWS = ['library', 'mine', 'data', 'create'];
   /* Identifiers the server issues (numbers, UUIDs, slugs): anything else in
    * the address is dropped rather than sent to the server. */
   const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -45,7 +45,7 @@ const HubCore = (() => {
   /* Which parameters each view keeps, and how each is checked. */
   const PARAMS = {
     home: [],
-    catalog: ['q', 'offset'],
+    catalog: ['q', 'cat', 'hw', 'who', 'os', 'lic', 'sort', 'offset'],
     experiment: ['id', 'version', 'tab', 'task'],
     guide: ['section'],
     signin: ['next'],
@@ -54,6 +54,7 @@ const HubCore = (() => {
     mine: ['id', 'new'],
     data: ['experiment', 'subject', 'mode', 'offset', 'session', 'toffset'],
     rig: ['tab', 'project', 'root', 'run', 'job'],
+    create: ['fork', 'step'],
   };
   const RIG_TABS = ['connection', 'installed', 'upload'];
   /* An experiment's reading views (design: Overview / Methods / Tasks &
@@ -61,6 +62,23 @@ const HubCore = (() => {
   const EXPERIMENT_TABS = ['overview', 'methods', 'tasks', 'versions'];
   /* A task or guide-section key inside a documentation descriptor. */
   const DOC_KEY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+  /* ---- marketplace facets (option "Store") ----------------------------------
+   * Categories are tags an author gives an experiment; the filters read the
+   * release manifest (hardware, platforms), the licence and the subject tags.
+   * Values within one filter widen the result (any of), filters narrow it. */
+  const CATEGORIES = [
+    ['attention', 'Attention'], ['eye-movements', 'Eye movements'], ['motion', 'Motion'],
+    ['size-shape', 'Size & shape'], ['depth', 'Depth'], ['colour', 'Colour'],
+  ];
+  const FACETS = {
+    hw: [['eye_tracker', 'Eye tracker'], ['reward', 'Reward line'], ['display', 'Display only']],
+    who: [['human', 'Human'], ['monkey', 'Monkey']],
+    os: [['linux', 'Linux'], ['darwin', 'macOS'], ['win32', 'Windows']],
+  };
+  const SORTS = [['newest', 'Newest'], ['name', 'Name']];
+  const CREATE_STEPS = ['describe', 'plan'];
+  const LICENCE = /^[A-Za-z0-9][A-Za-z0-9.+-]{0,39}$/;
 
   function cleanText(value) {
     if (typeof value !== 'string') return '';
@@ -94,6 +112,24 @@ const HubCore = (() => {
         return RIG_TABS.includes(raw) || EXPERIMENT_TABS.includes(raw) ? raw : undefined;
       case 'task': case 'section':
         return DOC_KEY.test(raw) ? raw : undefined;
+      case 'cat':
+        return CATEGORIES.some(([key]) => key === raw) ? raw : undefined;
+      case 'hw': case 'who': case 'os': {
+        const allowed = FACETS[name].map(([key]) => key);
+        const kept = allowed.filter((key) => String(raw).split(',').includes(key));
+        return kept.length ? kept.join(',') : undefined;
+      }
+      case 'lic': {
+        const kept = [];
+        for (const item of String(raw).split(',').slice(0, 12)) if (LICENCE.test(item) && !kept.includes(item)) kept.push(item);
+        return kept.length ? kept.sort().join(',') : undefined;
+      }
+      case 'sort':
+        return SORTS.some(([key]) => key === raw) && raw !== 'newest' ? raw : undefined;
+      case 'fork':
+        return ID.test(raw) ? raw : undefined;
+      case 'step':
+        return CREATE_STEPS.includes(raw) && raw !== 'describe' ? raw : undefined;
       default:
         return undefined;
     }
@@ -673,6 +709,153 @@ const HubCore = (() => {
     }
   }
 
+
+  /* -- marketplace ------------------------------------------------------------- */
+
+  /** A filter value from the address ('a,b') as a list. */
+  function facetList(value) {
+    return value ? String(value).split(',').filter(Boolean) : [];
+  }
+
+  /** The value of one filter after ticking or unticking `key`, for the address. */
+  function toggleFacet(value, key) {
+    const list = facetList(value);
+    const next = list.includes(key) ? list.filter((k) => k !== key) : list.concat([key]);
+    return next.length ? next.join(',') : undefined;
+  }
+
+  function itemTags(item) {
+    const tags = item && item.experiment && Array.isArray(item.experiment.tags) ? item.experiment.tags : [];
+    return tags.map((t) => String(t).toLowerCase());
+  }
+
+  function itemManifest(item) {
+    return (item && item.version && item.version.manifest) || {};
+  }
+
+  function itemLicence(item) {
+    const e = (item && item.experiment) || {};
+    return String(e.license || itemManifest(item).license || '').trim();
+  }
+
+  /** Which hardware keys a listing matches: eye_tracker and reward when its
+   *  release needs them, display when it needs neither. */
+  function hardwareKeys(item) {
+    const hw = itemManifest(item).hardware || {};
+    const keys = [];
+    if (hw.eye_tracker === true) keys.push('eye_tracker');
+    if (hw.reward === true) keys.push('reward');
+    if (!keys.length) keys.push('display');
+    return keys;
+  }
+
+  /** The subjects a listing names among its tags (human, monkey). */
+  function subjectKeys(item) {
+    const tags = itemTags(item);
+    return FACETS.who.map(([key]) => key).filter((key) => tags.includes(key));
+  }
+
+  function matches(item, route, skip) {
+    const r = route || {};
+    if (skip !== 'cat' && r.cat && !itemTags(item).includes(r.cat)) return false;
+    const any = (want, have) => !want.length || want.some((k) => have.includes(k));
+    if (skip !== 'hw' && !any(facetList(r.hw), hardwareKeys(item))) return false;
+    if (skip !== 'who' && !any(facetList(r.who), subjectKeys(item))) return false;
+    const platforms = Array.isArray(itemManifest(item).platforms) ? itemManifest(item).platforms : [];
+    if (skip !== 'os' && !any(facetList(r.os), platforms)) return false;
+    if (skip !== 'lic' && !any(facetList(r.lic), [itemLicence(item)])) return false;
+    return true;
+  }
+
+  function publishedAt(item) {
+    const e = (item && item.experiment) || {};
+    return String(e.published_at || (item && item.version && item.version.created_at) || e.created_at || '');
+  }
+
+  /** The listings an address asks for, filtered and sorted (newest first, or by name). */
+  function filterCatalog(items, route) {
+    const list = (Array.isArray(items) ? items : []).filter((item) => matches(item, route));
+    if (route && route.sort === 'name') {
+      list.sort((a, b) => String(a.experiment && a.experiment.title || '').localeCompare(String(b.experiment && b.experiment.title || ''), 'en', {sensitivity: 'base'}));
+    } else {
+      list.sort((a, b) => publishedAt(b).localeCompare(publishedAt(a)));
+    }
+    return list;
+  }
+
+  /** How many listings each choice would show, given the other filters:
+   *  {cat: {key: n}, hw: {...}, who: {...}, os: {...}, lic: {name: n}}. */
+  function catalogFacets(items, route) {
+    const list = Array.isArray(items) ? items : [];
+    const out = {cat: {}, hw: {}, who: {}, os: {}, lic: {}};
+    for (const [key] of CATEGORIES) out.cat[key] = 0;
+    for (const name of ['hw', 'who', 'os']) for (const [key] of FACETS[name]) out[name][key] = 0;
+    for (const item of list) {
+      if (matches(item, route, 'cat')) for (const tag of itemTags(item)) if (tag in out.cat) out.cat[tag] += 1;
+      if (matches(item, route, 'hw')) for (const key of hardwareKeys(item)) out.hw[key] += 1;
+      if (matches(item, route, 'who')) for (const key of subjectKeys(item)) out.who[key] += 1;
+      if (matches(item, route, 'os')) {
+        const platforms = Array.isArray(itemManifest(item).platforms) ? itemManifest(item).platforms : [];
+        for (const key of platforms) if (key in out.os) out.os[key] += 1;
+      }
+      if (matches(item, route, 'lic')) {
+        const lic = itemLicence(item);
+        if (lic) out.lic[lic] = (out.lic[lic] || 0) + 1;
+      }
+    }
+    return out;
+  }
+
+  /** How many filters an address applies (the phone's Filters button count). */
+  function activeFilters(route) {
+    const r = route || {};
+    return ['hw', 'who', 'os', 'lic'].reduce((n, name) => n + facetList(r[name]).length, 0);
+  }
+
+  /* The picture on a listing card is drawn from its tags: the first tag that
+   * names a stimulus decides; otherwise the categories suggest one. */
+  const SCHEMATICS = [
+    ['gabor', 'gabor'], ['rivalry', 'rivalry'], ['dots', 'dots'], ['grid', 'grid'], ['rings', 'rings'],
+    ['inducers', 'inducers'], ['target-step', 'step'], ['disc', 'disc'], ['fixation', 'fixation'],
+    ['motion', 'dots'], ['size-shape', 'rings'], ['attention', 'gabor'], ['eye-movements', 'step'],
+    ['depth', 'rivalry'], ['colour', 'disc'],
+  ];
+
+  function schematicKind(tags) {
+    const list = (Array.isArray(tags) ? tags : []).map((t) => String(t).toLowerCase());
+    for (const [tag, kind] of SCHEMATICS) if (list.includes(tag)) return kind;
+    return 'fixation';
+  }
+
+  /** A small deterministic number stream from an identifier (for the dot
+   *  positions of a card's picture): the same listing always draws the same. */
+  function seededRandom(seed) {
+    let x = 2166136261;
+    for (const ch of String(seed || 'alhazen')) x = Math.imul(x ^ ch.charCodeAt(0), 16777619) >>> 0;
+    return () => {
+      x = (Math.imul(x ^ (x >>> 15), 2246822507) + 0x9e3779b9) >>> 0;
+      x ^= x >>> 13;
+      return (x >>> 0) / 4294967296;
+    };
+  }
+
+  /** The leading prose of a Methods document as plain sentences: the text
+   *  before the second heading, without Markdown marks, at most `limit` characters. */
+  function methodsExcerpt(markdown, limit) {
+    const max = limit || 420;
+    const paras = [];
+    for (const block of String(markdown || '').split(/\n{2,}/)) {
+      const text = block.trim();
+      if (!text) continue;
+      if (/^#{1,6}\s/.test(text)) continue;
+      if (/^(```|\||[-*]\s|\d+\.\s)/.test(text)) continue;
+      paras.push(text.replace(/`([^`]*)`/g, '$1').replace(/\*\*([^*]+)\*\*/g, '$1').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/\s+/g, ' '));
+      if (paras.join(' ').length >= max) break;
+    }
+    const joined = paras.slice(0, 2).join('\n\n');
+    return joined.length > max ? joined.slice(0, max).replace(/\s+\S*$/, '') + '\u2026' : joined;
+  }
+
   /** "Showing 51–100" for a page of a list. */
   function nextOffsetLabel(offset, count) {
     const start = (Number(offset) || 0) + 1;
@@ -685,6 +868,8 @@ const HubCore = (() => {
     validatePackageMetadata, parseList, parseTags, formatBytes, formatDate, shortHash,
     hardwareList, platformsText, trialColumns, trialRow, cellText, jobState, indexState, uploadState, uploadTotals, firstHttpsUrl,
     nextOffsetLabel,
+    CATEGORIES, FACETS, SORTS, facetList, toggleFacet, hardwareKeys, subjectKeys, filterCatalog, catalogFacets,
+    activeFilters, schematicKind, seededRandom, methodsExcerpt,
   };
 })();
 

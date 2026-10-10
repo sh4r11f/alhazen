@@ -180,7 +180,7 @@ test('central visitor: the landing page says what is real, with an honest empty 
   assert.match(p.text(), /Nothing is published yet/);
   assert.match(p.text(), /Experiment.*Rig.*Data/s);
   const nav = p.document.getElementById('primary-nav').textContent;
-  assert.match(nav, /Catalogue/);
+  assert.match(nav, /Marketplace/);
   assert.doesNotMatch(nav, /This rig/);
   assert.match(p.document.getElementById('account').textContent, /Sign in.*Register/);
   assert.match(p.document.getElementById('role-badge').textContent, /Hub/);
@@ -297,7 +297,8 @@ test('Back and Forward redraw the screen and drop answers for the screen left be
   assert.match(p.text(), /Your experiment hub/);
   assert.equal(p.document.activeElement.getAttribute('data-heading'), '');
   await p.back('/?view=catalog');
-  assert.match(p.text(), /Published experiments/);
+  assert.match(p.text(), /Marketplace/);
+  assert.match(p.text(), /The marketplace is empty/);
 });
 
 test('experiment page: release sheet, citations as text with an https link, download only on central', async () => {
@@ -970,4 +971,127 @@ test('central registration keeps its form and posts to the hub', async () => {
   await p.submit(form);
   assert.deepEqual(p.hub.calls.find((c) => c.path.endsWith('/auth/register')).json,
     {username: 'alice', display_name: 'Alice A', password: 'x'.repeat(14), invite_code: 'INV'});
+});
+
+
+/* ---- marketplace, option "Store" -------------------------------------------- */
+
+function storeItems() {
+  const mk = (id, tags, hw, at) => ({experiment: experiment({id, title: 'Exp ' + id, tags, published_at: at}),
+    version: release({id: 'v' + id, manifest: Object.assign({}, release().manifest, {hardware: Object.assign({display: true, eye_tracker: false, reward: false}, hw)})})});
+  return [
+    mk('a', ['motion', 'human'], {eye_tracker: true}, '2026-10-07T00:00:00Z'),
+    mk('b', ['motion', 'monkey'], {eye_tracker: true, reward: true}, '2026-10-06T00:00:00Z'),
+    mk('c', ['colour', 'human'], {}, '2026-10-05T00:00:00Z'),
+    mk('d', ['attention', 'human'], {eye_tracker: true}, '2026-10-04T00:00:00Z'),
+    mk('e', ['depth', 'human'], {}, '2026-10-03T00:00:00Z'),
+    mk('f', ['size-shape', 'human'], {}, '2026-10-02T00:00:00Z'),
+    mk('g', ['eye-movements', 'monkey'], {eye_tracker: true, reward: true}, '2026-10-01T00:00:00Z'),
+  ];
+}
+
+test('marketplace: the newest three lead, then cards; a category and a filter from the address narrow it', async () => {
+  const routes = {'GET /config': () => SERVER_CONFIG, 'GET /auth/me': signedOut,
+    'GET /catalog': () => ({status: 200, body: {items: storeItems(), next_offset: null}})};
+  let p = await mount({routes, search: '?view=catalog'});
+  const titles = (sel) => p.main.querySelectorAll(sel).map((el) => el.querySelector('.card-link').textContent);
+  assert.deepEqual(titles('.card-featured'), ['Exp a', 'Exp b', 'Exp c']);
+  assert.equal(p.main.querySelectorAll('.card').length, 7);
+  assert.match(p.text(), /7 experiments/);
+  assert.equal(p.main.querySelectorAll('svg.sch').length, 7, 'every card has its picture');
+  p = await mount({routes, search: '?view=catalog&cat=motion&hw=reward'});
+  assert.deepEqual(titles('.card'), ['Exp b']);
+  assert.match(p.text(), /1 of 7 experiments/);
+  assert.equal(p.main.querySelectorAll('.card-featured').length, 0);
+  assert.ok(p.find('a', 'Reward line'), 'the active filter is a removable pill');
+  assert.equal(p.find('a', 'Reward line').getAttribute('href'), '/?view=catalog&cat=motion');
+  const current = p.main.querySelectorAll('.cat-chip').find((a) => a.getAttribute('aria-current') === 'true');
+  assert.match(current.textContent, /Motion/);
+  assert.equal(p.hub.calls.filter((c) => c.path.endsWith('/catalog')).length, 1);
+  await p.click(p.find('a', 'Attention'));
+  assert.equal(p.loc.search, '?view=catalog&cat=attention&hw=reward');
+  assert.match(p.text(), /No experiment fits these filters/);
+  assert.equal(p.hub.calls.filter((c) => c.path.endsWith('/catalog')).length, 1, 'the catalogue is kept, not fetched again');
+});
+
+test('marketplace: a visitor\'s Add to library is a sign-in link that comes back here', async () => {
+  const p = await mount({routes: {'GET /config': () => SERVER_CONFIG, 'GET /auth/me': signedOut,
+    'GET /experiments/e1': () => ({status: 200, body: {experiment: experiment(), versions: [release()]}}),
+    'GET /experiments/e1/versions/v1/documentation': () => ({status: 200, body: {documentation: null}})},
+  search: '?view=experiment&id=e1'});
+  const add = p.find('a', 'Add to library');
+  assert.equal(add.getAttribute('href'), '/?view=signin&next=%3Fview%3Dexperiment%26id%3De1');
+  assert.match(p.text(), /This release has no Methods document/);
+});
+
+test('marketplace: Add to library pins this release and the card says it is in the library', async () => {
+  let library = [];
+  const p = await mount({routes: {'GET /config': () => SERVER_CONFIG,
+    'GET /auth/me': () => ({status: 200, body: {user: ALICE, csrf_token: 'c'}}),
+    'GET /experiments/e1': () => ({status: 200, body: {experiment: experiment(), versions: [release()]}}),
+    'GET /experiments/e1/versions/v1/documentation': () => ({status: 200, body: {documentation: null}}),
+    'GET /library': () => ({status: 200, body: {items: library, next_offset: null}}),
+    'POST /library': (req) => { library = [{experiment: experiment(), version: release()}]; return {status: 200, body: {item: library[0], echo: req.json}}; },
+  }, search: '?view=experiment&id=e1'});
+  await p.click(p.find('button', 'Add to library'));
+  const post = p.hub.calls.find((c) => c.init.method === 'POST' && c.path.endsWith('/library'));
+  assert.deepEqual(post.json, {experiment_id: 'e1', version_id: 'v1'});
+  assert.match(p.text(), /In your library/);
+  assert.match(p.text(), /Pinned to v1\.2\.0/);
+  assert.ok(p.find('a', 'Open your library'));
+});
+
+test('create (Index flow): signed out goes to sign in; signed in, Generate sends nothing and says it is not connected', async () => {
+  const out = await mount({search: '?view=create&fork=b', routes: {'GET /config': () => SERVER_CONFIG, 'GET /auth/me': signedOut}});
+  assert.equal(out.loc.search, '?view=signin&next=%3Fview%3Dcreate%26fork%3Db');
+  assert.match(out.document.getElementById('account').textContent, /Create/);
+  const p = await mount({search: '?view=create&fork=b', routes: {
+    'GET /config': () => SERVER_CONFIG, 'GET /auth/me': () => ({status: 200, body: {user: ALICE, csrf_token: 'c1'}}),
+    'GET /catalog': () => ({status: 200, body: {items: storeItems(), next_offset: null}}),
+  }});
+  const form = p.main.querySelector('form');
+  const selects = form.querySelectorAll('select');
+  assert.equal(selects[0].value, 'b', 'the listing to fork is preselected');
+  assert.deepEqual(selects[1].querySelectorAll('option').map((o) => o.textContent), ['OpenAI', 'Anthropic', 'Google', 'OpenRouter']);
+  const key = form.querySelectorAll('input').find((i) => i.getAttribute('type') === 'password');
+  key.value = 'sk-' + 'x'.repeat(30);
+  await p.submit(form);
+  assert.match(p.text(), /Describe the experiment/);
+  assert.equal(key.value, '', 'the key field is cleared, never kept');
+  await p.click(p.find('button', 'Saccade adaptation'));
+  key.value = 'sk-' + 'y'.repeat(30);
+  const calls = p.hub.calls.length;
+  await p.submit(form);
+  assert.match(p.text(), /Generation is not connected yet/);
+  assert.match(p.text(), /nothing was sent to OpenAI and no key was stored/);
+  assert.equal(p.hub.calls.length, calls, 'no request of any kind');
+  assert.equal(key.value, '');
+  assert.ok(!p.session.map.size || ![...p.session.map.values()].some((v) => String(v).includes('sk-')));
+  await p.click(p.find('a', 'See an example plan'));
+  assert.equal(p.loc.search, '?view=create&fork=b&step=plan');
+  assert.match(p.text(), /Example plan/);
+  assert.match(p.text(), /Not connected yet/);
+  assert.equal(p.find('button', 'Create private draft').disabled, true);
+  assert.match(p.text(), /Fork of a listing: Exp b v1\.2\.0/);
+  assert.match(p.text(), /Parameters11/);
+});
+
+test('experiment page: Fork with AI opens Create with this experiment as the start; Add to library stays primary', async () => {
+  const p = await mount({routes: {'GET /config': () => SERVER_CONFIG, 'GET /auth/me': () => ({status: 200, body: {user: ALICE, csrf_token: 'c'}}),
+    'GET /experiments/e1': () => ({status: 200, body: {experiment: experiment(), versions: [release()]}}),
+    'GET /experiments/e1/versions/v1/documentation': () => ({status: 200, body: {documentation: null}}),
+    'GET /library': () => ({status: 200, body: {items: [], next_offset: null}}),
+    'GET /catalog': () => ({status: 200, body: {items: [{experiment: experiment(), version: release()}], next_offset: null}}),
+  }, search: '?view=experiment&id=e1'});
+  assert.equal(p.find('a', 'Start a variant'), undefined);
+  const fork = p.find('a', 'Fork with AI');
+  assert.equal(fork.textContent, 'Fork with AI');
+  assert.equal(fork.getAttribute('href'), '/?view=create&fork=e1');
+  assert.match(p.find('button', 'Add to library').className, /btn-primary/);
+  assert.doesNotMatch(fork.className, /btn-primary/);
+  await p.click(fork);
+  assert.equal(p.loc.search, '?view=create&fork=e1');
+  const radios = p.main.querySelectorAll('input').filter((i) => i.getAttribute('type') === 'radio');
+  assert.equal(radios[1].checked, true, 'Fork a catalogue listing is chosen');
+  assert.equal(p.main.querySelector('select[name="from"]').value, 'e1');
 });
