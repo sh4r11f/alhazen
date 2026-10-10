@@ -45,7 +45,9 @@ def first_component(data_root: str) -> str | None:
     (``data`` for ``data``, ``./data/lab`` and ``data/lab``), or None for an
     absolute one, one leaving the folder (``..``) or an empty one."""
     text = data_root.strip().replace("\\", "/")
-    if not text or text.startswith("~") or Path(text).is_absolute():
+    # Rooted ("/srv/data") or with a drive ("D:/data"): outside the release
+    # folder on every platform, even where Path calls it relative (Windows).
+    if not text or text.startswith(("~", "/")) or Path(text).is_absolute() or ":" in text[:3]:
         return None
     parts = [p for p in PurePosixPath(text).parts if p not in (".", "")]
     if not parts or parts[0] == ".." or ":" in parts[0]:

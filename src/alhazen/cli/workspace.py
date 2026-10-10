@@ -2589,6 +2589,7 @@ class Workspace:
         task: str | None,
         text: str | None,
         params_file: str | None,
+        run_dir: Path,
     ) -> dict[str, Any]:
         """What run.json says about the parameters the session got: where
         they came from and the SHA-256 of their exact bytes, so a label can be
@@ -2597,8 +2598,9 @@ class Workspace:
             record: dict[str, Any] = {
                 "source": "parameter set file" if params_file else "launch text",
                 "file": params_file,
-                # params.yaml, the exact bytes the session was given.
-                "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                # params.yaml as written, the exact bytes the session was given
+                # (Windows writes text with CRLF line endings).
+                "sha256": hashlib.sha256((run_dir / "params.yaml").read_bytes()).hexdigest(),
             }
             if params_file:
                 shipped = path_inside(Path(project["path"]), params_file)
@@ -2801,7 +2803,7 @@ class Workspace:
                 "params": (
                     self._ladder_record(project, training)
                     if training is not None
-                    else self._params_record(project, task, text, params_file)
+                    else self._params_record(project, task, text, params_file, run_dir)
                 ),
                 # A hub-installed release's identity (hub base, experiment and
                 # version ids, source ZIP SHA-256), as launch.json holds it.

@@ -324,9 +324,13 @@ def test_minor6_names_the_hub_refuses_are_found_at_preview(http, hub, workspace,
     if name == "Trials.CSV":
         files["trials.csv"] = b"2"
     try:
-        session_with(workspace, files)
+        folder = session_with(workspace, files)
     except OSError:
         pytest.skip("this file system cannot hold that name")
+    if len({p.name for p in folder.iterdir()} & set(files)) < len(files):
+        # A case-insensitive file system (macOS, Windows) kept one file for
+        # both names, so there is no collision to find (found by CI on macOS).
+        pytest.skip("this file system folds the two names into one file")
     connect(call, hub)
     body = {
         "project_id": project_id(workspace),

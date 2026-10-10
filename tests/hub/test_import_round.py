@@ -13,7 +13,9 @@ into the hub showed, held as tests. See docs/hub/import-round.md.
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import stat
 import sys
 from pathlib import Path
 
@@ -69,6 +71,29 @@ def _source(root: Path, name: str, version: str, run_py: str = "print('run')\n")
     (root / "configs" / "rig-lab.reward.yaml").write_text("pulses: 1\n", encoding="utf-8")
     (root / "configs" / "rig-sim.yaml").write_bytes(base.RIG.read_bytes())
     return root
+
+
+def _remove_tree(path: Path | str) -> None:
+    """Delete a release folder as an operator would. Its declared files are
+    read-only, which Windows refuses to delete until they are made writable."""
+
+    def writable(function, name, _info):  # noqa: ANN001
+        os.chmod(name, stat.S_IWRITE)
+        function(name)
+
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=writable)
+    else:
+        shutil.rmtree(path, onerror=writable)
+
+
+def _remove_link(path: Path) -> None:
+    """A directory link the hub made: a symbolic link, or on Windows a
+    junction (removed with rmdir, never its target's contents)."""
+    if path.is_symlink():
+        path.unlink()
+    else:
+        os.rmdir(path)
 
 
 # -- decision 1: the experiment's own rigs ship --------------------------------------
@@ -142,7 +167,9 @@ def test_share_links_migrates_and_keeps(tmp_path):
         "data-training-rehearsal": "linked",
     }
     assert (home / "data" / "participants.tsv").read_text(encoding="utf-8").endswith("sub-01\n")
-    assert (old / "data").is_symlink() and (old / "data").resolve() == (home / "data").resolve()
+    # A symbolic link on POSIX, a junction on Windows: either way it leads home.
+    assert os.path.realpath(old / "data") == os.path.realpath(home / "data")
+    assert not (old / "data").samefile(old) and (old / "data").samefile(home / "data")
     # Again: nothing moves, every link kept.
     assert {d["action"] for d in share(old, home, link_names(["data"]))} == {"kept"}
     new = _release(home, "0.6.1")
@@ -183,7 +210,7 @@ def test_removing_a_release_never_removes_the_shared_data(tmp_path):
     release = _release(home, "0.6.0")
     share(release, home, link_names(["data"]))
     (release / "data" / "participants.tsv").write_text("participant_id\n", encoding="utf-8")
-    shutil.rmtree(release)
+    _remove_tree(release)
     assert (home / "data" / "participants.tsv").is_file()
 
 
@@ -267,7 +294,7 @@ def test_an_upgrade_sees_the_same_participants_tsv(http, hub, workspace, tmp_pat
         existing, _, _ = data_roots(workspace.describe(install["project_id"]))
         assert (home / "data").resolve() in [r.path for r in existing]
     # Removing the old release folder leaves the experiment's data.
-    shutil.rmtree(first["path"])
+    _remove_tree(first["path"])
     assert registry.is_file()
 
 
@@ -283,7 +310,7 @@ def test_a_conflict_refuses_the_launch_before_anything_is_written(
     folder = Path(install["path"])
     home = folder.parent
     # As an install made before the shared root: the release's own data/ ...
-    (folder / "data").unlink()
+    _remove_link(folder / "data")
     (folder / "data").mkdir()
     (folder / "data" / "participants.tsv").write_text("own\n", encoding="utf-8")
     # ... while the shared one already holds another release's data.
@@ -488,7 +515,7 @@ def test_an_unfinished_install_gets_no_data_links(http, hub, workspace, tmp_path
     install = _install(call, hub, workspace, tmp_path, "0.6.0")
     folder = Path(install["path"])
     for name in link_names(["data"]):
-        (folder / name).unlink()
+        _remove_link(folder / name)
         (folder.parent / name).rmdir()
     records = json.loads((workspace.directory / "hub" / "installs.json").read_text("utf-8"))
     for record in records:

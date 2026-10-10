@@ -147,7 +147,9 @@ class ArtifactStore:
         target = self.path(key)
         if target.exists():
             raise StorageError("a release file already exists at this key; refusing to overwrite")
-        with temp.open("rb") as handle:
+        # r+b: Windows flushes a file only through a handle that may write
+        # (FlushFileBuffers); POSIX accepts either. Nothing is written.
+        with temp.open("r+b") as handle:
             os.fsync(handle.fileno())
         target.parent.mkdir(parents=True, exist_ok=True)
         fsync_dir(target.parent.parent)
@@ -242,7 +244,7 @@ class ArtifactStore:
             os.fsync(handle.fileno())
         for folder, _dirs, files in os.walk(source):
             for name in files:
-                with (Path(folder) / name).open("rb") as handle:
+                with (Path(folder) / name).open("r+b") as handle:  # see install_release
                     os.fsync(handle.fileno())
         for folder, _dirs, _files in os.walk(source, topdown=False):
             fsync_dir(Path(folder))

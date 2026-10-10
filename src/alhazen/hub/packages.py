@@ -1271,6 +1271,12 @@ def _leftover_names(destination: Path, nonce: str) -> tuple[str, str]:
     return f"{stem}.package", f"{stem}.staging"
 
 
+# Windows refuses to remove a file while any handle to it is open (POSIX
+# removes the name and keeps the open file), so the install record's handle
+# is released before the record is removed there.
+_OPEN_FILES_BLOCK_REMOVAL = sys.platform == "win32"
+
+
 def _lock(fd: int) -> bool:
     """Take an exclusive, non-blocking lock on an open record; False if
     another process holds it. Released by the OS when the holder exits."""
@@ -1455,8 +1461,14 @@ def install_bundle(
             raise PackageError(f"{_shown(name)} was changed by something else during the install")
         _replace_onto_claim(tree, destination)
     except BaseException as error:
+        # Windows cannot remove a file that is still open, so there the
+        # record's handle (and its lock) is released before _abandon removes
+        # it; POSIX keeps holding it until after, as before.
+        if _OPEN_FILES_BLOCK_REMOVAL:
+            os.close(record_fd)
         _abandon(error, destination, claim, (parent / copy_name, parent / staging_name), record)
-        os.close(record_fd)
+        if not _OPEN_FILES_BLOCK_REMOVAL:
+            os.close(record_fd)
         if isinstance(error, OSError):
             raise PackageError(
                 f"installing {_shown(name)} failed: {error.strerror or error}"
@@ -1464,9 +1476,18 @@ def install_bundle(
         raise
     # Committed: from here on the install has happened, whatever follows.
     # Each step is independent, and none can turn the install into a failure.
+    record_open = True
+
+    def remove_record() -> None:
+        nonlocal record_open
+        if _OPEN_FILES_BLOCK_REMOVAL and record_open:
+            os.close(record_fd)
+            record_open = False
+        os.unlink(record)
+
     for step, what in (
         (lambda: durability.directory(parent, "the final rename"), "syncing the final rename"),
-        (lambda: os.unlink(record), "removing the install record"),
+        (remove_record, "removing the install record"),
         (
             lambda: durability.directory(parent, "the removal of the install record"),
             "syncing the record's removal",
@@ -1476,7 +1497,8 @@ def install_bundle(
             step()
         except OSError as error:
             durability.unconfirmed.append(f"{what} ({error.strerror or error})")
-    os.close(record_fd)
+    if record_open:
+        os.close(record_fd)
     unconfirmed = sorted(set(durability.unconfirmed))
     note = "not confirmed on disk: " + ", ".join(unconfirmed)
     if sys.platform == "win32":
@@ -1593,11 +1615,15 @@ def recover_install(destination: Path) -> RecoveryResult:
                 state = "installed"
             else:
                 state = "kept"
+        if _OPEN_FILES_BLOCK_REMOVAL:
+            os.close(fd)  # Windows: an open file cannot be removed
+            fd = -1
         os.unlink(record)
         removed.append(record.name)
         _fsync_directory(destination.parent)
     finally:
-        os.close(fd)
+        if fd >= 0:
+            os.close(fd)
     return RecoveryResult(record_found=True, destination_state=state, removed=tuple(removed))
 
 
