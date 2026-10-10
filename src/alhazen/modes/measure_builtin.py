@@ -260,13 +260,34 @@ def _luminance(ctx: JobContext) -> Measurement:
             raise ValueError("monitor.luminance.levels must be between 3 and 33")
         display = ctx.devices.get("display")
         values = [i / (n_levels - 1) for i in range(n_levels)]
+        # Said once, before the first patch, because a patch is shown with
+        # nothing written on it: any text would add its own light to the
+        # reading, and a prompt drawn over the patch is what the meter would
+        # be pointed at.
+        if not ctx.confirm(
+            "ready",
+            f"Luminance: {n_levels} grey screens, darkest to brightest. Each one fills the "
+            "screen with nothing written on it. Point the photometer at the middle of the "
+            "screen, read it, then press SPACE and type the reading (cd/m²). ESC on a grey "
+            "screen stops the measurement. Is the photometer ready?",
+        ):
+            raise OperatorCancelled("the operator was not ready to read the photometer")
+        hold = patch_holder(display)
         measured = []
         for index, level in enumerate(values):
-            show_patch(display, level)
+            # The patch stays up, alone, until the operator has the reading.
+            # Only then does the prompt for the number replace it.
+            ctx.set_waiting(
+                f"grey screen {index + 1} of {n_levels}: read the photometer, then press SPACE"
+            )
+            try:
+                hold(level)
+            finally:
+                ctx.set_waiting(None)
             measured.append(
                 ctx.number(
                     f"level_{index}",
-                    f"Photometer reading of the patch at level {level:.3f} "
+                    f"Photometer reading of the grey screen just shown, level {level:.3f} "
                     f"({index + 1} of {n_levels})",
                     unit="cd/m²",
                     low=0.0,
@@ -333,6 +354,31 @@ def show_patch(display: Any, level: float) -> None:
     display.flip()
 
 
+def patch_holder(display: Any) -> Callable[[float], None]:
+    """A patch shower on the real window: fills it with one grey level and
+    keeps it there, with nothing drawn over it, until SPACE. ESC raises
+    OperatorCancelled.
+
+    The patch is drawn again on every frame it is held. One draw and one flip
+    would leave it up only until the next thing drew — and the next thing
+    used to be the prompt for the reading, so the operator never saw a patch
+    to point the meter at.
+    """
+    from psychopy import event
+
+    def hold(level: float) -> None:
+        event.clearEvents()
+        while True:
+            show_patch(display, level)
+            pressed = event.getKeys(keyList=["space", "escape"])
+            if "escape" in pressed:
+                raise OperatorCancelled("the operator stopped the luminance readings")
+            if "space" in pressed:
+                return
+
+    return hold
+
+
 def _keys(ctx: JobContext) -> Measurement:
     from alhazen.modes.measure import _psychopy_key_waiter
 
@@ -352,7 +398,8 @@ def _keys(ctx: JobContext) -> Measurement:
 def _mouse(ctx: JobContext) -> Measurement:
     distance = ctx.number(
         "distance_cm",
-        "Distance to slide the mouse along a ruler each pass",
+        "How far you will slide the mouse on the desk each pass, measured with a real ruler "
+        "laid beside it (nothing is drawn on the screen for this)",
         unit="cm",
         low=1.0,
         high=50.0,
@@ -367,8 +414,10 @@ def _mouse(ctx: JobContext) -> Measurement:
             try:
                 bucket.append(
                     drag(
-                        f"Hold the left button, slide the mouse {distance:g} cm {speed} "
-                        f"along the ruler, release. ({index + 1} of {passes}; ESC stops)"
+                        f"Lay a real ruler on the desk beside the mouse. Hold the left "
+                        f"button, slide the mouse {distance:g} cm {speed} along it, left to "
+                        f"right, then release. The screen shows no ruler: the distance is "
+                        f"measured on the desk. ({index + 1} of {passes}; ESC stops)"
                     )
                 )
             finally:
@@ -891,12 +940,13 @@ def builtin_jobs() -> list[MeasurementJob]:
             "input.mouse",
             "Keyboard & mouse",
             "Mouse pointer gain",
-            "Pointer px per cm of mouse travel, slow and fast (shows OS acceleration).",
+            "Pointer px per cm the mouse moves on the desk, slow and fast (shows OS "
+            "acceleration). Needs a real ruler beside the mouse.",
             45,
             _mouse,
             needs=frozenset({"display", "mouse", "operator"}),
             unavailable=_needs_window,
-            inputs=("distance_cm (cm)", "passes (count)"),
+            inputs=("distance_cm (cm, on the desk)", "passes (count)"),
             duration=JobDuration(operator="mouse passes over a measured distance, by the operator"),
         ),
         MeasurementJob(

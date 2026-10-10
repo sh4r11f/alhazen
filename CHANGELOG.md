@@ -25,6 +25,20 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+### Fixed
+
+- **Measure rig: the luminance patch stays on the screen.** Each grey level
+  was drawn and at once replaced by the prompt for its reading, so there was
+  never a patch to point the photometer at. Each level now fills the screen
+  with nothing written on it until SPACE, and the reading is typed after. The
+  job first says what is about to happen and asks whether the photometer is
+  ready.
+- **Measure rig: the mouse measurement says its ruler is a real one.** The
+  prompts spoke of sliding the mouse "along the ruler" without saying that it
+  is a ruler on the desk, and nothing is drawn on the screen.
+
 ## 2.14.0 - 2026-10-09
 
 ### Changed
