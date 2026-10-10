@@ -8,7 +8,6 @@ network, no real provider.
 from __future__ import annotations
 
 import base64
-import json
 import logging
 import os
 from dataclasses import replace
@@ -17,6 +16,8 @@ from typing import Any
 
 import pytest
 from sqlalchemy import create_engine, select, text
+from tests.hub import ai_fakes
+from tests.hub.server_support import Hub, make_bundle, make_settings
 
 from alhazen.hub import admin
 from alhazen.hub.ai import keys as ai_keys_module
@@ -25,8 +26,6 @@ from alhazen.hub.ai.providers import ProviderError
 from alhazen.hub.app import create_app
 from alhazen.hub.schema import SCHEMA_VERSION, SchemaError, ai_jobs, ai_keys, audit_events
 from alhazen.hub.settings import AISettings, HubSettings
-from tests.hub import ai_fakes
-from tests.hub.server_support import Hub, make_bundle, make_settings
 
 SECRET = base64.b64encode(b"k" * 32).decode()
 OPENAI_KEY = "sk-test-0123456789abcdefWXYZ"
@@ -157,8 +156,14 @@ class TestStatusAndKeys:
         r = ada.put("/ai/keys/openai", json={"key": "sk-other-key-000000001234"})
         assert r.json()["hint"] == "1234" and r.json()["rotated_at"] != first["rotated_at"]
         assert r.json()["created_at"] == first["created_at"]
-        assert ada.client.delete("/api/hub/v1/ai/keys/openai", headers=ada.headers()).status_code == 204
-        assert ada.client.delete("/api/hub/v1/ai/keys/openai", headers=ada.headers()).status_code == 404
+        assert (
+            ada.client.delete("/api/hub/v1/ai/keys/openai", headers=ada.headers()).status_code
+            == 204
+        )
+        assert (
+            ada.client.delete("/api/hub/v1/ai/keys/openai", headers=ada.headers()).status_code
+            == 404
+        )
         assert ada.get("/ai/status").json()["keys"] == []
 
     def test_key_shape_and_provider_checks(self, ai: AIHub) -> None:
@@ -262,7 +267,9 @@ class TestDraftLifecycle:
         bob = ai.browser("bob")
         assert bob.get(f"/experiments/{experiment['id']}").status_code == 404
         assert (
-            bob.get(f"/experiments/{experiment['id']}/versions/{version['id']}/download").status_code
+            bob.get(
+                f"/experiments/{experiment['id']}/versions/{version['id']}/download"
+            ).status_code
             == 404
         )
         assert bob.get(f"/ai/drafts/{created['draft']['id']}").status_code == 404
@@ -323,7 +330,10 @@ class TestDraftLifecycle:
         view = draft(ada, created["draft"]["id"])
         job = job_of(view, "source")
         assert view["draft"]["status"] == "planned"
-        assert job["error"]["code"] == "generation_invalid" and "run.py" in job["result"]["package_error"]
+        assert (
+            job["error"]["code"] == "generation_invalid"
+            and "run.py" in job["result"]["package_error"]
+        )
         r = ada.post(f"/ai/drafts/{created['draft']['id']}/accept", {"title": "x"})
         assert r.status_code == 409
         assert not list((ai.settings.artifact_root / "ai-drafts").rglob("*.zip"))
@@ -377,7 +387,9 @@ class TestDraftLifecycle:
 
 
 class TestDisclosure:
-    def test_start_from_own_version_sends_exactly_its_files(self, ai: AIHub, tmp_path: Path) -> None:
+    def test_start_from_own_version_sends_exactly_its_files(
+        self, ai: AIHub, tmp_path: Path
+    ) -> None:
         ada = signed_in(ai)
         eid = ada.create_experiment()["id"]
         bundle = make_bundle(tmp_path, extra={"task.py": b"GAP = 200  # own source\n"})
@@ -396,7 +408,9 @@ class TestDisclosure:
         assert start["bytes"] == sum(f["bytes"] for f in start["files"])
         assert OPENAI_KEY not in sent
 
-    def test_another_users_private_version_cannot_be_a_start(self, ai: AIHub, tmp_path: Path) -> None:
+    def test_another_users_private_version_cannot_be_a_start(
+        self, ai: AIHub, tmp_path: Path
+    ) -> None:
         bob = signed_in(ai, "bob")
         eid = bob.create_experiment()["id"]
         vid = bob.upload_version(eid, make_bundle(tmp_path)).json()["version"]["id"]
@@ -444,9 +458,7 @@ class TestJobsMechanics:
         assert ai.provider.requests == []
         assert ada.post(f"/ai/jobs/{created['job']['id']}/cancel").status_code == 200
 
-    def test_cancel_while_running_records_nothing_and_stops_further_calls(
-        self, ai: AIHub
-    ) -> None:
+    def test_cancel_while_running_records_nothing_and_stops_further_calls(self, ai: AIHub) -> None:
         ada = signed_in(ai)
         holder: dict[str, str] = {}
 
@@ -516,9 +528,14 @@ class TestLibraryRemove:
         r = ada.client.delete(f"/api/hub/v1/library/{eid}", headers=ada.headers())
         assert r.status_code == 204
         assert ada.get("/library").json()["items"] == []
-        assert ada.client.delete(f"/api/hub/v1/library/{eid}", headers=ada.headers()).status_code == 204
+        assert (
+            ada.client.delete(f"/api/hub/v1/library/{eid}", headers=ada.headers()).status_code
+            == 204
+        )
         assert ai.client.get("/api/hub/v1/catalog").json()["items"][0]["experiment"]["id"] == eid
-        r = ada.client.delete(f"/api/hub/v1/library/{eid}", headers={"Origin": "http://127.0.0.1:8750"})
+        r = ada.client.delete(
+            f"/api/hub/v1/library/{eid}", headers={"Origin": "http://127.0.0.1:8750"}
+        )
         assert r.status_code == 403
 
 
@@ -532,7 +549,9 @@ class TestSchemaThree:
         eid = ada.create_experiment()["id"]
         vid = ada.upload_version(eid, make_bundle(tmp_path)).json()["version"]["id"]
         service.app.state.hub.db.dispose()
-        engine = create_engine(settings.database_url.replace("postgresql://", "postgresql+psycopg://"))
+        engine = create_engine(
+            settings.database_url.replace("postgresql://", "postgresql+psycopg://")
+        )
         with engine.begin() as conn:  # make it a schema-2 database again
             for table in ("hub_ai_jobs", "hub_ai_drafts", "hub_ai_keys"):
                 conn.exec_driver_sql(f"DROP TABLE {table}")
@@ -579,10 +598,10 @@ class TestSettings:
         for block, message in (
             ('[ai]\nkey_secret = "short"\n', "32 random bytes"),
             ('[ai]\nkey_secret_env = "MISSING"\n', "not set"),
-            ('[ai]\nmystery = 1\n', "unknown key"),
+            ("[ai]\nmystery = 1\n", "unknown key"),
             ('[ai.providers.acme]\nbase_url = "https://x.org"\n', "unknown AI provider"),
             ('[ai.providers.openai]\nbase_url = "http://example.org/v1"\n', "plain http"),
-            ('[ai]\nworkers = 0\n', "positive integer"),
+            ("[ai]\nworkers = 0\n", "positive integer"),
         ):
             with pytest.raises(SettingsError, match=message):
                 load_settings(self._config(tmp_path, block), environ={})

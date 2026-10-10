@@ -79,13 +79,18 @@ zmq = ["pyzmq>=25"]
 # the API, SQLAlchemy Core keeps one schema for PostgreSQL (deployment, via
 # psycopg 3) and SQLite (local development), argon2-cffi hashes passwords.
 # psycopg's binary extra bundles libpq, so the host needs no PostgreSQL
-# client libraries.
+# client libraries. AI-assisted authoring (alhazen.hub.ai, off unless the
+# operator configures [ai]) calls providers with httpx and encrypts users'
+# provider keys with cryptography's Fernet (already a core dependency
+# through paramiko; named here because the hub uses it directly).
 hub = [
   "fastapi>=0.115",
   "uvicorn>=0.30",
   "sqlalchemy>=2.0.30",
   "psycopg[binary]>=3.2",
   "argon2-cffi>=23.1",
+  "httpx>=0.27",
+  "cryptography>=42",
 ]
 # The documentation site. Not needed to use alhazen, only to build its docs.
 docs = [

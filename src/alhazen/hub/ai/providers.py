@@ -16,6 +16,7 @@ response body: provider bodies are untrusted text and may echo a request.
 from __future__ import annotations
 
 import json
+import re
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -257,11 +258,11 @@ def _check_messages(messages: list[dict[str, Any]]) -> None:
 
 
 def _retry_wait(header: str | None) -> float:
-    if header is not None:
-        try:
-            return max(0.0, min(float(header.strip()), MAX_RETRY_WAIT_SECONDS))
-        except ValueError:
-            pass
+    """Seconds to wait before the one retry: a numeric Retry-After, capped;
+    otherwise (absent, or an HTTP date) two seconds."""
+    value = (header or "").strip()
+    if re.fullmatch(r"[0-9]{1,6}(\.[0-9]{1,3})?", value):
+        return min(float(value), MAX_RETRY_WAIT_SECONDS)
     return 2.0
 
 

@@ -103,8 +103,10 @@ def _messages(prompt: str, ctx: Context) -> list[dict[str, Any]]:
 
 
 def plan(client: Any, prompt: str, ctx: Context) -> Plan:
-    for attempt in range(2):  # one repair round
-        answer = client.complete(_messages(prompt, ctx), json_schema={"type": "object"}, max_tokens=4000)
+    for _attempt in range(2):  # one repair round
+        answer = client.complete(
+            _messages(prompt, ctx), json_schema={"type": "object"}, max_tokens=4000
+        )
         try:
             data = json.loads(answer.text)
         except ValueError:
@@ -203,7 +205,9 @@ class _Client:
             step = step()
         if isinstance(step, BaseException):
             raise step
-        return Completion(text=step, usage={"input_tokens": 10, "output_tokens": 5}, model=self.model)
+        return Completion(
+            text=step, usage={"input_tokens": 10, "output_tokens": 5}, model=self.model
+        )
 
     def verify(self) -> None:
         if self.provider.verify_error is not None:

@@ -16,7 +16,6 @@ environment variable so the file itself can be shared with no secret in it.
 from __future__ import annotations
 
 import base64
-import binascii
 import dataclasses
 import os
 import re
@@ -221,16 +220,16 @@ class AISettings:
 
 def wrapping_key(secret: str) -> bytes:
     """The 32-byte wrapping key from its base64 text, or SettingsError."""
-    text = secret.strip()
-    raw = b""
-    for decode in (base64.urlsafe_b64decode, base64.standard_b64decode):
-        try:
-            raw = decode(text + "=" * (-len(text) % 4))
-        except (binascii.Error, ValueError):
-            continue
-        if len(raw) == 32:
-            return raw
-    raise SettingsError("ai.key_secret must be 32 random bytes in base64 (44 characters)")
+    text = secret.strip().rstrip("=")
+    if re.fullmatch(r"[A-Za-z0-9_-]{43}", text):
+        raw = base64.urlsafe_b64decode(text + "=")
+    elif re.fullmatch(r"[A-Za-z0-9+/]{43}", text):
+        raw = base64.standard_b64decode(text + "=")
+    else:
+        raw = b""
+    if len(raw) != 32:
+        raise SettingsError("ai.key_secret must be 32 random bytes in base64 (44 characters)")
+    return raw
 
 
 @dataclass(frozen=True)

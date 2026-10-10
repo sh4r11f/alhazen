@@ -45,6 +45,7 @@ analysis = [
 ]
 dev = [
     { name = "argon2-cffi" },
+    { name = "cryptography" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "imageio" },
@@ -70,7 +71,9 @@ docs = [
 ]
 hub = [
     { name = "argon2-cffi" },
+    { name = "cryptography" },
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "psycopg", extra = ["binary"] },
     { name = "sqlalchemy", version = "2.0.54", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "sqlalchemy", version = "2.1.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
@@ -103,8 +106,10 @@ requires-dist = [
     { name = "alhazen-vision", extras = ["movie"], marker = "extra == 'dev'" },
     { name = "alhazen-vision", extras = ["zmq"], marker = "extra == 'dev'" },
     { name = "argon2-cffi", marker = "extra == 'hub'", specifier = ">=23.1" },
+    { name = "cryptography", marker = "extra == 'hub'", specifier = ">=42" },
     { name = "fastapi", marker = "extra == 'hub'", specifier = ">=0.115" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
+    { name = "httpx", marker = "extra == 'hub'", specifier = ">=0.27" },
     { name = "imageio", marker = "extra == 'movie'", specifier = ">=2.31" },
     { name = "imageio-ffmpeg", marker = "extra == 'movie'", specifier = ">=0.4.4" },
     { name = "import-linter", marker = "extra == 'dev'", specifier = ">=2.0" },

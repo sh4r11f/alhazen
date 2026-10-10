@@ -632,6 +632,9 @@ class AIWorker:
         self._wake = threading.Event()
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
+        # The last pass failure (exception class), for operators; cleared by
+        # a clean pass. A failed pass leaves its job leased, so it is retried.
+        self.last_error: str | None = None
 
     def start(self) -> None:
         if self._threads:
@@ -669,7 +672,9 @@ class AIWorker:
         while not self._stop.is_set():
             try:
                 self.drain()
-            except Exception:  # noqa: BLE001 - logged; the loop must survive
-                log.exception("AI worker pass failed")
+                self.last_error = None
+            except Exception as exc:  # noqa: BLE001 - recorded and logged; the loop must survive
+                self.last_error = type(exc).__name__
+                log.exception("AI worker pass failed; its job's lease will lapse and be retried")
             self._wake.wait(POLL_SECONDS)
             self._wake.clear()
