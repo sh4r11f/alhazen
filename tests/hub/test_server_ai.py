@@ -8,6 +8,7 @@ network, no real provider.
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import os
 from dataclasses import replace
@@ -606,3 +607,80 @@ class TestSettings:
             with pytest.raises(SettingsError, match=message):
                 load_settings(self._config(tmp_path, block), environ={})
         assert os.environ.get("HUB_AI") is None
+
+
+class TestWorkerAndRealClient:
+    def test_worker_threads_run_jobs_in_the_background(
+        self, tmp_path: Path, clock: Any, provider: ai_fakes.ScriptedProvider
+    ) -> None:
+        import time
+
+        from fastapi.testclient import TestClient
+
+        settings = ai_settings(tmp_path)
+        app = create_app(settings, clock=clock, start_maintenance=True)
+        runner = app.state.ai_worker.runner
+        runner.kit = ai_fakes.kit()
+        runner.client_factory = provider.factory()
+        helper = Hub(settings, clock)  # for registration only
+        helper.register("ada")
+        with TestClient(app, base_url="http://127.0.0.1:8750") as client:
+            login = client.post(
+                "/api/hub/v1/auth/login",
+                json={"username": "ada", "password": "correct horse battery"},
+                headers={"Origin": "http://127.0.0.1:8750"},
+            )
+            headers = {
+                "Origin": "http://127.0.0.1:8750",
+                "X-CSRF-Token": login.json()["csrf_token"],
+            }
+            client.put("/api/hub/v1/ai/keys/openai", json={"key": OPENAI_KEY}, headers=headers)
+            created = client.post(
+                "/api/hub/v1/ai/drafts",
+                json={"prompt": "gap task", "provider": "openai"},
+                headers=headers,
+            ).json()
+            deadline = time.monotonic() + 10
+            status = "queued"
+            while time.monotonic() < deadline and status not in ("done", "failed"):
+                time.sleep(0.05)
+                status = client.get(
+                    f"/api/hub/v1/ai/jobs/{created['job']['id']}", headers=headers
+                ).json()["job"]["status"]
+            assert status == "done"
+        assert app.state.ai_worker._threads == []  # stopped with the app
+
+    def test_a_job_through_the_real_openai_client(self, ai: AIHub) -> None:
+        import httpx
+
+        from alhazen.hub.ai.providers import HttpBudget, make_client
+
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(
+                200,
+                json={
+                    "model": "gpt-4.1",
+                    "choices": [{"message": {"content": ai_fakes.plan_text()}}],
+                    "usage": {"prompt_tokens": 100, "completion_tokens": 50},
+                },
+            )
+
+        def factory(info: Any, key: str, model: str) -> Any:
+            return make_client(
+                info, key, model, HttpBudget(), transport=httpx.MockTransport(handler)
+            )
+
+        ai.worker.runner.client_factory = factory
+        ada = signed_in(ai)
+        created = new_draft(ada)
+        ai.drain()
+        job = ada.get(f"/ai/jobs/{created['job']['id']}").json()["job"]
+        assert job["status"] == "done"
+        assert job["usage"] == {"input_tokens": 100, "output_tokens": 50}
+        assert seen[0].headers["authorization"] == f"Bearer {OPENAI_KEY}"
+        body = json.loads(seen[0].content)
+        assert body["model"] == "gpt-4.1" and body["max_completion_tokens"] <= 16000
+        assert OPENAI_KEY not in json.dumps(job)
