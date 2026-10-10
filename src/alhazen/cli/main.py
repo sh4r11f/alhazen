@@ -121,6 +121,14 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="open the Experiment Hub page (/hub) instead of the workspace",
     )
+    dashboard.add_argument(
+        "--forget-hub-login",
+        action="store_true",
+        help=(
+            "forget this workspace's Experiment Hub sign-in before starting (for a copied "
+            "--state-dir, which would otherwise carry another account's sign-in)"
+        ),
+    )
     # `alhazen hub ...` (alhazen.hub.cli): its parser is stdlib-only, so
     # adding it costs nothing for a plain install.
     from alhazen.hub.cli import add_parser as add_hub_parser

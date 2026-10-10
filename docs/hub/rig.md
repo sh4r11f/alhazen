@@ -76,6 +76,33 @@ of it.
 The existing experiment registrations, local experiments without a hub account and offline
 runs are untouched.
 
+### One data folder per experiment (import round decision 2)
+
+A release runs in its own folder, so a rig whose `data_root` is relative (`data`, alhazen's
+shared rigs and most experiments) would write into `<version>-<sha12>/data`: an upgrade would
+start an empty `participants.tsv`, restarting counterbalancing and the subject/initials checks,
+and removing an old release would take its data. Instead every data folder the release's rigs
+write under (the first component of each relative `data_root`, and beside it `-rehearsal`,
+`-training`, `-training-rehearsal`) is a directory link in the release folder to
+`<workspace>/hub/experiments/<name>/<that name>` (`alhazen.hub.shared_data`; a junction on
+Windows, not verified there). The experiment's own alhazen, whatever its version, writes where
+it always does; the release of each session is the run's `hub_release`, and `launch.json` also
+records `hub_data_folder`. The data stays under the protocol version (`data/v<pyproject
+version>/`), so a documentation-only release shares it.
+
+The links are made at registration and checked before every launch. A release folder that
+already holds a real data folder (installed before this rule) is moved there on first use,
+never copied; when both it and the shared folder hold data the launch is refused, naming both,
+and nothing is moved or merged. Removing a release folder removes its links, never the shared
+data. An absolute `data_root` already names one folder and is left alone.
+
+### The experiment's own rigs ship (decision 1)
+
+`configs/rig-<name>.yaml` files are protocol and travel in the package, so an installed
+`--rig lab` (or `lab-neural`) resolves to the package's file exactly as in a checkout. What a
+rig measured stays local: `rig-*_gamma.yaml`, `rig-*.reward.yaml`, `rig-*.json` reports, any
+rig file under a `measurements` folder or outside `configs/`.
+
 ## Run provenance
 
 `Workspace.start` gives every NEW run of a project under `<workspace>/hub/experiments/` a
@@ -96,6 +123,17 @@ A different release, or a release from another hub, is refused.
 experiment's own interpreter (whose alhazen may be older) and is covered by the session's
 manifest, so adding it would mean an engine change and a rewrite of hashed research files. The
 link between a session and its release is the workspace's run record.
+
+### Task parameters on a launch (decision 5)
+
+`POST /api/runs` with a `parameter_set` label whose entry names a params file must carry that
+launch's parameter text (`parameters_yaml` or `parameters`) or say `params: "default"`, which
+reads the entry's own file and sends it as `--params`. A label alone is refused with a 400
+naming the label and its file (it used to run the task's default file under the label's name).
+`params: "default"` with text is refused too. The dashboard page always sends the text it
+shows; an emptied editor sends no label. `run.json` records `params: {source, file, sha256}`
+(`source`: "launch text", "parameter set file" with `file_sha256` of the shipped file, or "task
+default" with the task's own file and its SHA-256 when run.py's table names it).
 
 ## Uploading a session
 
@@ -143,10 +181,26 @@ The job is a file in `<workspace>/hub/outbox/`. One worker thread runs jobs one 
 ## `alhazen hub`
 
 `connect URL [--allow-http-loopback]`, `login [--username]` (password via getpass only),
-`logout`, `status`, `pack DIR --output F [--license] [--yes]`, `push F --experiment ID`,
+`logout`, `status`, `pack DIR --output F [--license] [--hardware LIST] [--version X.Y.Z]
+[--drop-not-for-rig] [--yes]`, `push F --experiment ID`,
 `install EXP VER --sha256 S --python PY --trust-code`, `serve --config FILE` (needs the
 service from the hub extra). It shares `--state-dir` with the dashboard; `install` takes the
 workspace lock, so it refuses while a dashboard holds the workspace, and it starts no upload.
+
+`pack` reads the hardware suggestion from the packed configuration (an eye tracker from the
+experiment's own rig files, the reward line from monkey params files; files it could not read
+are named), points the manifest at `docs/experiment.json` when it is packed, and marks files
+that are probably not for the rig (tests, notebooks, `scripts/`, `.github`, `.githooks`,
+`uv.lock`, rehearsal data, stimulus-check images): they are included unless the author drops
+them (the prompt, or `--drop-not-for-rig`). `--version` sets a release version different from
+the pyproject (protocol) version; the manifest then records `protocol_version` and the data
+stays under the protocol's folder.
+
+**Copying a rig state.** A `--state-dir` copied from another workspace carries its hub sign-in
+(`hub/credential.json`, a bearer for that account) and its rig identity (`hub/rig.json`). Start
+the copy with `alhazen dashboard --state-dir COPY --forget-hub-login`, which removes the
+sign-in and keeps the hub address, and delete `hub/rig.json` from the copy so it gets its own
+rig id; then sign in as the account the copy is for.
 
 ## Not verified here
 

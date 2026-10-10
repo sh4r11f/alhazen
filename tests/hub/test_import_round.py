@@ -440,3 +440,31 @@ def test_preview_lists_flagged_files_and_the_protocol(tmp_path):
     }
     assert view["metadata"]["hardware"]["eye_tracker"] is True
 
+
+
+# -- decision 6: a copied rig state carries no one else's sign-in ---------------------
+
+
+def test_forget_hub_login_removes_the_bearer_and_keeps_the_hub(tmp_path, capsys):
+    from alhazen.cli.dashboard import forget_hub_login
+    from alhazen.cli.main import main
+    from alhazen.hub.credentials import Connection, Credential, RigState
+
+    copied = tmp_path / "copied-state"
+    state = RigState(copied / "hub")
+    state.save_connection(Connection("http://127.0.0.1:5", True))
+    state.save_credential(
+        Credential(base="http://127.0.0.1:5", token="t" * 40, user={"id": "u9", "username": "x"})
+    )
+    assert RigState(copied / "hub").credential() is not None
+    assert "Forgot" in forget_hub_login(copied)
+    fresh = RigState(copied / "hub")
+    assert fresh.credential() is None
+    assert fresh.connection() is not None
+    assert not (copied / "hub" / "credential.json").exists()
+    assert "No Experiment Hub sign-in" in forget_hub_login(copied)
+    assert "No Experiment Hub sign-in" in forget_hub_login(tmp_path / "never-used")
+    assert not (tmp_path / "never-used").exists()
+    with pytest.raises(SystemExit):
+        main(["dashboard", "--help"])
+    assert "--forget-hub-login" in capsys.readouterr().out

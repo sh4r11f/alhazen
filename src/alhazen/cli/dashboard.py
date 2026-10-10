@@ -706,6 +706,22 @@ class Handler(BaseHTTPRequestHandler):
                 remaining -= len(block)
 
 
+def forget_hub_login(directory: Path) -> str:
+    """Remove the workspace's stored Experiment Hub sign-in (its bearer),
+    keeping the hub address; what was done, in one line. A --state-dir copied
+    from another workspace carries that workspace's sign-in, which then acts
+    for another account here (import round 2026-10-09); a copy should also
+    drop hub/rig.json so it gets its own rig identity (docs/hub/rig.md)."""
+    from alhazen.hub.credentials import RigState
+
+    if not (directory / "hub").is_dir():
+        return "No Experiment Hub sign-in was stored."
+    state = RigState(directory / "hub")
+    if state.clear_credential():
+        return "Forgot the stored Experiment Hub sign-in; sign in again on the hub page."
+    return "No Experiment Hub sign-in was stored."
+
+
 def serve(args: argparse.Namespace) -> int:
     directory = Path(args.state_dir) if args.state_dir else Path.home() / ".alhazen" / "dashboard"
     with workspace_lock(directory.expanduser().resolve()):
@@ -718,6 +734,8 @@ def _serve(args: argparse.Namespace, directory: Path) -> int:
     # so the active run is stopped and the workspace lock released rather than
     # both being abandoned by a process that simply vanished.
     interrupt_on_console_break()
+    if getattr(args, "forget_hub_login", False):
+        print(forget_hub_login(directory), flush=True)
     workspace = Workspace(directory)
     for path in args.project:
         workspace.add(path)
