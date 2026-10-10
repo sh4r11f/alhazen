@@ -1059,7 +1059,7 @@ test('marketplace: Add to library pins this release and the card says it is in t
   assert.ok(p.find('a', 'Open your library'));
 });
 
-test('create (Index flow): signed out goes to sign in; signed in, Generate sends nothing and says it is not connected', async () => {
+test('create (Index flow): signed out goes to sign in; on a hub without AI authoring, Generate sends nothing and the example is labelled', async () => {
   const out = await mount({search: '?view=create&fork=b', routes: {'GET /config': () => SERVER_CONFIG, 'GET /auth/me': signedOut}});
   assert.equal(out.loc.search, '?view=signin&next=%3Fview%3Dcreate%26fork%3Db');
   assert.match(out.document.getElementById('account').textContent, /Create/);
@@ -1071,25 +1071,18 @@ test('create (Index flow): signed out goes to sign in; signed in, Generate sends
   const selects = form.querySelectorAll('select');
   assert.equal(selects[0].value, 'b', 'the listing to fork is preselected');
   assert.deepEqual(selects[1].querySelectorAll('option').map((o) => o.textContent), ['OpenAI', 'Anthropic', 'Google', 'OpenRouter']);
-  const key = form.querySelectorAll('input').find((i) => i.getAttribute('type') === 'password');
-  key.value = 'sk-' + 'x'.repeat(30);
-  await p.submit(form);
-  assert.match(p.text(), /Describe the experiment/);
-  assert.equal(key.value, '', 'the key field is cleared, never kept');
+  assert.match(p.text(), /AI authoring is not enabled on this hub/);
   await p.click(p.find('button', 'Saccade adaptation'));
-  key.value = 'sk-' + 'y'.repeat(30);
   const calls = p.hub.calls.length;
   await p.submit(form);
-  assert.match(p.text(), /Generation is not connected yet/);
-  assert.match(p.text(), /nothing was sent to OpenAI and no key was stored/);
+  assert.match(p.text(), /AI authoring is not enabled on this hub/);
   assert.equal(p.hub.calls.length, calls, 'no request of any kind');
-  assert.equal(key.value, '');
   assert.ok(!p.session.map.size || ![...p.session.map.values()].some((v) => String(v).includes('sk-')));
   await p.click(p.find('a', 'See an example plan'));
   assert.equal(p.loc.search, '?view=create&fork=b&step=plan');
   assert.match(p.text(), /Example plan/);
-  assert.match(p.text(), /Not connected yet/);
-  assert.equal(p.find('button', 'Create private draft').disabled, true);
+  assert.match(p.text(), /AI authoring is not enabled on this hub/);
+  assert.equal(p.find('button', 'Create private draft version').disabled, true);
   assert.match(p.text(), /Fork of a listing: Exp b v1\.2\.0/);
   assert.match(p.text(), /Parameters11/);
 });

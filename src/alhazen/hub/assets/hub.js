@@ -1475,7 +1475,7 @@ const HubApp = (() => {
           h('h1', {class: 'screen-title', tabindex: '-1', 'data-heading': ''}, experiment.title || 'Untitled experiment'),
           ownerLine(experiment),
           experiment.summary ? h('p', {class: 'lede'}, experiment.summary) : null,
-          h('div', {class: 'chips'}, status,
+          h('div', {class: 'chips'}, status, aiAssisted(version) ? aiChip() : null,
             ...tags.map((t) => cats.has(t)
               ? link({view: 'catalog', cat: t}, cats.get(t), {class: 'chip chip-tag chip-link'})
               : h('span', {class: 'chip chip-tag'}, t)),
@@ -1595,12 +1595,13 @@ const HubApp = (() => {
           h('span', {class: 'mono action-version-value'}, versionLabel(version))));
       }
       head.appendChild(h('p', {class: 'action-date'}, 'Released ' + C.formatDate(version.created_at, false)));
+      if (aiAssisted(version)) head.appendChild(aiChip());
       aside.appendChild(head);
       aside.appendChild(libraryAction(ctx, experiment, version));
       if (state.role === 'rig') aside.appendChild(installPanel(experiment, version));
       else aside.appendChild(downloadAction(experiment, version));
       if (state.role === 'server') {
-        const forkAi = link({view: 'create', fork: experiment.id}, null, {class: 'btn btn-line btn-block btn-fork', 'data-focus': 'fork-ai'});
+        const forkAi = link({view: 'create', fork: experiment.id, version: version.id !== experiment.published_version_id ? version.id : undefined}, null, {class: 'btn btn-line btn-block btn-fork', 'data-focus': 'fork-ai'});
         forkAi.append(sparkGlyph(), h('span', null, 'Fork with AI'));
         aside.appendChild(h('div', {class: 'sheet-block sheet-fork'}, forkAi));
       }
@@ -1767,6 +1768,14 @@ const HubApp = (() => {
       return box;
     }
 
+    function aiAssisted(version) {
+      return Boolean(version && version.manifest && version.manifest.ai_assisted === true);
+    }
+
+    function aiChip() {
+      return h('span', {class: 'chip chip-ai'}, 'AI-assisted draft');
+    }
+
     function versionsTab(r, experiment, versions, current) {
       const wrap = h('div', {class: 'block'});
       if (!versions.length) {
@@ -1781,7 +1790,7 @@ const HubApp = (() => {
         const published = v.id === experiment.published_version_id;
         tbody.appendChild(h('tr', {class: v === current ? 'row-current' : null},
           h('td', {class: 'mono'}, link({view: 'experiment', id: experiment.id, version: v.id}, versionLabel(v))),
-          h('td', null, published ? 'Public' : 'Private'),
+          h('td', null, published ? 'Public' : 'Private', aiAssisted(v) ? aiChip() : null),
           h('td', null, C.formatDate(v.created_at)),
           h('td', {class: 'mono num'}, C.formatBytes(v.size)),
           h('td', {class: 'mono', title: String(v.sha256 || '')}, C.shortHash(v.sha256))));
@@ -2136,9 +2145,33 @@ const HubApp = (() => {
         row.appendChild(h('a', {class: 'btn btn-line btn-small', download: '',
           href: state.api.url('/experiments/' + C.seg(experiment.id) + '/versions/' + C.seg(version.id) + '/download')}, 'Download'));
       }
-      row.appendChild(h('button', {type: 'button', class: 'btn btn-quiet btn-small', disabled: true,
-        title: 'The hub cannot remove a library entry yet; it can only pin another version.'}, 'Remove'));
+      const remove = h('button', {type: 'button', class: 'btn btn-quiet btn-small', 'data-focus': 'lib-remove-' + experiment.id}, 'Remove\u2026');
+      row.appendChild(remove);
       panel.appendChild(row);
+      const yes = h('button', {type: 'button', class: 'btn btn-danger btn-small'}, 'Remove from library');
+      const no = h('button', {type: 'button', class: 'btn btn-quiet btn-small'}, 'Keep it');
+      const removeStatus = statusLine();
+      const confirmRow = h('div', {class: 'confirm', hidden: true},
+        h('p', null, 'Remove ' + (experiment.title || 'this experiment') + ' from your library? Installed copies on rigs stay.'), yes, no, removeStatus.el);
+      panel.appendChild(confirmRow);
+      remove.addEventListener('click', () => { confirmRow.hidden = false; remove.hidden = true; yes.focus(); });
+      no.addEventListener('click', () => { confirmRow.hidden = true; remove.hidden = false; remove.focus(); });
+      yes.addEventListener('click', async () => {
+        yes.disabled = true;
+        no.disabled = true;
+        try {
+          await api('DELETE', '/library/' + C.seg(experiment.id));
+        } catch (exc) {
+          noteFailure(exc);
+          yes.disabled = false;
+          no.disabled = false;
+          removeStatus.show(exc.message, 'err');
+          return;
+        }
+        state.library = null;
+        state.flash = {text: 'Removed ' + (experiment.title || 'the experiment') + ' from your library.', tone: 'ok'};
+        if (ctx.epoch === state.epoch) retryCurrent();
+      });
       /* A newer public release than the pinned one: offer it, never follow it. */
       if (experiment.id && version.id) {
         (async () => {
@@ -2169,75 +2202,197 @@ const HubApp = (() => {
       return panel;
     }
 
-    /* ---- create with AI (ported from option Index: a structured form, then a two-column plan) ----
-     * Generation is the next phase: no route exists yet, so this page keeps
-     * real form state, sends nothing anywhere and says so at the Generate
-     * step. The plan view renders a fixed example (EXAMPLE_PLAN) so its
-     * layout can be judged; it is labelled as an example everywhere. */
+    /* ---- create with AI (Index flow: a structured form, then a two-column plan) ----
+     * Wired to the AI authoring API (ai-authoring CONTRACT.md):
+     *   GET /ai/status, PUT|DELETE /ai/keys/{provider}, POST /ai/drafts,
+     *   GET|DELETE /ai/drafts/{id}, POST /ai/drafts/{id}/generate|accept,
+     *   GET /ai/jobs/{id}, POST /ai/jobs/{id}/cancel.
+     * A key goes from the password field straight into one PUT and the field
+     * is cleared; it is never kept in page state or browser storage. A
+     * running job is polled every AI_POLL_MS. The fixed example plan is shown
+     * only when the hub has AI authoring disabled, and is labelled so. */
 
+    const AI_POLL_MS = 2000;
     const PROVIDERS = [['openai', 'OpenAI'], ['anthropic', 'Anthropic'], ['google', 'Google'], ['openrouter', 'OpenRouter']];
     const EXAMPLE_PROMPTS = [
       ['Ebbinghaus size matching', 'A size-matching task with the Ebbinghaus illusion: a target disc surrounded by large or small inducer circles on one side, a comparison disc on the other that the participant adjusts with the arrow keys until it looks the same size. Two inducer sizes by three target sizes, 20 trials each. Keep fixation on a central cross, checked with the eye tracker. Human participants.'],
       ['Saccade adaptation', 'Saccade adaptation in monkeys: a target jumps 10 degrees left or right; during the saccade it steps back by 2 degrees. 400 adaptation trials between 50 pre- and post-test trials without the step. Juice reward on landing within 2 degrees.'],
       ['Motion coherence threshold', 'A random-dot motion direction task: 200 dots in a 10 degree aperture, left or right motion, coherence set by a QUEST staircase to 75% correct. Key press response, no eye tracker. Human.'],
     ];
+    /* The plan page's example, in the contract's Plan shape; drawn only when
+     * AI authoring is disabled on this hub, and labelled as an example. */
     const EXAMPLE_PLAN = {
       title: 'Ebbinghaus size matching with fixation control',
-      slug: 'ebbinghaus-fixation',
-      paradigm: 'Method of adjustment. On each trial a target disc sits in the left or right hemifield, ringed by large or small inducer circles; a lone comparison disc sits mirror-symmetric on the other side. The participant scales the comparison with the arrow keys and confirms with the space bar while holding gaze on a central cross.',
-      design: [
-        ['Paradigm', 'Method of adjustment'],
-        ['Conditions', '2 inducer sizes \u00d7 3 target sizes \u00d7 2 sides (side counterbalanced)'],
-        ['Trials', '120 (20 per inducer \u00d7 target cell), in 4 blocks of 30'],
-        ['Session', 'About 25 minutes with calibration and breaks'],
-        ['Subject', 'Human'],
-        ['Hardware', 'Display, eye tracker'],
-      ],
+      summary: 'Method of adjustment: match a comparison disc to a target ringed by large or small inducers, with gaze held on a central cross.',
+      paradigm: 'Method of adjustment. On each trial a target disc sits in the left or right hemifield, ringed by large or small inducer circles; a lone comparison disc sits mirror-symmetric on the other side. The participant scales the comparison with the arrow keys and confirms with the space bar while holding gaze on a central cross. 2 inducer sizes \u00d7 3 target sizes, 20 trials per cell in 4 blocks of 30.',
+      subject_kind: 'human',
+      hardware: {display: true, eye_tracker: true, reward: false},
+      tasks: [{name: 'adjust', description: 'Size matching with fixation control'}],
       stimuli: [
-        ['Fixation cross', '0.4 dva', 'Centre', 'Black, always on'],
-        ['Target disc', '1.0, 1.4 or 1.8 dva', '6 dva left or right', 'Mid-grey'],
-        ['Inducers (large)', '2.4 dva, 6 around the target', 'Ring at 2.6 dva from target centre', 'Mid-grey'],
-        ['Inducers (small)', '0.5 dva, 8 around the target', 'Ring at 1.3 dva from target centre', 'Mid-grey'],
-        ['Comparison disc', 'Starts \u00b140% of the target, random', 'Mirror of the target', 'Arrow keys scale it by 1%'],
+        {element: 'Fixation cross', size: '0.4 dva', position: 'Centre', notes: 'Black, always on'},
+        {element: 'Target disc', size: '1.0, 1.4 or 1.8 dva', position: '6 dva left or right', notes: 'Mid-grey'},
+        {element: 'Inducers (large)', size: '2.4 dva, 6 around the target', position: 'Ring at 2.6 dva from target centre', notes: 'Mid-grey'},
+        {element: 'Inducers (small)', size: '0.5 dva, 8 around the target', position: 'Ring at 1.3 dva from target centre', notes: 'Mid-grey'},
+        {element: 'Comparison disc', size: 'Starts \u00b140% of the target, random', position: 'Mirror of the target', notes: 'Arrow keys scale it by 1%'},
       ],
       timeline: [
-        ['Fixate', 600, 'Gaze in a 2 dva window'],
-        ['Adjust', 4000, 'Until space, at most 8 s'],
-        ['Confirm', 300, 'Comparison size recorded'],
-        ['Interval', 700, 'Blank screen'],
+        {phase: 'Fixate', duration: 600, note: 'Gaze in a 2 dva window'},
+        {phase: 'Adjust', duration: 'event-driven', note: 'Until space, at most 8 s'},
+        {phase: 'Confirm', duration: 300, note: 'Comparison size recorded'},
+        {phase: 'Interval', duration: 700, note: 'Blank screen'},
       ],
       measures: [
-        ['Matched diameter', 'dva', 'Comparison size at confirmation'],
-        ['Illusion magnitude', '%', '(matched \u2212 target) / target'],
-        ['Adjustment time', 's', 'Stimulus onset to confirmation'],
-        ['Fixation breaks', 'count', 'Samples outside the window during Adjust'],
+        {measure: 'Matched diameter', unit: 'dva', definition: 'Comparison size at confirmation'},
+        {measure: 'Illusion magnitude', unit: '%', definition: '(matched \u2212 target) / target'},
+        {measure: 'Adjustment time', unit: 's', definition: 'Stimulus onset to confirmation'},
+        {measure: 'Fixation breaks', unit: 'count', definition: 'Samples outside the window during Adjust'},
       ],
       parameters: [
-        ['target_sizes_dva', '1.0, 1.4, 1.8', 'dva', 'Diameters of the target disc'],
-        ['inducer_large_dva', '2.4', 'dva', 'Diameter of each large inducer'],
-        ['inducer_small_dva', '0.5', 'dva', 'Diameter of each small inducer'],
-        ['eccentricity_dva', '6.0', 'dva', 'Horizontal offset of target and comparison'],
-        ['start_offset_pct', '40', '%', 'Largest random start offset of the comparison'],
-        ['step_pct', '1', '%', 'Scaling per key press'],
-        ['fix_window_dva', '2.0', 'dva', 'Gaze window radius around the cross'],
-        ['fix_duration', '600', 'ms', 'Fixation before the stimulus appears'],
-        ['max_adjust', '8000', 'ms', 'Time limit for one adjustment'],
-        ['iti', '700', 'ms', 'Blank interval between trials'],
-        ['n_per_condition', '20', 'trials', 'Repeats of each inducer \u00d7 target cell'],
+        {name: 'target_sizes_dva', default: '1.0, 1.4, 1.8', unit: 'dva', meaning: 'Diameters of the target disc'},
+        {name: 'inducer_large_dva', default: '2.4', unit: 'dva', meaning: 'Diameter of each large inducer'},
+        {name: 'inducer_small_dva', default: '0.5', unit: 'dva', meaning: 'Diameter of each small inducer'},
+        {name: 'eccentricity_dva', default: '6.0', unit: 'dva', meaning: 'Horizontal offset of target and comparison'},
+        {name: 'start_offset_pct', default: '40', unit: '%', meaning: 'Largest random start offset of the comparison'},
+        {name: 'step_pct', default: '1', unit: '%', meaning: 'Scaling per key press'},
+        {name: 'fix_window_dva', default: '2.0', unit: 'dva', meaning: 'Gaze window radius around the cross'},
+        {name: 'fix_duration', default: '600', unit: 'ms', meaning: 'Fixation before the stimulus appears'},
+        {name: 'max_adjust', default: '8000', unit: 'ms', meaning: 'Time limit for one adjustment'},
+        {name: 'iti', default: '700', unit: 'ms', meaning: 'Blank interval between trials'},
+        {name: 'n_per_condition', default: '20', unit: 'trials', meaning: 'Repeats of each inducer \u00d7 target cell'},
       ],
       tests: [
-        ['Parameters load and validate', 'configs/task.yaml against the params model'],
-        ['Stimulus geometry', 'Inducer rings never overlap the target at any size'],
-        ['Trial schedule', '120 trials, 20 per cell, sides balanced in each block'],
-        ['Simulated session', 'alhazen simulate completes with an automated observer'],
-        ['Timing', 'Every phase lasts whole frames at 60 and 120 Hz'],
-        ['Data columns', 'trials.csv holds every measure above'],
+        {name: 'Parameters load and validate', how: 'configs/task.yaml against the params model'},
+        {name: 'Stimulus geometry', how: 'Inducer rings never overlap the target at any size'},
+        {name: 'Trial schedule', how: '120 trials, 20 per cell, sides balanced in each block'},
+        {name: 'Simulated session', how: 'alhazen simulate completes with an automated observer'},
+        {name: 'Timing', how: 'Every phase lasts whole frames at 60 and 120 Hz'},
+        {name: 'Data columns', how: 'trials.csv holds every measure above'},
       ],
     };
 
     function createDraft() {
-      if (!state.createDraft) state.createDraft = {description: '', start: 'blank', from: '', provider: 'openai'};
+      if (!state.createDraft) state.createDraft = {description: '', start: 'blank', from: '', provider: 'openai', model: ''};
       return state.createDraft;
+    }
+
+    /** GET /ai/status, normalized: {enabled, providers:[{id,name,models,default_model}], keys:[{provider,hint,rotated_at}]}.
+     *  A hub without the route (404) has AI disabled; other failures throw. */
+    async function aiStatus(ctx) {
+      const got = await screenRequest(ctx.epoch, 'GET', '/ai/status');
+      if (!got) return null;
+      if (!got.ok) {
+        if (got.error.kind === 'not_found' || got.error.code === 'ai_disabled') return {enabled: false, providers: [], keys: []};
+        throw got.error;
+      }
+      const v = got.value || {};
+      const providers = (Array.isArray(v.providers) ? v.providers : []).filter((p) => p && p.id)
+        .map((p) => ({id: String(p.id), name: String(p.name || p.id), models: Array.isArray(p.models) ? p.models.map(String) : [], default_model: p.default_model ? String(p.default_model) : ''}));
+      state.ai = {enabled: v.enabled === true, providers, keys: Array.isArray(v.keys) ? v.keys.filter((k) => k && k.provider) : []};
+      return state.ai;
+    }
+
+    function providerName(id) {
+      const known = state.ai && state.ai.providers.find((p) => p.id === id);
+      if (known) return known.name;
+      const fixed = PROVIDERS.find(([v]) => v === id);
+      return fixed ? fixed[1] : (id || 'the provider');
+    }
+
+    /** One AI failure in the draft rail or a form: what happened (the
+     *  server's words below it when it sent any) and the next step. */
+    function aiAdviceBox(error, provider, actions) {
+      const e = error || {};
+      const code = e.kind === 'unauthorized' ? 'unauthorized' : (C.aiErrorCode(e) || e.code || '');
+      if (code === 'unauthorized') return errorBox(e);
+      const advice = C.aiAdvice(code, providerName(provider));
+      const message = String(e.message || '');
+      return h('div', {class: 'callout callout-err ix-advice', role: 'alert', 'data-ai-code': code || 'error'},
+        h('p', {class: 'callout-title'}, advice.title),
+        message && message !== advice.title ? h('p', {class: 'small'}, message) : null,
+        advice.next ? h('p', null, advice.next) : null,
+        ...(actions || []).filter((a) => a && (!a.when || a.when === advice.action)).map((a) => a.node));
+    }
+
+    function quietProgress(text) {
+      return h('p', {class: 'ix-progress', role: 'status'}, h('span', {class: 'spinner', 'aria-hidden': 'true'}), h('span', null, text));
+    }
+
+    /** Provider & key: the saved key's hint and date with Replace / Remove,
+     *  or a password field and Save. The field's value goes into one PUT
+     *  and is cleared at once, whatever the answer. */
+    function keyPanel(getProvider, onChange) {
+      const box = h('div', {class: 'ix-key'});
+      const status = statusLine();
+      const key = input({type: 'password', name: 'api_key', autocomplete: 'off', spellcheck: 'false', placeholder: 'Paste a key', 'data-focus': 'ai-key'});
+      let replacing = false;
+      async function save() {
+        const provider = getProvider();
+        const value = String(key.value || '').trim();
+        key.value = '';
+        if (!value) { status.show('Paste a key first.', 'err'); return null; }
+        status.show('Saving\u2026', 'info');
+        try {
+          const answer = await api('PUT', '/ai/keys/' + C.seg(provider), {json: {key: value}});
+          const saved = {provider, hint: String((answer && answer.hint) || ''), rotated_at: (answer && answer.rotated_at) || null};
+          state.ai.keys = state.ai.keys.filter((k) => k.provider !== provider).concat([saved]);
+          replacing = false;
+          render();
+          status.show('Key saved.', 'ok');
+          if (onChange) onChange();
+          return saved;
+        } catch (exc) {
+          noteFailure(exc);
+          status.clear();
+          render();
+          box.appendChild(aiAdviceBox(exc, provider));
+          return null;
+        }
+      }
+      function render() {
+        const provider = getProvider();
+        const saved = state.ai && state.ai.keys.find((k) => k.provider === provider);
+        const name = providerName(provider);
+        if (saved && !replacing) {
+          const replace = h('button', {type: 'button', class: 'btn btn-line btn-small', 'data-focus': 'ai-key-replace'}, 'Replace');
+          const remove = h('button', {type: 'button', class: 'btn btn-quiet btn-small'}, 'Remove\u2026');
+          const yes = h('button', {type: 'button', class: 'btn btn-danger btn-small'}, 'Remove key');
+          const no = h('button', {type: 'button', class: 'btn btn-quiet btn-small'}, 'Keep it');
+          const confirmRow = h('div', {class: 'confirm', hidden: true}, h('p', null, 'Remove the saved ' + name + ' key from your account?'), yes, no);
+          replace.addEventListener('click', () => { replacing = true; status.clear(); render(); key.focus(); });
+          remove.addEventListener('click', () => { confirmRow.hidden = false; remove.hidden = true; yes.focus(); });
+          no.addEventListener('click', () => { confirmRow.hidden = true; remove.hidden = false; remove.focus(); });
+          yes.addEventListener('click', async () => {
+            yes.disabled = true;
+            no.disabled = true;
+            try {
+              await api('DELETE', '/ai/keys/' + C.seg(provider));
+              state.ai.keys = state.ai.keys.filter((k) => k.provider !== provider);
+              render();
+              status.show('Key removed.', 'ok');
+              if (onChange) onChange();
+            } catch (exc) {
+              noteFailure(exc);
+              yes.disabled = false;
+              no.disabled = false;
+              status.show(exc.message, 'err');
+            }
+          });
+          const when = saved.rotated_at ? ' \u00b7 saved ' + C.formatDate(saved.rotated_at, false) : '';
+          box.replaceChildren(
+            h('p', {class: 'ix-key-state'}, h('span', {class: 'lamp lamp-ok', 'aria-hidden': 'true'}),
+              h('span', {'data-key-state': 'saved'}, name + ' key saved, ending ' + (saved.hint || '\u2026') + when)),
+            h('div', {class: 'actions'}, replace, remove), confirmRow, status.el);
+          return;
+        }
+        const button = h('button', {type: 'button', class: 'btn btn-line', on: {click: save}}, 'Save key');
+        const cancel = saved ? h('button', {type: 'button', class: 'btn btn-quiet', on: {click: () => { key.value = ''; replacing = false; status.clear(); render(); }}}, 'Cancel') : null;
+        box.replaceChildren(
+          h('div', {class: 'inline-form'}, field('API key', key, 'Saved to your account only, never shown again.'), button, cancel),
+          h('p', {class: 'ix-key-state'}, h('span', {class: 'lamp lamp-idle', 'aria-hidden': 'true'}),
+            h('span', {'data-key-state': 'none'}, saved ? 'The new key replaces the saved one.' : 'No ' + name + ' key saved for this account.')),
+          status.el);
+      }
+      return {el: box, render, save, field: key, pending: () => String(key.value || '').trim().length > 0};
     }
 
     function screenCreate(ctx) {
@@ -2250,7 +2405,7 @@ const HubApp = (() => {
       section.classList.add('screen-create');
 
       /* 1 Describe */
-      const description = textarea({name: 'description', rows: '7', maxlength: '4000', 'data-focus': 'create-describe',
+      const description = textarea({name: 'description', rows: '7', maxlength: '8000', 'data-focus': 'create-describe',
         placeholder: 'What should the experiment measure, with which stimuli, for whom?'}, draft.description);
       description.addEventListener('input', () => { draft.description = description.value; });
       const examples = h('div', {class: 'ix-examples'}, h('span', {class: 'ix-examples-label'}, 'Examples'),
@@ -2263,6 +2418,7 @@ const HubApp = (() => {
       const fork = h('input', {type: 'radio', name: startName, value: 'fork', id: nextId('r'), class: 'check', checked: draft.start === 'fork'});
       const listing = h('select', {id: nextId('s'), class: 'input select', name: 'from', disabled: draft.start !== 'fork'},
         h('option', {value: ''}, 'Loading the catalogue\u2026'));
+      const versionOf = new Map();
       const syncStart = () => {
         draft.start = fork.checked ? 'fork' : 'blank';
         listing.disabled = !fork.checked;
@@ -2274,6 +2430,7 @@ const HubApp = (() => {
         const got = await catalogItems(ctx, '');
         if (!got) return;
         const options = got.ok ? got.value.slice().sort((a, b) => String(a.experiment.title).localeCompare(String(b.experiment.title))) : [];
+        for (const item of options) if (item.version && item.version.id) versionOf.set(item.experiment.id, item.version.id);
         listing.replaceChildren(h('option', {value: ''}, got.ok ? (options.length ? 'Choose a listing' : 'The catalogue is empty') : 'The catalogue could not be read'),
           ...options.map((item) => h('option', {value: item.experiment.id, selected: item.experiment.id === draft.from},
             (item.experiment.title || 'Untitled') + ' \u00b7 ' + versionLabel(item.version) + ' \u00b7 ' + ((item.experiment.owner && item.experiment.owner.display_name) || ''))));
@@ -2282,12 +2439,26 @@ const HubApp = (() => {
 
       /* 3 Provider and key */
       const provider = select(PROVIDERS, draft.provider, {name: 'provider'});
-      provider.addEventListener('change', () => { draft.provider = provider.value; });
-      const key = input({type: 'password', name: 'api_key', autocomplete: 'off', spellcheck: 'false', placeholder: 'Paste a key'});
+      const model = select([['', 'Default']], draft.model, {name: 'model'});
+      const modelField = field('Model', model);
+      const keys = keyPanel(() => provider.value, null);
+      const keyArea = h('div', {class: 'ix-key-area', 'aria-live': 'polite'}, quietProgress('Checking AI authoring on this hub\u2026'));
+      function fillModels() {
+        const p = state.ai && state.ai.providers.find((x) => x.id === provider.value);
+        const models = p ? p.models : [];
+        const chosen = models.includes(draft.model) ? draft.model : (p && p.default_model) || '';
+        model.replaceChildren(...(models.length ? models : ['']).map((m) => h('option', {value: m, selected: m === chosen}, m || 'Default')));
+        model.value = chosen;
+        draft.model = chosen;
+        modelField.hidden = !models.length;
+      }
+      provider.addEventListener('change', () => { draft.provider = provider.value; fillModels(); keys.render(); });
+      model.addEventListener('change', () => { draft.model = model.value; });
 
       /* 4 Generate */
       const status = h('div', {class: 'ix-generate-status', 'aria-live': 'polite'});
-      const button = h('button', {type: 'submit', class: 'btn btn-primary btn-large', 'data-focus': 'create-generate'}, 'Generate plan');
+      const button = h('button', {type: 'submit', class: 'btn btn-primary btn-large', 'data-focus': 'create-generate', disabled: true}, 'Generate plan');
+      const exampleLink = link({view: 'create', step: 'plan', fork: r.fork}, 'See an example plan', {class: 'btn btn-quiet', hidden: true});
       const form = h('form', {class: 'ix-create', novalidate: true},
         createStep('1', 'Describe', 'What the experiment measures, its stimuli, trials and subjects.',
           field('Description', description, 'Plain language is fine. Numbers you give are kept; anything missing becomes a parameter to review.'),
@@ -2297,32 +2468,97 @@ const HubApp = (() => {
             h('label', {class: 'check-row', for: blank.getAttribute('id')}, blank, h('span', null, 'A blank experiment')),
             h('label', {class: 'check-row', for: fork.getAttribute('id')}, fork, h('span', null, 'Fork a catalogue listing'))),
           field('Listing', listing, 'Its code and parameters become the starting point of your private draft.')),
-        createStep('3', 'Provider & key', 'Your own key, from the provider you choose. The hub never pays for or shares keys.',
-          h('div', {class: 'field-pair'}, field('Provider', provider), field('API key', key, 'Saved to your account only, never shown again.')),
-          h('p', {class: 'ix-key-state'}, h('span', {class: 'lamp lamp-idle', 'aria-hidden': 'true'}),
-            h('span', null, 'No key saved for this account. Saving keys is not connected yet; this field is cleared when you generate or leave.'))),
+        h('div', {id: 'ai-key-step'}, createStep('3', 'Provider & key', 'Your own key, from the provider you choose. The hub never pays for or shares keys.',
+          h('div', {class: 'field-pair'}, field('Provider', provider), modelField), keyArea)),
         createStep('4', 'Generate', 'Generation writes a plan for you to review. Nothing is created until you accept it.',
-          h('div', {class: 'actions'}, button, link({view: 'create', step: 'plan', fork: r.fork}, 'See an example plan', {class: 'btn btn-quiet'})),
+          h('div', {class: 'actions'}, button, exampleLink),
           status));
-      form.addEventListener('submit', (event) => {
+
+      let ai = null;
+      (async () => {
+        try {
+          ai = await aiStatus(ctx);
+        } catch (exc) {
+          if (ctx.epoch !== state.epoch) return;
+          keyArea.replaceChildren(errorBox(exc, retryCurrent));
+          return;
+        }
+        if (!ai || ctx.epoch !== state.epoch) return;
+        if (!ai.enabled) {
+          keyArea.replaceChildren(h('p', {class: 'ix-key-state', 'data-ai': 'disabled'}, h('span', {class: 'lamp lamp-idle', 'aria-hidden': 'true'}),
+            h('span', null, 'AI authoring is not enabled on this hub.')));
+          modelField.hidden = true;
+          exampleLink.hidden = false;
+          return;
+        }
+        if (ai.providers.length) {
+          provider.replaceChildren(...ai.providers.map((p) => h('option', {value: p.id, selected: p.id === draft.provider}, p.name)));
+          provider.value = ai.providers.some((p) => p.id === draft.provider) ? draft.provider : ai.providers[0].id;
+          draft.provider = provider.value;
+        }
+        fillModels();
+        keyArea.replaceChildren(keys.el);
+        keys.render();
+        button.disabled = false;
+      })();
+
+      /** The start_from of a fork: the catalogue's public version, or the
+       *  version named in the address (Fork with AI from a private page),
+       *  or the experiment's published / newest version. */
+      async function startFrom() {
+        if (!fork.checked) return null;
+        const id = listing.value;
+        if (r.version && id === r.fork) return {experiment_id: id, version_id: r.version};
+        if (versionOf.has(id)) return {experiment_id: id, version_id: versionOf.get(id)};
+        const detail = await api('GET', '/experiments/' + C.seg(id));
+        const e = (detail && detail.experiment) || {};
+        const newest = sortVersions(detail && detail.versions)[0];
+        const vid = e.published_version_id || (newest && newest.id);
+        if (!vid) throw new C.HubError('invalid', 'That listing has no version you can start from.');
+        return {experiment_id: id, version_id: vid};
+      }
+
+      form.addEventListener('submit', async (event) => {
         prevent(event);
-        key.value = '';
+        const fail = (text) => status.replaceChildren(h('p', {class: 'form-status form-status-err', role: 'alert'}, text));
+        if (!ai || !ai.enabled) {
+          keys.field.value = '';
+          return fail('AI authoring is not enabled on this hub.');
+        }
         if (description.value.trim().length < 20) {
-          status.replaceChildren(h('p', {class: 'form-status form-status-err', role: 'alert'}, 'Describe the experiment in a sentence or two first.'));
+          keys.field.value = '';
+          fail('Describe the experiment in a sentence or two first.');
           description.focus();
           return;
         }
         if (fork.checked && !listing.value) {
-          status.replaceChildren(h('p', {class: 'form-status form-status-err', role: 'alert'}, 'Choose the listing to fork, or start from a blank experiment.'));
+          keys.field.value = '';
+          return fail('Choose the listing to fork, or start from a blank experiment.');
+        }
+        const chosen = provider.value;
+        if (keys.pending() && !(await keys.save())) return;
+        if (!state.ai.keys.some((k) => k.provider === chosen)) {
+          status.replaceChildren(aiAdviceBox({code: 'key_required', kind: 'ai'}, chosen));
           return;
         }
-        const name = (PROVIDERS.find(([v]) => v === provider.value) || [null, 'the provider'])[1];
-        status.replaceChildren(h('div', {class: 'ix-not-connected', role: 'status', tabindex: '-1', 'data-focus': 'create-not-connected'},
-          h('p', {class: 'ix-nc-title'}, 'Generation is not connected yet'),
-          h('p', null, `This hub version has no generation service, so nothing was sent to ${name} and no key was stored. Your description stays in this form.`),
-          link({view: 'create', step: 'plan', fork: r.fork}, 'See an example plan', {class: 'btn btn-line'})));
-        const box = status.firstChild;
-        if (box && box.focus) box.focus({preventScroll: true});
+        button.disabled = true;
+        status.replaceChildren(quietProgress('Starting\u2026'));
+        try {
+          const body = {prompt: description.value.trim(), start_from: await startFrom(), provider: chosen};
+          if (model.value) body.model = model.value;
+          const answer = await api('POST', '/ai/drafts', {json: body});
+          const made = answer && answer.draft;
+          if (!made || !made.id) throw new C.HubError('bad_response', 'The hub did not return the new draft.');
+          if (ctx.epoch !== state.epoch) return;
+          go({view: 'create', step: 'plan', draft: made.id});
+        } catch (exc) {
+          if (ctx.epoch !== state.epoch) return;
+          noteFailure(exc);
+          button.disabled = false;
+          status.replaceChildren(aiAdviceBox(exc, chosen));
+          const box = status.firstChild;
+          if (box && box.focus) { box.setAttribute('tabindex', '-1'); box.focus({preventScroll: true}); }
+        }
       });
       section.appendChild(form);
       return section;
@@ -2348,47 +2584,88 @@ const HubApp = (() => {
       return h('div', {class: 'table-wrap'}, table);
     }
 
+    /** One trial's phases; a phase without a fixed length (set by a
+     *  parameter, or until an event) is drawn at the typical share. */
     function planTimeline(phases) {
-      const total = phases.reduce((n, p) => n + p[1], 0);
+      const fixed = phases.filter((p) => p.ms !== null);
+      const typical = fixed.length ? fixed.reduce((n, p) => n + p.ms, 0) / fixed.length : 1000;
+      const weight = (p) => (p.ms === null ? typical : p.ms);
+      const total = phases.reduce((n, p) => n + weight(p), 0) || 1;
       const bar = h('ol', {class: 'ix-timeline', 'aria-label': 'One trial'});
-      phases.forEach(([label, ms, note], i) => {
-        const share = Math.max(8, Math.round((ms / total) * 100));
+      phases.forEach((p, i) => {
+        const share = Math.max(8, Math.round((weight(p) / total) * 100));
         bar.appendChild(h('li', {class: 'ix-phase ix-phase-' + (i % 4) + ' ix-w' + Math.min(100, Math.round(share / 4) * 4)},
-          h('span', {class: 'ix-phase-name'}, label),
-          h('span', {class: 'ix-phase-time'}, ms >= 1000 ? (ms / 1000) + ' s' : ms + ' ms'),
-          h('span', {class: 'ix-phase-note'}, note)));
+          h('span', {class: 'ix-phase-name'}, p.label),
+          h('span', {class: 'ix-phase-time' + (p.ms === null ? ' ix-phase-open' : '')}, p.time),
+          h('span', {class: 'ix-phase-note'}, p.note)));
       });
-      return h('div', {class: 'ix-timeline-wrap'}, bar,
-        h('p', {class: 'muted small'}, 'Adjust waits on the participant; its typical length is drawn, not its limit.'));
+      return h('div', {class: 'ix-timeline-wrap'}, bar);
+    }
+
+    /** The plan's reading column (shared by a real plan and the example). */
+    function planSections(view) {
+      const parts = [];
+      if (view.paradigm || view.design.length) {
+        parts.push(h('h2', {class: 'block-title'}, 'Paradigm'));
+        if (view.paradigm) parts.push(h('p', {class: 'ix-plan-text'}, view.paradigm));
+        if (view.design.length) parts.push(spec(view.design));
+      }
+      if (view.timeline.length) parts.push(h('h2', {class: 'block-title'}, 'Trial timeline'), planTimeline(view.timeline));
+      if (view.stimuli.rows.length) parts.push(h('h2', {class: 'block-title'}, 'Stimuli'), planTable('Stimuli', view.stimuli.heads, view.stimuli.rows));
+      if (view.measures.rows.length) parts.push(h('h2', {class: 'block-title'}, 'Measures'), planTable('Measures', view.measures.heads, view.measures.rows));
+      if (view.parameters.length) parts.push(h('h2', {class: 'block-title'}, 'Parameters'), planTable('Parameters', ['Name', 'Default', 'Unit', 'Meaning'], view.parameters, true));
+      if (view.tasks.length) parts.push(h('h2', {class: 'block-title'}, 'Tasks'), planTable('Tasks', ['Task', 'Description'], view.tasks, true));
+      if (view.tests.length) {
+        parts.push(h('h2', {class: 'block-title'}, 'Tests to run'),
+          h('ol', {class: 'ix-tests'}, ...view.tests.map(([name, how]) => h('li', {class: 'ix-test'},
+            h('span', {class: 'ix-test-name'}, name), h('span', {class: 'ix-test-what'}, how), h('span', {class: 'ix-test-state'}, 'On your rig')))));
+      }
+      if (view.notes) parts.push(h('h2', {class: 'block-title'}, 'Notes'), h('p', {class: 'ix-plan-text'}, view.notes));
+      return parts;
+    }
+
+    function planHead(r, title, lede, chips) {
+      return h('header', {class: 'screen-head'},
+        h('nav', {class: 'crumbs', 'aria-label': 'You are here'}, link({view: 'create', fork: r.fork}, 'Create'),
+          h('span', {class: 'crumb-sep', 'aria-hidden': 'true'}, '/'), h('span', {'aria-current': 'page'}, 'Plan')),
+        h('h1', {class: 'screen-title', tabindex: '-1', 'data-heading': ''}, title),
+        lede ? h('p', {class: 'lede'}, lede) : null,
+        h('div', {class: 'chips'}, ...chips));
+    }
+
+    function railState(lamp, word) {
+      return h('span', {class: 'ix-rail-state', 'data-focus': 'ai-state', tabindex: '-1'},
+        lamp === 'busy' ? h('span', {class: 'spinner', 'aria-hidden': 'true'}) : h('span', {class: 'lamp lamp-' + lamp, 'aria-hidden': 'true'}),
+        h('span', null, word));
     }
 
     function screenCreatePlan(ctx) {
       const r = ctx.route;
-      const draft = createDraft();
-      const plan = EXAMPLE_PLAN;
+      if (r.draft) return screenDraft(ctx);
       const section = h('section', {class: 'screen screen-create-plan'});
-      section.appendChild(h('header', {class: 'screen-head'},
-        h('nav', {class: 'crumbs', 'aria-label': 'You are here'}, link({view: 'create', fork: r.fork}, 'Create'),
-          h('span', {class: 'crumb-sep', 'aria-hidden': 'true'}, '/'), h('span', {'aria-current': 'page'}, 'Plan')),
-        h('h1', {class: 'screen-title', tabindex: '-1', 'data-heading': ''}, plan.title),
-        h('p', {class: 'lede'}, 'An example of the plan generation will produce, shown so this page can be reviewed. It was not generated from your description.'),
-        h('div', {class: 'chips'}, h('span', {class: 'chip chip-private'}, 'Example plan'), h('span', {class: 'chip'}, 'Not generated'))));
-      const sections = h('div', {class: 'ix-plan'},
-        h('h2', {class: 'block-title'}, 'Paradigm'),
-        h('p', {class: 'ix-plan-text'}, plan.paradigm),
-        spec(plan.design.map(([k, v]) => [k, v])),
-        h('h2', {class: 'block-title'}, 'Trial timeline'),
-        planTimeline(plan.timeline),
-        h('h2', {class: 'block-title'}, 'Stimuli'),
-        planTable('Stimuli', ['Element', 'Size', 'Position', 'Notes'], plan.stimuli),
-        h('h2', {class: 'block-title'}, 'Measures'),
-        planTable('Measures', ['Measure', 'Unit', 'Definition'], plan.measures),
-        h('h2', {class: 'block-title'}, 'Parameters'),
-        planTable('Parameters', ['Name', 'Value', 'Unit', 'Meaning'], plan.parameters, true),
-        h('h2', {class: 'block-title'}, 'Tests to run'),
-        h('ol', {class: 'ix-tests'}, ...plan.tests.map(([name, what]) => h('li', {class: 'ix-test'},
-          h('span', {class: 'ix-test-name'}, name), h('span', {class: 'ix-test-what'}, what), h('span', {class: 'ix-test-state'}, 'Not run')))));
-      const providerName = (PROVIDERS.find(([v]) => v === draft.provider) || [null, 'OpenAI'])[1];
+      const area = region('the plan');
+      section.appendChild(area.el);
+      (async () => {
+        let ai;
+        try {
+          ai = await aiStatus(ctx);
+        } catch (exc) {
+          if (ctx.epoch !== state.epoch) return;
+          return area.fail(exc, retryCurrent);
+        }
+        if (!ai || ctx.epoch !== state.epoch) return;
+        /* A real hub writes real plans: the example belongs to a hub with
+         * AI authoring disabled. */
+        if (ai.enabled) return go({view: 'create', fork: r.fork}, {replace: true});
+        area.fill(examplePlan(ctx));
+      })();
+      return section;
+    }
+
+    function examplePlan(ctx) {
+      const r = ctx.route;
+      const draft = createDraft();
+      const view = C.aiPlanView(EXAMPLE_PLAN);
       if (r.fork) { draft.start = 'fork'; draft.from = r.fork; }
       const forking = draft.start === 'fork' && draft.from;
       const startText = h('span', null, forking ? 'Fork of a listing' : 'Blank experiment');
@@ -2403,22 +2680,286 @@ const HubApp = (() => {
       const rail = h('aside', {class: 'sheet ix-rail', 'aria-label': 'Draft'},
         h('h2', {class: 'sheet-title'}, h('span', null, 'Draft'), h('span', {class: 'sheet-version'}, 'example')),
         spec([
-          ['Status', h('span', {class: 'ix-rail-state'}, h('span', {class: 'lamp lamp-idle', 'aria-hidden': 'true'}), h('span', null, 'Not generated'))],
+          ['Status', railState('idle', 'Not generated')],
           ['Goes to', 'My experiments, as a private draft'],
-          ['Name', plan.slug, {mono: true}],
+          ['Name', view.slug, {mono: true}],
           ['Start', startText],
-          ['Provider', providerName + ', your key'],
-          ['Parameters', String(plan.parameters.length)],
-          ['Tests to run', String(plan.tests.length)],
+          ['Parameters', String(view.parameters.length)],
+          ['Tests to run', String(view.tests.length)],
         ]),
         h('div', {class: 'sheet-block'},
-          h('div', {class: 'ix-not-connected'},
-            h('p', {class: 'ix-nc-title'}, 'Not connected yet'),
-            h('p', null, 'Generating, running the tests and saving the draft come with the next hub version. Until then nothing here is saved.')),
-          h('button', {type: 'button', class: 'btn btn-primary', disabled: true}, 'Create private draft'),
+          h('div', {class: 'ix-not-connected'}, h('p', {class: 'ix-nc-title'}, 'AI authoring is not enabled on this hub')),
+          h('button', {type: 'button', class: 'btn btn-primary', disabled: true}, 'Create private draft version'),
           link({view: 'create', fork: r.fork}, 'Back to the description', {class: 'btn btn-quiet'})));
-      section.appendChild(h('div', {class: 'exp-grid ix-plan-grid'}, sections, rail));
+      return [
+        planHead(r, view.title, 'An example of what generation produces. It was not generated from your description.',
+          [h('span', {class: 'chip chip-private'}, 'Example plan'), h('span', {class: 'chip'}, 'Not generated')]),
+        h('div', {class: 'exp-grid ix-plan-grid'}, h('div', {class: 'ix-plan'}, ...planSections(view)), rail),
+      ];
+    }
+
+    /** The job a draft is waiting on, or the last one of `kind`. */
+    function draftJob(detail, kind) {
+      const d = detail.draft || {};
+      const jobs = Array.isArray(detail.jobs) ? detail.jobs : [];
+      const wanted = kind === 'plan' ? d.plan_job_id : d.source_job_id;
+      const byId = wanted ? jobs.find((j) => j && String(j.id) === String(wanted)) : null;
+      if (byId) return byId;
+      const ofKind = jobs.filter((j) => j && j.kind === kind).sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
+      return ofKind[0] || null;
+    }
+
+    /** One AI draft: the plan being written, the plan, the generated
+     *  source and its validation report, acceptance, or a discarded or
+     *  failed draft, each with its next step in the rail. */
+    function screenDraft(ctx) {
+      const r = ctx.route;
+      const section = h('section', {class: 'screen screen-create-plan'});
+      const flash = flashNode();
+      if (flash) section.appendChild(flash);
+      const area = region('the draft');
+      section.appendChild(area.el);
+      (async () => {
+        const got = await screenRequest(ctx.epoch, 'GET', '/ai/drafts/' + C.seg(r.draft));
+        if (!got) return;
+        if (!got.ok) return area.fail(got.error, retryCurrent);
+        area.fill(draftPage(ctx, got.value || {}));
+      })();
       return section;
+    }
+
+    function pollJob(ctx, jobId) {
+      const tick = async () => {
+        const got = await screenRequest(ctx.epoch, 'GET', '/ai/jobs/' + C.seg(jobId));
+        if (!got) return;
+        const job = got.ok ? C.aiJob((got.value && got.value.job) || got.value) : null;
+        if (job && !job.active) {
+          go(state.route, {replace: true, focus: 'ai-state'});
+          return;
+        }
+        if (!got.ok && !['offline', 'unavailable', 'timeout'].includes(got.error.kind)) {
+          const where = $('main').querySelector('[data-ai-live]');
+          if (where) where.replaceChildren(aiAdviceBox(got.error, ''));
+          return;
+        }
+        state.polls.push(timers.set(tick, AI_POLL_MS));
+      };
+      state.polls.push(timers.set(tick, AI_POLL_MS));
+    }
+
+    function draftPage(ctx, detail) {
+      const r = ctx.route;
+      const d = detail.draft || {};
+      const plan = detail.plan || d.plan || d.plan_json || null;
+      const view = plan ? C.aiPlanView(plan) : null;
+      const planJob = draftJob(detail, 'plan');
+      const sourceJob = draftJob(detail, 'source');
+      const pj = C.aiJob(planJob);
+      const sj = sourceJob ? C.aiJob(sourceJob) : null;
+      const status = String(d.status || '');
+      const providerId = String(d.provider || (sourceJob && sourceJob.provider) || (planJob && planJob.provider) || '');
+      const modelName = String(d.model || (sourceJob && sourceJob.model) || (planJob && planJob.model) || '');
+      const report = sourceJob && (sj.done || sj.code === 'generation_invalid')
+        ? C.aiValidation(sourceJob.result || sourceJob.result_json || detail.report || null) : null;
+      const discarded = status === 'discarded';
+      const accepted = status === 'accepted' || Boolean(d.version_id);
+
+      /* Which stage the draft is in; the rail and the progress follow it. */
+      let stage;
+      if (discarded) stage = 'discarded';
+      else if (accepted) stage = 'accepted';
+      else if (!view && planJob && pj.active) stage = 'planning';
+      else if (!view) stage = 'plan-failed';
+      else if (sj && sj.active) stage = 'generating';
+      else if (sj && sj.done && report && report.ok) stage = 'generated';
+      else stage = 'planned';
+
+      const title = view ? view.title : 'Draft';
+      const lede = view ? view.summary : '';
+      const word = stage === 'planning' ? 'Writing the plan' : stage === 'generating' ? 'Writing the source'
+        : stage === 'plan-failed' ? (pj.cancelled ? 'Cancelled' : 'Plan failed')
+          : stage === 'planned' && sj && (sj.failed || sj.cancelled) ? (sj.cancelled ? 'Cancelled' : 'Source failed') : C.aiDraftWord(status || stage);
+      const chips = [h('span', {class: 'chip chip-private'}, 'Private draft')];
+      if (accepted) chips.push(h('span', {class: 'chip chip-public'}, 'Saved as a version'));
+
+      /* main column */
+      const main = h('div', {class: 'ix-plan'});
+      if (stage === 'planning') {
+        main.appendChild(quietProgress('Writing the plan from your description. This page updates on its own.'));
+      }
+      if (!view && d.prompt) {
+        main.append(h('h2', {class: 'block-title'}, 'Your description'), h('p', {class: 'ix-plan-text ix-prompt'}, String(d.prompt)));
+      }
+      if (report) main.append(validationBlock(report, sj));
+      if (stage === 'generating') main.appendChild(quietProgress('Writing the source files. This page updates on its own.'));
+      if (view) main.append(...planSections(view));
+
+      /* rail */
+      const live = h('div', {class: 'sheet-block', 'data-ai-live': ''});
+      const lamp = ['planning', 'generating'].includes(stage) ? 'busy'
+        : stage === 'plan-failed' || (stage === 'planned' && sj && sj.failed) ? 'err'
+          : (['accepted', 'generated', 'planned'].includes(stage) ? 'ok' : 'idle');
+      const startFrom = (d.start_from && d.start_from.experiment_id) || d.start_experiment_id ? 'Fork of a listing' : 'Blank experiment';
+      const disclosed = C.aiDisclosed((sourceJob && sourceJob.disclosed) || (planJob && planJob.disclosed));
+      const rail = h('aside', {class: 'sheet ix-rail', 'aria-label': 'Draft'},
+        h('h2', {class: 'sheet-title'}, 'Draft'),
+        spec([
+          ['Status', railState(lamp, word)],
+          ['Goes to', 'My experiments, as a private draft'],
+          ['Name', view ? view.slug : '', {mono: true}],
+          ['Start', startFrom],
+          ['Provider', providerId ? providerName(providerId) + (modelName ? ' \u00b7 ' + modelName : '') + ', your key' : ''],
+          ['Sent', disclosed],
+          ['Parameters', view ? String(view.parameters.length) : ''],
+          ['Tests to run', view ? String(view.tests.length) : ''],
+        ]),
+        live);
+
+      const discard = discardControl(ctx, d);
+      const back = link({view: 'create', fork: r.fork}, 'Back to the description', {class: 'btn btn-quiet',
+        on: {click: () => { const cd = createDraft(); if (d.prompt) cd.description = String(d.prompt); }}});
+      if (stage === 'planning' || stage === 'generating') {
+        const job = stage === 'planning' ? planJob : sourceJob;
+        live.append(cancelControl(ctx, job), discard);
+        if (job && job.id) pollJob(ctx, job.id);
+      } else if (stage === 'plan-failed') {
+        const retry = link({view: 'create', fork: r.fork}, 'Back to the description', {class: 'btn btn-primary',
+          on: {click: () => { if (d.prompt) createDraft().description = String(d.prompt); }}});
+        const keyStep = link({view: 'create', fork: r.fork}, 'Open Provider & key', {class: 'btn btn-line', 'data-focus-next': 'ai-key|ai-key-replace'});
+        live.append(aiAdviceBox(pj.cancelled ? {kind: 'cancelled', message: ''} : {code: pj.code || 'error', kind: 'ai', message: pj.message, status: 0},
+          providerId, [{node: keyStep, when: 'key'}]), retry, discard);
+      } else if (stage === 'planned') {
+        if (sj && (sj.failed || sj.cancelled)) {
+          live.appendChild(aiAdviceBox(sj.cancelled ? {kind: 'cancelled', message: ''} : {code: sj.code || 'error', kind: 'ai', message: sj.message},
+            providerId, [{node: link({view: 'create'}, 'Open Provider & key', {class: 'btn btn-line', 'data-focus-next': 'ai-key|ai-key-replace'}), when: 'key'}]));
+        }
+        live.append(generateControl(ctx, d, view, providerId), discard, back);
+      } else if (stage === 'generated') {
+        live.append(acceptControl(ctx, d, view, sourceJob, providerId), discard);
+      } else if (stage === 'accepted') {
+        const eid = d.experiment_id;
+        const vid = d.version_id;
+        live.append(h('div', {class: 'ix-done', role: 'status'}, h('p', {class: 'ix-nc-title'}, 'Saved as a private version in My experiments.')),
+          eid ? link({view: 'mine', id: eid}, 'Open in My experiments', {class: 'btn btn-primary', 'data-focus': 'ai-mine'}) : null,
+          eid && vid ? h('a', {class: 'btn btn-line', download: '', href: state.api.url('/experiments/' + C.seg(eid) + '/versions/' + C.seg(vid) + '/download')}, 'Download') : null);
+      } else {
+        live.append(h('p', {class: 'muted'}, 'This draft was discarded.'), link({view: 'create'}, 'Start a new draft', {class: 'btn btn-line'}));
+      }
+      return [planHead(r, title, lede, chips), h('div', {class: 'exp-grid ix-plan-grid'}, main, rail)];
+    }
+
+    /** The generated source's validation report: files with sizes, then
+     *  every check passed or failed. */
+    function validationBlock(report, job) {
+      const fileRows = report.files.map((f) => [f.path, f.size === null ? '' : C.formatBytes(f.size)]);
+      const list = h('ul', {class: 'ix-checks'}, ...report.checks.map((c) => h('li', {class: 'ix-check ix-check-' + (c.ok ? 'ok' : 'fail')},
+        h('span', {class: 'lamp lamp-' + (c.ok ? 'ok' : 'err'), 'aria-hidden': 'true'}),
+        h('span', {class: 'ix-check-name'}, c.name),
+        h('span', {class: 'ix-check-state'}, c.ok ? 'Passed' : 'Failed'),
+        c.detail ? h('span', {class: 'ix-check-detail'}, c.detail) : null)));
+      return h('section', {class: 'ix-validation', 'aria-label': 'Validation report'},
+        h('h2', {class: 'block-title'}, 'Generated source'),
+        h('p', {class: 'ix-plan-text', 'data-validation': report.ok ? 'ok' : 'failed'},
+          `${report.files.length} file${report.files.length === 1 ? '' : 's'} \u00b7 ${C.formatBytes(report.bytes)} \u00b7 `
+          + `${report.passed} check${report.passed === 1 ? '' : 's'} passed` + (report.failed ? `, ${report.failed} failed` : '')),
+        fileRows.length ? planTable('Files', ['File', 'Size'], fileRows, true, [1]) : null,
+        report.checks.length ? list : null);
+    }
+
+    function cancelControl(ctx, job) {
+      if (!job || !job.id) return null;
+      const button = h('button', {type: 'button', class: 'btn btn-line'}, 'Cancel');
+      button.addEventListener('click', async () => {
+        button.disabled = true;
+        try {
+          await api('POST', '/ai/jobs/' + C.seg(job.id) + '/cancel', {json: {}});
+        } catch (exc) {
+          noteFailure(exc);
+          button.disabled = false;
+          button.parentNode && button.parentNode.insertBefore(aiAdviceBox(exc, ''), button);
+          return;
+        }
+        if (ctx.epoch === state.epoch) go(state.route, {replace: true, focus: 'ai-state'});
+      });
+      return button;
+    }
+
+    function discardControl(ctx, d) {
+      const open = h('button', {type: 'button', class: 'btn btn-quiet'}, 'Discard\u2026');
+      const yes = h('button', {type: 'button', class: 'btn btn-danger'}, 'Discard draft');
+      const no = h('button', {type: 'button', class: 'btn btn-quiet'}, 'Keep it');
+      const row = h('div', {class: 'confirm', hidden: true}, h('p', null, 'Discard this draft? Nothing else is removed.'), yes, no);
+      open.addEventListener('click', () => { row.hidden = false; open.hidden = true; yes.focus(); });
+      no.addEventListener('click', () => { row.hidden = true; open.hidden = false; open.focus(); });
+      yes.addEventListener('click', async () => {
+        yes.disabled = true;
+        no.disabled = true;
+        try {
+          await api('DELETE', '/ai/drafts/' + C.seg(d.id));
+        } catch (exc) {
+          noteFailure(exc);
+          yes.disabled = false;
+          no.disabled = false;
+          row.appendChild(aiAdviceBox(exc, ''));
+          return;
+        }
+        if (ctx.epoch === state.epoch) go(state.route, {replace: true, focus: 'ai-state'});
+      });
+      return h('div', {class: 'ix-discard'}, open, row);
+    }
+
+    function generateControl(ctx, d, view, providerId) {
+      const button = h('button', {type: 'button', class: 'btn btn-primary', 'data-focus': 'ai-generate'}, 'Generate source');
+      const out = h('div', {'aria-live': 'polite'});
+      button.addEventListener('click', async () => {
+        button.disabled = true;
+        out.replaceChildren(quietProgress('Starting\u2026'));
+        try {
+          await api('POST', '/ai/drafts/' + C.seg(d.id) + '/generate', {json: {}});
+        } catch (exc) {
+          if (ctx.epoch !== state.epoch) return;
+          noteFailure(exc);
+          button.disabled = false;
+          out.replaceChildren(aiAdviceBox(exc, providerId, [{node: link({view: 'create'}, 'Open Provider & key', {class: 'btn btn-line', 'data-focus-next': 'ai-key|ai-key-replace'}), when: 'key'}]));
+          return;
+        }
+        if (ctx.epoch === state.epoch) go(state.route, {replace: true, focus: 'ai-state'});
+      });
+      return h('div', {class: 'ix-action'}, button, out);
+    }
+
+    function acceptControl(ctx, d, view, sourceJob, providerId) {
+      const result = (sourceJob && (sourceJob.result || sourceJob.result_json)) || {};
+      const manifest = result.manifest && typeof result.manifest === 'object' ? result.manifest : {};
+      const title = input({type: 'text', name: 'title', required: true, maxlength: '160', value: (view && view.title) || ''});
+      const summary = input({type: 'text', name: 'summary', maxlength: '300', value: (view && view.summary) || ''});
+      const license = input({type: 'text', name: 'license', maxlength: '120', value: String(manifest.license || (view && view.license) || 'MIT')});
+      const status = statusLine();
+      const button = h('button', {type: 'submit', class: 'btn btn-primary', 'data-focus': 'ai-accept'}, 'Create private draft version');
+      const out = h('div', {'aria-live': 'polite'});
+      const form = h('form', {class: 'form ix-accept'}, field('Title', title), field('Summary', summary), field('Licence', license), button, status.el, out);
+      form.addEventListener('submit', async (event) => {
+        prevent(event);
+        const body = {title: title.value.trim(), summary: summary.value.trim(), license: license.value.trim()};
+        if (!body.title) return status.show('Give the version a title.', 'err');
+        if (!body.license) return status.show('Name a licence.', 'err');
+        button.disabled = true;
+        status.show('Creating\u2026', 'info');
+        out.replaceChildren();
+        try {
+          const answer = await api('POST', '/ai/drafts/' + C.seg(d.id) + '/accept', {json: body});
+          if (!answer || !answer.version || !answer.experiment) throw new C.HubError('bad_response', 'The hub did not return the new version.');
+        } catch (exc) {
+          if (ctx.epoch !== state.epoch) return;
+          noteFailure(exc);
+          status.clear();
+          button.disabled = false;
+          out.replaceChildren(aiAdviceBox(exc, providerId, [{node: h('button', {type: 'button', class: 'btn btn-line', on: {click: () => go(state.route, {replace: true})}}, 'Reload'), when: 'reload'}]));
+          return;
+        }
+        if (ctx.epoch === state.epoch) go(state.route, {replace: true, focus: 'ai-mine'});
+      });
+      return form;
     }
 
     /* ---- my experiments -------------------------------------------------- */
@@ -2456,7 +2997,70 @@ const HubApp = (() => {
         table.appendChild(tbody);
         area.fill(h('div', {class: 'table-wrap'}, table));
       })();
+      if (state.role === 'server') section.appendChild(draftsBlock(ctx));
       return section;
+    }
+
+    /** My experiments: AI drafts not yet accepted or discarded (status,
+     *  open, discard), and accepted ones linked to their experiment. Hidden
+     *  when the hub has no AI authoring or there are none. */
+    function draftsBlock(ctx) {
+      const block = h('section', {class: 'ix-drafts', hidden: true, 'aria-label': 'Drafts'});
+      (async () => {
+        const got = await screenRequest(ctx.epoch, 'GET', '/ai/drafts');
+        if (!got || !got.ok) return;
+        const raw = Array.isArray(got.value) ? got.value : ((got.value && (got.value.items || got.value.drafts)) || []);
+        const items = raw.filter((d) => d && d.id && d.status !== 'discarded')
+          .sort((a, b) => String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || '')));
+        if (!items.length) return;
+        const table = h('table', {class: 'table'},
+          h('caption', {class: 'visually-hidden'}, 'Your AI drafts'),
+          h('thead', null, h('tr', null, ...['Draft', 'Status', 'Updated', ''].map((t) => h('th', {scope: 'col'}, t)))));
+        const tbody = h('tbody');
+        for (const d of items) {
+          const plan = d.plan || d.plan_json || null;
+          const prompt = String(d.prompt || '');
+          const name = String(d.title || (plan && plan.title) || (prompt.length > 70 ? prompt.slice(0, 69) + '\u2026' : prompt) || 'Untitled draft');
+          const accepted = d.status === 'accepted';
+          const actions = h('td', {class: 'ix-draft-actions'},
+            accepted && d.experiment_id ? link({view: 'mine', id: d.experiment_id}, 'Open experiment', {class: 'btn btn-line btn-small'})
+              : link({view: 'create', step: 'plan', draft: d.id}, 'Open', {class: 'btn btn-line btn-small'}));
+          if (!accepted) {
+            const open = h('button', {type: 'button', class: 'btn btn-quiet btn-small'}, 'Discard\u2026');
+            const yes = h('button', {type: 'button', class: 'btn btn-danger btn-small'}, 'Discard draft');
+            const no = h('button', {type: 'button', class: 'btn btn-quiet btn-small'}, 'Keep it');
+            const st = statusLine();
+            const row = h('div', {class: 'confirm', hidden: true}, h('p', null, 'Discard this draft?'), yes, no, st.el);
+            open.addEventListener('click', () => { row.hidden = false; open.hidden = true; yes.focus(); });
+            no.addEventListener('click', () => { row.hidden = true; open.hidden = false; open.focus(); });
+            yes.addEventListener('click', async () => {
+              yes.disabled = true;
+              no.disabled = true;
+              try {
+                await api('DELETE', '/ai/drafts/' + C.seg(d.id));
+              } catch (exc) {
+                noteFailure(exc);
+                yes.disabled = false;
+                no.disabled = false;
+                st.show(exc.message, 'err');
+                return;
+              }
+              state.flash = {text: 'Draft discarded.', tone: 'ok'};
+              if (ctx.epoch === state.epoch) retryCurrent();
+            });
+            actions.append(open, row);
+          }
+          tbody.appendChild(h('tr', {'data-draft': d.id},
+            h('td', {'data-label': 'Draft'}, name),
+            h('td', {'data-label': 'Status'}, C.aiDraftWord(d.status)),
+            h('td', {'data-label': 'Updated'}, C.formatDate(d.updated_at || d.created_at, false)),
+            actions));
+        }
+        table.appendChild(tbody);
+        block.replaceChildren(h('h2', {class: 'block-title'}, 'Drafts'), h('div', {class: 'table-wrap'}, table));
+        block.hidden = false;
+      })();
+      return block;
     }
 
     /** The metadata fields an author edits (new and edit share them). */
