@@ -222,8 +222,21 @@ SOURCE_SCHEMA: dict[str, Any] = _object(
 _PROVIDER_REFUSED_KEYWORDS = frozenset({"maxLength", "minLength"})
 _KNOWN_KEYWORDS = frozenset(
     {
-        "type", "enum", "properties", "required", "additionalProperties", "items", "anyOf",
-        "maxLength", "minLength", "pattern", "minimum", "maximum", "maxItems", "minItems", "title",
+        "type",
+        "enum",
+        "properties",
+        "required",
+        "additionalProperties",
+        "items",
+        "anyOf",
+        "maxLength",
+        "minLength",
+        "pattern",
+        "minimum",
+        "maximum",
+        "maxItems",
+        "minItems",
+        "title",
         "description",
     }
 )

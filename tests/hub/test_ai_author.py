@@ -27,6 +27,14 @@ from typing import Any
 
 import pytest
 import yaml
+from tests.hub.ai_support import (
+    FIXTURES,
+    FakeProvider,
+    ProviderError,
+    live_exchanges,
+    plan_answer,
+    source_answer,
+)
 
 from alhazen.hub.ai import author, prompts
 from alhazen.hub.ai.schemas import (
@@ -39,14 +47,6 @@ from alhazen.hub.ai.schemas import (
 from alhazen.hub.documentation import read_documentation
 from alhazen.hub.packages import inspect_bundle
 from alhazen.version import __version__ as ALHAZEN_VERSION
-from tests.hub.ai_support import (
-    FIXTURES,
-    FakeProvider,
-    ProviderError,
-    live_exchanges,
-    plan_answer,
-    source_answer,
-)
 
 PROMPT = (FIXTURES / "prompt.txt").read_text("utf-8").strip()
 DOC_FIXTURE = Path(__file__).parent / "fixtures" / "documentation" / "scaffold" / "docs"
@@ -329,7 +329,10 @@ def _param(plan: dict[str, Any], name: str) -> dict[str, Any]:
             "reward.by_outcome",
         ),
         (lambda p: p["parameters"].append(dict(p["parameters"][0])), "named twice"),
-        (lambda p: p["parameters"].append({**p["parameters"][0], "name": "paradigm"}), "also a value"),
+        (
+            lambda p: p["parameters"].append({**p["parameters"][0], "name": "paradigm"}),
+            "also a value",
+        ),
         (lambda p: _param(p, "paradigm.kind").update(default="latin"), "not one of the choices"),
         (lambda p: _param(p, "hold_duration").update(default=1000), "duration default"),
         (lambda p: _param(p, "fix_size_dva").update(default={"ms": 3}), "needs type duration"),
@@ -427,7 +430,8 @@ def test_generated_files(bundle, the_plan):
     }
     assert "PARAMETERS" in assigned and "LADDERS" not in assigned
     parameters = next(
-        node.value for node in run.body
+        node.value
+        for node in run.body
         if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") == "PARAMETERS"
     )
     assert isinstance(parameters, ast.Dict)
@@ -443,7 +447,8 @@ def test_generated_files(bundle, the_plan):
 def test_run_py_calls_run_experiment_as_the_scaffold_does(bundle):
     def keywords(text: str) -> set[str]:
         call = next(
-            node for node in ast.walk(ast.parse(text))
+            node
+            for node in ast.walk(ast.parse(text))
             if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "run_experiment"
         )
         return {kw.arg for kw in call.keywords if kw.arg}
@@ -530,7 +535,9 @@ def test_tests_may_write_files_and_import_pytest(the_plan, ctx):
     tests = source_answer()["test_module"] + (
         "\n\ndef test_writes(tmp_path):\n    (tmp_path / 'x').write_text('ok')\n"
     )
-    result = author.generate_source(FakeProvider(source_text=source_text(test_module=tests)), the_plan, ctx)
+    result = author.generate_source(
+        FakeProvider(source_text=source_text(test_module=tests)), the_plan, ctx
+    )
     assert result.report.ok, result.report.problems
 
 
@@ -546,14 +553,22 @@ def test_a_test_importing_a_missing_name_fails(the_plan, ctx):
     ("old", "new", "expected"),
     [
         ("Duration(ms=1000)", "Duration(ms=900)", 'hold_duration defaults to {"ms": 900}'),
-        ("fix_window_dva: float = 2.0", "fix_window_dva: float = 2.5", "fix_window_dva defaults to 2.5"),
+        (
+            "fix_window_dva: float = 2.0",
+            "fix_window_dva: float = 2.5",
+            "fix_window_dva defaults to 2.5",
+        ),
         (
             'SchedulerConfig(kind="sequence", n_per_condition=20)',
             'SchedulerConfig(kind="sequence", n_per_condition=10)',
             "paradigm.n_per_condition defaults to 10",
         ),
         ("    flash_size_dva: float = 1.0\n", "", "has no field flash_size_dva"),
-        ("    fix_size_dva: float = 2.0\n", "    fix_size_dva: float = 2.0\n    gap_dva: float\n", "gap_dva has no default"),
+        (
+            "    fix_size_dva: float = 2.0\n",
+            "    fix_size_dva: float = 2.0\n    gap_dva: float\n",
+            "gap_dva has no default",
+        ),
         ("(SubjectParams):", "(Model):", "must subclass SubjectParams"),
         (
             "    paradigm: SchedulerConfig",
@@ -607,7 +622,9 @@ def _doc(change) -> str:
         (lambda d: d.update(parameters=[]), "unexpected key 'parameters'"),
         (lambda d: d.pop("diagram"), "missing key 'diagram'"),
         (
-            lambda d: d["timeline"].update(between_trials={"label": "ITI", "timing": {"kind": "parameter", "param": "iti"}}),
+            lambda d: d["timeline"].update(
+                between_trials={"label": "ITI", "timing": {"kind": "parameter", "param": "iti"}}
+            ),
             "names 'iti', which is not a documented parameter",
         ),
     ],
@@ -640,8 +657,16 @@ def test_report_shape(bundle):
     report = bundle.report.to_dict()
     assert report["ok"] is True
     assert [check["name"] for check in report["checks"]] == [
-        "answer", "schema", "files", "syntax", "safety", "imports", "structure",
-        "defaults", "package", "documentation",
+        "answer",
+        "schema",
+        "files",
+        "syntax",
+        "safety",
+        "imports",
+        "structure",
+        "defaults",
+        "package",
+        "documentation",
     ]
     assert {entry["path"] for entry in report["files"]} == set(bundle.files)
 
@@ -662,7 +687,10 @@ def test_bundle_archive_rebuilds_with_new_metadata(bundle, the_plan):
 def test_live_run_record():
     exchanges = live_exchanges()
     assert [(e["step"], e["attempt"]) for e in exchanges] == [
-        ("plan", 1), ("plan", 2), ("source", 1), ("source", 2),
+        ("plan", 1),
+        ("plan", 2),
+        ("source", 1),
+        ("source", 2),
     ]
     assert {e["model"] for e in exchanges} == {"gpt-4.1-mini-2025-04-14"}
     assert all(e["finish_reason"] == "stop" for e in exchanges)
@@ -701,7 +729,7 @@ def test_live_source_failure_mode_reproduces(the_plan, ctx):
 def test_valid_fixture_is_what_the_kit_builds(the_plan, ctx):
     live_model = live_exchanges()[3]["model"]
     bundle = author.generate_source(FakeProvider(model=live_model), the_plan, ctx)
-    recorded = (FIXTURES / "valid" / "package.zip")
+    recorded = FIXTURES / "valid" / "package.zip"
     with tempfile.TemporaryDirectory() as folder:
         path = Path(folder) / "p.zip"
         path.write_bytes(recorded.read_bytes())

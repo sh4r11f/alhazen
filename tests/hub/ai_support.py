@@ -43,9 +43,9 @@ except ImportError:  # pragma: no cover - only before integration
 def _provider_error(kind: str) -> Exception:
     message = f"fake provider: {kind}"
     try:
-        return ProviderError(message, kind=kind)  # type: ignore[call-arg]
+        return ProviderError(message, kind=kind)
     except TypeError:
-        return ProviderError(kind=kind, message=message)  # type: ignore[call-arg]
+        return ProviderError(kind=kind, message=message)
 
 
 def live_exchanges() -> list[dict[str, Any]]:

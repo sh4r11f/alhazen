@@ -26,7 +26,6 @@ errors propagate unchanged: the caller maps them to its own responses.
 from __future__ import annotations
 
 import ast
-import builtins
 import hashlib
 import importlib
 import inspect
@@ -55,7 +54,6 @@ from alhazen.hub.ai.schemas import (
 )
 from alhazen.hub.documentation import DocumentationError, global_guide, read_documentation
 from alhazen.hub.packages import (
-    MANIFEST_NAME,
     PackageError,
     PackageInfo,
     build_bundle,
@@ -370,7 +368,9 @@ def _example_documentation() -> list[tuple[str, str]]:
     ]
 
 
-def _start_items(start: StartFrom) -> tuple[list[tuple[str, str]], list[tuple[str, int]], list[tuple[str, str]]]:
+def _start_items(
+    start: StartFrom,
+) -> tuple[list[tuple[str, str]], list[tuple[str, int]], list[tuple[str, str]]]:
     def priority(path: str) -> tuple[int, str]:
         order = ("run.py", "configs/", "src/", "docs/", "README", "pyproject.toml")
         for rank, prefix in enumerate(order):
@@ -529,9 +529,11 @@ def _plan_rules(plan: dict[str, Any]) -> list[str]:
         if low is not None and high is not None and low > high:
             found.append(f"{where}: min is greater than max")
         magnitude = default.get("ms") if isinstance(default, dict) else default
-        if isinstance(magnitude, (int, float)) and not isinstance(magnitude, bool):
-            if (low is not None and magnitude < low) or (high is not None and magnitude > high):
-                found.append(f"{where}: the default is outside min..max")
+        numeric = isinstance(magnitude, (int, float)) and not isinstance(magnitude, bool)
+        if numeric and (
+            (low is not None and magnitude < low) or (high is not None and magnitude > high)
+        ):
+            found.append(f"{where}: the default is outside min..max")
     names = set(by_name)
     for name in names:
         parts = name.split(".")
@@ -910,7 +912,7 @@ def _pyproject(plan: Plan, names: Names) -> str:
         ('description = "An alhazen experiment"', f"description = {json.dumps(plan.title)}"),
         (f"\n{scaffold_task} = ", f"\n{names.task_name} = "),
         (f"--task {scaffold_task} ", f"--task {names.task_name} "),
-        (f'version = "0.1.0"', f'version = "{PACKAGE_VERSION}"'),
+        ('version = "0.1.0"', f'version = "{PACKAGE_VERSION}"'),
     )
     for old, new in replacements:
         if old not in rendered:
@@ -989,8 +991,9 @@ def _task_part(text: str) -> tuple[dict[str, Any], list[str]]:
         value = parse_json_answer(text)
     except ValueError as error:
         return {}, [f"task_documentation_json: {error}"]
+    allowed = ", ".join(_DOC_TASK_KEYS)
     found = [
-        f"task_documentation_json: unexpected key {key[:40]!r} (allowed: {', '.join(_DOC_TASK_KEYS)})"
+        f"task_documentation_json: unexpected key {key[:40]!r} (allowed: {allowed})"
         for key in value
         if key not in _DOC_TASK_KEYS
     ]
@@ -1002,7 +1005,9 @@ def _task_part(text: str) -> tuple[dict[str, Any], list[str]]:
     return {key: value[key] for key in _DOC_TASK_KEYS if key in value}, found
 
 
-def manifest_metadata(plan: Plan, alhazen_release: str, references: Sequence[str]) -> dict[str, Any]:
+def manifest_metadata(
+    plan: Plan, alhazen_release: str, references: Sequence[str]
+) -> dict[str, Any]:
     """The manifest fields of a generated package (``build_bundle`` adds the
     file list and fills python_min and platforms)."""
     return {
@@ -1018,9 +1023,7 @@ def manifest_metadata(plan: Plan, alhazen_release: str, references: Sequence[str
     }
 
 
-def _provenance(
-    plan: Plan, ctx: AuthoringContext, model: str
-) -> dict[str, Any]:
+def _provenance(plan: Plan, ctx: AuthoringContext, model: str) -> dict[str, Any]:
     disclosed = ctx.disclosure("source")
     start = disclosed["start_from"]
     return {
@@ -1102,16 +1105,54 @@ MAX_TOTAL_BYTES = 2 * 1024 * 1024
 # modules get their own reason.
 _STDLIB_ALLOWED = frozenset(
     {
-        "__future__", "abc", "bisect", "collections", "contextlib", "copy", "dataclasses",
-        "datetime", "enum", "fractions", "functools", "heapq", "itertools", "json", "logging",
-        "math", "numbers", "operator", "pathlib", "random", "re", "statistics", "string",
-        "textwrap", "time", "types", "typing", "warnings",
+        "__future__",
+        "abc",
+        "bisect",
+        "collections",
+        "contextlib",
+        "copy",
+        "dataclasses",
+        "datetime",
+        "enum",
+        "fractions",
+        "functools",
+        "heapq",
+        "itertools",
+        "json",
+        "logging",
+        "math",
+        "numbers",
+        "operator",
+        "pathlib",
+        "random",
+        "re",
+        "statistics",
+        "string",
+        "textwrap",
+        "time",
+        "types",
+        "typing",
+        "warnings",
     }
 )
 _FORBIDDEN_MODULES = {
     **dict.fromkeys(
-        ("socket", "ssl", "urllib", "http", "ftplib", "smtplib", "telnetlib", "xmlrpc",
-         "requests", "httpx", "aiohttp", "websocket", "websockets", "asyncio"),
+        (
+            "socket",
+            "ssl",
+            "urllib",
+            "http",
+            "ftplib",
+            "smtplib",
+            "telnetlib",
+            "xmlrpc",
+            "requests",
+            "httpx",
+            "aiohttp",
+            "websocket",
+            "websockets",
+            "asyncio",
+        ),
         "network access",
     ),
     **dict.fromkeys(("subprocess", "multiprocessing", "pty", "signal"), "starting processes"),
@@ -1132,8 +1173,17 @@ _FORBIDDEN_CALLS = {
     "getattr": None,  # only with a non-literal name; see below
 }
 _WRITE_METHODS = frozenset(
-    {"write_text", "write_bytes", "unlink", "rmdir", "mkdir", "touch", "symlink_to",
-     "hardlink_to", "chmod"}
+    {
+        "write_text",
+        "write_bytes",
+        "unlink",
+        "rmdir",
+        "mkdir",
+        "touch",
+        "symlink_to",
+        "hardlink_to",
+        "chmod",
+    }
 )
 _THIRD_PARTY = frozenset({"numpy", "alhazen"})
 _TEST_THIRD_PARTY = frozenset({"pytest"})
@@ -1163,24 +1213,31 @@ def _safety(path: str, tree: ast.AST) -> list[str]:
                 else:
                     found.append(f"{path}:{line}: {_FORBIDDEN_CALLS[func.id]} ({func.id}())")
             if isinstance(func, ast.Name) and func.id == "open" and not test:
-                mode = node.args[1] if len(node.args) > 1 else next(
-                    (kw.value for kw in node.keywords if kw.arg == "mode"), None
+                mode = (
+                    node.args[1]
+                    if len(node.args) > 1
+                    else next((kw.value for kw in node.keywords if kw.arg == "mode"), None)
                 )
                 if mode is not None and not (
                     isinstance(mode, ast.Constant)
                     and isinstance(mode.value, str)
                     and not set(mode.value) & set("wax+")
                 ):
-                    found.append(f"{path}:{line}: opens a file for writing (alhazen writes all data)")
-            if (
-                isinstance(func, ast.Attribute)
-                and func.attr in _WRITE_METHODS
-                and not test
-            ):
-                found.append(f"{path}:{line}: {func.attr}() writes to disk (alhazen writes all data)")
+                    found.append(
+                        f"{path}:{line}: opens a file for writing (alhazen writes all data)"
+                    )
+            if isinstance(func, ast.Attribute) and func.attr in _WRITE_METHODS and not test:
+                found.append(
+                    f"{path}:{line}: {func.attr}() writes to disk (alhazen writes all data)"
+                )
         elif isinstance(node, ast.Name) and node.id in {"__builtins__", "__import__"}:
             found.append(f"{path}:{line}: {node.id}")
-        elif isinstance(node, ast.Attribute) and node.attr in {"environ", "getenv", "system", "popen"}:
+        elif isinstance(node, ast.Attribute) and node.attr in {
+            "environ",
+            "getenv",
+            "system",
+            "popen",
+        }:
             found.append(f"{path}:{line}: .{node.attr} (environment or shell access)")
     return found
 
@@ -1317,9 +1374,13 @@ def _class_assign(node: ast.ClassDef, name: str) -> ast.expr | None:
             isinstance(t, ast.Name) and t.id == name for t in item.targets
         ):
             return item.value
-        if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
-            if item.target.id == name and item.value is not None:
-                return item.value
+        if (
+            isinstance(item, ast.AnnAssign)
+            and isinstance(item.target, ast.Name)
+            and item.target.id == name
+            and item.value is not None
+        ):
+            return item.value
     return None
 
 
@@ -1333,7 +1394,11 @@ def _declared(task: ast.ClassDef) -> tuple[list[str] | None, list[str] | None]:
         if isinstance(first, (ast.Tuple, ast.List)) and all(
             isinstance(e, ast.Constant) and isinstance(e.value, str) for e in first.elts
         ):
-            events = [e.value for e in first.elts if isinstance(e, ast.Constant)]
+            events = [
+                e.value
+                for e in first.elts
+                if isinstance(e, ast.Constant) and isinstance(e.value, str)
+            ]
     outcome_names: list[str] | None = None
     value = _class_assign(task, "outcomes")
     if isinstance(value, ast.Call) and not value.args:
@@ -1395,7 +1460,7 @@ def _structure(
             found.append(f"{path}: {names.task_class} defines no {required}()")
     events, outcome_names = _declared(task)
     if events is None:
-        found.append(f"{path}: declare events as EventSchema((\"NAME\", ...)) with literal names")
+        found.append(f'{path}: declare events as EventSchema(("NAME", ...)) with literal names')
     if outcome_names is None:
         found.append(f"{path}: declare outcomes as outcomes(NAME=dict(...), ...)")
     return found, params, task
@@ -1433,7 +1498,9 @@ def _same(left: Any, right: Any) -> bool:
     if isinstance(left, dict) and isinstance(right, dict):
         return left.keys() == right.keys() and all(_same(left[k], right[k]) for k in left)
     if isinstance(left, list) and isinstance(right, list):
-        return len(left) == len(right) and all(_same(a, b) for a, b in zip(left, right, strict=True))
+        return len(left) == len(right) and all(
+            _same(a, b) for a, b in zip(left, right, strict=True)
+        )
     return bool(left == right)
 
 
@@ -1479,7 +1546,9 @@ def _unknown_keys(tree: Any, model: type[BaseModel], where: str) -> list[str]:
     return found
 
 
-def _defaults(names: Names, params: ast.ClassDef, tree: dict[str, Any]) -> tuple[list[str], list[str]]:
+def _defaults(
+    names: Names, params: ast.ClassDef, tree: dict[str, Any]
+) -> tuple[list[str], list[str]]:
     """The params model against the params file: every key a field, every
     literal default equal to the file's value, every required field set."""
     found: list[str] = []
@@ -1655,9 +1724,10 @@ def validate_package(
     safety = [line for path, tree in generated.items() for line in _safety(path, tree)]
     checks.append(Check("safety", tuple(safety)))
     own = {
-        path.removeprefix("src/").removesuffix(".py").replace("/", ".").removesuffix(
-            ".__init__"
-        ): tree
+        path.removeprefix("src/")
+        .removesuffix(".py")
+        .replace("/", ".")
+        .removesuffix(".__init__"): tree
         for path, tree in trees.items()
         if path.startswith("src/")
     }
@@ -1675,9 +1745,8 @@ def validate_package(
     else:
         structure, params_node, task_node = _structure(names, task_tree)
     checks.append(Check("structure", tuple(structure)))
-    tree = params_tree(plan)
     if params_node is not None:
-        default_problems, default_notes = _defaults(names, params_node, tree)
+        default_problems, default_notes = _defaults(names, params_node, params_tree(plan))
         checks.append(Check("defaults", tuple(default_problems), tuple(default_notes)))
     else:
         checks.append(Check("defaults", ("the params model was not found",)))
@@ -1692,10 +1761,10 @@ def validate_package(
     resolved: dict[str, Any] | None = None
     if archive is not None and info is not None:
         with tempfile.TemporaryDirectory(prefix="alhazen-ai-doc-") as folder:
-            path = Path(folder) / "package.zip"
-            path.write_bytes(archive)
+            zip_path = Path(folder) / "package.zip"
+            zip_path.write_bytes(archive)
             try:
-                resolved = read_documentation(path, info.manifest)
+                resolved = read_documentation(zip_path, info.manifest)
             except DocumentationError as error:
                 documentation_problems.append(str(error))
         if resolved is not None:
@@ -1752,9 +1821,7 @@ def generate_source(
     if not report.ok:
         messages = prompts.repair_messages(messages, completion.text, report.problems)
         completion = _complete(client, messages, SOURCE_SCHEMA, SOURCE_MAX_TOKENS, on_completion)
-        report, files, archive, info = _source_attempt(
-            plan, completion.text, ctx, completion.model
-        )
+        report, files, archive, info = _source_attempt(plan, completion.text, ctx, completion.model)
     if not report.ok or archive is None or info is None:
         raise SourceInvalid(
             "the generated source failed validation after one repair",
