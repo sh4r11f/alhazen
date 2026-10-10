@@ -595,8 +595,12 @@ a:hover { color: var(--accent-ink); text-decoration-thickness: 2px; }
 .digest .btn { margin-left: -12px; }
 .install .form { gap: 12px; }
 .docs-provenance { color: var(--muted); margin: 0 0 16px; }
-.docs-tasks { display: grid; grid-template-columns: minmax(170px, 220px) minmax(0, 1fr); gap: 40px; align-items: start; }
-.task-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; position: sticky; top: 92px; }
+/* The task index is a row above the guide, not a column beside it: beside the
+ * release card a side column left the guide 448 px at 1440 px, under the
+ * documentation's narrow-view breakpoint, so its figures scrolled sideways on
+ * a desktop (import round). The guide now has the reading column's width. */
+.docs-tasks { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; align-items: start; }
+.task-list { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 6px; }
 .task-link {
   display: flex; align-items: center; min-height: 40px; padding: 0 12px; border-radius: var(--radius-small);
   color: var(--muted); font-weight: 500; text-decoration: none;

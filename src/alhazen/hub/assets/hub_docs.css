@@ -169,7 +169,9 @@ button.hd-ref-param:hover { border-color: var(--hd-accent); }
 .hd-tl-hatch-line { stroke: var(--hd-faint); stroke-width: 1.4; }
 .hd-tl-break { fill: none; stroke: var(--hd-paper); stroke-width: 3.5; }
 .hd-tl-gapmark { fill: none; stroke: var(--hd-faint); stroke-width: 1.5; }
-.hd-tl-instant { stroke: var(--hd-ink); stroke-width: 2; }
+/* The instant's tick only: the class also names its phase group, and a stroke
+ * on the group outlined that phase's label and timing text too. */
+line.hd-tl-instant { stroke: var(--hd-ink); stroke-width: 2; }
 .hd-tl-boundary { stroke: var(--hd-faint); stroke-dasharray: 2 4; }
 .hd-tl-arrowhead { fill: var(--hd-muted); }
 .hd-tl-endarrow { stroke: var(--hd-muted); stroke-width: 1.25; }
@@ -256,13 +258,19 @@ button.hd-ref-param:hover { border-color: var(--hd-accent); }
 .hd-missing { border: 1px dashed var(--hd-rule); border-radius: 8px; padding: 1.25rem; max-width: 40rem; }
 .hd-missing p { color: var(--hd-muted); margin: 0.5rem 0 0; }
 
-/* Narrow views: stacked tables, timeline at its own size (scrolls sideways,
- * with the phase list below carrying the same content). */
+/* Figures keep their authored size (and scroll sideways, the phase list below
+ * carrying the same content) only on a phone-sized view: from 600 px they
+ * scale to their column, so a desktop never scrolls a figure sideways
+ * (import round 2026-10-09; at 390 px labels stay 12 px+, f6733be). */
+@container (max-width: 600px) {
+  .hd-figure-canvas--wide .hd-svg { max-width: none; }
+  .hd-scroll-note { display: block; }
+}
+
+/* Narrow views: stacked tables and phase text. */
 @container (max-width: 640px) {
   .hd-doc { padding: 1rem 0.85rem 2.5rem; }
   .hd-h1 { font-size: 1.45rem; }
-  .hd-figure-canvas--wide .hd-svg { max-width: none; }
-  .hd-scroll-note { display: block; }
   .hd-phase-text { grid-template-columns: minmax(0, 1fr); gap: 0.75rem; }
   .hd-params thead, .hd-outcomes thead, .hd-events thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
   .hd-params tr, .hd-outcomes tr, .hd-events tr { display: block; border-bottom: 1px solid var(--hd-rule); padding: 0.6rem 0; }
