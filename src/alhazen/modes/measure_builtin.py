@@ -1141,6 +1141,17 @@ def rig_devices(rig: RigConfig, *, windowed: bool = False) -> Devices:
         from alhazen.devices.reward import make_reward
 
         assert rig.devices.reward is not None
+        tracker_cfg = rig.devices.eyetracker
+        if (
+            rig.devices.reward.backend == "datapixx"
+            and tracker_cfg is not None
+            and tracker_cfg.backend == "viewpixx"
+        ):
+            # The TRACKPixx3 first, as the session builder does: both are on
+            # one DATAPixx3, pypixxlib's TRACKPixx3() opens it itself, and a
+            # tracker connected after the gate would have to open it again
+            # (it refuses). Held for the rest of the run like any device.
+            devices.get("tracker")
         dispenser = make_reward(rig.devices.reward)
         stack.callback(dispenser.close)
         return dispenser

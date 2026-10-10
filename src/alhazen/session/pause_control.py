@@ -48,6 +48,7 @@ from alhazen.core.clock import Clock
 from alhazen.core.commands import Command, CommandSource
 from alhazen.devices.eyetracker.procedures import Advance, ValidationResult
 from alhazen.display.backend import DisplayBackend
+from alhazen.errors import RewardUncertainError
 from alhazen.live_monitor.runtime import LiveMonitorController
 from alhazen.session.eyetracker import EyeTrackerMonitor
 from alhazen.session.pause import PauseMenu, build_pause_menu
@@ -717,7 +718,10 @@ class PauseController:
             self._manual_reward()
         except Exception as e:
             log.exception("manual reward failed while paused")
-            self._emit_session_event("REWARD_FAILED", {"manual": True, "error": str(e)})
+            self._emit_session_event(
+                "REWARD_FAILED",
+                {"manual": True, "error": str(e), "uncertain": isinstance(e, RewardUncertainError)},
+            )
             self._publish("paused", "Manual reward failed — check the pump.")
             return
         self._emit_session_event("REWARD", {"manual": True, **self._manual_reward_payload})

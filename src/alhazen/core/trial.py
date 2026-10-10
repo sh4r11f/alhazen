@@ -420,6 +420,9 @@ class RewardCompletion:
     request: RewardRequest
     error: str | None = None
     cancelled_by: str | None = None
+    # A failure whose outcome on the line is unknown (RewardUncertainError):
+    # the train may have reached the pump in part or whole.
+    uncertain: bool = False
 
 
 # ---------------------------------------------------------------------------

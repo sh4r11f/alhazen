@@ -831,6 +831,29 @@ def build_session(
         set_calibration_rng = getattr(tracker, "set_calibration_rng", None)
         if set_calibration_rng is not None:
             set_calibration_rng(named_stream(resolved_seed, "calibration_target"))
+        if tracker is not None:
+            # Connect at build time, alongside opening the display and measuring
+            # the refresh rate: a rig fault must surface before the snapshot is
+            # written and before a subject is sitting in the chair.
+            #
+            # And BEFORE the reward line and sync lines are built: a
+            # DATAPixx3 reward gate or sync line opens the same DATAPixx3 as
+            # a TRACKPixx3, and pypixxlib's TRACKPixx3() calls DPxOpen itself.
+            # Tracker first, that is the one open, which the gate then joins
+            # (devices/vpixx.py); the other way round it would open the
+            # device a second time, which the tracker refuses.
+            tracker.connect()
+            # Registered once connect() has returned, not before: the protocol
+            # does not promise shutdown() is safe on a tracker that never
+            # connected, and a tracker handed in may be any implementation. A
+            # connect() that fails is the backend's own to clean up.
+            # configure() is covered: the TRACKPixx3 starts its recording and
+            # reader thread there, and shutdown() stops both. None: a session
+            # that never began has no recording to retrieve (the protocol's
+            # "no recording wanted" call, as check-rig makes).
+            on_failure.callback(
+                _release_on_abort, "shut down the eye tracker", tracker.shutdown, None
+            )
         if reward is None and devices.reward is not None and opens_reward_line(task_params):
             reward = make_reward(devices.reward)
         if reward is not None:
@@ -876,21 +899,7 @@ def build_session(
             response = SubjectKeyboard(window=display.window)
         eyetracker: EyeTrackerMonitor | None = None
         if tracker is not None:
-            # Connect at build time, alongside opening the display and measuring
-            # the refresh rate: a rig fault must surface before the snapshot is
-            # written and before a subject is sitting in the chair.
-            tracker.connect()
-            # Registered once connect() has returned, not before: the protocol
-            # does not promise shutdown() is safe on a tracker that never
-            # connected, and a tracker handed in may be any implementation. A
-            # connect() that fails is the backend's own to clean up.
-            # configure() is covered: the TRACKPixx3 starts its recording and
-            # reader thread there, and shutdown() stops both. None: a session
-            # that never began has no recording to retrieve (the protocol's
-            # "no recording wanted" call, as check-rig makes).
-            on_failure.callback(
-                _release_on_abort, "shut down the eye tracker", tracker.shutdown, None
-            )
+            # Connected above, before the reward and sync lines.
             tracker.configure(screen, clock)
             # Calibration is deliberately NOT automatic. It blocks on an
             # experimenter at the rig, so it stays an explicit action — the

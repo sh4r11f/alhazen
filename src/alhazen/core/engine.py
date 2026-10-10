@@ -820,15 +820,23 @@ class TrialEngine:
                     ctx.record.get("n_mid_trial_reward_failures", 0) + 1
                 )
                 # False only if nothing else paid: a drop that did arrive
-                # earlier in the trial still makes it a rewarded trial.
-                ctx.record.setdefault("rewarded", False)
+                # earlier in the trial still makes it a rewarded trial. An
+                # uncertain failure may have reached the pump, so it is never
+                # recorded as nothing delivered: `rewarded` is left unset.
+                if not done.uncertain:
+                    ctx.record.setdefault("rewarded", False)
                 log.error(
-                    "mid-trial reward %r failed on trial %d: %s",
+                    "mid-trial reward %r failed on trial %d%s: %s",
                     done.request.reason,
                     ctx.trial_index,
+                    " (UNCERTAIN: it may have reached the pump)" if done.uncertain else "",
                     done.error,
                 )
-                self._emit(ctx, "REWARD_FAILED", {**done.request.payload(), "error": done.error})
+                self._emit(
+                    ctx,
+                    "REWARD_FAILED",
+                    {**done.request.payload(), "error": done.error, "uncertain": done.uncertain},
+                )
 
     def settle_rewards(self, ctx: TrialContext) -> None:
         """Wait for every mid-trial delivery to finish, and report them all.

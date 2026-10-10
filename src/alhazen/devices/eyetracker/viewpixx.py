@@ -2174,7 +2174,10 @@ class ViewPixxTracker:
         fault = dpx_fault(self._libdpx)
         if fault is None:
             return None
-        return f"did not answer a gaze read ({fault}): the USB link or the DATAPixx3 stopped responding"
+        return (
+            f"did not answer a gaze read ({fault}): the USB link or the DATAPixx3 stopped "
+            f"responding"
+        )
 
     def simulate_dropout(self) -> str:
         """Optional capability (protocol.py), for ``alhazen check-rig`` only:

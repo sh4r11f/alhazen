@@ -20,7 +20,16 @@ from typing import Any, Protocol, runtime_checkable
 
 from alhazen.config.models import SyncHwConfig, datapixx_sync_bit
 from alhazen.core.events import Event
-from alhazen.devices.vpixx import HOST_DEVICE, dout_bits, dpx_fault, dpx_link, load_libdpx
+from alhazen.devices.vpixx import (
+    HOST_DEVICE,
+    PYPIXXLIB_HELP,
+    dout_bits,
+    dpx_fault,
+    dpx_link,
+    load_libdpx,
+    missing_calls,
+    pixel_mode_b,
+)
 from alhazen.errors import SyncError
 
 log = logging.getLogger(__name__)
@@ -156,6 +165,25 @@ class NidaqSync:
         self._tasks.clear()
 
 
+# Every libdpx call DatapixxSync makes, checked before the device is touched.
+# DPxIsDoutPixelModeB is optional (devices/vpixx.py pixel_mode_b).
+SYNC_CALLS = (
+    "DPxOpen",
+    "DPxClose",
+    "DPxSelectDevice",
+    "DPxGetError",
+    "DPxGetErrorString",
+    "DPxClearError",
+    "DPxUpdateRegCache",
+    "DPxGetFirmwareRev",
+    "DPxIsDoutPixelMode",
+    "DPxIsDoutPixelModeGB",
+    "DPxIsDoutButtonSchedules",
+    "DPxIsDoutBacklightPulse",
+    "DPxSetDoutValue",
+)
+
+
 class DatapixxSync:
     """Sync lines on a DATAPixx3's digital outputs, pulsed on demand.
 
@@ -168,10 +196,13 @@ class DatapixxSync:
 
     Shared hardware and its limits, said rather than hidden:
 
-    - Any other output mode on a sync bit is refused at setup, before the
-      lines are touched: a Pixel Mode (the line would carry the stimulus),
-      DOUT button schedules on DOUT 0-15, the backlight pulse on DOUT 15.
-      alhazen never turns any of them off.
+    - Any other output mode on a sync bit is refused at setup, before any
+      digital-output write: a Pixel Mode (the line would carry the
+      stimulus), a Pixel Mode B this pypixxlib cannot read on firmware that
+      has it (for lines on DOUT 16-23), DOUT button schedules on DOUT 0-15,
+      the backlight pulse on DOUT 15. alhazen never turns any of them off.
+      Reading them takes one register-cache round trip (DPxUpdateRegCache
+      writes libdpx's cache back, then reads), with no DOUT value written.
     - Not with a DATAPixx3 reward gate: its DOUT schedule writes DOUT 0-15
       as a whole while it plays and VPixx does not document whether DOUT
       16-23 stay independent of it, so the rig config refuses the pair and
@@ -194,6 +225,12 @@ class DatapixxSync:
                 "pypixxlib is not installed — it ships with VPixx's Software Tools installer, "
                 "not PyPI (docs/eye-tracker.md); or use sync backend 'simulated' / 'none'"
             ) from e
+        missing = missing_calls(libdpx, SYNC_CALLS)
+        if missing:
+            raise SyncError(
+                f"sync lines on the {HOST_DEVICE}: this pypixxlib lacks {', '.join(missing)}. "
+                f"Nothing was opened; {PYPIXXLIB_HELP}"
+            )
         self._lib = libdpx
         self._link = dpx_link(libdpx)
         self._pulse_s = cfg.pulse_ms / 1000.0
@@ -243,11 +280,17 @@ class DatapixxSync:
         something more important (NidaqSync.close)."""
         if self._closed:
             return
-        self._closed = True
         if not self._link.lock.acquire(timeout=_LINK_TIMEOUT_S):
-            log.error("sync: the %s did not answer; its sync lines were not zeroed", HOST_DEVICE)
+            # Still open and still a holder: close() may be called again.
+            # Its holder entry is never removed without the lock.
+            log.error(
+                "sync: the %s did not answer; its sync lines were not zeroed and it is still "
+                "open (close() may be called again)",
+                HOST_DEVICE,
+            )
             return
         try:
+            self._closed = True
             try:
                 self._write(0)  # selects the DATAPixx3 first
             except Exception as e:  # pypixxlib's exception type cannot be named off the rig
@@ -290,16 +333,28 @@ class DatapixxSync:
     def _preflight(self) -> None:
         lib = self._lib
         self._select()
-        lib.DPxUpdateRegCache()
-        pixel = bool(lib.DPxIsDoutPixelMode())
-        pixel_gb = bool(lib.DPxIsDoutPixelModeGB())
-        read_b = getattr(lib, "DPxIsDoutPixelModeB", None)
-        pixel_b = bool(read_b()) if read_b is not None else False
-        buttons = bool(lib.DPxIsDoutButtonSchedules())
-        backlight = bool(lib.DPxIsDoutBacklightPulse())
+        try:
+            lib.DPxUpdateRegCache()
+            pixel = bool(lib.DPxIsDoutPixelMode())
+            pixel_gb = bool(lib.DPxIsDoutPixelModeGB())
+            pixel_b, pixel_b_basis = pixel_mode_b(lib)
+            buttons = bool(lib.DPxIsDoutButtonSchedules())
+            backlight = bool(lib.DPxIsDoutBacklightPulse())
+        except (AttributeError, TypeError) as e:
+            raise SyncError(
+                f"sync lines on the {HOST_DEVICE}: this pypixxlib lacks or rejects a call "
+                f"alhazen needs ({type(e).__name__}: {e}); {PYPIXXLIB_HELP}"
+            ) from e
         fault = dpx_fault(lib)
         if fault is not None:
             raise SyncError(f"sync lines on the {HOST_DEVICE}: it reported {fault}")
+        upper = self._mask & 0xFF0000
+        if pixel_b is None and upper:
+            raise SyncError(
+                f"sync lines on DOUT {dout_bits(upper)} refused: whether Pixel Mode B drives "
+                f"them from the screen cannot be read ({pixel_b_basis}). Not assumed off; "
+                f"{PYPIXXLIB_HELP}, or move the sync lines to DOUT 0-15"
+            )
         driven = 0
         if pixel:
             driven |= 0xFFFFFF

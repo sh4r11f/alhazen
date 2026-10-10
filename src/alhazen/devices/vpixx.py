@@ -82,6 +82,43 @@ def dpx_fault(libdpx: Any) -> str | None:
     return f"{error} ({detail})"
 
 
+# VPixx's Digital Out documentation: Pixel Mode B (DOUT 16-23 follow the top-
+# left pixel's blue byte) "is only available on DATAPixx3 with firmware
+# revision 27 and higher". Below it, the mode cannot be on.
+PIXEL_MODE_B_FIRMWARE = 27
+
+PYPIXXLIB_HELP = (
+    "install the pypixxlib that VPixx's Software Tools installer ships for this DATAPixx3's "
+    "firmware (docs/eye-tracker.md says how)"
+)
+
+
+def missing_calls(lib: Any, names: tuple[str, ...]) -> list[str]:
+    """The libdpx calls in ``names`` this pypixxlib does not have."""
+    return [name for name in names if not callable(getattr(lib, name, None))]
+
+
+def pixel_mode_b(lib: Any) -> tuple[bool | None, str]:
+    """Whether Pixel Mode B (DOUT 16-23 from the screen) is on, and how that
+    is known: read from the device, or impossible on its firmware; None when
+    neither can be said (a pypixxlib without DPxIsDoutPixelModeB on firmware
+    that has the mode). Never assumed off because the call is missing. The
+    caller holds the link's lock with the DATAPixx3 selected."""
+    read = getattr(lib, "DPxIsDoutPixelModeB", None)
+    if callable(read):
+        return bool(read()), "read from the device"
+    firmware = int(lib.DPxGetFirmwareRev())
+    if firmware < PIXEL_MODE_B_FIRMWARE:
+        return False, (
+            f"impossible: firmware revision {firmware} < {PIXEL_MODE_B_FIRMWARE}, the first "
+            f"with Pixel Mode B (VPixx Digital Out documentation)"
+        )
+    return None, (
+        f"unknown: this pypixxlib has no DPxIsDoutPixelModeB and the firmware revision is "
+        f"{firmware}, which has the mode"
+    )
+
+
 def load_libdpx() -> Any:
     """pypixxlib's libdpx wrapper, imported only when a VPixx device is used.
 

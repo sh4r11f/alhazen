@@ -48,6 +48,13 @@ class RewardError(AlhazenError):
     produces unusable behavior."""
 
 
+class RewardUncertainError(RewardError):
+    """A reward delivery whose outcome on the line is unknown: a train was
+    started (or the gate could not be confirmed at rest) and then something
+    failed, so some, all or none of it may have reached the pump. Never
+    retried; recorded as uncertain, never as "nothing delivered"."""
+
+
 class RewardRequestError(AlhazenError):
     """A phase asked for a mid-trial reward (``ctx.request_reward``) that this
     session cannot give: the task never declared ``mid_trial_reward = True``,
