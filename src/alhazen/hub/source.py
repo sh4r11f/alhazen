@@ -108,8 +108,43 @@ def _alhazen_floor(dependencies: Any) -> str | None:
     return None
 
 
-def suggest_metadata(root: Path) -> dict[str, Any]:
-    """A starting point from pyproject.toml, read as text (never imported)."""
+DOCUMENTATION_DESCRIPTOR = "docs/experiment.json"
+# A params file that declares a monkey session pays the rig's reward line.
+_MONKEY_PARAMS = re.compile(r"^subject_kind:[ \t]*['\"]?monkey['\"]?[ \t]*(?:#.*)?$", re.MULTILINE)
+
+
+def _declares_reward(root: Path, files: list[str] | None) -> bool:
+    """Whether any params file under ``configs/`` declares a monkey session
+    (``subject_kind: monkey``, alhazen 2.12), read as text, never imported.
+
+    A suggestion for the operator to review, like the rest of the metadata:
+    a human-only experiment keeps ``reward: false``. Only the files that
+    would be packed are read when ``files`` is given."""
+    if files is not None:
+        candidates = [root / f for f in files if f.startswith("configs/")]
+    else:
+        configs = root / "configs"
+        candidates = list(configs.rglob("*")) if configs.is_dir() else []
+    for path in candidates:
+        if path.suffix not in (".yaml", ".yml") or not path.is_file() or path.is_symlink():
+            continue
+        if "legacy" in path.relative_to(root).parts:
+            continue
+        try:
+            if _MONKEY_PARAMS.search(path.read_text(encoding="utf-8")):
+                return True
+        except (OSError, UnicodeDecodeError):
+            continue
+    return False
+
+
+def suggest_metadata(root: Path, files: list[str] | None = None) -> dict[str, Any]:
+    """A starting point from pyproject.toml, read as text (never imported).
+
+    ``files`` is the proposed file list when known: the documentation
+    descriptor is suggested only when it would be packed (an untracked
+    ``docs/experiment.json`` is not), and the reward guess reads only
+    packed params files."""
     project: dict[str, Any] = {}
     try:
         document = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
@@ -121,19 +156,27 @@ def suggest_metadata(root: Path) -> dict[str, Any]:
     licence = project.get("license")
     if isinstance(licence, dict):
         licence = licence.get("text") or ""
-    return {
+    suggestion: dict[str, Any] = {
         "name": slug,
         "version": str(project.get("version") or "0.1.0"),
         "title": naming.title,
         "description": str(project.get("description") or ""),
         "license": licence if isinstance(licence, str) else "",
         "citations": [],
-        "hardware": {"display": True, "eye_tracker": False, "reward": False},
+        "hardware": {
+            "display": True,
+            "eye_tracker": False,
+            "reward": _declares_reward(root, files),
+        },
         "python_min": "3.10",
         "alhazen_min": _alhazen_floor(project.get("dependencies")) or "2.13.0",
         "platforms": list(DEFAULT_PLATFORMS),
         "entrypoint": "run.py",
     }
+    descriptor = root / DOCUMENTATION_DESCRIPTOR
+    if (DOCUMENTATION_DESCRIPTOR in files) if files is not None else descriptor.is_file():
+        suggestion["documentation"] = DOCUMENTATION_DESCRIPTOR
+    return suggestion
 
 
 def preview(root: Path, packages: PackageBuilder) -> dict[str, Any]:
@@ -150,7 +193,7 @@ def preview(root: Path, packages: PackageBuilder) -> dict[str, Any]:
         "total_bytes": sum(f["size"] for f in files),
         "excluded": excluded,
         "excluded_count": excluded_count,
-        "metadata": suggest_metadata(root),
+        "metadata": suggest_metadata(root, [str(f["path"]) for f in files]),
     }
 
 

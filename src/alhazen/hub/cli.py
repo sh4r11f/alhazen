@@ -60,6 +60,14 @@ def add_parser(sub: Any) -> None:
     pack_cmd.add_argument("--output", required=True, help="the .zip to write")
     pack_cmd.add_argument("--license", default=None, help="the package's licence")
     pack_cmd.add_argument("--yes", action="store_true", help="do not ask to confirm the files")
+    pack_cmd.add_argument(
+        "--hardware",
+        default=None,
+        help=(
+            "what the experiment needs, comma-separated from display, eye_tracker, reward "
+            "(replaces the suggestion; 'none' for nothing)"
+        ),
+    )
     push = commands.add_parser("push", help="upload a package as a new private release")
     push.add_argument("bundle", help="a .zip built by `alhazen hub pack`")
     push.add_argument("--experiment", required=True, help="the hub experiment's id")
@@ -197,14 +205,36 @@ def _status(directory: Path, state: RigState) -> int:
     return 0
 
 
+HARDWARE_CHOICES = ("display", "eye_tracker", "reward")
+
+
+def parse_hardware(text: str) -> dict[str, bool]:
+    """``--hardware eye_tracker,reward`` as the manifest's hardware object."""
+    chosen = {part.strip() for part in text.split(",") if part.strip()}
+    if chosen == {"none"}:
+        chosen = set()
+    unknown = sorted(chosen - set(HARDWARE_CHOICES))
+    if unknown:
+        raise ValueError(
+            f"Unknown hardware {', '.join(unknown)}; choose from {', '.join(HARDWARE_CHOICES)}"
+        )
+    return {key: key in chosen for key in HARDWARE_CHOICES}
+
+
 def _pack(args: argparse.Namespace, directory: Path) -> int:
     packages = importlib.import_module("alhazen.hub.packages")
     root = Path(args.project).expanduser().resolve()
     files = packages.suggest_files(root)
-    metadata = suggest_metadata(root)
+    metadata = suggest_metadata(root, files)
     if args.license:
         metadata["license"] = args.license
+    if args.hardware is not None:
+        metadata["hardware"] = parse_hardware(args.hardware)
     print(f"{metadata['name']} {metadata['version']}: {len(files)} files")
+    needs = [k for k, v in metadata["hardware"].items() if v] or ["nothing"]
+    print(f"  hardware: {', '.join(needs)}")
+    if metadata.get("documentation"):
+        print(f"  documentation: {metadata['documentation']}")
     for name in files:
         print(f"  {name}")
     if not metadata.get("license"):
