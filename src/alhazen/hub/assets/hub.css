@@ -986,6 +986,8 @@ a:hover { color: var(--accent-ink); text-decoration-thickness: 2px; }
 .ix-rail .sheet-block .btn { justify-self: stretch; }
 .screen-create-plan .crumbs { margin-bottom: 18px; }
 /* AI authoring states (ai-authoring contract): progress, key, report, drafts. */
+.ix-phase-open { font-family: inherit; color: var(--muted); }
+.ix-rail dd.mono { overflow-wrap: anywhere; }
 .ix-progress { display: flex; gap: 10px; align-items: center; margin: 0 0 18px; color: var(--muted); }
 .ix-key { display: grid; gap: 12px; }
 .ix-key .inline-form .field { flex: 1 1 260px; }

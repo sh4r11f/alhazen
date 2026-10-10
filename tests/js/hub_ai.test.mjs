@@ -357,6 +357,7 @@ test('generation_invalid: the validator report with the failed check, and Genera
   await p.tick(2000);
   await p.tick(2000);
   assert.match(p.text(), /The generated output failed validation/);
+  assert.match(p.main.querySelector('aside').textContent, /StatusSource failed/);
   assert.match(p.text(), /1 check passed, 1 failed/);
   assert.match(p.text(), /Python syntaxFailed/);
   assert.match(p.text(), /line 3: invalid syntax/);

@@ -2560,7 +2560,7 @@ const HubApp = (() => {
         const share = Math.max(8, Math.round((weight(p) / total) * 100));
         bar.appendChild(h('li', {class: 'ix-phase ix-phase-' + (i % 4) + ' ix-w' + Math.min(100, Math.round(share / 4) * 4)},
           h('span', {class: 'ix-phase-name'}, p.label),
-          h('span', {class: 'ix-phase-time'}, p.time),
+          h('span', {class: 'ix-phase-time' + (p.ms === null ? ' ix-phase-open' : '')}, p.time),
           h('span', {class: 'ix-phase-note'}, p.note)));
       });
       return h('div', {class: 'ix-timeline-wrap'}, bar);
@@ -2741,7 +2741,8 @@ const HubApp = (() => {
       const title = view ? view.title : 'Draft';
       const lede = view ? view.summary : '';
       const word = stage === 'planning' ? 'Writing the plan' : stage === 'generating' ? 'Writing the source'
-        : stage === 'plan-failed' ? (pj.cancelled ? 'Cancelled' : 'Plan failed') : C.aiDraftWord(status || stage);
+        : stage === 'plan-failed' ? (pj.cancelled ? 'Cancelled' : 'Plan failed')
+          : stage === 'planned' && sj && (sj.failed || sj.cancelled) ? (sj.cancelled ? 'Cancelled' : 'Source failed') : C.aiDraftWord(status || stage);
       const chips = [h('span', {class: 'chip chip-private'}, 'Private draft')];
       if (accepted) chips.push(h('span', {class: 'chip chip-public'}, 'Saved as a version'));
 
@@ -2760,14 +2761,16 @@ const HubApp = (() => {
       /* rail */
       const live = h('div', {class: 'sheet-block', 'data-ai-live': ''});
       const lamp = ['planning', 'generating'].includes(stage) ? 'busy'
-        : (['accepted', 'generated', 'planned'].includes(stage) ? 'ok' : (stage === 'plan-failed' ? 'err' : 'idle'));
+        : stage === 'plan-failed' || (stage === 'planned' && sj && sj.failed) ? 'err'
+          : (['accepted', 'generated', 'planned'].includes(stage) ? 'ok' : 'idle');
       const startFrom = d.start_experiment_id ? 'Fork of a listing' : 'Blank experiment';
       const disclosed = C.aiDisclosed((sourceJob && sourceJob.disclosed) || (planJob && planJob.disclosed));
       const rail = h('aside', {class: 'sheet ix-rail', 'aria-label': 'Draft'},
-        h('h2', {class: 'sheet-title'}, h('span', null, 'Draft'), h('span', {class: 'sheet-version'}, view ? view.slug : '')),
+        h('h2', {class: 'sheet-title'}, 'Draft'),
         spec([
           ['Status', railState(lamp, word)],
           ['Goes to', 'My experiments, as a private draft'],
+          ['Name', view ? view.slug : '', {mono: true}],
           ['Start', startFrom],
           ['Provider', providerId ? providerName(providerId) + (modelName ? ' \u00b7 ' + modelName : '') + ', your key' : ''],
           ['Sent', disclosed],
