@@ -559,6 +559,15 @@ class HubAdapter:
             "base_url": record.get("base_url"),
             "intact": record.get("intact"),
             "error": record.get("error"),
+            # The experiment's one data folder for every release (decision 2
+            # of the import round): what registration linked, and the
+            # conflict every launch refuses with until it is resolved.
+            "shared_data": (
+                {"links": (record.get("shared_data") or {}).get("links", [])}
+                if record.get("shared_data")
+                else None
+            ),
+            "shared_data_error": record.get("shared_data_error"),
         }
 
     def projects(self, args: dict[str, str], body: dict[str, Any]) -> tuple[int, Any]:
@@ -660,6 +669,16 @@ class HubAdapter:
         except ValueError as exc:
             self.installs.update(sha256, error={"code": "registration_failed", "message": str(exc)})
             raise InstallError(400, "registration_failed", str(exc)) from exc
+        # The release's data folders lead to the experiment's one shared data
+        # folder from the start (alhazen.hub.shared_data). A conflict (an old
+        # release's own data and the shared folder both hold data) does not
+        # undo the registration: it is recorded, and every launch refuses
+        # with the same message until it is resolved.
+        try:
+            shared = self.workspace.share_hub_data(self.workspace.project(described["id"]))
+            data = {"shared_data": shared, "shared_data_error": None}
+        except ValueError as exc:
+            data = {"shared_data": None, "shared_data_error": str(exc)}
         return self.installs.update(
             sha256,
             status="registered",
@@ -667,6 +686,7 @@ class HubAdapter:
             python=python,
             intact=True,
             error=None,
+            **data,
         )
 
     # -- source packages --------------------------------------------------------------------------

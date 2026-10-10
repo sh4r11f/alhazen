@@ -79,10 +79,15 @@ MAX_DOCUMENTATION_BYTES = 4 * 1024 * 1024
 DOCUMENTATION_SUFFIX = ".json"
 PLATFORMS = ("darwin", "linux", "win32")
 HARDWARE_KEYS = ("display", "eye_tracker", "reward")
-# Oldest values a manifest may declare: the package format first ships in
-# alhazen 2.13.0, which itself needs Python 3.10.
+# Oldest values a manifest may declare. ``alhazen_min`` is the experiment's
+# own runtime floor, checked against the EXPERIMENT's interpreter at install
+# (compatibility_problems); the package format itself is read by the rig's
+# alhazen, never the experiment's, so it asks nothing of that floor. 2.12.0
+# is the oldest an imported experiment pins (attention-clamp; import round
+# 2026-10-09): the release that added subject_kind, which the reward
+# suggestion reads. Python 3.10 is what 2.12 itself needs.
 OLDEST_PYTHON = (3, 10)
-OLDEST_ALHAZEN = (2, 13, 0)
+OLDEST_ALHAZEN = (2, 12, 0)
 
 _CHUNK = 1024 * 1024
 _MAX_PATH_CHARS = 1024
@@ -371,7 +376,7 @@ def _validate_manifest(value: object, *, max_files: int, max_expanded_bytes: int
     if not _SEMVER.fullmatch(alhazen_min) or _release(alhazen_min) < OLDEST_ALHAZEN:
         raise PackageError(
             f"{_where('alhazen_min')} {_shown(alhazen_min)} must be MAJOR.MINOR.PATCH, no "
-            f"older than {'.'.join(map(str, OLDEST_ALHAZEN))} (the first with packages)"
+            f"older than {'.'.join(map(str, OLDEST_ALHAZEN))} (the oldest release the hub installs)"
         )
 
     platforms = value["platforms"]
@@ -1674,6 +1679,10 @@ _REFUSED_SUFFIXES = {
 _ENV_TEMPLATES = frozenset({".env.example", ".env.sample", ".env.template"})
 _SECRET_WORD = re.compile(r"(^|[._-])(secrets?|credentials?|tokens?)([._-]|$)")
 _RIG_SUFFIXES = (".yaml", ".yml", ".json")
+_EXPERIMENT_RIG_SUFFIXES = (".yaml", ".yml")
+# Beside a rig file: a measured gamma (config/gamma.py) and a reward
+# calibration (config/reward_calibration.py); measurements, not rigs.
+_MEASURED_RIG_SUFFIXES = ("_gamma.yaml", "_gamma.yml", ".reward.yaml", ".reward.yml")
 # Not sensitive, just not source: left out of suggestions, allowed if chosen.
 _NOISE_FOLDERS = frozenset(
     {
@@ -1712,7 +1721,21 @@ def _refusal(path: str) -> str | None:
     if _SUBJECT.fullmatch(name):
         return "a subject's data file"
     if name.startswith("rig-") and name.endswith(_RIG_SUFFIXES):
-        return "a rig's own configuration or calibration (each lab uses its own rig)"
+        # The experiment's own rig files (configs/rig-<name>.yaml, usually
+        # `extends:` a shared rig with the design's sync lines, photodiode
+        # event and calibration limits) are protocol and ship, so an
+        # installed `--rig lab` means what it means in the checkout. What a
+        # rig MEASURED stays local: gamma and reward calibrations kept
+        # beside the rig, JSON measurement reports, and any rig file outside
+        # configs/ (a copied run record).
+        shipped = (
+            parts[0] == "configs"
+            and "measurements" not in parts[:-1]
+            and name.endswith(_EXPERIMENT_RIG_SUFFIXES)
+            and not name.endswith(_MEASURED_RIG_SUFFIXES)
+        )
+        if not shipped:
+            return "a rig's measured calibration or a copied rig record (measurements stay local)"
     if name.startswith(".alhazen"):
         return "local alhazen state"
     if name not in _ENV_TEMPLATES and (

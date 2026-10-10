@@ -62,7 +62,7 @@ returns is computed over exactly the bytes it checked.
 | `description` | text, up to 20,000 characters, may be empty; newlines and tabs allowed |
 | `entrypoint` | `"run.py"`, which must be a declared file |
 | `python_min` | `"3.N"`, at least `"3.10"` |
-| `alhazen_min` | `MAJOR.MINOR.PATCH`, at least `"2.13.0"` |
+| `alhazen_min` | `MAJOR.MINOR.PATCH`, at least `"2.12.0"`: the experiment's own runtime floor, checked against the experiment's interpreter at install. The package format is read by the rig's alhazen, so it needs nothing newer (import round 2026-10-09; 2.12.0 is the oldest imported experiment's pin and added `subject_kind`). |
 | `platforms` | non-empty list, no repeats, from `linux`, `darwin`, `win32` |
 | `hardware` | exactly `{display, eye_tracker, reward}`, each `true`/`false` (a declaration, not a check) |
 | `license` | text, 1 to 200 characters |
@@ -171,7 +171,7 @@ problems = compatibility_problems(
 - **`build_bundle(source, output, metadata, files)`**: packages exactly
   `files`. `metadata` is the manifest minus `schema_version` and `files`;
   `entrypoint`, `python_min`, `alhazen_min`, `platforms` and `citations`
-  default to `run.py`, `3.10`, `2.13.0`, all three platforms and none. Each
+  default to `run.py`, `3.10`, `2.12.0`, all three platforms and none. Each
   file is opened without following links (on POSIX every folder on the way is
   opened by descriptor too), read once to hash and once to write, and refused
   if it changes in between. The archive is written beside `output`, verified
@@ -252,7 +252,7 @@ claiming more.
 | Bytecode | `__pycache__`, `*.pyc`, `*.pyo` |
 | Credentials and keys | `.env`, `.env.*`, `*.env` (not `.env.example`/`.sample`/`.template`); `.ssh`, `.gnupg`, `.aws`, `.azure`, `.gcloud`, `.kube`, `.docker` folders; `.netrc`, `.pgpass`, `.pypirc`, `.npmrc`, `.git-credentials`, `.htpasswd`, `known_hosts`, `authorized_keys`, `id_rsa`/`id_dsa`/`id_ecdsa`/`id_ed25519`; `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`, `*.kdbx`, `*.ppk`, `*.ovpn`; names with the word secret(s), credential(s) or token(s) |
 | Collected data | top-level `data`, `data-*`, `people` folders; any folder or file named `sub-...` anywhere, whatever the subject code (non-ASCII and compatibility forms included); `participants.tsv/.json`, `subjects.csv`, `experimenters.csv`; databases `*.sqlite`, `*.sqlite3`, `*.db` and their `-wal`/`-shm`/`-journal`; eye-tracker recordings `*.edf`, `*.asc` |
-| Rig-specific | `rig-*.yaml`, `rig-*.yml`, `rig-*.json` anywhere (rig files, gamma and reward calibrations, measurement reports): each lab runs on its own rig |
+| Rig measurements | `rig-*.json` anywhere (measurement reports); `rig-*_gamma.yaml` and `rig-*.reward.yaml` (gamma and reward calibrations measured on one machine); any `rig-*.yaml` outside `configs/` or under a `measurements` folder (a copied rig record). The experiment's own `configs/rig-<name>.yaml` files are protocol (sync lines, photodiode event, calibration limits, extra devices) and ship, so an installed `--rig lab` resolves to the package's `configs/rig-lab.yaml` exactly as a checkout does. What stays local is the operator's machine: secrets and per-machine values belong in the rig-state's own files, never in the experiment's repository. |
 | Local state | names starting `.alhazen`; the manifest's own name |
 
 A package's own `src/<package>/data/` folder is code, not a data root, and

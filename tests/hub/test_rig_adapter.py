@@ -436,7 +436,9 @@ def test_package_preview_and_upload_never_publish(http, hub, workspace):
     assert status == 200, out
     paths = [f["path"] for f in out["files"]]
     assert "run.py" in paths and "data/participants.tsv" not in paths
-    assert "configs/rig-sim.yaml" not in paths
+    # The experiment's own rig file is protocol and ships (import round,
+    # decision 1), so an installed copy resolves --rig as the checkout does.
+    assert "configs/rig-sim.yaml" in paths
     assert any(e["path"] == "data/participants.tsv" for e in out["excluded"])
     metadata = {**out["metadata"], "license": "MIT"}
     body = {

@@ -2539,6 +2539,10 @@ class Workspace:
                 )
             key = uuid.uuid4().hex
             run_dir = self.directory / "runs" / key
+            # A hub install writes into its experiment's one data folder,
+            # shared by every release (made, or migrated, before any check
+            # reads participants.tsv there).
+            shared_data = self.share_hub_data(self.project(request.project))
             # Who it is for and who runs it, from the people registry when the
             # page selected records: resolved first, so every check after
             # this one sees the subject the record names.
@@ -2588,7 +2592,11 @@ class Workspace:
             # before anything runs, and written into both records below; None
             # (and no key at all) for a folder that is not a hub install.
             release = self._hub_release(project)
-            pinned = {"hub_release": release} if release is not None else {}
+            pinned: dict[str, Any] = {"hub_release": release} if release is not None else {}
+            if shared_data is not None:
+                # Where this release's data folders lead: the experiment's
+                # one folder, shared by all its releases.
+                pinned["hub_data_folder"] = shared_data["folder"]
             (run_dir / "media").mkdir(parents=True)
             started = now()
             # The launch as it was decided, written once and never again
@@ -2713,6 +2721,31 @@ class Workspace:
             )
             self.worker.start()
             return dict(run)
+
+    def share_hub_data(self, project: dict[str, Any]) -> dict[str, Any] | None:
+        """For a project installed from the Experiment Hub (under this
+        workspace's ``hub/experiments/<name>/``), link each data folder its
+        rigs write under to the experiment's one shared data folder beside
+        its releases (alhazen.hub.shared_data), migrating a release's own
+        folder there on first use. Returns ``{"folder", "links", "problems"}``
+        (the shared folder, what was done per name, and rigs that could not
+        be read, which the Data page also reports), or None for any other
+        project. Raises ValueError, saying what to do, when a release's folder
+        and the shared one both hold data: nothing is moved, and the launch
+        must not start into either."""
+        installs = (self.directory / "hub" / "experiments").resolve()
+        root = Path(project["path"]).resolve()
+        if not root.is_relative_to(installs) or root.parent == installs:
+            return None
+        from alhazen.cli.workspace_data import relative_data_components
+        from alhazen.hub.shared_data import SharedDataConflict, link_names, share
+
+        components, problems = relative_data_components(self.describe(project["id"]))
+        try:
+            links = share(root, root.parent, link_names(components))
+        except SharedDataConflict as exc:
+            raise ValueError(f"Cannot start {project['name']}: {exc}") from exc
+        return {"folder": str(root.parent), "links": links, "problems": problems}
 
     def _hub_release(self, project: dict[str, Any]) -> dict[str, Any] | None:
         """The pinned release of a project installed from the Experiment Hub

@@ -77,8 +77,8 @@ def _reason(relative: str) -> str:
         return "environment"
     if top.startswith("data") or top in ("runs", "sessions"):
         return "collected data"
-    if name.startswith("rig-") and name.endswith((".yaml", ".yml")):
-        return "rig-specific configuration"
+    if name.startswith("rig-") and name.endswith((".yaml", ".yml", ".json")):
+        return "a rig's measured calibration or a copied rig record"
     if any(p.startswith(".") for p in parts):
         return "hidden file"
     if name.endswith((".sqlite3", ".db", ".edf", ".tsv")):

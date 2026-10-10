@@ -143,8 +143,12 @@ def make_source(root: Path) -> Path:
         "docs/experiment.json": '{"methods": "docs/methods.md"}\n',
         "docs/methods.md": "## Methods\n",
         "docs/timeline.svg": "<svg/>\n",
-        "configs/rig-lab.yaml": "monitor: {}\n",
+        "configs/rig-lab.yaml": "extends: lab\n",
+        "configs/rig-lab.reward.yaml": "pulses: 1\n",
+        "configs/rig-lab_gamma.yaml": "gamma: 2.2\n",
         "configs/measurements/rig-lab_2026.json": "{}\n",
+        "configs/measurements/rig-lab-old.yaml": "extends: lab\n",
+        "rig-copied.yaml": "monitor: {}\n",
         "data/sub-01/trials.csv": "a\n1\n",
         "data-rehearsal/x.csv": "a\n",
         "people/people.sqlite3": "db",
@@ -163,6 +167,9 @@ def make_source(root: Path) -> Path:
 
 CLEAN = [
     "README.md",
+    # The experiment's own rig overlay is protocol and ships (import round,
+    # decision 1); its measured calibrations and copied rig records do not.
+    "configs/rig-lab.yaml",
     "configs/task.yaml",
     "docs/experiment.json",
     "docs/methods.md",
@@ -260,7 +267,9 @@ class TestBuildAndInspect:
         assert inspect_bundle(path) == info
         manifest = info.manifest
         assert manifest["schema_version"] == 1 and manifest["entrypoint"] == "run.py"
-        assert manifest["python_min"] == "3.10" and manifest["alhazen_min"] == "2.13.0"
+        # alhazen_min defaults to the floor, 2.12.0 since the import round
+        # (decision 4; see test_alhazen_floor_is_the_oldest_imported_pin).
+        assert manifest["python_min"] == "3.10" and manifest["alhazen_min"] == "2.12.0"
         assert manifest["platforms"] == ["darwin", "linux", "win32"]
         assert [entry["path"] for entry in manifest["files"]] == CLEAN
         source = path.parent / "experiment"
@@ -342,8 +351,11 @@ class TestBuildAndInspect:
             "data/sub-01/trials.csv",
             "data-rehearsal/x.csv",
             "people/people.sqlite3",
-            "configs/rig-lab.yaml",
+            "configs/rig-lab.reward.yaml",
+            "configs/rig-lab_gamma.yaml",
             "configs/measurements/rig-lab_2026.json",
+            "configs/measurements/rig-lab-old.yaml",
+            "rig-copied.yaml",
             "keys/id_ed25519",
             ".venv/lib/x.py",
             "src/demo/__pycache__/x.cpython-311.pyc",
@@ -417,7 +429,7 @@ class TestBuildAndInspect:
             ({"entrypoint": "main.py"}, "entrypoint"),
             ({"python_min": "2.7"}, "python_min"),
             ({"python_min": "3.9"}, "python_min"),
-            ({"alhazen_min": "2.12.0"}, "alhazen_min"),
+            ({"alhazen_min": "2.11.9"}, "alhazen_min"),
             ({"platforms": []}, "platforms"),
             ({"platforms": ["linux", "linux"]}, "twice"),
             ({"platforms": ["freebsd"]}, "platforms"),
@@ -435,6 +447,25 @@ class TestBuildAndInspect:
         with pytest.raises(PackageError, match=match):
             build_bundle(source, tmp_path / "o.zip", {**META, **change}, CLEAN)
         assert sorted(os.listdir(tmp_path)) == ["experiment"]
+
+    def test_alhazen_floor_is_the_oldest_imported_pin(self, tmp_path, source):
+        """The floor was 2.13.0 (the first release with packages) and refused
+        attention-clamp, pinned on 2.12.0, although the package format is read
+        by the rig's alhazen and asks nothing of the experiment's (import
+        round 2026-10-09, decision 4). It is 2.12.0 now, the release that
+        added subject_kind; anything older is still refused, and the
+        experiment's interpreter is still checked against what it declares."""
+        info = build_bundle(source, tmp_path / "a.zip", {**META, "alhazen_min": "2.12.0"}, CLEAN)
+        assert info.manifest["alhazen_min"] == "2.12.0"
+        assert compatibility_problems(
+            info.manifest, python_version=(3, 11), alhazen_version="2.12.3", platform="linux"
+        ) == []
+        older = compatibility_problems(
+            info.manifest, python_version=(3, 11), alhazen_version="2.11.0", platform="linux"
+        )
+        assert len(older) == 1 and "2.12.0" in older[0]
+        with pytest.raises(PackageError, match="no older than 2.12.0"):
+            build_bundle(source, tmp_path / "b.zip", {**META, "alhazen_min": "2.11.9"}, CLEAN)
 
     def test_missing_metadata_is_refused(self, tmp_path, source):
         meta = dict(META)
