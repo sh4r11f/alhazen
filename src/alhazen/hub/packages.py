@@ -987,7 +987,9 @@ def _open_regular(path: Path) -> IO[bytes]:
     if not stat.S_ISREG(os.fstat(fd).st_mode):
         os.close(fd)
         raise PackageError(f"the package {_shown(path.name)} is not a regular file")
-    if _O_NONBLOCK:
+    # O_NONBLOCK exists only on POSIX; the platform check also tells a type
+    # checker on Windows, whose os module (Python < 3.12) has no set_blocking.
+    if _O_NONBLOCK and sys.platform != "win32":
         os.set_blocking(fd, True)
     return os.fdopen(fd, "rb")
 
