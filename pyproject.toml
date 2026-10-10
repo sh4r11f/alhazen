@@ -175,6 +175,11 @@ alhazen = [
   # served by the hub service and by `alhazen dashboard` at /hub.
   "hub/assets/*",
   "hub/assets/fonts/*",
+  # The documented scaffold that AI authoring shows a provider as the worked
+  # example of experiment documentation (tests/hub/test_ai_author.py keeps it
+  # equal to tests/hub/fixtures/documentation/scaffold/docs).
+  "hub/ai/example/*",
+  "hub/ai/example/tasks/*",
 ]
 
 [project.urls]
