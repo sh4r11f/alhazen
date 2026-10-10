@@ -54,8 +54,8 @@ def test_unreadable_files_are_skipped(tmp_path: Path) -> None:
     # that could not be parsed is named for the pack summary.
     notes: list[dict[str, str]] = []
     declared_hardware(tmp_path, notes=notes)
-    assert [n["path"] for n in notes] == ["configs/broken.yaml"]
-    assert "YAML" in notes[0]["reason"]
+    assert [n["path"] for n in notes] == ["configs/bad.yml", "configs/broken.yaml"]
+    assert all("YAML" in n["reason"] for n in notes)
 
 
 def test_only_packed_files_count_and_measured_rig_files_are_no_rig(tmp_path: Path) -> None:
