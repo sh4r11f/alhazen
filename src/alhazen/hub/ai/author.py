@@ -362,7 +362,10 @@ def scaffold_files(name: str = EXAMPLE_NAME) -> dict[str, str]:
 
 def _example_documentation() -> list[tuple[str, str]]:
     return [
-        (f"example: docs/{path.relative_to(EXAMPLE_ROOT).as_posix()}", path.read_text(encoding="utf-8"))
+        (
+            f"example: docs/{path.relative_to(EXAMPLE_ROOT).as_posix()}",
+            path.read_text(encoding="utf-8"),
+        )
         for path in sorted(EXAMPLE_ROOT.rglob("*"))
         if path.is_file()
     ]
