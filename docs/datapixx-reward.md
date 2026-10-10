@@ -1,22 +1,20 @@
 # DATAPixx3 reward: wiring and bench test for a WPI SP220i syringe pump
 
-!!! warning "Status: proposed. Not physically verified, not yet software-verified"
+!!! warning "Status: locally implemented, not physically verified"
     Nothing on this page has been tried on hardware. The wiring follows the
-    manufacturers' published pinouts. alhazen's DATAPixx reward backend is
-    still being written; its software verification is pending the final
-    integrated test suite, and no test result is claimed here. The rig-file
-    names and commands below are provisional and will be reconciled with the
-    backend when it lands. Until every item in
-    [What has been verified](#what-has-been-verified) is done on your own
-    bench, treat this rig's reward line as unverified. Do not connect it to an
-    animal.
+    manufacturers' published pinouts. The backend has software regression
+    tests using a stand-in for VPixx's library; passing those tests does not
+    verify physical pin voltages, pump behavior or liquid delivery. Until
+    the applicable items in [What has been verified](#what-has-been-verified)
+    are checked on your own bench, treat the reward line as unverified.
+    Do not connect it to an animal.
 
 This page covers one setup: a VPixx DATAPixx3 (the box that hosts the
 TRACKPixx3 and drives the VIEWPixx) gating a WPI SP220i syringe pump through
 the pump's TTL **Gate** input. It needs two wires and no soldering.
 
-Each section separates what the manufacturers **document** from what alhazen's
-backend is **planned** to do.
+Manufacturer electrical specifications, software behavior and outstanding
+physical bench checks are described separately.
 
 ## How the pump is driven
 
@@ -39,9 +37,9 @@ diameter and the rate entered on the pump, times how long the gate is LOW.
 alhazen cannot read either pump setting, so the rig file declares them and you
 must keep them true.
 
-Planned: the DATAPixx3 times the LOW period on its own clock (a hardware
-digital-output schedule), never with a Python sleep, and alhazen records the
-gate it **commanded**. A commanded gate is not evidence that juice came out.
+The backend programs the LOW period on the DATAPixx3's own clock (a finite
+hardware digital-output schedule), never with a Python sleep. Its record
+describes the gate it **commanded**, not evidence that juice came out.
 
 ## What you need
 
@@ -122,12 +120,12 @@ continuity and check:
 
 Write down that the check passed and the date.
 
-## The rig file (provisional)
+## The rig file
 
 The reward line is part of the machine, so it goes in the rig file of the
 machine it is wired to, after the cable check and before bench step B2. The
-pump values are what you entered on the pump's keypad. Field names follow the
-backend's draft and may change:
+pump values are what you entered on the pump's keypad. The numbers below
+are an example, not defaults or a recommended dose; enter your actual values:
 
 ```yaml
 devices:
@@ -142,14 +140,14 @@ devices:
       rate_ul_per_min: 3000        # example: the value the pump shows
 ```
 
-Planned behaviour, to be confirmed against the integrated backend:
-`alhazen check-rig` validates this without moving the pump, and `--pulse`
-runs one short reward, which is a bench step (B2), not a routine check. A human
-session never opens the reward line whatever the rig file says (this is
-existing alhazen behaviour). `--mode simulate`, or a `--simulate` choice that
-includes the reward, stands it down so the DATAPixx3's outputs are not
-touched; a `--simulate` choice that names only other devices, the tracker say,
-leaves the real pump live.
+`alhazen check-rig` without `--pulse` does not schedule a reward, but it
+**does write the configured idle level**. It is not a read-only check. Keep
+the pump off until the polarity and physical idle voltage have been checked.
+Adding `--pulse` explicitly requests one 50 ms reward pulse (bench step B2).
+It checks the whole rig and also pulses any configured sync outputs, so keep
+other connected equipment ready for that. A human session never opens the
+reward line. `--mode simulate`, or a `--simulate` choice including the reward,
+stands the reward down; simulating only other devices leaves the real pump live.
 
 ## Pump settings that are part of safety
 
@@ -173,8 +171,8 @@ Set these on the pump's keypad before it is ever wired:
   running when its power comes back after an interruption (documented).
 
 A reward calibration measured at one rate or syringe does not apply to
-another; re-measure after any change. (Planned: alhazen keys each calibration
-to the declared syringe and rate.)
+another; re-measure after any change. alhazen keys each calibration to the
+declared pump model, syringe, rate, gate polarity, line and voltage.
 
 ## Power-up and shutdown order
 
@@ -188,7 +186,7 @@ otherwise, follow this order every time:
 
 1. Pump power **OFF**.
 2. DATAPixx3 on; computer on.
-3. Run `alhazen check-rig --rig <your rig>` **without** `--pulse`. Planned: it
+3. Run `alhazen check-rig --rig <your rig>` **without** `--pulse`. It
    opens the DATAPixx3, refuses to continue if anything else claims the
    outputs (see below), drives Digital Out 0 HIGH and reads the device's
    register back. A register readback is not evidence of the voltage on the
@@ -198,7 +196,7 @@ otherwise, follow this order every time:
    about short glitches.
 5. Only now switch the pump **ON**. Its display should show it stopped.
 
-**During a session** (planned): alhazen drives only the outputs it owns,
+**During a session**: alhazen drives only the outputs it owns,
 re-asserts the gate HIGH after every reward, and stops with an error instead
 of guessing when it cannot confirm the line state. It never repeats a reward
 whose outcome it could not confirm.
@@ -226,20 +224,20 @@ interface between the two devices) could change that, but only as a real,
 specified design with a failure-state analysis and its own bench tests. None
 is proposed here.
 
-## Things alhazen is planned to refuse before touching the outputs
+## Output conflicts the backend refuses
 
 The DATAPixx3's digital outputs are shared, and a digital-output schedule
 writes the low 16 outputs (Digital Out 0–15) together for as long as it plays
 (documented: schedule words are 16 bits; the port returns to its resting
 value when the schedule ends). So every check covers that whole footprint,
-not just the gate. Planned refusals, before any write:
+not just the gate. The backend refuses to claim the gate when:
 
 - **Pixel Mode** is on (documented: it drives all 24 outputs from the
   top-left pixel), or **Pixel Mode GB** is on (it drives outputs 8–23, which
-  overlap the schedule's 8–15). Pixel Mode B drives 16–23 and does not overlap
-  0–15. These are set in LabMaestro (Digital IO → Output Mode) and persist on
-  the device. alhazen does not switch them off, because a recording may rely
-  on them.
+  overlap the schedule's 8–15), or **Pixel Mode B** is on. Pixel Mode B
+  drives 16–23; it is also refused because independence of those outputs from
+  the schedule is not documented. alhazen does not switch these modes off,
+  because a recording may rely on them.
 - **Backlight pulse** is enabled (documented: it puts the LCD backlight on
   Digital Out 15, inside the schedule's footprint), whichever output the gate
   is on.
@@ -247,12 +245,14 @@ not just the gate. Planned refusals, before any write:
   digital-output schedule from the same memory the reward uses).
 - A digital-output schedule is already running.
 - The reward's schedule memory would overlap the TRACKPixx3's sample buffer.
-- A sync line on Digital Out 0–15 is configured alongside the DATAPixx
-  reward, since the schedule would overwrite it during every reward.
+- **Any DATAPixx sync backend alongside DATAPixx reward**, including outputs
+  16–23. The rig validator and runtime ownership check both reject it.
 
-Sync on Digital Out 16–23 next to the reward is **not verified**: whether a
-schedule leaves those outputs untouched is not documented. Do not treat it as
-supported until bench step B6 shows it on your device.
+This version has no override for combined DATAPixx reward and sync. A bench
+measurement alone does not enable it: support would require a later reviewed
+implementation. DATAPixx sync without DATAPixx reward is supported; a separate
+NI-DAQ can provide sync alongside DATAPixx reward. Analog-output reward and
+reading the pump's Run output are not implemented.
 
 ## Bench test
 
@@ -312,14 +312,13 @@ signals. This measures the pump's indication, not actual motor movement or
 liquid arriving at the outlet. Check outlet delivery separately with the
 actual syringe and tubing; do not report the Run indication as liquid latency.
 
-**B6. Shared outputs.** With the TRACKPixx3 recording and any sync lines
-connected to the logic analyser, run rewards and sync pulses together only
-in an explicitly authorized bench configuration. Check that Digital Out 0
-follows the reward waveform, configured sync lines carry exactly their
-requested pulses without loss or stretching, and every unrelated output
-stays unchanged. Check whether the reward schedule leaves outputs 16–23
-independent; until this is demonstrated, sync next to the reward stays
-unsupported.
+**B6. Shared tracker and other outputs.** With TRACKPixx3 recording, monitor
+Digital Out 0 and the other DOUT lines with the analyser during rewards.
+Check the gate waveform, that unrelated lines stay at their prior levels,
+and that gaze recording continues. Do not configure DATAPixx sync at the
+same time: the backend rejects that combination. Investigating upper-output
+independence for a future implementation requires a separate reviewed bench
+diagnostic, not an override of this refusal.
 
 **B7. Failure drills, water only.**
 
@@ -344,6 +343,7 @@ Record what happened in each, including "the pump kept running".
 | Digital Out 0 level and glitches at power-up, reset, USB loss, power off | bench B1 (scope or analyser) | **not verified** |
 | Disconnected Gate input behaviour | bench B1 (controlled, water only) | **not verified** |
 | Gate behaviour, latency, dose per gate, repeated gates, target volume | bench B2–B5 | **not verified** |
-| Outputs 16–23 untouched by a schedule; sync and reward together | bench B6 | **not verified** |
+| Unrelated outputs stable and tracker continues during reward | bench B6 | **not verified** |
+| DATAPixx sync together with DATAPixx reward | validation and runtime ownership | **not supported; rejected** |
 | Failure drills | bench B7 | **not verified** |
-| alhazen DATAPixx backend (refusals, timing, uncertain-state handling) | final integrated test suite | **planned; software verification pending** |
+| alhazen DATAPixx backend (refusals, timing, uncertain-state handling) | software regression tests with a stand-in SDK | **software tested; not hardware verified** |
