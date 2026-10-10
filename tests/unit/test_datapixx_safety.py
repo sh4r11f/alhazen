@@ -14,10 +14,19 @@ source:
   ``DPxSelectDevice('TRACKPixx')``; ``TRACKPixx3.close()`` ends in
   ``DpxDevice.close`` -> ``DPxClose`` (pypixxlib ``tracker`` / ``dpxDevice``).
 
-Tests marked ``KNOWN BUG`` fail on purpose against 2dd0cf1/2fcc3b0: each
-reproduces a finding of the final review (strict xfail, so the suite stays
-green and a fix turns them into XPASS failures that must be unmarked). None of
-this is evidence about the pins or the pump.
+The six tests first written as strict-xfail ``KNOWN BUG`` reproductions of
+the review's findings (against 2dd0cf1/2fcc3b0) pass since the safety fixes
+and are unmarked. Three were rewritten to the stronger contract the fixes
+give, each saying why where it stands: the gaze read's fault is now consumed
+into the tracker's own dropout state rather than left pending; a tracker
+connected after the gate is refused before pypixxlib's second DPxOpen (and the
+real session builder is tested for one open and one close in both release
+orders); an unreadable Pixel Mode B on firmware that has it refuses the gate.
+The stand-in in tests/fake_sdk.py now models the vendor behaviour these tests
+used to patch in (DPxWriteRam's c_ushort byte count, DPxSelectDevice clearing
+the sticky error, TRACKPixx3()'s DPxOpen and close()'s DPxClose); the patches
+here stay, as independent restatements of the vendor source. None of this is
+evidence about the pins or the pump.
 """
 
 from __future__ import annotations
@@ -35,7 +44,7 @@ from alhazen.devices import reward as reward_module
 from alhazen.devices.eyetracker import ViewPixxTracker
 from alhazen.devices.reward import build_gate_words, make_reward
 from alhazen.devices.sync import make_sync
-from alhazen.errors import RewardError, SyncError
+from alhazen.errors import RewardError, SyncError, TrackerError
 from alhazen.testing import FakeClock
 from fake_sdk import USB_GONE, FakeLibdpx, install_fake_libdpx, install_fake_pypixxlib
 from support import SCREEN
@@ -45,10 +54,6 @@ GATE = RewardHwConfig(backend="datapixx", channel="dout0", polarity="active_low"
 SHORT = RewardPulses(n_pulses=2, pulse_ms=3, inter_pulse_ms=2)
 # VPixx's DPxWriteDoutBuffer chunk: the most words it ever hands DPxWriteRam.
 VENDOR_WRITE_RAM_MAX_WORDS = 0xFFF0 // 4
-
-
-def known_bug(reason: str):
-    return pytest.mark.xfail(strict=True, reason=f"KNOWN BUG (final review): {reason}")
 
 
 @pytest.fixture
@@ -92,11 +97,6 @@ class TestScheduleBufferWrite:
         assert libdpx.trains == [expected]
         reward.close()
 
-    @known_bug(
-        "DatapixxReward._start_schedule hands DPxWriteRam all words in one call; "
-        "pypixxlib packs the byte count as c_ushort, so a train of >= 32,768 words "
-        "is silently truncated and the schedule plays stale RAM for the rest"
-    )
     def test_a_long_train_is_written_in_full(self, libdpx, monkeypatch):
         vendor_write_ram(monkeypatch, libdpx)
         monkeypatch.setattr(reward_module.time, "sleep", lambda s: None)
@@ -105,10 +105,6 @@ class TestScheduleBufferWrite:
         expected = build_gate_words(self.LONG, bit=0, polarity="active_low", port_value=1)
         assert libdpx.trains == [expected]
 
-    @known_bug(
-        "no DPxWriteRam call may exceed VPixx's own per-call chunk "
-        f"({VENDOR_WRITE_RAM_MAX_WORDS} words, DPxWriteDoutBuffer)"
-    )
     def test_no_ram_write_exceeds_the_vendor_chunk(self, libdpx, monkeypatch):
         calls = vendor_write_ram(monkeypatch, libdpx)
         monkeypatch.setattr(reward_module.time, "sleep", lambda s: None)
@@ -129,10 +125,6 @@ class TestUnknownPixelModeB:
         backend="datapixx", pulse_ms=0.5, event_lines={"STIM_ON": "DATAPIXX3/dout17"}
     )
 
-    @known_bug(
-        "DatapixxSync._preflight reads a missing DPxIsDoutPixelModeB as False and opens "
-        "DOUT 16-23 without a refusal or a warning"
-    )
     def test_sync_on_dout_16_23_does_not_assume_pixel_mode_b_off(self, libdpx, monkeypatch, caplog):
         monkeypatch.delattr(FakeLibdpx, "DPxIsDoutPixelModeB")  # an older pypixxlib
         with caplog.at_level(logging.WARNING):
@@ -143,12 +135,25 @@ class TestUnknownPixelModeB:
             sync.close()
         assert "Pixel Mode B" in caplog.text
 
-    def test_the_reward_gate_says_pixel_mode_b_is_unknown(self, libdpx, monkeypatch, caplog):
+    # Rewritten with the M1 fix. It used to accept a gate that warned and drove
+    # the port with Pixel Mode B unknown; the gate's schedule writes the port
+    # and VPixx does not document DOUT 16-23 staying independent, so an
+    # unknown Pixel Mode B now refuses it — unless the firmware revision shows
+    # the mode cannot exist (VPixx: firmware 27+), which is evidence, not a
+    # guess.
+    def test_the_reward_gate_refuses_an_unreadable_pixel_mode_b(self, libdpx, monkeypatch):
         monkeypatch.delattr(FakeLibdpx, "DPxIsDoutPixelModeB")
-        with caplog.at_level(logging.WARNING):
-            reward = make_reward(GATE)
-        assert reward.preflight["pixel_mode_b"] is None
-        assert "cannot report Pixel Mode B" in caplog.text
+        libdpx.firmware_rev = 27
+        with pytest.raises(RewardError, match="Pixel Mode B.*cannot be read"):
+            make_reward(GATE)
+        assert libdpx.dout_writes == [] and libdpx.opens == libdpx.closes == 1
+
+    def test_firmware_without_pixel_mode_b_needs_no_accessor(self, libdpx, monkeypatch):
+        monkeypatch.delattr(FakeLibdpx, "DPxIsDoutPixelModeB")
+        libdpx.firmware_rev = 26
+        reward = make_reward(GATE)
+        assert reward.preflight["pixel_mode_b"] is False
+        assert "firmware revision 26" in reward.preflight["pixel_mode_b_basis"]
         reward.close()
 
 
@@ -171,26 +176,31 @@ def recording_tracker(monkeypatch):
 
 def failed_gaze_read(device, tracker) -> None:
     """One gaze read on a USB hiccup: TPxBestPolyGetEyePosition writes nothing
-    and raises nothing, leaving libdpx's sticky error set; the reader's read
-    hold ends without reading it (GazeReader.read_now, no check due yet)."""
+    and raises nothing, leaving libdpx's sticky error set.
+
+    Rewritten with the M2 fix. It used to assert the error was still pending
+    in libdpx after the read — the gap the review found, where the next
+    DPxSelectDevice (the reward's) could clear it. The read now reads the
+    error in its own hold of the lock and keeps it as the tracker's fault, so
+    what holds afterwards is stronger: libdpx's flag is consumed and the
+    reader already says what failed, before any check or anyone else's call."""
     device.libdpx.unplug()
     tracker._reader.read_now()
     device.libdpx.unplugged = False  # the link recovers
-    assert device.libdpx.error == USB_GONE
+    assert device.libdpx.error == "DPX_SUCCESS"  # consumed by the tracker, not left pending
+    verdict = tracker._reader.device_check
+    assert verdict is not None and verdict[0] is not None and USB_GONE in verdict[0]
 
 
 class TestTrackerFaultAttribution:
     def test_alone_the_tracker_check_catches_the_failed_read(self, monkeypatch):
         device, tracker = recording_tracker(monkeypatch)
         failed_gaze_read(device, tracker)
-        tracker._reader.check_now()
+        tracker._reader.check_now()  # the device answers again: the check finds nothing
         assert tracker._reader.device_check[0] is not None
+        assert USB_GONE in tracker.recording_fault()
         tracker.shutdown(None)
 
-    @known_bug(
-        "DpxLink.select() (reward poll) logs and clears a fault the gaze read left "
-        "unread, so the tracker's own recording check no longer sees it"
-    )
     def test_a_reward_between_read_and_check_does_not_hide_the_fault(self, monkeypatch):
         device, tracker = recording_tracker(monkeypatch)
         reward = make_reward(GATE)
@@ -199,6 +209,8 @@ class TestTrackerFaultAttribution:
         tracker._reader.check_now()
         try:
             assert tracker._reader.device_check[0] is not None
+            detail = tracker.recording_fault()  # the trial ends as a dropout
+            assert detail is not None and "gaze read" in detail and USB_GONE in detail
         finally:
             reward.close()
             tracker.shutdown(None)
@@ -248,19 +260,48 @@ class TestOpenCloseBalance:
         reward.close()
         assert (device.libdpx.opens, device.libdpx.closes) == (1, 1)
 
-    @known_bug(
-        "build_session opens the reward (make_reward, builder.py ~840) before "
-        "tracker.connect() (~882); pypixxlib's TRACKPixx3() then calls DPxOpen on an "
-        "open library, and only one DPxClose follows (undocumented libdpx behaviour)"
-    )
-    def test_session_order_keeps_open_and_close_balanced(self, monkeypatch):
+    # Rewritten with the M3 fix. It used to imitate the builder's old order by
+    # hand (gate first, then the tracker) and ask for a balance the vendor
+    # constructor made impossible. The builder now connects the tracker first
+    # (the REAL builder path is tested below, in both release orders), and a
+    # tracker connected after the gate is refused before pypixxlib's
+    # TRACKPixx3() could call DPxOpen a second time.
+    def test_a_tracker_after_the_gate_is_refused_without_a_second_open(self, monkeypatch):
         device = install_fake_pypixxlib(monkeypatch)
         vendor_faithful_tracker_class(monkeypatch, device)
-        reward = make_reward(GATE)  # the builder's order
-        tracker = connect_tracker()
-        tracker.shutdown(None)
+        reward = make_reward(GATE)
+        assert device.libdpx.opens == 1
+        with pytest.raises(TrackerError, match="must be connected before the DATAPixx3 reward"):
+            connect_tracker()
+        assert device.libdpx.opens == 1  # TRACKPixx3() never ran
         reward.close()
-        assert device.libdpx.opens == device.libdpx.closes
+        assert (device.libdpx.opens, device.libdpx.closes) == (1, 1)
+
+    def test_a_real_session_opens_once_and_closes_once(self, tmp_path, monkeypatch):
+        device = install_fake_pypixxlib(monkeypatch)
+        vendor_faithful_tracker_class(monkeypatch, device)
+        runner = session_with_tracker_and_gate(tmp_path)
+        assert (device.libdpx.opens, device.libdpx.closes) == (1, 0)  # the tracker's open
+        runner.run()  # teardown: tracker.shutdown, then reward.close
+        assert (device.libdpx.opens, device.libdpx.closes) == (1, 1)
+        assert device.libdpx.trains, "the session paid nothing through the gate"
+        assert not device.closed  # TRACKPixx3.close() skipped: the gate closed last
+
+    def test_a_failed_build_releases_gate_then_tracker_once(self, tmp_path, monkeypatch):
+        device = install_fake_pypixxlib(monkeypatch)
+        vendor_faithful_tracker_class(monkeypatch, device)
+        from alhazen.session import builder
+
+        def refuse(*args, **kwargs):
+            raise RuntimeError("monitor refused (test)")
+
+        monkeypatch.setattr(builder, "EyeTrackerMonitor", refuse)
+        with pytest.raises(RuntimeError, match="monitor refused"):
+            session_with_tracker_and_gate(tmp_path)
+        # Released in reverse: the gate first (not the last holder: no
+        # DPxClose), then the tracker, whose TRACKPixx3.close() closes once.
+        assert (device.libdpx.opens, device.libdpx.closes) == (1, 1)
+        assert device.closed
 
 
 # ----------------------------------------------------------------------
@@ -269,10 +310,6 @@ class TestOpenCloseBalance:
 
 
 class TestMissingCalls:
-    @known_bug(
-        "a pypixxlib lacking a preflight call raises AttributeError out of make_reward "
-        "instead of RewardError, so check-rig (catches AlhazenError) crashes"
-    )
     def test_a_missing_read_only_call_is_a_reward_error_and_releases(self, libdpx, monkeypatch):
         monkeypatch.delattr(FakeLibdpx, "DPxIsDoutButtonSchedules")
         with pytest.raises(RewardError):
@@ -282,8 +319,23 @@ class TestMissingCalls:
         monkeypatch.delattr(FakeLibdpx, "DPxIsDoutButtonSchedules")
         with pytest.raises((RewardError, AttributeError)):
             make_reward(GATE)
-        assert libdpx.opens == libdpx.closes == 1
+        # Since the m1 fix the missing call is found before the device is
+        # opened at all (GATE_CALLS), so the balance holds at zero, which is
+        # stronger than the 1 == 1 this asserted before.
+        assert libdpx.opens == libdpx.closes == 0
         assert libdpx.dout_writes == []  # refused before any DOUT write
+
+    def test_a_call_that_breaks_after_the_open_is_released_too(self, libdpx, monkeypatch):
+        # Present but rejecting its arguments (a different pypixxlib's
+        # signature): raised while reading, after the open.
+        def rejects(*args):
+            raise TypeError("DPxIsDoutButtonSchedules() takes 1 positional argument")
+
+        monkeypatch.setattr(libdpx, "DPxIsDoutButtonSchedules", rejects)
+        with pytest.raises(RewardError, match="lacks or rejects a call"):
+            make_reward(GATE)
+        assert libdpx.opens == libdpx.closes == 1
+        assert libdpx.dout_writes == []
 
 
 # ----------------------------------------------------------------------
@@ -340,3 +392,31 @@ class TestSound:
         reward.deliver(SHORT)  # a NEW delivery only when asked again
         assert len(libdpx.trains) == 2
         reward.close()
+
+
+def session_with_tracker_and_gate(tmp_path):
+    """build_session on a rig with a TRACKPixx3 and a DATAPixx3 gate, the
+    builder's own order, a monkey task paying a short train per HIT."""
+    from test_subject_kind import MONITOR, OutcomeTask, monkey
+
+    from alhazen.config.models import DevicesConfig, DisplayConfig, Duration, RigConfig
+    from alhazen.session.builder import build_session
+
+    rig = RigConfig(
+        monitor=MONITOR,
+        display=DisplayConfig(backend="simulated"),
+        devices=DevicesConfig(eyetracker=EyeTrackerConfig(backend="viewpixx"), reward=GATE),
+        data_root=tmp_path,
+    )
+    short = {"n_pulses": 1, "pulse_ms": 2, "inter_pulse_ms": 0}
+    return build_session(
+        rig=rig,
+        subject="t01",
+        session=1,
+        run=1,
+        task=OutcomeTask(monkey(by_outcome={"HIT": short})),
+        seed=1,
+        iti=Duration(ms=0),
+        simulated_frame_period_s=0.0,
+        date_yyyymmdd="20261010",
+    )

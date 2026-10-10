@@ -237,16 +237,48 @@ not just the gate. The backend refuses to claim the gate when:
   overlap the schedule's 8–15), or **Pixel Mode B** is on. Pixel Mode B
   drives 16–23; it is also refused because independence of those outputs from
   the schedule is not documented. alhazen does not switch these modes off,
-  because a recording may rely on them.
+  because a recording may rely on them. If this pypixxlib cannot read Pixel
+  Mode B (older releases lack `DPxIsDoutPixelModeB`), the gate is refused
+  unless the DATAPixx3's firmware revision is below 27, where VPixx documents
+  the mode does not exist; it is never assumed off. DATAPixx sync lines on
+  outputs 16–23 follow the same rule.
 - **Backlight pulse** is enabled (documented: it puts the LCD backlight on
   Digital Out 15, inside the schedule's footprint), whichever output the gate
   is on.
 - **Button schedules** are enabled (a button press would start a
   digital-output schedule from the same memory the reward uses).
 - A digital-output schedule is already running.
-- The reward's schedule memory would overlap the TRACKPixx3's sample buffer.
+- The reward's schedule memory would overlap the TRACKPixx3's sample buffer
+  or camera image, or run past the device's RAM.
+- The installed pypixxlib lacks one of the calls the backend uses. That is
+  checked before the DATAPixx3 is opened, so nothing is touched.
 - **Any DATAPixx sync backend alongside DATAPixx reward**, including outputs
   16–23. The rig validator and runtime ownership check both reject it.
+
+Reading these settings makes one register-cache round trip
+(`DPxUpdateRegCache` writes libdpx's cached registers back to the device and
+reads them again; pypixxlib has no read-only refresh). No digital-output value
+is written by these checks.
+
+Each reward train is written to the DATAPixx3's memory in pieces of at most
+16,380 words, the size VPixx's own `DPxWriteDoutBuffer` uses. pypixxlib's
+`DPxWriteRam` silently drops anything past 65,535 bytes in one call. The whole
+train is then read back and compared word for word. A train starts only if
+every word matches; otherwise it is refused and nothing plays. A train longer
+than the schedule memory holds (524,288 ms) is refused, never shortened.
+
+With a TRACKPixx3 on the same DATAPixx3, the tracker is connected first; the
+session builder and the Measure rig do this. pypixxlib's tracker object opens
+the device itself, and the backend refuses to connect a tracker after the
+reward has opened it rather than let the device be opened twice (which VPixx
+does not document).
+
+A reward that failed after its train started, or whose resting level could not
+be read back, is recorded as `REWARD_FAILED` with `"uncertain": true` and the
+error text. The trial's `rewarded` column is then left empty rather than
+`False`: some or all of the train may have reached the pump. It is never
+retried. The live juice plot counts it as a failed delivery and does not add
+its volume.
 
 This version has no override for combined DATAPixx reward and sync. A bench
 measurement alone does not enable it: support would require a later reviewed

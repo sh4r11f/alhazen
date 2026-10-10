@@ -468,9 +468,12 @@ def mouse_dragger(display: Any) -> Callable[[str], float]:
 
 
 def _datapixx_connection(cfg: RewardHwConfig) -> Measurement:
-    """Read-only, like the NI-DAQ check: the DATAPixx3 is opened, its
-    digital-output modes and the gate's register are read, and it is
-    released. Not even the rest level is written."""
+    """Like the NI-DAQ check, it changes no output: the DATAPixx3 is opened,
+    its digital-output modes and the gate's register are read, and it is
+    released. No digital-output value is written, not even the rest level;
+    reading the registers takes one register-cache round trip
+    (DPxUpdateRegCache writes libdpx's cache back to the device, then
+    reads), the only refresh pypixxlib offers."""
     from alhazen.devices.reward import probe_datapixx_gate
 
     detail: dict[str, Any] = {
@@ -479,8 +482,10 @@ def _datapixx_connection(cfg: RewardHwConfig) -> Measurement:
         "polarity": cfg.polarity,
         "pump": cfg.pump.model_dump() if cfg.pump is not None else None,
         "notes": [
-            "Read only: nothing was written to the DATAPixx3, not even the gate's rest level. "
-            "Register values are what libdpx reads back, not voltages on the pins.",
+            "No digital-output value was written, not even the gate's rest level. Reading the "
+            "registers took one register-cache round trip (DPxUpdateRegCache writes libdpx's "
+            "cache back, then reads). Register values are what libdpx reads back, not "
+            "voltages on the pins.",
             "Whether the pump runs, and how much it delivers, is reward.volume's question.",
         ],
     }
@@ -973,7 +978,8 @@ def builtin_jobs() -> list[MeasurementJob]:
             "reward.connection",
             "Reward",
             "Reward connection",
-            "Read-only: driver, device and output channel are present. Sends nothing.",
+            "Driver, device and output channel are present. Writes no output value (a "
+            "DATAPixx3 check makes one register-cache round trip).",
             30,
             _reward_connection,
             unavailable=_needs_real_reward,

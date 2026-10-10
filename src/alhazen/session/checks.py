@@ -498,8 +498,9 @@ def _check_reward(rig: RigConfig, pulse: bool) -> CheckResult:
         evidence["pump"] = cfg.pump.model_dump() if cfg.pump is not None else None
         evidence["notes"] = [
             "Without --pulse nothing is played: the DATAPixx3 is opened, its digital-output "
-            "modes are read, and only the gate's bit is set to rest and read back (register "
-            "evidence, not a measurement of the pin).",
+            "modes are read (register-cache round trips: DPxUpdateRegCache writes libdpx's "
+            "cache back, then reads), and the only digital-output write is the gate's own bit "
+            "set to rest and read back (register evidence, not a measurement of the pin).",
             "With --pulse, the gate's length is the DATAPixx3's own schedule; measured_ms is "
             "the wall clock across the call (start, completion polling, rest read-back), not "
             "a measurement of the pump, which runs at the rate set on its panel.",
@@ -508,7 +509,7 @@ def _check_reward(rig: RigConfig, pulse: bool) -> CheckResult:
         reward = make_reward(cfg)
     except AlhazenError as e:
         return CheckResult("reward", False, str(e), {**evidence, "error": str(e)})
-    preflight = getattr(reward, "preflight", None)  # a DATAPixx3 gate's read-only look
+    preflight = getattr(reward, "preflight", None)  # a DATAPixx3 gate's register state
     if isinstance(preflight, dict):
         evidence["preflight"] = dict(preflight)
     try:

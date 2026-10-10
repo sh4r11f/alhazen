@@ -41,7 +41,7 @@ from alhazen.devices.reward import (
 )
 from alhazen.devices.sync import DatapixxSync, make_sync
 from alhazen.devices.vpixx import dpx_link
-from alhazen.errors import RewardError, SyncError
+from alhazen.errors import RewardError, RewardUncertainError, SyncError, TrackerError
 from alhazen.testing import FakeClock
 from fake_sdk import FakeLibdpx, install_fake_libdpx, install_fake_pypixxlib
 from support import SCREEN
@@ -229,7 +229,7 @@ class TestOpen:
     )
     def test_another_output_mode_is_refused_before_any_write(self, libdpx, setting, match):
         setattr(libdpx, setting, True)
-        with pytest.raises(RewardError, match=f"refused before anything was written.*{match}"):
+        with pytest.raises(RewardError, match=f"refused before any digital-output write.*{match}"):
             make_reward(GATE)
         assert libdpx.dout_writes == [] and libdpx.ram == {} and libdpx.trains == []
         assert getattr(libdpx, setting) is True  # never turned off
@@ -247,7 +247,7 @@ class TestOpen:
 
     def test_a_rest_that_will_not_read_back_is_uncertain(self, libdpx, monkeypatch):
         monkeypatch.setattr(libdpx, "DPxGetDoutValue", lambda: 0)
-        with pytest.raises(RewardError, match="LINE STATE UNCERTAIN"):
+        with pytest.raises(RewardUncertainError, match="LINE STATE UNCERTAIN"):
             make_reward(GATE)
 
     def test_no_pypixxlib_is_a_loud_error(self, monkeypatch):
@@ -306,7 +306,7 @@ class TestDeliver:
         monkeypatch.setattr(reward_module, "_SCHEDULE_SLACK_S", 0.05)
         reward = make_reward(GATE)
         libdpx.polls_until_done = None
-        with pytest.raises(RewardError, match="UNCERTAIN.*NOT retried"):
+        with pytest.raises(RewardUncertainError, match="UNCERTAIN.*NOT retried"):
             reward.deliver(TRAIN)
         assert len(libdpx.trains) == 1
         assert libdpx.dout_stops == 1
@@ -323,7 +323,9 @@ class TestDeliver:
             return asked()
 
         monkeypatch.setattr(libdpx, "DPxIsDoutSchedRunning", fails_while_playing)
-        with pytest.raises(RewardError, match="DPX_ERR_USB_REQ_FAILED.*UNCERTAIN.*NOT retried"):
+        with pytest.raises(
+            RewardUncertainError, match="DPX_ERR_USB_REQ_FAILED.*UNCERTAIN.*NOT retried"
+        ):
             reward.deliver(TRAIN)
         assert len(libdpx.trains) == 1 and libdpx.dout_stops == 1
 
@@ -344,13 +346,13 @@ class TestDeliver:
             libdpx.unplug()
 
         monkeypatch.setattr(libdpx, "DPxStartDoutSched", start_then_unplug)
-        with pytest.raises(RewardError, match="UNCERTAIN.*LINE STATE UNCERTAIN"):
+        with pytest.raises(RewardUncertainError, match="UNCERTAIN.*LINE STATE UNCERTAIN"):
             reward.deliver(TRAIN)
 
     def test_the_queue_reports_a_failed_train_and_never_delivers_it_again(self, libdpx):
         queued = QueuedReward(make_reward(GATE))
         libdpx.fault_on["DPxStartDoutSched"] = "DPX_ERR_USB_REQ_FAILED"
-        with pytest.raises(RewardError, match="UNCERTAIN"):
+        with pytest.raises(RewardUncertainError, match="UNCERTAIN"):
             queued.deliver(TRAIN)
         queued.wait_idle()
         assert len(libdpx.trains) <= 1 and libdpx.dout_stops == 1
@@ -393,23 +395,36 @@ class TestSharedLink:
     def test_the_gate_released_first_leaves_the_device_to_the_tracker(self, monkeypatch):
         device = install_fake_pypixxlib(monkeypatch)
         tracker = connected_tracker(device)
+        assert device.libdpx.opens == 1  # pypixxlib's TRACKPixx3() opened it
         reward = make_reward(GATE)
-        assert device.libdpx.opens == 0  # the tracker's pypixxlib object opened it
+        assert device.libdpx.opens == 1  # the gate joined; no second open
         reward.close()
         assert device.libdpx.closes == 0 and not device.closed
         tracker.shutdown(None)
-        assert device.closed  # TRACKPixx3.close(), the last holder
+        assert device.closed and device.libdpx.closes == 1  # TRACKPixx3.close(), the last holder
 
     def test_the_tracker_shut_down_first_does_not_close_the_device(self, monkeypatch):
         device = install_fake_pypixxlib(monkeypatch)
-        reward = make_reward(GATE)  # opens the device itself (DPxOpen)
         tracker = connected_tracker(device)
+        reward = make_reward(GATE)
         tracker.shutdown(None)
-        assert not device.closed
+        assert not device.closed and device.libdpx.closes == 0
         assert device.libdpx.tracker_close_steps == ["TPxUninitialize", "TPxSetSleepPictureRequest"]
         reward.deliver(TRAIN)  # still works
         reward.close()
-        assert device.libdpx.closes == 1
+        assert (device.libdpx.opens, device.libdpx.closes) == (1, 1)
+
+    def test_a_tracker_after_the_gate_is_refused_before_pypixxlib_opens_again(self, monkeypatch):
+        device = install_fake_pypixxlib(monkeypatch)
+        reward = make_reward(GATE)  # the link's own DPxOpen
+        with pytest.raises(TrackerError, match="must be connected before"):
+            connected_tracker(device)
+        assert device.libdpx.opens == 1
+        reward.close()
+        assert (device.libdpx.opens, device.libdpx.closes) == (1, 1)
+        tracker = connected_tracker(device)  # alone again: fine
+        tracker.shutdown(None)
+        assert (device.libdpx.opens, device.libdpx.closes) == (2, 2)
 
     def test_gate_and_datapixx_sync_are_refused_in_one_process(self, libdpx):
         sync_cfg = SyncHwConfig(backend="datapixx", event_lines={"STIM_ON": "DATAPIXX3/dout17"})
