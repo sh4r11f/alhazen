@@ -2993,7 +2993,7 @@ const HubApp = (() => {
       const manifest = result.manifest && typeof result.manifest === 'object' ? result.manifest : {};
       const prior = (latest && latest.manifest) || {};
       const title = input({type: 'text', name: 'title', required: true, maxlength: '160', value: String(prior.title || (view && view.title) || '')});
-      const summary = input({type: 'text', name: 'summary', maxlength: '300', value: String(prior.summary || prior.description || (view && view.summary) || '')});
+      const summary = input({type: 'text', name: 'summary', maxlength: '280', value: String(prior.summary || prior.description || (view && view.summary) || '')});
       const license = input({type: 'text', name: 'license', maxlength: '120', value: String(manifest.license || prior.license || (view && view.license) || 'MIT')});
       const status = statusLine();
       const button = h('button', {type: 'submit', class: 'btn btn-primary', 'data-focus': 'ai-accept'}, label || 'Create private draft version');
@@ -3129,7 +3129,7 @@ const HubApp = (() => {
       const e = experiment || {};
       const f = {
         title: input({type: 'text', name: 'title', required: true, maxlength: '160', value: e.title || ''}),
-        summary: input({type: 'text', name: 'summary', maxlength: '300', value: e.summary || ''}),
+        summary: input({type: 'text', name: 'summary', maxlength: '280', value: e.summary || ''}),
         description: textarea({name: 'description', rows: '6', maxlength: '20000'}, e.description || ''),
         license: input({type: 'text', name: 'license', maxlength: '120', value: e.license || '', placeholder: 'MIT, CC-BY-4.0, \u2026'}),
         citations: textarea({name: 'citations', rows: '3'}, Array.isArray(e.citations) ? e.citations.join('\n') : ''),

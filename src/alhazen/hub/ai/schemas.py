@@ -106,7 +106,9 @@ PLAN_SCHEMA: dict[str, Any] = _object(
     {
         "title": _text(160),
         "slug": _text(64, pattern=SLUG_PATTERN),
-        "summary": _text(1000),
+        "summary": _text(
+            280, description="One or two sentences; at most 280 characters (the catalogue limit)."
+        ),
         "paradigm": _text(
             4000,
             description="Prose: what one trial asks of the subject, how conditions differ "
