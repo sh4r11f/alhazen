@@ -48,6 +48,7 @@ from alhazen._scaffold import TEMPLATE_ROOT, task_class_name
 from alhazen.hub.ai import prompts
 from alhazen.hub.ai.schemas import (
     PLAN_SCHEMA,
+    RUN_REPAIR_SCHEMA,
     SOURCE_SCHEMA,
     for_provider,
     problems,
@@ -1646,7 +1647,7 @@ class GeneratedBundle:
 
     files: dict[str, bytes]
     manifest: dict[str, Any]
-    report: ValidationReport
+    report: ValidationReport | None  # None for a package the hub stored, not validated now
     archive: bytes = field(repr=False)
     sha256: str = ""
 
@@ -1661,8 +1662,22 @@ def validate_package(
     """Every static check, in order, on an assembled package; the archive and
     its inspection when packaging succeeded. ``extra`` are problems found
     while assembling, reported under the documentation check."""
-    names = names_of(plan)
-    checks: list[Check] = [Check("files", tuple(_files_check(files)))]
+    return _validate(names_of(plan), params_tree(plan), files, metadata, extra=extra)
+
+
+def _validate(
+    names: Names,
+    tree_of_params: Any,
+    files: Mapping[str, bytes],
+    metadata: Mapping[str, Any],
+    *,
+    extra: Sequence[str] = (),
+    first: Sequence[Check] = (),
+) -> tuple[ValidationReport, bytes | None, PackageInfo | None]:
+    """validate_package for a package known by its names and params file
+    content (a plan's, or a stored package's own). ``first`` are checks
+    already run (the answer's), listed before these."""
+    checks: list[Check] = [*first, Check("files", tuple(_files_check(files)))]
     trees: dict[str, ast.Module] = {}
     syntax: list[str] = []
     for path, data in sorted(files.items()):
@@ -1717,7 +1732,10 @@ def validate_package(
         structure, params_node, task_node = _structure(names, task_tree)
     checks.append(Check("structure", tuple(structure)))
     if params_node is not None:
-        default_problems, default_notes = _defaults(names, params_node, params_tree(plan))
+        if isinstance(tree_of_params, dict):
+            default_problems, default_notes = _defaults(names, params_node, tree_of_params)
+        else:
+            default_problems, default_notes = [f"{PARAMS_PATH} is not a mapping of keys"], []
         checks.append(Check("defaults", tuple(default_problems), tuple(default_notes)))
     else:
         checks.append(Check("defaults", ("the params model was not found",)))
@@ -1796,6 +1814,281 @@ def generate_source(
     if not report.ok or archive is None or info is None:
         raise SourceInvalid(
             "the generated source failed validation after one repair",
+            report,
+            completion.text,
+            files,
+        )
+    return GeneratedBundle(
+        files=files,
+        manifest=info.manifest,
+        report=report,
+        archive=archive,
+        sha256=info.sha256,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Repair from a run: a package that passed its checks and failed on a rig
+# ---------------------------------------------------------------------------
+
+_TASK_MODULE = re.compile(r"src/([a-z][a-z0-9_]*)/task\.py")
+TEST_PATH = "tests/test_task.py"
+# The run log as sent: its head (how the session started) and its tail (the
+# traceback), within this budget.
+MAX_LOG_CHARS = 48_000
+_LOG_HEAD_CHARS = 8_000
+
+
+def names_of_package(files: Mapping[str, bytes]) -> Names:
+    """The identifiers of a package this kit generated, read from its files
+    (the plan is not part of a package): the one ``src/<package>/task.py``,
+    the documented task id, and the scaffold's class names for the package.
+    ValueError if the package does not have that shape."""
+    modules = [m.group(1) for path in files if (m := _TASK_MODULE.fullmatch(path))]
+    if len(modules) != 1:
+        raise ValueError(
+            "repair needs a package with exactly one src/<package>/task.py, as generated"
+        )
+    package = modules[0]
+    task_name = package.replace("_", "-")
+    if DESCRIPTOR_PATH in files:
+        try:
+            tasks = json.loads(files[DESCRIPTOR_PATH].decode("utf-8")).get("tasks") or []
+        except (UnicodeDecodeError, json.JSONDecodeError, AttributeError) as error:
+            raise ValueError(f"{DESCRIPTOR_PATH} cannot be read: {error}") from error
+        if tasks and isinstance(tasks[0], dict) and isinstance(tasks[0].get("id"), str):
+            task_name = tasks[0]["id"]
+    task_class = task_class_name(package)
+    return Names(
+        package=package,
+        task_name=task_name,
+        task_class=task_class,
+        params_class=f"{task_class}Params",
+    )
+
+
+def next_patch(version: str) -> str:
+    """``1.2.3`` → ``1.2.4``."""
+    major, minor, patch = release_of(version).split(".")
+    return f"{major}.{minor}.{int(patch) + 1}"
+
+
+def _later(left: str, right: str) -> str:
+    def key(version: str) -> tuple[int, ...]:
+        return tuple(int(part) for part in release_of(version).split("."))
+
+    return left if key(left) >= key(right) else right
+
+
+def _log_for_prompt(log: str) -> str:
+    if len(log) <= MAX_LOG_CHARS:
+        return log
+    tail = MAX_LOG_CHARS - _LOG_HEAD_CHARS
+    cut = len(log) - _LOG_HEAD_CHARS - tail
+    return f"{log[:_LOG_HEAD_CHARS]}\n[... {cut} characters of the log left out ...]\n{log[-tail:]}"
+
+
+def _text_of(files: Mapping[str, bytes], path: str) -> str:
+    return files[path].decode("utf-8", errors="replace") if path in files else ""
+
+
+def _repair_package_view(files: Mapping[str, bytes], names: Names) -> dict[str, str]:
+    """The files the model reads, the code to fix last."""
+    order = [
+        PARAMS_PATH,
+        DESCRIPTOR_PATH,
+        names.task_doc,
+        PROVENANCE_PATH,
+        names.task_module,
+        TEST_PATH,
+    ]
+    return {path: _text_of(files, path) for path in order if path in files}
+
+
+def _editable(names: Names) -> tuple[str, ...]:
+    return (PARAMS_PATH, DESCRIPTOR_PATH, METHODS_PATH, names.task_doc, "README.md")
+
+
+def _bump_pyproject(text: str, old: str, new: str) -> tuple[str, list[str]]:
+    line = f'version = "{old}"'
+    if text.count(line) != 1:
+        return text, [f"pyproject.toml: no single line {line}; its version was left as it is"]
+    return text.replace(line, f'version = "{new}"'), []
+
+
+def _repaired_provenance(
+    original: bytes | None,
+    ctx: AuthoringContext,
+    model: str,
+    base_version: str,
+    base_sha256: str,
+    log: str,
+    changes: str,
+) -> dict[str, Any]:
+    record: dict[str, Any] = {}
+    if original is not None:
+        try:
+            loaded = json.loads(original.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            loaded = None
+        if isinstance(loaded, dict):
+            record = loaded
+    if not record:
+        record = {"schema": "alhazen-ai-provenance", "schema_version": 1, "ai_assisted": True}
+    earlier = record.get("repairs")
+    repairs: list[Any] = earlier if isinstance(earlier, list) else []
+    record.update(
+        model=model,
+        alhazen_version=ctx.alhazen_version,
+        repairs=[
+            *repairs,
+            {
+                "from_version": base_version,
+                "from_sha256": base_sha256,
+                "log_sha256": hashlib.sha256(log.encode("utf-8")).hexdigest(),
+                "changes": changes[:2000],
+            },
+        ],
+    )
+    return record
+
+
+@dataclass(frozen=True)
+class _RepairBase:
+    """What a run repair starts from and keeps."""
+
+    files: dict[str, bytes]
+    names: Names
+    metadata: dict[str, Any]  # the manifest minus files, version bumped
+    log: str
+
+
+def _repair_attempt(
+    base: _RepairBase, text: str, ctx: AuthoringContext, model: str, version: str
+) -> tuple[ValidationReport, dict[str, bytes], bytes | None, PackageInfo | None]:
+    answer, report = _answer_report(text, RUN_REPAIR_SCHEMA, "repair")
+    if not report.ok:
+        return report, {}, None, None
+    names = base.names
+    files = dict(base.files)
+    found: list[str] = []
+    files[names.task_module] = _with_newline(answer["task_module"])
+    files[TEST_PATH] = _with_newline(answer["test_module"])
+    editable = _editable(names)
+    for item in answer["other_files"]:
+        if item["path"] not in editable:
+            found.append(
+                f"other_files: {item['path'][:80]!r} may not be changed by a repair "
+                f"(allowed: {', '.join(editable)})"
+            )
+        else:
+            files[item["path"]] = _with_newline(item["content"])
+    if all(files.get(path) == base.files.get(path) for path in files):
+        found.append("nothing changed: the answer returns the package as it ran")
+    old_version = str(base.metadata["previous_version"])
+    if "pyproject.toml" in files:
+        text_toml, notes = _bump_pyproject(_text_of(files, "pyproject.toml"), old_version, version)
+        files["pyproject.toml"] = text_toml.encode("utf-8")
+        found += notes
+    files[PROVENANCE_PATH] = (
+        json.dumps(
+            _repaired_provenance(
+                base.files.get(PROVENANCE_PATH),
+                ctx,
+                model,
+                old_version,
+                str(base.metadata["previous_sha256"]),
+                base.log,
+                answer["changes"],
+            ),
+            indent=2,
+            ensure_ascii=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+    try:
+        tree: Any = yaml.safe_load(_text_of(files, PARAMS_PATH))
+    except yaml.YAMLError as error:
+        tree = None
+        found.append(f"{PARAMS_PATH}: not valid YAML ({error.__class__.__name__})")
+    metadata = {
+        k: v for k, v in base.metadata.items() if k not in ("previous_version", "previous_sha256")
+    }
+    validation, archive, info = _validate(
+        names, tree, files, {**metadata, "version": version}, extra=found, first=report.checks
+    )
+    return validation, files, archive, info
+
+
+def _with_newline(text: str) -> bytes:
+    return (text if text.endswith("\n") else text + "\n").encode("utf-8")
+
+
+def repair_from_run(
+    client: ProviderClient,
+    bundle: GeneratedBundle,
+    log: str,
+    ctx: AuthoringContext,
+    notes: str | None = None,
+    *,
+    version: str | None = None,
+    on_completion: OnCompletion | None = None,
+) -> GeneratedBundle:
+    """Repair ``bundle`` (the package as it ran) from its run ``log``.
+
+    The model gets the authoring context (modes and the API a task may use),
+    the package's parameters, documentation and provenance, its current task
+    module and tests, the person's ``notes`` and the log, and is told to fix
+    the runtime failure without changing the protocol, parameters or
+    documentation unless the log shows they are wrong. The answer replaces
+    the task and test modules (and only the documentation or params files it
+    names); the result passes every check generate_source runs, the api check
+    included, after at most one repair request, or SourceInvalid is raised.
+
+    The new package's version is ``version`` when given, else the bundle's
+    patch + 1, in the manifest and pyproject.toml; docs/ai-provenance.json
+    records the repair (base version and SHA-256, the log's SHA-256, the
+    model's account of the change). ValueError if ``bundle`` is not a
+    package of the shape this kit generates."""
+    names = names_of_package(bundle.files)
+    base_version = str(bundle.manifest.get("version", "0.0.0"))
+    new_version = version if version is not None else next_patch(base_version)
+    release_of(new_version)  # refuse a malformed override before any request
+    metadata = {
+        key: value
+        for key, value in bundle.manifest.items()
+        if key not in ("files", "schema_version")
+    }
+    metadata["alhazen_min"] = _later(
+        str(metadata.get("alhazen_min", ctx.alhazen_version)), ctx.alhazen_version
+    )
+    metadata["previous_version"] = base_version
+    metadata["previous_sha256"] = bundle.sha256
+    base = _RepairBase(dict(bundle.files), names, metadata, log)
+    context = [(name, text) for name, text in ctx.source_items if name.startswith("alhazen ")]
+    messages = prompts.run_repair_messages(
+        _repair_package_view(bundle.files, names),
+        names.for_prompt(),
+        _log_for_prompt(log),
+        notes,
+        context,
+        RUN_REPAIR_SCHEMA,
+    )
+    completion = _complete(client, messages, RUN_REPAIR_SCHEMA, SOURCE_MAX_TOKENS, on_completion)
+    report, files, archive, info = _repair_attempt(
+        base, completion.text, ctx, completion.model, new_version
+    )
+    if not report.ok:
+        messages = prompts.repair_messages(messages, completion.text, report.problems)
+        completion = _complete(
+            client, messages, RUN_REPAIR_SCHEMA, SOURCE_MAX_TOKENS, on_completion
+        )
+        report, files, archive, info = _repair_attempt(
+            base, completion.text, ctx, completion.model, new_version
+        )
+    if not report.ok or archive is None or info is None:
+        raise SourceInvalid(
+            "the repaired source failed validation after one repair",
             report,
             completion.text,
             files,

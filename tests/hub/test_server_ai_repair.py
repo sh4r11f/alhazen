@@ -1,17 +1,22 @@
 """Repair from a rig's run log: a runtime failure no static check caught
 goes back to the draft as a repair job; accepting the repaired package makes
 the next version of the same experiment. Secrets in the log are removed
-before it is stored or sent. Scripted provider and the server's test kit;
-SQLite by default, PostgreSQL with ALHAZEN_HUB_TEST_POSTGRES_URL."""
+before it is stored or sent. Scripted provider and the server's test kit,
+and (TestRepairWithTheRealKit) the real kit's repair_from_run with its
+FakeProvider; SQLite by default, PostgreSQL with
+ALHAZEN_HUB_TEST_POSTGRES_URL."""
 
 from __future__ import annotations
 
+import io
+import json
+import zipfile
 from pathlib import Path
 from typing import Any
 
 import pytest
 from sqlalchemy import select
-from tests.hub import ai_fakes
+from tests.hub import ai_fakes, ai_support
 from tests.hub.test_server_ai import (
     OPENAI_KEY,
     AIHub,
@@ -21,6 +26,7 @@ from tests.hub.test_server_ai import (
     signed_in,
     to_generated,
 )
+from tests.hub.test_server_ai_kit import KitHub, start, user
 
 from alhazen.hub.ai.providers import ProviderError
 from alhazen.hub.ai.redact import clean_log, redact
@@ -181,9 +187,75 @@ class TestRepair:
         assert busy.status_code == 429 and busy.json()["error"]["code"] == "ai_jobs_busy"
 
 
-def job_log(ai: AIHub, job_id: str) -> str:
-    import json
+@pytest.fixture
+def kh(tmp_path: Path, clock: Any) -> KitHub:
+    return KitHub(ai_settings(tmp_path), clock, ai_support.FakeProvider())
 
+
+def kit_accepted(kh: KitHub) -> tuple[Any, str, dict[str, Any]]:
+    """Plan, source and acceptance through the real kit and its FakeProvider."""
+    ada = user(kh)
+    draft_id = start(ada)["draft"]["id"]
+    kh.drain()
+    assert ada.post(f"/ai/drafts/{draft_id}/generate", {}).status_code == 202
+    kh.drain()
+    r = ada.post(f"/ai/drafts/{draft_id}/accept", {})
+    assert r.status_code == 200, r.text
+    return ada, draft_id, r.json()
+
+
+class TestRepairWithTheRealKit:
+    """The same route and worker, with alhazen.hub.ai.author.repair_from_run
+    doing the work (no stubbed kit)."""
+
+    def test_repair_makes_a_validated_next_version(self, kh: KitHub) -> None:
+        ada, draft_id, first = kit_accepted(kh)
+        exp_id, v1 = first["experiment"]["id"], first["version"]
+        kh.fake.requests.clear()
+        r = repair(ada, draft_id, TRACEBACK + BEARER, notes="Stopped on trial 2.")
+        assert r.status_code == 202, r.text
+        kh.drain()
+        view = draft(ada, draft_id)
+        job = job_of(view, "source")
+        assert view["draft"]["status"] == "generated" and job["status"] == "done", job
+        assert job["result"]["report"]["ok"] is True
+        names = [c["name"] for c in job["result"]["report"]["checks"]]
+        assert "api" in names and "documentation" in names
+        assert job["disclosed"]["repair"]["base"]["version_id"] == v1["id"]
+        sent = kh.fake.sent_text()
+        assert "draw_disc" in sent and "Stopped on trial 2." in sent
+        assert "SECRETBEARERVALUE1234" not in sent and OPENAI_KEY not in sent
+        assert kh.fake.requests[0]["json_schema"]["title"] == "alhazen_repair"
+
+        second = ada.post(f"/ai/drafts/{draft_id}/accept", {})
+        assert second.status_code == 200, second.text
+        v2 = second.json()["version"]
+        assert second.json()["experiment"]["id"] == exp_id
+        assert v2["version"] == "0.1.1" and v2["ai_assisted"] is True
+        download = ada.get(f"/experiments/{exp_id}/versions/{v2['id']}/download")
+        with zipfile.ZipFile(io.BytesIO(download.content)) as archive:
+            provenance = json.loads(archive.read("docs/ai-provenance.json"))
+            assert 'version = "0.1.1"' in archive.read("pyproject.toml").decode()
+        assert provenance["repairs"][0]["from_version"] == "0.1.0"
+
+    def test_an_invalid_repair_is_generation_invalid_and_keeps_the_version(
+        self, kh: KitHub
+    ) -> None:
+        ada, draft_id, first = kit_accepted(kh)
+        kh.fake.behaviours = ["valid"] * len(kh.fake.requests) + ["rules_invalid"]
+        assert repair(ada, draft_id).status_code == 202
+        kh.drain()
+        view = draft(ada, draft_id)
+        failed = [j for j in view["jobs"] if j["kind"] == "repair"][0]
+        assert failed["error"]["code"] == "generation_invalid"
+        report = failed["result"]["report"]
+        assert report["ok"] is False
+        assert any(c["name"] == "syntax" and not c["ok"] for c in report["checks"])
+        assert view["draft"]["status"] == "accepted"
+        assert view["draft"]["version_id"] == first["version"]["id"]
+
+
+def job_log(ai: AIHub, job_id: str) -> str:
     with ai.service.db.transaction() as conn:
         row = conn.execute(select(ai_jobs.c.request_json).where(ai_jobs.c.id == job_id)).one()
     return str(json.loads(row.request_json)["log"])

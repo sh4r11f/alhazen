@@ -64,7 +64,7 @@ Rules for the plan:
 12. Plain, literal language. No marketing.
 """
 
-SOURCE_SYSTEM = """\
+SOURCE_INTRO = """\
 You write the source of an alhazen experiment package from an approved plan. alhazen is a
 Python toolkit for gaze-contingent vision experiments; the context below holds its modes, its
 public API (exact signatures from the installed version), the scaffold `alhazen new` writes and
@@ -105,6 +105,10 @@ use are fixed and given below. You write:
   mode (`python run.py --task <task> --mode demo`, `--mode simulate --headless`,
   `--mode test --sub dev --ses 1 --initials DEV`, `--rig <name>` for a real session).
 
+"""
+
+# The rules every answer that writes task code follows (source and run repair).
+CODE_RULES = """\
 Drawing:
 - The display (`setup.display`) has NO drawing methods: everything on screen is a stimulus
   object in TrialPlan.stimuli, drawn by the phases. Prefer alhazen's own stimuli:
@@ -138,6 +142,33 @@ Getting the science right:
 Never: network access, subprocess or os.system, eval or exec, dynamic imports, writing files
 (alhazen writes all data), reading environment secrets, rig configuration files.
 """
+
+SOURCE_SYSTEM = SOURCE_INTRO + CODE_RULES
+
+RUN_REPAIR_SYSTEM = """\
+You repair an alhazen experiment package that passed its static checks but failed when it
+ran on a rig. alhazen is a Python toolkit for gaze-contingent vision experiments; the
+context below holds its modes and the exact API a task may use (read from the installed
+version). You get the package's parameters and documentation, its current task module and
+tests, and the run log. Answer with one JSON object that follows the JSON schema given at
+the end, and nothing else. Code goes in JSON strings: escape newlines and quotes properly.
+
+Fix the failure the log shows, and everything else in the code that fails the same way.
+Do not change the protocol (phases, their order and timing, conditions, outcomes, events),
+the parameters or the documentation, unless the log shows that they are wrong; when you
+must, put the whole changed file in `other_files` and say why in `changes`. Keep the class
+names, the task name and the params file's keys and defaults.
+
+- `changes`: what failed, why, and what you changed, in plain sentences.
+- `task_module`: the complete corrected src/<package>/task.py.
+- `test_module`: the complete tests/test_task.py, with a test that would have caught this
+  failure where one can be written without a display, tracker or renderer.
+- `other_files`: only files the fix requires, from: configs/task.yaml,
+  docs/experiment.json, docs/methods.md, docs/tasks/<task>.md, README.md. Usually empty.
+
+"""
+
+RUN_REPAIR_SYSTEM = RUN_REPAIR_SYSTEM + CODE_RULES
 
 REPAIR_INSTRUCTION = """\
 Your previous answer failed these checks:
@@ -214,4 +245,29 @@ def repair_messages(
         *messages,
         {"role": "assistant", "content": answer},
         {"role": "user", "content": REPAIR_INSTRUCTION.format(problems=listed)},
+    ]
+
+
+def run_repair_messages(
+    package: Mapping[str, str],
+    names: Mapping[str, str],
+    log: str,
+    notes: str | None,
+    context: Sequence[tuple[str, str]],
+    schema: Mapping[str, Any],
+) -> list[Message]:
+    """The messages that ask for a repair of a package that failed when it
+    ran: instructions, context, the package's own files (``package``: path
+    to text, the code to fix last), the fixed names, the person's notes and
+    the run log."""
+    blocks = [context_text(context)]
+    blocks += [_block(f"The package as it ran: {path}", text) for path, text in package.items()]
+    blocks.append(_block("Fixed names", "\n".join(f"- {k}: {v}" for k, v in names.items())))
+    if notes and notes.strip():
+        blocks.append(_block("Notes from the person who ran it", notes))
+    blocks.append(_block("The run log (secrets removed)", log))
+    blocks.append(_schema_block(schema))
+    return [
+        {"role": "system", "content": RUN_REPAIR_SYSTEM},
+        {"role": "user", "content": "\n".join(blocks)},
     ]

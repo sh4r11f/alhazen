@@ -219,6 +219,18 @@ SOURCE_SCHEMA: dict[str, Any] = _object(
     title="alhazen_source",
 )
 
+# What the model writes to repair a package that failed when it ran: the
+# whole task and test modules, and only the other files the fix requires.
+RUN_REPAIR_SCHEMA: dict[str, Any] = _object(
+    {
+        "changes": _text(4000),
+        "task_module": _text(200_000),
+        "test_module": _text(200_000),
+        "other_files": _rows(_object({"path": _text(200), "content": _text(200_000)}), 5),
+    },
+    title="alhazen_repair",
+)
+
 _PROVIDER_REFUSED_KEYWORDS = frozenset({"maxLength", "minLength"})
 _KNOWN_KEYWORDS = frozenset(
     {
