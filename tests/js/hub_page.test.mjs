@@ -1041,29 +1041,57 @@ test('marketplace: Add to library pins this release and the card says it is in t
   assert.ok(p.find('a', 'Open your library'));
 });
 
-test('Create with AI: private; generating says it is not connected and sends nothing; the plan is labelled an example', async () => {
-  let p = await mount({routes: {'GET /config': () => SERVER_CONFIG, 'GET /auth/me': signedOut}, search: '?view=create&fork=e1'});
-  assert.equal(p.loc.search, '?view=signin&next=%3Fview%3Dcreate%26fork%3De1');
-  assert.match(p.document.getElementById('account').textContent, /Create/);
-  p = await mount({routes: {'GET /config': () => SERVER_CONFIG,
-    'GET /auth/me': () => ({status: 200, body: {user: ALICE, csrf_token: 'c'}}),
-    'GET /catalog': () => ({status: 200, body: {items: storeItems(), next_offset: null}})}, search: '?view=create&fork=a'});
-  const before = p.hub.calls.length;
-  const prompt = p.main.querySelector('textarea');
-  assert.equal(p.main.querySelectorAll('.example-chip').length, 3);
-  await p.click(p.main.querySelectorAll('.example-chip')[1]);
-  assert.match(prompt.value, /saccade task/);
-  const key = p.main.querySelectorAll('input').find((i) => i.getAttribute('type') === 'password');
-  key.value = 'sk-secret';
-  assert.equal(p.main.querySelector('select[name="fork"]').value, 'a');
-  await p.submit(p.main.querySelector('form'));
+test('create (Index flow): signed out goes to sign in; signed in, Generate sends nothing and says it is not connected', async () => {
+  const out = await mount({search: '?view=create&fork=b', routes: {'GET /config': () => SERVER_CONFIG, 'GET /auth/me': signedOut}});
+  assert.equal(out.loc.search, '?view=signin&next=%3Fview%3Dcreate%26fork%3Db');
+  assert.match(out.document.getElementById('account').textContent, /Create/);
+  const p = await mount({search: '?view=create&fork=b', routes: {
+    'GET /config': () => SERVER_CONFIG, 'GET /auth/me': () => ({status: 200, body: {user: ALICE, csrf_token: 'c1'}}),
+    'GET /catalog': () => ({status: 200, body: {items: storeItems(), next_offset: null}}),
+  }});
+  const form = p.main.querySelector('form');
+  const selects = form.querySelectorAll('select');
+  assert.equal(selects[0].value, 'b', 'the listing to fork is preselected');
+  assert.deepEqual(selects[1].querySelectorAll('option').map((o) => o.textContent), ['OpenAI', 'Anthropic', 'Google', 'OpenRouter']);
+  const key = form.querySelectorAll('input').find((i) => i.getAttribute('type') === 'password');
+  key.value = 'sk-' + 'x'.repeat(30);
+  await p.submit(form);
+  assert.match(p.text(), /Describe the experiment/);
+  assert.equal(key.value, '', 'the key field is cleared, never kept');
+  await p.click(p.find('button', 'Saccade adaptation'));
+  key.value = 'sk-' + 'y'.repeat(30);
+  const calls = p.hub.calls.length;
+  await p.submit(form);
   assert.match(p.text(), /Generation is not connected yet/);
-  assert.equal(key.value, '', 'the key field is cleared');
-  assert.equal(p.hub.calls.length, before, 'nothing is sent anywhere');
-  assert.ok(!JSON.stringify([...p.session.map.values()]).includes('sk-secret'));
+  assert.match(p.text(), /nothing was sent to OpenAI and no key was stored/);
+  assert.equal(p.hub.calls.length, calls, 'no request of any kind');
+  assert.equal(key.value, '');
+  assert.ok(!p.session.map.size || ![...p.session.map.values()].some((v) => String(v).includes('sk-')));
   await p.click(p.find('a', 'See an example plan'));
-  assert.equal(p.loc.search, '?view=create&fork=a&step=plan');
+  assert.equal(p.loc.search, '?view=create&fork=b&step=plan');
   assert.match(p.text(), /Example plan/);
-  assert.match(p.text(), /Fork of Exp a v1\.2\.0/);
-  assert.ok(p.find('button', 'Save as private draft').disabled);
+  assert.match(p.text(), /Not connected yet/);
+  assert.equal(p.find('button', 'Create private draft').disabled, true);
+  assert.match(p.text(), /Fork of a listing: Exp b v1\.2\.0/);
+  assert.match(p.text(), /Parameters11/);
+});
+
+test('experiment page: Fork with AI opens Create with this experiment as the start; Add to library stays primary', async () => {
+  const p = await mount({routes: {'GET /config': () => SERVER_CONFIG, 'GET /auth/me': () => ({status: 200, body: {user: ALICE, csrf_token: 'c'}}),
+    'GET /experiments/e1': () => ({status: 200, body: {experiment: experiment(), versions: [release()]}}),
+    'GET /experiments/e1/versions/v1/documentation': () => ({status: 200, body: {documentation: null}}),
+    'GET /library': () => ({status: 200, body: {items: [], next_offset: null}}),
+    'GET /catalog': () => ({status: 200, body: {items: [{experiment: experiment(), version: release()}], next_offset: null}}),
+  }, search: '?view=experiment&id=e1'});
+  assert.equal(p.find('a', 'Start a variant'), undefined);
+  const fork = p.find('a', 'Fork with AI');
+  assert.equal(fork.textContent, 'Fork with AI');
+  assert.equal(fork.getAttribute('href'), '/?view=create&fork=e1');
+  assert.match(p.find('button', 'Add to library').className, /btn-primary/);
+  assert.doesNotMatch(fork.className, /btn-primary/);
+  await p.click(fork);
+  assert.equal(p.loc.search, '?view=create&fork=e1');
+  const radios = p.main.querySelectorAll('input').filter((i) => i.getAttribute('type') === 'radio');
+  assert.equal(radios[1].checked, true, 'Fork a catalogue listing is chosen');
+  assert.equal(p.main.querySelector('select[name="from"]').value, 'e1');
 });

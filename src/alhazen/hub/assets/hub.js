@@ -133,7 +133,7 @@ const HubApp = (() => {
       flash: null,          // one-shot message for the next screen {text, tone, username}
       library: null,        // cached GET /library items for this account (null: not loaded)
       catalog: null,        // {q, at, items}: the whole published catalogue for one search, kept a minute
-      createDraft: {prompt: '', provider: 'anthropic', fork: ''},  // the Create form's text (never the key)
+      createDraft: null,    // the Create form's description and choices (never the key)
       polls: [],
       booted: false,
     };
@@ -1563,6 +1563,11 @@ const HubApp = (() => {
       aside.appendChild(libraryAction(ctx, experiment, version));
       if (state.role === 'rig') aside.appendChild(installPanel(experiment, version));
       else aside.appendChild(downloadAction(experiment, version));
+      if (state.role === 'server') {
+        const forkAi = link({view: 'create', fork: experiment.id}, null, {class: 'btn btn-line btn-block btn-fork', 'data-focus': 'fork-ai'});
+        forkAi.append(sparkGlyph(), h('span', null, 'Fork with AI'));
+        aside.appendChild(h('div', {class: 'sheet-block sheet-fork'}, forkAi));
+      }
       const subjects = C.subjectKeys({experiment}).map((s) => s === 'human' ? 'Human' : 'Monkey').join(', ');
       aside.appendChild(spec([
         ['Licence', experiment.license || m.license || 'not stated'],
@@ -1571,9 +1576,6 @@ const HubApp = (() => {
         ['Runs on', C.platformsText(m)],
         ['SHA-256', h('span', {class: 'mono', title: String(version.sha256 || '')}, C.shortHash(version.sha256) + '\u2026')],
       ]));
-      if (state.role === 'server') {
-        aside.appendChild(h('p', {class: 'sheet-variant'}, link({view: 'create', fork: experiment.id}, 'Start a variant with AI', {class: 'btn btn-quiet btn-small'})));
-      }
       if (isOwner(experiment)) {
         aside.appendChild(h('p', {class: 'sheet-owner'}, link({view: 'mine', id: experiment.id}, 'Manage this experiment', {class: 'btn btn-quiet'})));
       }
@@ -2131,201 +2133,255 @@ const HubApp = (() => {
       return panel;
     }
 
-    /* ---- create with AI (the next phase's flow; generation not connected) ---- */
+    /* ---- create with AI (ported from option Index: a structured form, then a two-column plan) ----
+     * Generation is the next phase: no route exists yet, so this page keeps
+     * real form state, sends nothing anywhere and says so at the Generate
+     * step. The plan view renders a fixed example (EXAMPLE_PLAN) so its
+     * layout can be judged; it is labelled as an example everywhere. */
 
+    const PROVIDERS = [['openai', 'OpenAI'], ['anthropic', 'Anthropic'], ['google', 'Google'], ['openrouter', 'OpenRouter']];
     const EXAMPLE_PROMPTS = [
-      'A two-interval contrast detection task for a Gabor at four eccentricities, with a QUEST+ threshold for each and fixation control.',
-      'A saccade task where the target steps during the eye movement, to adapt saccade gain over 300 trials in a monkey, with juice for accurate landings.',
-      'Ebbinghaus size matching by adjustment: large or small inducers, three gaps, keyboard responses, no eye tracker.',
+      ['Ebbinghaus size matching', 'A size-matching task with the Ebbinghaus illusion: a target disc surrounded by large or small inducer circles on one side, a comparison disc on the other that the participant adjusts with the arrow keys until it looks the same size. Two inducer sizes by three target sizes, 20 trials each. Keep fixation on a central cross, checked with the eye tracker. Human participants.'],
+      ['Saccade adaptation', 'Saccade adaptation in monkeys: a target jumps 10 degrees left or right; during the saccade it steps back by 2 degrees. 400 adaptation trials between 50 pre- and post-test trials without the step. Juice reward on landing within 2 degrees.'],
+      ['Motion coherence threshold', 'A random-dot motion direction task: 200 dots in a 10 degree aperture, left or right motion, coherence set by a QUEST staircase to 75% correct. Key press response, no eye tracker. Human.'],
     ];
-    const PROVIDERS = [['anthropic', 'Anthropic'], ['openai', 'OpenAI'], ['google', 'Google'], ['openrouter', 'OpenRouter']];
+    const EXAMPLE_PLAN = {
+      title: 'Ebbinghaus size matching with fixation control',
+      slug: 'ebbinghaus-fixation',
+      paradigm: 'Method of adjustment. On each trial a target disc sits in the left or right hemifield, ringed by large or small inducer circles; a lone comparison disc sits mirror-symmetric on the other side. The participant scales the comparison with the arrow keys and confirms with the space bar while holding gaze on a central cross.',
+      design: [
+        ['Paradigm', 'Method of adjustment'],
+        ['Conditions', '2 inducer sizes \u00d7 3 target sizes \u00d7 2 sides (side counterbalanced)'],
+        ['Trials', '120 (20 per inducer \u00d7 target cell), in 4 blocks of 30'],
+        ['Session', 'About 25 minutes with calibration and breaks'],
+        ['Subject', 'Human'],
+        ['Hardware', 'Display, eye tracker'],
+      ],
+      stimuli: [
+        ['Fixation cross', '0.4 dva', 'Centre', 'Black, always on'],
+        ['Target disc', '1.0, 1.4 or 1.8 dva', '6 dva left or right', 'Mid-grey'],
+        ['Inducers (large)', '2.4 dva, 6 around the target', 'Ring at 2.6 dva from target centre', 'Mid-grey'],
+        ['Inducers (small)', '0.5 dva, 8 around the target', 'Ring at 1.3 dva from target centre', 'Mid-grey'],
+        ['Comparison disc', 'Starts \u00b140% of the target, random', 'Mirror of the target', 'Arrow keys scale it by 1%'],
+      ],
+      timeline: [
+        ['Fixate', 600, 'Gaze in a 2 dva window'],
+        ['Adjust', 4000, 'Until space, at most 8 s'],
+        ['Confirm', 300, 'Comparison size recorded'],
+        ['Interval', 700, 'Blank screen'],
+      ],
+      measures: [
+        ['Matched diameter', 'dva', 'Comparison size at confirmation'],
+        ['Illusion magnitude', '%', '(matched \u2212 target) / target'],
+        ['Adjustment time', 's', 'Stimulus onset to confirmation'],
+        ['Fixation breaks', 'count', 'Samples outside the window during Adjust'],
+      ],
+      parameters: [
+        ['target_sizes_dva', '1.0, 1.4, 1.8', 'dva', 'Diameters of the target disc'],
+        ['inducer_large_dva', '2.4', 'dva', 'Diameter of each large inducer'],
+        ['inducer_small_dva', '0.5', 'dva', 'Diameter of each small inducer'],
+        ['eccentricity_dva', '6.0', 'dva', 'Horizontal offset of target and comparison'],
+        ['start_offset_pct', '40', '%', 'Largest random start offset of the comparison'],
+        ['step_pct', '1', '%', 'Scaling per key press'],
+        ['fix_window_dva', '2.0', 'dva', 'Gaze window radius around the cross'],
+        ['fix_duration', '600', 'ms', 'Fixation before the stimulus appears'],
+        ['max_adjust', '8000', 'ms', 'Time limit for one adjustment'],
+        ['iti', '700', 'ms', 'Blank interval between trials'],
+        ['n_per_condition', '20', 'trials', 'Repeats of each inducer \u00d7 target cell'],
+      ],
+      tests: [
+        ['Parameters load and validate', 'configs/task.yaml against the params model'],
+        ['Stimulus geometry', 'Inducer rings never overlap the target at any size'],
+        ['Trial schedule', '120 trials, 20 per cell, sides balanced in each block'],
+        ['Simulated session', 'alhazen simulate completes with an automated observer'],
+        ['Timing', 'Every phase lasts whole frames at 60 and 120 Hz'],
+        ['Data columns', 'trials.csv holds every measure above'],
+      ],
+    };
 
-    function createSteps(current) {
-      const steps = [['describe', 'Describe'], ['plan', 'Review the plan'], ['draft', 'Save as a private draft']];
-      const ol = h('ol', {class: 'steps', 'aria-label': 'Steps'});
-      steps.forEach(([key, label], i) => {
-        ol.appendChild(h('li', {class: 'step' + (key === current ? ' is-current' : ''), 'aria-current': key === current ? 'step' : null},
-          h('span', {class: 'step-n'}, String(i + 1)), h('span', null, label)));
-      });
-      return ol;
+    function createDraft() {
+      if (!state.createDraft) state.createDraft = {description: '', start: 'blank', from: '', provider: 'openai'};
+      return state.createDraft;
     }
 
     function screenCreate(ctx) {
       const r = ctx.route;
       if (r.step === 'plan') return screenCreatePlan(ctx);
-      const draft = state.createDraft;
-      if (r.fork) draft.fork = r.fork;
-      const section = h('section', {class: 'screen screen-create'});
-      section.appendChild(h('header', {class: 'create-head'},
-        h('h1', {class: 'screen-title', tabindex: '-1', 'data-heading': ''}, 'Create an experiment with AI'),
-        h('p', {class: 'lede'}, 'Describe the experiment in plain language. A model drafts a plan you review, then a private draft under My experiments.'),
-        createSteps('describe')));
-      const flash = flashNode();
-      if (flash) section.appendChild(flash);
-      const promptId = nextId('prompt');
-      const prompt = textarea({id: promptId, name: 'prompt', rows: '7', class: 'input textarea prompt-box', maxlength: '4000',
-        placeholder: 'What should the experiment measure, in whom, with which stimuli and responses?', 'data-focus': 'create-prompt'}, draft.prompt);
-      prompt.addEventListener('input', () => { draft.prompt = prompt.value; });
-      const examples = h('ul', {class: 'prompt-examples', 'aria-label': 'Example descriptions'});
-      for (const text of EXAMPLE_PROMPTS) {
-        examples.appendChild(h('li', null, h('button', {type: 'button', class: 'example-chip', on: {click: () => {
-          prompt.value = text;
-          draft.prompt = text;
-          prompt.focus();
-        }}}, text)));
-      }
-      const describe = h('div', {class: 'create-card'},
-        h('h2', {class: 'create-card-title'}, h('span', {class: 'create-n'}, '1'), h('span', null, 'Describe it')),
-        h('label', {class: 'field-label', for: promptId}, 'Description'), prompt,
-        h('p', {class: 'field-hint'}, 'Or start from an example:'), examples);
-      /* Fork from a published release (or start empty). */
-      const forkId = nextId('fork');
-      const fork = select([['', 'Start from scratch']], '', {id: forkId, name: 'fork', 'data-focus': 'create-fork'});
-      const forkCard = h('div', {class: 'fork-preview'});
-      const paintFork = (items) => {
-        const chosen = items.find((i) => i.experiment && i.experiment.id === draft.fork);
-        forkCard.replaceChildren();
-        if (!chosen) return;
-        forkCard.append(h('span', {class: 'fork-art', 'aria-hidden': 'true'}, schematic(C.schematicKind(chosen.experiment.tags), chosen.experiment.id, 'strip')),
-          h('span', {class: 'fork-text'}, h('span', {class: 'fork-title'}, chosen.experiment.title || 'Untitled experiment'),
-            h('span', {class: 'fork-meta'}, [versionLabel(chosen.version), chosen.experiment.license].filter(Boolean).join(' \u00b7 ')
-              + ' \u00b7 the draft keeps its licence and cites it')));
+      const draft = createDraft();
+      if (r.fork) { draft.start = 'fork'; draft.from = r.fork; }
+      const section = screenShell('Create', 'Create an experiment',
+        'Describe it in plain language, choose where to start, and generate a plan to review. Nothing runs or is published without you.');
+      section.classList.add('screen-create');
+
+      /* 1 Describe */
+      const description = textarea({name: 'description', rows: '7', maxlength: '4000', 'data-focus': 'create-describe',
+        placeholder: 'What should the experiment measure, with which stimuli, for whom?'}, draft.description);
+      description.addEventListener('input', () => { draft.description = description.value; });
+      const examples = h('div', {class: 'ix-examples'}, h('span', {class: 'ix-examples-label'}, 'Examples'),
+        ...EXAMPLE_PROMPTS.map(([label, text]) => h('button', {type: 'button', class: 'btn btn-line btn-small ix-example',
+          on: {click: () => { description.value = text; draft.description = text; description.focus(); }}}, label)));
+
+      /* 2 Start from */
+      const startName = nextId('start');
+      const blank = h('input', {type: 'radio', name: startName, value: 'blank', id: nextId('r'), class: 'check', checked: draft.start !== 'fork'});
+      const fork = h('input', {type: 'radio', name: startName, value: 'fork', id: nextId('r'), class: 'check', checked: draft.start === 'fork'});
+      const listing = h('select', {id: nextId('s'), class: 'input select', name: 'from', disabled: draft.start !== 'fork'},
+        h('option', {value: ''}, 'Loading the catalogue\u2026'));
+      const syncStart = () => {
+        draft.start = fork.checked ? 'fork' : 'blank';
+        listing.disabled = !fork.checked;
       };
-      fork.addEventListener('change', () => { draft.fork = fork.value; paintFork(forkItems); });
-      let forkItems = [];
+      blank.addEventListener('change', syncStart);
+      fork.addEventListener('change', syncStart);
+      listing.addEventListener('change', () => { draft.from = listing.value; });
       (async () => {
         const got = await catalogItems(ctx, '');
-        if (!got || !got.ok) return;
-        forkItems = got.value;
-        for (const item of C.filterCatalog(forkItems, {sort: 'name'})) {
-          const opt = h('option', {value: item.experiment.id}, (item.experiment.title || 'Untitled') + ' \u00b7 ' + versionLabel(item.version));
-          if (item.experiment.id === draft.fork) opt.selected = true;
-          fork.appendChild(opt);
-        }
-        fork.value = draft.fork || '';
-        paintFork(forkItems);
+        if (!got) return;
+        const options = got.ok ? got.value.slice().sort((a, b) => String(a.experiment.title).localeCompare(String(b.experiment.title))) : [];
+        listing.replaceChildren(h('option', {value: ''}, got.ok ? (options.length ? 'Choose a listing' : 'The catalogue is empty') : 'The catalogue could not be read'),
+          ...options.map((item) => h('option', {value: item.experiment.id, selected: item.experiment.id === draft.from},
+            (item.experiment.title || 'Untitled') + ' \u00b7 ' + versionLabel(item.version) + ' \u00b7 ' + ((item.experiment.owner && item.experiment.owner.display_name) || ''))));
+        listing.value = draft.from || '';
       })();
-      const forkBlock = h('div', {class: 'create-card'},
-        h('h2', {class: 'create-card-title'}, h('span', {class: 'create-n'}, '2'), h('span', null, 'Fork from\u2026')),
-        field('Starting point', fork, 'Optional. The plan then changes a published release instead of starting empty.'), forkCard);
-      /* Provider and key: the key lives in this field only. */
-      const providerId = nextId('provider');
-      const provider = select(PROVIDERS, draft.provider, {id: providerId, name: 'provider'});
+
+      /* 3 Provider and key */
+      const provider = select(PROVIDERS, draft.provider, {name: 'provider'});
       provider.addEventListener('change', () => { draft.provider = provider.value; });
-      const key = input({type: 'password', name: 'api-key', autocomplete: 'off', spellcheck: 'false', placeholder: 'Paste your API key', 'data-focus': 'create-key'});
-      const keyBlock = h('div', {class: 'create-card'},
-        h('h2', {class: 'create-card-title'}, h('span', {class: 'create-n'}, '3'), h('span', null, 'Model and key')),
-        h('div', {class: 'create-pair'}, field('Provider', provider), field('API key', key, 'Your own key. It will be stored encrypted for your account and never shown again.')),
-        h('p', {class: 'key-status'}, h('span', {class: 'lamp lamp-idle', 'aria-hidden': 'true'}),
-          h('span', null, 'Not connected yet: this version neither saves nor sends a key.')));
-      const status = statusLine();
-      const generate = h('button', {type: 'submit', class: 'btn btn-primary'}, sparkGlyph(), h('span', null, 'Generate plan'));
-      describe.classList.add('create-main');
-      const form = h('form', {class: 'create-form'}, describe, h('div', {class: 'create-side'}, forkBlock, keyBlock),
-        h('div', {class: 'create-actions'}, generate,
-          link({view: 'create', step: 'plan', fork: draft.fork || undefined}, 'See an example plan', {class: 'btn btn-line'})),
-        status.el);
+      const key = input({type: 'password', name: 'api_key', autocomplete: 'off', spellcheck: 'false', placeholder: 'Paste a key'});
+
+      /* 4 Generate */
+      const status = h('div', {class: 'ix-generate-status', 'aria-live': 'polite'});
+      const button = h('button', {type: 'submit', class: 'btn btn-primary btn-large', 'data-focus': 'create-generate'}, 'Generate plan');
+      const form = h('form', {class: 'ix-create', novalidate: true},
+        createStep('1', 'Describe', 'What the experiment measures, its stimuli, trials and subjects.',
+          field('Description', description, 'Plain language is fine. Numbers you give are kept; anything missing becomes a parameter to review.'),
+          examples),
+        createStep('2', 'Start from', 'A blank experiment, or a copy of a published listing you then change.',
+          h('div', {class: 'ix-choice'},
+            h('label', {class: 'check-row', for: blank.getAttribute('id')}, blank, h('span', null, 'A blank experiment')),
+            h('label', {class: 'check-row', for: fork.getAttribute('id')}, fork, h('span', null, 'Fork a catalogue listing'))),
+          field('Listing', listing, 'Its code and parameters become the starting point of your private draft.')),
+        createStep('3', 'Provider & key', 'Your own key, from the provider you choose. The hub never pays for or shares keys.',
+          h('div', {class: 'field-pair'}, field('Provider', provider), field('API key', key, 'Saved to your account only, never shown again.')),
+          h('p', {class: 'ix-key-state'}, h('span', {class: 'lamp lamp-idle', 'aria-hidden': 'true'}),
+            h('span', null, 'No key saved for this account. Saving keys is not connected yet; this field is cleared when you generate or leave.'))),
+        createStep('4', 'Generate', 'Generation writes a plan for you to review. Nothing is created until you accept it.',
+          h('div', {class: 'actions'}, button, link({view: 'create', step: 'plan', fork: r.fork}, 'See an example plan', {class: 'btn btn-quiet'})),
+          status));
       form.addEventListener('submit', (event) => {
         prevent(event);
         key.value = '';
-        if (!prompt.value.trim()) return status.show('Describe the experiment first.', 'err');
-        status.show('Generation is not connected yet, so nothing was sent and no plan was made. The key field has been cleared. '
-          + '\u201cSee an example plan\u201d shows what a plan will look like.', 'info');
+        if (description.value.trim().length < 20) {
+          status.replaceChildren(h('p', {class: 'form-status form-status-err', role: 'alert'}, 'Describe the experiment in a sentence or two first.'));
+          description.focus();
+          return;
+        }
+        if (fork.checked && !listing.value) {
+          status.replaceChildren(h('p', {class: 'form-status form-status-err', role: 'alert'}, 'Choose the listing to fork, or start from a blank experiment.'));
+          return;
+        }
+        const name = (PROVIDERS.find(([v]) => v === provider.value) || [null, 'the provider'])[1];
+        status.replaceChildren(h('div', {class: 'ix-not-connected', role: 'status', tabindex: '-1', 'data-focus': 'create-not-connected'},
+          h('p', {class: 'ix-nc-title'}, 'Generation is not connected yet'),
+          h('p', null, `This hub version has no generation service, so nothing was sent to ${name} and no key was stored. Your description stays in this form.`),
+          link({view: 'create', step: 'plan', fork: r.fork}, 'See an example plan', {class: 'btn btn-line'})));
+        const box = status.firstChild;
+        if (box && box.focus) box.focus({preventScroll: true});
       });
       section.appendChild(form);
       return section;
     }
 
-    /* A static example of a generated plan, so the screen can be judged. */
-    const EXAMPLE_PLAN = {
-      title: 'Contrast detection at four eccentricities',
-      paradigm: 'Two-interval forced choice; a QUEST+ threshold per eccentricity, interleaved',
-      subjects: 'Human',
-      hardware: 'Display, eye tracker (fixation control)',
-      stimuli: [
-        ['Gabor target', 'Vertical, 4 c/deg, envelope \u03c3 0.3 deg, on the horizontal meridian'],
-        ['Fixation point', '0.15 deg disc at the screen centre, gaze window 1.5 deg'],
-        ['Interval cues', 'Two tones, 50 ms, mark the intervals'],
-      ],
-      measures: ['Contrast threshold at 75% correct, per eccentricity', 'Proportion correct per contrast', 'Response time', 'Fixation breaks per block'],
-      parameters: [
-        ['ecc_dva', '2, 4, 8, 12', 'deg', 'Target eccentricities'],
-        ['sf_cpd', '4', 'c/deg', 'Carrier spatial frequency'],
-        ['sigma_dva', '0.3', 'deg', 'Gaussian envelope'],
-        ['interval_ms', '200', 'ms', 'Each stimulus interval'],
-        ['isi_ms', '500', 'ms', 'Gap between intervals'],
-        ['n_per_ecc', '80', 'trials', 'QUEST+ trials per eccentricity'],
-        ['fix_window_dva', '1.5', 'deg', 'Gaze window radius'],
-      ],
-      timeline: [['Fixation', 500], ['Interval 1', 200], ['Gap', 500], ['Interval 2', 200], ['Response', 2000], ['ITI', 700]],
-      tests: [
-        ['Parameters', 'Bounds and the condition table (pytest)'],
-        ['Simulate', '40 trials per eccentricity with a simulated observer; threshold recovered within 0.1 log units'],
-        ['Timing', 'Frame counts for 200 ms at 60, 120 and 144 Hz'],
-        ['Package', 'alhazen hub pack lists every file; no data folder'],
-      ],
-    };
+    function createStep(number, title, text, ...body) {
+      return h('section', {class: 'ix-step', 'aria-label': number + '. ' + title},
+        h('div', {class: 'ix-step-head'},
+          h('span', {class: 'ix-step-num', 'aria-hidden': 'true'}, number),
+          h('div', null, h('h2', {class: 'ix-step-title'}, title), h('p', {class: 'ix-step-text'}, text))),
+        h('div', {class: 'ix-step-body'}, ...body));
+    }
+
+    function planTable(caption, heads, rows, monoFirst, numCols) {
+      const table = h('table', {class: 'table ix-plan-table'},
+        h('caption', {class: 'visually-hidden'}, caption),
+        h('thead', null, h('tr', null, ...heads.map((t, i) => h('th', {scope: 'col', class: (numCols || []).includes(i) ? 'num' : null}, t)))));
+      const tbody = h('tbody');
+      for (const row of rows) {
+        tbody.appendChild(h('tr', null, ...row.map((cell, i) => h('td', {'data-label': heads[i], class: [i === 0 && monoFirst ? 'mono' : '', (numCols || []).includes(i) ? 'num' : ''].join(' ').trim() || null}, cell))));
+      }
+      table.appendChild(tbody);
+      return h('div', {class: 'table-wrap'}, table);
+    }
+
+    function planTimeline(phases) {
+      const total = phases.reduce((n, p) => n + p[1], 0);
+      const bar = h('ol', {class: 'ix-timeline', 'aria-label': 'One trial'});
+      phases.forEach(([label, ms, note], i) => {
+        const share = Math.max(8, Math.round((ms / total) * 100));
+        bar.appendChild(h('li', {class: 'ix-phase ix-phase-' + (i % 4) + ' ix-w' + Math.min(100, Math.round(share / 4) * 4)},
+          h('span', {class: 'ix-phase-name'}, label),
+          h('span', {class: 'ix-phase-time'}, ms >= 1000 ? (ms / 1000) + ' s' : ms + ' ms'),
+          h('span', {class: 'ix-phase-note'}, note)));
+      });
+      return h('div', {class: 'ix-timeline-wrap'}, bar,
+        h('p', {class: 'muted small'}, 'Adjust waits on the participant; its typical length is drawn, not its limit.'));
+    }
 
     function screenCreatePlan(ctx) {
+      const r = ctx.route;
+      const draft = createDraft();
       const plan = EXAMPLE_PLAN;
-      const draft = state.createDraft;
-      if (ctx.route.fork) draft.fork = ctx.route.fork;
-      const startingPoint = h('span', null, draft.fork ? 'Fork of a published release' : 'New experiment');
-      if (draft.fork) {
+      const section = h('section', {class: 'screen screen-create-plan'});
+      section.appendChild(h('header', {class: 'screen-head'},
+        h('nav', {class: 'crumbs', 'aria-label': 'You are here'}, link({view: 'create', fork: r.fork}, 'Create'),
+          h('span', {class: 'crumb-sep', 'aria-hidden': 'true'}, '/'), h('span', {'aria-current': 'page'}, 'Plan')),
+        h('h1', {class: 'screen-title', tabindex: '-1', 'data-heading': ''}, plan.title),
+        h('p', {class: 'lede'}, 'An example of the plan generation will produce, shown so this page can be reviewed. It was not generated from your description.'),
+        h('div', {class: 'chips'}, h('span', {class: 'chip chip-private'}, 'Example plan'), h('span', {class: 'chip'}, 'Not generated'))));
+      const sections = h('div', {class: 'ix-plan'},
+        h('h2', {class: 'block-title'}, 'Paradigm'),
+        h('p', {class: 'ix-plan-text'}, plan.paradigm),
+        spec(plan.design.map(([k, v]) => [k, v])),
+        h('h2', {class: 'block-title'}, 'Trial timeline'),
+        planTimeline(plan.timeline),
+        h('h2', {class: 'block-title'}, 'Stimuli'),
+        planTable('Stimuli', ['Element', 'Size', 'Position', 'Notes'], plan.stimuli),
+        h('h2', {class: 'block-title'}, 'Measures'),
+        planTable('Measures', ['Measure', 'Unit', 'Definition'], plan.measures),
+        h('h2', {class: 'block-title'}, 'Parameters'),
+        planTable('Parameters', ['Name', 'Value', 'Unit', 'Meaning'], plan.parameters, true),
+        h('h2', {class: 'block-title'}, 'Tests to run'),
+        h('ol', {class: 'ix-tests'}, ...plan.tests.map(([name, what]) => h('li', {class: 'ix-test'},
+          h('span', {class: 'ix-test-name'}, name), h('span', {class: 'ix-test-what'}, what), h('span', {class: 'ix-test-state'}, 'Not run')))));
+      const providerName = (PROVIDERS.find(([v]) => v === draft.provider) || [null, 'OpenAI'])[1];
+      if (r.fork) { draft.start = 'fork'; draft.from = r.fork; }
+      const forking = draft.start === 'fork' && draft.from;
+      const startText = h('span', null, forking ? 'Fork of a listing' : 'Blank experiment');
+      if (forking) {
         (async () => {
           const got = await catalogItems(ctx, '');
           if (!got || !got.ok) return;
-          const item = got.value.find((i) => i.experiment && i.experiment.id === draft.fork);
-          if (item) startingPoint.textContent = 'Fork of ' + (item.experiment.title || 'Untitled') + ' ' + versionLabel(item.version);
+          const item = got.value.find((i) => i.experiment && i.experiment.id === draft.from);
+          if (item) startText.textContent = 'Fork of a listing: ' + (item.experiment.title || 'Untitled') + ' ' + versionLabel(item.version);
         })();
       }
-      const section = h('section', {class: 'screen screen-create screen-plan'});
-      section.appendChild(h('header', {class: 'create-head'},
-        h('h1', {class: 'screen-title', tabindex: '-1', 'data-heading': ''}, 'Review the plan'),
-        h('p', {class: 'lede'}, 'Check what the model proposes before anything is written. You can change the description and generate again.'),
-        createSteps('plan')));
-      section.appendChild(h('div', {class: 'callout callout-info plan-notice', role: 'note'},
-        h('p', {class: 'callout-title'}, 'Example plan'),
-        h('p', null, 'Generation is not connected yet, so this is a fixed example of the screen, not a plan made from your description.')));
-      const stack = h('div', {class: 'plan-stack'});
-      const card = (title, ...children) => h('section', {class: 'plan-card'}, h('h2', {class: 'plan-card-title'}, title), ...children);
-      stack.appendChild(h('section', {class: 'plan-card plan-card-lead'},
-        h('div', {class: 'plan-lead-art', 'aria-hidden': 'true'}, schematic('gabor', 'example-plan', 'wide')),
-        h('div', null,
-          h('p', {class: 'plan-kicker'}, 'Proposed experiment'),
-          h('h2', {class: 'plan-title'}, plan.title),
-          spec([['Paradigm', plan.paradigm], ['Subjects', plan.subjects], ['Hardware', plan.hardware],
-            ['Starting point', startingPoint]]))));
-      stack.appendChild(h('div', {class: 'plan-pair'},
-        card('Stimuli', h('ul', {class: 'plan-list'},
-          ...plan.stimuli.map(([name, text]) => h('li', null, h('span', {class: 'plan-term'}, name), h('span', null, text))))),
-        card('Measures', h('ul', {class: 'plan-list plan-list-plain'}, ...plan.measures.map((m) => h('li', null, m))))));
-      const table = h('table', {class: 'table'},
-        h('caption', {class: 'visually-hidden'}, 'Parameters'),
-        h('thead', null, h('tr', null, ...['Parameter', 'Default', 'Unit', 'Meaning'].map((t) => h('th', {scope: 'col'}, t)))),
-        h('tbody', null, ...plan.parameters.map(([n, v, u, m]) => h('tr', null,
-          h('td', {class: 'mono'}, n), h('td', {class: 'mono num'}, v), h('td', null, u), h('td', null, m)))));
-      stack.appendChild(card('Parameters', h('div', {class: 'table-wrap'}, table)));
-      const total = plan.timeline.reduce((n, [, ms]) => n + ms, 0);
-      const bar = h('ol', {class: 'timeline', 'aria-label': 'One trial, ' + total + ' ms at most'});
-      for (const [name, ms] of plan.timeline) {
-        const seg = h('li', {class: 'timeline-seg' + (/Interval/.test(name) ? ' is-stim' : '')},
-          h('span', {class: 'timeline-name'}, name), h('span', {class: 'timeline-ms mono'}, (name === 'Response' ? '\u2264 ' : '') + ms + ' ms'));
-        seg.dataset.span = String(Math.max(1, Math.round((ms / total) * 24)));
-        bar.appendChild(seg);
-      }
-      stack.appendChild(card('Trial timeline', bar));
-      stack.appendChild(card('Tests to run before use', h('ul', {class: 'plan-tests'},
-        ...plan.tests.map(([name, text]) => h('li', null, h('span', {class: 'plan-test-state'}, 'Not run'),
-          h('span', {class: 'plan-term'}, name), h('span', null, text))))));
-      stack.appendChild(h('section', {class: 'plan-card plan-card-dest'},
-        h('h2', {class: 'plan-card-title'}, 'Where it goes'),
-        h('p', null, 'A private draft under My experiments: ', h('strong', null, plan.title), ', version 0.1.0. Only you see it until you publish a release.'),
-        h('div', {class: 'actions'},
-          h('button', {type: 'button', class: 'btn btn-primary', disabled: true}, 'Save as private draft'),
-          link({view: 'create', fork: draft.fork || undefined}, 'Edit the description', {class: 'btn btn-line'}),
-          link({view: 'mine'}, 'My experiments', {class: 'btn btn-quiet'}))));
-      section.appendChild(stack);
+      const rail = h('aside', {class: 'sheet ix-rail', 'aria-label': 'Draft'},
+        h('h2', {class: 'sheet-title'}, h('span', null, 'Draft'), h('span', {class: 'sheet-version'}, 'example')),
+        spec([
+          ['Status', h('span', {class: 'ix-rail-state'}, h('span', {class: 'lamp lamp-idle', 'aria-hidden': 'true'}), h('span', null, 'Not generated'))],
+          ['Goes to', 'My experiments, as a private draft'],
+          ['Name', plan.slug, {mono: true}],
+          ['Start', startText],
+          ['Provider', providerName + ', your key'],
+          ['Parameters', String(plan.parameters.length)],
+          ['Tests to run', String(plan.tests.length)],
+        ]),
+        h('div', {class: 'sheet-block'},
+          h('div', {class: 'ix-not-connected'},
+            h('p', {class: 'ix-nc-title'}, 'Not connected yet'),
+            h('p', null, 'Generating, running the tests and saving the draft come with the next hub version. Until then nothing here is saved.')),
+          h('button', {type: 'button', class: 'btn btn-primary', disabled: true}, 'Create private draft'),
+          link({view: 'create', fork: r.fork}, 'Back to the description', {class: 'btn btn-quiet'})));
+      section.appendChild(h('div', {class: 'exp-grid ix-plan-grid'}, sections, rail));
       return section;
     }
 
