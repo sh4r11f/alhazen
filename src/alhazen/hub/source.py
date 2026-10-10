@@ -30,6 +30,8 @@ else:  # pragma: no cover - Python 3.10
 # How much of an experiment folder the exclusion summary walks and lists.
 MAX_WALK_ENTRIES = 50_000
 MAX_EXCLUDED_LISTED = 200
+DOCUMENTATION_PATH = "docs/experiment.json"
+
 METADATA_FIELDS = (
     "name",
     "version",
@@ -108,8 +110,11 @@ def _alhazen_floor(dependencies: Any) -> str | None:
     return None
 
 
-def suggest_metadata(root: Path) -> dict[str, Any]:
-    """A starting point from pyproject.toml, read as text (never imported)."""
+def suggest_metadata(root: Path, files: list[str] | None = None) -> dict[str, Any]:
+    """A starting point from pyproject.toml, read as text (never imported).
+
+    ``files``: the files proposed for the package; the documentation pointer
+    is suggested only when the descriptor is one of them."""
     project: dict[str, Any] = {}
     try:
         document = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
@@ -121,6 +126,10 @@ def suggest_metadata(root: Path) -> dict[str, Any]:
     licence = project.get("license")
     if isinstance(licence, dict):
         licence = licence.get("text") or ""
+    # The documentation descriptor's conventional place (docs/hub/
+    # documentation.md): pointed at when it is packed, so `alhazen hub pack`
+    # ships documentation the hub reads rather than an unread file.
+    documented = DOCUMENTATION_PATH in (files or [])
     return {
         "name": slug,
         "version": str(project.get("version") or "0.1.0"),
@@ -133,6 +142,7 @@ def suggest_metadata(root: Path) -> dict[str, Any]:
         "alhazen_min": _alhazen_floor(project.get("dependencies")) or "2.13.0",
         "platforms": list(DEFAULT_PLATFORMS),
         "entrypoint": "run.py",
+        **({"documentation": DOCUMENTATION_PATH} if documented else {}),
     }
 
 
@@ -150,7 +160,7 @@ def preview(root: Path, packages: PackageBuilder) -> dict[str, Any]:
         "total_bytes": sum(f["size"] for f in files),
         "excluded": excluded,
         "excluded_count": excluded_count,
-        "metadata": suggest_metadata(root),
+        "metadata": suggest_metadata(root, [str(f["path"]) for f in files]),
     }
 
 

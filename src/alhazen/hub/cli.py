@@ -201,7 +201,7 @@ def _pack(args: argparse.Namespace, directory: Path) -> int:
     packages = importlib.import_module("alhazen.hub.packages")
     root = Path(args.project).expanduser().resolve()
     files = packages.suggest_files(root)
-    metadata = suggest_metadata(root)
+    metadata = suggest_metadata(root, files)
     if args.license:
         metadata["license"] = args.license
     print(f"{metadata['name']} {metadata['version']}: {len(files)} files")
