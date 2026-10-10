@@ -40,6 +40,17 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   before and after every train and at close. A fault stops the schedule,
   writes rest once and reports the delivery as uncertain; it is never
   retried. Not verified on hardware: see docs/datapixx-reward.md.
+  Each train is written to DATAPixx3 RAM in chunks of at most 16,380 words
+  (pypixxlib's `DPxWriteRam` silently drops anything past 65,535 bytes per
+  call), read back and compared word for word before it starts; a train
+  longer than the 524,288-word buffer is refused, never shortened. A
+  pypixxlib without one of the calls used, or one that cannot read Pixel
+  Mode B on firmware 27+, is refused before the device is opened or written.
+- `alhazen.errors.RewardUncertainError` (a `RewardError`): a delivery that
+  failed after its train started, or whose resting level could not be read
+  back. `REWARD_FAILED` payloads gain `error` and `uncertain` (end of trial,
+  mid-trial and manual), and an uncertain delivery leaves the row's
+  `rewarded` empty instead of `False`. `RewardCompletion.uncertain`.
 - Sync backend `datapixx`: active-high pulses on DATAPixx3 digital outputs
   (`DATAPIXX3/dout<N>`), refused on bits a Pixel Mode, button schedules or
   the backlight pulse drive. It cannot be combined with a `datapixx` reward
@@ -58,6 +69,14 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 - A dumped `RewardHwConfig` carries `polarity`, `pump` and
   `dout_buffer_address` (None, None and the default on an NI-DAQ line).
 - check-rig closes the reward line after a failed `--pulse` as well.
+- `build_session` connects the eye tracker before it builds the reward and
+  sync lines (pypixxlib's TRACKPixx3 opens the DATAPixx3 itself; a tracker
+  connected after a DATAPixx3 gate is refused). The Measure rig opens a
+  TRACKPixx3 before a DATAPixx3 gate.
+- A TRACKPixx3 gaze read's libdpx fault is read in the read's own lock hold
+  and kept as the tracker's dropout until the next trial's device check, so
+  another libdpx user cannot clear it; a device that goes away is now named
+  at the gaze read ("did not answer a gaze read").
 
 ## 2.15.0 - 2026-10-09
 
