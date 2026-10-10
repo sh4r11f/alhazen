@@ -1406,6 +1406,33 @@ class TestInterpreters:
         assert seen == {"launch": expected, "schema": expected}
         assert launcher_root not in expected
 
+    def test_an_inherited_launcher_checkout_does_not_reach_another_interpreter(
+        self, tmp_path, monkeypatch
+    ):
+        """A dashboard started from a source checkout (PYTHONPATH=src) put
+        that src/ on every project interpreter's path, so a hub install whose
+        own env pins alhazen ran the launcher's alhazen while the probe
+        reported the env's version (found importing kde-vergence). Another
+        interpreter loses exactly that entry and keeps the rest; the
+        launcher's own interpreter keeps it, since it imports alhazen there."""
+        launcher_root = str(Path(workspace_module.__file__).resolve().parents[2])
+        monkeypatch.setenv(
+            "PYTHONPATH", os.pathsep.join(["BEFORE", launcher_root, "AFTER"])
+        )
+        root = tmp_path / "project"
+        other = str(tmp_path / "venv" / "bin" / "python")
+        env = workspace_module._child_env({"path": str(root), "python": other})
+        assert env["PYTHONPATH"].split(os.pathsep) == [
+            str(root / "src"),
+            str(root),
+            "BEFORE",
+            "AFTER",
+        ]
+        own = workspace_module._child_env({"path": str(root), "python": sys.executable})
+        assert launcher_root in own["PYTHONPATH"].split(os.pathsep)
+        unnamed = workspace_module._child_env({"path": str(root)})
+        assert launcher_root in unnamed["PYTHONPATH"].split(os.pathsep)
+
     def test_registration_records_which_alhazen_the_interpreter_has(self, workspace, monkeypatch):
         monkeypatch.setattr(workspace_module, "probe_interpreter", REAL_PROBE)
         project = workspace.add(workspace.projects[0]["path"], sys.executable)

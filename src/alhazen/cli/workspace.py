@@ -189,14 +189,28 @@ def _child_env(project: dict[str, Any]) -> dict[str, str]:
     for another interpreter fails to import). The project's interpreter must
     have alhazen installed itself; ``probe_interpreter`` checks that when the
     project is registered, which is the moment the message can still be acted on.
+
+    The same holds for a PYTHONPATH the launcher was started with: when it
+    names the directory the launcher's own alhazen is imported from (a
+    dashboard run from a source checkout with ``PYTHONPATH=src``), that entry
+    is dropped for any OTHER interpreter, or a hub install that pins alhazen
+    2.13.0 in its own env would run the launcher's alhazen instead while the
+    probe reports the env's version. The launcher's own interpreter keeps it.
     """
     env = os.environ.copy()
     root = Path(project["path"])
-    inherited = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = os.pathsep.join(
-        [str(root / "src"), str(root)] + ([inherited] if inherited else [])
-    )
+    inherited = [p for p in env.get("PYTHONPATH", "").split(os.pathsep) if p]
+    python = project.get("python")
+    if python and os.path.abspath(python) != os.path.abspath(sys.executable):
+        own = _LAUNCHER_IMPORT_ROOT
+        inherited = [p for p in inherited if os.path.realpath(p) != own]
+    env["PYTHONPATH"] = os.pathsep.join([str(root / "src"), str(root), *inherited])
     return env
+
+
+# The directory this process imports alhazen from (src/ of a checkout, or the
+# site-packages of an installed wheel): see _child_env.
+_LAUNCHER_IMPORT_ROOT = os.path.realpath(Path(__file__).resolve().parents[2])
 
 
 def probe_interpreter(python: str, project_path: str) -> dict[str, Any]:
@@ -210,7 +224,7 @@ def probe_interpreter(python: str, project_path: str) -> dict[str, Any]:
     interpreter and says what to install, because the alternative is a
     registration that looks fine and a launch that dies on ``import alhazen``.
     """
-    env = _child_env({"path": project_path})
+    env = _child_env({"path": project_path, "python": python})
     try:
         result = subprocess.run(
             [python, "-c", INTERPRETER_PROBE],
