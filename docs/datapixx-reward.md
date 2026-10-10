@@ -1,11 +1,13 @@
 # DATAPixx3 reward: wiring and bench test for a WPI SP220i syringe pump
 
-!!! warning "Status: proposed, not physically verified"
+!!! warning "Status: proposed. Not physically verified, not yet software-verified"
     Nothing on this page has been tried on hardware. The wiring follows the
-    manufacturers' published pinouts, and alhazen's DATAPixx reward backend has
-    only been tested in software, against a stand-in for VPixx's library. A
-    passing test suite says nothing about what the pump does. Until every item
-    in [What has been verified](#what-has-been-verified) is ticked on your own
+    manufacturers' published pinouts. alhazen's DATAPixx reward backend is
+    still being written; its software verification is pending the final
+    integrated test suite, and no test result is claimed here. The rig-file
+    names and commands below are provisional and will be reconciled with the
+    backend when it lands. Until every item in
+    [What has been verified](#what-has-been-verified) is done on your own
     bench, treat this rig's reward line as unverified. Do not connect it to an
     animal.
 
@@ -13,15 +15,20 @@ This page covers one setup: a VPixx DATAPixx3 (the box that hosts the
 TRACKPixx3 and drives the VIEWPixx) gating a WPI SP220i syringe pump through
 the pump's TTL **Gate** input. It needs two wires and no soldering.
 
+Each section separates what the manufacturers **document** from what alhazen's
+backend is **planned** to do.
+
 ## How the pump is driven
 
-The SP220i has its own motor driver. The DATAPixx3 only tells it when to run:
+Documented (WPI SP200 Series manual, rev. 041516, p. 14):
 
 | Gate input (pump DE9 pin 4) | Pump |
 |---|---|
 | HIGH (2–5 V) | stopped |
 | HIGH → LOW | starts, and keeps running while LOW |
 | LOW → HIGH | stops |
+| LOW is 0–0.5 V | |
+| 0.5–2 V | not defined by the manual: treat as unsafe, neither run nor stop is guaranteed |
 
 So the line **idles HIGH**, goes **LOW for the reward**, and **ends HIGH**.
 This is the opposite of the NI-DAQ solenoid line (idle 0 V, open at 5 V); do
@@ -30,19 +37,23 @@ not copy a solenoid setting to this rig.
 How much liquid a reward gives is set by the pump, not by alhazen: the syringe
 diameter and the rate entered on the pump, times how long the gate is LOW.
 alhazen cannot read either pump setting, so the rig file declares them and you
-must keep them true. The DATAPixx3 times the LOW period on its own clock
-(a hardware digital-output schedule), never with a Python sleep. What alhazen
-records is the gate it **commanded**. It does not know that juice came out.
+must keep them true.
+
+Planned: the DATAPixx3 times the LOW period on its own clock (a hardware
+digital-output schedule), never with a Python sleep, and alhazen records the
+gate it **commanded**. A commanded gate is not evidence that juice came out.
 
 ## What you need
 
 - A **male DB25** screw-terminal breakout (the DATAPixx3 digital output port
   is female).
-- A **male DE9** screw-terminal breakout (the pump's TTL I/O port is female;
-  check yours).
+- A **male DE9** screw-terminal breakout (the pump's TTL I/O port is female
+  in the lab's photo; check yours).
 - Two lengths of insulated hookup wire, about 22–24 AWG, as long as the bench
   needs. Two colours help: one for the signal, one for ground.
-- A multimeter with a continuity setting.
+- A multimeter with DC volts and continuity.
+- An oscilloscope or a logic analyser that tolerates 5 V signals, for the
+  transient and pulse-width checks (a multimeter cannot see them).
 - For the bench test: a syringe with **no needle**, tubing, a beaker, water and
   a scale that reads to 1 mg (1 mg of water is 1 µL).
 
@@ -80,12 +91,22 @@ connect:
 
 Use the pin numbers printed on each breakout's own terminal legend. Do not
 count pins on the connector face: viewed from the front and from the back the
-numbering is mirrored. The rig file then names this line `dout0`.
+numbering is mirrored.
 
-Why these levels are within spec (from the datasheets, not yet measured):
-the DATAPixx3 drives 5 V through 25 Ω and can sink 12 mA; the pump reads
-0–0.5 V as LOW and sinks at most 2 mA, and reads 2–5 V as HIGH. A LOW from the
-DATAPixx3 therefore sits near 0.05 V, and its HIGH at about 5 V.
+### Electrical compatibility
+
+Documented ratings: the DATAPixx3's digital outputs drive 5 V through a 25 Ω
+series resistor and are rated to source 15 mA and sink 12 mA. The pump's input
+reads 0–0.5 V as LOW, with at most 2 mA flowing out of the input that the
+driving output must sink, and 2–5 V as HIGH.
+
+So, on paper, the DATAPixx3 output can sink the pump input's LOW current with
+margin (12 mA rated against at most 2 mA). That is rated compatibility, not a
+measured level: the LOW voltage at the pump is the output stage's own
+low-level voltage plus the drop across the series resistor, and VPixx does not
+publish the output stage's low-level voltage. Measure it (bench step B1): with
+the pump connected and the line driven LOW, the voltage between DE9 pins 4 and
+3 must be at most 0.5 V; driven HIGH, at least 2 V.
 
 ## Check the cable before it touches either device
 
@@ -101,11 +122,12 @@ continuity and check:
 
 Write down that the check passed and the date.
 
-## The rig file
+## The rig file (provisional)
 
 The reward line is part of the machine, so it goes in the rig file of the
 machine it is wired to, after the cable check and before bench step B2. The
-pump values are what you entered on the pump's keypad:
+pump values are what you entered on the pump's keypad. Field names follow the
+backend's draft and may change:
 
 ```yaml
 devices:
@@ -120,13 +142,14 @@ devices:
       rate_ul_per_min: 3000        # example: the value the pump shows
 ```
 
-`alhazen check-rig` validates this without moving the pump; `--pulse` runs
-one short reward and is a bench step (B2), not a routine check. A human
-session never opens the reward line whatever the rig file says.
-`--mode simulate`, or a `--simulate` choice that includes the reward, stands
-it down (deliveries are logged, the DATAPixx3's outputs are not touched). A
-`--simulate` choice that names only other devices, the tracker say, leaves the
-real pump live.
+Planned behaviour, to be confirmed against the integrated backend:
+`alhazen check-rig` validates this without moving the pump, and `--pulse`
+runs one short reward, which is a bench step (B2), not a routine check. A human
+session never opens the reward line whatever the rig file says (this is
+existing alhazen behaviour). `--mode simulate`, or a `--simulate` choice that
+includes the reward, stands it down so the DATAPixx3's outputs are not
+touched; a `--simulate` choice that names only other devices, the tracker say,
+leaves the real pump live.
 
 ## Pump settings that are part of safety
 
@@ -144,114 +167,136 @@ Set these on the pump's keypad before it is ever wired:
   describes stop/run as a pause that resumes towards the target, so gate
   pulses probably add up towards one total rather than restart each time; what
   happens to gates after the target is reached is not documented. Bench step
-  B4 below finds out. Until then, set a target no larger than the most you
-  would accept the subject receiving in one session.
+  B4 finds out. Until then, set a target no larger than the most you would
+  accept the subject receiving in one session.
 - **PWR UP: STOP.** With RUN selected and no target volume, the pump resumes
-  running when its power comes back after an interruption.
+  running when its power comes back after an interruption (documented).
 
-alhazen records the declared syringe and rate with every session and with each
-reward calibration. A calibration measured at one rate or syringe does not
-apply to another; re-measure after any change.
+A reward calibration measured at one rate or syringe does not apply to
+another; re-measure after any change. (Planned: alhazen keys each calibration
+to the declared syringe and rate.)
 
 ## Power-up and shutdown order
 
 The DATAPixx3's documentation does not say what its digital outputs do while
-it boots, while USB is unplugged, or while it is switched off. If Digital Out
-0 sits LOW in any of those states, a connected and powered pump will run.
-Software cannot prevent that. Until bench step B1 shows otherwise, follow this
-order every time:
+it boots, resets, has USB unplugged, or is switched off. If Digital Out 0 sits
+LOW, or in the undefined 0.5–2 V band, in any of those states, a connected and
+powered pump may run. Software cannot prevent that. Until bench step B1 shows
+otherwise, follow this order every time:
 
 **Start**
 
 1. Pump power **OFF**.
 2. DATAPixx3 on; computer on.
-3. Run `alhazen check-rig --rig <your rig>` **without** `--pulse`. It opens the
-   DATAPixx3, refuses to continue if anything else claims the line (see
-   below), drives Digital Out 0 HIGH and reads it back.
-4. With the meter on DC volts between breakout pins 1 and 13: about 5 V.
+3. Run `alhazen check-rig --rig <your rig>` **without** `--pulse`. Planned: it
+   opens the DATAPixx3, refuses to continue if anything else claims the
+   outputs (see below), drives Digital Out 0 HIGH and reads the device's
+   register back. A register readback is not evidence of the voltage on the
+   pin.
+4. With the meter on DC volts between breakout pins 1 and 13: at least 2 V,
+   expected about 5 V. A meter shows the settled level only; it says nothing
+   about short glitches.
 5. Only now switch the pump **ON**. Its display should show it stopped.
 
-**During a session**, alhazen drives only the gate bit, re-asserts it HIGH after
-every reward, and stops with an error instead of guessing when it cannot
-confirm the line is HIGH. It never repeats a reward whose outcome it could not
-confirm.
+**During a session** (planned): alhazen drives only the outputs it owns,
+re-asserts the gate HIGH after every reward, and stops with an error instead
+of guessing when it cannot confirm the line state. It never repeats a reward
+whose outcome it could not confirm.
 
 **Stop**
 
 1. End the session.
-2. Pump **OFF** (or press its run/stop key, then switch it off).
+2. Pump **OFF** at its power switch.
 3. Quit alhazen, then shut down the computer and the DATAPixx3.
 
 Never unplug the DATAPixx3's USB or power while the pump is on.
 
-**To stop the pump at once:** its run/stop key, its power switch, or unplug the
-DE9. An unplugged Gate input most likely reads HIGH (the pump sinks current
-from it when LOW, which suggests a pull-up), so the pump should stop, but this
-is unverified: bench step B1 checks it.
+**To stop the pump at once:** switch the pump **off at its power switch**.
+Its run/stop key also stops it if the key works in your pump's current state;
+use it as a second option, not instead of the power switch. Do not rely on
+unplugging the DE9 or a wire: whether a disconnected Gate input stops the
+motor is not documented, and it is tested only as a controlled water-only
+bench step (B1).
 
 What software cannot cover: a power cut, the DATAPixx3 resetting, USB failing
 or the computer freezing mid-reward. In each, the pump's own settings (rate,
-target volume, PWR UP STOP) and the order above are the protection. A fail-safe
-alternative is an inverting stage (an opto-isolator or open-collector
-transistor) so that a LOW or unpowered DATAPixx3 output means "stopped"; it
-needs more than two wires, flips the polarity in the rig file, and is not
-proposed here.
+target volume, PWR UP STOP) and the order above are the protection. A
+different interface (a hardware interlock, a watchdog, or an isolated
+interface between the two devices) could change that, but only as a real,
+specified design with a failure-state analysis and its own bench tests. None
+is proposed here.
 
-## Things alhazen refuses before touching the line
+## Things alhazen is planned to refuse before touching the outputs
 
-The DATAPixx3's digital outputs are shared. alhazen checks, and refuses to
-start a reward line, when:
+The DATAPixx3's digital outputs are shared, and a digital-output schedule
+writes the low 16 outputs (Digital Out 0–15) together for as long as it plays
+(documented: schedule words are 16 bits; the port returns to its resting
+value when the schedule ends). So every check covers that whole footprint,
+not just the gate. Planned refusals, before any write:
 
-- **Pixel Mode** is on (it drives all 24 outputs from the top-left pixel), or
-  **Pixel Mode GB** (outputs 8–23) or **Pixel Mode B** (16–23) covers the
-  reward line. These are set in LabMaestro (Digital IO → Output Mode) and
-  persist on the device. alhazen does not switch them off, because a recording
-  may rely on them.
-- **Button schedules** are enabled (a button press would start a digital-output
-  schedule from the same memory the reward uses).
-- **Backlight pulse** is enabled and the reward line is Digital Out 15.
+- **Pixel Mode** is on (documented: it drives all 24 outputs from the
+  top-left pixel), or **Pixel Mode GB** is on (it drives outputs 8–23, which
+  overlap the schedule's 8–15). Pixel Mode B drives 16–23 and does not overlap
+  0–15. These are set in LabMaestro (Digital IO → Output Mode) and persist on
+  the device. alhazen does not switch them off, because a recording may rely
+  on them.
+- **Backlight pulse** is enabled (documented: it puts the LCD backlight on
+  Digital Out 15, inside the schedule's footprint), whichever output the gate
+  is on.
+- **Button schedules** are enabled (a button press would start a
+  digital-output schedule from the same memory the reward uses).
 - A digital-output schedule is already running.
 - The reward's schedule memory would overlap the TRACKPixx3's sample buffer.
+- A sync line on Digital Out 0–15 is configured alongside the DATAPixx
+  reward, since the schedule would overwrite it during every reward.
 
-A digital-output schedule writes the low 16 outputs (0–15) together for as long
-as it plays. Sync pulses on those outputs would be overwritten during a reward,
-so alhazen refuses DATAPixx sync lines below 16 while the reward uses the
-DATAPixx3. Whether outputs 16–23 are left alone by a schedule is not documented
-and is checked in bench step B6.
+Sync on Digital Out 16–23 next to the reward is **not verified**: whether a
+schedule leaves those outputs untouched is not documented. Do not treat it as
+supported until bench step B6 shows it on your device.
 
 ## Bench test
 
 Rules for every step: **no animal, no needle, no person's mouth.** Water only,
 into a beaker on a scale. Wear eye protection when the line is under pressure.
-Keep a hand near the pump's run/stop key. Record every number in the rig's
-notes with the date, the pump settings and the alhazen version.
+Keep a hand on the pump's power switch. Record every number in the rig's notes
+with the date, the pump settings, the instrument used and the alhazen version.
+
+Classify every voltage reading by the pump's documented bands: **LOW**
+0–0.5 V, **HIGH** 2–5 V, **undefined** 0.5–2 V. An undefined reading is not
+safe in either direction.
 
 **B0. Cable check.** The continuity check above, passed and written down.
 
-**B1. Idle levels, pump unplugged.** Meter between breakout pins 1 and 13,
-pump cable disconnected. Record the voltage:
+**B1. Idle levels and transients, pump unplugged first.** Meter between
+breakout pins 1 and 13, and a scope or logic analyser on the same pins for the
+transitions, pump cable disconnected. Record the level in each state, and any
+glitch the scope or analyser catches during each transition:
 
 1. DATAPixx3 off.
-2. During DATAPixx3 power-up, and once it has booted, before alhazen runs.
-3. After `alhazen check-rig` without `--pulse` (expect about 5 V).
-4. With the DATAPixx3's USB unplugged, then replugged.
-5. After alhazen exits normally, and after it is killed (end the process).
+2. DATAPixx3 power-up, and once it has booted, before alhazen runs.
+3. After `alhazen check-rig` without `--pulse` (expect HIGH, about 5 V).
+4. USB unplugged, then replugged.
+5. alhazen exiting normally, and alhazen killed (end the process).
 
-Any LOW reading (below about 2 V) in steps 1, 2, 4 or 5 is a state in which a
-powered pump would run; the start/stop order above is then mandatory, not just
-advisable. Then, with the pump connected and powered but alhazen idle,
-confirm: no motion for 60 s; unplugging the DE9 keeps it stopped.
+A LOW or undefined level, or a LOW-going glitch, in steps 1, 2, 4 or 5 is a
+state in which a powered pump may run: the start/stop order above is then
+mandatory. Then connect the pump, power it with alhazen idle, and confirm:
+the HIGH level at DE9 pins 4–3 under load is at least 2 V; no motion for 60 s.
+Drive the line LOW once from a controlled test with water only and confirm the
+loaded LOW level is at most 0.5 V. Only as a controlled water-only test,
+unplug the DE9 while the pump is idle and record whether it stays stopped;
+this is a measurement of one pump, not an emergency procedure.
 
 **B2. One pulse.** Pump primed, outlet into the beaker. Run
 `alhazen check-rig --rig <your rig> --pulse`. The pump should run once,
-briefly, and stop. If it keeps running, stop it with its key and do not
-continue.
+briefly, and stop. If it keeps running, switch it off and do not continue.
 
 **B3. Dose versus gate time.** Deliver a fixed train (for example 20 rewards
-of 200 ms) through the Measure rig's "Juice per pulse" measurement. Weigh the
-water. Compare µL per reward with rate × time. Repeat at two other widths.
-Short pulses may deliver less than rate × time (the stepper ramps), so
-calibrate at the widths you will use, never extrapolate.
+of 200 ms) through the Measure rig's "Juice per pulse" measurement. Measure
+the gate's actual LOW width with the scope or analyser. Weigh the water.
+Compare µL per reward with rate × time. Repeat at two other widths. Short
+pulses may deliver less than rate × time (the stepper ramps), so calibrate at
+the widths you will use, never extrapolate.
 
 **B4. Repeated gates and the target volume.** Set a small target volume and
 deliver rewards until it is reached and beyond. Record whether each gate
@@ -261,14 +306,14 @@ cap.
 
 **B5. Latency.** Measure the time from the gate's falling edge to the pump
 starting, and from its rising edge to stopping. A bench-only third wire from
-pump pin 7 (Run indicator, HIGH while running) to an oscilloscope or logic
-analyser together with Digital Out 0 shows both. Do not guess this number;
-alhazen does not.
+pump pin 7 (Run indicator, HIGH while running) to the scope or analyser,
+together with Digital Out 0, shows both. Do not guess this number.
 
 **B6. Shared outputs.** With the TRACKPixx3 recording and any sync lines
-connected to a logic analyser, run rewards and sync pulses together. Check no
-sync pulse is lost or stretched during a reward, and that no output other than
-Digital Out 0 changes during a reward schedule.
+connected to the logic analyser, run rewards and sync pulses together. Check
+that no output other than Digital Out 0 changes during a reward schedule, and
+whether outputs 16–23 are left untouched; until they are shown to be, sync
+next to the reward stays unsupported.
 
 **B7. Failure drills, water only.**
 
@@ -284,13 +329,15 @@ Record what happened in each, including "the pump kept running".
 
 | Item | Source | Status |
 |---|---|---|
-| DATAPixx3 Digital Out is DB25 female; DOUT0 on pin 1, GND on pin 13; 5 V through 25 Ω, 15 mA source, 12 mA sink | VPixx DATAPixx3 documentation | documented |
-| SP200-series TTL pinout: Gate pin 4, ground pin 3, Trigger pin 8, Run indicator pin 7; LOW 0–0.5 V at most 2 mA, HIGH 2–5 V | WPI SP200 Series manual (041516), p. 14 | documented |
+| DATAPixx3 Digital Out is DB25 female; DOUT0 on pin 1, GND on pin 13; 5 V through 25 Ω, rated 15 mA source, 12 mA sink | VPixx DATAPixx3 documentation | documented |
+| SP200-series TTL pinout: Gate pin 4, ground pin 3, Trigger pin 8, Run indicator pin 7; LOW 0–0.5 V with at most 2 mA to sink, HIGH 2–5 V | WPI SP200 Series manual (041516), p. 14 | documented |
 | Pump DE9 is female | photo of the lab's pump | observed, not measured |
-| Port returns to its static value when a digital-output schedule ends | VPixx Datapixx button-schedule demo | documented |
+| Port returns to its resting value when a digital-output schedule ends | VPixx Datapixx button-schedule demo | documented |
 | Schedule words are 16 bits (outputs 0–15) | pypixxlib `DPxWriteDoutBuffer` | documented |
+| Loaded LOW ≤ 0.5 V and HIGH ≥ 2 V at the pump input | bench B1 | **not verified** |
+| Digital Out 0 level and glitches at power-up, reset, USB loss, power off | bench B1 (scope or analyser) | **not verified** |
+| Disconnected Gate input behaviour | bench B1 (controlled, water only) | **not verified** |
 | Gate behaviour, latency, dose per gate, repeated gates, target volume | bench B2–B5 | **not verified** |
-| Digital Out 0 level at power-up, USB loss, power off | bench B1 | **not verified** |
 | Outputs 16–23 untouched by a schedule; sync and reward together | bench B6 | **not verified** |
 | Failure drills | bench B7 | **not verified** |
-| alhazen DATAPixx backend | unit tests against a stand-in library | software only |
+| alhazen DATAPixx backend (refusals, timing, uncertain-state handling) | final integrated test suite | **planned; software verification pending** |
