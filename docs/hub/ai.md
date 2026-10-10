@@ -30,8 +30,17 @@ development and is folded into this page and api-contract.md.
   checks). Simulation happens on a rig after download, as for any version.
 - **A person accepts.** Acceptance creates a private version; nothing is
   published, installed, run on a rig or touches a session. The version's
-  owner view carries `ai_assisted: true` and `ai_draft_id`; visitors never
-  see either.
+  owner view carries `ai_assisted: true` and `ai_draft_id`, and the same
+  `ai_assisted: true` under `manifest` in the response object (the stored
+  `alhazen-package.json` has no such field: the package format refuses
+  unknown fields). The package itself carries `docs/ai-provenance.json`.
+  Visitors see none of the hub-side marks.
+- **Edited metadata.** A title, summary or license given at acceptance that
+  differs from the generated package is written into the package (the kit
+  rebuilds it with `bundle_archive`; a new license also replaces `LICENSE`
+  with the kit's text, and must be one of `schemas.LICENSES`), then the
+  rebuilt bytes pass every upload check again. The experiment's license
+  therefore always matches its version's, as publishing requires.
 
 ## Configuration (`[ai]`, all optional; off without `key_secret`)
 
@@ -119,7 +128,12 @@ provider's response body.
 
 ## Seam with the authoring kit
 
-`alhazen.hub.ai.jobs.AuthorKit` adapts `alhazen.hub.ai.author`:
+`alhazen.hub.ai.jobs.AuthorKit` adapts `alhazen.hub.ai.author` (kit notes:
+`/workspace/alhazen-hub-work/ai-authoring/AUTHOR-KIT.md` during development).
+The worker uses the kit's own `GeneratedBundle.archive` when present (re-read
+with `inspect_bundle` and the documentation check before it is stored) and
+folds `ctx.disclosure(kind)` (context item sizes, start-from files actually
+sent and omitted) into the job's `disclosed` record. Seam:
 `build_context(alhazen_version, start)`, `plan(client, prompt, ctx)`,
 `generate_source(client, plan, ctx)` (returning `files: dict[str, bytes]`,
 `manifest`, `report`), `StartFrom(experiment_title, version, files)`,
