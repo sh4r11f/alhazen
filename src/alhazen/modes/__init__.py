@@ -55,6 +55,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:  # annotations only: this module stays importable without pydantic models
     from alhazen.config.models import RigConfig
     from alhazen.config.rigs import RigRef
+    from alhazen.modes.simulation import SimulateChoice
 
 
 class Mode(str, Enum):
@@ -144,23 +145,73 @@ _NOT_CALIBRATING = {
 CALIBRATION_FLAGS = "--calibration-target/--calibration-images/--calibration-motion"
 
 
+# Why each mode that runs no trials cannot take --simulate.
+_NOT_SIMULATING = {
+    Mode.MEASURE: "measure mode measures the rig's own devices",
+    Mode.DEMO: "demo mode drives no device but the display",
+    Mode.MOVIE: "movie mode drives no device at all",
+}
+
+
 def flag_refusal(
-    mode: Mode, *, headless: bool = False, mouse: bool = False, calibration: bool = False
+    mode: Mode,
+    *,
+    headless: bool = False,
+    mouse: bool = False,
+    calibration: bool = False,
+    simulate: SimulateChoice | None = None,
 ) -> str | None:
     """Why ``mode`` cannot honour the flags asked for — or None when it can.
 
-    ``--headless`` belongs to simulate alone and ``--mouse`` to test alone.
+    ``simulate`` is the launch's choice of devices to stand in for
+    (``--simulate``, ``--gaze``; alhazen.modes.simulation.SimulateChoice):
+    any mode that runs trials takes it. ``--headless`` needs the task's
+    autopilot as the subject — ``--gaze autopilot``, or simulate mode, the
+    older way to say the same — because a person needs a window. ``--mouse``
+    is test mode's older way to say ``--simulate tracker --gaze mouse``.
     ``calibration`` is any of the calibration-target flags, which choose what
     the rig's own tracker draws when it calibrates: run and test only, and
-    not with ``--mouse``, which takes that tracker away.
+    not when that tracker is simulated.
     The check is one function, called by the command line before anything
     loads and by ``build_mode_session`` before anything is wired, so a flag
     a mode cannot honour is refused with the reason and never silently
     ignored: an experimenter who typed ``--headless`` and got a window would
     not know which of the two the data came from.
     """
-    if headless and mode is not Mode.SIMULATE:
-        return f"--headless: only simulate mode runs without a window — {_NOT_HEADLESS[mode]}"
+    if simulate:
+        if mode in _NOT_SIMULATING:
+            return (
+                f"--simulate: only a mode that runs trials (run, test, training) stands in for "
+                f"a device — {_NOT_SIMULATING[mode]}"
+            )
+        if mode is Mode.SIMULATE:
+            return (
+                "--simulate: simulate mode already stands in for every device, with the task's "
+                "autopilot as the subject. Say it one way: --mode test --simulate all "
+                "--gaze autopilot"
+            )
+        if mouse:
+            return (
+                "--simulate: --mouse already stands the mouse in for the eye tracker. Say it "
+                "one way: --simulate tracker --gaze mouse"
+            )
+        if headless and not simulate.autopilot:
+            return (
+                "--headless: a session with no window needs the task's autopilot as its "
+                "subject (--simulate tracker --gaze autopilot, or --simulate all --gaze "
+                "autopilot) — a person, or a mouse cursor, needs a window"
+            )
+        if calibration and "tracker" in simulate.devices:
+            return (
+                f"{CALIBRATION_FLAGS}: --simulate stands in for the rig's eye tracker, and a "
+                f"stand-in has no calibration to draw a target in"
+            )
+    elif headless and mode is not Mode.SIMULATE:
+        return (
+            f"--headless: a session runs without a window only with the task's autopilot as "
+            f"its subject (--simulate all --gaze autopilot, or simulate mode) — "
+            f"{_NOT_HEADLESS[mode]}"
+        )
     if mouse and mode is not Mode.TEST:
         return f"--mouse: only test mode takes the mouse cursor as gaze — {_NOT_MOUSE[mode]}"
     if calibration and mode in _NOT_CALIBRATING:

@@ -25,6 +25,38 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+### Added
+
+- **Simulation is a choice at launch: `--simulate` and `--gaze`.** Any mode
+  that runs trials (run, test, training) stands in for the devices named —
+  `--simulate tracker,reward` or `--simulate all`, from tracker, reward, sync,
+  recording and spikes — whether or not they are connected. With the tracker
+  simulated, `--gaze autopilot` (the task plays itself) or `--gaze mouse`
+  (you play it, the cursor as your eye) is required; there is no default. So
+  a training stage can be watched working itself in a window:
+  `--mode training --stage fixate --simulate all --gaze autopilot`, with
+  `--headless` to take the window away. Nothing is simulated that is not
+  named: a device that fails to connect still stops the launch. Any stand-in
+  makes the session a rehearsal — its data goes to the rehearsal root, run
+  mode's refusal of a development rig does not apply — and the mode keeps its
+  meaning: run and training stay full-length, test stays reduced. `simulate`
+  mode and test mode's `--mouse` still work and are now two spellings of this
+  choice. The first step of
+  [docs/design/simulate-as-a-choice.md](docs/design/simulate-as-a-choice.md);
+  [docs/modes.md](docs/modes.md) has the commands.
+- **`session.json` records what was simulated.** A new key, `simulated`:
+  `{devices: [...], gaze: "autopilot" | "mouse" | null}`, or null when every
+  device was the rig's own. Simulate mode and `--mouse` record it too. A new
+  key without a schema bump, like `training`.
+
+### Changed
+
+- **The refusal of `--headless` is reworded**, since a session with no window
+  is no longer simulate mode's alone: it names `--simulate all --gaze
+  autopilot` beside simulate mode.
+
 ## 2.14.1 - 2026-10-09
 
 ### Fixed

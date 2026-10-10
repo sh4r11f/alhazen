@@ -47,6 +47,7 @@ from alhazen.config.rigs import (
 )
 from alhazen.errors import AlhazenError, ConfigError, DataError, DisplayError
 from alhazen.modes import Mode, flag_refusal, real_data_refusal
+from alhazen.modes.simulation import ALL, GAZE_SOURCES, SIMULATABLE, SimulateChoice
 from alhazen.session.checks import check_rig, format_result
 from alhazen.session.identity import Experimenter, SubjectDemographics
 from alhazen.testing.sorter import FAULTS
@@ -552,6 +553,25 @@ def add_mode_arguments(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="test mode: the mouse cursor as gaze, even on a rig with an eye tracker",
     )
+    # Which of the rig's devices this launch stands in for, connected or not,
+    # and who supplies gaze when the tracker is one of them. Nothing is
+    # simulated that is not named here (alhazen.modes.simulation).
+    parser.add_argument(
+        "--simulate",
+        default=None,
+        metavar="DEVICES",
+        help=f"run, test and training: stand in for these devices, comma-separated — "
+        f"{', '.join(SIMULATABLE)}, or {ALL}. The session is then a rehearsal: its data is "
+        f"kept out of the rig's own",
+    )
+    parser.add_argument(
+        "--gaze",
+        default=None,
+        choices=list(GAZE_SOURCES),
+        help="with --simulate tracker (or all): who supplies gaze — autopilot (the task plays "
+        "itself, nobody in the chair) or mouse (you play it, the cursor as your eye). "
+        "Required then; there is no default",
+    )
     # The calibration target for this run, over the rig's own setting
     # (eyetracker.calibration_target; docs/eye-tracker.md). Run and test only:
     # the modes that calibrate the rig's tracker (alhazen.modes.flag_refusal).
@@ -758,8 +778,23 @@ def _run_session(
     # Refused before anything loads: a flag the mode cannot honour is a
     # usage error, and finding that out after the rig opened a window is
     # the wrong moment.
+    # What this launch stands in for, checked the same way: a device name
+    # --simulate does not know, or a tracker simulated with nobody chosen to
+    # supply gaze, is a usage error. A namespace built without the two flags
+    # (an older caller's) simulates nothing.
+    try:
+        args.simulate_choice = SimulateChoice.parse(
+            getattr(args, "simulate", None), getattr(args, "gaze", None)
+        )
+    except ValueError as exc:
+        print(f"CANNOT RUN: {exc}", file=sys.stderr)
+        return 2
     refusal = flag_refusal(
-        mode, headless=args.headless, mouse=args.mouse, calibration=_calibration_flags(args)
+        mode,
+        headless=args.headless,
+        mouse=args.mouse,
+        calibration=_calibration_flags(args),
+        simulate=args.simulate_choice,
     )
     if refusal is not None:
         print(f"CANNOT RUN: {refusal}", file=sys.stderr)
@@ -847,8 +882,14 @@ def _run_session(
     # connects a device. A forgotten --rig used to record a session with no
     # tracker into the real data root. Exit 2, like the flag refusal above: a
     # usage error. docs/rigs.md §5.
-    refusal = real_data_refusal(
-        mode, rig, args.rig_ref, instead=lambda: _real_data_instead(args, root)
+    # A launch that simulates anything is a rehearsal, which is what a
+    # development rig is for: its data never reaches the real data root.
+    refusal = (
+        None
+        if args.simulate_choice
+        else real_data_refusal(
+            mode, rig, args.rig_ref, instead=lambda: _real_data_instead(args, root)
+        )
     )
     if refusal is not None:
         print(f"CANNOT RUN: {refusal}", file=sys.stderr)
@@ -1112,7 +1153,10 @@ def _settle_subject_and_session(args: argparse.Namespace, mode: Mode) -> str | N
     refused = _normalize_initials_flag(args)
     if refused is not None:
         return refused
-    if mode is Mode.SIMULATE:
+    # The autopilot as the subject (simulate mode, or --gaze autopilot in
+    # any mode) is nobody to ask and nobody to register.
+    choice = getattr(args, "simulate_choice", None)
+    if mode is Mode.SIMULATE or (choice is not None and choice.autopilot):
         if args.sub is None:
             args.sub = "sim"
         if args.ses is None:
@@ -1499,6 +1543,7 @@ def _trial_session(args: argparse.Namespace, rig: Any, task: Any, params: Any, m
             open_live_monitor=False if args.no_live_monitor_browser else None,
             headless=args.headless,
             mouse=args.mouse,
+            simulate=args.simulate_choice,
             # run.py's own override (run_experiment's `instructions=`), or
             # None — `alhazen run` never sets it — in which case the session
             # builder shows what the task declares (Task.instructions).
