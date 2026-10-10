@@ -1367,6 +1367,12 @@ def _structure(
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("alhazen.testing"):
             found.append(f"{path}:{node.lineno}: task code imports alhazen.testing (test doubles)")
+        elif isinstance(node, ast.ImportFrom) and _STAND_INS & {a.name for a in node.names}:
+            stand_in = sorted(_STAND_INS & {a.name for a in node.names})[0]
+            found.append(
+                f"{path}:{node.lineno}: {stand_in} is a stand-in that draws nothing; "
+                "draw a real stimulus (make_fixation draws a disc anywhere)"
+            )
         elif isinstance(node, ast.Name) and node.id in _STAND_INS:
             found.append(
                 f"{path}:{node.lineno}: {node.id} is a stand-in that draws nothing; "
