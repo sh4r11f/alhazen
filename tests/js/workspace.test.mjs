@@ -1500,6 +1500,10 @@ describe('the Task parameters menu', () => {
       chooseMode(app, 'movie');
       await launch(app);
       assert.equal('parameters' in launched(app), false);
+      /* Nor the entry's label: what runs is not that file (the server
+       * refuses a label without its contents, import round decision 5). */
+      assert.equal(launched(app).parameter_set, null);
+      assert.equal('params' in launched(app), false);
     });
 
   it('says a project without parameter files runs on its code’s defaults, and sends none',

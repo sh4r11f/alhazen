@@ -1071,6 +1071,14 @@ function launchDraft() {
     draft.parameters_yaml = $('parameter-yaml').value;
   } else if (usesParameters() && editor === 'fields' && values !== null) {
     draft.parameters = values;
+  } else if (usesParameters() && draft.parameter_set && selectedSet()?.params) {
+    // No text to send (an emptied editor): the launch does not run the
+    // entry's file, so it does not carry the entry's label either; the
+    // server refuses a label without its file's contents (import round,
+    // decision 5), and the history then names the task, which is what ran.
+    // An entry on no file keeps its label: running the task's own default
+    // is what that label means.
+    draft.parameter_set = null;
   }
   return draft;
 }

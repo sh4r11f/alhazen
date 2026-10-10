@@ -9,10 +9,12 @@ task's own name, and records the label beside it.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
 import pytest
+import yaml
 from test_workspace import request_for, workspace
 
 from alhazen.cli.workspace import project_parameter_sets, project_tasks
@@ -201,9 +203,16 @@ class TestTheProjectAndItsLaunches:
 
     def test_a_run_records_its_entry_and_keeps_its_task_name(self, workspace):
         key = self.tasked(workspace)
+        # params: "default" since the import round (decision 5): a label alone
+        # no longer launches; this runs the entry's own file as shipped.
         run = workspace.start(
             request_for(
-                workspace, project=key, mode="simulate", task="mt-tuning", parameter_set="Tuning"
+                workspace,
+                project=key,
+                mode="simulate",
+                task="mt-tuning",
+                parameter_set="Tuning",
+                params="default",
             )
         )
         workspace.worker.join(timeout=60)
@@ -215,6 +224,91 @@ class TestTheProjectAndItsLaunches:
             Path(detail["directory"], "console.log").read_text(encoding="utf-8").splitlines()[0]
         )
         assert argv[argv.index("--task") + 1] == "mt-tuning"
+
+    def test_a_label_without_its_file_contents_is_refused_naming_it(self, workspace):
+        """POST /api/runs with a label and no text used to run the task's
+        default params file while run.json recorded the label (import round
+        2026-10-09: attention-clamp's 'Calibration (human)' ran the cued block,
+        mbri's 'Search (RDK, human)' the monkey file). Refused now, naming
+        the label, before anything is written."""
+        key = self.tasked(workspace)
+        with pytest.raises(ValueError, match="'Tuning' were sent without the contents of"):
+            workspace.start(
+                request_for(
+                    workspace, project=key, mode="simulate", task="mt-tuning", parameter_set="Tuning"
+                )
+            )
+        assert not list((workspace.directory / "runs").glob("*/run.json"))
+        with pytest.raises(ValueError, match='params: "default" runs the parameters as shipped'):
+            workspace.start(
+                request_for(
+                    workspace,
+                    project=key,
+                    mode="simulate",
+                    task="mt-tuning",
+                    parameter_set="Tuning",
+                    params="default",
+                    parameters_yaml="speed: 4\n",
+                )
+            )
+        assert not list((workspace.directory / "runs").glob("*/run.json"))
+
+    def test_default_runs_the_entry_file_and_records_its_hash(self, workspace):
+        key = self.tasked(workspace)
+        root = Path(workspace.projects[0]["path"])
+        shipped = (root / "configs" / "task.yaml").read_bytes()
+        run = workspace.start(
+            request_for(
+                workspace,
+                project=key,
+                mode="simulate",
+                task="mt-tuning",
+                parameter_set="Tuning",
+                params="default",
+            )
+        )
+        workspace.worker.join(timeout=60)
+        detail = workspace.detail(run["id"])
+        folder = Path(detail["directory"])
+        record = json.loads((folder / "run.json").read_text(encoding="utf-8"))
+        sent = (folder / "params.yaml").read_bytes()
+        assert record["params"] == {
+            "source": "parameter set file",
+            "file": "configs/task.yaml",
+            "sha256": hashlib.sha256(sent).hexdigest(),
+            "file_sha256": hashlib.sha256(shipped).hexdigest(),
+        }
+        assert yaml.safe_load(sent) == yaml.safe_load(shipped)
+        argv = json.loads((folder / "console.log").read_text(encoding="utf-8").splitlines()[0])
+        assert argv[argv.index("--params") + 1] == str(folder / "params.yaml")
+
+    def test_text_and_an_entry_on_no_file_are_recorded_too(self, workspace):
+        key = self.tasked(workspace)
+        run = workspace.start(
+            request_for(
+                workspace,
+                project=key,
+                mode="simulate",
+                task="mt-tuning",
+                parameter_set="Tuning",
+                parameters_yaml="speed: 4\n",
+            )
+        )
+        workspace.worker.join(timeout=60)
+        folder = Path(workspace.detail(run["id"])["directory"])
+        record = json.loads((folder / "run.json").read_text(encoding="utf-8"))
+        assert record["params"]["source"] == "launch text"
+        assert record["params"]["sha256"] == hashlib.sha256((folder / "params.yaml").read_bytes()).hexdigest()
+        # "Search" names no file: its label means the task's own default.
+        run = workspace.start(
+            request_for(
+                workspace, project=key, mode="simulate", task="mib-search", parameter_set="Search"
+            )
+        )
+        workspace.worker.join(timeout=60)
+        folder = Path(workspace.detail(run["id"])["directory"])
+        record = json.loads((folder / "run.json").read_text(encoding="utf-8"))
+        assert record["params"] == {"source": "task default", "file": None, "sha256": None}
 
     def test_an_entry_for_another_task_is_refused_before_anything_is_written(self, workspace):
         key = self.tasked(workspace)

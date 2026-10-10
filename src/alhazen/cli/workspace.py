@@ -1159,6 +1159,13 @@ class Launch(BaseModel):
     # renames anything already recorded. None from a client that sends no
     # label, and for a launch that takes no parameters.
     parameter_set: str | None = None
+    # "default": run the parameters the launch names AS SHIPPED, with no text:
+    # for a parameter_set, that entry's own file (read here and sent as the
+    # params file); without one, the task's own default. Required to launch a
+    # parameter_set without parameters text: a label alone used to run the
+    # task's default file while the history showed the label (import round
+    # 2026-10-09, decision 5). The page always sends the text it shows.
+    params: Literal["default"] | None = None
     # A training launch (mode "training"): the ladder, by run.py's LADDERS
     # label, and the stage, by its id (project_ladders). `rehearse` runs the
     # stage in simulate mode instead, headless, filed under the training
@@ -2531,6 +2538,79 @@ class Workspace:
                 f"but the launch names {task}; choose the entry again"
             )
 
+    def _bind_parameters(
+        self, project: dict[str, Any], request: Launch
+    ) -> tuple[Launch, str | None]:
+        """The launch with its parameters bound to what the label names, and
+        the project-relative params file the text came from (None when the
+        text is the request's own, or when no file is sent).
+
+        A Task parameters label without parameter text is refused, naming the
+        label, unless the request says ``params: "default"``: then the
+        entry's own file is read and sent, so the session runs exactly the
+        file the label names. ``params: "default"`` with text is a
+        contradiction and refused too. Training stages name their own
+        parameters (the ladder) and are not touched here."""
+        has_text = request.parameters is not None or request.parameters_yaml is not None
+        if request.params == "default" and has_text:
+            raise ValueError(
+                'params: "default" runs the parameters as shipped; send it without parameter '
+                "text, or send the text without it"
+            )
+        if request.mode == Mode.TRAINING.value or request.parameter_set is None or has_text:
+            return request, None
+        sets = self.describe(project["id"])["parameter_sets"]
+        entry = next((e for e in sets if e["label"] == request.parameter_set), None)
+        if entry is None or not entry.get("params"):
+            # An unknown label is refused by _check_parameter_set, with the
+            # list of labels; an entry on no file runs the task's default,
+            # which is what its label means.
+            return request, None
+        if request.params != "default":
+            raise ValueError(
+                f"Task parameters {request.parameter_set!r} were sent without the contents of "
+                f"{entry['params']}. Send the parameter text the launch should run "
+                f'(parameters_yaml), or params: "default" to run {entry["params"]} as shipped'
+            )
+        text = path_inside(Path(project["path"]), entry["params"]).read_text(encoding="utf-8")
+        return request.model_copy(update={"parameters_yaml": text}), str(entry["params"])
+
+    def _params_record(
+        self,
+        project: dict[str, Any],
+        task: str | None,
+        text: str | None,
+        params_file: str | None,
+    ) -> dict[str, Any]:
+        """What run.json says about the parameters the session got: where
+        they came from and the SHA-256 of their exact bytes, so a label can be
+        checked against what actually ran."""
+        if text is not None:
+            record: dict[str, Any] = {
+                "source": "parameter set file" if params_file else "launch text",
+                "file": params_file,
+                # params.yaml, the exact bytes the session was given.
+                "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            }
+            if params_file:
+                shipped = path_inside(Path(project["path"]), params_file)
+                record["file_sha256"] = hashlib.sha256(shipped.read_bytes()).hexdigest()
+            return record
+        # No params file sent: run.py's own default for the task, when the
+        # task table names it.
+        declared = project_tasks(Path(project["path"]))
+        own = next((t["params"] for t in declared["tasks"] if t["name"] == task), None)
+        path = path_inside(Path(project["path"]), own) if own else None
+        return {
+            "source": "task default",
+            "file": own if path is not None and path.is_file() else None,
+            "sha256": (
+                hashlib.sha256(path.read_bytes()).hexdigest()
+                if path is not None and path.is_file()
+                else None
+            ),
+        }
+
     def start(self, request: Launch) -> dict[str, Any]:
         with self.lock:
             if self.active:
@@ -2547,6 +2627,10 @@ class Workspace:
             # page selected records: resolved first, so every check after
             # this one sees the subject the record names.
             request, identity = self._identity(self.project(request.project), request)
+            # A Task parameters label runs its own file, never the task's
+            # default under the label's name (_bind_parameters); bound before
+            # the command is built, so --params goes with it.
+            request, params_file = self._bind_parameters(self.project(request.project), request)
             recorded_in = _experimenter_destination(
                 self.project(request.project), request, identity
             )
@@ -2689,6 +2773,9 @@ class Workspace:
                 # The measurements a Measure rig run was asked for, in run
                 # order as the page listed them; None for any other launch.
                 "measurements": list(request.measurements) if request.measurements else None,
+                # The parameters it ran: their source and the SHA-256 of their
+                # bytes (params.yaml, or the task's default file).
+                "params": self._params_record(project, task, text, params_file),
                 # A hub-installed release's identity (hub base, experiment and
                 # version ids, source ZIP SHA-256), as launch.json holds it.
                 **pinned,
