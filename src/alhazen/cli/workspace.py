@@ -177,6 +177,21 @@ def _load_record(path: Path, kind: type) -> Any:
     return value
 
 
+def _launcher_root() -> Path:
+    """The directory this launcher's own ``alhazen`` package is imported from
+    (a checkout's ``src/``, or the launcher's site-packages)."""
+    return Path(__file__).resolve().parents[2]
+
+
+def _same_interpreter(python: Any) -> bool:
+    if not isinstance(python, str) or not python:
+        return False
+    try:
+        return Path(python).resolve() == Path(sys.executable).resolve()
+    except OSError:
+        return False
+
+
 def _child_env(project: dict[str, Any]) -> dict[str, str]:
     """The environment a project's interpreter runs in: its own paths, then ours.
 
@@ -189,13 +204,28 @@ def _child_env(project: dict[str, Any]) -> dict[str, str]:
     for another interpreter fails to import). The project's interpreter must
     have alhazen installed itself; ``probe_interpreter`` checks that when the
     project is registered, which is the moment the message can still be acted on.
+
+    The same holds for an INHERITED PYTHONPATH that names the launcher's own
+    root (a dashboard started from a source checkout with
+    ``PYTHONPATH=<checkout>/src``): that entry is dropped for any interpreter
+    other than the launcher's own, so an experiment's own environment runs its
+    own pinned alhazen, not the launcher's. Every other inherited entry, and
+    everything for the launcher's own interpreter, is passed on unchanged.
     """
     env = os.environ.copy()
     root = Path(project["path"])
-    inherited = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = os.pathsep.join(
-        [str(root / "src"), str(root)] + ([inherited] if inherited else [])
-    )
+    inherited = [part for part in env.get("PYTHONPATH", "").split(os.pathsep) if part]
+    if inherited and not _same_interpreter(project.get("python")):
+        launcher = _launcher_root()
+
+        def is_launcher(part: str) -> bool:
+            try:
+                return Path(part).resolve() == launcher
+            except OSError:
+                return False
+
+        inherited = [part for part in inherited if not is_launcher(part)]
+    env["PYTHONPATH"] = os.pathsep.join([str(root / "src"), str(root), *inherited])
     return env
 
 
@@ -210,7 +240,7 @@ def probe_interpreter(python: str, project_path: str) -> dict[str, Any]:
     interpreter and says what to install, because the alternative is a
     registration that looks fine and a launch that dies on ``import alhazen``.
     """
-    env = _child_env({"path": project_path})
+    env = _child_env({"path": project_path, "python": python})
     try:
         result = subprocess.run(
             [python, "-c", INTERPRETER_PROBE],

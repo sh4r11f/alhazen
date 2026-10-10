@@ -1406,6 +1406,44 @@ class TestInterpreters:
         assert seen == {"launch": expected, "schema": expected}
         assert launcher_root not in expected
 
+    def test_an_inherited_launcher_checkout_does_not_reach_another_interpreter(
+        self, tmp_path, monkeypatch
+    ):
+        """A dashboard started from a source checkout with PYTHONPATH=<checkout>/src
+        passed that entry on, so an experiment's own venv ran the launcher's
+        alhazen instead of its pinned one (found importing amodal-averaging into
+        the hub). Dropped for another interpreter; kept for the launcher's own;
+        every other inherited entry kept, in order."""
+        launcher = str(workspace_module._launcher_root())
+        monkeypatch.setenv("PYTHONPATH", os.pathsep.join(["FIRST", launcher, "LAST"]))
+        root = tmp_path / "exp"
+        other = tmp_path / "venv" / "bin" / "python"
+        other.parent.mkdir(parents=True)
+        other.write_text("", encoding="utf-8")
+        base = [str(root / "src"), str(root)]
+        env = workspace_module._child_env({"path": str(root), "python": str(other)})
+        assert env["PYTHONPATH"].split(os.pathsep) == [*base, "FIRST", "LAST"]
+        env = workspace_module._child_env({"path": str(root), "python": sys.executable})
+        assert env["PYTHONPATH"].split(os.pathsep) == [*base, "FIRST", launcher, "LAST"]
+        # No interpreter recorded (an old registry entry): treated as another one.
+        env = workspace_module._child_env({"path": str(root)})
+        assert launcher not in env["PYTHONPATH"].split(os.pathsep)
+
+    def test_the_probe_sees_the_environment_the_launch_gets(self, tmp_path, monkeypatch):
+        launcher = str(workspace_module._launcher_root())
+        monkeypatch.setenv("PYTHONPATH", launcher)
+        seen = {}
+
+        def run(command, **kwargs):
+            seen["path"] = kwargs["env"]["PYTHONPATH"]
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="no alhazen")
+
+        monkeypatch.setattr(subprocess, "run", run)
+        other = tmp_path / "python"
+        with pytest.raises(ValueError):
+            workspace_module.probe_interpreter(str(other), str(tmp_path))
+        assert launcher not in seen["path"].split(os.pathsep)
+
     def test_registration_records_which_alhazen_the_interpreter_has(self, workspace, monkeypatch):
         monkeypatch.setattr(workspace_module, "probe_interpreter", REAL_PROBE)
         project = workspace.add(workspace.projects[0]["path"], sys.executable)
