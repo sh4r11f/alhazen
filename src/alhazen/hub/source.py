@@ -130,11 +130,10 @@ def _declares_reward(root: Path, files: list[str] | None) -> bool:
             continue
         if "legacy" in path.relative_to(root).parts:
             continue
-        try:
-            if _MONKEY_PARAMS.search(path.read_text(encoding="utf-8")):
-                return True
-        except (OSError, UnicodeDecodeError):
-            continue
+        # errors="replace": a params file that is not UTF-8 is the loader's to
+        # refuse, not the suggestion's; an unreadable one is a real error.
+        if _MONKEY_PARAMS.search(path.read_text(encoding="utf-8", errors="replace")):
+            return True
     return False
 
 
