@@ -13,8 +13,8 @@ can check exactly what would have been disclosed.
 
 Behaviours, one consumed per request (the last repeats):
 ``valid``, ``invalid_json``, ``schema_invalid``, ``rules_invalid`` (valid JSON
-that breaks the plan rules, or a source answer whose task module does not
-compile), and the provider failures ``quota``, ``auth``, ``timeout``,
+that breaks the plan rules, or a source or run-repair answer whose task module
+does not compile), and the provider failures ``quota``, ``auth``, ``timeout``,
 ``invalid``, ``other`` (raised as ``ProviderError(kind=...)``).
 """
 
@@ -76,6 +76,18 @@ def _rules_invalid_source() -> str:
     return json.dumps(answer)
 
 
+def repair_answer() -> dict[str, Any]:
+    """A valid run-repair answer for the package built from the valid
+    fixture (a comment added to build_trial; nothing else changes)."""
+    return json.loads((FIXTURES / "repair" / "default-answer.json").read_text(encoding="utf-8"))
+
+
+def _rules_invalid_repair() -> str:
+    answer = repair_answer()
+    answer["task_module"] = answer["task_module"] + "\ndef broken(:\n"
+    return json.dumps(answer)
+
+
 @dataclass(frozen=True)
 class FakeCompletion:
     text: str
@@ -93,6 +105,9 @@ class FakeProvider:
     # Valid-behaviour source answers to give in order before source_text (a
     # live failure, then its repair).
     source_queue: list[str] = field(default_factory=list)
+    # Run-repair answers (schema alhazen_repair), in order, before repair_text.
+    repair_queue: list[str] = field(default_factory=list)
+    repair_text: str | None = None
     model: str = "fake-model-1"
     requests: list[dict[str, Any]] = field(default_factory=list)
 
@@ -122,7 +137,19 @@ class FakeProvider:
         elif behaviour == "schema_invalid":
             text = json.dumps({"title": "only a title"})
         elif behaviour == "rules_invalid":
-            text = _rules_invalid_plan() if step == "alhazen_plan" else _rules_invalid_source()
+            if step == "alhazen_plan":
+                text = _rules_invalid_plan()
+            elif step == "alhazen_repair":
+                text = _rules_invalid_repair()
+            else:
+                text = _rules_invalid_source()
+        elif behaviour == "valid" and step == "alhazen_repair":
+            if self.repair_queue:
+                text = self.repair_queue.pop(0)
+            elif self.repair_text is not None:
+                text = self.repair_text
+            else:
+                text = json.dumps(repair_answer())
         elif behaviour == "valid":
             if step == "alhazen_plan":
                 text = self.plan_text if self.plan_text is not None else plan_answer()

@@ -42,6 +42,7 @@ from alhazen.hub.ai import author, prompts, surface
 from alhazen.hub.ai.schemas import (
     LICENSES,
     PLAN_SCHEMA,
+    RUN_REPAIR_SCHEMA,
     SOURCE_SCHEMA,
     for_provider,
     problems,
@@ -1055,3 +1056,235 @@ def test_gpt41_round_replays(ctx):
 def test_listing_names_the_phase_protocol():
     text = surface.api_text()
     assert "class Phase" in text and "a new phase implements Phase" in text
+
+
+# ---------------------------------------------------------------------------
+# 7. Repair from a run (repair_from_run)
+# ---------------------------------------------------------------------------
+
+DRAW_DISC_LOG = (DRAW_DISC / "run-log.txt").read_text(encoding="utf-8")
+
+
+def draw_disc_bundle(ctx) -> author.GeneratedBundle:
+    """The draw_disc package as it was accepted and ran (assembled, not
+    validated: it is the package that failed on the rig)."""
+    plan = author.Plan.from_dict(json.loads((DRAW_DISC / "plan.json").read_text("utf-8")))
+    answer = json.loads((DRAW_DISC / "source-answer.json").read_text("utf-8"))
+    files, _ = author.assemble(plan, answer, ctx, "gpt-4.1")
+    metadata = author.manifest_metadata(plan, ctx.alhazen_version, answer["references"])
+    archive, info = author.bundle_archive(files, metadata)
+    return author.GeneratedBundle(
+        files=files, manifest=info.manifest, report=None, archive=archive, sha256=info.sha256
+    )
+
+
+def repair_answer(**changes: Any) -> str:
+    answer = json.loads((DRAW_DISC / "repair-answer.json").read_text("utf-8"))
+    answer.update(changes)
+    return json.dumps(answer)
+
+
+def test_the_draw_disc_package_is_repaired(ctx):
+    bundle = draw_disc_bundle(ctx)
+    fake = FakeProvider(repair_text=repair_answer())
+    result = author.repair_from_run(
+        fake, bundle, DRAW_DISC_LOG, ctx, notes="It stopped on the first flash trial."
+    )
+    assert result.report is not None and result.report.ok, result.report
+    assert len(fake.requests) == 1
+    assert fake.requests[0]["json_schema"] == for_provider(RUN_REPAIR_SCHEMA)
+    assert b"draw_disc" not in result.files["src/fixation_flash/task.py"]
+    # A new version of the same package: everything else as it was.
+    assert result.manifest["version"] == "0.1.1"
+    for key in ("name", "title", "description", "license", "hardware", "documentation"):
+        assert result.manifest[key] == bundle.manifest[key]
+    assert 'version = "0.1.1"' in result.files["pyproject.toml"].decode()
+    for path in ("configs/task.yaml", "docs/experiment.json", "run.py", "LICENSE", "README.md"):
+        assert result.files[path] == bundle.files[path], path
+    provenance = json.loads(result.files["docs/ai-provenance.json"])
+    assert provenance["ai_assisted"] is True
+    assert provenance["repairs"][0]["from_version"] == "0.1.0"
+    assert provenance["repairs"][0]["from_sha256"] == bundle.sha256
+    assert "draw_disc" in provenance["repairs"][0]["changes"]
+    with tempfile.TemporaryDirectory() as folder:
+        path = Path(folder) / "p.zip"
+        path.write_bytes(result.archive)
+        assert inspect_bundle(path).sha256 == result.sha256
+
+
+def test_the_repair_request_carries_the_code_the_log_and_the_api(ctx):
+    bundle = draw_disc_bundle(ctx)
+    fake = FakeProvider(repair_text=repair_answer())
+    author.repair_from_run(fake, bundle, DRAW_DISC_LOG, ctx, notes="Trial 2 crashed.")
+    system, user = fake.requests[0]["messages"]
+    assert system["content"] == prompts.RUN_REPAIR_SYSTEM
+    assert "Do not change the protocol" in system["content"]
+    text = user["content"]
+    assert DRAW_DISC_LOG.strip() in text and "Trial 2 crashed." in text
+    assert bundle.files["src/fixation_flash/task.py"].decode().strip() in text
+    assert bundle.files["tests/test_task.py"].decode().strip() in text
+    assert bundle.files["configs/task.yaml"].decode().strip() in text
+    api = dict(ctx.source_items)
+    assert any(name.startswith("alhazen ") and body in text for name, body in api.items())
+    assert "scaffold: run.py" not in text  # only what a repair needs
+
+
+def test_a_version_override_is_used(ctx):
+    bundle = draw_disc_bundle(ctx)
+    result = author.repair_from_run(
+        FakeProvider(repair_text=repair_answer()), bundle, DRAW_DISC_LOG, ctx, version="0.2.0"
+    )
+    assert result.manifest["version"] == "0.2.0"
+    assert 'version = "0.2.0"' in result.files["pyproject.toml"].decode()
+    with pytest.raises(ValueError):
+        author.repair_from_run(FakeProvider(), bundle, DRAW_DISC_LOG, ctx, version="next")
+
+
+PRIVATE_LOG = (
+    "Traceback (most recent call last):\n"
+    '  File "src/fixation_flash/task.py", line 130, in on_frame\n'
+    "    return ctx.end_undrawn(self.on_break)\n"
+    "AttributeError: 'HoldWithFlash' object has no attribute 'on_break'\n"
+)
+PRIVATE_SUBCLASS = """
+
+class HoldWithFlash(phases.HoldFixation):
+    def on_frame(self, ctx):
+        if ctx.time_up(self._t0, self._duration_s):
+            return ctx.end_undrawn(self._on_break)
+        return super().on_frame(ctx)
+"""
+
+
+def test_a_log_naming_a_private_attribute_ends_api_clean(ctx):
+    """The first answer reaches for HoldFixation's private state (as gpt-4.1
+    did); the api check names it, and the repair round's answer is clean."""
+    bundle = draw_disc_bundle(ctx)
+    repaired = json.loads(repair_answer())["task_module"]
+    fake = FakeProvider(
+        repair_queue=[
+            repair_answer(task_module=repaired + PRIVATE_SUBCLASS),
+            repair_answer(),
+        ]
+    )
+    result = author.repair_from_run(fake, bundle, PRIVATE_LOG, ctx)
+    assert len(fake.requests) == 2
+    told = fake.requests[1]["messages"][-1]["content"]
+    assert "HoldFixation" in told and "private" in told and "_on_break" in told
+    api = next(check for check in result.report.checks if check.name == "api")
+    assert api.ok and result.report.ok
+    assert b"HoldWithFlash" not in result.files["src/fixation_flash/task.py"]
+
+
+@pytest.mark.parametrize("behaviour", ["invalid_json", "schema_invalid", "rules_invalid"])
+def test_an_invalid_repair_raises(ctx, behaviour):
+    fake = FakeProvider([behaviour])
+    with pytest.raises(author.SourceInvalid) as raised:
+        author.repair_from_run(fake, draw_disc_bundle(ctx), DRAW_DISC_LOG, ctx)
+    assert len(fake.requests) == 2 and not raised.value.report.ok
+
+
+def test_returning_the_failing_code_is_refused(ctx):
+    bundle = draw_disc_bundle(ctx)
+    original = bundle.files["src/fixation_flash/task.py"].decode()
+    tests_text = bundle.files["tests/test_task.py"].decode()
+    same = repair_answer(task_module=original, test_module=tests_text)
+    with pytest.raises(author.SourceInvalid) as raised:
+        author.repair_from_run(FakeProvider(repair_text=same), bundle, DRAW_DISC_LOG, ctx)
+    found = raised.value.report.problems
+    assert any("nothing changed" in p for p in found)
+    assert any("which has no 'draw_disc'" in p for p in found)
+
+
+def test_other_files_are_limited_to_parameters_and_documentation(ctx):
+    bundle = draw_disc_bundle(ctx)
+    readme = bundle.files["README.md"].decode() + "\nRepaired: the flash is a make_fixation.\n"
+    result = author.repair_from_run(
+        FakeProvider(
+            repair_text=repair_answer(other_files=[{"path": "README.md", "content": readme}])
+        ),
+        bundle,
+        DRAW_DISC_LOG,
+        ctx,
+    )
+    assert result.files["README.md"].decode() == readme
+    sneaky = repair_answer(other_files=[{"path": "run.py", "content": "print(1)\n"}])
+    with pytest.raises(author.SourceInvalid) as raised:
+        author.repair_from_run(FakeProvider(repair_text=sneaky), bundle, DRAW_DISC_LOG, ctx)
+    assert any("'run.py' may not be changed" in p for p in raised.value.report.problems)
+
+
+def test_a_params_change_is_checked_against_the_code(ctx):
+    bundle = draw_disc_bundle(ctx)
+    params = (
+        bundle.files["configs/task.yaml"]
+        .decode()
+        .replace("flash_size_dva: 1.0", "flash_size_dva: 2.0")
+    )
+    assert params != bundle.files["configs/task.yaml"].decode()
+    answer = repair_answer(other_files=[{"path": "configs/task.yaml", "content": params}])
+    with pytest.raises(author.SourceInvalid) as raised:
+        author.repair_from_run(FakeProvider(repair_text=answer), bundle, DRAW_DISC_LOG, ctx)
+    assert any("flash_size_dva defaults to 1.0" in p for p in raised.value.report.problems)
+
+
+def test_a_cancel_after_the_first_answer_stops_before_the_repair_round(ctx):
+    class Cancelled(Exception):
+        pass
+
+    def cancel(_completion):
+        raise Cancelled
+
+    fake = FakeProvider(["invalid_json", "valid"])
+    with pytest.raises(Cancelled):
+        author.repair_from_run(
+            fake, draw_disc_bundle(ctx), DRAW_DISC_LOG, ctx, on_completion=cancel
+        )
+    assert len(fake.requests) == 1
+
+
+def test_provider_errors_propagate_from_a_repair(ctx):
+    with pytest.raises(ProviderError):
+        author.repair_from_run(FakeProvider(["quota"]), draw_disc_bundle(ctx), DRAW_DISC_LOG, ctx)
+
+
+def test_a_long_log_keeps_its_start_and_its_traceback(ctx):
+    log = "session start\n" + "frame ok\n" * 20_000 + DRAW_DISC_LOG
+    fake = FakeProvider(repair_text=repair_answer())
+    author.repair_from_run(fake, draw_disc_bundle(ctx), log, ctx)
+    text = fake.requests[0]["messages"][1]["content"]
+    assert "session start" in text and DRAW_DISC_LOG.strip() in text
+    assert "characters of the log left out" in text
+    assert len(text) < len(log)
+
+
+def test_only_generated_packages_can_be_repaired(ctx):
+    bundle = draw_disc_bundle(ctx)
+    files = {k: v for k, v in bundle.files.items() if not k.startswith("src/")}
+    with pytest.raises(ValueError, match="src/<package>/task.py"):
+        author.names_of_package(files)
+    names = author.names_of_package(bundle.files)
+    assert (names.package, names.task_name, names.task_class) == (
+        "fixation_flash",
+        "fixation-flash",
+        "FixationFlashTask",
+    )
+
+
+def test_next_patch():
+    assert author.next_patch("0.1.0") == "0.1.1"
+    assert author.next_patch("1.9.9") == "1.9.10"
+
+
+def test_the_default_fake_repair_fits_the_valid_package(the_plan, ctx, bundle):
+    """FakeProvider's default repair answer repairs the package the default
+    FakeProvider generates (what the server tests accept and then repair)."""
+    stored = author.GeneratedBundle(
+        files=bundle.files,
+        manifest=bundle.manifest,
+        report=None,
+        archive=bundle.archive,
+        sha256=bundle.sha256,
+    )
+    result = author.repair_from_run(FakeProvider(), stored, DRAW_DISC_LOG, ctx)
+    assert result.report.ok and result.manifest["version"] == "0.1.1"
