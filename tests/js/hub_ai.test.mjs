@@ -243,6 +243,21 @@ test('the whole flow: generate, poll the plan job, plan, generate source, report
   assert.equal(p.find('a', 'Download').getAttribute('href'), '/api/hub/v1/experiments/xe1/versions/xv1/download');
 });
 
+test('Generate checks the form first: a sentence of description, a listing to fork; nothing is sent', async () => {
+  const {p} = await open('?view=create', {keys: [{provider: 'openai', hint: 'abcd'}]});
+  const form = p.main.querySelector('form');
+  await p.submit(form);
+  assert.match(p.text(), /Describe the experiment in a sentence or two first/);
+  await describe(p);
+  const radios = form.querySelectorAll('input').filter((i) => i.getAttribute('type') === 'radio');
+  radios[0].checked = false;
+  radios[1].checked = true;
+  radios[1].fire('change', {});
+  await p.submit(form);
+  assert.match(p.text(), /Choose the listing to fork/);
+  assert.equal(posts(p, 'POST /ai/drafts').length, 0);
+});
+
 test('Generate saves a typed key first, then starts the draft; with no key at all it asks for one and sends nothing', async () => {
   const {p} = await open();
   await describe(p);

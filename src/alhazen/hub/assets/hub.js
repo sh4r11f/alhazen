@@ -2684,9 +2684,6 @@ const HubApp = (() => {
       const area = region('the draft');
       section.appendChild(area.el);
       (async () => {
-        if (!state.ai) {
-          try { await aiStatus(ctx); } catch (exc) { /* names only; the draft answer decides */ }
-        }
         const got = await screenRequest(ctx.epoch, 'GET', '/ai/drafts/' + C.seg(r.draft));
         if (!got) return;
         if (!got.ok) return area.fail(got.error, retryCurrent);
