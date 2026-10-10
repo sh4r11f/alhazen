@@ -9,6 +9,7 @@ can check exactly what would have been disclosed.
     provider = FakeProvider()                                # always valid
     provider = FakeProvider(["invalid_json", "valid"])       # one bad answer, then good
     provider = FakeProvider(["quota"])                       # the provider is out of credit
+    provider = FakeProvider(source_queue=[bad, good])        # these source answers in order
 
 Behaviours, one consumed per request (the last repeats):
 ``valid``, ``invalid_json``, ``schema_invalid``, ``rules_invalid`` (valid JSON
@@ -89,6 +90,9 @@ class FakeProvider:
     behaviours: list[str] = field(default_factory=lambda: ["valid"])
     plan_text: str | None = None
     source_text: str | None = None
+    # Valid-behaviour source answers to give in order before source_text (a
+    # live failure, then its repair).
+    source_queue: list[str] = field(default_factory=list)
     model: str = "fake-model-1"
     requests: list[dict[str, Any]] = field(default_factory=list)
 
@@ -122,6 +126,8 @@ class FakeProvider:
         elif behaviour == "valid":
             if step == "alhazen_plan":
                 text = self.plan_text if self.plan_text is not None else plan_answer()
+            elif self.source_queue:
+                text = self.source_queue.pop(0)
             else:
                 text = (
                     self.source_text

@@ -52,6 +52,8 @@ from alhazen.hub.ai.schemas import (
     for_provider,
     problems,
 )
+from alhazen.hub.ai.surface import api_text
+from alhazen.hub.ai.surface import inspect_module as api_inspect
 from alhazen.hub.documentation import DocumentationError, global_guide, read_documentation
 from alhazen.hub.packages import (
     PackageError,
@@ -198,48 +200,6 @@ START_SUFFIXES = (".py", ".yaml", ".yml", ".toml", ".md", ".json", ".txt", ".cfg
 MAX_START_FILE_BYTES = 64 * 1024
 MAX_START_BYTES = 256 * 1024
 
-# Public alhazen names a task module uses, by the module that defines them.
-# Signatures and summaries are read from the installed code at build time.
-_API: tuple[tuple[str, tuple[str, ...]], ...] = (
-    (
-        "alhazen",
-        (
-            "Task",
-            "TrialPlan",
-            "TrialSetup",
-            "Condition",
-            "CircleRegion",
-            "Duration",
-            "outcomes",
-            "Model",
-            "SubjectParams",
-            "SchedulerConfig",
-            "RewardPolicy",
-            "RewardPulses",
-            "InputFrame",
-            "Screen",
-        ),
-    ),
-    ("alhazen.core.events", ("EventSchema",)),
-    ("alhazen.task.phases", ()),  # every name in its __all__
-    ("alhazen.stimuli.fixation", ("make_fixation",)),
-    ("alhazen.stimuli.base", ("Stimulus", "NullStimulus")),
-    ("alhazen.modes.demo", ("DemoView",)),
-    ("alhazen.modes.movie", ("MovieClip",)),
-    ("alhazen.modes.simulation", ("Simulation",)),
-    ("alhazen.devices.automated", ("AutomatedGazeTracker",)),
-    ("alhazen.testing", ()),
-)
-_TASK_METHODS = (
-    "default_params",
-    "instructions",
-    "conditions",
-    "build_trial",
-    "demo_views",
-    "movie_clips",
-    "simulation",
-)
-
 
 def release_of(version: str) -> str:
     """``MAJOR.MINOR.PATCH`` of an alhazen version (``2.13.0.dev1`` → ``2.13.0``)."""
@@ -297,48 +257,6 @@ class AuthoringContext:
             "context_bytes": sum(item["bytes"] for item in context),
             "start_from": start,
         }
-
-
-def _summary(obj: Any) -> str:
-    text = inspect.getdoc(obj) or ""
-    first = text.split("\n\n")[0].replace("\n", " ").strip()
-    return first[:400]
-
-
-def _signature(obj: Any) -> str:
-    try:
-        return str(inspect.signature(obj))
-    except (TypeError, ValueError):
-        return ""
-
-
-def api_summary() -> str:
-    """The public API a task uses, as signatures and one-line summaries read
-    from the installed alhazen. A module that cannot be imported here (a
-    renderer dependency missing) is named rather than described."""
-    lines: list[str] = []
-    for module_name, wanted in _API:
-        try:
-            module = importlib.import_module(module_name)
-        except ImportError as error:
-            lines.append(f"## {module_name}: not importable here ({error.name or 'dependency'})")
-            continue
-        names = wanted or tuple(getattr(module, "__all__", ()))
-        lines.append(f"## {module_name}")
-        for name in names:
-            obj = getattr(module, name, None)
-            if obj is None:
-                continue
-            lines.append(f"- {name}{_signature(obj)}")
-            summary = _summary(obj)
-            if summary:
-                lines.append(f"  {summary}")
-            if name == "Task":
-                for method in _TASK_METHODS:
-                    member = getattr(obj, method, None)
-                    if member is not None:
-                        lines.append(f"  - Task.{method}{_signature(member)}: {_summary(member)}")
-    return "\n".join(lines)
 
 
 def scaffold_files(name: str = EXAMPLE_NAME) -> dict[str, str]:
@@ -419,7 +337,7 @@ def build_context(alhazen_version: str, start: StartFrom | None = None) -> Autho
     package = EXAMPLE_NAME
     core = [
         (f"alhazen {release}: modes and protections (generated guide)", guide),
-        (f"alhazen {release}: public API used by tasks", api_summary()),
+        (f"alhazen {release}: the API a task may use (anything else does not exist)", api_text()),
     ]
     plan_scaffold = [
         (f"scaffold: src/{package}/task.py", scaffold[f"src/{package}/task.py"]),
@@ -1189,6 +1107,9 @@ _WRITE_METHODS = frozenset(
     }
 )
 _THIRD_PARTY = frozenset({"numpy", "alhazen"})
+# The renderer: alhazen-vision's `psychopy` extra, imported inside a
+# stimulus's constructor so a simulated session runs without it.
+_RENDERER = "psychopy"
 _TEST_THIRD_PARTY = frozenset({"pytest"})
 
 
@@ -1294,6 +1215,9 @@ def _imports(
     notes: list[str] = []
     allowed = _THIRD_PARTY | ({package} | (_TEST_THIRD_PARTY if _is_test(path) else set()))
     module_aliases: dict[str, Any] = {}
+    module_level = {
+        node.lineno for node in tree.body if isinstance(node, (ast.Import, ast.ImportFrom))
+    }
     for line, module, names, level in _imported_modules(tree):
         where = f"{path}:{line}"
         if level:
@@ -1306,6 +1230,13 @@ def _imports(
         if root in sys.stdlib_module_names:
             if root not in _STDLIB_ALLOWED:
                 found.append(f"{where}: imports {module}, which experiment code does not need")
+            continue
+        if root == _RENDERER and not _is_test(path):
+            if line in module_level:
+                found.append(
+                    f"{where}: import {module} inside the stimulus that uses it, so a simulated "
+                    "session runs without PsychoPy"
+                )
             continue
         if root not in allowed:
             found.append(f"{where}: imports {module}, which the package does not depend on")
@@ -1413,6 +1344,29 @@ _INHERITED_FIELDS = frozenset({"subject_kind", "reward"})
 _STAND_INS = frozenset({"NullStimulus"})
 
 
+def _on_simulated_branch(node: ast.AST, parents: Mapping[ast.AST, ast.AST]) -> bool:
+    """Whether ``node`` only runs on the simulated display: inside the body
+    of an ``if <x>.kind == "simulated"`` (the shape of make_fixation)."""
+    child, parent = node, parents.get(node)
+    while parent is not None:
+        if isinstance(parent, (ast.If, ast.IfExp)) and child is not parent.test:
+            test = parent.test
+            body = parent.body if isinstance(parent.body, list) else [parent.body]
+            if (
+                isinstance(test, ast.Compare)
+                and len(test.ops) == 1
+                and isinstance(test.ops[0], ast.Eq)
+                and isinstance(test.left, ast.Attribute)
+                and test.left.attr == "kind"
+                and isinstance(test.comparators[0], ast.Constant)
+                and test.comparators[0].value == "simulated"
+                and any(child is item for item in body)
+            ):
+                return True
+        child, parent = parent, parents.get(parent)
+    return False
+
+
 def _structure(
     names: Names, tree: ast.Module
 ) -> tuple[list[str], ast.ClassDef | None, ast.ClassDef | None]:
@@ -1432,19 +1386,19 @@ def _structure(
                     f"{path}:{item.lineno}: {names.params_class} redeclares {target.id}, "
                     "which SubjectParams already declares with its checks"
                 )
+    parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("alhazen.testing"):
             found.append(f"{path}:{node.lineno}: task code imports alhazen.testing (test doubles)")
-        elif isinstance(node, ast.ImportFrom) and _STAND_INS & {a.name for a in node.names}:
-            stand_in = sorted(_STAND_INS & {a.name for a in node.names})[0]
+        elif (
+            isinstance(node, ast.Name)
+            and node.id in _STAND_INS
+            and not _on_simulated_branch(node, parents)
+        ):
             found.append(
-                f"{path}:{node.lineno}: {stand_in} is a stand-in that draws nothing; "
-                "draw a real stimulus (make_fixation draws a disc anywhere)"
-            )
-        elif isinstance(node, ast.Name) and node.id in _STAND_INS:
-            found.append(
-                f"{path}:{node.lineno}: {node.id} is a stand-in that draws nothing; "
-                "draw a real stimulus (make_fixation draws a disc anywhere)"
+                f"{path}:{node.lineno}: {node.id} is a stand-in that draws nothing; use it "
+                'only on the simulated display (if display.kind == "simulated"), as '
+                "make_fixation does, and draw a real stimulus everywhere else"
             )
     if task is None:
         found.append(f"{path}: no class {names.task_class} (the task)")
@@ -1741,6 +1695,20 @@ def validate_package(
         import_problems += found
         import_notes += notes
     checks.append(Check("imports", tuple(import_problems), tuple(import_notes)))
+    api_findings = [
+        api_inspect(path, tree, files[path].decode("utf-8", errors="replace"))
+        for path, tree in generated.items()
+    ]
+    api_problems = [line for found in api_findings for line in found.problems]
+    renderer = any(
+        _module_root(module) == _RENDERER
+        for tree in generated.values()
+        for _, module, _, _ in _imported_modules(tree)
+    )
+    api_notes = tuple(line for found in api_findings for line in found.notes) + (
+        ("calls into PsychoPy are not checked (it is not installed here)",) if renderer else ()
+    )
+    checks.append(Check("api", tuple(api_problems), api_notes))
     task_tree = trees.get(names.task_module)
     params_node = task_node = None
     if task_tree is None:

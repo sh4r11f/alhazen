@@ -1,5 +1,5 @@
 {
- "ok": true,
+ "ok": false,
  "checks": [
   {
    "name": "answer",
@@ -39,9 +39,17 @@
   },
   {
    "name": "api",
-   "ok": true,
-   "problems": [],
-   "notes": []
+   "ok": false,
+   "problems": [
+    "src/fixation_flash/task.py:195: HoldFixation() takes no argument 'duration'; closest: duration_s, duration_record_key, region",
+    "src/fixation_flash/task.py:172: self is a HoldWithFlash, which has no 'on_break'; closest: on_frame, on_exit, on_enter",
+    "src/fixation_flash/task.py:174: self is a HoldWithFlash, which has no 'entered'; closest: on_enter",
+    "src/fixation_flash/task.py:174: self is a HoldWithFlash, which has no 'duration'; closest: flash_duration_s",
+    "src/fixation_flash/task.py:175: self is a HoldWithFlash, which has no 'on_advance'; closest: on_frame"
+   ],
+   "notes": [
+    "calls into PsychoPy are not checked (it is not installed here)"
+   ]
   },
   {
    "name": "structure",
@@ -79,47 +87,47 @@
   },
   {
    "path": "README.md",
-   "size": 1651
+   "size": 1508
   },
   {
    "path": "configs/task.yaml",
-   "size": 505
+   "size": 511
   },
   {
    "path": "docs/ai-provenance.json",
-   "size": 492
+   "size": 487
   },
   {
    "path": "docs/experiment.json",
-   "size": 9966
+   "size": 13048
   },
   {
    "path": "docs/methods.md",
-   "size": 1979
+   "size": 3112
   },
   {
-   "path": "docs/tasks/fixation-flash-hold.md",
-   "size": 878
+   "path": "docs/tasks/fixation-flash.md",
+   "size": 918
   },
   {
    "path": "pyproject.toml",
-   "size": 1298
+   "size": 1269
   },
   {
    "path": "run.py",
-   "size": 2020
+   "size": 1977
   },
   {
-   "path": "src/fixation_flash_hold/__init__.py",
-   "size": 210
+   "path": "src/fixation_flash/__init__.py",
+   "size": 184
   },
   {
-   "path": "src/fixation_flash_hold/task.py",
-   "size": 6473
+   "path": "src/fixation_flash/task.py",
+   "size": 12415
   },
   {
    "path": "tests/test_task.py",
-   "size": 5508
+   "size": 5573
   }
  ]
 }

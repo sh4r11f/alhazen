@@ -85,7 +85,9 @@ use are fixed and given below. You write:
   e.g. AcquireFixation marks FIX_ON and FIX_ACQUIRED), `outcomes`, `params_model`,
   `default_params` (configs/task.yaml found from this file, as in the scaffold), `instructions`
   (None for a monkey), `conditions`, `build_trial`, `demo_views`, `movie_clips`, `simulation`.
-  Use only the alhazen API in the context; import only alhazen, numpy and the standard library.
+  Use only the alhazen API listed in the context ("the API a task may use"): a name,
+  attribute or keyword argument that is not listed does not exist. Import only alhazen, numpy
+  and the standard library (and psychopy, only inside a stimulus's constructor).
 - `test_module`: tests/test_task.py, pytest, runnable with no display, tracker or renderer,
   using alhazen's test doubles the way the scaffold's tests do. Cover the plan's tests.
 - `task_documentation_json`: a JSON object, as text, with exactly the keys `title`, `summary`,
@@ -103,10 +105,27 @@ use are fixed and given below. You write:
   mode (`python run.py --task <task> --mode demo`, `--mode simulate --headless`,
   `--mode test --sub dev --ses 1 --initials DEV`, `--rig <name>` for a real session).
 
+Drawing:
+- The display (`setup.display`) has NO drawing methods: everything on screen is a stimulus
+  object in TrialPlan.stimuli, drawn by the phases. Prefer alhazen's own stimuli:
+  `make_fixation(display, screen, size_dva, fill_color, pos)` draws a filled disc of any size,
+  colour and position (pos in pixels from the centre: `screen.deg2px(dva)`), so a flash, a dot
+  or a target is a make_fixation.
+- Only for a shape alhazen lacks, write a stimulus exactly like FixationPoint in the context:
+  build the PsychoPy visual on `display.window` in the constructor (import psychopy there), and
+  a make_ factory that returns `NullStimulus(name)` when `display.kind == "simulated"`.
+  `NullStimulus` anywhere else, and `alhazen.testing`, are test stand-ins and never belong in
+  task.py.
+
+Trial logic:
+- Compose the provided phases. A stimulus shown during part of a hold is a sequence of
+  HoldFixation phases (before; during, with `concurrent=[key]` and an `onset_event`; after),
+  each with its own `duration_record_key`.
+- Only if no provided phase does what is needed, write a class implementing the Phase
+  protocol (`name`, `on_enter(ctx)`, `on_frame(ctx)`) that keeps its own state. Never subclass
+  a provided phase to reach its private attributes, and never call methods it does not list.
+
 Getting the science right:
-- Draw every stimulus for real. `make_fixation(display, screen, size_dva, fill_color, pos)`
-  draws a filled disc anywhere (pos in pixels from the centre: `screen.deg2px(dva)`).
-  `NullStimulus` and `alhazen.testing` are stand-ins for tests and never belong in task.py.
 - While gaze must stay in a window, show stimuli with `HoldFixation(..., concurrent=[keys])`:
   it checks gaze on every frame. `Feedback` and `Blank` draw without checking gaze.
 - An outcome that IS the measurement (fixation broken by a flash, a wrong response) is
