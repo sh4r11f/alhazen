@@ -165,6 +165,19 @@ class TestCommand:
         with pytest.raises(ValueError, match=words):
             workspace._command(launch(workspace, **change), workspace.directory / "job")
 
+    def test_a_rehearsal_needs_no_initials(self, workspace):
+        """A rehearsal is simulated: the page never asked for initials, and
+        the server refused the launch without them (import round
+        2026-10-09: amodal-averaging's training rehearsal). It starts and
+        records none; a real training launch still needs them."""
+        request = launch(workspace, rehearse=True, initials="")
+        assert "--initials" not in workspace._command(request, workspace.directory / "job")
+        run = workspace.start(request)
+        workspace.worker.join(timeout=10)
+        assert run["initials"] is None and run["training"]["rehearse"] is True
+        with pytest.raises(ValueError, match="initials are required for training"):
+            workspace._command(launch(workspace, initials=""), workspace.directory / "job2")
+
     def test_a_rehearsal_may_use_a_development_rig(self, workspace):
         command = workspace._command(
             launch(workspace, rig="configs/rig-laptop.yaml", rehearse=True),

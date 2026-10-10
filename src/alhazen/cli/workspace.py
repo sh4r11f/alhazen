@@ -1350,7 +1350,9 @@ def _launch_initials(request: Launch, mode: Mode) -> str | None:
     if not text:
         if mode in {Mode.RUN, Mode.TEST}:
             raise ValueError("Subject initials are required for run and test modes")
-        if mode is Mode.TRAINING:
+        # A rehearsal of a stage is a simulated session: nobody is there,
+        # so nobody's initials are asked for (import round, decision 6).
+        if mode is Mode.TRAINING and not request.rehearse:
             raise ValueError("Subject initials are required for training mode")
         return None
     return normalize_initials(text)
