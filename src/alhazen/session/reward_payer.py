@@ -153,7 +153,13 @@ class RewardPayer:
             # event says uncertain. A failure before anything was played
             # keeps the old record: `rewarded` False unless a drop arrived.
             uncertain = isinstance(error, RewardUncertainError)
-            if not uncertain:
+            if uncertain:
+                # Explicit None serializes as an empty CSV cell and survives
+                # a later definite failure's setdefault(False). It also
+                # replaces an earlier definite failure, but not a known drop.
+                if ctx.record.get("rewarded") is not True:
+                    ctx.record["rewarded"] = None
+            else:
                 ctx.record.setdefault("rewarded", False)
             # error and uncertain are additive keys: an older reader of
             # events.csv sees the payload it always did, plus two.

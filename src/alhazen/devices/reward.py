@@ -661,20 +661,23 @@ class DatapixxReward:
         except BaseException as e:  # a fault, a stuck or unobserved schedule, an interrupt
             self._fail(f"waiting for the train on {line} to finish", e)
         done_s = time.monotonic() - started
-        self._link.acquire(f"checking the reward gate on {line} after a train", RewardError)
+        # The train has already played. A lock timeout or an SDK exception
+        # in this last confirmation cannot become a definite no-delivery
+        # failure just because it did not originate as RewardError.
         try:
+            self._link.acquire(f"checking the reward gate on {line} after a train", RewardError)
             try:
                 self._select()
                 problem = self._write_rest()
-            except RewardError as e:
-                problem = str(e)
-        finally:
-            self._link.lock.release()
-        if problem is not None:
+                if problem is not None:
+                    raise RewardError(problem)
+            finally:
+                self._link.lock.release()
+        except Exception as error:
             raise RewardUncertainError(
                 f"the reward train on {line} finished, but the gate's register did not read "
-                f"back at rest ({problem}). {_UNCERTAIN}"
-            )
+                f"back at rest ({type(error).__name__}: {error}). {_UNCERTAIN}"
+            ) from error
         self.last_train = {
             "samples": len(words),
             "train_s": length_s,

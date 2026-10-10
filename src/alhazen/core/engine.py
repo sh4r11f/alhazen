@@ -822,8 +822,13 @@ class TrialEngine:
                 # False only if nothing else paid: a drop that did arrive
                 # earlier in the trial still makes it a rewarded trial. An
                 # uncertain failure may have reached the pump, so it is never
-                # recorded as nothing delivered: `rewarded` is left unset.
-                if not done.uncertain:
+                # recorded as nothing delivered. Explicit None keeps that
+                # uncertainty through other failed drops in either order;
+                # a successful drop still makes the trial rewarded.
+                if done.uncertain:
+                    if ctx.record.get("rewarded") is not True:
+                        ctx.record["rewarded"] = None
+                else:
                     ctx.record.setdefault("rewarded", False)
                 log.error(
                     "mid-trial reward %r failed on trial %d%s: %s",

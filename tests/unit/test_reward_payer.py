@@ -140,7 +140,8 @@ class TestAPumpFailure:
 
         payer = Payer(RewardPolicy(by_outcome={"CORRECT": PAID}), Uncertain())
         assert payer.deliver(CORRECT) is True
-        assert "rewarded" not in payer.ctx.record  # unknown: neither True nor False
+        # Explicit unknown survives later definite failures; CSV stays empty.
+        assert payer.ctx.record["rewarded"] is None  # neither True nor False
         assert payer.events == [
             (
                 "REWARD_FAILED",
