@@ -186,10 +186,13 @@ def _launcher_root() -> Path:
 def _same_interpreter(python: Any) -> bool:
     if not isinstance(python, str) or not python:
         return False
-    try:
-        return Path(python).resolve() == Path(sys.executable).resolve()
-    except OSError:
-        return False
+
+    # Not resolve(): a virtual environment's python is a symlink to its base
+    # interpreter, so resolving makes every venv "the launcher's own".
+    def absolute(path: str) -> str:
+        return os.path.normcase(os.path.abspath(path))
+
+    return absolute(python) == absolute(sys.executable)
 
 
 def _child_env(project: dict[str, Any]) -> dict[str, str]:

@@ -1423,6 +1423,13 @@ class TestInterpreters:
         base = [str(root / "src"), str(root)]
         env = workspace_module._child_env({"path": str(root), "python": str(other)})
         assert env["PYTHONPATH"].split(os.pathsep) == [*base, "FIRST", "LAST"]
+        # A virtual environment's python is a symlink to the base interpreter:
+        # still another interpreter, with its own site-packages.
+        venv_python = tmp_path / "venv2" / "bin" / "python"
+        venv_python.parent.mkdir(parents=True)
+        venv_python.symlink_to(Path(sys.executable).resolve())
+        env = workspace_module._child_env({"path": str(root), "python": str(venv_python)})
+        assert env["PYTHONPATH"].split(os.pathsep) == [*base, "FIRST", "LAST"]
         env = workspace_module._child_env({"path": str(root), "python": sys.executable})
         assert env["PYTHONPATH"].split(os.pathsep) == [*base, "FIRST", launcher, "LAST"]
         # No interpreter recorded (an old registry entry): treated as another one.
