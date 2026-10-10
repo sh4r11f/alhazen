@@ -866,8 +866,8 @@ const HubCore = (() => {
 
   const AI_JOB_WORDS = {queued: 'Queued', running: 'Running', done: 'Done', failed: 'Failed', cancelled: 'Cancelled'};
   const AI_DRAFT_WORDS = {
-    describing: 'Writing the plan', planning: 'Writing the plan', planned: 'Plan ready',
-    generated: 'Source ready', accepted: 'Saved as a version', discarded: 'Discarded',
+    describing: 'No plan yet', planning: 'Writing the plan', planned: 'Plan ready',
+    generating: 'Writing the source', generated: 'Source ready', accepted: 'Saved as a version', discarded: 'Discarded',
   };
 
   function aiDraftWord(status) {
@@ -1038,8 +1038,10 @@ const HubCore = (() => {
       .filter((f) => f.path).sort((a, b) => a.path.localeCompare(b.path));
     const checks = (Array.isArray(rep.checks) ? rep.checks : []).map((c) => {
       const o = c && typeof c === 'object' ? c : {name: c, ok: true};
-      return {name: cellText(o.name || o.check || o.id || 'Check'), ok: checkOk(o), detail: cellText(o.message || o.detail || '')};
+      const problems = Array.isArray(o.problems) ? o.problems.map(String).join('; ') : '';
+      return {name: cellText(o.name || o.check || o.id || 'Check'), ok: checkOk(o), detail: cellText(problems || o.message || o.detail || '')};
     });
+    if (r.package_error) checks.push({name: 'Package', ok: false, detail: cellText(r.package_error)});
     for (const e of Array.isArray(rep.errors) ? rep.errors : []) {
       const o = e && typeof e === 'object' ? e : {message: e};
       checks.push({name: cellText(o.path || o.check || 'Error'), ok: false, detail: cellText(o.message || o.detail || '')});

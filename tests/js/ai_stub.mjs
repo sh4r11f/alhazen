@@ -98,7 +98,7 @@ export function aiHub(base, options) {
         if (!b.prompt || b.prompt.length > 8000) return err(400, 'invalid', 'prompt');
         s.n += 1;
         const d = {id: 'd' + s.n, experiment_id: 'xe' + s.n, prompt: b.prompt, provider: b.provider, model: b.model,
-          start_experiment_id: b.start_from ? b.start_from.experiment_id : null, start_version_id: b.start_from ? b.start_from.version_id : null,
+          start_experiment_id: b.start_from ? b.start_from.experiment_id : null, start_version_id: b.start_from ? b.start_from.version_id : null, start_from: b.start_from || null,
           status: 'planning', created_at: '2026-10-09T10:00:00Z', updated_at: '2026-10-09T10:00:00Z'};
         s.drafts.set(d.id, d);
         const job = newJob('plan', d);

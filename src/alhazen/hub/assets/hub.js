@@ -2722,7 +2722,7 @@ const HubApp = (() => {
       const sj = sourceJob ? C.aiJob(sourceJob) : null;
       const status = String(d.status || '');
       const providerId = String(d.provider || (sourceJob && sourceJob.provider) || (planJob && planJob.provider) || '');
-      const modelName = String((sourceJob && sourceJob.model) || (planJob && planJob.model) || d.model || '');
+      const modelName = String(d.model || (sourceJob && sourceJob.model) || (planJob && planJob.model) || '');
       const report = sourceJob && (sj.done || sj.code === 'generation_invalid')
         ? C.aiValidation(sourceJob.result || sourceJob.result_json || detail.report || null) : null;
       const discarded = status === 'discarded';
@@ -2763,7 +2763,7 @@ const HubApp = (() => {
       const lamp = ['planning', 'generating'].includes(stage) ? 'busy'
         : stage === 'plan-failed' || (stage === 'planned' && sj && sj.failed) ? 'err'
           : (['accepted', 'generated', 'planned'].includes(stage) ? 'ok' : 'idle');
-      const startFrom = d.start_experiment_id ? 'Fork of a listing' : 'Blank experiment';
+      const startFrom = (d.start_from && d.start_from.experiment_id) || d.start_experiment_id ? 'Fork of a listing' : 'Blank experiment';
       const disclosed = C.aiDisclosed((sourceJob && sourceJob.disclosed) || (planJob && planJob.disclosed));
       const rail = h('aside', {class: 'sheet ix-rail', 'aria-label': 'Draft'},
         h('h2', {class: 'sheet-title'}, 'Draft'),

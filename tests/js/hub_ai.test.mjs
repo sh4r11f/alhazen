@@ -107,6 +107,14 @@ test('core: validation reports, disclosure, durations and the draft address', ()
   assert.equal(bad.failed, 1);
   assert.equal(bad.files[0].size, 10);
   assert.equal(C.aiValidation({report: {ok: false, checks: []}}).ok, false);
+  /* the author kit's report (checks with problems) and the server's package failure */
+  const kit = C.aiValidation({report: {ok: false, checks: [{name: 'syntax', ok: false, problems: ['a.py:3 bad', 'b.py:1 bad'], notes: []}], files: [{path: 'a.py', size: 3}]},
+    package_error: 'manifest mismatch'});
+  assert.deepEqual(kit.checks.map((x) => [x.name, x.ok, x.detail]), [['syntax', false, 'a.py:3 bad; b.py:1 bad'], ['Package', false, 'manifest mismatch']]);
+  assert.equal(kit.files[0].path, 'a.py');
+  assert.equal(C.aiDraftWord('describing'), 'No plan yet');
+  assert.equal(C.aiDraftWord('generating'), 'Writing the source');
+  assert.deepEqual(C.aiJob({status: 'failed', error: {code: 'provider_quota', status: 402, message: 'm'}}).code, 'provider_quota');
   assert.equal(C.aiValidation(null).ok, true);
   assert.match(C.aiDisclosed({files: ['a', 'b'], bytes: 2048}), /2 source files \(2(\.0)? KiB\)/);
   assert.equal(C.aiDisclosed(null), '');
