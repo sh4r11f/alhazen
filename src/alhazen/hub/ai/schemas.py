@@ -55,11 +55,19 @@ PARAMETER_NAME_PATTERN = r"^[a-z_][a-z0-9_]{0,63}(\.[A-Za-z_][A-Za-z0-9_]{0,63})
 MAX_TASKS = 1
 
 
-def _text(max_length: int, *, nullable: bool = False, pattern: str | None = None) -> dict[str, Any]:
+def _text(
+    max_length: int,
+    *,
+    nullable: bool = False,
+    pattern: str | None = None,
+    description: str | None = None,
+) -> dict[str, Any]:
     schema: dict[str, Any] = {"type": ["string", "null"] if nullable else "string"}
     schema["maxLength"] = max_length
     if pattern is not None:
         schema["pattern"] = pattern
+    if description is not None:
+        schema["description"] = description
     return schema
 
 
@@ -99,7 +107,11 @@ PLAN_SCHEMA: dict[str, Any] = _object(
         "title": _text(160),
         "slug": _text(64, pattern=SLUG_PATTERN),
         "summary": _text(1000),
-        "paradigm": _text(4000),
+        "paradigm": _text(
+            4000,
+            description="Prose: what one trial asks of the subject, how conditions differ "
+            "and how they are served.",
+        ),
         "subject_kind": {"type": "string", "enum": list(SUBJECT_KINDS)},
         "license": {"type": "string", "enum": list(LICENSES)},
         "hardware": _object(
@@ -109,13 +121,21 @@ PLAN_SCHEMA: dict[str, Any] = _object(
                 "reward": {"type": "boolean"},
             }
         ),
-        "design": _rows(_object({"label": _text(80), "value": _text(400)}), 12),
+        "design": _rows(
+            _object(
+                {
+                    "label": _text(80, description="Conditions, Trials, Session, Subject..."),
+                    "value": _text(400),
+                }
+            ),
+            12,
+        ),
         "stimuli": _rows(
             _object(
                 {
                     "name": _text(120),
-                    "size": _text(200),
-                    "position": _text(200),
+                    "size": _text(200, description="A value with its unit, e.g. '1.0 dva'."),
+                    "position": _text(200, description="Where, with units, e.g. '8 dva right'."),
                     "notes": _text(400),
                 }
             ),
@@ -154,10 +174,14 @@ PLAN_SCHEMA: dict[str, Any] = _object(
         "timeline": _rows(
             _object(
                 {
-                    "phase": _text(120),
+                    "phase": _text(120, description="A plain label, e.g. 'Hold fixation'."),
                     "duration": {"type": "string", "enum": list(TIMELINE_DURATIONS)},
                     "parameter": _text(200, nullable=True),
-                    "until": _text(300, nullable=True),
+                    "until": _text(
+                        300,
+                        nullable=True,
+                        description="For an event-driven phase, what ends it, in words.",
+                    ),
                     "note": _text(400),
                 }
             ),
@@ -170,7 +194,9 @@ PLAN_SCHEMA: dict[str, Any] = _object(
             min_items=1,
         ),
         "tests": _rows(_object({"name": _text(160), "how": _text(600)}), 30, min_items=1),
-        "notes": _text(4000),
+        "notes": _text(
+            4000, description="Every value you chose that the description did not give."
+        ),
     },
     title="alhazen_plan",
 )
@@ -198,6 +224,7 @@ _KNOWN_KEYWORDS = frozenset(
     {
         "type", "enum", "properties", "required", "additionalProperties", "items", "anyOf",
         "maxLength", "minLength", "pattern", "minimum", "maximum", "maxItems", "minItems", "title",
+        "description",
     }
 )
 _MAX_PROBLEMS = 50

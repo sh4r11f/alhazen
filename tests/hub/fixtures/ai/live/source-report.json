@@ -1,0 +1,121 @@
+{
+ "ok": false,
+ "checks": [
+  {
+   "name": "answer",
+   "ok": true,
+   "problems": [],
+   "notes": []
+  },
+  {
+   "name": "schema",
+   "ok": true,
+   "problems": [],
+   "notes": []
+  },
+  {
+   "name": "files",
+   "ok": true,
+   "problems": [],
+   "notes": []
+  },
+  {
+   "name": "syntax",
+   "ok": true,
+   "problems": [],
+   "notes": []
+  },
+  {
+   "name": "safety",
+   "ok": true,
+   "problems": [],
+   "notes": []
+  },
+  {
+   "name": "imports",
+   "ok": true,
+   "problems": [],
+   "notes": []
+  },
+  {
+   "name": "structure",
+   "ok": true,
+   "problems": [],
+   "notes": []
+  },
+  {
+   "name": "defaults",
+   "ok": true,
+   "problems": [],
+   "notes": []
+  },
+  {
+   "name": "package",
+   "ok": true,
+   "problems": [],
+   "notes": []
+  },
+  {
+   "name": "documentation",
+   "ok": false,
+   "problems": [
+    "task 'fixation-flash-hold'.timeline.between_trials.timing.param names 'iti', which is not a documented parameter"
+   ],
+   "notes": []
+  }
+ ],
+ "files": [
+  {
+   "path": ".gitignore",
+   "size": 94
+  },
+  {
+   "path": "LICENSE",
+   "size": 1102
+  },
+  {
+   "path": "README.md",
+   "size": 1651
+  },
+  {
+   "path": "configs/task.yaml",
+   "size": 505
+  },
+  {
+   "path": "docs/ai-provenance.json",
+   "size": 492
+  },
+  {
+   "path": "docs/experiment.json",
+   "size": 10142
+  },
+  {
+   "path": "docs/methods.md",
+   "size": 1979
+  },
+  {
+   "path": "docs/tasks/fixation-flash-hold.md",
+   "size": 940
+  },
+  {
+   "path": "pyproject.toml",
+   "size": 1298
+  },
+  {
+   "path": "run.py",
+   "size": 2020
+  },
+  {
+   "path": "src/fixation_flash_hold/__init__.py",
+   "size": 210
+  },
+  {
+   "path": "src/fixation_flash_hold/task.py",
+   "size": 6235
+  },
+  {
+   "path": "tests/test_task.py",
+   "size": 5508
+  }
+ ]
+}

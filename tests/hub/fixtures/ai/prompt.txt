@@ -1,0 +1,1 @@
+A fixation-hold task with a brief peripheral flash on half the trials; measure whether fixation survives the flash

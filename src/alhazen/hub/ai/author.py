@@ -1341,6 +1341,10 @@ def _declared(task: ast.ClassDef) -> tuple[list[str] | None, list[str] | None]:
     return events, outcome_names
 
 
+_INHERITED_FIELDS = frozenset({"subject_kind", "reward"})
+_STAND_INS = frozenset({"NullStimulus"})
+
+
 def _structure(
     names: Names, tree: ast.Module
 ) -> tuple[list[str], ast.ClassDef | None, ast.ClassDef | None]:
@@ -1352,6 +1356,22 @@ def _structure(
         found.append(f"{path}: no class {names.params_class} (the params model)")
     elif "SubjectParams" not in _base_names(params):
         found.append(f"{path}: {names.params_class} must subclass SubjectParams")
+    else:
+        for item in params.body:
+            target = item.target if isinstance(item, ast.AnnAssign) else None
+            if isinstance(target, ast.Name) and target.id in _INHERITED_FIELDS:
+                found.append(
+                    f"{path}:{item.lineno}: {names.params_class} redeclares {target.id}, "
+                    "which SubjectParams already declares with its checks"
+                )
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("alhazen.testing"):
+            found.append(f"{path}:{node.lineno}: task code imports alhazen.testing (test doubles)")
+        elif isinstance(node, ast.Name) and node.id in _STAND_INS:
+            found.append(
+                f"{path}:{node.lineno}: {node.id} is a stand-in that draws nothing; "
+                "draw a real stimulus (make_fixation draws a disc anywhere)"
+            )
     if task is None:
         found.append(f"{path}: no class {names.task_class} (the task)")
         return found, params, task

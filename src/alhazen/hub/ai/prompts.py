@@ -31,7 +31,8 @@ Rules for the plan:
 1. Every quantity the experiment needs is a parameter: a dotted name into the task's params file
    (`fix_window_dva`, `paradigm.n_per_condition`), a label, a group (Stimulus, Gaze, Timing,
    Design, Reward, Response), a type, a unit and a default. Durations have type "duration" and a
-   default of {"ms": n}. Sizes and positions are in degrees of visual angle (unit "dva").
+   default of {"ms": n}; their constraints' min and max are in milliseconds. Sizes and
+   positions are in degrees of visual angle (unit "dva").
 2. Always include `paradigm.kind` (type "choice", choices sequence, constant, staircase,
    questplus, adjustment) and `paradigm.n_per_condition` (type "integer"): the scheduler.
 3. The timeline lists the phases of ONE trial in order. A phase whose length depends on the
@@ -51,8 +52,16 @@ Rules for the plan:
 7. `measures` are what the trial records (outcome, latencies, landing positions...).
    `tests` are checks a generated test suite will run with no hardware: parameters load, the
    trial's phases and outcomes, condition counts, a simulated trial through alhazen's fakes.
-8. `license` is MIT unless the description asks for another.
-9. Plain, literal language. No marketing.
+8. What differs between trials (a flash or none, the target's side) is a CONDITION, not a
+   parameter: name the conditions in `design` (label "Conditions"). Each condition is served
+   `paradigm.n_per_condition` times, so "on half the trials" means two conditions served equally.
+   Parameters hold values (sizes, positions, durations, counts).
+9. Timing inside a phase (the delay from hold onset to a flash) is its own duration parameter,
+   named in that phase's note. Phase labels are plain words ("Hold fixation"), not class names.
+10. `paradigm` is prose; `design` also states trials per session and the expected session length
+    as a range that depends on the subject where it does.
+11. `license` is MIT unless the description asks for another.
+12. Plain, literal language. No marketing.
 """
 
 SOURCE_SYSTEM = """\
@@ -93,6 +102,19 @@ use are fixed and given below. You write:
   the subject. `readme_markdown`: README.md, what the experiment is and how to run it in each
   mode (`python run.py --task <task> --mode demo`, `--mode simulate --headless`,
   `--mode test --sub dev --ses 1 --initials DEV`, `--rig <name>` for a real session).
+
+Getting the science right:
+- Draw every stimulus for real. `make_fixation(display, screen, size_dva, fill_color, pos)`
+  draws a filled disc anywhere (pos in pixels from the centre: `screen.deg2px(dva)`).
+  `NullStimulus` and `alhazen.testing` are stand-ins for tests and never belong in task.py.
+- While gaze must stay in a window, show stimuli with `HoldFixation(..., concurrent=[keys])`:
+  it checks gaze on every frame. `Feedback` and `Blank` draw without checking gaze.
+- An outcome that IS the measurement (fixation broken by a flash, a wrong response) is
+  `completed=True, success=False` so it is counted; `completed=False` serves the condition
+  again and removes it from the data.
+- Parameters named in the timeline and diagram exist only if the params file below has them
+  (or `subject_kind`); the example's `iti`, for instance, is not there unless the plan has it.
+- Do not redeclare `subject_kind` or `reward`: `SubjectParams` declares them with their checks.
 
 Never: network access, subprocess or os.system, eval or exec, dynamic imports, writing files
 (alhazen writes all data), reading environment secrets, rig configuration files.
