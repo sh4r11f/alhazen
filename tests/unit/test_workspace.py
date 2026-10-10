@@ -1436,6 +1436,35 @@ class TestInterpreters:
         env = workspace_module._child_env({"path": str(root)})
         assert launcher not in env["PYTHONPATH"].split(os.pathsep)
 
+    def test_another_interpreter_loses_exactly_the_launcher_entry(self, tmp_path, monkeypatch):
+        """A dashboard started from a source checkout (PYTHONPATH=src) put
+        that src/ on every project interpreter's path, so a hub install whose
+        own env pins alhazen ran the launcher's alhazen while the probe
+        reported the env's version (found importing kde-vergence). Another
+        interpreter loses exactly that entry and keeps the rest; the
+        launcher's own interpreter keeps it, since it imports alhazen there.
+
+        Integration (fix/import-round): the kde-vergence and amodal-averaging
+        fixes disagreed on a project with no recorded interpreter; the
+        amodal-averaging rule is kept (an unknown interpreter is treated as
+        another one, so it never silently runs the launcher's alhazen)."""
+        launcher_root = str(Path(workspace_module.__file__).resolve().parents[2])
+        monkeypatch.setenv("PYTHONPATH", os.pathsep.join(["BEFORE", launcher_root, "AFTER"]))
+        root = tmp_path / "project"
+        other = str(tmp_path / "venv" / "bin" / "python")
+        env = workspace_module._child_env({"path": str(root), "python": other})
+        assert env["PYTHONPATH"].split(os.pathsep) == [
+            str(root / "src"),
+            str(root),
+            "BEFORE",
+            "AFTER",
+        ]
+        own = workspace_module._child_env({"path": str(root), "python": sys.executable})
+        assert launcher_root in own["PYTHONPATH"].split(os.pathsep)
+        unnamed = workspace_module._child_env({"path": str(root)})
+        assert launcher_root not in unnamed["PYTHONPATH"].split(os.pathsep)
+        assert unnamed["PYTHONPATH"].split(os.pathsep)[-2:] == ["BEFORE", "AFTER"]
+
     def test_the_probe_sees_the_environment_the_launch_gets(self, tmp_path, monkeypatch):
         launcher = str(workspace_module._launcher_root())
         monkeypatch.setenv("PYTHONPATH", launcher)
