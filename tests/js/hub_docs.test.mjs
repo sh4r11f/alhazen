@@ -176,6 +176,32 @@ test('the timeline figure is labelled, honest about waits and free of inline sty
   assertNoInlineBehaviour(figure);
 });
 
+test('labels of a short phase beside the next stack instead of overprinting (mbri "Block marker")', () => {
+  const timeline = clone(SCAFFOLD.tasks[0].timeline);
+  timeline.phases.unshift({ id: 'marker', label: 'Block marker',
+    timing: { kind: 'conditional', ms: 0, text: '0 ms', scaled: true }, start_events: [], end_events: [] });
+  const layout = HubDocs.layoutTimeline(timeline);
+  const [marker, acquire] = layout.segments;
+  assert.equal(marker.kind, 'instant');
+  assert.notEqual(marker.labelRow, acquire.labelRow, 'the two labels are in different tiers');
+  const rows = new Map();
+  for (const s of layout.segments.concat(layout.between ? [layout.between] : [])) {
+    for (const other of rows.get(s.labelRow) || []) {
+      assert.ok(s.labelX >= other.labelEnd || other.labelX >= s.labelEnd, s.label + ' overlaps ' + other.label);
+    }
+    rows.set(s.labelRow, (rows.get(s.labelRow) || []).concat([s]));
+  }
+  const plain = HubDocs.layoutTimeline(clone(SCAFFOLD.tasks[0].timeline));
+  assert.equal(plain.labelRows, 1, 'a timeline that fits keeps one tier');
+  assert.equal(layout.labelShift, (layout.labelRows - 1) * 36);
+  const figure = HubDocs.timelineSvg({ ...SCAFFOLD.tasks[0], timeline }, options());
+  const texts = byTag(figure, 'text');
+  const label = (name) => texts.find((t) => t.textContent === name);
+  assert.notEqual(label('Block marker').getAttribute('y'), label('Acquire fixation').getAttribute('y'));
+  const body = all(figure).find((e) => (e.getAttribute('class') || '') === 'hd-tl-body');
+  assert.equal(body.getAttribute('transform'), 'translate(0,' + layout.labelShift + ')');
+});
+
 test('the stimulus figure draws the source geometry to scale', () => {
   const task = SCAFFOLD.tasks[0];
   const figure = HubDocs.diagramSvg(task, options());

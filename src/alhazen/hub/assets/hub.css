@@ -662,6 +662,9 @@ a:hover { color: var(--accent-ink); text-decoration-thickness: 2px; }
 .file-row { display: flex; justify-content: space-between; gap: 12px; align-items: center; border-bottom: 1px solid var(--line); }
 .file-row:last-child { border-bottom: 0; }
 .file-row .check-row { min-width: 0; }
+.file-row .file-flag { margin-left: auto; flex-shrink: 1; min-width: 0; white-space: normal; text-align: right; }
+.package-flags { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin: 4px 0 8px; }
+.package-flags p { margin: 0; flex: 1 1 18rem; }
 .file-size { color: var(--muted); flex: none; }
 .excluded summary { cursor: pointer; min-height: 40px; display: flex; align-items: center; font-weight: 500; }
 .consent { margin-top: 24px; border-top: 1px solid var(--line); padding-top: 4px; }

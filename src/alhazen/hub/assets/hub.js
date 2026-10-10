@@ -795,6 +795,11 @@ const HubApp = (() => {
     function versionLabel(version) {
       if (!version) return '';
       const v = version.version || (version.manifest && version.manifest.version) || '';
+      const protocol = version.manifest && version.manifest.protocol_version;
+      /* A release numbered apart from its protocol (pyproject) version, as a
+       * documentation-only release is: both, since the data is filed under
+       * the protocol's (import round decision 3). */
+      if (v && protocol && protocol !== v) return 'release ' + v + ', protocol ' + protocol;
       return v ? 'v' + v : 'version ' + String(version.id || '');
     }
 
@@ -1499,6 +1504,27 @@ const HubApp = (() => {
       return overviewTab(ctx, experiment, version);
     }
 
+    /** Markdown the author wrote (a description, a Methods excerpt) as
+     *  safe DOM: the documentation renderer builds elements, never parses
+     *  markup, keeps only https links and drops images; parameter and task
+     *  references resolve against ``documentation`` when given. Without the
+     *  renderer, the text as plain paragraphs. */
+    function markdownProse(text, documentation, className) {
+      const docs = docsRenderer();
+      if (docs && typeof docs.renderMarkdown === 'function') {
+        try {
+          const rendered = docs.renderMarkdown(text, {document: doc, headingLevel: 3},
+            documentation ? {doc: documentation} : {});
+          return h('div', {class: className}, rendered);
+        } catch (exc) {
+          /* The text stays readable, and the page says why it is plain. */
+          return h('div', {class: className}, ...text.split(/\n{2,}/).map((p) => h('p', null, p)),
+            h('p', {class: 'muted small'}, 'Shown as plain text: ' + exc.message));
+        }
+      }
+      return h('div', {class: className}, ...text.split(/\n{2,}/).map((p) => h('p', null, p)));
+    }
+
     /** Overview: what it is, a Methods excerpt and the task list (from the
      *  release's own documentation, when it has some), the release details
      *  and citations. */
@@ -1507,7 +1533,7 @@ const HubApp = (() => {
       const reading = h('div', {class: 'exp-reading'});
       reading.appendChild(h('h2', {class: 'block-title'}, 'About'));
       reading.appendChild(experiment.description
-        ? h('div', {class: 'prose'}, ...String(experiment.description).split(/\n{2,}/).map((p) => h('p', null, p)))
+        ? markdownProse(String(experiment.description), null, 'prose')
         : h('p', {class: 'muted'}, 'The author has not written a description.'));
       if (version) {
         const docsArea = h('div', {class: 'exp-docs', 'aria-live': 'polite', 'aria-busy': 'true'});
@@ -1523,7 +1549,9 @@ const HubApp = (() => {
           const parts = [h('h2', {class: 'block-title'}, 'Methods')];
           const excerpt = C.methodsExcerpt(methods, 460);
           if (excerpt) {
-            parts.push(h('div', {class: 'prose prose-excerpt'}, ...excerpt.split(/\n{2,}/).map((p) => h('p', null, p))),
+            /* Rendered as the Methods page renders it, so [[param:...]]
+             * references show their values here too (import round). */
+            parts.push(markdownProse(excerpt, documentation, 'prose prose-excerpt'),
               link({view: 'experiment', id: r.id, version: r.version, tab: 'methods'}, 'Read the full Methods', {class: 'more-link'}));
           } else {
             parts.push(h('p', {class: 'muted'}, got.ok ? 'This release has no Methods document.' : 'The Methods could not be read: ' + got.error.message));
@@ -1547,6 +1575,9 @@ const HubApp = (() => {
         reading.appendChild(spec([
           ['Python', m.python_min ? '\u2265 ' + m.python_min : null, {mono: true}],
           ['alhazen', m.alhazen_min ? '\u2265 ' + m.alhazen_min : null, {mono: true}],
+          ['Release', m.version || version.version || null, {mono: true}],
+          ['Protocol', m.protocol_version && m.protocol_version !== m.version
+            ? m.protocol_version + ' (data filed under v' + m.protocol_version + ')' : null, {mono: true}],
           ['Entry point', m.entrypoint, {mono: true}],
           ['Files', Array.isArray(m.files) ? String(m.files.length) : null],
           ['Archive', C.formatBytes(version.size)],
@@ -3331,15 +3362,42 @@ const HubApp = (() => {
         totals.textContent = `${n} of ${files.length} files selected \u00b7 ${C.formatBytes(bytes)}`;
       };
       const list = h('ul', {class: 'file-list'});
+      /* Files probably not needed to run on a rig (tests, notebooks, CI,
+       * the lock file...): marked, still selected; the author drops them
+       * here if they want (import round decision 6). */
+      const unlikely = new Map((Array.isArray(preview && preview.not_for_rig) ? preview.not_for_rig : [])
+        .map((x) => [x.path, x.reason]));
       for (const f of files) {
         const c = checkbox(f.path, {checked: true});
         c.box.addEventListener('change', count);
         boxes.push([c.box, f]);
-        list.appendChild(h('li', {class: 'file-row'}, c.el, h('span', {class: 'mono small file-size'}, C.formatBytes(f.size))));
+        list.appendChild(h('li', {class: 'file-row'}, c.el,
+          unlikely.has(f.path) ? h('span', {class: 'chip chip-private file-flag'}, 'probably not for the rig: ' + unlikely.get(f.path)) : null,
+          h('span', {class: 'mono small file-size'}, C.formatBytes(f.size))));
       }
       count();
       wrap.appendChild(h('h3', {class: 'sub-title'}, 'Files to pack'));
       wrap.appendChild(totals);
+      if (unlikely.size) {
+        const flagged = boxes.filter(([, file]) => unlikely.has(file.path));
+        const toggle = h('button', {type: 'button', class: 'btn btn-quiet'});
+        const label = () => {
+          const kept = flagged.some(([box]) => box.checked);
+          toggle.textContent = kept
+            ? 'Leave out the ' + flagged.length + ' files probably not for the rig'
+            : 'Include them again';
+        };
+        toggle.addEventListener('click', () => {
+          const keep = !flagged.some(([box]) => box.checked);
+          flagged.forEach(([box]) => { box.checked = keep; });
+          count();
+          label();
+        });
+        label();
+        wrap.appendChild(h('div', {class: 'package-flags'},
+          h('p', {class: 'muted small'}, unlikely.size + ' of these files are probably not needed to run the experiment on a rig. '
+            + 'They are included unless you leave them out.'), toggle));
+      }
       wrap.appendChild(h('div', {class: 'file-scroll'}, list));
       const excluded = Array.isArray(preview && preview.excluded) ? preview.excluded : [];
       const excludedCount = Number(preview && preview.excluded_count) || excluded.length;
@@ -3368,7 +3426,11 @@ const HubApp = (() => {
       const errors = {};
       const errorEl = (name) => { errors[name] = h('p', {class: 'field-error', hidden: true}); return errors[name]; };
       wrap.append(
-        h('div', {class: 'field-pair'}, field('Package name', f.name, 'Lower-case slug.', errorEl('name')), field('Version', f.version, 'Like 1.0.0. Never reused.', errorEl('version'))),
+        h('div', {class: 'field-pair'}, field('Package name', f.name, 'Lower-case slug.', errorEl('name')),
+          field('Version', f.version, preview && preview.protocol_version
+            ? 'Like 1.0.0. Never reused. The protocol (pyproject) version is ' + preview.protocol_version
+              + ': a different release version is recorded beside it, and the data stays under v' + preview.protocol_version + '.'
+            : 'Like 1.0.0. Never reused.', errorEl('version'))),
         field('Title', f.title, null, errorEl('title')),
         field('Description', f.description),
         field('Licence', f.license, null, errorEl('license')),

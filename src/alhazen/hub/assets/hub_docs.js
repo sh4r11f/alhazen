@@ -412,6 +412,10 @@ const HubDocs = (() => {
   const TL = {
     pad: 16, phaseMin: 72, unscaled: 140, maxPxPerMs: 0.32, scaledBudget: 520,
     labelTop: 18, barY: 58, barH: 24, trackH: 30, eventH: 18, branchH: 24, gap: 34, endW: 112,
+    /* A phase label tier: label and timing line. Labels that would overprint
+     * (a short or instant phase beside the next: mbri's "Block marker")
+     * stack in tiers above the bar; the figure grows by the tiers it needs. */
+    labelRowH: 36, labelCharW: 7.6, timeCharW: 7.3,
   };
   const NICE_MS = [10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 2500, 5000, 10000];
 
@@ -453,6 +457,22 @@ const HubDocs = (() => {
       x += width;
     }
     const width = Math.ceil(x + TL.pad);
+    /* Label tiers, greedily: row 0 sits just above the bar; a label that
+     * would start before the previous one in its row ends goes one row up. */
+    const tierEnds = [];
+    for (const segment of segments.concat(betweenSegment ? [betweenSegment] : [])) {
+      const x0 = segment.x + (segment.kind === 'instant' ? 0 : 6);
+      const span = Math.max(String(segment.label || '').length * TL.labelCharW,
+        shortTiming(segment).length * TL.timeCharW) + 10;
+      let row = 0;
+      while (tierEnds[row] !== undefined && tierEnds[row] > x0) row += 1;
+      tierEnds[row] = x0 + span;
+      segment.labelRow = row;
+      segment.labelX = x0;
+      segment.labelEnd = x0 + span;
+    }
+    const labelRows = Math.max(1, tierEnds.length);
+    const labelShift = (labelRows - 1) * TL.labelRowH;
     const byId = new Map(segments.map((s) => [s.id, s]));
     let y = TL.barY + TL.barH + 14;
     const tracks = ((timeline && timeline.tracks) || []).map((track) => {
@@ -496,7 +516,8 @@ const HubDocs = (() => {
       y += 30;
     }
     return {
-      width, height: Math.ceil(y + TL.pad), pxPerMs, segments, end, between: betweenSegment,
+      width, height: Math.ceil(y + TL.pad + labelShift), labelRows, labelShift,
+      pxPerMs, segments, end, between: betweenSegment,
       tracks, events, eventTop, branches, scaleBar, trialEnd,
       anyClamped: segments.some((s) => s.clamped) || Boolean(betweenSegment && betweenSegment.clamped),
       anyUnscaled: segments.some((s) => s.kind === 'unscaled') || Boolean(betweenSegment && betweenSegment.kind === 'unscaled'),
@@ -540,6 +561,8 @@ const HubDocs = (() => {
     arrow.appendChild(svg(c, 'path', { d: 'M0,0 L8,4 L0,8 z', class: 'hd-tl-arrowhead' }));
     defs.appendChild(arrow);
     root.appendChild(defs);
+    /* Everything below the label tiers; stacked labels draw above row 0. */
+    const body = svg(c, 'g', { class: 'hd-tl-body', transform: 'translate(0,' + layout.labelShift + ')' });
 
     const drawSegment = (segment, group) => {
       const g = svg(c, 'g', { class: 'hd-tl-phase hd-tl-' + segment.kind + (segment.conditional ? ' hd-tl-conditional' : '') });
@@ -563,9 +586,14 @@ const HubDocs = (() => {
           g.appendChild(svg(c, 'text', { x: segment.x + segment.width - 4, y: TL.barY + TL.barH - 7, 'text-anchor': 'end', class: 'hd-tl-note' }, 'not to scale'));
         }
       }
-      const labelX = segment.x + (segment.kind === 'instant' ? 0 : 6);
-      g.appendChild(svg(c, 'text', { x: labelX, y: TL.labelTop, class: 'hd-tl-label' }, segment.label));
-      g.appendChild(svg(c, 'text', { x: labelX, y: TL.labelTop + 17, class: 'hd-tl-time' }, shortTiming(segment)));
+      const labelX = segment.labelX;
+      const labelY = TL.labelTop - (segment.labelRow || 0) * TL.labelRowH;
+      if (segment.labelRow) {
+        /* A stacked label points down to its own phase. */
+        g.appendChild(svg(c, 'line', { x1: labelX, y1: labelY + 22, x2: labelX, y2: TL.barY - 2, class: 'hd-tl-leader' }));
+      }
+      g.appendChild(svg(c, 'text', { x: labelX, y: labelY, class: 'hd-tl-label' }, segment.label));
+      g.appendChild(svg(c, 'text', { x: labelX, y: labelY + 17, class: 'hd-tl-time' }, shortTiming(segment)));
       group.appendChild(g);
     };
     const phases = svg(c, 'g', { class: 'hd-tl-phases' });
@@ -576,13 +604,13 @@ const HubDocs = (() => {
       phases.appendChild(svg(c, 'text', { x: gapX, y: TL.barY + TL.barH + 14, 'text-anchor': 'middle', class: 'hd-tl-note' }, 'after the trial'));
       drawSegment({ ...layout.between, id: 'between', conditional: false }, phases);
     }
-    root.appendChild(phases);
+    body.appendChild(phases);
 
     /* Trial boundary and the outcome it ends with. */
-    root.appendChild(svg(c, 'line', { x1: layout.trialEnd, y1: TL.barY - 10, x2: layout.trialEnd, y2: layout.height - TL.pad, class: 'hd-tl-boundary' }));
+    body.appendChild(svg(c, 'line', { x1: layout.trialEnd, y1: TL.barY - 10, x2: layout.trialEnd, y2: layout.height - TL.pad - layout.labelShift, class: 'hd-tl-boundary' }));
     if (layout.end) {
-      root.appendChild(svg(c, 'line', { x1: layout.trialEnd + 4, y1: TL.barY + TL.barH / 2, x2: layout.trialEnd + 26, y2: TL.barY + TL.barH / 2, class: 'hd-tl-endarrow', 'marker-end': 'url(#' + id + '-arrow)' }));
-      root.appendChild(svg(c, 'text', { x: layout.trialEnd + 30, y: TL.barY + TL.barH / 2 + 4, class: 'hd-tl-outcome hd-tl-outcome--end' }, layout.end.outcome));
+      body.appendChild(svg(c, 'line', { x1: layout.trialEnd + 4, y1: TL.barY + TL.barH / 2, x2: layout.trialEnd + 26, y2: TL.barY + TL.barH / 2, class: 'hd-tl-endarrow', 'marker-end': 'url(#' + id + '-arrow)' }));
+      body.appendChild(svg(c, 'text', { x: layout.trialEnd + 30, y: TL.barY + TL.barH / 2 + 4, class: 'hd-tl-outcome hd-tl-outcome--end' }, layout.end.outcome));
     }
 
     const tracks = svg(c, 'g', { class: 'hd-tl-tracks' });
@@ -590,7 +618,7 @@ const HubDocs = (() => {
       tracks.appendChild(svg(c, 'rect', { x: track.x, y: track.y + 12, width: track.width, height: 7, rx: 1.5, class: 'hd-tl-track hd-tl-track--' + track.role }));
       tracks.appendChild(svg(c, 'text', { x: track.x + 2, y: track.y + 8, class: 'hd-tl-track-label' }, track.label));
     }
-    root.appendChild(tracks);
+    body.appendChild(tracks);
 
     const events = svg(c, 'g', { class: 'hd-tl-events' });
     for (const event of layout.events) {
@@ -598,7 +626,7 @@ const HubDocs = (() => {
       events.appendChild(svg(c, 'line', { x1: event.x, y1: TL.barY + TL.barH, x2: event.x, y2: y + 12, class: 'hd-tl-event-tick' }));
       events.appendChild(svg(c, 'text', { x: event.x + 4, y: y + 12, class: 'hd-tl-event' }, event.name));
     }
-    root.appendChild(events);
+    body.appendChild(events);
 
     const branches = svg(c, 'g', { class: 'hd-tl-branches' });
     for (const branch of layout.branches) {
@@ -610,15 +638,16 @@ const HubDocs = (() => {
         branches.appendChild(svg(c, 'text', { x: branch.x + 20, y: branch.y + 12, class: 'hd-tl-outcome hd-tl-outcome--' + branch.kind }, branch.outcome));
       }
     }
-    root.appendChild(branches);
+    body.appendChild(branches);
 
     if (layout.scaleBar) {
       const bar = layout.scaleBar;
       const g = svg(c, 'g', { class: 'hd-tl-scale' });
       g.appendChild(svg(c, 'path', { d: 'M' + bar.x + ',' + (bar.y - 4) + ' v4 h' + bar.px + ' v-4', class: 'hd-tl-scalebar' }));
       g.appendChild(svg(c, 'text', { x: bar.x + bar.px + 6, y: bar.y + 3, class: 'hd-tl-note' }, formatNumber(bar.ms) + ' ms'));
-      root.appendChild(g);
+      body.appendChild(g);
     }
+    root.appendChild(body);
     return root;
   }
 
