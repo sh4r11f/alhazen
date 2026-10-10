@@ -68,9 +68,12 @@ def test_only_packed_files_count_and_measured_rig_files_are_no_rig(tmp_path: Pat
         "eye_tracker": False,
         "reward": False,
     }
-    assert declared_hardware(
-        tmp_path, ["configs/rig-lab.reward.yaml", "configs/legacy/rig-old.yaml"]
-    )["eye_tracker"] is False
+    assert (
+        declared_hardware(tmp_path, ["configs/rig-lab.reward.yaml", "configs/legacy/rig-old.yaml"])[
+            "eye_tracker"
+        ]
+        is False
+    )
     assert declared_hardware(tmp_path, ["configs/rig-lab.yaml"])["eye_tracker"] is True
 
 

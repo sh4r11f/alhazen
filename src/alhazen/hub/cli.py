@@ -261,7 +261,10 @@ def _pack(args: argparse.Namespace, directory: Path) -> int:
         print(f"  documentation: {metadata['documentation']}")
     unlikely = {name: reason for name in files if (reason := not_for_the_rig(name)) is not None}
     for name in files:
-        print(f"  {name}" + (f"   [probably not for the rig: {unlikely[name]}]" if name in unlikely else ""))
+        print(
+            f"  {name}"
+            + (f"   [probably not for the rig: {unlikely[name]}]" if name in unlikely else "")
+        )
     if not metadata.get("license"):
         raise ValueError("Give the package a licence with --license")
     if unlikely:

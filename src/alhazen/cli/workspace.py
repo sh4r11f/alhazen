@@ -2626,11 +2626,12 @@ class Workspace:
         ladder = next((x for x in ladders if x["name"] == training["ladder"]), None)
         file = ladder.get("file") if ladder else None
         path = path_inside(Path(project["path"]), file) if file else None
-        known = path is not None and path.is_file()
+        if path is None or not path.is_file():
+            return {"source": "training stage", "file": None, "sha256": None}
         return {
             "source": "training stage",
-            "file": file if known else None,
-            "sha256": hashlib.sha256(path.read_bytes()).hexdigest() if known else None,
+            "file": file,
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         }
 
     def start(self, request: Launch) -> dict[str, Any]:

@@ -220,15 +220,15 @@ def _install(call, hub, space, tmp_path, version):  # noqa: F811
     )
     assert status == 201, out
     install = out["install"]
-    install["path"] = next(
-        p["path"] for p in space.projects if p["id"] == install["project_id"]
-    )
+    install["path"] = next(p["path"] for p in space.projects if p["id"] == install["project_id"])
     return install
 
 
 def _run(space: Workspace, project_id: str) -> dict:
     run = space.start(
-        Launch(project=project_id, mode="movie", rig="configs/rig-sim.yaml", extra_args="--task demo")
+        Launch(
+            project=project_id, mode="movie", rig="configs/rig-sim.yaml", extra_args="--task demo"
+        )
     )
     space.worker.join(timeout=30)
     assert not space.worker.is_alive()
@@ -272,7 +272,10 @@ def test_an_upgrade_sees_the_same_participants_tsv(http, hub, workspace, tmp_pat
 
 
 def test_a_conflict_refuses_the_launch_before_anything_is_written(
-    http, hub, workspace, tmp_path  # noqa: F811
+    http,  # noqa: F811
+    hub,  # noqa: F811
+    workspace,  # noqa: F811
+    tmp_path,
 ):
     call, _ = http
     connect(call, hub)
@@ -287,7 +290,9 @@ def test_a_conflict_refuses_the_launch_before_anything_is_written(
     (home / "data" / "participants.tsv").write_text("shared\n", encoding="utf-8")
     runs_before = set((workspace.directory / "runs").glob("*"))
     with pytest.raises(ValueError, match="Both .* hold data"):
-        workspace.start(Launch(project=install["project_id"], mode="movie", rig="configs/rig-sim.yaml"))
+        workspace.start(
+            Launch(project=install["project_id"], mode="movie", rig="configs/rig-sim.yaml")
+        )
     assert set((workspace.directory / "runs").glob("*")) == runs_before
     assert (folder / "data" / "participants.tsv").read_text(encoding="utf-8") == "own\n"
 
@@ -302,9 +307,10 @@ def test_a_docs_release_records_its_protocol_and_keeps_the_data_folder(tmp_path)
     meta = {**META, "name": "amodal-averaging", "version": "0.6.1"}
     assert release_metadata(checkout, meta)["protocol_version"] == "0.6.0"
     # Never taken from the caller: the pyproject says what the protocol is.
-    assert release_metadata(checkout, {**meta, "protocol_version": "9.9.9"})[
-        "protocol_version"
-    ] == "0.6.0"
+    assert (
+        release_metadata(checkout, {**meta, "protocol_version": "9.9.9"})["protocol_version"]
+        == "0.6.0"
+    )
     same = release_metadata(checkout, {**meta, "version": "0.6.0"})
     assert "protocol_version" not in same
     info = pack(checkout, packages, tmp_path / "a.zip", meta, packages.suggest_files(checkout))
@@ -318,9 +324,13 @@ def test_the_manifest_refuses_a_protocol_version_equal_to_the_release(tmp_path):
     files = packages.suggest_files(checkout)
     meta = {**META, "name": "x", "version": "0.6.0"}
     with pytest.raises(packages.PackageError, match="only when it differs"):
-        packages.build_bundle(checkout, tmp_path / "a.zip", {**meta, "protocol_version": "0.6.0"}, files)
+        packages.build_bundle(
+            checkout, tmp_path / "a.zip", {**meta, "protocol_version": "0.6.0"}, files
+        )
     with pytest.raises(packages.PackageError, match="protocol_version"):
-        packages.build_bundle(checkout, tmp_path / "b.zip", {**meta, "protocol_version": "v 1"}, files)
+        packages.build_bundle(
+            checkout, tmp_path / "b.zip", {**meta, "protocol_version": "v 1"}, files
+        )
     with pytest.raises(packages.PackageError, match="MAJOR.MINOR.PATCH"):
         packages.build_bundle(checkout, tmp_path / "c.zip", {**meta, "version": "0.6.1a"}, files)
 
@@ -439,7 +449,6 @@ def test_preview_lists_flagged_files_and_the_protocol(tmp_path):
         "uv.lock",
     }
     assert view["metadata"]["hardware"]["eye_tracker"] is True
-
 
 
 # -- decision 6: a copied rig state carries no one else's sign-in ---------------------

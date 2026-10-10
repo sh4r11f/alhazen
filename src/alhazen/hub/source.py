@@ -183,9 +183,7 @@ def declared_hardware(
     else:
         names = []
     names = [
-        n
-        for n in names
-        if n.endswith((".yaml", ".yml")) and "legacy" not in n.split("/")[:-1]
+        n for n in names if n.endswith((".yaml", ".yml")) and "legacy" not in n.split("/")[:-1]
     ]
     if len(names) > MAX_HARDWARE_FILES:
         if notes is not None:

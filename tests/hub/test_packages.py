@@ -457,9 +457,12 @@ class TestBuildAndInspect:
         experiment's interpreter is still checked against what it declares."""
         info = build_bundle(source, tmp_path / "a.zip", {**META, "alhazen_min": "2.12.0"}, CLEAN)
         assert info.manifest["alhazen_min"] == "2.12.0"
-        assert compatibility_problems(
-            info.manifest, python_version=(3, 11), alhazen_version="2.12.3", platform="linux"
-        ) == []
+        assert (
+            compatibility_problems(
+                info.manifest, python_version=(3, 11), alhazen_version="2.12.3", platform="linux"
+            )
+            == []
+        )
         older = compatibility_problems(
             info.manifest, python_version=(3, 11), alhazen_version="2.11.0", platform="linux"
         )

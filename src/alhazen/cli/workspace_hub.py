@@ -674,6 +674,7 @@ class HubAdapter:
         # release's own data and the shared folder both hold data) does not
         # undo the registration: it is recorded, and every launch refuses
         # with the same message until it is resolved.
+        data: dict[str, Any]
         try:
             shared = self.workspace.share_hub_data(self.workspace.project(described["id"]))
             data = {"shared_data": shared, "shared_data_error": None}

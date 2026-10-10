@@ -152,4 +152,3 @@ def share(release: Path, home: Path, names: Iterable[str]) -> list[dict[str, str
             _make_link(own, shared)
         done.append({"name": name, "action": action})
     return done
-

@@ -235,7 +235,11 @@ class TestTheProjectAndItsLaunches:
         with pytest.raises(ValueError, match="'Tuning' were sent without the contents of"):
             workspace.start(
                 request_for(
-                    workspace, project=key, mode="simulate", task="mt-tuning", parameter_set="Tuning"
+                    workspace,
+                    project=key,
+                    mode="simulate",
+                    task="mt-tuning",
+                    parameter_set="Tuning",
                 )
             )
         assert not list((workspace.directory / "runs").glob("*/run.json"))
@@ -298,7 +302,10 @@ class TestTheProjectAndItsLaunches:
         folder = Path(workspace.detail(run["id"])["directory"])
         record = json.loads((folder / "run.json").read_text(encoding="utf-8"))
         assert record["params"]["source"] == "launch text"
-        assert record["params"]["sha256"] == hashlib.sha256((folder / "params.yaml").read_bytes()).hexdigest()
+        assert (
+            record["params"]["sha256"]
+            == hashlib.sha256((folder / "params.yaml").read_bytes()).hexdigest()
+        )
         # "Search" names no file: its label means the task's own default.
         run = workspace.start(
             request_for(
