@@ -38,6 +38,12 @@
    "notes": []
   },
   {
+   "name": "api",
+   "ok": true,
+   "problems": [],
+   "notes": []
+  },
+  {
    "name": "structure",
    "ok": true,
    "problems": [],
@@ -109,7 +115,7 @@
   },
   {
    "path": "src/fixation_flash_hold/task.py",
-   "size": 6499
+   "size": 6473
   },
   {
    "path": "tests/test_task.py",

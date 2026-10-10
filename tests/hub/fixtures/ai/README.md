@@ -46,6 +46,9 @@ holds that only these three fields differ):
    not check gaze), recorded as `flash_hold_s`.
 2. `task_documentation_json`: removed `timeline.between_trials` (it named `iti`).
 3. `task_markdown`: removed the sentence referring to `[[param:iti]]`.
+4. `task_module` again (2026-10-09, found by the `api` check added after the gpt-4.1 run):
+   `movie_clips` read `setup.refresh_rate_hz`, which a MovieSetup does not have (it has
+   `hz`); movie mode would have failed with an AttributeError.
 
 `package.zip` is what `generate_source` builds from `plan.json` and that answer
 (provenance names the live model); `report.json` is its validation report, all

@@ -22,6 +22,8 @@ import ast
 import json
 import re
 import tempfile
+import textwrap
+import typing
 from pathlib import Path
 from typing import Any
 
@@ -36,7 +38,7 @@ from tests.hub.ai_support import (
     source_answer,
 )
 
-from alhazen.hub.ai import author, prompts
+from alhazen.hub.ai import author, prompts, surface
 from alhazen.hub.ai.schemas import (
     LICENSES,
     PLAN_SCHEMA,
@@ -159,9 +161,10 @@ def test_context_is_alhazens_own(ctx):
     release = author.release_of(ALHAZEN_VERSION)
     guide = json.loads(names[f"alhazen {release}: modes and protections (generated guide)"])
     assert guide["alhazen_version"] == ALHAZEN_VERSION
-    api = names[f"alhazen {release}: public API used by tasks"]
+    api = names[f"alhazen {release}: the API a task may use (anything else does not exist)"]
     for name in ("HoldFixation(", "AcquireFixation(", "make_fixation(", "SubjectParams("):
         assert name in api
+    assert "class DisplayBackend" in api and "draw_disc" not in api
     assert "class FixationDemoTask(Task)" in names["scaffold: src/fixation_demo/task.py"]
     assert not any(name.startswith("start/") for name, _ in ctx.source_items)
     assert ctx.disclosure("source")["start_from"] is None
@@ -513,7 +516,11 @@ FORBIDDEN = [
     ("from alhazen.nothing import X\n", "alhazen has no module alhazen.nothing"),
     ("from alhazen.cli.modes import run_experiment\n", "task code does not import alhazen.cli"),
     ("from alhazen.testing import FakeClock\n", "imports alhazen.testing"),
-    ("from alhazen.stimuli.base import NullStimulus\n", "stand-in that draws nothing"),
+    (
+        "from alhazen.stimuli.base import NullStimulus\nFLASH = NullStimulus('flash')\n",
+        "stand-in that draws nothing",
+    ),
+    ("import psychopy\n", "inside the stimulus that uses it"),
     ("from . import task\n", "relative import"),
 ]
 
@@ -663,6 +670,7 @@ def test_report_shape(bundle):
         "syntax",
         "safety",
         "imports",
+        "api",
         "structure",
         "defaults",
         "package",
@@ -752,3 +760,254 @@ def test_valid_fixture_corrections_are_the_documented_ones():
     assert changed == ["task_documentation_json", "task_markdown", "task_module"]
     assert re.search(r"NullStimulus", live["task_module"])
     assert "NullStimulus" not in corrected["task_module"]
+
+
+# ---------------------------------------------------------------------------
+# 6. The runtime API surface (the `api` check and its listing)
+# ---------------------------------------------------------------------------
+
+DRAW_DISC = FIXTURES / "live-gpt41-draw-disc"
+
+
+def api_problems(source: str, path: str = "src/pkg/task.py") -> list[str]:
+    source = textwrap.dedent(source)
+    return surface.check(path, ast.parse(source), source)
+
+
+def test_the_live_draw_disc_failure_is_refused(ctx):
+    """gpt-4.1's package passed every check of the time and failed at run
+    time: its flash called display.draw_disc, which alhazen's display lacks."""
+    plan = author.Plan.from_dict(json.loads((DRAW_DISC / "plan.json").read_text("utf-8")))
+    failing_answer = (DRAW_DISC / "source-answer.json").read_text("utf-8")
+    provider = FakeProvider(source_text=failing_answer)
+    with pytest.raises(author.SourceInvalid) as raised:
+        author.generate_source(provider, plan, ctx)
+    report = raised.value.report
+    failed = [check.name for check in report.checks if not check.ok]
+    assert failed == ["api"]
+    line = next(p for p in report.problems if "draw_disc" in p)
+    assert "self.display is a DisplayBackend, which has no 'draw_disc'" in line
+    assert "window" in line and "flip" in line  # what it does have
+    # Byte for byte the module the rig installed and ran.
+    installed = json.loads(failing_answer)["task_module"]
+    assert "self.display.draw_disc(" in installed
+
+
+def test_the_live_draw_disc_failure_is_repaired(ctx):
+    plan = author.Plan.from_dict(json.loads((DRAW_DISC / "plan.json").read_text("utf-8")))
+    provider = FakeProvider(
+        source_queue=[
+            (DRAW_DISC / "source-answer.json").read_text("utf-8"),
+            (DRAW_DISC / "repaired-answer.json").read_text("utf-8"),
+        ]
+    )
+    result = author.generate_source(provider, plan, ctx)
+    assert result.report.ok, result.report.problems
+    assert len(provider.requests) == 2
+    repair = provider.requests[1]["messages"][-1]["content"]
+    assert "api: src/fixation_flash/task.py:102: self.display is a DisplayBackend" in repair
+    assert b"draw_disc" not in result.files["src/fixation_flash/task.py"]
+
+
+def test_the_listing_is_what_the_check_accepts():
+    text = surface.api_text()
+    assert "anything else does not exist" in text
+    display = surface.resolve("alhazen.display.backend:DisplayBackend")
+    for name in surface.public_members(display):
+        assert f".{name}" in text
+    assert "draw_disc" not in text
+    for hook, arguments in surface.HOOK_ARGUMENTS.items():
+        for reference in arguments.values():
+            cls = surface.resolve(reference)
+            assert f"{hook} receives" in text and cls.__name__ in text
+    assert "class FixationPoint" in text  # the worked example of a stimulus
+
+
+@pytest.mark.parametrize(
+    ("module", "constructed"),
+    [
+        ("alhazen.modes.demo", "DemoSetup("),
+        ("alhazen.modes.movie", "MovieSetup("),
+    ],
+)
+def test_hook_arguments_are_what_alhazen_passes(module, constructed):
+    import importlib as _importlib
+    import inspect as _inspect
+
+    assert constructed in _inspect.getsource(_importlib.import_module(module))
+
+
+def test_trial_setup_is_what_build_trial_receives():
+    import inspect as _inspect
+
+    from alhazen.task.plan import TrialSetup
+    from alhazen.task.task import Task
+
+    hints = typing.get_type_hints(Task.build_trial)
+    assert hints["setup"] is TrialSetup
+    assert "TrialSetup(" in _inspect.getsource(
+        __import__("alhazen.session.runner", fromlist=["x"])
+    ) or "TrialSetup(" in _inspect.getsource(__import__("alhazen.core.engine", fromlist=["x"]))
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (  # the setup each hook gets
+            """
+            from alhazen import Task
+            class T(Task):
+                def movie_clips(self, setup):
+                    return setup.refresh_rate_hz
+            """,
+            "setup is a MovieSetup, which has no 'refresh_rate_hz'; it has: hz",
+        ),
+        (
+            """
+            from alhazen import Task
+            class T(Task):
+                def build_trial(self, setup):
+                    return setup.screen.deg2pix(1.0)
+            """,
+            "setup.screen is a Screen, which has no 'deg2pix'; closest: deg2px",
+        ),
+        (  # a phase callback's ctx
+            """
+            from alhazen.task import phases
+            P = phases.TrialFeedback(verdict=lambda ctx: ctx.recrod["ok"], then="X", duration_s=1)
+            """,
+            "ctx is a TrialContext, which has no 'recrod'; closest: record",
+        ),
+        (  # keywords of an alhazen callable
+            """
+            from alhazen.task import phases
+            P = phases.HoldFixation(duraton_s=0.5)
+            """,
+            "HoldFixation() takes no argument 'duraton_s'; closest: duration_s",
+        ),
+        (
+            """
+            from alhazen.stimuli.fixation import make_fixation
+            def f(setup):
+                return make_fixation(setup.display, setup.screen, 1.0, position=(0, 0))
+            """,
+            "make_fixation() takes no argument 'position'; closest: pos",
+        ),
+        (  # the generated params model, through an annotation
+            """
+            from alhazen import SubjectParams, Task
+            class P(SubjectParams):
+                flash_size_dva: float = 1.0
+            class T(Task):
+                def build_trial(self, setup):
+                    params: P = self.params
+                    return params.flash_sise_dva
+            """,
+            "params is a P, which has no 'flash_sise_dva'; closest: flash_size_dva",
+        ),
+        (  # through a returned value
+            """
+            from alhazen.stimuli.fixation import make_fixation
+            def f(setup):
+                dot = make_fixation(setup.display, setup.screen, 1.0)
+                dot.set_colour((1, 0, 0))
+            """,
+            "dot is a Stimulus, which has no 'set_colour'",
+        ),
+        (
+            """
+            def f(ctx):
+                return ctx._undrawn_then
+            """,
+            "ctx._undrawn_then is private to alhazen",
+        ),
+    ],
+)
+def test_api_check_finds(source, expected):
+    found = api_problems(source)
+    assert any(expected in line for line in found), found
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        # a stimulus written like FixationPoint, with its simulated branch
+        """
+        from alhazen.stimuli.base import NullStimulus
+        class Ring:
+            def __init__(self, display, screen, radius_dva):
+                from psychopy import visual
+                self._stim = visual.Circle(display.window, radius=screen.deg2px(radius_dva))
+            def draw(self):
+                self._stim.draw()
+        def make_ring(display, screen, radius_dva):
+            if display.kind == "simulated":
+                return NullStimulus("ring")
+            return Ring(display, screen, radius_dva)
+        """,
+        # a base the check cannot see into: nothing is claimed
+        """
+        import collections
+        class Odd(collections.UserDict):
+            pass
+        def f(setup):
+            return Odd().anything
+        """,
+        # a guarded optional capability
+        """
+        def f(setup):
+            if hasattr(setup.display, "frame_period_s"):
+                return setup.display.frame_period_s
+        """,
+        # Enum and pydantic members come with their bases
+        """
+        from alhazen import SubjectKind, SchedulerConfig
+        def f():
+            return SubjectKind.HUMAN.value, SchedulerConfig().model_dump()
+        """,
+        # an annotated ctx is not taken for a TrialContext
+        """
+        from typing import Any
+        def run(ctx: Any):
+            return ctx.number("x")
+        """,
+    ],
+)
+def test_api_check_claims_nothing_it_cannot_follow(source):
+    assert api_problems(source) == []
+
+
+def test_api_check_accepts_the_scaffold():
+    files = author.scaffold_files()
+    for path in ("src/fixation_demo/task.py", "tests/test_task.py"):
+        assert surface.check(path, ast.parse(files[path]), files[path]) == [], path
+
+
+def test_null_stimulus_is_allowed_on_the_simulated_branch(the_plan, ctx):
+    module = (
+        task_module()
+        .replace(
+            "        flash_stimulus = make_fixation(",
+            '        if setup.display.kind == "simulated":\n'
+            '            flash_stimulus = NullStimulus("flash")\n'
+            "        flash_stimulus = make_fixation(",
+            1,
+        )
+        .replace(
+            "from alhazen.stimuli.fixation import make_fixation\n",
+            "from alhazen.stimuli.base import NullStimulus\n"
+            "from alhazen.stimuli.fixation import make_fixation\n",
+            1,
+        )
+    )
+    assert 'NullStimulus("flash")' in module
+    result = author.generate_source(
+        FakeProvider(source_text=source_text(task_module=module)), the_plan, ctx
+    )
+    assert result.report.ok, result.report.problems
+
+
+def test_the_old_valid_fixture_had_a_movie_mode_bug_the_api_check_finds():
+    live = json.loads(live_exchanges()[3]["text"])["task_module"]
+    found = api_problems(live, "src/fixation_flash_hold/task.py")
+    assert any("setup is a MovieSetup, which has no 'refresh_rate_hz'" in p for p in found)
