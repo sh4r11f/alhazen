@@ -207,7 +207,7 @@ class DatapixxSync:
         self._link.acquire("opening the DATAPixx3 sync lines", SyncError)
         try:
             try:
-                self._link.open(self)
+                self._link.connect(self)
             except RuntimeError as e:
                 raise SyncError(f"sync lines on the {HOST_DEVICE}: {e}") from e
             try:

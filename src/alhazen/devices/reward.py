@@ -323,7 +323,7 @@ def probe_datapixx_gate(cfg: RewardHwConfig) -> dict[str, Any]:
     link.acquire(f"reading the {HOST_DEVICE}'s digital outputs", RewardError)
     try:
         try:
-            link.open(probe)
+            link.connect(probe)
             state = read_gate_state(libdpx, cfg)
         except RuntimeError as e:
             raise RewardError(f"reward gate {cfg.line}: {e}") from e
@@ -417,7 +417,7 @@ class DatapixxReward:
         self._link.acquire(f"opening the reward gate on {cfg.line}", RewardError)
         try:
             try:
-                self._link.open(self)
+                self._link.connect(self)
             except RuntimeError as e:
                 raise RewardError(f"reward gate {cfg.line}: {e}") from e
             try:

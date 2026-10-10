@@ -31,7 +31,7 @@ three things have to be decided once, here, rather than by each backend:
   releases the lock.
 
 The decision this module hides: libdpx's global state and its lifetime.
-Callers learn a lock, select, open/release, reserve. The price is one
+Callers learn a lock, select, connect/release, reserve. The price is one
 process-wide lock: a gaze read (2 ms typical, 20–40 ms worst measured on the
 rig) can delay a reward start or a sync pulse by that much. What callers
 must not rely on: anything about the selected device other than
@@ -120,7 +120,7 @@ class DpxLink:
     def opened(self) -> bool:
         return self._opened
 
-    def open(self, holder: object) -> None:
+    def connect(self, holder: object) -> None:
         """Open the device for ``holder``: ``DPxOpen`` only if no holder has
         opened it, then select the DATAPixx3 and check that it answered.
 
