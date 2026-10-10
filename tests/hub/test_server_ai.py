@@ -296,9 +296,13 @@ class TestDraftLifecycle:
         assert r.status_code == 400 and r.json()["error"]["code"] == "prompt_too_long"
         r = ada.post("/ai/drafts", {"prompt": "x", "provider": "openai", "model": "../etc"})
         assert r.status_code == 400
+        r = ada.post("/ai/drafts", {"prompt": "line one\r\nline two", "provider": "openai"})
+        assert r.status_code == 202 and r.json()["draft"]["prompt"] == "line one\nline two"
+        r = ada.post("/ai/drafts", {"prompt": "bidi \u202e trick", "provider": "openai"})
+        assert r.status_code == 400
         r = ada.post("/ai/drafts", {"prompt": "x", "provider": "openai", "extra": 1})
         assert r.status_code == 400 and r.json()["error"]["code"] == "unknown_field"
-        assert ai.provider.requests == []
+        assert ai.provider.requests == []  # nothing ran (no drain)
 
     def test_invalid_plan_reports_and_draft_returns_to_describing(self, ai: AIHub) -> None:
         ada = signed_in(ai)

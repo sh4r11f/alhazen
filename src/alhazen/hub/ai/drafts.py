@@ -240,12 +240,17 @@ def _prompt(hub: Hub, value: object) -> str:
     limit = hub.settings.ai.max_prompt_chars
     if not isinstance(value, str) or not value.strip():
         raise invalid("prompt is required")
-    value = value.strip()
+    value = _lines(value).strip()
     if len(value) > limit:
         raise invalid(f"prompt may be at most {limit} characters", "prompt_too_long")
     if has_hidden_characters(value, multiline=True):
         raise invalid("prompt contains control or invisible characters")
     return value
+
+
+def _lines(value: str) -> str:
+    """Pasted text keeps its line breaks as plain newlines."""
+    return value.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _model(runner: Runner, provider: str, value: object) -> str:
@@ -402,6 +407,7 @@ def generate(hub: Hub, principal: Principal, draft_id: str, body: dict[str, Any]
     edits = body.get("plan_edits") or {}
     if not isinstance(edits, dict) or set(edits) - {"title", "notes"}:
         raise invalid("plan_edits may hold only title and notes")
+    edits = {k: _lines(v) if isinstance(v, str) else v for k, v in edits.items()}
     for name, limit in (("title", MAX_PLAN_TITLE), ("notes", MAX_PLAN_NOTES)):
         if name in edits and (
             not isinstance(edits[name], str)
