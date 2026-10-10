@@ -6,14 +6,16 @@
   the contract with workspace.js, which finds every control by id and never
   walks the page's nesting; rename an id in both places or the script fails
   at load. Structure: a sidebar (the logo; Experiments, the workspace's home;
-  the open experiment's pages General / Run / Data / History; the colour
-  theme switch), then the main column holding one screen at a time, each a
+  the open experiment's pages General / Run / Measure rig / Data / History,
+  Measure rig added by workspace_bench.js; the colour theme switch), then the main column holding one screen at a time, each a
   real address (?view=experiments, ?project=<id>&view=general|run|data|history;
   route() in workspace.js): the Experiments page (#home-view, drawn by
   workspace_manage.js), or the open experiment's heading and one of its
-  pages: General (#general-view, workspace_manage.js), Run (#workspace: the
-  configuration form on the left, the run output and recent runs on the
-  right), Data (#data-view, workspace_data.js) or History (#history-view,
+  pages: General (#general-view, workspace_manage.js), Run (#workspace: two panes,
+  Setup, the configuration as a grid of sections over a launch bar fixed to
+  the window's bottom, and Output, the session clock and summary, the run
+  output with the live monitor, the recent runs and the upload card;
+  workspace_bench.js switches them), Data (#data-view, workspace_data.js) or History (#history-view,
   workspace_manage.js). Two dialogs follow: project settings and the
   enlarged image.
 -->
@@ -65,6 +67,12 @@
        it loads last: the collapsible icon rail, the Run page's two panes
        (settings | instrument) and the type that replaces the mono labels. -->
   <link rel="stylesheet" href="/workspace_split.css">
+  <!-- Composite (2026-10-09): the Run page from Bench (Setup | Output
+       panes, the settings grid, the launch bar fixed to the window's
+       bottom, the full-width output with the live monitor) and Console's
+       session clock, over Split's shell. Loads after Split. -->
+  <link rel="stylesheet" href="/workspace_run.css">
+  <script src="/workspace_bench.js" defer></script>
 </head>
 <body>
   <!-- Sidebar: logo, the registered experiments (renderState() in
@@ -174,22 +182,30 @@
 
     <!-- The Run page of the open experiment. -->
     <div id="workspace" hidden>
+      <!-- The Run page's two panes: Setup (the configuration and the launch
+           bar) and Output (the selected run's output, its upload and the
+           recent runs). workspace_bench.js switches them, and opens Output
+           when a run starts; the lamp mirrors #run-status. -->
+      <div id="run-panes" class="segmented run-panes" role="group" aria-label="Run page">
+        <button type="button" id="pane-setup" aria-pressed="true">Setup</button>
+        <button type="button" id="pane-output" aria-pressed="false">
+          Output <span id="pane-output-lamp" class="pane-lamp" aria-hidden="true"></span>
+        </button>
+      </div>
 
       <div class="workspace-grid">
         <!-- Left column: the launch form. Which fields show depends on the
              mode (modeChanged() in workspace.js); hidden fields are also
              disabled so the browser does not validate what cannot be seen. -->
-        <section class="configuration card">
-          <div class="card-heading">
-            <h2>Configure a run</h2>
-          </div>
-          <!-- The form is a signal path, top to bottom: each stage (Mode,
-               Run options, Rig, Task parameters) is a numbered node on one
-               rail that ends at the launch, and the node of the stage being
-               edited lights up (workspace.css "Instrument"). The numbers are
-               a CSS counter, so a stage the mode hides takes its number
-               with it. -->
+        <section class="configuration">
+          <h2 class="sr-only">Configure a run</h2>
+          <!-- The form is a grid of plain sections: Mode with Subject &
+               session, Run options and Rig side by side, then Task
+               parameters (or the training ladder, or the measurements) the
+               full width, and the launch bar fixed to the bottom of the
+               window (workspace.css "Bench"). -->
           <form id="launch-form">
+            <div class="bench-col">
             <section class="stage" id="mode-stage">
               <label for="mode" class="stage-title">Mode</label>
               <select id="mode"></select>
@@ -257,6 +273,7 @@
               </div>
               <p id="identity-help" class="help"></p>
             </section>
+            </div>
 
             <section class="stage" id="options-stage" aria-labelledby="options-title">
               <h3 class="stage-title" id="options-title">Run options</h3>
@@ -452,6 +469,14 @@
                    parameters entry, rig and subject (launchSummary()). -->
               <!-- How long that launch would take, asked of the project's own
                    alhazen as the form changes (workspace_duration.js). -->
+              <!-- During a run: its elapsed time and a way to its output, in
+                   the bar's place for the estimate (workspace_bench.js). -->
+              <div id="bar-session" class="bar-session" hidden>
+                <span class="bar-lamp" aria-hidden="true"></span>
+                <span class="bar-session-text">Running</span>
+                <span id="bar-elapsed" class="bar-elapsed">00:00</span>
+                <button type="button" id="bar-output" class="quiet">View output</button>
+              </div>
               <div id="duration-estimate"></div>
               <p id="launch-summary" class="launch-summary" aria-live="polite"></p>
               <p id="launch-note" class="help"></p>
@@ -460,22 +485,33 @@
           </form>
         </section>
 
-        <!-- Right column, the instrument pane (Split): the selected run's
-             output, its upload, then the run history. The pane carries the
-             darker surface down the page; the column inside it stays in
-             the window while the form scrolls. -->
-        <div class="instrument-pane">
+        <!-- Right column: the selected run's output, then the run history. -->
         <div class="results-column">
           <!-- Upload to the archive, for the session the selected launch saved, once
                it has finished (workspace_upload.js mountSession; hidden for
                a launch that saved no session). -->
-          <section id="upload-card" class="card upload-card" aria-label="Upload to the archive" hidden></section>
-          <section class="card output-card">
-            <div class="card-heading">
-              <h2>Run output</h2>
-              <span id="run-status" class="status">READY</span>
+          <section id="upload-card" class="upload-card" aria-label="Upload to the archive" hidden></section>
+          <section class="output-card">
+            <h2 class="sr-only">Run output</h2>
+            <!-- The session summary (from Console): the selected run's
+                 elapsed time, large, ticking once a second while it runs
+                 (workspace_bench.js reads the data-started / data-finished /
+                 data-active attributes refreshRun() puts on #run-info); its
+                 status lamp (amber while running), its start, and the run
+                 line. -->
+            <div id="session-summary" class="session-summary" data-active="false">
+              <div class="session-clock">
+                <span class="readout-label">Elapsed</span>
+                <span id="session-elapsed" class="readout-value">00:00</span>
+              </div>
+              <div class="session-meta">
+                <div class="session-meta-row">
+                  <span id="run-status" class="status">READY</span>
+                  <span class="session-started">Started <span id="session-started">–</span></span>
+                </div>
+                <div id="run-info" class="run-info"></div>
+              </div>
             </div>
-            <div id="run-info" class="run-info"></div>
             <!-- A Measure rig run's queue (workspace_measure.js renderProgress). -->
             <div id="measure-progress" aria-live="polite" hidden></div>
             <div class="output-toolbar">
@@ -528,17 +564,16 @@
             </div>
           </section>
 
-          <section class="card history-card">
+          <section class="history-card">
             <div class="card-heading">
               <h2>Recent runs</h2>
               <!-- Every launch and session, with their records: the
                    History page (filled by renderHistory()). -->
-              <a id="history-all" href="?view=history">All in History →</a>
+              <a id="history-all" href="?view=history">All in History</a>
               <span id="history-count" class="step">0 RUNS</span>
             </div>
             <div id="history"></div>
           </section>
-        </div>
         </div>
       </div>
     </div>

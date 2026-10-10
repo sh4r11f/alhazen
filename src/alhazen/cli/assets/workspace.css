@@ -2147,101 +2147,10 @@ footer {
    pair; the session number needs little room. */
 #identity > .field-pair:first-child {
   grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
-
-/* ---- Upload to the archive on the Run page (workspace_upload.js, its own CSS) ---- */
-.upload-card {
-  padding: 18px 22px;
 }
 
-/* ---- Run page layout: the bench (chosen 2026-10-08 over a two-column deck
- * and a run strip; screenshots and reasons on the project page) ----
- * The form is long and scrolls with the page; the results column — the
- * upload card, the run output and the recent runs — sticks beside it and
- * fills the window, so it is in view wherever the reader is in the form,
- * its bottom lines up with the window's, and the run history gets the
- * height that is left instead of a fixed 380 px box that cut it off. Each
- * part scrolls inside itself. A window too short for that (under 720 px)
- * keeps the plain flow. */
-.history-card {
-  display: flex;
-  flex-direction: column;
-}
-
-.history-card .card-heading a {
-  font-size: 13px;
-  color: var(--muted);
-  text-decoration: none;
-  margin-left: auto;
-}
-
-.history-card .card-heading a:hover {
-  color: var(--ink);
-}
-
-@media (min-width: 861px) and (min-height: 720px) {
-  .results-column {
-    position: sticky;
-    top: 16px;
-    max-height: calc(100vh - 32px);
-    gap: 16px;
-  }
-  /* The upload card keeps its height (its login, preview and progress
-     must never be cut off) up to half the window, then scrolls inside. */
-  #upload-card {
-    flex: 0 0 auto;
-    max-height: 52vh;
-    overflow-y: auto;
-  }
-  .output-card {
-    flex: 1 1 auto;
-    min-height: 240px;
-    display: flex;
-    flex-direction: column;
-  }
-  #media-panel, #console-panel, #monitor-panel {
-    flex: 1 1 auto;
-    min-height: 0;
-    overflow: auto;
-  }
-  .output-empty {
-    min-height: 0;
-    height: 100%;
-  }
-  #console {
-    max-height: none;
-  }
-  #monitor-frame {
-    height: 100%;
-    min-height: 420px;
-  }
-  .history-card {
-    flex: 0 1 300px;
-    min-height: 120px;
-  }
-  #history {
-    max-height: none;
-    flex: 1 1 auto;
-    overflow: auto;
-  }
-}
-
-/* One column: what just finished comes first. The upload card leads (it
- * shows only once a session has ended), then the form, the output and the
- * history. */
-@media (max-width: 860px) {
-  .results-column {
-    display: contents;
-  }
-  #upload-card {
-    order: -1;
-  }
-  .output-card {
-    order: 1;
-  }
-  .history-card {
-    order: 2;
-  }
-  .workspace-grid {
-    gap: 18px;
-  }
-}
+/* ---- The Run page's layout ----
+ * workspace_run.css (the Composite design: Bench's Setup / Output panes).
+ * An unclosed rule just above (#identity's field pair) had made the earlier
+ * "bench" layout rules that stood here dead since 2026-10-08; they are
+ * removed rather than revived, since workspace_run.css replaces them. */
