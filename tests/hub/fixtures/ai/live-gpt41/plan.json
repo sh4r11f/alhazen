@@ -1,0 +1,309 @@
+{
+ "title": "Fixation-hold with Peripheral Flash",
+ "slug": "fixation-flash",
+ "summary": "A fixation-hold task in which a brief peripheral flash is presented on half of the trials, either to the left or right of fixation. The subject must maintain fixation throughout. The experiment measures the rate and latency of fixation breaks on flash versus no-flash trials.",
+ "paradigm": "Each trial begins with a fixation point at screen center. The subject must acquire and hold fixation. On flash trials, a brief peripheral flash appears either 8 dva left or right of fixation. On no-flash trials, no flash is shown. The subject is instructed to maintain fixation throughout. The trial ends if fixation is broken or after a set hold duration. Conditions (flash left, flash right, no flash) are served equally, in sequence or shuffled as set in paradigm.kind.",
+ "subject_kind": "human",
+ "license": "MIT",
+ "hardware": {
+  "display": true,
+  "eye_tracker": true,
+  "reward": false
+ },
+ "design": [
+  {
+   "label": "Conditions",
+   "value": "Flash left, Flash right, No flash"
+  },
+  {
+   "label": "Trials per condition",
+   "value": "paradigm.n_per_condition"
+  },
+  {
+   "label": "Total trials per session",
+   "value": "3 × paradigm.n_per_condition"
+  },
+  {
+   "label": "Session length",
+   "value": "5–15 minutes for humans, depending on n_per_condition and subject pace"
+  },
+  {
+   "label": "Subject",
+   "value": "Human"
+  }
+ ],
+ "stimuli": [
+  {
+   "name": "fixation",
+   "notes": "White filled circle at screen center, size set by fix_size_dva.",
+   "position": "0 dva (centered)",
+   "size": "fix_size_dva dva"
+  },
+  {
+   "name": "flash_left",
+   "notes": "Yellow filled circle, appears 8 dva left of fixation on flash-left trials, size set by flash_size_dva.",
+   "position": "flash_eccentricity_dva dva left",
+   "size": "flash_size_dva dva"
+  },
+  {
+   "name": "flash_right",
+   "notes": "Yellow filled circle, appears 8 dva right of fixation on flash-right trials, size set by flash_size_dva.",
+   "position": "flash_eccentricity_dva dva right",
+   "size": "flash_size_dva dva"
+  }
+ ],
+ "measures": [
+  {
+   "definition": "Whether fixation was broken during or after the flash (on flash trials) or during the equivalent period (no-flash trials)",
+   "name": "fixation_break",
+   "unit": "boolean"
+  },
+  {
+   "definition": "Latency from flash onset to fixation break, or null if no break",
+   "name": "break_latency_ms",
+   "unit": "ms"
+  },
+  {
+   "definition": "Condition label: flash left, flash right, or no flash",
+   "name": "condition",
+   "unit": "string"
+  },
+  {
+   "definition": "Outcome of the trial: FIXATED, FIX_BREAK, NO_FIXATION",
+   "name": "outcome",
+   "unit": "string"
+  }
+ ],
+ "parameters": [
+  {
+   "constraints": {
+    "choices": null,
+    "max": null,
+    "min": 0.05,
+    "note": null
+   },
+   "default": 0.3,
+   "group": "Stimulus",
+   "label": "Fixation point size",
+   "meaning": "Diameter of the fixation point at screen center",
+   "name": "fix_size_dva",
+   "type": "number",
+   "unit": "dva"
+  },
+  {
+   "constraints": {
+    "choices": null,
+    "max": null,
+    "min": 0.5,
+    "note": null
+   },
+   "default": 2.0,
+   "group": "Gaze",
+   "label": "Fixation window diameter",
+   "meaning": "Diameter of the gaze window for fixation acquisition and hold",
+   "name": "fix_window_dva",
+   "type": "number",
+   "unit": "dva"
+  },
+  {
+   "constraints": {
+    "choices": null,
+    "max": 10000,
+    "min": 100,
+    "note": null
+   },
+   "default": {
+    "ms": 2000
+   },
+   "group": "Timing",
+   "label": "Fixation acquire timeout",
+   "meaning": "Maximum time to acquire fixation before aborting the trial",
+   "name": "acquire_timeout",
+   "type": "duration",
+   "unit": "ms"
+  },
+  {
+   "constraints": {
+    "choices": null,
+    "max": 5000,
+    "min": 100,
+    "note": null
+   },
+   "default": {
+    "ms": 500
+   },
+   "group": "Timing",
+   "label": "Fixation hold duration",
+   "meaning": "Duration for which fixation must be held (including flash period)",
+   "name": "hold_duration",
+   "type": "duration",
+   "unit": "ms"
+  },
+  {
+   "constraints": {
+    "choices": null,
+    "max": 5000,
+    "min": 10,
+    "note": "Conventional value for a brief visual flash"
+   },
+   "default": {
+    "ms": 50
+   },
+   "group": "Stimulus",
+   "label": "Flash duration",
+   "meaning": "Duration of the peripheral flash",
+   "name": "flash_duration",
+   "type": "duration",
+   "unit": "ms"
+  },
+  {
+   "constraints": {
+    "choices": null,
+    "max": 20.0,
+    "min": 1.0,
+    "note": "Conventional value for peripheral flash"
+   },
+   "default": 8.0,
+   "group": "Stimulus",
+   "label": "Flash eccentricity",
+   "meaning": "Horizontal distance from fixation to flash center",
+   "name": "flash_eccentricity_dva",
+   "type": "number",
+   "unit": "dva"
+  },
+  {
+   "constraints": {
+    "choices": null,
+    "max": 10.0,
+    "min": 0.1,
+    "note": "Conventional value for a small peripheral flash"
+   },
+   "default": 1.0,
+   "group": "Stimulus",
+   "label": "Flash size",
+   "meaning": "Diameter of the peripheral flash",
+   "name": "flash_size_dva",
+   "type": "number",
+   "unit": "dva"
+  },
+  {
+   "constraints": {
+    "choices": null,
+    "max": 5000,
+    "min": 0,
+    "note": null
+   },
+   "default": {
+    "ms": 500
+   },
+   "group": "Timing",
+   "label": "Inter-trial interval",
+   "meaning": "Blank interval between trials",
+   "name": "iti",
+   "type": "duration",
+   "unit": "ms"
+  },
+  {
+   "constraints": {
+    "choices": [
+     "sequence",
+     "constant",
+     "staircase",
+     "questplus",
+     "adjustment"
+    ],
+    "max": null,
+    "min": null,
+    "note": null
+   },
+   "default": "sequence",
+   "group": "Design",
+   "label": "Scheduler kind",
+   "meaning": "How conditions are served",
+   "name": "paradigm.kind",
+   "type": "choice",
+   "unit": null
+  },
+  {
+   "constraints": {
+    "choices": null,
+    "max": 1000,
+    "min": 1,
+    "note": null
+   },
+   "default": 10,
+   "group": "Design",
+   "label": "Trials per condition",
+   "meaning": "How many times each condition is served",
+   "name": "paradigm.n_per_condition",
+   "type": "integer",
+   "unit": null
+  }
+ ],
+ "timeline": [
+  {
+   "duration": "event-driven",
+   "note": "Wait for gaze to enter fixation window, up to acquire_timeout.",
+   "parameter": "acquire_timeout",
+   "phase": "Acquire fixation",
+   "until": "Gaze enters fixation window or timeout"
+  },
+  {
+   "duration": "parameterized",
+   "note": "Hold fixation for hold_duration. On flash trials, flash appears after flash_onset_delay (default 250 ms) for flash_duration.",
+   "parameter": "hold_duration",
+   "phase": "Hold fixation (with or without flash)",
+   "until": null
+  },
+  {
+   "duration": "parameterized",
+   "note": "Present peripheral flash for flash_duration on flash trials. On no-flash trials, nothing is shown.",
+   "parameter": "flash_duration",
+   "phase": "Flash (flash trials only)",
+   "until": null
+  },
+  {
+   "duration": "instant",
+   "note": "Mark outcome: FIXATED if fixation held, FIX_BREAK if fixation broken, NO_FIXATION if never acquired.",
+   "parameter": null,
+   "phase": "Outcome mark",
+   "until": null
+  },
+  {
+   "duration": "parameterized",
+   "note": "Blank screen between trials.",
+   "parameter": "iti",
+   "phase": "Inter-trial interval",
+   "until": null
+  }
+ ],
+ "tasks": [
+  {
+   "description": "Fixation-hold with peripheral flash: subject maintains fixation while a brief flash appears left or right (or not at all). Measures fixation stability and break latency.",
+   "name": "fixation-flash"
+  }
+ ],
+ "tests": [
+  {
+   "how": "Load all parameters and check that each is present and valid.",
+   "name": "Parameter load"
+  },
+  {
+   "how": "Run a simulated session with all three conditions and verify that the timeline and outcomes are as expected.",
+   "name": "Simulated session"
+  },
+  {
+   "how": "Check that the timeline includes fixation acquire, hold, flash (on flash trials), and outcome phases in the correct order.",
+   "name": "Timeline structure"
+  },
+  {
+   "how": "Verify that each condition (flash left, flash right, no flash) is served paradigm.n_per_condition times.",
+   "name": "Condition counts"
+  },
+  {
+   "how": "Simulate a trial with a fixation break after the flash and check that break_latency_ms is recorded.",
+   "name": "Fixation break latency"
+  }
+ ],
+ "notes": "Chose flash duration (flash_duration.ms=50), flash size (flash_size_dva=1.0), and flash eccentricity (flash_eccentricity_dva=8.0) as conventional values. Chose fixation hold duration (hold_duration.ms=500) and acquire timeout (acquire_timeout.ms=2000) as in the scaffold. Chose inter-trial interval (iti.ms=500) as in the scaffold. Chose white for fixation color and yellow for flash color. Chose sequence scheduler as default."
+}

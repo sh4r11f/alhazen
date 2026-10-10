@@ -201,6 +201,39 @@ def data_roots(described: dict[str, Any]) -> tuple[list[DataRoot], list[DataRoot
     return existing, missing, problems
 
 
+def relative_data_components(described: dict[str, Any]) -> tuple[set[str], list[str]]:
+    """The project-folder entries its rigs' relative ``data_root`` values
+    write under (``data`` for ``data`` or ``data/lab``), from the same Rig
+    menu entries :func:`data_roots` reads, and the problems met (a rig that
+    cannot be read is said, never skipped quietly). Absolute data roots are
+    no entry of the folder and are left out. For a hub install these are the
+    names linked to the experiment's shared data folder
+    (alhazen.hub.shared_data)."""
+    from alhazen.hub.shared_data import first_component
+
+    project_dir = Path(described["path"])
+    shared = _shared_rigs(described)
+    components: set[str] = set()
+    problems: list[str] = []
+    for entry in described.get("rigs", []):
+        if entry.get("shadowed") or entry.get("error"):
+            if entry.get("error"):
+                problems.append(f"Rig {entry['name']} cannot be read: {entry['error']}")
+            continue
+        rig_file = Path(entry["path"])
+        if not rig_file.is_absolute():
+            rig_file = project_dir / rig_file
+        try:
+            raw = rig_mapping(rig_file, shared=shared).values.get("data_root")
+        except (AlhazenError, OSError) as exc:
+            problems.append(f"Rig {entry['name']} cannot be read: {exc}")
+            continue
+        component = first_component(raw) if isinstance(raw, str) else None
+        if component is not None:
+            components.add(component)
+    return components, problems
+
+
 def _training_stage_roots(real: Path) -> list[tuple[Path, str]]:
     """The training stages' own data folders beside ``real`` that exist
     (``<real>-training/<ladder>/<stage>/`` and its rehearsal sibling;

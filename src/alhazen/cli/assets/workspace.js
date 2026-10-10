@@ -1078,6 +1078,14 @@ function launchDraft() {
     draft.parameters_yaml = $('parameter-yaml').value;
   } else if (usesParameters() && editor === 'fields' && values !== null) {
     draft.parameters = values;
+  } else if (usesParameters() && draft.parameter_set && selectedSet()?.params) {
+    // No text to send (an emptied editor): the launch does not run the
+    // entry's file, so it does not carry the entry's label either; the
+    // server refuses a label without its file's contents (import round,
+    // decision 5), and the history then names the task, which is what ran.
+    // An entry on no file keeps its label: running the task's own default
+    // is what that label means.
+    draft.parameter_set = null;
   }
   return draft;
 }
@@ -2592,6 +2600,12 @@ async function refreshRun() {
     if (run.error) info += ' · ' + run.error;
   }
   $('run-info').textContent = info;
+  // The session clock (workspace_bench.js) reads these: when the selected
+  // run started, when it finished (empty while it runs) and whether it is
+  // the active one.
+  $('run-info').dataset.started = run?.started || '';
+  $('run-info').dataset.finished = active ? '' : (run?.finished || '');
+  $('run-info').dataset.active = String(active);
   // Only the active run can be stopped; while it stops, the button waits.
   $('stop').hidden = !run || run.id !== state.active;
   $('stop').disabled = run?.status === 'stopping';
@@ -2635,20 +2649,17 @@ async function refreshRun() {
   let heading;
   let detail;
   if (!run) {
-    heading = 'A closer look at your experiment.';
-    detail = 'Preview images and recorded movies appear here. '
-      + 'Choose a mode and start a run to see the results.';
+    heading = 'No run yet';
+    detail = '';
   } else if (active) {
-    heading = 'Your experiment is working.';
-    detail = 'Images appear as they are written. Movies are available when recording '
-      + 'finishes. Follow progress in the console.';
+    heading = 'Your experiment is working';
+    detail = 'Images appear as they are written; movies when recording finishes.';
   } else if (run.status === 'failed') {
-    heading = 'This run needs attention.';
-    detail = 'Open the console for the error and the command that produced it.';
+    heading = 'Run failed';
+    detail = 'The console has the error and the command.';
   } else {
-    heading = 'No images or movies in this run.';
-    detail = 'Session modes write their data to the rig’s data directory. '
-      + 'Use a preview script or movie mode to generate media.';
+    heading = 'No media in this run';
+    detail = '';
   }
   empty.querySelector('h3').textContent = heading;
   empty.querySelector('p').textContent = detail;

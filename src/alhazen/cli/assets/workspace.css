@@ -25,240 +25,180 @@
  */
 
 /* ---- The page's font ----
- * Nunito, a rounded sans-serif, shipped with the page (fonts/, beside this
- * file; served by dashboard.py) because no operating system has it and the
- * rigs have no internet. Licence: SIL Open Font License 1.1, fonts/OFL.txt.
- * Source: https://github.com/google/fonts/tree/main/ofl/nunito,
- * Nunito[wght].ttf version 3.602 (google/fonts commit 604936664fd6), cut
- * to Latin and Latin-1 with fontTools' pyftsubset and saved as WOFF2. One
- * variable file carries every weight from 200 to 1000. font-display: swap
+ * Manrope, the Experiment Hub's typeface (the same file as
+ * hub/assets/fonts), shipped with the page (fonts/, served by dashboard.py)
+ * because the rigs have no internet. Licence: SIL Open Font License 1.1,
+ * fonts/OFL.txt. One variable file, weights 200 to 800; font-display: swap
  * shows the system font until it has loaded, never blank text.
  */
 @font-face {
-  font-family: "Nunito";
-  src: url("/fonts/Nunito-latin.woff2") format("woff2");
-  font-weight: 200 1000;
+  font-family: "Manrope";
+  src: url("/fonts/Manrope-latin.woff2") format("woff2");
+  font-weight: 200 800;
   font-style: normal;
   font-display: swap;
 }
 
-/* ---- Design tokens ---- */
-
-/* The light palette, and everything that is the same in both themes. Text
- * tokens (--ink, --muted, --accent, the status inks) keep at least 4.5:1
- * against --surface and --paper; --field-border keeps 3:1 against the
- * field, as a control's edge must. */
+/* ---- Design tokens ----
+ * The Hub's warm palette (hub/assets/hub.css), so the Hub and the
+ * workspace read as one product: warm paper, ink, one oxblood accent.
+ * Split (2026-10-09): the Run page's right pane, the instrument, sits on
+ * the --instrument surfaces, a step darker than the settings pane in light
+ * and in dark. The rail tokens colour the sidebar. Text tokens keep 4.5:1
+ * on every ground they are drawn on, edges 3:1 (tests/js/workspace.test.mjs).
+ */
 :root {
   color-scheme: light;
-  /* The instrument palette (2026-10-06): cool neutral paper, white panels,
-   * near-black ink, one signal blue for action and selection, and a
-   * graphite rail (the --rail-* tokens) for the sidebar, whose selection is
-   * the same amber the dark theme's selection has. */
-  --paper: #eceef1;
-  --surface: #ffffff;
-  --surface-2: #f3f5f7;
-  --surface-3: #e5e8ec;
-  --ink: #0e1317;
-  --muted: #4c5662;
-  --line: #d6dbe1;
-  --field: #ffffff;
-  --field-border: #7c8794;
-  --hover-border: #94a0ad;
-  --hover-bg: #f2f5f9;
-  --accent: #1f4bd6;
-  --accent-hover: #183db0;
-  --accent-soft: #e6ecfd;
-  --on-accent: #ffffff;
-  /* The selected experiment in the sidebar: on the rail (below), amber on
-   * graphite in both themes. */
-  --selected-bg: #222c36;
-  --selected-ink: #ffcf33;
-  --focus: #1f4bd6;
-  --run-ink: #1f4bd6;
-  --run-bg: #e6ecfd;
-  --run-line: #b9c8f6;
-  --ok-ink: #1d6b47;
-  --ok-bg: #e7f4ec;
-  --ok-line: #b6dcc5;
-  --bad-ink: #a52f2f;
-  --bad-bg: #fdeeec;
-  --bad-line: #eac3bd;
-  --console-bg: #0f1418;
-  --console-ink: #d3dfeb;
-  --media-bg: #e3e7ec;
-  --shadow: #0e131714;
-  --backdrop: #0e131780;
-  /* The sidebar is a graphite rail in the light theme. Its own tokens, which
-   * the sidebar rebinds the page tokens to (.sidebar, "Instrument" below),
-   * so every rule inside it keeps naming the ordinary tokens. */
-  --rail: #11171c;
-  --rail-2: #1b232b;
-  --rail-3: #26303a;
-  --rail-ink: #e8edf1;
-  --rail-muted: #9ba6b2;
-  --rail-line: #2c3741;
-  --logo-ground: #11171c;
-  --logo-brick: #c7cfd7;
-  /* Step numbers on the configuration's signal path. */
-  --node: #ffffff;
-  --node-ink: #4c5662;
-  /* Nunito, the page's own font (@font-face above); the system's own
-   * friendly sans-serifs stand in until it loads, or if it cannot. */
-  --sans: "Nunito",ui-rounded,"SF Pro Rounded","Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
-  --mono: ui-monospace,SFMono-Regular,Consolas,monospace;
+  --paper: #fbf9f5;
+  --surface: #fffefc;
+  --surface-2: #f4f0e8;
+  --surface-3: #e9e3d8;
+  --ink: #1f1b17;
+  --muted: #5e564d;
+  --line: #e3dccf;
+  --field: #fffefc;
+  --field-border: #8a8174;
+  --hover-border: #6f665a;
+  --hover-bg: #f4f0e8;
+  --accent: #7f1d1d;
+  --accent-hover: #5f1515;
+  --accent-soft: #f4e4e0;
+  --on-accent: #fffdf9;
+  --selected-bg: #f1e0da;
+  --selected-ink: #7f1d1d;
+  --focus: #8b1e24;
+  --run-ink: #7a4206;
+  --run-bg: #f9efdc;
+  --run-line: #e2cb94;
+  --ok-ink: #25613d;
+  --ok-bg: #e8f1e8;
+  --ok-line: #b5d3bb;
+  --bad-ink: #a3241c;
+  --bad-bg: #fbebe7;
+  --bad-line: #e6c0b8;
+  --console-bg: #1c1915;
+  --console-ink: #e9e2d6;
+  --media-bg: #e6dfd3;
+  --shadow: #1f1b171a;
+  --backdrop: #1f1b1780;
+  --rail: #f4f0e8;
+  --rail-2: #ebe5da;
+  --rail-3: #e2dacd;
+  --rail-ink: #1f1b17;
+  --rail-muted: #5e564d;
+  --rail-line: #e2dacd;
+  --node: #fffefc;
+  --node-ink: #5e564d;
+  --instrument: #efe8dd;
+  --instrument-2: #e7dfd2;
+  --instrument-line: #dbd1c1;
+  --instrument-ink: #1f1b17;
+  --instrument-muted: #5a5249;
+  --sans: "Manrope","Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,sans-serif;
+  --mono: ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
 }
-
-/* The dark palette: the owner's VS Code theme, "Deepdark Material Theme |
- * Full Black Version" (extension nimda.deepdark-material 3.3.1). Each token
- * takes the colour of the theme's part that plays the same role:
- *
- *   --paper          editor.background                    #080808
- *   --surface        sideBar.background (sidebar, cards,  #0c0c0c
- *                    buttons, dialogs; a card reads as one
- *                    by its --line border, as VS Code's
- *                    panels do)
- *   --surface-2      editorMarkerNavigation.background    #1f1f1e
- *                    (insets: rig facts, selected rows)
- *   --surface-3      list.hoverBackground (badges, the    #212121
- *                    switch's track, inline code)
- *   --ink            editorSuggestWidget.foreground,      #d0d0d0
- *                    peekViewResult.lineForeground
- *   --muted          sideBar.foreground                   #8c8c8a
- *   --line           panel.border, editorWidget.border    #3d3d3c
- *   --field          editor.background                    #080808
- *   --field-border   breadcrumb.foreground                #6d6d6d
- *                    (NOT input.border #50504f: that is
- *                    2.4:1 on the field, under the 3:1 a
- *                    control's edge needs)
- *   --hover-border   input.border, dropdown.border        #50504f
- *   --hover-bg       list.hoverBackground                 #212121
- *   --accent         button.background,                   #00a4f3
- *                    notificationLink.foreground
- *   --accent-hover   button.hoverBackground               #0093da
- *   --accent-soft    merge.incomingContentBackground      #082a3b
- *                    (#0070a7 at 30%, over --surface)
- *   --on-accent      editor.background                    #080808
- *                    (NOT button.foreground #ffffff: white
- *                    on #00a4f3 is 2.8:1; #080808 is 7.3:1)
- *   --selected-bg    list.activeSelectionBackground       #212121
- *   --selected-ink   list.activeSelectionForeground       #f3c900
- *   --focus          panelTitle.activeBorder              #00a4f3
- *                    (the theme's focusBorder is #080808,
- *                    which would not show on this page)
- *   --run-*          as --accent / --accent-soft, line    #0070a7
- *                    merge.incomingHeaderBackground
- *   --ok-ink         editorInfo.foreground                #00f3c9
- *   --ok-bg/-line    merge.currentContentBackground       #082b25
- *                    (#007460 at 30%) / its header         #007460
- *   --bad-ink        errorForeground #f3002b, lightened   #f64262
- *                    26% toward white: #f3002b is 3.7:1 on
- *                    --surface-3 and 4.1:1 on --bad-bg
- *   --bad-bg/-line   diffEditor.removedTextBackground     #330910
- *                    (#a7001d at 25%) / its solid colour   #a7001d
- *   --console-bg/ink terminal.background / --ink          #080808
- *   --media-bg       tab.activeBackground                 #000000
- *   --logo-ground    editor.background                    #080808
- *   --logo-brick     tab.inactiveForeground               #b2b2b1
- *
- * Every text token keeps 4.5:1 on every background it is used on, and
- * --field-border and --focus 3:1 (tests/js/workspace.test.mjs checks the
- * pairs). */
 
 /* The dark palette, for "Auto" while the system is dark. Keep identical to
  * the block after it (see the file comment). */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme=light]) {
     color-scheme: dark;
-    --paper: #080808;
-    --surface: #0c0c0c;
-    --surface-2: #1f1f1e;
-    --surface-3: #212121;
-    --ink: #d0d0d0;
-    --muted: #8c8c8a;
-    --line: #3d3d3c;
-    --field: #080808;
-    --field-border: #6d6d6d;
-    --hover-border: #50504f;
-    --hover-bg: #212121;
-    --accent: #00a4f3;
-    --accent-hover: #0093da;
-    --accent-soft: #082a3b;
-    --on-accent: #080808;
-    --selected-bg: #212121;
-    --selected-ink: #f3c900;
-    --focus: #00a4f3;
-    --run-ink: #00a4f3;
-    --run-bg: #082a3b;
-    --run-line: #0070a7;
-    --ok-ink: #00f3c9;
-    --ok-bg: #082b25;
-    --ok-line: #007460;
-    --bad-ink: #f64262;
-    --bad-bg: #330910;
-    --bad-line: #a7001d;
-    --console-bg: #080808;
-    --console-ink: #d0d0d0;
-    --media-bg: #000000;
-    --shadow: #00000080;
+    --paper: #151311;
+    --surface: #1c1a17;
+    --surface-2: #23201c;
+    --surface-3: #2e2a25;
+    --ink: #ece6da;
+    --muted: #ada393;
+    --line: #3b362f;
+    --field: #151311;
+    --field-border: #7d7467;
+    --hover-border: #9a9082;
+    --hover-bg: #28241f;
+    --accent: #d8706a;
+    --accent-hover: #e58a84;
+    --accent-soft: #3a1d1d;
+    --on-accent: #1a0b0a;
+    --selected-bg: #3a1d1d;
+    --selected-ink: #f0b0a8;
+    --focus: #eb9a92;
+    --run-ink: #e8c06a;
+    --run-bg: #2c2312;
+    --run-line: #5e4a1d;
+    --ok-ink: #86cf9f;
+    --ok-bg: #17291e;
+    --ok-line: #2f5a3d;
+    --bad-ink: #f2958c;
+    --bad-bg: #341917;
+    --bad-line: #6e2d28;
+    --console-bg: #0c0b09;
+    --console-ink: #e2dbcf;
+    --media-bg: #0c0b09;
+    --shadow: #00000066;
     --backdrop: #000000b3;
-    --logo-ground: #080808;
-    --logo-brick: #b2b2b1;
-    --rail: #0c0c0c;
-    --rail-2: #1f1f1e;
-    --rail-3: #212121;
-    --rail-ink: #d0d0d0;
-    --rail-muted: #8c8c8a;
-    --rail-line: #3d3d3c;
-    --node: #0c0c0c;
-    --node-ink: #8c8c8a;
+    --rail: #1a1815;
+    --rail-2: #24211d;
+    --rail-3: #2e2a25;
+    --rail-ink: #ece6da;
+    --rail-muted: #ada393;
+    --rail-line: #2e2a25;
+    --node: #23201c;
+    --node-ink: #ada393;
+    --instrument: #100e0c;
+    --instrument-2: #191714;
+    --instrument-line: #2c2823;
+    --instrument-ink: #ece6da;
+    --instrument-muted: #ada393;
   }
 }
 
 /* The dark palette, for the reader's explicit Dark choice. */
 :root[data-theme=dark] {
     color-scheme: dark;
-    --paper: #080808;
-    --surface: #0c0c0c;
-    --surface-2: #1f1f1e;
-    --surface-3: #212121;
-    --ink: #d0d0d0;
-    --muted: #8c8c8a;
-    --line: #3d3d3c;
-    --field: #080808;
-    --field-border: #6d6d6d;
-    --hover-border: #50504f;
-    --hover-bg: #212121;
-    --accent: #00a4f3;
-    --accent-hover: #0093da;
-    --accent-soft: #082a3b;
-    --on-accent: #080808;
-    --selected-bg: #212121;
-    --selected-ink: #f3c900;
-    --focus: #00a4f3;
-    --run-ink: #00a4f3;
-    --run-bg: #082a3b;
-    --run-line: #0070a7;
-    --ok-ink: #00f3c9;
-    --ok-bg: #082b25;
-    --ok-line: #007460;
-    --bad-ink: #f64262;
-    --bad-bg: #330910;
-    --bad-line: #a7001d;
-    --console-bg: #080808;
-    --console-ink: #d0d0d0;
-    --media-bg: #000000;
-    --shadow: #00000080;
+    --paper: #151311;
+    --surface: #1c1a17;
+    --surface-2: #23201c;
+    --surface-3: #2e2a25;
+    --ink: #ece6da;
+    --muted: #ada393;
+    --line: #3b362f;
+    --field: #151311;
+    --field-border: #7d7467;
+    --hover-border: #9a9082;
+    --hover-bg: #28241f;
+    --accent: #d8706a;
+    --accent-hover: #e58a84;
+    --accent-soft: #3a1d1d;
+    --on-accent: #1a0b0a;
+    --selected-bg: #3a1d1d;
+    --selected-ink: #f0b0a8;
+    --focus: #eb9a92;
+    --run-ink: #e8c06a;
+    --run-bg: #2c2312;
+    --run-line: #5e4a1d;
+    --ok-ink: #86cf9f;
+    --ok-bg: #17291e;
+    --ok-line: #2f5a3d;
+    --bad-ink: #f2958c;
+    --bad-bg: #341917;
+    --bad-line: #6e2d28;
+    --console-bg: #0c0b09;
+    --console-ink: #e2dbcf;
+    --media-bg: #0c0b09;
+    --shadow: #00000066;
     --backdrop: #000000b3;
-    --logo-ground: #080808;
-    --logo-brick: #b2b2b1;
-    --rail: #0c0c0c;
-    --rail-2: #1f1f1e;
-    --rail-3: #212121;
-    --rail-ink: #d0d0d0;
-    --rail-muted: #8c8c8a;
-    --rail-line: #3d3d3c;
-    --node: #0c0c0c;
-    --node-ink: #8c8c8a;
+    --rail: #1a1815;
+    --rail-2: #24211d;
+    --rail-3: #2e2a25;
+    --rail-ink: #ece6da;
+    --rail-muted: #ada393;
+    --rail-line: #2e2a25;
+    --node: #23201c;
+    --node-ink: #ada393;
+    --instrument: #100e0c;
+    --instrument-2: #191714;
+    --instrument-line: #2c2823;
+    --instrument-ink: #ece6da;
+    --instrument-muted: #ada393;
 }
 
 /* ---- Element defaults ---- */
@@ -394,15 +334,6 @@ h3 {
   width: 56px;
   height: 56px;
 }
-
-.logo-ground {
-  fill: var(--logo-ground);
-}
-
-.logo-brick {
-  fill: var(--logo-brick);
-}
-
 
 .brand small {
   display: block;
@@ -2216,101 +2147,10 @@ footer {
    pair; the session number needs little room. */
 #identity > .field-pair:first-child {
   grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
-
-/* ---- Upload to the archive on the Run page (workspace_upload.js, its own CSS) ---- */
-.upload-card {
-  padding: 18px 22px;
 }
 
-/* ---- Run page layout: the bench (chosen 2026-10-08 over a two-column deck
- * and a run strip; screenshots and reasons on the project page) ----
- * The form is long and scrolls with the page; the results column — the
- * upload card, the run output and the recent runs — sticks beside it and
- * fills the window, so it is in view wherever the reader is in the form,
- * its bottom lines up with the window's, and the run history gets the
- * height that is left instead of a fixed 380 px box that cut it off. Each
- * part scrolls inside itself. A window too short for that (under 720 px)
- * keeps the plain flow. */
-.history-card {
-  display: flex;
-  flex-direction: column;
-}
-
-.history-card .card-heading a {
-  font-size: 13px;
-  color: var(--muted);
-  text-decoration: none;
-  margin-left: auto;
-}
-
-.history-card .card-heading a:hover {
-  color: var(--ink);
-}
-
-@media (min-width: 861px) and (min-height: 720px) {
-  .results-column {
-    position: sticky;
-    top: 16px;
-    max-height: calc(100vh - 32px);
-    gap: 16px;
-  }
-  /* The upload card keeps its height (its login, preview and progress
-     must never be cut off) up to half the window, then scrolls inside. */
-  #upload-card {
-    flex: 0 0 auto;
-    max-height: 52vh;
-    overflow-y: auto;
-  }
-  .output-card {
-    flex: 1 1 auto;
-    min-height: 240px;
-    display: flex;
-    flex-direction: column;
-  }
-  #media-panel, #console-panel, #monitor-panel {
-    flex: 1 1 auto;
-    min-height: 0;
-    overflow: auto;
-  }
-  .output-empty {
-    min-height: 0;
-    height: 100%;
-  }
-  #console {
-    max-height: none;
-  }
-  #monitor-frame {
-    height: 100%;
-    min-height: 420px;
-  }
-  .history-card {
-    flex: 0 1 300px;
-    min-height: 120px;
-  }
-  #history {
-    max-height: none;
-    flex: 1 1 auto;
-    overflow: auto;
-  }
-}
-
-/* One column: what just finished comes first. The upload card leads (it
- * shows only once a session has ended), then the form, the output and the
- * history. */
-@media (max-width: 860px) {
-  .results-column {
-    display: contents;
-  }
-  #upload-card {
-    order: -1;
-  }
-  .output-card {
-    order: 1;
-  }
-  .history-card {
-    order: 2;
-  }
-  .workspace-grid {
-    gap: 18px;
-  }
-}
+/* ---- The Run page's layout ----
+ * workspace_run.css (the Composite design: Bench's Setup / Output panes).
+ * An unclosed rule just above (#identity's field pair) had made the earlier
+ * "bench" layout rules that stood here dead since 2026-10-08; they are
+ * removed rather than revived, since workspace_run.css replaces them. */

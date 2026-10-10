@@ -48,6 +48,32 @@ Working on alhazen itself: install [uv](https://docs.astral.sh/uv/), then
 3.11, `uv.lock`) and `uv run pytest` runs the suite; CONTRIBUTING.md has
 every gate.
 
+## Experiment Hub (development branch)
+
+The optional Experiment Hub adds accounts, a public catalogue of pinned source releases,
+private libraries, downloads to a rig, and opt-in private session uploads. Experiments
+still run locally, using the existing rig, calibration, reward, training and recording
+workflow. The default `alhazen dashboard` remains the local workspace; the hub reading
+and connection surface is available with `alhazen dashboard --hub`.
+
+This branch is a development build, not a released or deployed service. Pilot registration
+is invite-gated. Published code does not publish collected data, and downloaded code is
+not executed until its exact release is explicitly trusted. Local files are kept after
+upload; a verified primary copy is not an independent backup.
+
+Experiment descriptions and task guides are versioned with their source: authored Methods,
+parameter meanings and defaults, stimulus schematics, timelines, outcomes and event notes.
+The source-checked fixation scaffold is an example, not a catalogue of validated paper
+replications. Native bring-your-own-key AI authoring is a future phase, not an enabled feature.
+
+- [Design and assumptions](docs/hub/design.md)
+- [Service and operator guide](docs/hub/server.md)
+- [Rig and offline workflow](docs/hub/rig.md)
+- [Scientific documentation format](docs/hub/documentation.md)
+- [Source package safety and recovery](docs/hub/packages.md)
+- [Real HTTP integration test](docs/hub/integration-test.md)
+- [Verification and deployment boundaries](docs/hub/verification.md)
+
 ## What it gives an experiment
 
 - **A frame loop that is honest about time.** Visual events are stamped by

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -179,6 +180,28 @@ class TestCommand:
     def test_refusals_before_anything_is_written(self, workspace, change, words):
         with pytest.raises(ValueError, match=words):
             workspace._command(launch(workspace, **change), workspace.directory / "job")
+
+    def test_a_rehearsal_needs_no_initials(self, workspace):
+        """A rehearsal is simulated: the page never asked for initials, and
+        the server refused the launch without them (import round
+        2026-10-09: amodal-averaging's training rehearsal). It starts and
+        records none; a real training launch still needs them."""
+        request = launch(workspace, rehearse=True, initials="")
+        assert "--initials" not in workspace._command(request, workspace.directory / "job")
+        run = workspace.start(request)
+        workspace.worker.join(timeout=10)
+        assert run["initials"] is None and run["training"]["rehearse"] is True
+        # Its parameters are the ladder file's (import round decision 5).
+        assert run["params"]["source"] == "training stage"
+        ladder = workspace.describe(run["project"])["ladders"][0]["file"]
+        shipped = Path(workspace.projects[0]["path"], ladder).read_bytes()
+        assert run["params"] == {
+            "source": "training stage",
+            "file": ladder,
+            "sha256": hashlib.sha256(shipped).hexdigest(),
+        }
+        with pytest.raises(ValueError, match="initials are required for training"):
+            workspace._command(launch(workspace, initials=""), workspace.directory / "job2")
 
     def test_a_rehearsal_may_use_a_development_rig(self, workspace):
         command = workspace._command(

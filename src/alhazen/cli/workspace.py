@@ -177,6 +177,24 @@ def _load_record(path: Path, kind: type) -> Any:
     return value
 
 
+def _launcher_root() -> Path:
+    """The directory this launcher's own ``alhazen`` package is imported from
+    (a checkout's ``src/``, or the launcher's site-packages)."""
+    return Path(__file__).resolve().parents[2]
+
+
+def _same_interpreter(python: Any) -> bool:
+    if not isinstance(python, str) or not python:
+        return False
+
+    # Not resolve(): a virtual environment's python is a symlink to its base
+    # interpreter, so resolving makes every venv "the launcher's own".
+    def absolute(path: str) -> str:
+        return os.path.normcase(os.path.abspath(path))
+
+    return absolute(python) == absolute(sys.executable)
+
+
 def _child_env(project: dict[str, Any]) -> dict[str, str]:
     """The environment a project's interpreter runs in: its own paths, then ours.
 
@@ -189,13 +207,28 @@ def _child_env(project: dict[str, Any]) -> dict[str, str]:
     for another interpreter fails to import). The project's interpreter must
     have alhazen installed itself; ``probe_interpreter`` checks that when the
     project is registered, which is the moment the message can still be acted on.
+
+    The same holds for an INHERITED PYTHONPATH that names the launcher's own
+    root (a dashboard started from a source checkout with
+    ``PYTHONPATH=<checkout>/src``): that entry is dropped for any interpreter
+    other than the launcher's own, so an experiment's own environment runs its
+    own pinned alhazen, not the launcher's. Every other inherited entry, and
+    everything for the launcher's own interpreter, is passed on unchanged.
     """
     env = os.environ.copy()
     root = Path(project["path"])
-    inherited = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = os.pathsep.join(
-        [str(root / "src"), str(root)] + ([inherited] if inherited else [])
-    )
+    inherited = [part for part in env.get("PYTHONPATH", "").split(os.pathsep) if part]
+    if inherited and not _same_interpreter(project.get("python")):
+        launcher = _launcher_root()
+
+        def is_launcher(part: str) -> bool:
+            try:
+                return Path(part).resolve() == launcher
+            except OSError:
+                return False
+
+        inherited = [part for part in inherited if not is_launcher(part)]
+    env["PYTHONPATH"] = os.pathsep.join([str(root / "src"), str(root), *inherited])
     return env
 
 
@@ -210,7 +243,7 @@ def probe_interpreter(python: str, project_path: str) -> dict[str, Any]:
     interpreter and says what to install, because the alternative is a
     registration that looks fine and a launch that dies on ``import alhazen``.
     """
-    env = _child_env({"path": project_path})
+    env = _child_env({"path": project_path, "python": python})
     try:
         result = subprocess.run(
             [python, "-c", INTERPRETER_PROBE],
@@ -1126,6 +1159,13 @@ class Launch(BaseModel):
     # renames anything already recorded. None from a client that sends no
     # label, and for a launch that takes no parameters.
     parameter_set: str | None = None
+    # "default": run the parameters the launch names AS SHIPPED, with no text:
+    # for a parameter_set, that entry's own file (read here and sent as the
+    # params file); without one, the task's own default. Required to launch a
+    # parameter_set without parameters text: a label alone used to run the
+    # task's default file while the history showed the label (import round
+    # 2026-10-09, decision 5). The page always sends the text it shows.
+    params: Literal["default"] | None = None
     # A training launch (mode "training"): the ladder, by run.py's LADDERS
     # label, and the stage, by its id (project_ladders). `rehearse` runs the
     # stage in simulate mode instead, filed under the training root's
@@ -1311,7 +1351,9 @@ def _launch_initials(request: Launch, mode: Mode) -> str | None:
     if not text:
         if mode in {Mode.RUN, Mode.TEST}:
             raise ValueError("Subject initials are required for run and test modes")
-        if mode is Mode.TRAINING:
+        # A rehearsal of a stage is a simulated session: nobody is there,
+        # so nobody's initials are asked for (import round, decision 6).
+        if mode is Mode.TRAINING and not request.rehearse:
             raise ValueError("Subject initials are required for training mode")
         return None
     return normalize_initials(text)
@@ -2504,6 +2546,96 @@ class Workspace:
                 f"but the launch names {task}; choose the entry again"
             )
 
+    def _bind_parameters(
+        self, project: dict[str, Any], request: Launch
+    ) -> tuple[Launch, str | None]:
+        """The launch with its parameters bound to what the label names, and
+        the project-relative params file the text came from (None when the
+        text is the request's own, or when no file is sent).
+
+        A Task parameters label without parameter text is refused, naming the
+        label, unless the request says ``params: "default"``: then the
+        entry's own file is read and sent, so the session runs exactly the
+        file the label names. ``params: "default"`` with text is a
+        contradiction and refused too. Training stages name their own
+        parameters (the ladder) and are not touched here."""
+        has_text = request.parameters is not None or request.parameters_yaml is not None
+        if request.params == "default" and has_text:
+            raise ValueError(
+                'params: "default" runs the parameters as shipped; send it without parameter '
+                "text, or send the text without it"
+            )
+        if request.mode == Mode.TRAINING.value or request.parameter_set is None or has_text:
+            return request, None
+        sets = self.describe(project["id"])["parameter_sets"]
+        entry = next((e for e in sets if e["label"] == request.parameter_set), None)
+        if entry is None or not entry.get("params"):
+            # An unknown label is refused by _check_parameter_set, with the
+            # list of labels; an entry on no file runs the task's default,
+            # which is what its label means.
+            return request, None
+        if request.params != "default":
+            raise ValueError(
+                f"Task parameters {request.parameter_set!r} were sent without the contents of "
+                f"{entry['params']}. Send the parameter text the launch should run "
+                f'(parameters_yaml), or params: "default" to run {entry["params"]} as shipped'
+            )
+        text = path_inside(Path(project["path"]), entry["params"]).read_text(encoding="utf-8")
+        return request.model_copy(update={"parameters_yaml": text}), str(entry["params"])
+
+    def _params_record(
+        self,
+        project: dict[str, Any],
+        task: str | None,
+        text: str | None,
+        params_file: str | None,
+        run_dir: Path,
+    ) -> dict[str, Any]:
+        """What run.json says about the parameters the session got: where
+        they came from and the SHA-256 of their exact bytes, so a label can be
+        checked against what actually ran."""
+        if text is not None:
+            record: dict[str, Any] = {
+                "source": "parameter set file" if params_file else "launch text",
+                "file": params_file,
+                # params.yaml as written, the exact bytes the session was given
+                # (Windows writes text with CRLF line endings).
+                "sha256": hashlib.sha256((run_dir / "params.yaml").read_bytes()).hexdigest(),
+            }
+            if params_file:
+                shipped = path_inside(Path(project["path"]), params_file)
+                record["file_sha256"] = hashlib.sha256(shipped.read_bytes()).hexdigest()
+            return record
+        # No params file sent: run.py's own default for the task, when the
+        # task table names it.
+        declared = project_tasks(Path(project["path"]))
+        own = next((t["params"] for t in declared["tasks"] if t["name"] == task), None)
+        path = path_inside(Path(project["path"]), own) if own else None
+        return {
+            "source": "task default",
+            "file": own if path is not None and path.is_file() else None,
+            "sha256": (
+                hashlib.sha256(path.read_bytes()).hexdigest()
+                if path is not None and path.is_file()
+                else None
+            ),
+        }
+
+    def _ladder_record(self, project: dict[str, Any], training: dict[str, Any]) -> dict[str, Any]:
+        """A training stage's parameters are its ladder file's: that file and
+        its SHA-256, for run.json's ``params``."""
+        ladders = self.describe(project["id"])["ladders"]
+        ladder = next((x for x in ladders if x["name"] == training["ladder"]), None)
+        file = ladder.get("file") if ladder else None
+        path = path_inside(Path(project["path"]), file) if file else None
+        if path is None or not path.is_file():
+            return {"source": "training stage", "file": None, "sha256": None}
+        return {
+            "source": "training stage",
+            "file": file,
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+
     def start(self, request: Launch) -> dict[str, Any]:
         with self.lock:
             if self.active:
@@ -2512,10 +2644,18 @@ class Workspace:
                 )
             key = uuid.uuid4().hex
             run_dir = self.directory / "runs" / key
+            # A hub install writes into its experiment's one data folder,
+            # shared by every release (made, or migrated, before any check
+            # reads participants.tsv there).
+            shared_data = self.share_hub_data(self.project(request.project))
             # Who it is for and who runs it, from the people registry when the
             # page selected records: resolved first, so every check after
             # this one sees the subject the record names.
             request, identity = self._identity(self.project(request.project), request)
+            # A Task parameters label runs its own file, never the task's
+            # default under the label's name (_bind_parameters); bound before
+            # the command is built, so --params goes with it.
+            request, params_file = self._bind_parameters(self.project(request.project), request)
             recorded_in = _experimenter_destination(
                 self.project(request.project), request, identity
             )
@@ -2557,6 +2697,15 @@ class Workspace:
                 self._check_parameter_set(project, request, task)
             ref, shared = self._launch_rig(project, request.rig)
             merged = rig_mapping(ref.path, shared=shared)
+            # The hub release this folder was installed from, captured now,
+            # before anything runs, and written into both records below; None
+            # (and no key at all) for a folder that is not a hub install.
+            release = self._hub_release(project)
+            pinned: dict[str, Any] = {"hub_release": release} if release is not None else {}
+            if shared_data is not None:
+                # Where this release's data folders lead: the experiment's
+                # one folder, shared by all its releases.
+                pinned["hub_data_folder"] = shared_data["folder"]
             (run_dir / "media").mkdir(parents=True)
             started = now()
             # The launch as it was decided, written once and never again
@@ -2580,6 +2729,7 @@ class Workspace:
                 # Where the subject's age and sex are recorded, likewise:
                 # "session.json", "workspace", or None when neither is known.
                 "demographics_recorded_in": demographics_in,
+                **pinned,
             }
             with (run_dir / "launch.json").open("x", encoding="utf-8") as stream:
                 json.dump(launch, stream, indent=2, ensure_ascii=False)
@@ -2648,6 +2798,16 @@ class Workspace:
                 # The measurements a Measure rig run was asked for, in run
                 # order as the page listed them; None for any other launch.
                 "measurements": list(request.measurements) if request.measurements else None,
+                # The parameters it ran: their source and the SHA-256 of their
+                # bytes (params.yaml, or the task's default file).
+                "params": (
+                    self._ladder_record(project, training)
+                    if training is not None
+                    else self._params_record(project, task, text, params_file, run_dir)
+                ),
+                # A hub-installed release's identity (hub base, experiment and
+                # version ids, source ZIP SHA-256), as launch.json holds it.
+                **pinned,
             }
             self.runs[key] = run
             self._save_run(run)
@@ -2677,6 +2837,65 @@ class Workspace:
             )
             self.worker.start()
             return dict(run)
+
+    def share_hub_data(self, project: dict[str, Any]) -> dict[str, Any] | None:
+        """For a project installed from the Experiment Hub (under this
+        workspace's ``hub/experiments/<name>/``), link each data folder its
+        rigs write under to the experiment's one shared data folder beside
+        its releases (alhazen.hub.shared_data), migrating a release's own
+        folder there on first use. Returns ``{"folder", "links", "problems"}``
+        (the shared folder, what was done per name, and rigs that could not
+        be read, which the Data page also reports), or None for any other
+        project. Raises ValueError, saying what to do, when a release's folder
+        and the shared one both hold data: nothing is moved, and the launch
+        must not start into either."""
+        installs = (self.directory / "hub" / "experiments").resolve()
+        root = Path(project["path"]).resolve()
+        if not root.is_relative_to(installs) or root.parent == installs:
+            return None
+        from alhazen.cli.workspace_data import relative_data_components
+        from alhazen.hub.installation import InstallError, InstallStore
+        from alhazen.hub.shared_data import SharedDataConflict, link_names, share
+
+        # Only a release whose install finished and whose code was trusted:
+        # an interrupted install's folder must hold exactly what its
+        # recovery expects, so nothing is linked into it.
+        installs_store = InstallStore(self.directory / "hub")
+        record = installs_store.for_path(str(root))
+        try:
+            if record is None:
+                raise InstallError(
+                    409,
+                    "install_unrecorded",
+                    "This experiment folder is inside the hub's installs but has no install record",
+                )
+            installs_store.trusted_record(record["sha256"])
+        except InstallError as exc:
+            raise ValueError(f"Cannot start {project['name']}: {exc.message}") from exc
+        components, problems = relative_data_components(self.describe(project["id"]))
+        try:
+            links = share(root, root.parent, link_names(components))
+        except SharedDataConflict as exc:
+            raise ValueError(f"Cannot start {project['name']}: {exc}") from exc
+        return {"folder": str(root.parent), "links": links, "problems": problems}
+
+    def _hub_release(self, project: dict[str, Any]) -> dict[str, Any] | None:
+        """The pinned release of a project installed from the Experiment Hub
+        (under this workspace's ``hub/experiments``), from its trusted install
+        record: read from local files only, never the network, and only for
+        such a folder, so other launches never touch the hub's records. A
+        hub folder without a usable record refuses the launch rather than
+        run with its provenance missing."""
+        installs = (self.directory / "hub" / "experiments").resolve()
+        root = Path(project["path"]).resolve()
+        if not root.is_relative_to(installs):
+            return None
+        from alhazen.hub.installation import InstallError, InstallStore
+
+        try:
+            return InstallStore(self.directory / "hub").provenance(str(root))
+        except InstallError as exc:
+            raise ValueError(f"Cannot start {project['name']}: {exc.message}") from exc
 
     def _save_run(self, run: dict[str, Any]) -> None:
         replace_atomically(

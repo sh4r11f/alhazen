@@ -1,0 +1,125 @@
+{
+ "ok": true,
+ "checks": [
+  {
+   "name": "answer",
+   "ok": true,
+   "problems": [],
+   "notes": []
+  },
+  {
+   "name": "schema",
+   "ok": true,
+   "problems": [],
+   "notes": []
+  },
+  {
+   "name": "files",
+   "ok": true,
+   "problems": [],
+   "notes": []
+  },
+  {
+   "name": "syntax",
+   "ok": true,
+   "problems": [],
+   "notes": []
+  },
+  {
+   "name": "safety",
+   "ok": true,
+   "problems": [],
+   "notes": []
+  },
+  {
+   "name": "imports",
+   "ok": true,
+   "problems": [],
+   "notes": []
+  },
+  {
+   "name": "api",
+   "ok": true,
+   "problems": [],
+   "notes": []
+  },
+  {
+   "name": "structure",
+   "ok": true,
+   "problems": [],
+   "notes": []
+  },
+  {
+   "name": "defaults",
+   "ok": true,
+   "problems": [],
+   "notes": []
+  },
+  {
+   "name": "package",
+   "ok": true,
+   "problems": [],
+   "notes": []
+  },
+  {
+   "name": "documentation",
+   "ok": true,
+   "problems": [],
+   "notes": []
+  }
+ ],
+ "files": [
+  {
+   "path": ".gitignore",
+   "size": 94
+  },
+  {
+   "path": "LICENSE",
+   "size": 1102
+  },
+  {
+   "path": "README.md",
+   "size": 1651
+  },
+  {
+   "path": "configs/task.yaml",
+   "size": 505
+  },
+  {
+   "path": "docs/ai-provenance.json",
+   "size": 492
+  },
+  {
+   "path": "docs/experiment.json",
+   "size": 9966
+  },
+  {
+   "path": "docs/methods.md",
+   "size": 1979
+  },
+  {
+   "path": "docs/tasks/fixation-flash-hold.md",
+   "size": 878
+  },
+  {
+   "path": "pyproject.toml",
+   "size": 1298
+  },
+  {
+   "path": "run.py",
+   "size": 2020
+  },
+  {
+   "path": "src/fixation_flash_hold/__init__.py",
+   "size": 210
+  },
+  {
+   "path": "src/fixation_flash_hold/task.py",
+   "size": 6473
+  },
+  {
+   "path": "tests/test_task.py",
+   "size": 5508
+  }
+ ]
+}

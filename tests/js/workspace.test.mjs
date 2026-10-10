@@ -8,6 +8,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
+import vm from 'node:vm';
 
 import { loadWorkspace, plain, response, settle } from './load_workspace.mjs';
 
@@ -1499,6 +1500,10 @@ describe('the Task parameters menu', () => {
       chooseMode(app, 'movie');
       await launch(app);
       assert.equal('parameters' in launched(app), false);
+      /* Nor the entry's label: what runs is not that file (the server
+       * refuses a label without its contents, import round decision 5). */
+      assert.equal(launched(app).parameter_set, null);
+      assert.equal('params' in launched(app), false);
     });
 
   it('says a project without parameter files runs on its code’s defaults, and sends none',
@@ -2222,11 +2227,12 @@ describe('the colour theme', () => {
 
   it('keeps every text and control colour readable in both palettes', () => {
     /* WCAG AA: text needs a contrast ratio of 4.5:1 against what it is drawn
-     * on; a control's edge (a field's border, the focus ring) and the logo's
-     * bricks 3:1. The dark palette is the owner's VS Code theme, and where
-     * the theme itself falls short (white on its blue button is 2.8:1) the
-     * stylesheet departs from it; this pins that it did. Each pair below is
-     * one the stylesheet really draws (text token on background token). */
+     * on; a control's edge (a field's border, the focus ring) 3:1. Both
+     * palettes are the Hub's warm family (Split, 2026-10-09, replacing the
+     * owner's old VS Code dark theme); the dark accent is light enough that
+     * links read on the dark paper, so its button text is dark. Each pair
+     * below is one the stylesheet really draws (text token on background
+     * token). */
     const css = readFileSync(
       new URL('../../src/alhazen/cli/assets/workspace.css', import.meta.url), 'utf8',
     );
@@ -2269,18 +2275,31 @@ describe('the colour theme', () => {
       ['rail-muted', ['rail', 'rail-2']],
       ['node-ink', ['node']],
       ['on-accent', ['accent']],
+      /* The instrument surface (Split's; in the Composite design the Run
+       * page's session summary sits on it): its text on its grounds, and
+       * the accent, status and selection inks drawn on it. The running
+       * clock and lamp (--run-ink) also sit on the launch bar (--surface). */
+      ['instrument-ink', ['instrument', 'instrument-2']],
+      ['instrument-muted', ['instrument', 'instrument-2']],
+      ['ink', ['instrument', 'instrument-2']],
+      ['muted', ['instrument', 'instrument-2']],
+      ['accent', ['instrument', 'instrument-2', 'selected-bg', 'rail', 'rail-2']],
+      ['selected-ink', ['rail']],
+      ['run-ink', ['instrument', 'surface', 'paper']],
+      ['ok-ink', ['instrument']],
+      ['bad-ink', ['instrument']],
     ];
     const EDGES = [
       ['field-border', ['field', 'surface']],
-      ['focus', ['paper', 'surface']],
-      ['logo-brick', ['logo-ground']],
-      ['logo-brick', ['rail']],
+      ['focus', ['paper', 'surface', 'instrument']],
+      ['field-border', ['instrument']],
     ];
     const light = palette(':root {');
     const dark = palette(':root[data-theme=dark]');
-    // Light mode keeps its own colours; the dark one is the VS Code theme's.
-    assert.equal(dark.paper.toLowerCase(), '#080808');
-    assert.equal(dark['selected-ink'].toLowerCase(), '#f3c900');
+    // Both palettes are the Hub's (hub/assets/hub.css): warm paper, oxblood.
+    assert.equal(light.paper.toLowerCase(), '#fbf9f5');
+    assert.equal(light.accent.toLowerCase(), '#7f1d1d');
+    assert.equal(dark.paper.toLowerCase(), '#151311');
     const low = [];
     for (const [name, colours] of [['light', light], ['dark', dark]]) {
       for (const [pairs, need] of [[TEXT, 4.5], [EDGES, 3]]) {
@@ -2300,9 +2319,10 @@ describe('the colour theme', () => {
 
 describe('the logo', () => {
   it('is the same drawing in the sidebar and in the favicon', () => {
-    /* The sidebar draws it inline (so it follows the page's theme) and the
-     * browser tab loads favicon.svg (an image, which cannot read the page's
-     * CSS): two copies of one drawing, which must not drift apart. */
+    /* The sidebar draws the Penrose mark inline (so it follows the page's
+     * theme) and the browser tab loads favicon.svg (an image, which cannot
+     * read the page's CSS): two copies of one drawing, which must not drift
+     * apart. */
     const read = (name) => readFileSync(
       new URL(`../../src/alhazen/cli/assets/${name}`, import.meta.url), 'utf8',
     );
@@ -2312,56 +2332,23 @@ describe('the logo', () => {
       assert.ok(start !== -1 && end > start);
       return text.slice(start, end).replace(/\s+/g, ' ');
     };
-    // The frame, the letter and the layering are one drawing. The bricks
-    // (the <pattern>s before LOGO-START) are sized per file: see the next test.
     const inline = drawing(read('workspace.html'));
     assert.equal(drawing(read('favicon.svg')), inline);
-    assert.match(inline, /url\(#logo-bricks-turned\)/);
     assert.match(read('workspace.html'), /<link rel="icon" href="\/favicon.svg" type="image\/svg\+xml">/);
   });
 
-  it('uses 4:1 bricks, finer in the sidebar than in the favicon', () => {
-    /* The sidebar draws the logo at 56 px with bricks 4 units wide (one
-     * pixel each); a browser tab draws the favicon at 16-32 px, where those
-     * would blur into grey, so it uses bricks 7 wide. In both the ground is
-     * horizontal L×w bricks, the figure the same turned upright and shifted
-     * by half a brick width both ways. */
-    const read = (name) => readFileSync(
-      new URL(`../../src/alhazen/cli/assets/${name}`, import.meta.url), 'utf8',
-    );
-    const bricks = (text) => {
-      const ground = text.match(/<pattern id="logo-bricks" width="([\d.]+)" height="([\d.]+)"/);
-      const turned = text.match(
-        /<pattern id="logo-bricks-turned" width="([\d.]+)" height="([\d.]+)"\s+patternUnits="userSpaceOnUse" patternTransform="translate\(([\d.]+) ([\d.]+)\)"/,
-      );
-      assert.ok(ground && turned, 'both brick patterns are present');
-      const [gw, gh] = ground.slice(1, 3).map(Number);
-      const [tw, th, dx, dy] = turned.slice(1, 5).map(Number);
-      // A tile is two bricks: ground 2L × 2w, figure 2w × 2L.
-      const w = gh / 2;
-      assert.equal(gw / 2, 4 * w, 'ground bricks are 4:1');
-      assert.deepEqual([tw, th], [gh, gw], 'the figure is the ground turned 90 degrees');
-      assert.deepEqual([dx, dy], [w / 2, w / 2], 'shifted by half a brick width');
-      return w;
-    };
-    assert.equal(bricks(read('workspace.html')), 4);
-    assert.equal(bricks(read('favicon.svg')), 7);
-  });
-
-  it('paints the upright bricks inside a drawn A, with nothing on top of it', () => {
-    /* The owner: the vertical bricks are painted IN the A, not an A on top
-     * of the figure. So the letter is a path (the favicon cannot load the
-     * page's font, and a path looks the same everywhere) that clips the
-     * turned bricks, and there is no disc, <text> or solid letter left. */
-    const html = readFileSync(
-      new URL('../../src/alhazen/cli/assets/workspace.html', import.meta.url), 'utf8',
-    );
+  it('is the Hub’s Penrose mark: its ink faces and its accent face', () => {
+    /* The workspace and the Hub carry one mark (hub/assets/icon.svg). */
+    const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8');
+    const hub = [...read('../../src/alhazen/hub/assets/icon.svg').matchAll(/ d="([^"]+)"/g)]
+      .map((m) => m[1]);
+    const html = read('../../src/alhazen/cli/assets/workspace.html');
     const logo = html.slice(html.indexOf('<!-- LOGO-START'), html.indexOf('<!-- LOGO-END -->'));
     const markup = logo.replace(/<!--[\s\S]*?-->/g, '');
-    assert.match(markup, /<clipPath id="logo-letter">\s*<path d="M[^"]+Z"\/>/);
-    // The turned bricks are drawn only inside the letter's clip.
-    assert.match(markup, /<g clip-path="url\(#logo-letter\)">[^]*?fill="url\(#logo-bricks-turned\)"[^]*?<\/g>/);
-    assert.doesNotMatch(markup, /<text|<circle|stroke/);
+    const ours = [...markup.matchAll(/<path class="(mark-ink|mark-face)" d="([^"]+)"\/>/g)];
+    assert.deepEqual(ours.map((m) => m[1]), ['mark-ink', 'mark-face']);
+    assert.deepEqual(ours.map((m) => m[2]), hub);
+    assert.doesNotMatch(markup, /<text/);
   });
 });
 
@@ -2720,5 +2707,63 @@ describe('the Rig summary\'s Reward line', () => {
     assert.deepEqual(plain(app.run(`rewardFact(${JSON.stringify(line)}, null)`)),
       [['Reward', ['Dev1/ao0 at 5 V', 'volume not measured (Measure rig, Reward)']]]);
     assert.deepEqual(plain(app.run('rewardFact(undefined, null)')), []);
+  });
+});
+
+describe('the Composite Run page (Split shell, Bench run, Console clock)', () => {
+  const read = (name) => readFileSync(
+    new URL(`../../src/alhazen/cli/assets/${name}`, import.meta.url), 'utf8',
+  );
+
+  it('has Setup and Output panes, the session clock and the clock in the launch bar', () => {
+    const html = read('workspace.html');
+    const at = (text) => {
+      const index = html.indexOf(text);
+      assert.notEqual(index, -1, text);
+      return index;
+    };
+    // The pane switch comes first on the Run page, then the form, then the output.
+    const order = [
+      'id="run-panes"', 'id="pane-setup"', 'id="pane-output"', 'id="launch-form"',
+      'class="launch-footer"', 'id="bar-session"', 'id="bar-elapsed"', 'id="duration-estimate"',
+      'id="launch"', 'id="session-summary"', 'id="session-elapsed"', 'id="run-status"',
+      'id="session-started"', 'id="run-info"', 'id="monitor-tab"', 'id="monitor-frame"',
+      'id="history"',
+    ].map(at);
+    assert.deepEqual(order, [...order].sort((a, b) => a - b));
+    // Split's two-pane instrument layout is gone from the Run page.
+    assert.doesNotMatch(html, /class="instrument-pane"/);
+    // The Run page's layer loads after Split's, and its script is there.
+    assert.ok(at('href="/workspace_run.css"') > at('href="/workspace_split.css"'));
+    assert.match(html, /<script src="\/workspace_bench.js" defer><\/script>/);
+  });
+
+  it('frames the live monitor full width at 78% of the window', () => {
+    const css = read('workspace_run.css');
+    assert.match(css, /#monitor-frame \{[^}]*height: 78vh;/);
+  });
+
+  it('formats the elapsed clock as mm:ss, then h:mm:ss, and freezes it at the finish', () => {
+    const context = vm.createContext({
+      document: { readyState: 'loading', addEventListener() {}, getElementById: () => null },
+      window: {},
+      Date, Number, String, Math, Event: class {},
+    });
+    context.window = context;
+    vm.runInContext(read('workspace_bench.js'), context);
+    const { clock, startedAt } = context.WorkspaceBench;
+    const start = '2026-10-09T20:00:00Z';
+    const at = (s) => Date.parse(start) + s * 1000;
+    assert.equal(clock(start, '', at(0)), '00:00');
+    assert.equal(clock(start, '', at(65)), '01:05');
+    assert.equal(clock(start, '', at(3600 + 62)), '1:01:02');
+    // A finished run shows how long it took, whatever the time is now.
+    assert.equal(clock(start, '2026-10-09T20:00:09Z', at(500)), '00:09');
+    // No start, or an unreadable one: zero, never NaN.
+    assert.equal(clock('', '', at(5)), '00:00');
+    assert.equal(clock('not a date', '', at(5)), '00:00');
+    // A clock skew never shows negative time.
+    assert.equal(clock(start, '', at(-30)), '00:00');
+    assert.equal(startedAt(''), '–');
   });
 });
