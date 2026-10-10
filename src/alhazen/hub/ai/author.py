@@ -53,7 +53,7 @@ from alhazen.hub.ai.schemas import (
     problems,
 )
 from alhazen.hub.ai.surface import api_text
-from alhazen.hub.ai.surface import check as api_check
+from alhazen.hub.ai.surface import inspect_module as api_inspect
 from alhazen.hub.documentation import DocumentationError, global_guide, read_documentation
 from alhazen.hub.packages import (
     PackageError,
@@ -1695,17 +1695,17 @@ def validate_package(
         import_problems += found
         import_notes += notes
     checks.append(Check("imports", tuple(import_problems), tuple(import_notes)))
-    api_problems = [
-        line
+    api_findings = [
+        api_inspect(path, tree, files[path].decode("utf-8", errors="replace"))
         for path, tree in generated.items()
-        for line in api_check(path, tree, files[path].decode("utf-8", errors="replace"))
     ]
+    api_problems = [line for found in api_findings for line in found.problems]
     renderer = any(
         _module_root(module) == _RENDERER
         for tree in generated.values()
         for _, module, _, _ in _imported_modules(tree)
     )
-    api_notes = (
+    api_notes = tuple(line for found in api_findings for line in found.notes) + (
         ("calls into PsychoPy are not checked (it is not installed here)",) if renderer else ()
     )
     checks.append(Check("api", tuple(api_problems), api_notes))

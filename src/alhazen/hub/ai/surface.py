@@ -190,8 +190,10 @@ def public_members(cls: type) -> list[str]:
 def _hints(obj: Any) -> dict[str, Any]:
     try:
         return typing.get_type_hints(obj)
-    except Exception:  # noqa: BLE001 - unresolvable hints mean "type unknown", nothing more
-        return {}
+    except (NameError, TypeError, AttributeError):
+        # A forward reference alhazen only imports for type checking: keep
+        # the raw annotations, which _as_type reads as "type unknown".
+        return dict(getattr(obj, "__annotations__", {}) or {})
 
 
 def _as_type(hint: Any) -> Any:
@@ -379,6 +381,7 @@ class _Checker:
         self.lines = source.splitlines()
         self.is_test = path.startswith("tests/") or "/tests/" in path
         self.problems: list[str] = []
+        self.notes: list[str] = []
         self.globals: dict[str, Any] = {}
         self.classes: dict[str, _UserClass] = {}
         self.parents: dict[ast.AST, ast.AST] = {}
@@ -395,7 +398,8 @@ class _Checker:
                     continue
                 try:
                     module = importlib.import_module(node.module)
-                except ImportError:
+                except ImportError as error:
+                    self._unfollowed(node, f"{node.module} could not be imported ({error.name})")
                     continue
                 for alias in node.names:
                     value = getattr(module, alias.name, None)
@@ -403,6 +407,7 @@ class _Checker:
                         try:
                             value = importlib.import_module(f"{node.module}.{alias.name}")
                         except ImportError:
+                            self._unfollowed(node, f"{node.module} has no {alias.name}")
                             continue
                     self.globals[alias.asname or alias.name] = ("value", value)
             elif isinstance(node, ast.Import):
@@ -413,7 +418,10 @@ class _Checker:
                                 "value",
                                 importlib.import_module(alias.name),
                             )
-                        except ImportError:
+                        except ImportError as error:
+                            self._unfollowed(
+                                node, f"{alias.name} could not be imported ({error.name})"
+                            )
                             continue
 
     def _collect_classes(self) -> None:
@@ -700,6 +708,11 @@ class _Checker:
 
     # -- findings -------------------------------------------------------
 
+    def _unfollowed(self, node: ast.AST, what: str) -> None:
+        """Something the check could not follow: claimed neither way, and
+        said in the report's notes."""
+        self.notes.append(f"{self._where(node)}: not checked: {what}")
+
     def _where(self, node: ast.AST) -> str:
         return f"{self.path}:{getattr(node, 'lineno', 0)}"
 
@@ -842,6 +855,7 @@ class _Checker:
         try:
             signature = inspect.signature(target)
         except (TypeError, ValueError):
+            self._unfollowed(call, f"keywords of {ast.unparse(call.func)[:60]} (no signature)")
             return
         accepted = signature.parameters
         if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in accepted.values()):
@@ -854,21 +868,37 @@ class _Checker:
                     f"{_closest(keyword.arg, [p for p in accepted if p != 'self'])}"
                 )
 
-    def run(self) -> list[str]:
+    def run(self) -> Findings:
         self._imports()
         self._collect_classes()
         for _ in range(3):  # bases, constructor arguments and attributes settle
             self._resolve_bases()
             self._walk_scope(self.tree, dict(self.globals), None, check=False)
+        self.problems.clear()
+        self.notes.clear()
+        self._imports()
         self._resolve_bases()
         self._walk_scope(self.tree, dict(self.globals), None, check=True)
-        return list(dict.fromkeys(self.problems))
+        return Findings(tuple(dict.fromkeys(self.problems)), tuple(dict.fromkeys(self.notes)))
+
+
+@dataclass(frozen=True)
+class Findings:
+    """What the check found (problems) and what it could not follow (notes)."""
+
+    problems: tuple[str, ...]
+    notes: tuple[str, ...]
+
+
+def inspect_module(path: str, tree: ast.Module, source: str = "") -> Findings:
+    """Attributes read on alhazen values, and keywords passed to alhazen
+    callables, that the running alhazen does not have, as ``path:line:
+    message`` lines naming the closest real names; plus notes on what could
+    not be followed. ``source`` (the text ``tree`` was parsed from) lets a
+    line's ``# type: ignore[attr-defined]`` be honoured."""
+    return _Checker(path, tree, source).run()
 
 
 def check(path: str, tree: ast.Module, source: str = "") -> list[str]:
-    """Attributes read on alhazen values, and keywords passed to alhazen
-    callables, that the running alhazen does not have, as ``path:line:
-    message`` lines naming the closest real names. ``source`` (the text
-    ``tree`` was parsed from) lets a line's ``# type: ignore[attr-defined]``
-    be honoured."""
-    return _Checker(path, tree, source).run()
+    """The problems of :func:`inspect_module`."""
+    return list(inspect_module(path, tree, source).problems)
