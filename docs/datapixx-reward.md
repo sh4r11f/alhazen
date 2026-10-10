@@ -304,16 +304,22 @@ resumes towards the target, whether the pump ignores gates after it, and what
 restarts it. Decide from that whether to run with a target volume as a session
 cap.
 
-**B5. Latency.** Measure the time from the gate's falling edge to the pump
-starting, and from its rising edge to stopping. A bench-only third wire from
-pump pin 7 (Run indicator, HIGH while running) to the scope or analyser,
-together with Digital Out 0, shows both. Do not guess this number.
+**B5. Latency.** Measure the time from the gate's falling edge to the pump's
+Run indication, and from its rising edge to that indication ending. A
+bench-only third wire from pump pin 7 (Run indicator, HIGH while running) to
+the scope or analyser, together with Digital Out 0, shows the two electrical
+signals. This measures the pump's indication, not actual motor movement or
+liquid arriving at the outlet. Check outlet delivery separately with the
+actual syringe and tubing; do not report the Run indication as liquid latency.
 
 **B6. Shared outputs.** With the TRACKPixx3 recording and any sync lines
-connected to the logic analyser, run rewards and sync pulses together. Check
-that no output other than Digital Out 0 changes during a reward schedule, and
-whether outputs 16–23 are left untouched; until they are shown to be, sync
-next to the reward stays unsupported.
+connected to the logic analyser, run rewards and sync pulses together only
+in an explicitly authorized bench configuration. Check that Digital Out 0
+follows the reward waveform, configured sync lines carry exactly their
+requested pulses without loss or stretching, and every unrelated output
+stays unchanged. Check whether the reward schedule leaves outputs 16–23
+independent; until this is demonstrated, sync next to the reward stays
+unsupported.
 
 **B7. Failure drills, water only.**
 
