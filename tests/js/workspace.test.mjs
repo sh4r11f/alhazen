@@ -2738,3 +2738,22 @@ describe('the Rig summary\'s Reward line', () => {
     ]]]);
   });
 });
+
+
+describe('DATAPixx pump calibration identity', () => {
+  it('matches pump settings regardless of JSON field order', () => {
+    const app = loadWorkspace();
+    const pump = { model: 'WPI SP220i', syringe_diameter_mm: 14.5, rate_ul_per_min: 3000 };
+    const storedPump = { rate_ul_per_min: 3000, model: 'WPI SP220i', syringe_diameter_mm: 14.5 };
+    const gate = { backend: 'datapixx', channel: 'dout0', polarity: 'active_low', pump };
+    const measurements = { 50: {
+      ul_per_pulse: 2.5, line: 'DATAPIXX3/dout0', voltage: 5,
+      polarity: 'active_low', pump: storedPump,
+    } };
+    const fact = plain(app.run(`rewardFact(${JSON.stringify(gate)}, ${JSON.stringify(measurements)})`));
+    assert.deepEqual(fact[0][1], [
+      'DATAPIXX3/dout0, active_low gate, pump 3000 µL/min, 14.5 mm syringe',
+      '2.5 µL per 50 ms pulse',
+    ]);
+  });
+});

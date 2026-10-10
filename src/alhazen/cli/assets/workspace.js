@@ -615,7 +615,15 @@ function rewardFact(reward, calibration) {
   const voltage = reward.voltage ?? 5.0;
   const polarity = reward.polarity ?? null;
   const pump = reward.pump ?? null;
-  const samePump = (entry) => JSON.stringify(entry.pump ?? null) === JSON.stringify(pump);
+  // JSON object member order is not part of a pump's calibration identity.
+  const samePump = (entry) => {
+    const measured = entry.pump ?? null;
+    if (measured === null || pump === null) return measured === pump;
+    const keys = Object.keys(pump);
+    return Object.keys(measured).length === keys.length
+      && keys.every(key => Object.prototype.hasOwnProperty.call(measured, key)
+        && measured[key] === pump[key]);
+  };
   const where = gated
     ? `${line}, ${polarity} gate`
       + (pump ? `, pump ${pump.rate_ul_per_min} µL/min, ${pump.syringe_diameter_mm} mm syringe` : '')
