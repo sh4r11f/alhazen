@@ -138,6 +138,29 @@ def generate_source(client: Any, plan_obj: Plan, ctx: Context) -> Bundle:
     return Bundle(files, manifest, Report(True))
 
 
+def repair_from_run(client: Any, bundle: Any, log: str, ctx: Context) -> Bundle:
+    """Send the log and the base package's file list; the answer replaces files."""
+    answer = client.complete(
+        [
+            {
+                "role": "user",
+                "content": "RUN LOG\n" + log + "\nBASE FILES " + ",".join(sorted(bundle.files)),
+            }
+        ],
+        json_schema={"type": "object"},
+        max_tokens=16000,
+    )
+    data = json.loads(answer.text)
+    if not data.get("files"):
+        raise SourceInvalid(Report(False, ["no files"]))
+    files = dict(bundle.files)
+    files.update({path: text.encode() for path, text in data["files"].items()})
+    manifest = {k: v for k, v in bundle.manifest.items() if k not in ("files", "schema_version")}
+    if "version" in data:
+        manifest["version"] = data["version"]
+    return Bundle(files, manifest, Report(True))
+
+
 def kit() -> AuthorKit:
     module = SimpleNamespace(
         StartFrom=StartFrom,
@@ -147,6 +170,7 @@ def kit() -> AuthorKit:
         build_context=build_context,
         plan=plan,
         generate_source=generate_source,
+        repair_from_run=repair_from_run,
     )
     return AuthorKit(module)
 
@@ -228,3 +252,7 @@ def plan_dict() -> dict[str, Any]:
 
 def as_dict(obj: Any) -> dict[str, Any]:
     return asdict(obj)
+
+
+def repair_text(**changes: Any) -> str:
+    return json.dumps({"files": {"run.py": "print('repaired: draw a Circle')\n"}, **changes})

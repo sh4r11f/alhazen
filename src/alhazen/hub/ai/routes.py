@@ -106,6 +106,16 @@ def add_routes(app: FastAPI, hub: Hub, worker: AIWorker, kit: RouteKit) -> None:
         worker.wake()
         return JSONResponse(job, status_code=202)
 
+    @app.post(API + "/ai/drafts/{draft_id}/repair")
+    async def repair(request: Request, draft_id: str) -> JSONResponse:
+        principal = await kit.writer(request)
+        body = await kit.read_json(request, limit)
+        job = await call(
+            drafts.repair, hub, principal, kit.ident(draft_id, "Draft not found"), body
+        )
+        worker.wake()
+        return JSONResponse(job, status_code=202)
+
     @app.post(API + "/ai/drafts/{draft_id}/accept")
     async def accept(request: Request, draft_id: str) -> dict[str, Any]:
         principal = await kit.writer(request)
