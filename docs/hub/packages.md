@@ -204,16 +204,20 @@ problems = compatibility_problems(
   7. sync the parent and remove the record.
   `durable` is True only if every file and folder entry, including the
   rename and the record's removal, was synced and the OS confirmed it. A
-  file system that refuses directory syncs (EINVAL/ENOTSUP) and Windows,
-  where Python cannot sync a folder, give `durable=False` with a note. On a
+  folder is synced with `fsync` on POSIX and, on Windows, where Python's
+  `os.fsync` cannot open a folder, with the Win32 call `FlushFileBuffers`
+  on a folder handle opened for writing. A file system that refuses folder
+  syncs (EINVAL/ENOTSUP; on Windows a drive without a folder flush, such as
+  some network shares) gives `durable=False` with a note. On a
   failure before the commit every leftover is removed independently; a
   cleanup failure is attached as a note to the original error (which is the
   one raised) and keeps the record so `recover_install` can finish.
 - **`extract_bundle(path, destination, *, expected_sha256=None, limits...)
   -> PackageInfo`**: `install_bundle`, but raises `InstallNotDurable` (whose
   `result` says the files ARE installed) instead of returning an install
-  whose durability was not confirmed. On Windows that is every install, so
-  rig code should call `install_bundle` and show the durability state.
+  whose durability was not confirmed. That can happen on any platform (a
+  network or virtual drive), so rig code should call `install_bundle` and
+  show the durability state.
 - **`recover_install(destination) -> RecoveryResult(record_found,
   destination_state, removed)`**: acts only through the owner record, and is
   refused with `InstallInProgress` while the installer still holds the
@@ -236,12 +240,16 @@ and file names, never absolute local paths, so the server may return them.
 
 ## Limits of what was verified
 
-Checked on Linux with Python 3.10 to 3.13. Not verified on real Windows
-(8.3 short names, NTFS case table, the 260-character limit, reparse-point
-tags, the rename retry for briefly held handles, `msvcrt` record locking) or
-macOS, or on network/FUSE mounts (directory sync, `flock`). On those the
-module fails closed (refuses, or reports `durable=False`) rather than
-claiming more.
+Checked on Linux with Python 3.10 to 3.13. On Windows (11, NTFS, Python
+3.11, long paths off) the package tests and one whole install-and-run round
+trip pass, and the folder flush is confirmed by the OS there; that the bytes
+survive a power cut was not tested on any platform. Still not verified on
+real Windows: 8.3 short names, the NTFS case table, reparse-point tags
+other than junctions, the rename retry for briefly held handles, `msvcrt`
+record locking under contention, and recovery after a killed install (those
+tests are POSIX-only). Not verified on macOS hardware or on network/FUSE
+mounts (folder sync, `flock`). On those the module fails closed (refuses,
+or reports `durable=False`) rather than claiming more.
 
 ## Refused file classes
 

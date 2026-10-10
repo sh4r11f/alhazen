@@ -63,7 +63,7 @@ of it.
    `<workspace>/hub/experiments/<name>/<version>-<sha12>`; an existing folder is never replaced;
    the declared files are made read-only (folders stay writable for data). A durability the
    file system could not confirm is recorded (`durable: false`, its note) rather than treated as
-   failure (Windows never confirms; not physically verified there). An interrupted install is
+   failure (some network and virtual drives never confirm). An interrupted install is
    cleared only by `POST /local/install-recover {sha256}` through the package module's own
    recovery: its leftovers and an empty claim are removed, a committed tree is completed only if
    it holds exactly the release's declared files, and any other content is left untouched;
@@ -85,7 +85,7 @@ and removing an old release would take its data. Instead every data folder the r
 write under (the first component of each relative `data_root`, and beside it `-rehearsal`,
 `-training`, `-training-rehearsal`) is a directory link in the release folder to
 `<workspace>/hub/experiments/<name>/<that name>` (`alhazen.hub.shared_data`; a junction on
-Windows, not verified there). The experiment's own alhazen, whatever its version, writes where
+Windows, which needs no privilege). The experiment's own alhazen, whatever its version, writes where
 it always does; the release of each session is the run's `hub_release`, and `launch.json` also
 records `hub_data_folder`. The data stays under the protocol version (`data/v<pyproject
 version>/`), so a documentation-only release shares it.
@@ -201,6 +201,44 @@ stays under the protocol's folder.
 the copy with `alhazen dashboard --state-dir COPY --forget-hub-login`, which removes the
 sign-in and keeps the hub address, and delete `hub/rig.json` from the copy so it gets its own
 rig id; then sign in as the account the copy is for.
+
+## Windows: how long a session's paths may be
+
+Windows refuses a path of 260 characters or more unless an administrator has switched on long
+paths (`LongPathsEnabled`), which most computers have not. An installed experiment writes
+through its release folder, so every file of a session starts with
+
+```
+<workspace>\hub\experiments\<name>\<version>-<sha12>\<data root>\v<version>\sub-<ID>\ses-001\run-01_task-<task>\
+```
+
+and the hub's own part of that (`hub\experiments\` before the name, `\<version>-<sha12>` after
+it) is about 35 characters a plain checkout does not have. The path Windows counts is this one,
+through the link, not the shared folder the link leads to.
+
+With the default workspace (`C:\Users\<user>\.alhazen\dashboard`) and the longest data root
+(`data-training-rehearsal`), a session fits when
+
+```
+len(user) + len(name) + 2 * len(version) + 2 * len(subject ID) + len(task) <= 101
+```
+
+Typical names come to 60 to 80. When a session would not fit, an experiment on alhazen 2.14 or
+newer refuses it before it starts and names the path and its length; nothing is lost. An
+experiment that pins an older alhazen has no such check and fails when it writes its tables, at
+the end of the session, so on Windows pin 2.14 or newer.
+
+Three ways to make room, any one of which is enough:
+
+- start the dashboard with a short state folder, `alhazen dashboard --hub --state-dir C:\ah`
+  (23 characters back, plus the length of the user name);
+- have an administrator switch on long paths, after which there is no limit to speak of:
+  `reg add HKLM\SYSTEM\CurrentControlSet\Control\FileSystem /v LongPathsEnabled /t REG_DWORD /d 1 /f`;
+- use shorter subject IDs or task names.
+
+`tests/hub/test_live_roundtrip.py` installs a release and runs a session from a folder deeper
+than the default workspace. It passes on a Windows 11 without long paths; CI's Windows runners
+have long paths switched on, so they do not show this limit.
 
 ## Not verified here
 

@@ -981,6 +981,11 @@ def _open_regular(path: Path) -> IO[bytes]:
     try:
         fd = _open_descriptor(path, os.O_RDONLY | _O_BINARY | _O_NONBLOCK)
     except OSError as error:
+        # Windows will not open a folder at all, and answers "Permission
+        # denied", which sends the reader looking at permissions. POSIX
+        # opens it, and the check below says what it is; say the same here.
+        if os.path.isdir(path):
+            raise PackageError(f"the package {_shown(path.name)} is not a regular file") from error
         raise PackageError(
             f"cannot open the package {_shown(path.name)}: {error.strerror}"
         ) from error
@@ -1116,11 +1121,87 @@ def stage_bundle(
 # Installing a bundle
 
 
+# Win32 names for the folder flush below (winnt.h, winbase.h, winerror.h).
+_GENERIC_WRITE = 0x40000000
+# Read, write and delete: holding the folder open shuts nobody else out.
+_FILE_SHARE_ALL = 0x00000007
+_OPEN_EXISTING = 3
+# What lets CreateFileW open a folder at all.
+_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+_ERROR_ACCESS_DENIED = 5
+# How FlushFileBuffers says "this file system has no folder flush" (some
+# network shares and virtual drives): ERROR_INVALID_FUNCTION,
+# ERROR_ACCESS_DENIED, ERROR_INVALID_HANDLE, ERROR_NOT_SUPPORTED and
+# ERROR_INVALID_PARAMETER. The counterpart of POSIX's EINVAL/ENOTSUP below.
+_FLUSH_UNSUPPORTED = frozenset({1, 5, 6, 50, 87})
+
+
+def _flush_windows_folder(path: Path) -> bool:
+    """Windows' folder sync. True once Windows has confirmed the folder's
+    entries are on disk; False where this account or file system cannot do
+    it; OSError for anything else (the folder is gone, the disk is failing).
+
+    ``os.fsync`` cannot do this on Windows, because ``os.open`` cannot open a
+    folder there. The Win32 API can: FlushFileBuffers on a folder handle that
+    was opened for writing sends the folder's entries (the names created,
+    renamed and removed in it) through to the disk. Until this existed every
+    Windows install was reported as "not confirmed on disk".
+    """
+    if sys.platform != "win32":  # pragma: no cover - _fsync_directory checks first
+        raise AssertionError("the Win32 folder flush was called off Windows")
+    import ctypes
+    from ctypes import wintypes
+
+    # This call's own handle on kernel32, so the argument types set here are
+    # not shared with, or changed by, other code that uses ctypes.windll.
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,  # the folder
+        wintypes.DWORD,  # access wanted
+        wintypes.DWORD,  # what others may do meanwhile
+        wintypes.LPVOID,  # security attributes: the defaults
+        wintypes.DWORD,  # open only what exists
+        wintypes.DWORD,  # flags
+        wintypes.HANDLE,  # no template file
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.FlushFileBuffers.argtypes = [wintypes.HANDLE]
+    kernel32.FlushFileBuffers.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    handle = kernel32.CreateFileW(
+        str(path),
+        _GENERIC_WRITE,  # a flush is refused on a handle opened only for reading
+        _FILE_SHARE_ALL,
+        None,
+        _OPEN_EXISTING,
+        _FILE_FLAG_BACKUP_SEMANTICS,
+        None,
+    )
+    if handle is None or handle == wintypes.HANDLE(-1).value:  # INVALID_HANDLE_VALUE
+        code = ctypes.get_last_error()
+        if code == _ERROR_ACCESS_DENIED:
+            # May not open the folder for writing: cannot be confirmed here,
+            # as with EACCES/EPERM on POSIX below.
+            return False
+        raise ctypes.WinError(code)
+    try:
+        if not kernel32.FlushFileBuffers(handle):
+            code = ctypes.get_last_error()
+            if code in _FLUSH_UNSUPPORTED:
+                return False
+            raise ctypes.WinError(code)
+    finally:
+        kernel32.CloseHandle(handle)
+    return True
+
+
 def _fsync_directory(path: Path) -> bool:
     """Make a folder's entries durable; False where that cannot be done or
-    confirmed (Windows, or a file system that refuses directory syncs)."""
+    confirmed (an account or a file system that refuses folder syncs)."""
     if sys.platform == "win32":
-        return False
+        return _flush_windows_folder(path)
     try:
         fd = _open_descriptor(path, os.O_RDONLY | _O_DIRECTORY)
     except OSError as error:
@@ -1501,8 +1582,6 @@ def install_bundle(
         os.close(record_fd)
     unconfirmed = sorted(set(durability.unconfirmed))
     note = "not confirmed on disk: " + ", ".join(unconfirmed)
-    if sys.platform == "win32":
-        note += " (Windows: folders cannot be synced from Python; files were flushed)"
     return InstallResult(
         info=info,
         destination=destination,
@@ -1555,8 +1634,9 @@ def extract_bundle(
 ) -> PackageInfo:
     """:func:`install_bundle`, returning the verified package. Never reports
     a durable success it could not confirm: if the install committed but the
-    file system could not confirm durability (always so on Windows), it
-    raises InstallNotDurable, whose ``result`` says the files ARE installed.
+    file system could not confirm durability (some network and virtual
+    drives, on any platform), it raises InstallNotDurable, whose ``result``
+    says the files ARE installed.
     Callers that handle that state should call install_bundle directly."""
     result = install_bundle(
         path,
@@ -1984,6 +2064,17 @@ def build_bundle(
         shown = "; ".join(f"{_shown(path)} ({reason})" for path, reason in refused[:20])
         more = f" and {len(refused) - 20} more" if len(refused) > 20 else ""
         raise PackageError(f"these files may not be packaged: {shown}{more}")
+    # From the list alone, before any file is opened: Windows cannot open
+    # some of these paths at all, and would otherwise report the one that is
+    # too long as a file it "cannot find". (_validate_manifest holds the same
+    # cap for every package that is read, whoever built it.)
+    too_long = [path for path in paths if len(path) > MAX_PACKAGE_PATH_CHARS]
+    if too_long:
+        raise PackageError(
+            f"{_shown(too_long[0])} is {len(too_long[0])} characters long; package paths are "
+            f"at most {MAX_PACKAGE_PATH_CHARS} characters, so that an installed experiment "
+            "fits Windows' 260-character limit"
+        )
     _check_path_set([MANIFEST_NAME, *paths])
     if ENTRYPOINT not in paths:
         raise PackageError(f"the package must include {ENTRYPOINT}, the experiment's entry point")

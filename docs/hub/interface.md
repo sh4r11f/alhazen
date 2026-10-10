@@ -112,9 +112,9 @@ Cancel) stay on This rig → Upload data.
 
 When the rig reports an install with `durable: false`, the install row and the install panel add that
 the files are installed and verified but the computer could not confirm they were written through to
-disk, with the rig's `durability_note` (folder sync is unavailable on Windows and some mounts). It says
-this is about storage, not the code, and suggests checking the install again after a power loss.
-Windows behaviour itself is unverified here.
+disk, with the rig's `durability_note` (some network and virtual drives have no folder sync, on any
+platform). It says this is about storage, not the code, and suggests checking the install again after
+a power loss. An install on an ordinary Windows disk is confirmed like one on Linux or macOS.
 
 ## Rebuilding a trial index (contract gate B1)
 

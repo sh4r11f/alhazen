@@ -4117,7 +4117,7 @@ const HubApp = (() => {
 
     /** An install whose files the rig verified but could not confirm were
      *  flushed to disk (durable === false: the folder sync is unsupported on
-     *  this system, e.g. Windows, or failed). A storage fact, not a verdict
+     *  this drive, e.g. a network share, or failed). A storage fact, not a verdict
      *  on the code. Null when durable or not reported. */
     function durabilityNote(record) {
       if (!record || record.durable !== false) return null;

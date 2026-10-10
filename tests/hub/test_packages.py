@@ -1317,10 +1317,27 @@ class TestPortability:
         assert len(long) > pk.MAX_PACKAGE_PATH_CHARS
         assert safe_relative(long) == long  # still a portable path in general
         target = source / long
-        target.parent.mkdir(parents=True)
-        target.write_text("", encoding="utf-8")
+        try:
+            target.parent.mkdir(parents=True)
+            target.write_text("", encoding="utf-8")
+        except OSError:
+            # Windows without long paths cannot create this file at all (the
+            # test folder plus 215 characters is over its 260). The cap is
+            # checked from the list alone, so the refusal is the same there.
+            if sys.platform != "win32":
+                raise
+        with pytest.raises(PackageError, match="at most") as refused:
+            build_bundle(source, tmp_path / "o.zip", dict(META), [*CLEAN, long])
+        # Names the path and its length, not a position in a list.
+        assert "folder/folder" in str(refused.value) and str(len(long)) in str(refused.value)
+
+    def test_the_length_cap_is_checked_before_any_file_is_read(self, tmp_path, source):
+        # The long path is not on disk: were files read first, the refusal
+        # would be "cannot open", which hides the real reason on Windows.
+        long = "/".join(["folder"] * 30) + "/x.py"
         with pytest.raises(PackageError, match="at most"):
             build_bundle(source, tmp_path / "o.zip", dict(META), [*CLEAN, long])
+        assert not (tmp_path / "o.zip").exists()
 
     def test_only_name_surrogate_reparse_points_count_as_links(self):
         import types
@@ -1412,8 +1429,20 @@ class TestInstallOutcome:
         info, path = bundle
         result = pk.install_bundle(path, tmp_path / "demo")
         assert result.info == info and result.destination == tmp_path / "demo"
-        assert result.durable == (sys.platform != "win32")
+        # On every platform: Windows used to report every install as not
+        # confirmed, because nothing asked it to flush a folder.
+        assert result.durable and result.durability_note == ""
         assert sorted(os.listdir(tmp_path)) == ["demo", "demo.zip", "experiment"]
+
+    def test_a_folder_sync_is_confirmed_on_an_ordinary_disk(self, tmp_path):
+        (tmp_path / "new.txt").write_bytes(b"x")
+        assert pk._fsync_directory(tmp_path) is True
+
+    def test_a_missing_folder_is_an_error_not_an_unconfirmed_sync(self, tmp_path):
+        # "Could not confirm" is for a disk that has no folder sync. A folder
+        # that is not there is a failure, and must not be reported as that.
+        with pytest.raises(OSError):
+            pk._fsync_directory(tmp_path / "gone")
 
     def test_unconfirmed_sync_after_the_commit_is_not_a_failure(
         self, tmp_path, bundle, monkeypatch
@@ -1513,6 +1542,88 @@ def die_during_install(bundle: Path, destination: Path, phase: str) -> int:
         timeout=60,
     )
     return result.returncode
+
+
+class _FakeKernel32:
+    """kernel32 as _flush_windows_folder uses it, answering as told: `opens`
+    is the handle CreateFileW returns and `flushes` whether the flush works."""
+
+    def __init__(self, opens: int, flushes: bool) -> None:
+        self.asked: tuple = ()
+        self.closed: list[int] = []
+
+        # Plain functions, not methods: the code under test sets argtypes
+        # and restype on each, as it does on the real ones.
+        def create(*args):
+            self.asked = args
+            return opens
+
+        def flush(handle):
+            return flushes
+
+        def close(handle):
+            self.closed.append(handle)
+            return True
+
+        self.CreateFileW, self.FlushFileBuffers, self.CloseHandle = create, flush, close
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the Win32 folder flush")
+class TestWindowsFolderFlush:
+    """Which Windows answers mean "this disk cannot confirm" (False) and
+    which are failures (OSError). The real call is exercised by every install
+    test above; these fake kernel32 to reach answers a healthy disk never gives."""
+
+    INVALID = 2**64 - 1 if sys.maxsize > 2**32 else 2**32 - 1  # INVALID_HANDLE_VALUE
+
+    def fake(self, monkeypatch, *, opens: int = 99, flushes: bool = True, error: int = 0):
+        import ctypes
+
+        kernel32 = _FakeKernel32(opens, flushes)
+        monkeypatch.setattr(ctypes, "WinDLL", lambda name, use_last_error=False: kernel32)
+        monkeypatch.setattr(ctypes, "get_last_error", lambda: error)
+        return kernel32
+
+    def test_a_confirmed_flush_closes_its_handle(self, tmp_path, monkeypatch):
+        kernel32 = self.fake(monkeypatch)
+        assert pk._flush_windows_folder(tmp_path) is True
+        assert kernel32.closed == [99]
+        # Opened for writing: Windows refuses to flush a read-only handle.
+        assert kernel32.asked[0] == str(tmp_path) and kernel32.asked[1] == 0x40000000
+
+    def test_a_folder_that_may_not_be_opened_is_unconfirmed(self, tmp_path, monkeypatch):
+        kernel32 = self.fake(monkeypatch, opens=self.INVALID, error=5)  # access denied
+        assert pk._flush_windows_folder(tmp_path) is False
+        assert kernel32.closed == []  # there was no handle to close
+
+    def test_any_other_failure_to_open_is_an_error(self, tmp_path, monkeypatch):
+        self.fake(monkeypatch, opens=self.INVALID, error=3)  # path not found
+        with pytest.raises(OSError):
+            pk._flush_windows_folder(tmp_path)
+
+    @pytest.mark.parametrize("code", [1, 5, 6, 50, 87])
+    def test_a_disk_without_a_folder_flush_is_unconfirmed(self, tmp_path, monkeypatch, code):
+        kernel32 = self.fake(monkeypatch, flushes=False, error=code)
+        assert pk._flush_windows_folder(tmp_path) is False
+        assert kernel32.closed == [99]
+
+    def test_a_failing_flush_is_an_error(self, tmp_path, monkeypatch):
+        kernel32 = self.fake(monkeypatch, flushes=False, error=1117)  # I/O device error
+        with pytest.raises(OSError) as failed:
+            pk._flush_windows_folder(tmp_path)
+        assert failed.value.winerror == 1117
+        assert kernel32.closed == [99]  # closed on the way out all the same
+
+    def test_an_unconfirmed_flush_is_reported_by_the_install(self, tmp_path, bundle, monkeypatch):
+        # The whole way up: a disk with no folder flush gives an installed
+        # package marked not durable, and extract_bundle says so.
+        _, path = bundle
+        monkeypatch.setattr(pk, "_flush_windows_folder", lambda folder: False)
+        result = pk.install_bundle(path, tmp_path / "demo")
+        assert not result.durable and "not confirmed on disk" in result.durability_note
+        with pytest.raises(pk.InstallNotDurable):
+            extract_bundle(path, tmp_path / "again")
+        assert (tmp_path / "again" / "run.py").is_file()
 
 
 @POSIX_ONLY

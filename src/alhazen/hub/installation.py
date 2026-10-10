@@ -529,7 +529,7 @@ def _extract(
     """Unpack; ``(durable, note)``. A package module with ``install_bundle``
     gets the reviewed digest (checked against its own verified copy before
     writing) and reports whether the file system confirmed durability, which
-    is recorded rather than treated as failure (Windows never confirms). An
+    is recorded rather than treated as failure (some drives never confirm). An
     older module gets ``extract_bundle``, the digest having been checked above."""
     install = getattr(packages, "install_bundle", None)
     if install is not None:
