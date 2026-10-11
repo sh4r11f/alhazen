@@ -280,11 +280,113 @@ error text. The trial's `rewarded` column is then left empty rather than
 retried. The live juice plot counts it as a failed delivery and does not add
 its volume.
 
-This version has no override for combined DATAPixx reward and sync. A bench
-measurement alone does not enable it: support would require a later reviewed
-implementation. DATAPixx sync without DATAPixx reward is supported; a separate
-NI-DAQ can provide sync alongside DATAPixx reward. Analog-output reward and
-reading the pump's Run output are not implemented.
+A digital-output gate is never combined with DATAPixx sync, and there is no
+override. To use DATAPixx sync with DATAPixx reward on one device, put the gate
+on an analog output instead
+([Analog output gate](#analog-output-gate-reward-sync-on-one-datapixx3)).
+DATAPixx sync without a DATAPixx reward is supported, and so is an NI-DAQ
+providing sync alongside a DATAPixx reward. Reading the pump's Run output is
+not implemented.
+
+## Analog output gate (reward + sync on one DATAPixx3)
+
+!!! warning "Not physically verified"
+    Like the rest of this page, this has software tests only. Nothing here has
+    been tried on a DATAPixx3 or a pump.
+
+A digital-output gate shares the Digital Out port with DATAPixx sync lines,
+and its schedule rewrites outputs 0–15 together, so the two are refused
+together. To have the reward and the recording sync on one DATAPixx3, drive the
+pump's Gate from one of the DATAPixx3's **analog outputs** instead. Those are
+the DACs, on the separate **Analog I/O** port. The DAC schedule then times the
+gate, and the whole Digital Out port stays free for sync lines.
+
+**Wiring.** The Analog I/O port is a female DB25 of its own, next to Digital
+Out and looking the same. Use a second male DB25 breakout on the **Analog
+I/O** port, not on Digital Out.
+
+| DATAPixx3 Analog I/O DB25 | Pump TTL I/O DE9 |
+|---|---|
+| DAC0, pin 11 (DAC1 pin 24, DAC2 pin 12, DAC3 pin 25) | pin 4, Gate |
+| analog ground, pin 13 (or pin 10) | pin 3, ground |
+
+- Never use pin 23 (+5 VDC). It is a supply that cannot be switched, so the
+  pump would run or stop permanently.
+- Pin 1 of the Analog I/O port is an analog input (ADC0), not an output.
+- Pump pins 7 (Run) and 8 (Trigger) stay unconnected, as before.
+
+The DACs are 16-bit and drive ±10 V at up to ±25 mA, which is far outside
+the pump's TTL input. On paper the pump reads LOW at 0–0.5 V (sinking at most
+2 mA) and HIGH at 2–5 V. alhazen therefore uses only two levels: **0 V** and
+`voltage`. `voltage` must be above 2 V and at most 5 V, and defaults to 5.0.
+It never commands a negative level or one above `voltage`. With
+`polarity: active_low` the gate rests at `voltage` and goes to 0 V while
+dispensing.
+
+**Rig file.**
+
+```yaml
+devices:
+  reward:
+    backend: datapixx
+    channel: dac0            # Analog I/O DB25 pin 11
+    polarity: active_low     # rests at `voltage`, 0 V runs the pump
+    voltage: 5.0             # the HIGH level, (2, 5] V
+    pump:
+      model: WPI SP220i
+      syringe_diameter_mm: 26.59   # example
+      rate_ul_per_min: 3000        # example
+  sync:
+    backend: datapixx
+    event_lines:
+      STIM_ON: DATAPIXX3/dout2
+```
+
+`dac_buffer_address` (default 10,000,000) places the schedule in the
+DATAPixx3's memory. It must not overlap the digital-output gate's region
+(VPixx's own examples also use 8,000,000), the TRACKPixx3's sample buffer or
+its camera image. A calibration measured on a DAC gate counts only for that
+channel, polarity, voltage and pump setting.
+
+**What alhazen refuses before writing to the DAC:**
+
+- DAC-ADC loopback is on.
+- DAC raw (uncalibrated) mode is on.
+- A DAC schedule is already running.
+- Another DAC channel is set up for schedule buffering. alhazen never switches
+  it off.
+- The TRACKPixx3 drives that DAC with eye data, or that cannot be read. The
+  `TPxGetAllDACOutput` wrapper in the pypixxlib source VPixx publishes raises
+  an error, and with that version the gate is refused.
+- The channel's range (read every time) cannot hold 0 V and `voltage`, or a
+  level would land outside the pump's bands.
+- The pypixxlib in use lacks a call the gate needs.
+
+alhazen computes each sample's 16-bit code itself, using pypixxlib's own
+formula. It writes the train in pieces, reads it back word for word, and only
+then starts a finite DAC schedule. The first and last samples are at rest.
+VPixx documents no return to a resting value when a DAC schedule ends or is
+stopped. After every train, and after any stop, alhazen therefore writes the
+rest level and reads it back, allowing one code of tolerance. As with the
+digital gate, a failure after the start is recorded as uncertain and never
+retried. The tracker connects first.
+
+**Power-up.** VPixx does not document the DAC output at power-up, reset,
+USB loss or power-off. A DAC sitting at code 0 outputs **0 V, which runs the
+pump on an active-low gate**. Follow the same order as above: pump off until
+`alhazen check-rig` (without `--pulse`) has set the rest level and you have
+measured it at the pump connector; pump off before the DATAPixx3 is switched
+off or unplugged; keep PWR UP: STOP.
+
+**Bench steps.** Use the same water-only steps B0–B7, with the meter or scope
+between Analog I/O pin 11 and pin 13 instead of Digital Out pins 1 and 13. Add
+these checks:
+
+- the level at the pump's pins 4–3 under load, at rest and while active;
+- the DAC pin's level at power-up and after USB loss (B1);
+- the level after a train ends, and after a train is killed mid-way (B7);
+- with sync lines configured: each sync line pulses cleanly during a reward,
+  and the gate does not move during a sync pulse (B6).
 
 ## Bench test
 
@@ -347,8 +449,9 @@ actual syringe and tubing; do not report the Run indication as liquid latency.
 **B6. Shared tracker and other outputs.** With TRACKPixx3 recording, monitor
 Digital Out 0 and the other DOUT lines with the analyser during rewards.
 Check the gate waveform, that unrelated lines stay at their prior levels,
-and that gaze recording continues. Do not configure DATAPixx sync at the
-same time: the backend rejects that combination. Investigating upper-output
+and that gaze recording continues. Do not configure DATAPixx sync with a
+digital-output gate: the backend rejects that combination (an analog-output
+gate may share the device with sync; see its own bench checks). Investigating upper-output
 independence for a future implementation requires a separate reviewed bench
 diagnostic, not an override of this refusal.
 
@@ -376,6 +479,9 @@ Record what happened in each, including "the pump kept running".
 | Disconnected Gate input behaviour | bench B1 (controlled, water only) | **not verified** |
 | Gate behaviour, latency, dose per gate, repeated gates, target volume | bench B2–B5 | **not verified** |
 | Unrelated outputs stable and tracker continues during reward | bench B6 | **not verified** |
-| DATAPixx sync together with DATAPixx reward | validation and runtime ownership | **not supported; rejected** |
+| DATAPixx sync together with a digital-output DATAPixx reward | validation and runtime ownership | **not supported; rejected** |
+| DATAPixx sync together with an analog-output (DAC) DATAPixx reward | software tests with a stand-in SDK, including a full session | **software tested; not hardware verified** |
+| DAC pins: Analog I/O DB25 DAC0 pin 11, DAC1 24, DAC2 12, DAC3 25, ground 10 and 13, +5 VDC on pin 23; ±10 V, ±25 mA, 16 bits | VPixx DATAPixx3 documentation | documented |
+| DAC level at power-up, reset, USB loss, power off; after a schedule ends or is stopped; loaded levels at the pump | bench B1, B7 on the Analog I/O pins | **not verified** |
 | Failure drills | bench B7 | **not verified** |
 | alhazen DATAPixx backend (refusals, timing, uncertain-state handling) | software regression tests with a stand-in SDK | **software tested; not hardware verified** |

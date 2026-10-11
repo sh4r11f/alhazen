@@ -51,6 +51,24 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   back. `REWARD_FAILED` payloads gain `error` and `uncertain` (end of trial,
   mid-trial and manual), and an uncertain delivery leaves the row's
   `rewarded` empty instead of `False`. `RewardCompletion.uncertain`.
+- Reward gate on a DATAPixx3 **analog output**: backend `datapixx` with
+  `channel: dac0`-`dac3` (Analog I/O DB25), timed by the DAC schedule at two
+  levels only, 0 V and `voltage` (the HIGH level, in (2.0, 5.0] V, default
+  5.0); `dac_buffer_address` (default 10,000,000) is kept clear of the
+  digital-output gate's region and the TRACKPixx3's RAM. Codes are computed
+  with pypixxlib's formula from the channel's range, written in chunks and
+  read back before the schedule starts; rest is set and read back (one code
+  of tolerance) before and after every train and after any stop. Refused
+  before any write: DAC-ADC loopback, DAC raw mode, a running DAC schedule,
+  another buffered DAC channel, a TRACKPixx3 analog output on the channel
+  (or one that cannot be read), a range or rounding outside the pump's
+  bands, a missing call. Uses no digital output, so it and DATAPixx3 sync
+  lines share one DATAPixx3 (the rig validator allows that pair; a
+  digital-output gate with DATAPixx3 sync stays refused). Not verified on
+  hardware: docs/datapixx-reward.md.
+- Reward calibrations record and match the backend family (`datapixx`) as
+  part of a gated line's identity; a simulated stand-in of a DATAPixx3 gate
+  keeps it.
 - Sync backend `datapixx`: active-high pulses on DATAPixx3 digital outputs
   (`DATAPIXX3/dout<N>`), refused on bits a Pixel Mode, button schedules or
   the backlight pulse drive. It cannot be combined with a `datapixx` reward
