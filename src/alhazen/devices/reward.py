@@ -564,14 +564,17 @@ def read_dac_state(lib: Any, cfg: RewardHwConfig) -> dict[str, Any]:
             f"reward gate {cfg.line}: this pypixxlib lacks or rejects a call alhazen needs "
             f"({type(e).__name__}: {e}); {PYPIXXLIB_HELP}"
         ) from e
-    # The TRACKPixx3 can drive the DACs with eye data (EnableTPxAnalogOut:
-    # one mode byte per DAC, 0 = schedule-controlled). pypixxlib's own
-    # TPxGetAllDACOutput wrapper, as VPixx publishes it, declares an argument
-    # the C call does not take and so raises TypeError; that is an unknown
-    # mode, never a mode assumed to be 0.
+    # The TRACKPixx3 can drive the DACs with eye data. TPxGetAllDACOutput
+    # returns its analog-output mode word; 0 means no DAC is driven by the
+    # tracker. How the word maps to channels is not documented (one byte per
+    # DAC is only inferred), so ANY non-zero word is treated as driving this
+    # channel: the gate opens only when the tracker drives no DAC at all.
+    # pypixxlib's wrapper as VPixx publishes it declares an argument the C
+    # call does not take and raises TypeError; the lab's install (argtypes
+    # None) calls it with none. A failure is an unknown mode, never 0.
     try:
-        mode = int(lib.TPxGetAllDACOutput())
-        state["tracker_analog_mode"] = (mode >> (8 * channel)) & 0xFF
+        mode = int(lib.TPxGetAllDACOutput()) & 0xFFFFFFFF
+        state["tracker_analog_mode"] = mode
         state["tracker_analog_basis"] = "read from the device"
     except (AttributeError, TypeError) as e:
         state["tracker_analog_mode"] = None
@@ -639,8 +642,11 @@ def dac_refusal(state: dict[str, Any], cfg: RewardHwConfig) -> str | None:
         )
     if state["tracker_analog_mode"] != 0:
         return (
-            f"the TRACKPixx3 analog output drives DAC{channel} with eye data (mode "
-            f"{state['tracker_analog_mode']}): the gate would follow the eye"
+            f"the TRACKPixx3 analog output is on (mode word "
+            f"{state['tracker_analog_mode']:#010x}): it drives DAC outputs with eye data, and "
+            f"which DACs it drives is not documented, so DAC{channel} is not assumed free (the "
+            f"gate could follow the eye). Turn the tracker's analog output off, or use a "
+            f"digital-output gate with separate sync hardware"
         )
     if state["dac_schedule_running"]:
         return "a DAC schedule is already running (another program, or a train not ended)"

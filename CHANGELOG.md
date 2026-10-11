@@ -60,8 +60,8 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   read back before the schedule starts; rest is set and read back (one code
   of tolerance) before and after every train and after any stop. Refused
   before any write: DAC-ADC loopback, DAC raw mode, a running DAC schedule,
-  another buffered DAC channel, a TRACKPixx3 analog output on the channel
-  (or one that cannot be read), a range or rounding outside the pump's
+  another buffered DAC channel, any TRACKPixx3 analog output (its channel
+  layout is undocumented) or one that cannot be read, a range or rounding outside the pump's
   bands, a missing call. Uses no digital output, so it and DATAPixx3 sync
   lines share one DATAPixx3 (the rig validator allows that pair; a
   digital-output gate with DATAPixx3 sync stays refused). Not verified on
@@ -72,8 +72,9 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 - Sync backend `datapixx`: active-high pulses on DATAPixx3 digital outputs
   (`DATAPIXX3/dout<N>`), refused on bits a Pixel Mode, button schedules or
   the backlight pulse drive. It cannot be combined with a `datapixx` reward
-  on the same rig (the reward schedule writes DOUT 0-15 as a whole and VPixx
-  does not document whether DOUT 16-23 stay independent).
+  on a digital output (that schedule writes DOUT 0-15 as a whole and VPixx
+  does not document whether DOUT 16-23 stay independent); a reward on an
+  analog output (`dac<N>`) shares the device with it.
 - `alhazen.devices.vpixx`: one DATAPixx3 link per process. The TRACKPixx3
   tracker, the reward gate and sync lines share its lock and select the
   DATAPixx3 before each operation; the device is closed only by its last

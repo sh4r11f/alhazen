@@ -642,8 +642,9 @@ class FakeLibdpx:
     #   DPxSetDacSchedule does with its seconds onset); count > 0 counts down;
     # - DPxSetDacBuff(address, bytes); one frame = one word per buffered
     #   channel, interleaved;
-    # - TPxGetAllDACOutput(): one TRACKPixx3 analog-output mode byte per DAC
-    #   (0 = schedule-controlled). As VPixx publishes it, the wrapper
+    # - TPxGetAllDACOutput(): the TRACKPixx3 analog-output mode word (0 = no
+    #   DAC driven by the tracker; per-channel layout undocumented, so the
+    #   gate refuses any non-zero word). As VPixx publishes it, the wrapper
     #   declares an argument the C call does not take and raises TypeError
     #   (dac_tpx_getter_broken models that).
     # Not documented, modelled conservatively: a schedule that ends or is

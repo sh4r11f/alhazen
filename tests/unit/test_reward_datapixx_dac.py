@@ -305,11 +305,18 @@ class TestRefusals:
         assert libdpx.dac_buffered == {3}  # never switched off
 
     def test_the_tracker_driving_the_channel(self, libdpx):
-        libdpx.tpx_dac_mode = 7  # DAC0: average eye screen X
-        self.refused(libdpx, match="drives DAC0 with eye data")
+        libdpx.tpx_dac_mode = 7  # DAC0: average eye screen X (inferred layout)
+        self.refused(libdpx, match="analog output is on.*eye data")
 
-    def test_the_tracker_driving_another_channel_is_fine(self, libdpx):
-        libdpx.tpx_dac_mode = 7 << 8  # DAC1
+    @pytest.mark.parametrize("word", [7 << 8, 7 << 16, 7 << 24, 0x80000000])
+    def test_the_tracker_driving_any_dac_refuses(self, libdpx, word):
+        # The mode word's layout is undocumented: any non-zero word refuses,
+        # whichever channel the gate is on.
+        libdpx.tpx_dac_mode = word
+        self.refused(libdpx, match="not assumed free")
+
+    def test_tracker_analog_output_off_opens(self, libdpx):
+        libdpx.tpx_dac_mode = 0
         make_reward(DAC).close()
 
     def test_an_unreadable_tracker_analog_mode(self, libdpx):

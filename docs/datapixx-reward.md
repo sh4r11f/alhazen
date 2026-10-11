@@ -357,9 +357,15 @@ channel, polarity, voltage and pump setting.
   it off. (The gate's own channel is switched on for buffering when the gate
   opens and off again when it closes, so a later gate on another channel is
   not refused because of it; a channel found buffered is left as found.)
-- The TRACKPixx3 drives that DAC with eye data, or that cannot be read. The
-  `TPxGetAllDACOutput` wrapper in the pypixxlib source VPixx publishes raises
-  an error, and with that version the gate is refused.
+- The TRACKPixx3's analog output (eye data on the DACs) is on at all, or its
+  state cannot be read. Which DACs it drives is not documented, so any
+  tracker analog output refuses the gate, whatever its channel. If eye
+  signals must leave through the DACs, use a digital-output gate with
+  separate sync hardware instead. The `TPxGetAllDACOutput` wrapper in the
+  pypixxlib source VPixx publishes raises an error, so with that version the
+  gate is refused; check yours read-only with
+  `python -c "from pypixxlib import _libdpx as d; print(d._TPxGetAllDACOutput.argtypes)"`:
+  `None` means the call works.
 - The channel's range (read every time) cannot hold 0 V and `voltage`, or a
   level would land outside the pump's bands.
 - The pypixxlib in use lacks a call the gate needs.
