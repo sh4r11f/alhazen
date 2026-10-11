@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import Any
 
 from alhazen.config.gamma import fit_gamma, gamma_path, load_gamma, read_measurements
-from alhazen.config.models import RewardHwConfig, RewardPulses, RigConfig
+from alhazen.config.models import RewardHwConfig, RewardPulses, RigConfig, dac_channel_of
 from alhazen.config.reward_calibration import record_reward_calibration
 from alhazen.display.ruler import draw_ruler_on
 from alhazen.display.screen import Screen
@@ -608,13 +608,12 @@ def _reward_volume(ctx: JobContext) -> Measurement:
     line = hardware.line
     # A DATAPixx3 gate: the pump's own settings decide the volume, so the arm
     # prompt states them and the calibration records them (gate_identity).
-    gate_identity: dict[str, Any] = (
-        {"backend": hardware.backend, **hardware.calibration_identity()}
-        if hardware.polarity is not None
-        else {}
+    gate_identity: dict[str, Any] = hardware.calibration_identity() if hardware.gated else {}
+    level = (
+        f" at {hardware.voltage:g} V / 0 V" if dac_channel_of(hardware.channel) is not None else ""
     )
     where = (
-        f"{line} ({hardware.polarity} gate; pump {hardware.pump.model}, "
+        f"{line} ({hardware.polarity} gate{level}; pump {hardware.pump.model}, "
         f"{hardware.pump.rate_ul_per_min:g} µL/min, {hardware.pump.syringe_diameter_mm:g} mm "
         f"syringe — as set on the pump)"
         if hardware.pump is not None

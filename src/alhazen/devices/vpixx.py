@@ -152,6 +152,10 @@ class DpxLink:
         # holder id -> (holder, mask of the DOUT bits it drives, whether it
         # plays DOUT schedules and so owns the whole port).
         self._reserved: dict[int, tuple[object, int, bool]] = {}
+        # holder id -> (holder, DAC channel it drives): a DAC reward gate.
+        # Kept apart from the DOUT reservations: a DAC gate uses no digital
+        # output, so DATAPixx3 sync lines may share the device with it.
+        self._dac: dict[int, tuple[object, int]] = {}
 
     # ------------------------------------------------------------------
     # Lifetime. Every method below expects the caller to hold ``lock``.
@@ -235,6 +239,7 @@ class DpxLink:
         caller holds ``lock``.
         """
         self._reserved.pop(id(holder), None)
+        self._dac.pop(id(holder), None)
         before = len(self._holders)
         self._holders = [existing for existing in self._holders if existing is not holder]
         if len(self._holders) == before:
@@ -287,6 +292,20 @@ class DpxLink:
                     f"{type(other).__name__}; one line cannot have two owners"
                 )
         self._reserved[id(holder)] = (holder, mask, schedules)
+
+    def reserve_dac(self, holder: object, channel: int) -> None:
+        """Record that ``holder`` drives analog output ``channel`` (and runs
+        the DAC schedule over it). Refuses (ValueError) a channel another
+        holder drives, or a second DAC schedule owner: the DATAPixx3 has one
+        DAC schedule. Reserves no digital output, so it never conflicts with
+        DATAPixx3 sync lines. The caller holds ``lock``."""
+        for key, (other, other_channel) in self._dac.items():
+            if key != id(holder):
+                raise ValueError(
+                    f"the {HOST_DEVICE}'s DAC schedule is already used by "
+                    f"{type(other).__name__} (DAC{other_channel}); there is one DAC schedule"
+                )
+        self._dac[id(holder)] = (holder, channel)
 
     def acquire(self, doing: str, error: type[Exception]) -> None:
         """Take ``lock`` within LOCK_TIMEOUT_S or raise ``error`` saying what

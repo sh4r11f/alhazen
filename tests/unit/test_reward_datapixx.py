@@ -69,13 +69,17 @@ class TestConfig:
     def test_a_gate_line_is_the_datapixx3_digital_output_it_names(self):
         assert GATE.device == "DATAPIXX3"
         assert GATE.line == "DATAPIXX3/dout0"
-        assert GATE.calibration_identity() == {"polarity": "active_low", "pump": PUMP}
+        assert GATE.calibration_identity() == {
+            "backend": "datapixx",
+            "polarity": "active_low",
+            "pump": PUMP,
+        }
 
     def test_ni_daq_defaults_and_identity_are_unchanged(self):
         line = RewardHwConfig(backend="nidaq")
         assert (line.device, line.channel, line.voltage) == ("Dev1", "ao0", 5.0)
         assert line.line == "Dev1/ao0"
-        assert line.calibration_identity() == {"polarity": None, "pump": None}
+        assert line.calibration_identity() == {"backend": None, "polarity": None, "pump": None}
         assert isinstance(make_reward(RewardHwConfig(backend="simulated")), SimulatedReward)
 
     @pytest.mark.parametrize(
@@ -154,6 +158,7 @@ class TestConfig:
                     "line": "DATAPIXX3/dout0",
                     "voltage": 5.0,
                     "ul_per_pulse": 2.5,
+                    "backend": "datapixx",
                     "polarity": "active_low",
                     "pump": PUMP,
                 },
