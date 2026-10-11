@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from alhazen.config.models import EyeTrackerConfig, RewardPulses, RigConfig
+from alhazen.config.models import EyeTrackerConfig, RewardPulses, RigConfig, dac_channel_of
 from alhazen.core.clock import Clock, MonotonicClock
 from alhazen.devices.eyetracker import EyeTracker, make_tracker
 from alhazen.devices.eyetracker.calibration_targets import CalibrationTargets
@@ -496,11 +496,22 @@ def _check_reward(rig: RigConfig, pulse: bool) -> CheckResult:
         evidence["line"] = cfg.line
         evidence["polarity"] = cfg.polarity
         evidence["pump"] = cfg.pump.model_dump() if cfg.pump is not None else None
+        analog = dac_channel_of(cfg.channel) is not None
         evidence["notes"] = [
-            "Without --pulse nothing is played: the DATAPixx3 is opened, its digital-output "
-            "modes are read (register-cache round trips: DPxUpdateRegCache writes libdpx's "
-            "cache back, then reads), and the only digital-output write is the gate's own bit "
-            "set to rest and read back (register evidence, not a measurement of the pin).",
+            (
+                "Without --pulse nothing is played: the DATAPixx3 is opened, its DAC settings "
+                "and the TRACKPixx3's analog-output mode are read (register-cache round trips: "
+                "DPxUpdateRegCache writes libdpx's cache back, then reads), and the only "
+                "analog-output write is the gate's own DAC channel set to its rest level and "
+                "read back (register evidence, not a measurement of the pin's voltage). No "
+                "digital output is touched."
+                if analog
+                else "Without --pulse nothing is played: the DATAPixx3 is opened, its "
+                "digital-output modes are read (register-cache round trips: DPxUpdateRegCache "
+                "writes libdpx's cache back, then reads), and the only digital-output write is "
+                "the gate's own bit set to rest and read back (register evidence, not a "
+                "measurement of the pin)."
+            ),
             "With --pulse, the gate's length is the DATAPixx3's own schedule; measured_ms is "
             "the wall clock across the call (start, completion polling, rest read-back), not "
             "a measurement of the pump, which runs at the rate set on its panel.",

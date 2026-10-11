@@ -329,6 +329,7 @@ class FakeLibdpx:
         # buffers untouched, the register cache keeps its last values.
         self.unplugged = False
         self._init_dout()
+        self._init_dac()
 
     def unplug(self) -> None:
         """The device goes away (see ``unplugged``)."""
@@ -433,6 +434,7 @@ class FakeLibdpx:
         if "DPxUpdateRegCache" in self.fault_on or "DPxUpdateRegCache" in self.raise_on:
             self._call("DPxUpdateRegCache")
         self._advance_dout()
+        self._advance_dac()
         if not self.dout_running:
             last = self.port_history[-1] if self.port_history else None
             if last != ("register", self.dout_register):
@@ -626,6 +628,157 @@ class FakeLibdpx:
             if self._polls_left <= 0:
                 self.dout_running = False
                 self.port_history.append(("register", self.dout_register))
+
+    # -----------------------------------------------------------------------
+    # The DATAPixx3's analog outputs (DAC0-3 on the Analog I/O port), as
+    # pypixxlib's _libdpx publishes them:
+    # - DPxSetDacValue(value, channel) / DPxGetDacValue(channel): the static
+    #   16-bit two's-complement code (c_int, c_int; returns a signed int);
+    # - DPxSetDacVoltage(voltage, channel) converts with the channel's range;
+    # - DPxGetDacRange(channel) -> (min, max) volts (DATAPixx docs: ±10 V on
+    #   ch0/1, ±5 V on ch2/3; the DATAPixx3 page: ±10 V on all four);
+    # - DPxSetDacSched(onset, rate, units, count): argtypes c_uint, c_uint,
+    #   c_int, c_uint, so a float onset raises ctypes.ArgumentError (what
+    #   DPxSetDacSchedule does with its seconds onset); count > 0 counts down;
+    # - DPxSetDacBuff(address, bytes); one frame = one word per buffered
+    #   channel, interleaved;
+    # - TPxGetAllDACOutput(): one TRACKPixx3 analog-output mode byte per DAC
+    #   (0 = schedule-controlled). As VPixx publishes it, the wrapper
+    #   declares an argument the C call does not take and raises TypeError
+    #   (dac_tpx_getter_broken models that).
+    # Not documented, modelled conservatively: a schedule that ends or is
+    # stopped leaves the pin at the sample it was on (no return to the
+    # static value); a start begins at the next register write.
+    # -----------------------------------------------------------------------
+
+    def _init_dac(self) -> None:
+        self.dac_range: dict[int, tuple[float, float]] = {c: (-10.0, 10.0) for c in range(4)}
+        self.dac_static = [0, 0, 0, 0]  # unsigned 16-bit codes
+        self.dac_pin = [0, 0, 0, 0]  # what each pin is driven to, as a code
+        self.dac_static_writes: list[tuple[int, int]] = []  # (code, channel)
+        self.dac_buffered: set[int] = set()
+        self.dac_buff: tuple[int, int] = (0, 0)
+        self.dac_sched: tuple[int, int, str, int] | None = None
+        self.dac_running = False
+        self.dac_start_pending = False
+        self.dac_stops = 0
+        self.dac_trains: list[tuple[tuple[int, ...], list[int]]] = []
+        self.dac_loopback = False
+        self.dac_calib_raw = False
+        self.tpx_dac_mode = 0
+        self.dac_tpx_getter_broken = False
+        self._dac_train: list[int] = []
+        self._dac_polls_left: int | None = None
+
+    def DPxGetDacNumChans(self) -> int:  # noqa: N802 - vendor's name
+        return 4
+
+    def DPxGetDacRange(self, channel: int) -> tuple[float, float]:  # noqa: N802
+        return self.dac_range[int(channel)]
+
+    def DPxSetDacValue(self, value: int, channel: int) -> None:  # noqa: N802 - vendor's name
+        self._call("DPxSetDacValue")
+        assert isinstance(value, int) and isinstance(channel, int), "(value, channel) ints"
+        assert -32768 <= value <= 65535, "a 16-bit DAC value"
+        assert 0 <= channel < 4, f"no DAC channel {channel}"
+        code = value & 0xFFFF
+        self.dac_static[channel] = code
+        self.dac_pin[channel] = code
+        self.dac_static_writes.append((code, channel))
+
+    def DPxGetDacValue(self, channel: int) -> int:  # noqa: N802 - vendor's name
+        code = self.dac_static[int(channel)]
+        return code - 0x10000 if code >= 0x8000 else code  # c_int: signed
+
+    def DPxSetDacVoltage(self, voltage: float, channel: int) -> None:  # noqa: N802
+        low, high = self.dac_range[int(channel)]
+        code = math.floor((voltage - low) / (high - low) * 65536 - 32768 + 0.5)
+        self.DPxSetDacValue(max(-32768, min(32767, code)), int(channel))
+
+    def DPxGetDacVoltage(self, channel: int) -> float:  # noqa: N802 - vendor's name
+        low, high = self.dac_range[int(channel)]
+        signed = self.DPxGetDacValue(channel)
+        return (signed + 32768) / 65536 * (high - low) + low
+
+    def DPxIsDacBuffChan(self, channel: int) -> int:  # noqa: N802 - vendor's name
+        return int(int(channel) in self.dac_buffered)
+
+    def DPxEnableDacBuffChan(self, channel: int) -> None:  # noqa: N802 - vendor's name
+        self._call("DPxEnableDacBuffChan")
+        self.dac_buffered.add(int(channel))
+
+    def DPxDisableDacBuffChan(self, channel: int) -> None:  # noqa: N802 - vendor's name
+        self.dac_buffered.discard(int(channel))
+
+    def DPxDisableDacBuffAllChans(self) -> None:  # noqa: N802 - vendor's name
+        self.dac_buffered.clear()
+
+    def DPxSetDacBuff(self, address: int, size: int) -> None:  # noqa: N802 - vendor's name
+        self._call("DPxSetDacBuff")
+        self.dac_buff = (int(address), size)
+
+    def DPxSetDacSched(self, onset: int, rate: int, units: str, count: int) -> None:  # noqa: N802
+        self._call("DPxSetDacSched")
+        for name, value in (("onset", onset), ("rate", rate), ("count", count)):
+            if not isinstance(value, int):
+                # argtypes c_uint: a float (DPxSetDacSchedule's seconds onset)
+                raise ctypes.ArgumentError(f"argument {name}: wrong type")
+        self.dac_sched = (onset, rate, units, count)
+
+    def DPxStartDacSched(self) -> None:  # noqa: N802 - vendor's name
+        self._call("DPxStartDacSched")
+        self.dac_start_pending = True
+
+    def DPxStopDacSched(self) -> None:  # noqa: N802 - vendor's name
+        self._call("DPxStopDacSched")
+        self.dac_stops += 1
+        self.dac_start_pending = False
+        if self.dac_running:
+            # Stopped mid-train: the pin stays where the train was (here,
+            # half way through it).
+            self.dac_running = False
+            channel = next(iter(sorted(self.dac_buffered)), 0)
+            if self._dac_train:
+                self.dac_pin[channel] = self._dac_train[len(self._dac_train) // 2]
+
+    def DPxIsDacSchedRunning(self) -> int:  # noqa: N802 - vendor's name
+        return int(self.dac_running)
+
+    def DPxIsDacAdcLoopback(self) -> int:  # noqa: N802 - vendor's name
+        return int(self.dac_loopback)
+
+    def DPxIsDacCalibRaw(self) -> int:  # noqa: N802 - vendor's name
+        return int(self.dac_calib_raw)
+
+    def TPxGetAllDACOutput(self) -> int:  # noqa: N802 - vendor's name
+        if self.dac_tpx_getter_broken:
+            raise TypeError("this function takes at least 1 argument (0 given)")
+        return self.tpx_dac_mode
+
+    def _advance_dac(self) -> None:
+        if self.dac_start_pending:
+            self.dac_start_pending = False
+            address, size = self.dac_buff
+            count = self.dac_sched[3] if self.dac_sched is not None else 0
+            channels = tuple(sorted(self.dac_buffered))
+            frames = min(size // (2 * max(len(channels), 1)), count)
+            words = [
+                self.ram.get(address + 2 * index, 0)
+                for index in range(frames * max(len(channels), 1))
+            ]
+            self.dac_trains.append((channels, words))
+            self._dac_train = words
+            self.dac_running = True
+            self._dac_polls_left = self.polls_until_done
+            return
+        if self.dac_running and self._dac_polls_left is not None:
+            self._dac_polls_left -= 1
+            if self._dac_polls_left <= 0:
+                self.dac_running = False
+                # Finished: the pin holds the last sample played.
+                channels = sorted(self.dac_buffered)
+                if channels and self._dac_train:
+                    self.dac_pin[channels[0]] = self._dac_train[-1]
 
     def TPxUninitialize(self) -> None:  # noqa: N802 - vendor's name
         self.tracker_close_steps.append("TPxUninitialize")

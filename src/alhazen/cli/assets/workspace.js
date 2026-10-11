@@ -615,6 +615,10 @@ function rewardFact(reward, calibration) {
   const voltage = reward.voltage ?? 5.0;
   const polarity = reward.polarity ?? null;
   const pump = reward.pump ?? null;
+  // The backend family a calibration records (RewardHwConfig.calibration_identity).
+  const family = gated ? 'datapixx' : null;
+  // An analog-output gate's HIGH level is a setting (0 V and `voltage`).
+  const analog = /^dac[0-3]$/.test(reward.channel || '');
   // JSON object member order is not part of a pump's calibration identity.
   const samePump = (entry) => {
     const measured = entry.pump ?? null;
@@ -625,7 +629,7 @@ function rewardFact(reward, calibration) {
         && measured[key] === pump[key]);
   };
   const where = gated
-    ? `${line}, ${polarity} gate`
+    ? `${line}, ${polarity} gate` + (analog ? ` at ${voltage} V` : '')
       + (pump ? `, pump ${pump.rate_ul_per_min} µL/min, ${pump.syringe_diameter_mm} mm syringe` : '')
     : `${line} at ${voltage} V`;
   const parts = [reward.backend === 'simulated' ? 'simulated' : where];
@@ -634,6 +638,7 @@ function rewardFact(reward, calibration) {
   } else {
     const measured = Object.entries(calibration || {})
       .filter(([, entry]) => entry.line === line && Number(entry.voltage) === Number(voltage)
+        && (entry.backend ?? null) === family
         && (entry.polarity ?? null) === polarity && samePump(entry))
       .map(([width, entry]) => `${Number(entry.ul_per_pulse).toFixed(1)} µL per ${width} ms pulse`
         + (entry.measured_at ? ` (${String(entry.measured_at).slice(0, 10)})` : ''));

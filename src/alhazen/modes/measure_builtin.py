@@ -469,8 +469,10 @@ def mouse_dragger(display: Any) -> Callable[[str], float]:
 
 def _datapixx_connection(cfg: RewardHwConfig) -> Measurement:
     """Like the NI-DAQ check, it changes no output: the DATAPixx3 is opened,
-    its digital-output modes and the gate's register are read, and it is
-    released. No digital-output value is written, not even the rest level;
+    what decides the gate's safety (digital-output modes for a DOUT gate; DAC
+    settings and the TRACKPixx3 analog-output mode for a DAC gate) and the
+    gate's register are read, and it is released. No output value is
+    written, not even the rest level;
     reading the registers takes one register-cache round trip
     (DPxUpdateRegCache writes libdpx's cache back to the device, then
     reads), the only refresh pypixxlib offers."""
@@ -482,7 +484,7 @@ def _datapixx_connection(cfg: RewardHwConfig) -> Measurement:
         "polarity": cfg.polarity,
         "pump": cfg.pump.model_dump() if cfg.pump is not None else None,
         "notes": [
-            "No digital-output value was written, not even the gate's rest level. Reading the "
+            "No output value was written, not even the gate's rest level. Reading the "
             "registers took one register-cache round trip (DPxUpdateRegCache writes libdpx's "
             "cache back, then reads). Register values are what libdpx reads back, not "
             "voltages on the pins.",
