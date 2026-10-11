@@ -16,6 +16,11 @@ Routes (dashboard.Handler has already checked Host, Origin and the token):
   proxied to the ONE configured hub with the stored bearer;
 * ``/local/*``: connection, installed releases, source packaging and session
   uploads (shapes in docs/hub/rig.md).
+
+An install can build the release's Python environment itself
+(``setup: "auto"``; ``alhazen.hub.environments``). That takes minutes, so it
+runs in a background thread: the request answers 202 at once and the page
+follows ``install.environment`` in ``/local/status`` (docs/hub/app.md).
 """
 
 from __future__ import annotations
@@ -45,12 +50,22 @@ from alhazen.hub.client import (
     probe_hub,
 )
 from alhazen.hub.credentials import Connection, Credential, RigState, public_user, sign_in
+from alhazen.hub.environments import (
+    Environments,
+    Plan,
+    SetupError,
+    Tools,
+    find_tools,
+    read_plan,
+    require_git,
+)
 from alhazen.hub.installation import (
     TRUST_STATEMENT,
     InstallError,
     InstallStore,
     check_identifier,
     check_sha256,
+    now,
 )
 from alhazen.hub.source import pack_and_upload
 from alhazen.hub.source import preview as source_preview
@@ -198,6 +213,14 @@ class HubAdapter:
         hub = workspace.directory / "hub"
         self.state = RigState(hub)
         self.installs = InstallStore(hub)
+        # The Python environments this rig builds for installed releases, and
+        # the builds started by this process: release digest -> {"thread",
+        # "detail"}. ``detail`` is the build's latest output line; it is kept
+        # in memory only, because the page polls it and it is worth no file
+        # write. ``_setup_lock`` guards the dict and "one build at a time".
+        self.environments = Environments(hub)
+        self._setups: dict[str, dict[str, Any]] = {}
+        self._setup_lock = threading.Lock()
         self.outbox = Outbox(hub / "outbox")
         self.previews = Previews()
         self.scratch = hub / "scratch"
@@ -216,6 +239,7 @@ class HubAdapter:
             **extra,
         )
         if background:
+            self._mark_interrupted_setups()
             self.outbox.recover()
             credential = self.state.credential()
             if credential is not None:
@@ -223,6 +247,14 @@ class HubAdapter:
 
     def close(self) -> None:
         self.uploader.close()
+        # Stop an environment build still running. Its thread records it as
+        # cancelled, so the page offers to start it again next time; the wait
+        # is bounded so that closing the app never hangs on a stuck download.
+        self.environments.close()
+        with self._setup_lock:
+            threads = [setup["thread"] for setup in self._setups.values()]
+        for thread in threads:
+            thread.join(timeout=10)
 
     # -- plumbing -------------------------------------------------------------------------
 
@@ -489,6 +521,10 @@ class HubAdapter:
             "installed": [self._install_public(r) for r in self.installs.records()],
             "jobs": [public_job(j) for j in jobs],
             "run_active": self.busy(),
+            # Whether this computer can build an experiment's Python
+            # environment itself, and why not when it cannot: the page offers
+            # "set up automatically" only when it can.
+            "setup": self._setup_public(),
             "outbox_problems": self.outbox.problems(),
             "interpreters": [{"path": p, "label": label} for p, label in interpreters.items()],
             "trust_statement": TRUST_STATEMENT,
@@ -568,7 +604,38 @@ class HubAdapter:
                 else None
             ),
             "shared_data_error": record.get("shared_data_error"),
+            # The environment this rig built for the release, or None when
+            # the operator chose an interpreter of their own.
+            "environment": self._environment_public(record),
         }
+
+    def _environment_public(self, record: dict[str, Any]) -> dict[str, Any] | None:
+        """What the page shows of a release's environment: its state
+        (``building``, ``ready`` or ``failed``), what it was built from, and
+        while it is building the latest line of the build's output."""
+        environment = record.get("environment")
+        if not isinstance(environment, dict):
+            return None
+        building = environment.get("state") == "building"
+        with self._setup_lock:
+            live = self._setups.get(str(record.get("sha256")))
+            detail = live["detail"] if live is not None and building else None
+        return {
+            "state": environment.get("state"),
+            "python_version": environment.get("python_version"),
+            "extras": environment.get("extras") or [],
+            "git_packages": environment.get("git_packages") or [],
+            "started_at": environment.get("started_at"),
+            "finished_at": environment.get("finished_at"),
+            "detail": detail,
+        }
+
+    def _setup_public(self) -> dict[str, Any]:
+        try:
+            tools = find_tools()
+        except SetupError as exc:
+            return {"available": False, "reason": exc.message, "git": False}
+        return {"available": True, "reason": None, "git": tools.git is not None}
 
     def projects(self, args: dict[str, str], body: dict[str, Any]) -> tuple[int, Any]:
         items = []
@@ -589,15 +656,21 @@ class HubAdapter:
         return 200, {"items": items}
 
     def install(self, args: dict[str, str], body: dict[str, Any]) -> tuple[int, Any]:
+        """Download, verify, unpack and trust a release, then give it an
+        interpreter: the one the operator names (``python``; answered 201,
+        registered) or one this rig builds (``setup: "auto"``; answered 202
+        while it is being built, see :meth:`_start_setup`)."""
         self._refuse_if_busy()
         credential = self._signed_in()
-        python = body.get("python")
-        if not isinstance(python, str) or not python or not Path(python).is_absolute():
-            raise HubRouteError(
-                400, "invalid_request", "Choose the Python interpreter by its full path"
-            )
-        if not Path(python).is_file():
-            raise HubRouteError(400, "invalid_request", f"No interpreter at {python}")
+        automatic = self._wants_automatic_setup(body)
+        if automatic:
+            # Both checked before anything is downloaded, so a refusal here
+            # leaves no half-done install behind.
+            self._setup_tools()
+            self._refuse_a_second_setup()
+            python = ""
+        else:
+            python = self._chosen_python(body)
         sha256 = check_sha256(body.get("sha256"))
         record = self._authed(
             lambda client: self.installs.install(
@@ -610,7 +683,202 @@ class HubAdapter:
                 trusted_by=credential.user,
             )
         )
+        if automatic:
+            record, started = self._start_setup(record["sha256"])
+            return (202 if started else 201), {"install": self._install_public(record)}
         return 201, {"install": self._install_public(self.register(record["sha256"], python))}
+
+    @staticmethod
+    def _wants_automatic_setup(body: dict[str, Any]) -> bool:
+        """True for ``setup: "auto"``. The two ways to get an interpreter
+        exclude each other, so a request naming both is refused rather than
+        one of them being silently ignored."""
+        setup = body.get("setup")
+        if setup is None:
+            return False
+        if setup != "auto":
+            raise HubRouteError(
+                400, "invalid_request", 'setup must be "auto", or left out with a python given'
+            )
+        if body.get("python") is not None:
+            raise HubRouteError(
+                400, "invalid_request", 'Give either setup: "auto" or a python, not both'
+            )
+        return True
+
+    @staticmethod
+    def _chosen_python(body: dict[str, Any]) -> str:
+        python = body.get("python")
+        if not isinstance(python, str) or not python or not Path(python).is_absolute():
+            raise HubRouteError(
+                400,
+                "invalid_request",
+                "Choose the Python interpreter by its full path, or let this rig set one up "
+                '(setup: "auto")',
+            )
+        if not Path(python).is_file():
+            raise HubRouteError(400, "invalid_request", f"No interpreter at {python}")
+        return python
+
+    # -- automatic setup: an environment built by this rig -----------------------------------
+
+    def setting_up(self) -> bool:
+        """An experiment's Python environment is being built right now. The
+        dashboard refuses to start a session meanwhile: the download and the
+        install would compete with the session for the disk and the CPU."""
+        with self._setup_lock:
+            return self._a_setup_is_running()
+
+    def _a_setup_is_running(self) -> bool:
+        """:meth:`setting_up` for a caller that already holds the lock."""
+        return any(setup["thread"].is_alive() for setup in self._setups.values())
+
+    def _refuse_a_second_setup(self) -> None:
+        if self.setting_up():
+            raise HubRouteError(
+                409,
+                "setup_busy",
+                "Another experiment is being set up on this rig; wait for it to finish, "
+                "then try again",
+            )
+
+    def _setup_tools(self) -> Tools:
+        try:
+            return find_tools()
+        except SetupError as exc:
+            raise HubRouteError(409, exc.code, exc.message) from exc
+
+    def setup(self, args: dict[str, str], body: dict[str, Any]) -> tuple[int, Any]:
+        """Build, or build again, the Python environment of a release that is
+        already installed and trusted here, then register it: what the page's
+        "Set up" and "Try again" do. 202 when a build was started, 200 when
+        the release was already set up."""
+        self._refuse_if_busy()
+        self._refuse_a_second_setup()
+        record, started = self._start_setup(check_sha256(body.get("sha256")))
+        return (202 if started else 200), {"install": self._install_public(record)}
+
+    def _start_setup(self, sha256: str) -> tuple[dict[str, Any], bool]:
+        """Start building the environment of a TRUSTED install in a
+        background thread; ``(record, started)``. Nothing is started when the
+        release is already registered with the environment built for it.
+
+        Building runs the release's build backend, so the trust gate
+        (``trusted_record``) comes first, as it does for a registration.
+        What cannot work is refused here, before the thread, so the request
+        itself carries the reason: no uv, no lock file in the release, or a
+        git source on a computer without git. Such a refusal is also kept on
+        the record, where the page shows it next to the install.
+        """
+        record = self.installs.trusted_record(sha256)
+        environment = record.get("environment")
+        if (
+            isinstance(environment, dict)
+            and environment.get("state") == "ready"
+            and record.get("status") == "registered"
+            and not record.get("error")
+            and record.get("python") == environment.get("python")
+            and Path(str(record.get("python"))).is_file()
+        ):
+            return record, False
+        tools = self._setup_tools()
+        try:
+            plan = read_plan(Path(record["path"]), python_min=str(record.get("python_min") or ""))
+            require_git(plan, tools)
+        except SetupError as exc:
+            self.installs.update(sha256, error={"code": exc.code, "message": exc.message})
+            raise InstallError(409, exc.code, exc.message) from exc
+        building = {
+            "state": "building",
+            "python": None,
+            "python_version": plan.python,
+            "extras": list(plan.extras),
+            "git_packages": list(plan.git_packages),
+            "started_at": now(),
+            "finished_at": None,
+        }
+        with self._setup_lock:
+            # Checked again under the lock: two requests may both have passed
+            # the route's own check a moment ago.
+            if self._a_setup_is_running():
+                raise HubRouteError(
+                    409, "setup_busy", "Another experiment is being set up on this rig"
+                )
+            record = self.installs.update(sha256, environment=building, error=None)
+            thread = threading.Thread(
+                target=self._run_setup,
+                args=(sha256, Path(record["path"]), plan, tools, building),
+                name=f"hub-setup-{sha256[:12]}",
+                daemon=True,
+            )
+            self._setups[sha256] = {"thread": thread, "detail": "Starting"}
+            thread.start()
+        return record, True
+
+    def _run_setup(
+        self, sha256: str, release: Path, plan: Plan, tools: Tools, building: dict[str, Any]
+    ) -> None:
+        """The background thread of one setup: build the environment, record
+        it, register the release with its interpreter. Every way out leaves
+        the record saying what happened; none leaves it at "building"."""
+
+        def progress(line: str) -> None:
+            with self._setup_lock:
+                self._setups[sha256]["detail"] = line[:300]
+
+        try:
+            python = self.environments.build(release, sha256, plan, tools, on_output=progress)
+        except SetupError as exc:
+            self._setup_failed(sha256, building, exc.code, exc.message)
+            return
+        except Exception as exc:
+            # Not a refusal but a bug or a failing disk. It is recorded, so
+            # the page stops saying "setting up", and raised again, so its
+            # traceback reaches the app's log.
+            self._setup_failed(
+                sha256,
+                building,
+                "setup_failed",
+                f"Setting up stopped on an unexpected error: {exc!r}",
+            )
+            raise
+        # The record keeps saying "building" until the registration is
+        # decided too: the page stops following a setup when that state
+        # changes, and must then find either a registered release or the
+        # reason it is not one, never the moment in between.
+        progress("Registering the experiment")
+        done = {**building, "state": "ready", "python": str(python), "finished_at": now()}
+        try:
+            self.register(sha256, str(python))
+        except InstallError as exc:
+            # register() keeps most of its refusals on the record itself (an
+            # interpreter without alhazen, an incompatible one); this also
+            # keeps the ones it only raises, such as files changed meanwhile.
+            self.installs.update(
+                sha256, environment=done, error={"code": exc.code, "message": exc.message}
+            )
+            return
+        self.installs.update(sha256, environment=done)
+
+    def _setup_failed(self, sha256: str, building: dict[str, Any], code: str, message: str) -> None:
+        failed = {**building, "state": "failed", "finished_at": now()}
+        self.installs.update(sha256, environment=failed, error={"code": code, "message": message})
+
+    def _mark_interrupted_setups(self) -> None:
+        """At start: a record still saying "building" belongs to a build that
+        died with the last process (the app was closed, or the computer shut
+        down). It is marked failed with that reason, so the page offers to
+        start it again instead of showing progress that will never move."""
+        for record in self.installs.records():
+            environment = record.get("environment")
+            if isinstance(environment, dict) and environment.get("state") == "building":
+                self._setup_failed(
+                    str(record["sha256"]),
+                    environment,
+                    "setup_interrupted",
+                    "Setting up this experiment was interrupted (the app was closed "
+                    "before it finished). Start it again.",
+                )
 
     def install_recover(self, args: dict[str, str], body: dict[str, Any]) -> tuple[int, Any]:
         """Explicit recovery of an interrupted install (package module's own
@@ -1071,6 +1339,7 @@ LOCAL_ROUTES: dict[tuple[str, str], LocalHandler] = {
     ),
     ("POST", "/local/install"): HubAdapter.install,
     ("POST", "/local/install-recover"): HubAdapter.install_recover,
+    ("POST", "/local/setup"): HubAdapter.setup,
     ("POST", "/local/package-preview"): HubAdapter.package_preview,
     ("POST", "/local/package-upload"): HubAdapter.package_upload,
     ("GET", "/local/sessions"): HubAdapter.sessions,

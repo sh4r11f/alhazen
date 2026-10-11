@@ -394,3 +394,22 @@ test('a card picture follows its tags; the Methods excerpt is plain leading pros
   assert.ok(C.methodsExcerpt('word '.repeat(200), 60).endsWith('\u2026'));
   assert.equal(C.methodsExcerpt(''), '');
 });
+
+test('an install set up by the rig is described by its state; one given an interpreter says nothing', () => {
+  /* The page's objects come from its own script context: compared as plain data. */
+  const plain = (value) => JSON.parse(JSON.stringify(value));
+  /* No environment: the operator chose an interpreter, there is no setup to report. */
+  assert.deepEqual(plain(C.setupState({status: 'registered'})), {busy: false, state: null, word: ''});
+  assert.deepEqual(plain(C.setupState(null)), {busy: false, state: null, word: ''});
+  assert.deepEqual(plain(C.setupState({environment: null})), {busy: false, state: null, word: ''});
+  /* Building: busy, with the build's latest line (or "starting" before the first). */
+  const building = C.setupState({environment: {state: 'building', python_version: '3.11', detail: ' Downloading psychopy (64.0MiB) '}});
+  assert.equal(building.busy, true);
+  assert.equal(building.word, 'Setting up Python 3.11 and the experiment’s packages: Downloading psychopy (64.0MiB)');
+  assert.match(C.setupState({environment: {state: 'building', detail: null}}).word, /^Setting up the experiment’s packages: starting$/);
+  /* Ended: no longer busy, whichever way. */
+  assert.deepEqual(plain(C.setupState({environment: {state: 'failed'}})), {busy: false, state: 'failed', word: 'Setting up did not finish'});
+  assert.equal(C.setupState({environment: {state: 'ready'}}).busy, false);
+  /* A state this page does not know is not reported as a build in progress. */
+  assert.deepEqual(plain(C.setupState({environment: {state: 'queued'}})), {busy: false, state: null, word: ''});
+});

@@ -260,6 +260,13 @@ class DashboardServer(ThreadingHTTPServer):
                 self._hub = HubAdapter(self.workspace, self.data)
             return self._hub
 
+    def setting_up(self) -> bool:
+        """An installed experiment's Python environment is being built
+        (HubAdapter.setting_up). False for a dashboard that never used the
+        hub, without loading it."""
+        with self._hub_lock:
+            return self._hub is not None and self._hub.setting_up()
+
     def close_hub(self) -> None:
         with self._hub_lock:
             if self._hub is not None:
@@ -495,6 +502,15 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("Parameter YAML must be text")
                 self._json({"values": parse_parameters(body["text"])})
             elif path == "/api/runs":
+                if self.server.setting_up():
+                    # A build downloads and unpacks hundreds of megabytes; a
+                    # session started beside it would be timed on a busy disk.
+                    raise ValueError(
+                        "An experiment is being set up on this computer (its Python "
+                        "environment is being downloaded and installed), which would "
+                        "disturb a session's timing. Wait for it to finish (the Hub page "
+                        "shows its progress), then start the session."
+                    )
                 self._json(workspace.start(Launch.model_validate(body)), 201)
             elif path == "/api/estimate":
                 self._json(self.server.estimates.estimate(EstimateRequest.model_validate(body)))

@@ -1159,3 +1159,135 @@ test('a release numbered apart from its protocol is labelled with both', async (
   assert.match(p.text(), /release 0\.6\.1, protocol 0\.6\.0/);
   assert.match(p.text(), /v0\.6\.0/);
 });
+
+/* -- automatic setup (docs/hub/app.md) ----------------------------------------------- */
+
+const SHA = 'ab'.repeat(32);
+function setupStatus(installed, setup) {
+  return () => ({status: 200, body: {state: 'signed_in', base_url: 'https://hub.example.org', user: ALICE, jobs: [], run_active: false,
+    interpreters: [{path: '/opt/lab/bin/python', label: 'lab'}], setup, installed: installed()}});
+}
+function tickTrust(form) {
+  form.querySelectorAll('input').find((i) => i.getAttribute('type') === 'checkbox').checked = true;
+}
+function pythonField(form) {
+  return form.querySelectorAll('.field').find((f) => f.textContent.includes('Python interpreter'));
+}
+
+test('where the rig can set an experiment up, that is the default, and the page follows the build until it is registered', async () => {
+  /* What the rig reports, in order: the build's progress twice, then the registered release. */
+  const reports = [
+    {sha256: SHA, version: '1.2.0', status: 'installed', error: null, environment: {state: 'building', python_version: '3.11', detail: 'Downloading psychopy (64.0MiB)'}},
+    {sha256: SHA, version: '1.2.0', status: 'installed', error: null, environment: {state: 'building', python_version: '3.11', detail: 'Installed 212 packages in 41s'}},
+    {sha256: SHA, version: '1.2.0', status: 'registered', workspace_url: '/?project=p9', error: null, environment: {state: 'ready', python_version: '3.11', detail: null}},
+  ];
+  let step = -1;
+  const p = await mount({path: '/hub', hash: '#token=' + TOKEN, search: '?view=experiment&id=e1', routes: rigRoutes({
+    'GET /experiments/e1': () => ({status: 200, body: {experiment: experiment(), versions: [release()]}}),
+    'GET /local/status': setupStatus(() => (step < 0 ? [] : [reports[Math.min(step, 2)]]), {available: true, reason: null, git: true}),
+    'POST /local/install': () => { step = 0; return {status: 202, body: {install: reports[0]}}; },
+  })});
+  const form = p.find('form', 'Set it up for me');
+  /* No interpreter is asked for; trust still is. */
+  assert.equal(pythonField(form).hidden, true);
+  await p.submit(form);
+  assert.equal(p.hub.calls.filter((c) => c.path.endsWith('/local/install')).length, 0);
+  assert.match(p.text(), /trust this exact release/);
+  tickTrust(form);
+  await p.submit(form);
+  const call = p.hub.calls.find((c) => c.path.endsWith('/local/install'));
+  assert.deepEqual(call.json, {experiment_id: 'e1', version_id: 'v1', sha256: SHA, trust_code: true, setup: 'auto'});
+  /* Accepted: the form gives way to the build's progress, and no link to the workspace yet. */
+  assert.equal(form.hidden, true);
+  assert.match(p.text(), /Setting up Python 3\.11 and the experiment’s packages: Downloading psychopy \(64\.0MiB\)\./);
+  assert.equal(p.find('a', 'Open it in the workspace'), undefined);
+  step = 1;
+  await p.tick();
+  assert.match(p.text(), /Installed 212 packages in 41s/);
+  assert.doesNotMatch(p.text(), /Installed and registered/);
+  step = 2;
+  await p.tick();
+  assert.match(p.text(), /Installed and registered in the workspace/);
+  assert.equal(p.find('a', 'Open it in the workspace').getAttribute('href'), '/?project=p9');
+  assert.equal(form.hidden, true);
+  /* The build has ended: the page stops asking. */
+  const asked = p.hub.calls.filter((c) => c.key === 'GET /local/status').length;
+  await p.tick();
+  assert.equal(p.hub.calls.filter((c) => c.key === 'GET /local/status').length, asked);
+});
+
+test('an operator can still name a Python of their own where setup is offered', async () => {
+  const p = await mount({path: '/hub', hash: '#token=' + TOKEN, search: '?view=experiment&id=e1', routes: rigRoutes({
+    'GET /experiments/e1': () => ({status: 200, body: {experiment: experiment(), versions: [release()]}}),
+    'GET /local/status': setupStatus(() => [], {available: true, reason: null, git: true}),
+    'POST /local/install': () => ({status: 201, body: {install: {sha256: SHA, version: '1.2.0', status: 'registered', workspace_url: '/?project=p9', error: null, environment: null}}}),
+  })});
+  const form = p.find('form', 'Set it up for me');
+  const radios = form.querySelectorAll('input').filter((i) => i.getAttribute('type') === 'radio');
+  radios[0].checked = false;
+  radios[1].checked = true;
+  radios[1].fire('change', {});
+  assert.ok(!pythonField(form).hidden);
+  tickTrust(form);
+  await p.submit(form);
+  assert.match(p.text(), /Choose the Python interpreter/);
+  pythonField(form).querySelector('input').value = '/opt/lab/bin/python';
+  await p.submit(form);
+  const call = p.hub.calls.find((c) => c.path.endsWith('/local/install'));
+  assert.deepEqual(call.json, {experiment_id: 'e1', version_id: 'v1', sha256: SHA, trust_code: true, python: '/opt/lab/bin/python'});
+});
+
+test('a build that failed shows its reason and its output, and offers to set up again', async () => {
+  const failed = {sha256: SHA, version: '1.2.0', status: 'installed', environment: {state: 'failed', python_version: '3.11', detail: null},
+    error: {code: 'setup_failed', message: 'Building the Python environment failed (uv exit code 2). The end of its output:\nerror: Failed to fetch psychopy\n  Caused by: connection refused'}};
+  const p = await mount({path: '/hub', hash: '#token=' + TOKEN, search: '?view=experiment&id=e1', routes: rigRoutes({
+    'GET /experiments/e1': () => ({status: 200, body: {experiment: experiment(), versions: [release()]}}),
+    'GET /local/status': setupStatus(() => [failed], {available: true, reason: null, git: true}),
+  })});
+  assert.match(p.text(), /not registered: Building the Python environment failed \(uv exit code 2\)/);
+  /* The lines uv printed are shown as output, not run into the sentence. */
+  assert.equal(p.find('pre').textContent, 'error: Failed to fetch psychopy\n  Caused by: connection refused');
+  assert.equal(p.find('button', 'Set up this experiment').textContent, 'Set up this experiment');
+  assert.ok(!p.find('form', 'Set it up for me').hidden);
+});
+
+test('a page opened while a build runs follows it instead of offering a second one', async () => {
+  const building = {sha256: SHA, version: '1.2.0', status: 'installed', error: null, environment: {state: 'building', python_version: '3.11', detail: 'Resolved 212 packages'}};
+  let done = false;
+  const p = await mount({path: '/hub', hash: '#token=' + TOKEN, search: '?view=experiment&id=e1', routes: rigRoutes({
+    'GET /experiments/e1': () => ({status: 200, body: {experiment: experiment(), versions: [release()]}}),
+    'GET /local/status': setupStatus(() => [done ? Object.assign({}, building, {status: 'registered', workspace_url: '/?project=p9', environment: {state: 'ready'}}) : building],
+      {available: true, reason: null, git: true}),
+  })});
+  assert.match(p.text(), /Resolved 212 packages/);
+  assert.equal(p.find('form', 'Set it up for me').hidden, true);
+  done = true;
+  await p.tick();
+  assert.match(p.text(), /Installed and registered in the workspace/);
+});
+
+test('a rig that cannot set an experiment up says why and asks for an interpreter', async () => {
+  const p = await mount({path: '/hub', hash: '#token=' + TOKEN, search: '?view=experiment&id=e1', routes: rigRoutes({
+    'GET /experiments/e1': () => ({status: 200, body: {experiment: experiment(), versions: [release()]}}),
+    'GET /local/status': setupStatus(() => [], {available: false, reason: 'This computer has no uv.', git: false}),
+  })});
+  assert.match(p.text(), /cannot set the experiment up by itself: This computer has no uv\./);
+  const form = p.find('form', 'Python interpreter');
+  assert.equal(form.querySelectorAll('input').filter((i) => i.getAttribute('type') === 'radio').length, 0);
+  assert.ok(!pythonField(form).hidden);
+});
+
+test('the Installed table says a release is being set up, and shows only the sentence of a failure', async () => {
+  const rows = [
+    {sha256: SHA, experiment_id: 'e1', version_id: 'v1', version: '1.2.0', title: 'Fixation demo', status: 'installed', error: null,
+      environment: {state: 'building', python_version: '3.11', detail: 'Downloading psychopy'}},
+    {sha256: 'cd'.repeat(32), experiment_id: 'e2', version_id: 'v2', version: '0.3.0', title: 'Pursuit', status: 'installed',
+      environment: {state: 'failed'}, error: {code: 'setup_failed', message: 'Building failed (uv exit code 2).\nerror: no network'}},
+  ];
+  const p = await mount({path: '/hub', hash: '#token=' + TOKEN, search: '?view=rig&tab=installed', routes: rigRoutes({
+    'GET /local/status': setupStatus(() => rows, {available: true, reason: null, git: true}),
+  })});
+  assert.match(p.text(), /Setting up Python 3\.11 and the experiment’s packages: Downloading psychopy \(open the experiment to follow it\)/);
+  assert.match(p.text(), /Files only \(not registered\): Building failed \(uv exit code 2\)\./);
+  assert.doesNotMatch(p.text(), /no network/);
+});

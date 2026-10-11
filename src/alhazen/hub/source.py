@@ -109,13 +109,31 @@ def not_for_the_rig(relative: str) -> str | None:
         return "CI configuration"
     if folders and folders[0] == ".githooks":
         return "git hook"
-    if relative == "uv.lock":
-        return "lock file (the rig runs the experiment in an interpreter it already has)"
+    # uv.lock, pyproject.toml and .python-version are NOT here: a rig builds
+    # the experiment's Python environment from them (alhazen.hub.environments).
     if any(p.startswith("data-rehearsal") for p in parts):
         return "rehearsal data"
     if "stimulus-check" in folders and name.lower().endswith(_IMAGE_SUFFIXES):
         return "stimulus-check image"
     return None
+
+
+def setup_note(files: list[str]) -> str | None:
+    """What to tell an author whose package lacks a file a rig needs to set
+    the experiment up by itself, or None when both are there. Such a package
+    still installs; each rig's operator must then prepare its Python by hand."""
+    missing = [name for name in ("pyproject.toml", "uv.lock") if name not in files]
+    if not missing:
+        return None
+    advice = (
+        "Run `uv lock` in the experiment folder and include uv.lock."
+        if missing == ["uv.lock"]
+        else "Include them (uv.lock is written by `uv lock`)."
+    )
+    return (
+        f"No {' or '.join(missing)} in this package: a rig cannot set the experiment up by "
+        f"itself, so each operator will have to prepare a Python environment by hand. {advice}"
+    )
 
 
 def _excluded(root: Path, chosen: set[str]) -> tuple[list[dict[str, str]], int]:
@@ -309,6 +327,9 @@ def preview(root: Path, packages: PackageBuilder) -> dict[str, Any]:
         ],
         # Configuration files the hardware suggestion could not read.
         "notes": notes,
+        # Said when the proposal lacks what a rig sets the experiment up
+        # from (the lock file); None otherwise.
+        "setup_note": setup_note([str(f["path"]) for f in files]),
     }
 
 

@@ -44,6 +44,8 @@ const HubApp = (() => {
   const THEMES = ['system', 'light', 'dark'];
   const PAGE = 20;
   const POLL_MS = 1000;
+  /* How often the install panel asks the rig how a setup is going. */
+  const SETUP_POLL_MS = 2000;
   const POLL_MAX_MS = 8000;
   /* The contract's package cap; the server enforces it, the page says it
    * before sending 256 MiB for nothing. */
@@ -1708,11 +1710,18 @@ const HubApp = (() => {
       const href = state.api.url('/experiments/' + C.seg(experiment.id) + '/versions/' + C.seg(version.id) + '/download');
       return h('div', {class: 'sheet-block'},
         h('a', {class: 'btn btn-line btn-block', href, download: ''}, 'Download the release archive'),
-        h('p', {class: 'muted small'}, 'The hub never runs experiments. Install it on a rig from your library '
-          + '(alhazen dashboard --hub).'));
+        h('p', {class: 'muted small'}, 'The hub never runs experiments. Open the Alhazen app on the rig '
+          + '(or alhazen dashboard --hub) and install it from your library there.'));
     }
 
-    /** Trust and install a release on this rig (rig only). */
+    /** Trust and install a release on this rig (rig only).
+     *
+     *  A release needs a Python interpreter that has its dependencies. Where
+     *  the rig can build one itself (local.setup.available: it has uv), that
+     *  is the default: the install answers at once and the page follows the
+     *  build in /local/status until the release is registered or the build
+     *  has failed. Otherwise, or when the operator prefers, they name an
+     *  interpreter of their own, as before. */
     function installPanel(experiment, version) {
       const box = h('div', {class: 'sheet-block install'});
       box.appendChild(h('h3', {class: 'sub-title'}, 'Install on this rig'));
@@ -1722,16 +1731,33 @@ const HubApp = (() => {
           link({view: 'rig', tab: 'connection'}, 'Connect this rig', {class: 'btn btn-line'}));
         return box;
       }
+      /* The screen this panel belongs to: a poll that comes back after the
+       * reader has moved on must not touch the page. */
+      const epoch = state.epoch;
       const existing = installFor(version.sha256);
       const status = statusLine();
       const result = h('div', {class: 'install-result'});
+      const registered = (record) => Boolean(record && record.status === 'registered' && !record.error);
       const showInstalled = (record) => {
         result.replaceChildren();
         if (!record) return;
-        const ok = record.status === 'registered' && !record.error;
+        const setup = C.setupState(record);
+        if (setup.busy) {
+          result.appendChild(h('p', {class: 'note', role: 'status'}, setup.word + '.'));
+          result.appendChild(h('p', {class: 'muted small'},
+            'The first experiment takes several minutes (PsychoPy alone is hundreds of megabytes); later ones reuse what was downloaded. '
+            + 'You can leave this page: setting up goes on, and no session can start until it is done.'));
+          return;
+        }
+        const ok = registered(record);
+        /* A build's failure ends with the last lines uv printed: the first
+         * line is the sentence, the rest is shown as the output it is. */
+        const lines = String((record.error && record.error.message) || '').split('\n');
+        const why = lines[0] || (setup.state === 'failed' ? 'see the build\u2019s log.' : 'choose how to set it up below.');
         result.appendChild(h('p', {class: 'note note-' + (ok ? 'ok' : 'warn'), role: 'status'},
           ok ? 'Installed and registered in the workspace (' + versionLabel(record) + ').'
-            : 'Files installed and verified, but not registered: ' + ((record.error && record.error.message) || 'choose an interpreter below.')));
+            : 'Files installed and verified, but not registered: ' + why));
+        if (!ok && lines.length > 1) result.appendChild(h('pre', {class: 'install-log'}, lines.slice(1).join('\n')));
         const durability = durabilityNote(record);
         if (durability) result.appendChild(durability);
         const open = workspaceLink(record, 'Open it in the workspace');
@@ -1739,12 +1765,13 @@ const HubApp = (() => {
       };
       showInstalled(existing);
       box.appendChild(result);
-      if (existing && existing.status === 'registered' && !existing.error) return box;
+      if (registered(existing)) return box;
       if (!local.user) {
         box.append(h('p', {class: 'muted'}, 'Sign in on this rig to install.'),
           link({view: 'signin', next: currentNext()}, 'Sign in', {class: 'btn btn-line'}));
         return box;
       }
+      const canSetUp = Boolean(local.setup && local.setup.available);
       box.appendChild(h('div', {class: 'callout callout-warn'},
         h('p', {class: 'callout-title'}, 'This release is Python code from its author.'),
         /* The rig's own statement when it gives one (rig-contract: trust_statement). */
@@ -1752,7 +1779,9 @@ const HubApp = (() => {
           : 'Trusting it lets Alhazen import and run it as your operating-system user, with your access to files, '
           + 'collected data, saved credentials and connected devices. A virtual environment is not a sandbox. Install only code whose author you trust.'),
         h('p', null, 'Installing downloads the archive, checks its SHA-256 and every file against the manifest, and extracts it into a new folder. '
-          + 'Existing experiments and checkouts are not changed, and nothing is installed into the interpreter.')));
+          + 'Existing experiments and checkouts are not changed'
+          + (canSetUp ? '. Setting it up builds a Python environment for this release alone, from the versions its author locked.'
+            : ', and nothing is installed into the interpreter.'))));
       const listId = nextId('interpreters');
       const python = input({type: 'text', name: 'python', autocomplete: 'off', spellcheck: 'false', list: listId,
         placeholder: '/path/to/venv/bin/python', 'data-focus': 'install-python'});
@@ -1760,32 +1789,76 @@ const HubApp = (() => {
       for (const i of Array.isArray(local.interpreters) ? local.interpreters : []) {
         if (i && i.path) datalist.appendChild(h('option', {value: i.path}, i.label || i.path));
       }
+      const pythonField = field('Python interpreter', python,
+        'The absolute path of the interpreter that already has alhazen; the experiment will run with it. '
+        + (datalist.children.length ? 'Interpreters this rig knows are suggested.' : ''));
+      /* How the release gets its interpreter. Offered only where the rig can
+       * build one; elsewhere the reason is said and the field stands alone. */
+      const howName = nextId('how');
+      const auto = h('input', {type: 'radio', name: howName, value: 'auto', id: nextId('r'), class: 'check', checked: canSetUp});
+      const own = h('input', {type: 'radio', name: howName, value: 'own', id: nextId('r'), class: 'check', checked: !canSetUp});
+      const how = canSetUp
+        ? h('fieldset', {class: 'fieldset'}, h('legend', null, 'Python for this experiment'),
+          h('label', {class: 'check-row', for: auto.getAttribute('id')}, auto,
+            h('span', null, 'Set it up for me (recommended): this rig downloads the Python and the packages the author locked.')),
+          h('label', {class: 'check-row', for: own.getAttribute('id')}, own,
+            h('span', null, 'Use a Python I already prepared.')))
+        : null;
+      const whyNot = !canSetUp && local.setup && local.setup.reason
+        ? h('p', {class: 'muted small'}, 'This rig cannot set the experiment up by itself: ' + String(local.setup.reason))
+        : null;
       const trust = checkbox('I trust the code of ' + (experiment.title || 'this experiment') + ' ' + versionLabel(version)
         + ', SHA-256 ' + C.shortHash(version.sha256) + '\u2026, and choose to install it.');
-      const button = h('button', {type: 'submit', class: 'btn btn-primary'}, existing ? 'Register with this interpreter' : 'Install ' + versionLabel(version));
-      const form = h('form', {class: 'form'},
-        field('Python interpreter', python,
-          'The absolute path of the interpreter that already has alhazen; the experiment will run with it. '
-          + (datalist.children.length ? 'Interpreters this rig knows are suggested.' : '')),
-        datalist, trust.el, button, status.el);
+      const button = h('button', {type: 'submit', class: 'btn btn-primary'});
+      const syncHow = () => {
+        pythonField.hidden = auto.checked;
+        const installed = Boolean(installFor(version.sha256));
+        button.textContent = !installed ? 'Install ' + versionLabel(version)
+          : (auto.checked ? 'Set up this experiment' : 'Register with this interpreter');
+      };
+      auto.addEventListener('change', syncHow);
+      own.addEventListener('change', syncHow);
+      syncHow();
+      const form = h('form', {class: 'form'}, how, whyNot, pythonField, datalist, trust.el, button, status.el);
+      /* Ask the rig again until the build has ended, showing its latest
+       * line; then show what it ended as, and the form again if it failed. */
+      const followSetup = () => {
+        state.polls.push(timers.set(async () => {
+          if (epoch !== state.epoch) return;
+          await loadLocal();
+          if (epoch !== state.epoch) return;
+          const record = installFor(version.sha256);
+          showInstalled(record);
+          if (C.setupState(record).busy) return followSetup();
+          drawChrome();
+          form.hidden = registered(record);
+          syncHow();
+          return undefined;
+        }, SETUP_POLL_MS));
+      };
       form.addEventListener('submit', async (event) => {
         prevent(event);
-        const py = C.validatePython(python.value);
-        if (!py.ok) return status.show(py.reason, 'err');
+        const py = auto.checked ? null : C.validatePython(python.value);
+        if (py && !py.ok) return status.show(py.reason, 'err');
         if (!trust.box.checked) return status.show('Tick the box to confirm you trust this exact release.', 'err');
         button.disabled = true;
-        status.show('Downloading, verifying and registering\u2026 keep this page open.', 'info');
+        status.show(auto.checked ? 'Downloading and verifying\u2026' : 'Downloading, verifying and registering\u2026 keep this page open.', 'info');
         try {
-          const answer = await api('POST', '/local/install', {
-            json: {experiment_id: experiment.id, version_id: version.id, sha256: version.sha256, trust_code: true, python: py.value},
-            timeoutMs: 15 * 60 * 1000,
-          });
+          const json = {experiment_id: experiment.id, version_id: version.id, sha256: version.sha256, trust_code: true};
+          if (auto.checked) json.setup = 'auto';
+          else json.python = py.value;
+          const answer = await api('POST', '/local/install', {json, timeoutMs: 15 * 60 * 1000});
           await loadLocal();
           drawChrome();
           const record = (answer && answer.install) || installFor(version.sha256);
           status.clear();
           showInstalled(record);
-          if (record && record.status === 'registered' && !record.error) form.hidden = true;
+          if (C.setupState(record).busy) {
+            form.hidden = true;
+            followSetup();
+          } else if (registered(record)) {
+            form.hidden = true;
+          }
         } catch (exc) {
           noteFailure(exc);
           await loadLocal();
@@ -1793,9 +1866,17 @@ const HubApp = (() => {
           status.show(exc.message, 'err');
         } finally {
           button.disabled = false;
+          syncHow();
         }
       });
       box.appendChild(form);
+      /* Opened while a build is already running (started from this page
+       * earlier, or from another window): follow it instead of offering to
+       * start a second one. */
+      if (C.setupState(existing).busy) {
+        form.hidden = true;
+        followSetup();
+      }
       return box;
     }
 
@@ -3355,16 +3436,24 @@ const HubApp = (() => {
       const wrap = h('div', {class: 'review'});
       const boxes = [];
       const totals = h('p', {class: 'mono small'});
+      /* Said whenever the selection has no uv.lock, whether the folder has
+       * none or the author unticked it: such a release still installs, but
+       * every rig's operator must then prepare its Python by hand. */
+      const lockNote = h('p', {class: 'note note-warn', hidden: true},
+        'No uv.lock in this package: a rig cannot set the experiment up by itself, so each operator will have to prepare a Python '
+        + 'environment by hand. Run \u201cuv lock\u201d in the experiment folder and include uv.lock.');
       const count = () => {
         let n = 0;
         let bytes = 0;
         boxes.forEach(([box, f]) => { if (box.checked) { n += 1; bytes += Number(f.size) || 0; } });
         totals.textContent = `${n} of ${files.length} files selected \u00b7 ${C.formatBytes(bytes)}`;
+        lockNote.hidden = boxes.some(([box, f]) => box.checked && f.path === 'uv.lock');
       };
       const list = h('ul', {class: 'file-list'});
-      /* Files probably not needed to run on a rig (tests, notebooks, CI,
-       * the lock file...): marked, still selected; the author drops them
-       * here if they want (import round decision 6). */
+      /* Files probably not needed to run on a rig (tests, notebooks,
+       * CI...): marked, still selected; the author drops them here if they
+       * want (import round decision 6). The lock file is not one of them:
+       * a rig builds the experiment's Python environment from it. */
       const unlikely = new Map((Array.isArray(preview && preview.not_for_rig) ? preview.not_for_rig : [])
         .map((x) => [x.path, x.reason]));
       for (const f of files) {
@@ -3378,6 +3467,7 @@ const HubApp = (() => {
       count();
       wrap.appendChild(h('h3', {class: 'sub-title'}, 'Files to pack'));
       wrap.appendChild(totals);
+      wrap.appendChild(lockNote);
       if (unlikely.size) {
         const flagged = boxes.filter(([, file]) => unlikely.has(file.path));
         const toggle = h('button', {type: 'button', class: 'btn btn-quiet'});
@@ -4143,7 +4233,11 @@ const HubApp = (() => {
       for (const i of list) {
         let word = i.status === 'registered' ? 'Registered' : 'Files only (not registered)';
         if (i.intact === false) word = 'Files changed since install';
-        if (i.error) word += ': ' + (i.error.message || i.error.code);
+        /* Only the sentence: a failed build's message carries uv's last
+         * lines after it, which the experiment's own page shows in full. */
+        if (i.error) word += ': ' + String(i.error.message || i.error.code).split('\n')[0];
+        const setup = C.setupState(i);
+        if (setup.busy) word = setup.word + ' (open the experiment to follow it)';
         tbody.appendChild(h('tr', null,
           h('td', null, link({view: 'experiment', id: i.experiment_id, version: i.version_id}, i.title || i.name || String(i.experiment_id))),
           h('td', {class: 'mono', title: String(i.sha256 || '')}, versionLabel(i) + ' \u00b7 ' + C.shortHash(i.sha256)),

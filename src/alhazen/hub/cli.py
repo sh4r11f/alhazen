@@ -33,7 +33,13 @@ from typing import Any
 from alhazen.hub.client import HubClient, HubError, api_path, canonical_base, probe_hub
 from alhazen.hub.credentials import Connection, RigState, sign_in
 from alhazen.hub.installation import TRUST_STATEMENT, InstallStore
-from alhazen.hub.source import not_for_the_rig, pack, protocol_version, suggest_metadata
+from alhazen.hub.source import (
+    not_for_the_rig,
+    pack,
+    protocol_version,
+    setup_note,
+    suggest_metadata,
+)
 from alhazen.hub.sync import Outbox, public_job
 
 InstallFunction = Callable[..., dict[str, Any]]
@@ -280,6 +286,10 @@ def _pack(args: argparse.Namespace, directory: Path) -> int:
         if drop:
             files = [name for name in files if name not in unlikely]
             print(f"Dropped {len(unlikely)} files; {len(files)} remain.")
+    # After any drop, so it describes what will actually be packed.
+    advice = setup_note(files)
+    if advice is not None:
+        print(f"Note: {advice}")
     if not args.yes and input("Include exactly these files? [y/N] ").strip().lower() != "y":
         print("Nothing built.")
         return 1

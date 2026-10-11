@@ -20,7 +20,7 @@
  *
  * Interface: HubCore = {VIEWS, parseRoute, formatRoute, safeNext,
  *   sameOriginPath, HubError, errorFromResponse, createApi, validateHubUrl,
- *   validatePython, validatePackageMetadata, parseList, parseTags,
+ *   validatePython, setupState, validatePackageMetadata, parseList, parseTags,
  *   formatBytes, formatDate, shortHash, hardwareList, platformsText,
  *   trialColumns, trialRow, cellText, jobState, indexState, uploadState, uploadState, uploadTotals, firstHttpsUrl,
  *   readToken, seg, nextOffsetLabel}
@@ -444,6 +444,24 @@ const HubCore = (() => {
     if (text.length > 1024) return {ok: false, reason: 'That interpreter path is too long.'};
     if (/[\u0000-\u001f\u007f]/.test(text)) return {ok: false, reason: 'The interpreter must be one line.'};
     return {ok: true, value: text};
+  }
+
+  /* An install whose Python environment the rig builds itself
+   * (install.environment; docs/hub/app.md), in words for the page.
+   * `busy` while the build runs: the page then asks again after a moment
+   * and shows the build's latest line. An install the operator gave an
+   * interpreter of their own has no environment: state null, nothing to say. */
+  function setupState(install) {
+    const env = install && typeof install.environment === 'object' ? install.environment : null;
+    if (!env) return {busy: false, state: null, word: ''};
+    if (env.state === 'building') {
+      const python = env.python_version ? 'Python ' + String(env.python_version) + ' and ' : '';
+      const detail = typeof env.detail === 'string' && env.detail.trim() ? env.detail.trim() : 'starting';
+      return {busy: true, state: 'building', word: 'Setting up ' + python + 'the experiment\u2019s packages: ' + detail};
+    }
+    if (env.state === 'failed') return {busy: false, state: 'failed', word: 'Setting up did not finish'};
+    if (env.state === 'ready') return {busy: false, state: 'ready', word: 'Set up by this rig'};
+    return {busy: false, state: null, word: ''};
   }
 
   /* The hub's password rule (contract M1): 12 to 1024 characters. The
@@ -1125,7 +1143,7 @@ const HubCore = (() => {
 
   return {
     API_PREFIX, VIEWS, PRIVATE_VIEWS, RIG_TABS, EXPERIMENT_TABS, parseRoute, formatRoute, safeNext, sameOriginPath,
-    HubError, errorFromResponse, createApi, seg, readToken, validateHubUrl, validatePython, validatePassword,
+    HubError, errorFromResponse, createApi, seg, readToken, validateHubUrl, validatePython, setupState, validatePassword,
     validatePackageMetadata, parseList, parseTags, formatBytes, formatDate, shortHash,
     hardwareList, platformsText, trialColumns, trialRow, cellText, jobState, indexState, uploadState, uploadTotals, firstHttpsUrl,
     nextOffsetLabel,
