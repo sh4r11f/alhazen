@@ -69,6 +69,13 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 - Reward calibrations record and match the backend family (`datapixx`) as
   part of a gated line's identity; a simulated stand-in of a DATAPixx3 gate
   keeps it.
+- Measure rig "Juice per pulse" on a pump gate (a line with `pump`): the arm
+  prompt says "ARM THE PUMP" and states the expected volume (pump rate ×
+  total gate time); after the beaker reading it shows both, flags a reading
+  more than 20% off with likely causes, and stores it only after a second
+  confirmation. The calibration entry records `expected_ul` and
+  `read_vs_expected`; the reading stays the stored value. NI-DAQ valve lines
+  are unchanged apart from neutral wording in the open-time limit.
 - Sync backend `datapixx`: active-high pulses on DATAPixx3 digital outputs
   (`DATAPIXX3/dout<N>`), refused on bits a Pixel Mode, button schedules or
   the backlight pulse drive. It cannot be combined with a `datapixx` reward

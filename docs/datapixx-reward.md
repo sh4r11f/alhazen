@@ -436,7 +436,11 @@ briefly, and stop. If it keeps running, switch it off and do not continue.
 **B3. Dose versus gate time.** Deliver a fixed train (for example 20 rewards
 of 200 ms) through the Measure rig's "Juice per pulse" measurement. Measure
 the gate's actual LOW width with the scope or analyser. Weigh the water.
-Compare µL per reward with rate × time. Repeat at two other widths. Short
+Compare µL per reward with rate × time: the measurement states that
+expected volume (pump rate from the rig file × total gate time) before you
+arm it, shows your reading beside it, stores both in the calibration, and
+asks again before storing a reading more than 20% off. Repeat at two other
+widths. Short
 pulses may deliver less than rate × time (the stepper ramps), so calibrate at
 the widths you will use, never extrapolate.
 
