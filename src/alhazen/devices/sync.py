@@ -203,10 +203,12 @@ class DatapixxSync:
       the backlight pulse on DOUT 15. alhazen never turns any of them off.
       Reading them takes one register-cache round trip (DPxUpdateRegCache
       writes libdpx's cache back, then reads), with no DOUT value written.
-    - Not with a DATAPixx3 reward gate: its DOUT schedule writes DOUT 0-15
-      as a whole while it plays and VPixx does not document whether DOUT
-      16-23 stay independent of it, so the rig config refuses the pair and
-      the link refuses it again at run time.
+    - Not with a DATAPixx3 reward gate on a digital output: its DOUT
+      schedule writes DOUT 0-15 as a whole while it plays and VPixx does not
+      document whether DOUT 16-23 stay independent of it, so the rig config
+      refuses the pair and the link refuses it again at run time. A gate on
+      an analog output (channel dac<N>) uses the DAC schedule and no
+      digital output, and shares the device with these lines.
     - The link's lock is shared with a TRACKPixx3's gaze reader: a pulse can
       start up to one gaze read late (2 ms typical, 20-40 ms worst measured
       on the rig) — measure it on the bench before aligning neural data to

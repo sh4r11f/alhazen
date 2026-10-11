@@ -18,10 +18,12 @@ three things have to be decided once, here, rather than by each backend:
 - **Which DOUT bits belong to whom.** The digital-output register is one
   24-bit word; :meth:`DpxLink.reserve` records which bits a holder drives
   and refuses overlapping reservations. A holder that plays a DOUT
-  *schedule* (the reward gate) owns the whole port while it is open: VPixx
-  documents that a schedule writes 16-bit words onto DOUT 0-15 as a whole,
-  and does not document whether DOUT 16-23 stay independent of it, so no
-  other DOUT holder may share the port with it.
+  *schedule* (a digital-output reward gate) owns the whole port while it is
+  open: VPixx documents that a schedule writes 16-bit words onto DOUT 0-15
+  as a whole, and does not document whether DOUT 16-23 stay independent of
+  it, so no other DOUT holder may share the port with it. An analog-output
+  reward gate reserves its DAC channel instead (:meth:`DpxLink.reserve_dac`)
+  and no digital output, so DOUT holders share the device with it.
 - **Which device is selected.** pypixxlib's own objects select other devices
   (TRACKPixx3() selects the TRACKPixx; a VIEWPixx may be on the same USB),
   so every locked operation starts with :meth:`DpxLink.select`. Selecting
