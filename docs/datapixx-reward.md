@@ -354,7 +354,9 @@ channel, polarity, voltage and pump setting.
 - DAC raw (uncalibrated) mode is on.
 - A DAC schedule is already running.
 - Another DAC channel is set up for schedule buffering. alhazen never switches
-  it off.
+  it off. (The gate's own channel is switched on for buffering when the gate
+  opens and off again when it closes, so a later gate on another channel is
+  not refused because of it; a channel found buffered is left as found.)
 - The TRACKPixx3 drives that DAC with eye data, or that cannot be read. The
   `TPxGetAllDACOutput` wrapper in the pypixxlib source VPixx publishes raises
   an error, and with that version the gate is refused.

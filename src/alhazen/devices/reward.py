@@ -451,6 +451,7 @@ DAC_GATE_CALLS = (
     "DPxIsDacCalibRaw",
     "DPxIsDacBuffChan",
     "DPxEnableDacBuffChan",
+    "DPxDisableDacBuffChan",
     "DPxGetDacValue",
     "DPxSetDacValue",
     "DPxGetRamSize",
@@ -693,6 +694,10 @@ class _DoutOutput:
     def reserve(self, link: Any, owner: object) -> None:
         link.reserve(owner, self.mask, schedules=True)
 
+    def release_output(self, lib: Any) -> str | None:
+        """Nothing to undo: a DOUT gate changes no mode on the device."""
+        return None
+
     def write_rest(self, lib: Any) -> str | None:
         lib.DPxSetDoutValue(self.rest, self.mask)
         lib.DPxUpdateRegCache()
@@ -750,6 +755,9 @@ class _DacOutput:
         # Set from the channel's range by the first read (read_dac_state).
         self.rest_code: int | None = None
         self.active_code: int | None = None
+        # True once prepare() switched this channel's buffering on (so close
+        # switches it off again); a channel found buffered is left as found.
+        self.buffering_enabled_here = False
 
     def read(self, lib: Any, cfg: RewardHwConfig) -> tuple[dict[str, Any], str | None]:
         state = read_dac_state(lib, cfg)
@@ -787,9 +795,12 @@ class _DacOutput:
         for it. Another buffered channel is refused before this (dac_refusal:
         it would interleave), never switched off; the result is read back."""
         channels = int(lib.DPxGetDacNumChans())
+        was_buffered = bool(lib.DPxIsDacBuffChan(self.channel))
         lib.DPxEnableDacBuffChan(self.channel)
         lib.DPxUpdateRegCache()
         buffered = [c for c in range(channels) if lib.DPxIsDacBuffChan(c)]
+        if not was_buffered:
+            self.buffering_enabled_here = True
         fault = dpx_fault(lib)
         if fault is not None:
             raise RewardError(f"setting DAC buffering failed: the {HOST_DEVICE} reported {fault}")
@@ -813,6 +824,24 @@ class _DacOutput:
 
     def stop(self, lib: Any) -> None:
         lib.DPxStopDacSched()
+
+    def release_output(self, lib: Any) -> str | None:
+        """Switch the channel's schedule buffering off again if prepare()
+        switched it on, and read that back, so a later gate on another DAC
+        channel (or another program's DAC schedule) is not refused because
+        of this one. A channel found buffered when the gate opened is left
+        as found. The caller has already written and read back rest."""
+        if not self.buffering_enabled_here:
+            return None
+        lib.DPxDisableDacBuffChan(self.channel)
+        lib.DPxUpdateRegCache()
+        fault = dpx_fault(lib)
+        if fault is not None:
+            return f"the {HOST_DEVICE} reported {fault} while releasing DAC buffering"
+        if lib.DPxIsDacBuffChan(self.channel):
+            return f"DAC{self.channel} still reads as buffered after being released"
+        self.buffering_enabled_here = False
+        return None
 
     @staticmethod
     def _signed(code: int) -> int:
@@ -875,7 +904,8 @@ class DatapixxReward:
     A DAC gate uses no digital output: DATAPixx3 sync lines may share the
     device with it. A DOUT gate owns the whole digital-output port while
     open (its schedule writes DOUT 0-15 as a whole), so no DATAPixx3 sync
-    line may share the device with it.
+    line may share the device with it. The two differ only in the output
+    strategy; this class is the same for both.
 
     Built for the WPI SP220i's Gate input (TTL I/O pin 4 against ground on
     pin 3): ``polarity: active_low`` rests the line HIGH and holds it LOW
@@ -1110,6 +1140,8 @@ class DatapixxReward:
                 if self._out.running(self._lib):
                     self._out.stop(self._lib)
                 problem = self._out.write_rest(self._lib)
+                if problem is None:
+                    problem = self._out.release_output(self._lib)
             except Exception as e:  # pypixxlib's exception type cannot be named off the rig
                 problem = f"{type(e).__name__}: {e}"
             finally:
@@ -1138,10 +1170,18 @@ class DatapixxReward:
         self._select()
         state, refusal = self._out.read(self._lib, self._cfg)
         if refusal is not None:
+            before = state.get("gate_level_before")
+            warning = ""
+            if before is not None and not self._out.resting_before(state):
+                warning = (
+                    f" The gate currently reads {before}, not its rest level "
+                    f"({self._out.rest_name}) for a {self._cfg.polarity} gate: whatever is wired "
+                    f"to it (the pump) may be RUNNING now; alhazen wrote nothing to it."
+                )
             raise RewardError(
                 f"reward gate {self._cfg.line} refused before any {self._out.noun} write: "
                 f"{refusal}. alhazen does not change this setting for you — another program or "
-                f"the recording may rely on it"
+                f"the recording may rely on it.{warning}"
             )
         return state
 
@@ -1206,16 +1246,20 @@ class DatapixxReward:
         """Stop the started schedule once, write rest once, and raise
         RewardUncertainError saying what failed and whether the register
         read back at rest. The delivery is uncertain, never retried. A stop
-        takes effect at the next register write (VPixx), which the rest
-        write is; nothing documents the output returning to rest by itself,
-        so rest is always written and read back."""
+        takes effect at the next register write (VPixx), which is the rest
+        write itself (no register write in between); nothing documents the
+        output returning to rest by itself, so rest is always written and
+        read back."""
         settled: str | None
         if self._link.lock.acquire(timeout=_LINK_TIMEOUT_S):
             try:
                 try:
                     self._select()
+                    # One register write carries both: the stop and the rest
+                    # level (write_rest does the DPxUpdateRegCache). A separate
+                    # write for the stop would leave a train stopped on an
+                    # active sample holding the gate for one more round trip.
                     self._out.stop(self._lib)
-                    self._lib.DPxUpdateRegCache()
                     settled = self._out.write_rest(self._lib)
                 except Exception as e:  # pypixxlib's exception type cannot be named off the rig
                     settled = f"{type(e).__name__}: {e}"
