@@ -652,7 +652,7 @@ class FakeLibdpx:
     # -----------------------------------------------------------------------
 
     def _init_dac(self) -> None:
-        self.dac_range: dict[int, tuple[float, float]] = {c: (-10.0, 10.0) for c in range(4)}
+        self.dac_range: dict[int, tuple[float, float]] = dict.fromkeys(range(4), (-10.0, 10.0))
         self.dac_static = [0, 0, 0, 0]  # unsigned 16-bit codes
         self.dac_pin = [0, 0, 0, 0]  # what each pin is driven to, as a code
         self.dac_static_writes: list[tuple[int, int]] = []  # (code, channel)
