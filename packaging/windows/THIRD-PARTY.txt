@@ -1,0 +1,24 @@
+Alhazen for Windows includes two programs made by others. They are in the
+"tools" folder and are run as separate programs; Alhazen is not linked with
+either.
+
+uv {uv_version}
+    What it does here: builds the Python environments Alhazen and each
+    experiment run in.
+    Copyright (c) Astral Software Inc.
+    Licence: Apache License 2.0 or MIT, at your choice.
+    Source and licence texts: {uv_source}
+
+Git for Windows (MinGit) {git_version}
+    What it does here: fetches packages that an experiment takes from a git
+    repository.
+    Licence: GNU General Public License version 2 (and the licences of the
+    components it bundles); the full texts are in tools\git\LICENSE.txt and
+    under tools\git\usr\share\licenses.
+    Source code for exactly this version:
+    {git_source}
+    and https://github.com/git-for-windows/git-sdk-64
+
+Python and the Python packages Alhazen uses are downloaded during
+installation from python-build-standalone and the Python Package Index; each
+carries its own licence inside the installed files.
