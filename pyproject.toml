@@ -157,6 +157,12 @@ dev = ["alhazen-vision[dev]", "pip"]
 [project.scripts]
 alhazen = "alhazen.cli.main:main"
 
+# The Windows app's icon runs this one: a windowless program (no console
+# flashes up) that starts `alhazen app` hidden, or asks the app already
+# running to show its window (src/alhazen/cli/app.py).
+[project.gui-scripts]
+alhazen-app = "alhazen.cli.app:launch"
+
 # The scaffold's templates, the live monitor's and the workspace's frontends
 # and the shared rigs ship inside the wheel — all are read at runtime, so a
 # package that omitted them would install fine and fail on first use

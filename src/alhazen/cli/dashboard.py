@@ -249,6 +249,9 @@ class DashboardServer(ThreadingHTTPServer):
         # dashboard that never opens the hub page imports none of it.
         self._hub: Any = None
         self._hub_lock = threading.Lock()
+        # The app's window (cli/app.AppWindow) when this server is the
+        # Alhazen app's; None for a dashboard opened in a browser.
+        self.window: Any = None
         super().__init__(("127.0.0.1", port), Handler)
 
     def hub(self) -> Any:
@@ -512,6 +515,14 @@ class Handler(BaseHTTPRequestHandler):
                         "shows its progress), then start the session."
                     )
                 self._json(workspace.start(Launch.model_validate(body)), 201)
+            elif path == "/api/app/window":
+                # A second click on the app's icon: the launcher asks the
+                # running app to show its window (cli/app.ask_for_window).
+                if self.server.window is None:
+                    self._json({"error": "This dashboard is not the Alhazen app"}, 409)
+                else:
+                    self.server.window.show(self.server.hub_url)
+                    self._json({"ok": True})
             elif path == "/api/estimate":
                 self._json(self.server.estimates.estimate(EstimateRequest.model_validate(body)))
             elif path == "/api/stop":
@@ -770,7 +781,26 @@ def _serve(args: argparse.Namespace, directory: Path) -> int:
     print(
         f"Workspace: {workspace.directory}\nCtrl+C stops the server and any active run.", flush=True
     )
-    if not args.no_browser:
+    if getattr(args, "window", False):
+        # The Alhazen app (cli/app.py): the Hub page in a window of its own,
+        # and a server that stops once that window is closed and no session
+        # or setup is running.
+        from alhazen.cli.app import AppWindow, find_edge, supervise
+
+        server.window = AppWindow(workspace.directory / "window", edge=find_edge())
+        server.window.show(server.hub_url)
+        threading.Thread(
+            target=supervise,
+            args=(
+                server.window,
+                server.hub_url,
+                lambda: workspace.active is not None or server.setting_up(),
+                server.shutdown,
+            ),
+            name="alhazen-app-window",
+            daemon=True,
+        ).start()
+    elif not args.no_browser:
         opened = server.hub_url if hub else server.url
         threading.Timer(0.25, webbrowser.open, args=(opened,)).start()
     try:

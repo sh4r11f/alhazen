@@ -130,6 +130,13 @@ def main(argv: list[str] | None = None) -> int:
             "--state-dir, which would otherwise carry another account's sign-in)"
         ),
     )
+    # `alhazen app`: the dashboard as the Windows app runs it (cli/app.py).
+    # The Start-menu icon runs `alhazen-app`, which starts this hidden.
+    app = sub.add_parser(
+        "app", help="open Alhazen in a window of its own (what the Windows app runs)"
+    )
+    app.add_argument("--port", type=int, default=0, help="loopback port (default: automatic)")
+    app.add_argument("--state-dir", default=None, help="registry, logs and media directory")
     # `alhazen hub ...` (alhazen.hub.cli): its parser is stdlib-only, so
     # adding it costs nothing for a plain install.
     from alhazen.hub.cli import add_parser as add_hub_parser
@@ -1864,7 +1871,32 @@ def _with_explicit_flags(args: argparse.Namespace) -> argparse.Namespace:
 
 # Looked up by name at call time for `run` and `sim-sorter`, whose handlers
 # take other arguments; the rest are the functions themselves.
+def _app(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    """The dashboard with the Hub page in an app window: `alhazen dashboard
+    --hub`, plus the window and stopping when it is closed (cli/app.py)."""
+    if sys.platform != "win32":
+        print(
+            "CANNOT OPEN THE APP: its window is for Windows only so far. "
+            "On this system run: alhazen dashboard --hub",
+            file=sys.stderr,
+        )
+        return 1
+    return _dashboard(
+        argparse.Namespace(
+            project=[],
+            port=args.port,
+            state_dir=args.state_dir,
+            no_browser=True,
+            hub=True,
+            forget_hub_login=False,
+            window=True,
+        ),
+        parser,
+    )
+
+
 _COMMANDS: dict[str, Handler] = {
+    "app": _app,
     "dashboard": _dashboard,
     "hub": _hub,
     "validate": _validate,
