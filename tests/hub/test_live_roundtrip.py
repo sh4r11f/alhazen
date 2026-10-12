@@ -831,9 +831,12 @@ def test_a_rig_sets_an_experiment_up_itself_and_runs_a_session_in_it(
         assert install["environment"]["state"] == "ready"
         assert install["environment"]["git_packages"] == ["alhazen-vision"]
         python = Path(install["python"])
-        # The interpreter is the rig's own build for this release, not this test's.
-        assert rig.state / "hub" / "envs" / version["sha256"][:12] in python.parents
-        assert python.is_file() and python != Path(sys.executable)
+        # The interpreter is the rig's own build for this release, not this
+        # test's. Resolved on both sides: Windows may spell a temporary
+        # folder with a short name in one place and its long name in another.
+        built = (rig.state / "hub" / "envs" / version["sha256"][:12]).resolve()
+        assert built in python.resolve().parents
+        assert python.is_file() and python.resolve() != Path(sys.executable).resolve()
         state = rig.call("GET", "/api/state", expect=200)
         (project,) = [p for p in state["projects"] if p["id"] == install["project_id"]]
         assert project["python"] == str(python)

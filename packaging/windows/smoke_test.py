@@ -138,7 +138,11 @@ def check_setup(work: Path) -> None:
     assert seen["python"] == [3, 12], seen
     assert "smoke-task" in seen["tasks"], seen
     # Imported from the release folder, not from a copy in the environment.
-    assert Path(seen["experiment"]) == release / "src" / "smoke_task" / "__init__.py", seen
+    # Compared as files, not as text: Windows may spell the temporary folder
+    # with a short name (RUNNER~1) in one place and its long name in another.
+    assert os.path.samefile(seen["experiment"], release / "src" / "smoke_task" / "__init__.py"), (
+        seen
+    )
 
 
 def check_dashboard(work: Path) -> None:

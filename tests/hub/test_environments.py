@@ -416,8 +416,9 @@ def test_a_real_uv_builds_an_environment_that_registers_the_experiments_tasks(tm
     ).stdout.splitlines()
     assert report[0] == "(3, 11)"
     assert report[1] == "['demo-task']"
-    # The experiment is imported from the release folder, not from a copy.
-    assert Path(report[2]) == root / "src" / "demo_task" / "__init__.py"
+    # The experiment is imported from the release folder, not from a copy
+    # (compared as files: a temporary folder may be spelled two ways).
+    assert os.path.samefile(report[2], root / "src" / "demo_task" / "__init__.py")
     # The release's own files are untouched; the lock was not rewritten.
     after = sorted(
         p.relative_to(root).as_posix()
