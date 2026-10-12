@@ -442,6 +442,15 @@ def _log_tail(directory: Path) -> str:
     return f"The end of its log ({path}):\n{text[-LOG_TAIL_CHARS:]}"
 
 
+def report_problem(text: str) -> None:
+    """Tell the person the app could not start: in a message box on Windows,
+    where the launcher has no terminal, and on the terminal elsewhere."""
+    if sys.platform == "win32":
+        message_box(text, error=True)
+    else:
+        print(text, file=sys.stderr)
+
+
 def launch(argv: list[str] | None = None) -> int:
     """The ``alhazen-app`` program: show the app, starting it if need be."""
     parser = argparse.ArgumentParser(prog="alhazen-app", description="Open the Alhazen app.")
@@ -473,10 +482,6 @@ def launch(argv: list[str] | None = None) -> int:
     except OSError as exc:
         problem = f"Alhazen could not start: {exc}"
     if problem is not None:
-        if sys.platform == "win32":
-            message_box(problem, error=True)
-        else:
-            # No dialogs here, and a terminal to print to: say it there.
-            print(problem, file=sys.stderr)
+        report_problem(problem)
         return 1
     return 0

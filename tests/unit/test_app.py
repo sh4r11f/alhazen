@@ -26,6 +26,7 @@ from alhazen.cli.app import (
     ask_for_window,
     find_edge,
     launch,
+    report_problem,
     running_server,
     server_command,
     start_lock,
@@ -329,12 +330,15 @@ class TestRunningServer:
 class TestStarting:
     def test_the_server_runs_under_the_console_interpreter(self, tmp_path):
         # The launcher is windowless (pythonw); the server must not be.
-        command = server_command(tmp_path, r"C:\Alhazen\app\Scripts\pythonw.exe")
-        assert Path(command[0]).name == "python.exe"
-        assert Path(command[0]).parent == Path(r"C:\Alhazen\app\Scripts")
+        scripts = tmp_path / "Alhazen" / "app" / "Scripts"
+        command = server_command(tmp_path, str(scripts / "pythonw.exe"))
+        assert Path(command[0]) == scripts / "python.exe"
         assert command[1:] == ["-m", "alhazen", "app", "--state-dir", str(tmp_path)]
+        # The name is matched whatever its case, as Windows itself does.
+        assert Path(server_command(tmp_path, str(scripts / "PythonW.EXE"))[0]).name == "python.exe"
         # Any other interpreter is used as it is.
-        assert server_command(tmp_path, "/usr/bin/python3")[0] == str(Path("/usr/bin/python3"))
+        other = str(scripts / "python3")
+        assert server_command(tmp_path, other)[0] == other
 
     def test_the_server_is_started_hidden_with_its_output_in_the_log(self, tmp_path):
         calls = []
@@ -418,11 +422,8 @@ class TestLaunch:
             return FakeProcess()
 
         monkeypatch.setattr(app_module, "start_server", start)
-        monkeypatch.setattr(
-            app_module, "message_box", lambda text, error=False: done["boxes"].append(text)
-        )
+        monkeypatch.setattr(app_module, "report_problem", done["boxes"].append)
         monkeypatch.setattr(app_module.webbrowser, "open", done["browser"].append)
-        monkeypatch.setattr(sys, "platform", "win32")
         return done
 
     def test_a_first_click_starts_the_server_and_waits_for_it(self, tmp_path, spy, monkeypatch):
@@ -459,6 +460,20 @@ class TestLaunch:
         monkeypatch.setattr(app_module, "start_server", broken)
         assert launch(["--state-dir", str(tmp_path)]) == 1
         assert spy["boxes"] == ["Alhazen could not start: python.exe is missing"]
+
+    def test_a_problem_goes_to_a_box_on_windows_and_to_the_terminal_elsewhere(
+        self, monkeypatch, capsys
+    ):
+        boxes = []
+        monkeypatch.setattr(
+            app_module, "message_box", lambda text, error=False: boxes.append((text, error))
+        )
+        monkeypatch.setattr(sys, "platform", "win32")
+        report_problem("Alhazen could not start")
+        assert boxes == [("Alhazen could not start", True)] and capsys.readouterr().err == ""
+        monkeypatch.setattr(sys, "platform", "linux")
+        report_problem("Alhazen could not start")
+        assert len(boxes) == 1 and capsys.readouterr().err == "Alhazen could not start\n"
 
     def test_a_second_click_during_a_start_starts_nothing(self, tmp_path, spy, monkeypatch):
         waited = []
