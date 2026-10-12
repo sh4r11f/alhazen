@@ -13,7 +13,7 @@ import sys
 import tempfile
 import threading
 import webbrowser
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -249,6 +249,9 @@ class DashboardServer(ThreadingHTTPServer):
         # dashboard that never opens the hub page imports none of it.
         self._hub: Any = None
         self._hub_lock = threading.Lock()
+        # The app's window (cli/app.AppWindow) when this server is the
+        # Alhazen app's; None for a dashboard opened in a browser.
+        self.window: Any = None
         super().__init__(("127.0.0.1", port), Handler)
 
     def hub(self) -> Any:
@@ -259,6 +262,13 @@ class DashboardServer(ThreadingHTTPServer):
 
                 self._hub = HubAdapter(self.workspace, self.data)
             return self._hub
+
+    def setting_up(self) -> bool:
+        """An installed experiment's Python environment is being built
+        (HubAdapter.setting_up). False for a dashboard that never used the
+        hub, without loading it."""
+        with self._hub_lock:
+            return self._hub is not None and self._hub.setting_up()
 
     def close_hub(self) -> None:
         with self._hub_lock:
@@ -495,7 +505,24 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("Parameter YAML must be text")
                 self._json({"values": parse_parameters(body["text"])})
             elif path == "/api/runs":
+                if self.server.setting_up():
+                    # A build downloads and unpacks hundreds of megabytes; a
+                    # session started beside it would be timed on a busy disk.
+                    raise ValueError(
+                        "An experiment is being set up on this computer (its Python "
+                        "environment is being downloaded and installed), which would "
+                        "disturb a session's timing. Wait for it to finish (the Hub page "
+                        "shows its progress), then start the session."
+                    )
                 self._json(workspace.start(Launch.model_validate(body)), 201)
+            elif path == "/api/app/window":
+                # A second click on the app's icon: the launcher asks the
+                # running app to show its window (cli/app.ask_for_window).
+                if self.server.window is None:
+                    self._json({"error": "This dashboard is not the Alhazen app"}, 409)
+                else:
+                    self.server.window.show(self.server.hub_url)
+                    self._json({"ok": True})
             elif path == "/api/estimate":
                 self._json(self.server.estimates.estimate(EstimateRequest.model_validate(body)))
             elif path == "/api/stop":
@@ -754,7 +781,32 @@ def _serve(args: argparse.Namespace, directory: Path) -> int:
     print(
         f"Workspace: {workspace.directory}\nCtrl+C stops the server and any active run.", flush=True
     )
-    if not args.no_browser:
+    # The app's log line (cli/app.log_line) when this server is the app's:
+    # it has no terminal, so what it does about its window, and why it stops,
+    # is written down. None for a dashboard in a terminal.
+    note: Callable[[str], None] | None = None
+    if getattr(args, "window", False):
+        # The Alhazen app (cli/app.py): the Hub page in a window of its own,
+        # and a server that stops once that window is closed and no session
+        # or setup is running.
+        from alhazen.cli.app import AppWindow, find_edge, log_line, supervise
+
+        note = log_line
+        note(f"The app's server is up (process {os.getpid()}).")
+        server.window = AppWindow(workspace.directory / "window", edge=find_edge())
+        server.window.show(server.hub_url)
+        threading.Thread(
+            target=supervise,
+            args=(
+                server.window,
+                server.hub_url,
+                lambda: workspace.active is not None or server.setting_up(),
+                server.shutdown,
+            ),
+            name="alhazen-app-window",
+            daemon=True,
+        ).start()
+    elif not args.no_browser:
         opened = server.hub_url if hub else server.url
         threading.Timer(0.25, webbrowser.open, args=(opened,)).start()
     try:
@@ -764,7 +816,10 @@ def _serve(args: argparse.Namespace, directory: Path) -> int:
         # to stop the server, not a fault: the finally stops the active run
         # and releases the workspace lock, and a traceback here would read as
         # a crash to the person who just asked it to stop.
-        pass
+        if note is not None:
+            # Nobody presses Ctrl+C on the app: say so, to tell this stop
+            # from the usual one (its window was closed).
+            note("Stopped by a console break or Ctrl+C, not by its window.")
     finally:
         server.server_close()
         server.uploads.close()

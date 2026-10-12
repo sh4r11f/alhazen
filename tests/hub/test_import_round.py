@@ -410,7 +410,6 @@ def test_pack_cli_takes_a_release_version(tmp_path, capsys):
         ("scripts/ci_local.py", "development script"),
         (".github/workflows/ci.yml", "CI configuration"),
         (".githooks/pre-push", "git hook"),
-        ("uv.lock", "lock file"),
         ("docs/stimulus-check/kanizsa-near.png", "stimulus-check image"),
         ("docs/data-rehearsal-example/x.csv", "rehearsal data"),
     ],
@@ -422,7 +421,20 @@ def test_not_for_the_rig(path, reason):
 
 
 @pytest.mark.parametrize(
-    "path", ["run.py", "src/pkg/task.py", "configs/rig-lab.yaml", "docs/methods.md", "README.md"]
+    "path",
+    [
+        "run.py",
+        "src/pkg/task.py",
+        "configs/rig-lab.yaml",
+        "docs/methods.md",
+        "README.md",
+        # What a rig builds the experiment's Python environment from
+        # (alhazen.hub.environments): the lock file was flagged before
+        # rigs could do that.
+        "uv.lock",
+        "pyproject.toml",
+        ".python-version",
+    ],
 )
 def test_needed_files_are_not_flagged(path):
     from alhazen.hub.source import not_for_the_rig
@@ -460,8 +472,10 @@ def test_pack_keeps_flagged_files_by_default_and_says_so(tmp_path, capsys):
     checkout = _with_tooling(_source(tmp_path / "e", "mbri", "0.4.0"))
     assert cli._pack(cli_args(checkout, tmp_path / "keep.zip"), tmp_path) == 0
     out = capsys.readouterr().out
-    assert "4 files are probably not for the rig" in out
+    assert "3 files are probably not for the rig" in out
     assert "tests/test_task.py   [probably not for the rig: tests]" in out
+    # The lock file is listed like any needed file, and nothing is missing.
+    assert "  uv.lock\n" in out and "Note:" not in out
     paths = {f["path"] for f in packages.inspect_bundle(tmp_path / "keep.zip").manifest["files"]}
     assert {"tests/test_task.py", "uv.lock", "scripts/ci_local.py"} <= paths
 
@@ -472,13 +486,14 @@ def test_pack_drops_flagged_files_when_asked(tmp_path, capsys, monkeypatch):
     checkout = _with_tooling(_source(tmp_path / "e", "mbri", "0.4.0"))
     assert cli._pack(cli_args(checkout, tmp_path / "a.zip", drop_not_for_rig=True), tmp_path) == 0
     paths = {f["path"] for f in packages.inspect_bundle(tmp_path / "a.zip").manifest["files"]}
-    assert not paths & {"tests/test_task.py", "uv.lock", "scripts/ci_local.py"}
-    assert "configs/rig-lab.yaml" in paths
+    assert not paths & {"tests/test_task.py", "scripts/ci_local.py"}
+    # Dropping the tooling keeps what the rig sets the experiment up from.
+    assert {"configs/rig-lab.yaml", "uv.lock", "pyproject.toml"} <= paths
     # Interactive: the author answers the drop question, then confirms.
     answers = iter(["y", "y"])
     monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
     assert cli._pack(cli_args(checkout, tmp_path / "b.zip", yes=False), tmp_path) == 0
-    assert "Dropped 4 files" in capsys.readouterr().out
+    assert "Dropped 3 files" in capsys.readouterr().out
     answers = iter(["", "y"])  # Enter keeps them
     assert cli._pack(cli_args(checkout, tmp_path / "c.zip", yes=False), tmp_path) == 0
     paths = {f["path"] for f in packages.inspect_bundle(tmp_path / "c.zip").manifest["files"]}
@@ -495,9 +510,26 @@ def test_preview_lists_flagged_files_and_the_protocol(tmp_path):
         "tests/test_task.py",
         "scripts/ci_local.py",
         ".github/workflows/ci.yml",
-        "uv.lock",
     }
+    assert view["setup_note"] is None
     assert view["metadata"]["hardware"]["eye_tracker"] is True
+
+
+def test_a_package_without_its_lock_file_is_pointed_out(tmp_path, capsys):
+    from alhazen.hub import cli
+    from alhazen.hub.source import preview, setup_note
+
+    checkout = _source(tmp_path / "e", "mbri", "0.4.0")
+    assert not (checkout / "uv.lock").exists()
+    # In the dashboard's preview and on the command line, in the same words.
+    note = preview(checkout, packages)["setup_note"]
+    assert "No uv.lock" in note and "uv lock" in note and "by hand" in note
+    assert cli._pack(cli_args(checkout, tmp_path / "a.zip"), tmp_path) == 0
+    assert f"Note: {note}" in capsys.readouterr().out
+    # The package is still built: the note is advice, not a refusal.
+    assert (tmp_path / "a.zip").is_file()
+    assert setup_note(["run.py"]).startswith("No pyproject.toml or uv.lock")
+    assert setup_note(["pyproject.toml", "uv.lock", "run.py"]) is None
 
 
 # -- decision 6: a copied rig state carries no one else's sign-in ---------------------

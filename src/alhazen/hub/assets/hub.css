@@ -594,6 +594,12 @@ a:hover { color: var(--accent-ink); text-decoration-thickness: 2px; }
 .digest-text { word-break: break-all; font-size: 0.8125rem; }
 .digest .btn { margin-left: -12px; }
 .install .form { gap: 12px; }
+/* The end of a failed build's output: as printed, scrolling inside its box. */
+.install-log {
+  margin: 8px 0 16px; padding: 10px 12px; max-height: 14em; overflow: auto;
+  border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-2);
+  font-family: var(--mono); font-size: 0.8rem; white-space: pre-wrap; overflow-wrap: anywhere;
+}
 .docs-provenance { color: var(--muted); margin: 0 0 16px; }
 /* The task index is a row above the guide, not a column beside it: beside the
  * release card a side column left the guide 448 px at 1440 px, under the

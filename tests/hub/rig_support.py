@@ -28,8 +28,10 @@ def release_zip(
     version: str = "1.0.0",
     run_py: str = "print('hello')\n",
     platforms: list[str] | None = None,
+    extra_files: dict[str, str] | None = None,
 ) -> tuple[bytes, dict]:
-    """A synthetic release: run.py and pyproject.toml."""
+    """A synthetic release: run.py and pyproject.toml, plus ``extra_files``
+    (package path -> text), for a release that ships a lock file."""
     source = tmp / f"src-{name}-{version}-{abs(hash(run_py))}"
     source.mkdir(parents=True)
     (source / "run.py").write_text(run_py)
@@ -47,8 +49,12 @@ def release_zip(
         "license": "MIT",
         "citations": [],
     }
+    for path, text in (extra_files or {}).items():
+        (source / path).parent.mkdir(parents=True, exist_ok=True)
+        (source / path).write_text(text, encoding="utf-8")
     out = tmp / f"{name}-{version}-{abs(hash(run_py))}.zip"
-    info = packages.build_bundle(source, out, metadata, ["pyproject.toml", "run.py"])
+    files = sorted(["pyproject.toml", "run.py", *(extra_files or {})])
+    info = packages.build_bundle(source, out, metadata, files)
     return out.read_bytes(), dict(info.manifest)
 
 
