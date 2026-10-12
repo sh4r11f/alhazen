@@ -136,9 +136,13 @@ jobs:
       # ordinary person, who gets their own copy in their own profile.
       #
       # The installer runs from a small command file, as that person, which
-      # writes down what happened in a folder both accounts can read: asking
-      # PowerShell for the exit code of a program started as someone else is
-      # not dependable.
+      # writes down what happened in a folder both accounts can read.
+      #
+      # The command file is started through .NET and not with Start-Process:
+      # Start-Process hands the new program the caller's environment even
+      # when it runs as someone else, so TEMP and LOCALAPPDATA would still
+      # name the administrator's folders. Given no environment at all,
+      # Windows makes the right one from the new person's profile.
       - name: It installs for a person who is not an administrator
         shell: pwsh
         timeout-minutes: 10
@@ -158,7 +162,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Could not create the account $name" }
           icacls $shared /grant "${name}:(OI)(CI)F" | Out-Null
           if ($LASTEXITCODE -ne 0) { throw "Could not open $shared to $name" }
-          $credential = [pscredential]::new($name, (ConvertTo-SecureString $password -AsPlainText -Force))
 
           # What that person does: install, then start the installed program.
           # ("> file echo text" and not "echo text> file": a digit before ">"
@@ -166,13 +169,23 @@ jobs:
           Set-Content "$shared\install.cmd" -Encoding ascii -Value @(
             '@echo off',
             '> "%~dp0who.txt" whoami /groups',
+            '> "%~dp0where.txt" echo %LOCALAPPDATA% and %TEMP%',
             '"%~dp0AlhazenSetup.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG="%~dp0setup.log"',
             '> "%~dp0exit.txt" echo %ERRORLEVEL%',
             'if exist "%LOCALAPPDATA%\Alhazen\installed.ok" (> "%~dp0installed.txt" echo yes)',
             'if exist "%LOCALAPPDATA%\Alhazen\install.log" copy /y "%LOCALAPPDATA%\Alhazen\install.log" "%~dp0install.log" > nul',
             '> "%~dp0version.txt" 2>&1 "%LOCALAPPDATA%\Alhazen\app\Scripts\alhazen.exe" --version'
           )
-          Start-Process cmd.exe -ArgumentList "/c", "`"$shared\install.cmd`"" -Credential $credential -LoadUserProfile -WorkingDirectory $shared -Wait
+          # (Nothing may read $start.Environment, not even to print $start:
+          # reading it fills it with this account's variables.)
+          $start = [System.Diagnostics.ProcessStartInfo]::new("cmd.exe", "/c `"$shared\install.cmd`"")
+          $start.UserName = $name
+          $start.Password = ConvertTo-SecureString $password -AsPlainText -Force
+          $start.LoadUserProfile = $true
+          $start.UseShellExecute = $false
+          $start.WorkingDirectory = $shared
+          $started = [System.Diagnostics.Process]::Start($start)
+          $started.WaitForExit()
 
           function Told($file) {
             # What the command file wrote down, or "" when it never got there.
@@ -183,6 +196,7 @@ jobs:
           # S-1-5-32-544 is the Administrators group, whatever the language.
           if (-not (Told "who.txt")) { $problems += "the command file did not run as $name" }
           elseif ((Told "who.txt") -match "S-1-5-32-544") { $problems += "$name is an administrator, so this test shows nothing" }
+          if ((Told "where.txt") -notmatch "\\$name\\AppData\\Local and ") { $problems += "it ran with someone else's folders: '$(Told "where.txt")'" }
           if ((Told "exit.txt") -ne "0") { $problems += "the installer's exit code was '$(Told "exit.txt")', not 0" }
           if ((Told "installed.txt") -ne "yes") { $problems += "installed.ok was not written" }
           if ((Told "version.txt") -notmatch "^alhazen \d") { $problems += "the installed program did not start: '$(Told "version.txt")'" }
