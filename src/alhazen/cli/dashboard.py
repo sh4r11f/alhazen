@@ -13,7 +13,7 @@ import sys
 import tempfile
 import threading
 import webbrowser
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -781,12 +781,18 @@ def _serve(args: argparse.Namespace, directory: Path) -> int:
     print(
         f"Workspace: {workspace.directory}\nCtrl+C stops the server and any active run.", flush=True
     )
+    # The app's log line (cli/app.log_line) when this server is the app's:
+    # it has no terminal, so what it does about its window, and why it stops,
+    # is written down. None for a dashboard in a terminal.
+    note: Callable[[str], None] | None = None
     if getattr(args, "window", False):
         # The Alhazen app (cli/app.py): the Hub page in a window of its own,
         # and a server that stops once that window is closed and no session
         # or setup is running.
-        from alhazen.cli.app import AppWindow, find_edge, supervise
+        from alhazen.cli.app import AppWindow, find_edge, log_line, supervise
 
+        note = log_line
+        note(f"The app's server is up (process {os.getpid()}).")
         server.window = AppWindow(workspace.directory / "window", edge=find_edge())
         server.window.show(server.hub_url)
         threading.Thread(
@@ -810,7 +816,10 @@ def _serve(args: argparse.Namespace, directory: Path) -> int:
         # to stop the server, not a fault: the finally stops the active run
         # and releases the workspace lock, and a traceback here would read as
         # a crash to the person who just asked it to stop.
-        pass
+        if note is not None:
+            # Nobody presses Ctrl+C on the app: say so, to tell this stop
+            # from the usual one (its window was closed).
+            note("Stopped by a console break or Ctrl+C, not by its window.")
     finally:
         server.server_close()
         server.uploads.close()

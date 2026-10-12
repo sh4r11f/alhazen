@@ -12,6 +12,8 @@
 #   * the installed app sets an experiment up using ONLY the uv and git it
 #     brought, with neither on PATH (packaging/windows/smoke_test.py);
 #   * an uninstall removes the app;
+#   * Microsoft Edge keeps, in the app's profile folder, the file the app
+#     reads to know that its window is open;
 #   * the whole path a user takes, with nothing stood in for: a real Hub
 #     server, a real rig, the rig building an experiment's environment with
 #     the pinned uv, and a session running in it (the opt-in test in
@@ -233,6 +235,24 @@ jobs:
           $env:PATH = "$PWD\build\windows\stage\tools;$env:PATH"
           python -m pytest tests/hub/test_live_roundtrip.py -k "sets_an_experiment_up" -q
           if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      # The app knows its window is open from a file Edge keeps in the
+      # app's profile folder (cli/app.py). That file is Edge's own business,
+      # so the Edge on this machine is asked: it must be there while the
+      # window is open and gone once it is closed. An Edge update that
+      # changed this would be seen here before it left a person with a
+      # window and no server behind it.
+      - name: Edge keeps the lock file the app's window rule rests on
+        shell: pwsh
+        timeout-minutes: 5
+        env:
+          ALHAZEN_TEST_REAL_EDGE: "1"
+        run: |
+          $report = python -m pytest tests/unit/test_app.py -k "real_edge" -q -rs | Out-String
+          Write-Host $report
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          # A skip is not a pass: the step exists to run this one test.
+          if ($report -notmatch "1 passed") { throw "The real-Edge test did not run" }
 
       - name: A second install over the first works (an upgrade)
         shell: pwsh

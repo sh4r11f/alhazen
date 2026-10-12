@@ -131,15 +131,68 @@ sequenceDiagram
 - **Without Microsoft Edge** the page opens in the default browser and a small dialog stands in
   for the window: clicking OK quits the app.
 - **The server's output** goes to `app.log` in the workspace folder, because the server has no
-  visible console. A start that fails shows the end of that log.
+  visible console. A start that fails shows the end of that log. The log of the run before is
+  kept beside it as `app.previous.log`: the moment to want it is after clicking the icon again
+  because something went wrong.
+- **The app writes down what it does about its window, and why it stops**, each line with the
+  time:
+
+  ```
+  23:30:08 The app's server is up (process 38012).
+  23:30:08 A window was asked for: started Edge (process 41148).
+  23:30:09 The Edge process started 0.5 s ago (process 41148) ended with exit code 0.
+  23:30:09 Edge has the app's profile open: the window is up.
+  23:30:19 Edge no longer has the app's profile open.
+  23:30:19 The window is closed and nothing is running: stopping.
+  ```
+
+  A stop that did not come from the window says so too
+  (`Stopped by a console break or Ctrl+C, not by its window.`).
 
 Three choices that are not obvious, each measured on Windows 11 before it was written:
 
 | Choice | Why |
 |---|---|
 | The server is a console program started hidden, not a windowless one | A session is a console program that the dashboard stops with a console break. Children of a hidden-console process inherit a console without a window: no console window appears for a run, and the break still reaches it. |
-| "A window is open" means "an Edge process this server started is alive" | Edge is started on a profile folder of its own (`<workspace>\window`). The first process on a profile lives as long as one of its windows; a later one hands its window over and exits. |
+| "A window is open" means "Edge holds the app's profile" | Edge is started on a profile folder of its own (`<workspace>\window`). While any Edge process has a profile open, Edge keeps a file named `lockfile` in it, and the file goes when the last such process ends. See below for why it is not "the Edge process this server started is alive". |
 | Edge gets `--disable-sync` and `msImplicitSignin` off | On a new profile Edge otherwise opened a sync confirmation in a second window, which would also have kept the app alive after its own window was closed. |
+
+### How the app knows its window is open
+
+The first rule was "the window is open while the Edge process this server started is alive". It
+was wrong, and the owner's second try of the app showed it: the window opened and said
+`127.0.0.1 refused to connect`.
+
+The process that is started is not always the one that goes on to show the window. Edge may
+pass the window to another of its processes and end the started one at once, with success. For
+a second window that is certain (it goes to the process that already has the profile). For the
+first window it happened now and then: 2 of about 45 starts on one Windows 11 PC, and what
+sets it off was not found. Under the first rule the server then took its window for closed at
+its first look, half a second after opening it, and stopped. The window was left with nothing
+to connect to, and the log said nothing.
+
+```mermaid
+stateDiagram-v2
+  [*] --> coming: a window is asked for
+  coming --> up: Edge holds the profile
+  coming --> up: a started process is alive
+  coming --> never_came: 15 s without either
+  up --> closed: Edge lets go, no started process alive
+  never_came --> in_browser: the page opens in the default browser
+  closed --> [*]: nothing running, the server stops
+```
+
+| Case | What the app does |
+|---|---|
+| Edge holds the profile, whichever of its processes does | The window is open. |
+| The started process ended, Edge has not taken the profile yet | The window is given 15 s to appear (`WINDOW_START_GRACE_S`). |
+| No window after that | Edge showed none: the page opens in the default browser, with the stand-in dialog. Before, an Edge that ended with success made the app vanish. |
+| The window was up and Edge has let go of the profile | Closed. The server stops within about two seconds, unless a session or setup is running. |
+| An Edge that keeps no such file | Judged by its processes, as under the first rule. |
+
+The rule rests on a file Edge makes for itself, so
+`test_the_real_edge_keeps_its_lock_file_exactly_while_its_window_is_open` checks it against the
+Edge that is installed (opt-in, `ALHAZEN_TEST_REAL_EDGE=1`; the Windows app workflow runs it).
 
 ## Setting an experiment up
 
@@ -249,6 +302,13 @@ On a Windows 11 PC with long paths off and no symlink privilege:
 - `tests/hub/test_live_roundtrip.py` (opt-in, `ALHAZEN_TEST_REAL_UV=1`): a real Hub server and a
   real rig; the rig built the environment itself and ran a session in it.
 
+- The app's window, after the fix to how the app knows it is open: 20 starts in a row by the
+  desktop shortcut, each with its page and a server that stopped 1 to 2 s after the window was
+  closed. The fault itself forced with the real Edge (a stand-in `msedge.exe` that starts the
+  real one as another process and ends at once): under the first rule the server stopped 0.9 s
+  after it came up and the window said `127.0.0.1 refused to connect`; under this one it stayed
+  until the window was closed.
+
 On GitHub's Windows runner (`.github/workflows/windows-app.yml`): the installer compiles; a
 Python step made to fail is reported as above; a silent install as the runner's own account (an
 administrator) and as a new account that is not one; the smoke test; the end-to-end test above;
@@ -261,8 +321,15 @@ is not particular to one Windows build.
 - **The fixed installer's pages, clicked through by hand.** The owner clicked through the
   installer once, before the fix, and that is how the folder-link guard was found. Since the fix
   it has only been run silently, so its last page ("Open Alhazen") has not been used.
-- **The app window, by hand.** It was opened and closed by a script; the pages were tested in
-  the fake browser the other page tests use.
+- **The app window, by hand, since the fix to how the app knows its window is open.** The
+  owner opened it once before that fix, and that is how the fault was found. Since then it was
+  opened and closed by a script; the pages were tested in the fake browser the other page tests
+  use.
+- **What makes Edge pass a first window to another of its processes.** It was seen, and forced
+  with a stand-in to test the fix, but not explained.
+- **An Edge set to keep running in the background** (its "startup boost"). If Edge then kept
+  the app's profile open after the last window was closed, the app would stay up, hidden, until
+  the next click found it. On the PC it was tried on the setting is off.
 - **Windows 10, and Windows 11 on any computer but one** (build 26300). GitHub's runner is
   Windows Server 2025.
 - **A session with a real PsychoPy window, started from the app**, and any session with real

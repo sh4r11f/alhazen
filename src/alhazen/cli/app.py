@@ -27,10 +27,24 @@ parent would give every run a visible console and could not send the break.
 (Both measured on Windows 11; docs/hub/app.md.)
 
 How the window's lifetime is known: Edge is started with a profile folder of
-its own (``--user-data-dir``). The first Edge process started on a profile
-stays alive exactly as long as a window of that profile is open; a later one
-hands its window to the first and exits at once. So "is a window open" is "is
-any Edge process this server started still alive".
+its own (``--user-data-dir``), which no other program uses. While any Edge
+process has that profile open, Edge keeps a file named ``lockfile`` in it and
+removes the file when the last such process ends. So "is a window open" is
+"does Edge hold the app's profile".
+
+Not "is the Edge process this server started still alive", which was the
+first rule and was wrong: the process that is started is not always the one
+that goes on to show the window. Edge may pass the window to another of its
+processes and end the started one at once, with success. That is certain for a
+second window (it is handed to the process that already has the profile) and
+was seen now and then for the first, on Windows 11. Under the first rule the
+server then took its window for closed half a second after opening it, and
+stopped; the window was left with "127.0.0.1 refused to connect".
+
+The started processes still count, for two cases the file cannot cover: the
+moments before Edge has taken the profile (a window asked for is given
+``WINDOW_START_GRACE_S`` to appear), and an Edge that would not keep such a
+file (the app then behaves as under the first rule).
 
 Price: the window is Edge's, so Edge must be installed (it is part of
 Windows 10 and 11). Without it the page opens in the default browser and a
@@ -64,9 +78,16 @@ _EDGE_PATH = ("Microsoft", "Edge", "Application", "msedge.exe")
 WINDOW_SIZE = "1280,900"
 # How often the server looks at whether its window is still open.
 SUPERVISE_POLL_S = 0.5
-# An Edge that exits with an error this soon after being started never showed
-# a window: the app falls back to the default browser instead of vanishing.
-FAILED_START_S = 5.0
+# How long a window that was asked for is given to appear before the app
+# believes there is none. It covers the moments in which no Edge process this
+# server started is alive and Edge has not taken the profile yet (Edge passing
+# the window from one of its processes to another). A window still missing
+# after it never came: the app falls back to the default browser.
+WINDOW_START_GRACE_S = 15.0
+# The file Edge keeps in a profile folder while any of its processes has the
+# profile open, and removes when the last of them ends (it is opened to be
+# deleted on close, so it goes even when Edge is killed).
+PROFILE_LOCK_NAME = "lockfile"
 # How long the launcher waits for the server to answer before saying it did
 # not start. A first start imports the whole dashboard from a cold disk.
 START_TIMEOUT_S = 120.0
@@ -77,6 +98,9 @@ START_TIMEOUT_S = 120.0
 OTHER_SERVER_GRACE_S = 30.0
 # The server's output (it has no visible console): beside the workspace state.
 LOG_NAME = "app.log"
+# The log of the run before, kept when the next one starts: the usual moment
+# to want it is after clicking the icon again because something went wrong.
+PREVIOUS_LOG_NAME = "app.previous.log"
 # Locked by the launcher that is starting the server (see ``start_lock``).
 START_LOCK_NAME = "app-start.lock"
 # How much of that log a failed start shows.
@@ -140,13 +164,30 @@ def message_box(text: str, *, error: bool = False) -> None:
     ctypes.windll.user32.MessageBoxW(None, text, "Alhazen", _MB_ERROR if error else _MB_INFO)
 
 
+def profile_is_held(profile: Path) -> bool:
+    """Whether an Edge process has ``profile`` open right now (module
+    docstring): Edge's own lock file is there."""
+    return (profile / PROFILE_LOCK_NAME).exists()
+
+
+def log_line(text: str) -> None:
+    """One line in the app's log, with the time of day. The log is the
+    server's output (``start_server``); it is the only place a program without
+    a terminal can say why it did something, above all why it stopped."""
+    print(f"{time.strftime('%H:%M:%S')} {text}", flush=True)
+
+
 class AppWindow:
     """The app's window: shown on request, and asked whether it is open.
 
-    With Edge, each :meth:`show` starts an Edge process on the app's profile;
-    the window is open while any of them lives. Without Edge, :meth:`show`
-    opens the default browser and a dialog stands in for the window: it is
-    "open" until the dialog is dismissed.
+    With Edge, each :meth:`show` starts an Edge process on the app's profile.
+    The window is open while Edge holds that profile, whichever of its
+    processes does (module docstring). Without Edge, :meth:`show` opens the
+    default browser and a dialog stands in for the window: it is "open" until
+    the dialog is dismissed.
+
+    Every change it sees goes to the log (``log``): a started process ending,
+    Edge taking or letting go of the profile, the fallback to the browser.
     """
 
     def __init__(
@@ -158,6 +199,8 @@ class AppWindow:
         open_browser: Callable[[str], Any] = webbrowser.open,
         dialog: Callable[[str], None] = message_box,
         clock: Callable[[], float] = time.monotonic,
+        holds_profile: Callable[[Path], bool] = profile_is_held,
+        log: Callable[[str], None] = log_line,
     ) -> None:
         self.profile = profile
         self._edge = edge
@@ -165,13 +208,23 @@ class AppWindow:
         self._open_browser = open_browser
         self._dialog = dialog
         self._clock = clock
+        self._holds_profile = holds_profile
+        self._log = log
         self._lock = threading.Lock()
-        # Edge processes started and not yet seen to have ended.
-        self._processes: list[Any] = []
-        # The first Edge process and when it was started: an early exit with
-        # an error means Edge could not show a window at all.
-        self._first: Any = None
-        self._first_at = 0.0
+        # Edge processes started and not yet seen to have ended, each with
+        # the time it was started.
+        self._processes: list[tuple[Any, float]] = []
+        # When a window was last asked for (None: never), and whether Edge
+        # has been seen holding the profile since: until it has, the window
+        # may still be on its way (WINDOW_START_GRACE_S).
+        self._asked_at: float | None = None
+        self._seen_since_asked = False
+        # Whether Edge was holding the profile at the last look, to log the
+        # change and not every look.
+        self._held = False
+        # Whether a window was ever known to be up. One that was and is gone
+        # was closed; one that never was, never came (failed_to_start).
+        self._was_open = False
         # The stand-in dialog's thread, once the browser fallback is in use.
         self._dialog_thread: threading.Thread | None = None
 
@@ -185,9 +238,10 @@ class AppWindow:
         self.profile.mkdir(parents=True, exist_ok=True)
         process = self._popen(window_command(edge, url, self.profile))
         with self._lock:
-            self._processes.append(process)
-            if self._first is None:
-                self._first, self._first_at = process, self._clock()
+            now = self._clock()
+            self._processes.append((process, now))
+            self._asked_at, self._seen_since_asked = now, False
+        self._log(f"A window was asked for: started Edge (process {getattr(process, 'pid', '?')}).")
 
     def _show_in_browser(self, url: str) -> None:
         self._open_browser(url)
@@ -206,29 +260,73 @@ class AppWindow:
             )
             self._dialog_thread.start()
 
+    def _look(self) -> tuple[bool, bool]:
+        """Look at Edge once: ``(up, starting)``. Called with the lock held.
+
+        ``up``: a window is known to be there. Edge holds the profile, or a
+        process this server started is alive. ``starting``: neither, but a
+        window was asked for a moment ago and has not been seen yet, so it
+        may still be coming.
+        """
+        now = self._clock()
+        alive = []
+        for process, started in self._processes:
+            code = process.poll()
+            if code is None:
+                alive.append((process, started))
+            else:
+                self._log(
+                    f"The Edge process started {now - started:.1f} s ago "
+                    f"(process {getattr(process, 'pid', '?')}) ended with exit code {code}."
+                )
+        self._processes = alive
+        if self._edge is None or self._asked_at is None:
+            # No window was ever asked of Edge: there is nothing to look at.
+            return False, False
+        held = self._holds_profile(self.profile)
+        if held != self._held:
+            self._held = held
+            self._log(
+                "Edge has the app's profile open: the window is up."
+                if held
+                else "Edge no longer has the app's profile open."
+            )
+        if held:
+            self._seen_since_asked = True
+        waited = now - self._asked_at
+        starting = not self._seen_since_asked and waited < WINDOW_START_GRACE_S
+        if held or (alive and not starting):
+            # Known to be up: Edge holds the profile, or (for an Edge that
+            # keeps no lock file) a started process outlived the time a
+            # window is given to appear.
+            self._was_open = True
+        return bool(alive) or held, starting and not alive and not held
+
     def is_open(self) -> bool:
+        """Whether the app's window is open, or still on its way."""
         with self._lock:
-            self._processes = [p for p in self._processes if p.poll() is None]
+            up, starting = self._look()
             dialog = self._dialog_thread is not None and self._dialog_thread.is_alive()
-            return bool(self._processes) or dialog
+            return up or starting or dialog
 
     def failed_to_start(self) -> bool:
-        """Edge was started once, and exited with an error within a few
-        seconds: it never showed a window (a broken install, a policy that
-        forbids it). True at most once; :meth:`use_browser` follows."""
+        """Edge was asked for a window and none ever came: no started process
+        is alive, Edge never held the profile, and the time a window is given
+        to appear has passed (a broken install, a policy that forbids it).
+        :meth:`use_browser` follows. False for a window that was up and has
+        been closed, and while one may still be coming."""
         with self._lock:
-            first = self._first
-            if first is None or self._edge is None:
+            if self._edge is None or self._asked_at is None:
                 return False
-            code = first.poll()
-            early = self._clock() - self._first_at < FAILED_START_S
-            return code not in (None, 0) and early and len(self._processes) <= 1
+            up, starting = self._look()
+            return not up and not starting and not self._was_open
 
     def use_browser(self, url: str) -> None:
         """Give up on Edge for this run and show ``url`` the fallback way."""
         with self._lock:
             self._edge = None
             self._processes = []
+        self._log("Edge showed no window: opening the page in the default browser instead.")
         self._show_in_browser(url)
 
 
@@ -240,6 +338,7 @@ def supervise(
     *,
     poll_s: float = SUPERVISE_POLL_S,
     sleep: Callable[[float], None] = time.sleep,
+    log: Callable[[str], None] = log_line,
 ) -> None:
     """Stop the server once its window is closed and nothing is running.
 
@@ -248,16 +347,30 @@ def supervise(
     hidden, until both are done, and is found again by the next click on the
     icon. ``stop`` is ``DashboardServer.shutdown``, which makes
     ``serve_forever`` return to the usual clean-up. Runs in its own thread.
+
+    The reason for stopping goes to the log first (``log``): a server that
+    stops is otherwise silent, and "why did the app go away" must have an
+    answer on disk.
     """
+    # Whether "closed, but still busy" has been said for this closing.
+    said_busy = False
     while True:
         sleep(poll_s)
         if window.is_open():
+            said_busy = False
             continue
         if window.failed_to_start():
             window.use_browser(url)
             continue
         if busy():
+            if not said_busy:
+                log(
+                    "The window is closed, but a session or a setup is still running: "
+                    "the app stays up until it has ended."
+                )
+                said_busy = True
             continue
+        log("The window is closed and nothing is running: stopping.")
         stop()
         return
 
@@ -331,9 +444,25 @@ def server_command(directory: Path, executable: str | None = None) -> list[str]:
 
 
 def start_server(directory: Path, *, popen: Callable[..., Any] = subprocess.Popen) -> Any:
-    """Start the server hidden, its output going to the app's log file."""
+    """Start the server hidden, its output going to the app's log file.
+
+    The log of the run before is kept beside it (``PREVIOUS_LOG_NAME``): a
+    click on the icon after something went wrong must not erase the only
+    account of what went wrong.
+    """
     directory.mkdir(parents=True, exist_ok=True)
-    with (directory / LOG_NAME).open("w", encoding="utf-8") as log:
+    path = directory / LOG_NAME
+    not_kept = ""
+    # (A first start has no log to keep.)
+    if path.exists():
+        try:
+            os.replace(path, directory / PREVIOUS_LOG_NAME)
+        except OSError as exc:
+            # Not a reason to refuse to start; said in the new log instead.
+            not_kept = f"(The log of the run before could not be kept: {exc})\n"
+    with path.open("w", encoding="utf-8") as log:
+        log.write(not_kept)
+        log.flush()
         return popen(
             server_command(directory),
             stdin=subprocess.DEVNULL,
