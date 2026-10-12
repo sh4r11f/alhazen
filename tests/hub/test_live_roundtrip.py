@@ -690,3 +690,191 @@ def _session_folder(project_id: str, local: dict[str, Any], rig: Rig) -> Path:
     assert folder.is_dir() and (folder / "manifest.yaml").is_file()
     assert rig.state in folder.resolve().parents  # the installed release's data, on this rig
     return folder
+
+
+# -- automatic setup, for real (opt-in) ---------------------------------------------------------
+
+# The alhazen release the test experiment pins, as a git tag, the way the real
+# experiments do (alhazen is not on PyPI). The session below therefore runs on
+# THAT alhazen, in an environment the rig built, while the hub and the
+# dashboard are this checkout's: what a rig does with any published experiment.
+PINNED_ALHAZEN_TAG = "v2.15.0"
+PINNED_ALHAZEN_VERSION = "2.15.0"
+# A first build downloads a Python and alhazen's dependencies.
+SETUP_S = 900.0
+
+REAL_UV = pytest.mark.skipif(
+    os.environ.get("ALHAZEN_TEST_REAL_UV") != "1" or shutil.which("uv") is None,
+    reason="set ALHAZEN_TEST_REAL_UV=1 (with uv and git on PATH) to let the rig build a real "
+    "environment; it needs the network",
+)
+
+
+def locked_package(root: Path, version: str) -> tuple[Path, dict[str, Any]]:
+    """``alhazen new fixation_demo`` as an author who uses uv publishes it:
+    alhazen taken from a release tag, the Python pinned, and the lock file
+    ``uv lock`` writes, all packed by the real builder. The scaffold's
+    ``psychopy`` extra is removed: the rig installs that extra when a project
+    defines it, and PsychoPy would add minutes and a gigabyte to a session
+    that is simulated."""
+    source = scaffold("fixation_demo", root / f"src-{version}")
+    project = source / "pyproject.toml"
+    text = project.read_text(encoding="utf-8")
+    extra = 'psychopy = ["alhazen-vision[psychopy]"]\n'
+    assert text.count(extra) == 1, "the scaffold's psychopy extra moved; update this fixture"
+    text = text.replace(extra, "")
+    text += (
+        "\n[tool.uv.sources]\n"
+        'alhazen-vision = { git = "https://github.com/sh4r11f/alhazen", '
+        f'tag = "{PINNED_ALHAZEN_TAG}" }}\n'
+    )
+    project.write_text(text, encoding="utf-8")
+    (source / ".python-version").write_text(
+        f"{sys.version_info[0]}.{sys.version_info[1]}\n", encoding="utf-8"
+    )
+    locked = subprocess.run(
+        ["uv", "lock", "--project", str(source)], capture_output=True, text=True, timeout=600
+    )
+    assert locked.returncode == 0, locked.stderr[-2000:]
+    metadata = {
+        "name": "fixation-demo",
+        "version": version,
+        "title": "Fixation hold: set up by the rig",
+        "description": "Synthetic end-to-end test package; not a validated experiment.",
+        "entrypoint": "run.py",
+        "python_min": "3.10",
+        "alhazen_min": "2.13.0",
+        "platforms": ["linux", "darwin", "win32"],
+        "hardware": {"display": True, "eye_tracker": True, "reward": False},
+        "license": "MIT",
+        "citations": [],
+    }
+    files = suggest_files(source)
+    assert {"uv.lock", ".python-version", "pyproject.toml"} <= set(files)
+    bundle = root / f"fixation-demo-{version}.zip"
+    build_bundle(source, bundle, metadata, files)
+    return bundle, metadata
+
+
+@REAL_UV
+def test_a_rig_sets_an_experiment_up_itself_and_runs_a_session_in_it(
+    stack: tuple[CentralHub, Rig], tmp_path: Path
+) -> None:
+    """The whole path the app promises, with nothing stood in for: the real
+    hub, the real rig dashboard, the real uv. The operator names no
+    interpreter; the rig builds one from the release's lock file, registers
+    the release with it and runs a session there."""
+    hub, rig = stack
+    author = Account(hub, "author_setup")
+    try:
+        bundle, metadata = locked_package(tmp_path / "author", "0.1.0")
+        response = author.client.post(
+            "/experiments",
+            json={
+                "title": metadata["title"],
+                "summary": "Synthetic automatic-setup fixture.",
+                "description": metadata["description"],
+                "license": "MIT",
+                "citations": [],
+                "tags": ["synthetic"],
+            },
+        )
+        assert response.status_code == 201, _error(response)
+        experiment_id = response.json()["experiment"]["id"]
+        response = author.client.post(
+            f"/experiments/{experiment_id}/versions",
+            content=bundle.read_bytes(),
+            headers={"Content-Type": "application/zip"},
+        )
+        assert response.status_code == 201, _error(response)
+        version = response.json()["version"]
+
+        rig.hub(
+            "POST",
+            "/local/connect",
+            json={"url": hub.origin, "allow_http_loopback": True},
+            expect=200,
+        )
+        rig.hub(
+            "POST",
+            "/auth/login",
+            json={"username": author.username, "password": author.password},
+            expect=200,
+        )
+        status = rig.hub("GET", "/local/status", expect=200)
+        assert status["setup"]["available"] is True, status["setup"]
+
+        # Install with no interpreter named: accepted, and built in the background.
+        accepted = rig.hub(
+            "POST",
+            "/local/install",
+            json={
+                "experiment_id": experiment_id,
+                "version_id": version["id"],
+                "sha256": version["sha256"],
+                "trust_code": True,
+                "setup": "auto",
+            },
+            expect=202,
+        )["install"]
+        assert accepted["environment"]["state"] == "building"
+        # Nothing may run beside a build; the launcher says so itself.
+        refused = rig.client.post("/api/runs", json={})
+        assert refused.status_code == 400 and "being set up" in refused.text
+
+        def set_up() -> dict[str, Any] | None:
+            (install,) = rig.hub("GET", "/local/status", expect=200)["installed"]
+            return install if install["environment"]["state"] != "building" else None
+
+        install = wait_for("the rig to build the experiment's environment", set_up, SETUP_S, 2.0)
+        assert install["status"] == "registered" and install["error"] is None, install["error"]
+        assert install["environment"]["state"] == "ready"
+        assert install["environment"]["git_packages"] == ["alhazen-vision"]
+        python = Path(install["python"])
+        # The interpreter is the rig's own build for this release, not this test's.
+        assert rig.state / "hub" / "envs" / version["sha256"][:12] in python.parents
+        assert python.is_file() and python != Path(sys.executable)
+        state = rig.call("GET", "/api/state", expect=200)
+        (project,) = [p for p in state["projects"] if p["id"] == install["project_id"]]
+        assert project["python"] == str(python)
+        # The experiment's pinned alhazen, from its lock file: not this checkout.
+        assert project["alhazen_version"] == PINNED_ALHAZEN_VERSION
+
+        run = rig.call(
+            "POST",
+            "/api/runs",
+            json={
+                "project": install["project_id"],
+                "mode": "simulate",
+                "rig": "alhazen/laptop",
+                "headless": True,
+                "seed": 23,
+                "subject": SUBJECT,
+                "session": 1,
+                "trials": TRIALS,
+            },
+            expect=201,
+        )
+
+        def finished() -> dict[str, Any] | None:
+            runs = rig.call("GET", "/api/state", expect=200)["runs"]
+            (record,) = [r for r in runs if r["id"] == run["id"]]
+            return record if record["status"] not in ("running", "stopping") else None
+
+        record = wait_for("the simulate session to finish", finished, RUN_S, every=1.0)
+        assert record["status"] == "completed" and record["returncode"] == 0, (
+            record["status"],
+            record.get("returncode"),
+            f"console log under {rig.state}",
+        )
+        sessions = rig.hub(
+            "GET", "/local/sessions", params={"project_id": install["project_id"]}, expect=200
+        )
+        done = [s for s in sessions["items"] if s["complete"] and s["mode"] == "simulate"]
+        assert len(done) == 1, [(s["run_id"], s["complete"]) for s in sessions["items"]]
+        print(
+            f"automatic setup OK: environment built by the rig at {python.parent.parent.name}, "
+            f"alhazen {project['alhazen_version']}, one {TRIALS}-trial session completed"
+        )
+    finally:
+        author.client.close()

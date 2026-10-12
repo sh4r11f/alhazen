@@ -4,7 +4,8 @@ Status: development branch. Nothing here changes the default dashboard: `alhazen
 still opens the workspace at `/`, and every run, rig, calibration, reward and training rule
 stays the launcher's. The hub adds a page (`/hub`), an API on the same loopback server
 (`/api/hub/v1`) and an `alhazen hub` command. This page is the rig's design and its exact
-local contract; the central API is [api-contract.md](api-contract.md).
+local contract; the central API is [api-contract.md](api-contract.md). The Windows app that
+wraps this page in a window and installs everything a rig needs is [app.md](app.md).
 
 ## Modules and what each hides
 
@@ -13,6 +14,7 @@ local contract; the central API is [api-contract.md](api-contract.md).
 | `alhazen.hub.client` | URL canonicalisation, bearer header, redirect refusal, timeouts, typed `HubError` | stdlib only; no retry policy of its own |
 | `alhazen.hub.credentials` | where the hub address, bearer and rig id live (`<workspace>/hub/`, 0700/0600) and the `epoch` fence | not protection from code running as the same OS user |
 | `alhazen.hub.installation` | download, verification order, versioned unpack, trust record per SHA-256 | proves bytes, not safety of code |
+| `alhazen.hub.environments` | building a release's Python environment from its own lock file: how uv and git are found, which Python and extras, where environments live ([app.md](app.md)) | one environment per release; needs the release's `uv.lock` |
 | `alhazen.hub.source` | preview of an experiment's source, metadata suggestion, pack + upload of an approved list | archive rules are all `alhazen.hub.packages` |
 | `alhazen.hub.sync` | session upload: preview binding, durable outbox, the background worker | no rig timing guarantee |
 | `alhazen.hub.protocol` | the shared upload identity: canonical `manifest_sha256` and receipt checks (stdlib; the hub service uses the same definition) | none beyond the contract |
@@ -53,7 +55,10 @@ of it.
 
 ## Installing a release
 
-`POST /local/install {experiment_id, version_id, sha256, trust_code: true, python}`:
+`POST /local/install {experiment_id, version_id, sha256, trust_code: true, python}`, or with
+`setup: "auto"` in place of `python`, in which case steps 1 to 5 are the same and step 6 uses an
+interpreter the rig builds for the release in the background (202; [app.md](app.md), "Setting an
+experiment up"):
 
 1. refused while a session runs (`run_active`) or without `trust_code: true`;
 2. the hub's version record must list that exact SHA-256 (`hash_mismatch` otherwise);
@@ -191,8 +196,10 @@ workspace lock, so it refuses while a dashboard holds the workspace, and it star
 experiment's own rig files, the reward line from monkey params files; files it could not read
 are named), points the manifest at `docs/experiment.json` when it is packed, and marks files
 that are probably not for the rig (tests, notebooks, `scripts/`, `.github`, `.githooks`,
-`uv.lock`, rehearsal data, stimulus-check images): they are included unless the author drops
-them (the prompt, or `--drop-not-for-rig`). `--version` sets a release version different from
+rehearsal data, stimulus-check images): they are included unless the author drops
+them (the prompt, or `--drop-not-for-rig`). `uv.lock` is not one of them: a rig builds the
+experiment's Python environment from it, and `pack` says so when a package has none.
+`--version` sets a release version different from
 the pyproject (protocol) version; the manifest then records `protocol_version` and the data
 stays under the protocol's folder.
 
