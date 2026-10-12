@@ -127,6 +127,13 @@ jobs:
           }
           Get-Content "$home_\install.log" -Tail 5
           Get-ChildItem "$home_\app\Scripts\alhazen*.exe" | ForEach-Object { $_.Name }
+          # Windows' folder-link guard must be off in the installer that was
+          # really built (see RedirectionGuard in alhazen.iss). Setup writes
+          # down what it did with it; a log without that line means Inno
+          # Setup changed, and this check has to be looked at again.
+          $guard = Select-String -Path $log -Pattern "RedirectionGuard status"
+          if (-not $guard) { throw "setup.log does not say what was done with RedirectionGuard" }
+          if ($guard.Line -notmatch "Not enabling") { throw "RedirectionGuard is not off: $($guard.Line.Trim())" }
 
       # The people this app is for are not administrators; this runner's
       # account is one. That difference hid a real failure: Windows trusts a
@@ -134,6 +141,9 @@ jobs:
       # that an ordinary person made, and uv makes such a link for every
       # Python it downloads. So the install is done once more by a new,
       # ordinary person, who gets their own copy in their own profile.
+      # (Before alhazen.iss switched RedirectionGuard off, this step failed
+      # with "untrusted mount point (os error 448)", as it did for the first
+      # person who ran the installer on their own computer.)
       #
       # The installer runs from a small command file, as that person, which
       # writes down what happened in a folder both accounts can read.

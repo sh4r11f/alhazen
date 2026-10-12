@@ -216,6 +216,15 @@ class TestTheInstallerScript:
         # A different AppId would install a second copy beside the first.
         assert "AppId={{597AD17D-7C55-4184-847B-9E905C398D83}" in self.SCRIPT
 
+    def test_the_folder_link_guard_is_off(self):
+        # Inno Setup 6.7 switches Windows' RedirectionGuard on by default.
+        # Under it, uv cannot go through the folder link it keeps each Python
+        # behind when a person who is not an administrator made the link, and
+        # the installer's Python step fails with "untrusted mount point
+        # (os error 448)". That is how the first install on a real computer
+        # failed. A commented-out line would not count: the directive itself.
+        assert re.search(r"^RedirectionGuard=no$", self.SCRIPT, re.MULTILINE)
+
     def test_a_failed_python_step_has_an_exit_code_of_its_own(self):
         # Setup counts an install as done once the files are copied. Without
         # a code of its own, a silent install whose Python step failed ends

@@ -58,11 +58,43 @@ for the current user, into a fixed folder:
 
 The installer copies the files, then has the bundled uv download Python 3.12 and install alhazen
 and its packages into `app\`. That step needs an internet connection and downloads about 130 MB.
-If it fails, the installer says so and names `install.log`; running it again repeats the step.
+
+If that step fails, the app cannot start, and the installer says so three ways:
+
+| To whom | How |
+|---|---|
+| The person at the screen | A message that shows what uv reported (the end of `install.log`) and names the half of the step that failed. |
+| Whoever started it silently (`/VERYSILENT`) | Exit code **20**. Inno Setup's own codes are 0 to 8, and it counts an install as done once the files are copied, so without this a failed install ended with 0. No message box waits for a click. |
+| The next person to look for the app | No Start-menu or desktop shortcut is left pointing at a program that does not exist. |
+
+Running the installer again repeats the step and puts the shortcuts back.
 
 The Start-menu shortcut runs `app\Scripts\alhazen-app.exe`. An upgrade is the newer installer run
 over the old one, with the app closed. An uninstall removes the folder; it leaves the person's
 workspace (`%USERPROFILE%\.alhazen`: experiments, data, settings) and uv's shared download cache.
+
+**Windows' folder-link guard is off in this installer.** From version 6.7, Inno Setup switches
+on a Windows protection called RedirectionGuard for its own process. A program under the guard
+refuses to go through a folder link (a junction) made by a person who is not an administrator,
+and the guard also covers the programs the installer starts (seen on Windows 11 and on Windows
+Server 2025; Inno Setup's documentation says otherwise). uv keeps every Python it downloads
+behind such a link, made by the person installing:
+
+```
+%APPDATA%\uv\python\cpython-3.12-windows-x86_64-none   (a link, to the folder below)
+%APPDATA%\uv\python\cpython-3.12.14-windows-x86_64-none
+```
+
+With the guard on, the Python step failed for everyone who is not an administrator:
+
+```
+The path cannot be traversed because it contains an untrusted mount point. (os error 448)
+```
+
+The guard is there for an installer that runs with more rights than the person who made the
+link. This one runs as that person and writes only to their own folders, so `alhazen.iss` sets
+`RedirectionGuard=no`. The workflow checks Setup's own log for it, and installs once as an
+account that is not an administrator.
 
 **Unsigned installer.** Windows SmartScreen shows "Windows protected your PC" for an installer
 that is not signed with a code-signing certificate; the person has to choose *More info*, then
@@ -206,18 +238,33 @@ On a Windows 11 PC with long paths off and no symlink privilege:
 - The installer's layout and its two uv commands, run by hand, then
   `packaging/windows/smoke_test.py` from the installed Python: the app's own uv and git, with
   neither on PATH, built an environment for an experiment that takes alhazen from git.
+- The installer itself, run by a person who is not an administrator. The first such run failed
+  (see *Windows' folder-link guard* above); the installer as it was fails the same way when run
+  silently, and finishes when started with `/NOREDIRECTIONGUARD`. With the fix, compiled by
+  Inno Setup 6.7.1: a silent install finishes in about 20 s; a Python step made to fail ends in
+  12 s with exit code 20, no `installed.ok`, no shortcuts and uv's words in the message; an
+  install over the failed one works. Then, from the app that install made: `smoke_test.py`, and
+  the launcher (one window for a double click, a second for a later click, the app gone once the
+  last window is closed).
 - `tests/hub/test_live_roundtrip.py` (opt-in, `ALHAZEN_TEST_REAL_UV=1`): a real Hub server and a
   real rig; the rig built the environment itself and ran a session in it.
 
 On GitHub's Windows runner (`.github/workflows/windows-app.yml`): the installer compiles; a
-silent install, the smoke test, the end-to-end test above, an install over an install, and an
-uninstall.
+Python step made to fail is reported as above; a silent install as the runner's own account (an
+administrator) and as a new account that is not one; the smoke test; the end-to-end test above;
+an install over an install; an uninstall. Before the fix, the install as an account that is not
+an administrator failed there with the same error as on the PC (run 38207402754), so the failure
+is not particular to one Windows build.
 
 ## Not verified, and not built
 
-- **Nobody has clicked through the installer's pages or the app window by hand.** The window was
-  opened and closed by a script; the pages were tested in the fake browser the other page tests
-  use.
+- **The fixed installer's pages, clicked through by hand.** The owner clicked through the
+  installer once, before the fix, and that is how the folder-link guard was found. Since the fix
+  it has only been run silently, so its last page ("Open Alhazen") has not been used.
+- **The app window, by hand.** It was opened and closed by a script; the pages were tested in
+  the fake browser the other page tests use.
+- **Windows 10, and Windows 11 on any computer but one** (build 26300). GitHub's runner is
+  Windows Server 2025.
 - **A session with a real PsychoPy window, started from the app**, and any session with real
   devices. The hidden-console design was measured with a stand-in child, not with a session.
 - **A first build on a slow connection.** PsychoPy's environment is about a gigabyte; the builds

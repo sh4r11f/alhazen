@@ -70,6 +70,23 @@ WizardStyle=modern
 ; that says what to do; Windows' own "close applications" page cannot see it,
 ; because the program that is running is created by step 2, not copied here.
 CloseApplications=no
+; Windows' RedirectionGuard stays off. Inno Setup switches it on by default
+; from version 6.7. A process under the guard refuses to go through a folder
+; link (a junction) that someone who is not an administrator made. The guard
+; also covers the programs Setup starts, whatever Inno Setup's documentation
+; says: seen on Windows 11 (build 26300) and on Windows Server 2025. uv keeps
+; every Python it manages behind exactly such a link, made by the person installing
+; (cpython-3.12-... points to cpython-3.12.14-...). So with the guard on,
+; step 2 failed for everyone who is not an administrator:
+;   "The path cannot be traversed because it contains an untrusted mount
+;    point. (os error 448)"
+; The guard is there for an installer that has more rights than the person
+; who made the link. This one runs as that person and writes only to their
+; own folders, so it protects nothing here.
+; (An older compiler does not know the directive, and has no guard to switch off.)
+#if Ver >= EncodeVer(6,7,0)
+RedirectionGuard=no
+#endif
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
