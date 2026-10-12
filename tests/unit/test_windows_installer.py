@@ -216,6 +216,28 @@ class TestTheInstallerScript:
         # A different AppId would install a second copy beside the first.
         assert "AppId={{597AD17D-7C55-4184-847B-9E905C398D83}" in self.SCRIPT
 
+    def test_a_failed_python_step_has_an_exit_code_of_its_own(self):
+        # Setup counts an install as done once the files are copied. Without
+        # a code of its own, a silent install whose Python step failed ends
+        # with 0, exactly like one that worked.
+        defined = re.search(r"^#define PythonStepFailed (\d+)$", self.SCRIPT, re.MULTILINE)
+        assert defined, "alhazen.iss no longer defines PythonStepFailed"
+        code = int(defined[1])
+        assert code > 8  # Inno Setup's own exit codes are 0 to 8
+        assert "function GetCustomSetupExitCode(): Integer;" in self.SCRIPT
+        assert "Result := {#PythonStepFailed};" in self.SCRIPT
+        # The workflow that installs the real thing waits for the same code.
+        workflow = REPOSITORY / ".github" / "workflows" / "windows-app.yml"
+        assert f"$run.ExitCode -ne {code})" in workflow.read_text(encoding="utf-8")
+
+    def test_no_message_waits_for_a_click_in_a_silent_install(self):
+        # A plain MsgBox is shown even under /SUPPRESSMSGBOXES, and a silent
+        # install then waits for a click nobody is there to make. Every box
+        # the script shows must be the suppressible kind.
+        code = self.SCRIPT.split("[Code]", 1)[1]
+        boxes = re.findall(r"\b(\w*MsgBox)\(", code)
+        assert boxes and set(boxes) == {"SuppressibleMsgBox"}
+
     def test_the_build_passes_every_definition_the_script_requires(self, build):
         required = set(re.findall(r"#ifndef (\w+)", self.SCRIPT))
         source = (PACKAGING / "build.py").read_text(encoding="utf-8")

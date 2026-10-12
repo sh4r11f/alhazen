@@ -3,9 +3,12 @@
 #
 # This is the only place the installer itself is tested: Inno Setup is not a
 # development dependency, so a contributor's computer usually cannot compile
-# it. The job is the test of four things no unit test covers:
+# it. The job is the test of things no unit test covers:
 #   * alhazen.iss compiles;
-#   * a silent install ends with a working app (its own Python, its packages);
+#   * a silent install ends with a working app (its own Python, its packages),
+#     for an administrator and for a person who is not one;
+#   * an install whose Python step fails says so (exit code, message, no
+#     shortcut) instead of looking like one that worked;
 #   * the installed app sets an experiment up using ONLY the uv and git it
 #     brought, with neither on PATH (packaging/windows/smoke_test.py);
 #   * an uninstall removes the app;
@@ -73,6 +76,41 @@ jobs:
           python packaging\windows\build.py --wheel $wheel --out build\windows
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
+      # The unhappy path first, and before the good install on purpose (a good
+      # install over a failed one is what a person does next). uv is told not
+      # to download a Python and is shown a folder that holds none, so the
+      # installer's Python step cannot work. The install must then end by
+      # itself, with the exit code alhazen.iss gives this case, no
+      # installed.ok, no shortcut to a program that is not there, and uv's own
+      # words in the message. Without that, a silent install that failed
+      # looked exactly like one that worked.
+      - name: A failed Python step is reported, not hidden
+        shell: pwsh
+        # A message box nobody can click would otherwise hold the job for
+        # its whole half hour.
+        timeout-minutes: 5
+        env:
+          UV_PYTHON_DOWNLOADS: never
+          UV_PYTHON_INSTALL_DIR: ${{ runner.temp }}\no-python-here
+        run: |
+          $setup = (Get-ChildItem build\windows\AlhazenSetup-*.exe).FullName
+          $log = Join-Path $PWD "build\windows\setup-failed.log"
+          New-Item -ItemType Directory -Force $env:UV_PYTHON_INSTALL_DIR | Out-Null
+          $run = Start-Process $setup -Wait -PassThru -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/LOG=$log"
+          $home_ = "$env:LOCALAPPDATA\Alhazen"
+          $shortcut = Join-Path ([Environment]::GetFolderPath("Programs")) "Alhazen.lnk"
+          $problems = @()
+          if ($run.ExitCode -ne 20) { $problems += "the exit code was $($run.ExitCode), not 20" }
+          if (Test-Path "$home_\installed.ok") { $problems += "installed.ok was written" }
+          if (Test-Path $shortcut) { $problems += "a shortcut was left at $shortcut" }
+          if (-not (Select-String -Path "$home_\install.log" -Pattern "No interpreter found" -Quiet)) { $problems += "install.log does not hold uv's error" }
+          if (-not (Select-String -Path $log -Pattern "No interpreter found" -Quiet)) { $problems += "the message does not show uv's error" }
+          if ($problems) {
+            Write-Host "--- setup-failed.log (end)"; Get-Content $log -Tail 40
+            throw "A failed Python step was not reported as it should be: $($problems -join '; ')"
+          }
+          Select-String -Path $log -Pattern "Message box" -Context 0, 8 | ForEach-Object { $_.Line; $_.Context.PostContext }
+
       - name: Install it, silently
         shell: pwsh
         run: |
@@ -89,6 +127,71 @@ jobs:
           }
           Get-Content "$home_\install.log" -Tail 5
           Get-ChildItem "$home_\app\Scripts\alhazen*.exe" | ForEach-Object { $_.Name }
+
+      # The people this app is for are not administrators; this runner's
+      # account is one. That difference hid a real failure: Windows trusts a
+      # folder link (a junction) that an administrator made and may refuse one
+      # that an ordinary person made, and uv makes such a link for every
+      # Python it downloads. So the install is done once more by a new,
+      # ordinary person, who gets their own copy in their own profile.
+      #
+      # The installer runs from a small command file, as that person, which
+      # writes down what happened in a folder both accounts can read: asking
+      # PowerShell for the exit code of a program started as someone else is
+      # not dependable.
+      - name: It installs for a person who is not an administrator
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          $setup = (Get-ChildItem build\windows\AlhazenSetup-*.exe).FullName
+          $shared = "C:\alhazen-ordinary"
+          New-Item -ItemType Directory -Force $shared | Out-Null
+          Copy-Item $setup "$shared\AlhazenSetup.exe"
+
+          # A new local account, in the Users group only. Its password is
+          # made here and never printed; the machine is discarded after the job.
+          $name = "alhazen-ordinary"
+          # (14 characters: `net user` stops to ask a question about longer ones.)
+          $letters = (48..57) + (65..90) + (97..122) | Get-Random -Count 10 | ForEach-Object { [char]$_ }
+          $password = (-join $letters) + "aA1!"
+          net user $name $password /add /y | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "Could not create the account $name" }
+          icacls $shared /grant "${name}:(OI)(CI)F" | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "Could not open $shared to $name" }
+          $credential = [pscredential]::new($name, (ConvertTo-SecureString $password -AsPlainText -Force))
+
+          # What that person does: install, then start the installed program.
+          # ("> file echo text" and not "echo text> file": a digit before ">"
+          # would be read as a stream number.)
+          Set-Content "$shared\install.cmd" -Encoding ascii -Value @(
+            '@echo off',
+            '> "%~dp0who.txt" whoami /groups',
+            '"%~dp0AlhazenSetup.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG="%~dp0setup.log"',
+            '> "%~dp0exit.txt" echo %ERRORLEVEL%',
+            'if exist "%LOCALAPPDATA%\Alhazen\installed.ok" (> "%~dp0installed.txt" echo yes)',
+            'if exist "%LOCALAPPDATA%\Alhazen\install.log" copy /y "%LOCALAPPDATA%\Alhazen\install.log" "%~dp0install.log" > nul',
+            '> "%~dp0version.txt" 2>&1 "%LOCALAPPDATA%\Alhazen\app\Scripts\alhazen.exe" --version'
+          )
+          Start-Process cmd.exe -ArgumentList "/c", "`"$shared\install.cmd`"" -Credential $credential -LoadUserProfile -WorkingDirectory $shared -Wait
+
+          function Told($file) {
+            # What the command file wrote down, or "" when it never got there.
+            if (Test-Path "$shared\$file") { return (Get-Content "$shared\$file" -Raw).Trim() }
+            return ""
+          }
+          $problems = @()
+          # S-1-5-32-544 is the Administrators group, whatever the language.
+          if (-not (Told "who.txt")) { $problems += "the command file did not run as $name" }
+          elseif ((Told "who.txt") -match "S-1-5-32-544") { $problems += "$name is an administrator, so this test shows nothing" }
+          if ((Told "exit.txt") -ne "0") { $problems += "the installer's exit code was '$(Told "exit.txt")', not 0" }
+          if ((Told "installed.txt") -ne "yes") { $problems += "installed.ok was not written" }
+          if ((Told "version.txt") -notmatch "^alhazen \d") { $problems += "the installed program did not start: '$(Told "version.txt")'" }
+          if ($problems) {
+            Write-Host "--- install.log (what uv reported)"; Told "install.log" | Write-Host
+            Write-Host "--- setup.log (end)"; if (Test-Path "$shared\setup.log") { Get-Content "$shared\setup.log" -Tail 30 }
+            throw "The install as an ordinary person failed: $($problems -join '; ')"
+          }
+          Write-Host "Installed and started by $name, who is not an administrator: $(Told "version.txt")"
 
       - name: The installed app sets an experiment up and serves its pages
         shell: pwsh

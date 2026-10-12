@@ -14,6 +14,10 @@
 ;      needs an internet connection; its output goes to <folder>\install.log.
 ;   3. adds the Start-menu shortcut, which runs <folder>\app\Scripts\alhazen-app.exe.
 ;
+; When step 2 fails the app cannot start, and the install says so three ways:
+; a message with what uv reported, exit code 20 (PythonStepFailed below; Setup's
+; own codes stop at 8), and no shortcut left pointing at a program that is not there.
+;
 ; The app's layout (<folder>\app beside <folder>\tools) is what
 ; alhazen.hub.environments.find_tools looks for; keep the two in step.
 ;
@@ -33,6 +37,10 @@
 ; The Python the app itself runs on. Experiments get the Python their own
 ; lock files ask for; this one only runs the dashboard.
 #define AppPython "3.12"
+
+; The exit code of an install whose files were copied but whose Python step
+; (step 2) failed. Inno Setup's own exit codes are 0 to 8.
+#define PythonStepFailed 20
 
 [Setup]
 ; Identifies the app to Windows across versions: never change it, or an
@@ -88,10 +96,49 @@ Type: dirifempty; Name: "{app}"
 var
   { Whether step 2 (the app's Python environment) finished. }
   PythonReady: Boolean;
+  { Whether step 2 was reached at all. False when the install stopped before
+    it: Setup then reports that itself, with its own exit code. }
+  PythonStepRan: Boolean;
 
 function SetupSucceeded(): Boolean;
 begin
   Result := PythonReady;
+end;
+
+{ What the exit code of a finished install is. Setup counts an install as
+  done once the files are copied, so without this a silent install whose
+  Python step failed would end with 0, like one that worked, and whoever
+  started it would never be told. Setup calls this only when its own code
+  would have been 0. }
+function GetCustomSetupExitCode(): Integer;
+begin
+  Result := 0;
+  if PythonStepRan and not PythonReady then
+    Result := {#PythonStepFailed};
+end;
+
+{ The end of install.log: what uv itself reported, which is the cause. The
+  message shows it, because a guess ("check the connection") was wrong the
+  first time this step failed on a real computer. Empty when there is no log. }
+function LogTail(): String;
+var
+  Lines: TArrayOfString;
+  Index, First: Integer;
+begin
+  Result := '';
+  if not LoadStringsFromFile(ExpandConstant('{app}\install.log'), Lines) then
+    exit;
+  { uv ends with its error and the causes under it: the last lines. }
+  First := GetArrayLength(Lines) - 6;
+  if First < 0 then
+    First := 0;
+  for Index := First to GetArrayLength(Lines) - 1 do
+    if Trim(Lines[Index]) <> '' then
+      Result := Result + Trim(Lines[Index]) + #13#10;
+  { A message box has room for a few lines. Keep the end: the last cause
+    uv names is the root one. }
+  if Length(Result) > 900 then
+    Result := '...' + Copy(Result, Length(Result) - 899, 900);
 end;
 
 { True while the app is running. Its server process is <folder>\app\Scripts\python.exe,
@@ -139,30 +186,52 @@ end;
 
 { Step 2, after the files are in place. The environment is made from
   scratch each time (--clear), so an upgrade never inherits packages from the
-  version before it. A failure is said in a message box and leaves no
-  "installed.ok": the app cannot start, and the message says why and what to do. }
+  version before it.
+
+  A failure leaves no "installed.ok" and is said loudly: a message with what
+  uv reported, a non-zero exit code (GetCustomSetupExitCode), and the
+  shortcuts taken away again, since they would point at a program that does
+  not exist. Running the installer again puts them back. }
 procedure CurStepChanged(CurStep: TSetupStep);
 var
-  Environment, Python, WheelPath: String;
+  Environment, Python, WheelPath, Step, Report: String;
 begin
   if CurStep <> ssPostInstall then
     exit;
+  PythonStepRan := True;
   Environment := ExpandConstant('{app}\app');
   Python := Environment + '\Scripts\python.exe';
   WheelPath := ExpandConstant('{app}\wheels\{#Wheel}');
   DeleteFile(ExpandConstant('{app}\install.log'));
   DeleteFile(ExpandConstant('{app}\installed.ok'));
-  PythonReady :=
-    RunUv('Downloading Python {#AppPython} (about 30 MB)...',
-      'venv --clear --managed-python --python {#AppPython} "' + Environment + '"')
-    and RunUv('Downloading and installing Alhazen''s packages (about 100 MB)...',
-      'pip install --python "' + Python + '" "' + WheelPath + '"');
+  { The two halves in turn, so the message can name the one that failed. }
+  Step := 'getting its Python';
+  PythonReady := RunUv('Downloading Python {#AppPython} (about 30 MB)...',
+    'venv --clear --managed-python --python {#AppPython} "' + Environment + '"');
   if PythonReady then
-    SaveStringToFile(ExpandConstant('{app}\installed.ok'), '{#AppVersion}', False)
-  else
-    MsgBox('Alhazen''s files were copied, but setting up its Python did not finish, so Alhazen cannot start yet.'
-      + #13#10#13#10 + 'This step downloads from the internet. Check the connection and run this installer again.'
-      + #13#10#13#10 + 'Details: ' + ExpandConstant('{app}\install.log'), mbError, MB_OK);
+  begin
+    Step := 'installing its packages';
+    PythonReady := RunUv('Downloading and installing Alhazen''s packages (about 100 MB)...',
+      'pip install --python "' + Python + '" "' + WheelPath + '"');
+  end;
+  if PythonReady then
+  begin
+    SaveStringToFile(ExpandConstant('{app}\installed.ok'), '{#AppVersion}', False);
+    exit;
+  end;
+  { The shortcuts were made before this step; without the app they are dead. }
+  DeleteFile(ExpandConstant('{autoprograms}\Alhazen.lnk'));
+  DeleteFile(ExpandConstant('{autodesktop}\Alhazen.lnk'));
+  Report := LogTail();
+  if Report = '' then
+    Report := '(nothing was written to the log)' + #13#10;
+  { Suppressible, not MsgBox: a plain MsgBox is shown even to a silent
+    install with /SUPPRESSMSGBOXES, which then waits for a click nobody is
+    there to make. The text still goes to Setup's log (/LOG). }
+  SuppressibleMsgBox('Alhazen''s files were copied, but ' + Step + ' did not finish, so Alhazen cannot start yet.'
+    + #13#10#13#10 + 'What was reported:' + #13#10 + Report
+    + #13#10 + 'This step needs an internet connection. Once the cause is dealt with, run this installer again.'
+    + #13#10#13#10 + 'The full log: ' + ExpandConstant('{app}\install.log'), mbError, MB_OK, IDOK);
 end;
 
 { An uninstall removes the environment the running app is using. }
@@ -171,7 +240,9 @@ begin
   Result := True;
   if AppIsRunning() then
   begin
-    MsgBox('Alhazen is running. Close its window, then uninstall again.', mbError, MB_OK);
+    { Suppressible for the same reason as above: a silent uninstall must
+      end (refused), not wait for a click. }
+    SuppressibleMsgBox('Alhazen is running. Close its window, then uninstall again.', mbError, MB_OK, IDOK);
     Result := False;
   end;
 end;
