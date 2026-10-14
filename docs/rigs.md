@@ -45,7 +45,7 @@ comments on why each setting is what it is.
 |---|---|---|---|
 | `lab` | EyeLink 1000 on its own Host PC, a solenoid and four TTL lines on an NI DAQ, a photodiode corner | real sessions whose events a neural recording is aligned to; a monkey can be run here | collected |
 | `lab-rehearsal` | none: `lab` with every device stood down to a simulated one | rehearsing the lab's checkout (`alhazen check-rig --rig lab-rehearsal --pulse`) and whole sessions away from the rig | refused |
-| `vpixx` | the VPixx booth: VIEWPixx panel, TRACKPixx3 in the chassis, no reward or sync | real sessions with human volunteers | collected |
+| `vpixx` | the VPixx booth: VIEWPixx panel, TRACKPixx3 in the chassis, a syringe pump gated from the DATAPixx3 ([DATAPixx3 reward](datapixx-reward.md)), no sync | real sessions with human volunteers, who never open the reward line; a monkey can be run here | collected |
 | `laptop` | the development laptop (Windows 11, its own 2560×1440 panel at 165 Hz, never the ultrawide beside it), no devices | writing and trying an experiment | refused |
 | `mac` | a MacBook Pro 14", no devices | the same, on a Mac; replace its monitor numbers with yours (§4) | refused |
 
@@ -210,7 +210,7 @@ its data. alhazen's shared rigs each say which they are:
 | Rig | `real_data` | Why |
 |---|---|---|
 | `lab` | `true` | the lab rig: real tracker, reward and sync lines |
-| `vpixx` | `true` | the VPixx booth: real panel and tracker, human volunteers |
+| `vpixx` | `true` | the VPixx booth: real panel, tracker and reward pump |
 | `laptop` | `false` | the development laptop: no tracker, a GPU shared with everything else (it drops frames as a matter of course), and a desk at no measured distance |
 | `mac` | `false` | the same on a Mac, and its monitor numbers are an example MacBook's, not any measured panel's |
 | `lab-rehearsal` | `false` | no machine at all: the lab with every device simulated and no window, so a run here would file a scripted participant's arithmetic as a subject. The lab it rehearses collects |

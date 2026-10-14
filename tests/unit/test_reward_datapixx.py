@@ -145,9 +145,21 @@ class TestConfig:
         DevicesConfig(reward=GATE, sync=SyncHwConfig(backend="nidaq", event_lines={}))
         DevicesConfig(reward=RewardHwConfig(backend="nidaq"), sync=sync)
 
-    def test_the_shared_vpixx_rig_still_has_no_reward_line(self):
+    def test_the_shared_vpixx_rig_declares_the_booths_pump_gate(self):
         rig = load_rig(Path(alhazen.__file__).parent / "rigs" / "rig-vpixx.yaml")
-        assert rig.devices.reward is None
+        reward = rig.devices.reward
+        # The booth's wiring: Digital Out 0 to the SP220i's Gate, resting HIGH.
+        # The pump's rate and syringe are whatever its panel is set to, so
+        # they are not pinned here; the config refuses a line without them.
+        assert reward is not None and reward.backend == "datapixx"
+        assert (reward.device, reward.channel, reward.polarity) == (
+            "DATAPIXX3",
+            "dout0",
+            "active_low",
+        )
+        assert reward.pump is not None and reward.pump.model == "WPI SP220i"
+        # A digital-output gate cannot share the DATAPixx3 with sync lines.
+        assert rig.devices.sync is None
         assert rig.devices.eyetracker is not None and rig.devices.eyetracker.backend == "viewpixx"
 
     def test_an_ni_daq_calibration_never_counts_for_the_gate(self):

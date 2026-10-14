@@ -92,6 +92,12 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   `RewardHwConfig.calibration_identity()`; `ul_per_pulse(identity=...)`.
 
 ### Changed
+- The shared `vpixx` rig declares the booth's reward line: a WPI SP220i gated
+  from the DATAPixx3's Digital Out 0 (`backend: datapixx`, `channel: dout0`,
+  `polarity: active_low`, the pump's syringe and rate as set on its panel).
+  `alhazen check-rig --rig vpixx` now opens the gate and drives it to its
+  rest level, and needs a pypixxlib with the gate's calls. A human session
+  still opens no reward line. No reward calibration ships with it.
 - A dumped `RewardHwConfig` carries `polarity`, `pump` and
   `dout_buffer_address` (None, None and the default on an NI-DAQ line).
 - check-rig closes the reward line after a failed `--pulse` as well.
