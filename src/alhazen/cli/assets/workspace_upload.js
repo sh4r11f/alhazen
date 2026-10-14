@@ -22,6 +22,13 @@
  *
  * The archive's name on the page ("Upload to <name>") is the settings'
  * `label`, typed in on this computer; the code ships only "archive".
+ *
+ * Where it goes is a field on every view: a folder on this computer or a
+ * remote user@host:/path, filled with this computer's default and offering
+ * the remembered ones. What is typed there is sent with check, login,
+ * preview and start (`destination`); ticking Remember makes it the default
+ * and keeps it in the list (`remember` on start, after the upload is
+ * accepted). One field value is shared by every view on the page.
  */
 'use strict';
 
@@ -46,6 +53,17 @@
   /* The transport the settings choose, and the SFTP login's last state. */
   let transportKind = null;
   let loginState = null;
+  /* The destination field: this computer's default, the remembered ones,
+   * what the operator typed (null: the default), Remember, and the server's
+   * reading of the typed text ({ok, transport, destination, host} or why not). */
+  let defaultDest = '';
+  let savedDests = [];
+  let typed = null;
+  let remember = false;
+  let destInfo = null;
+  let destTicket = 0;
+  let destTimer = null;
+  let fieldCount = 0;
   const views = new Set();
 
   function el(ctx, tag, className, text) {
@@ -93,6 +111,8 @@
         label = answer.settings.label || 'archive';
         transportKind = answer.settings.transport;
         loginState = answer.login;
+        defaultDest = answer.destination || '';
+        savedDests = answer.saved || [];
         settingsProblem = null;
         redraw();
       }).catch((e) => {
@@ -187,6 +207,129 @@
     return box;
   }
 
+  /* -- the destination field ---------------------------------------------- */
+
+  function destText() {
+    return (typed ?? defaultDest).trim();
+  }
+
+  /** What every request sends about where it goes: the field's text, or
+   *  nothing (the saved default) while it is empty. */
+  function destBody() {
+    const text = destText();
+    return text ? {destination: text} : {};
+  }
+
+  function destQuery() {
+    const text = destText();
+    return text ? `destination=${encodeURIComponent(text)}` : '';
+  }
+
+  /** Read the field back from the server (debounced), then refresh the
+   *  views, so every one names the same place and the right login. */
+  function readDestination(ctx, delay = 250) {
+    clearTimeout(destTimer);
+    destTimer = setTimeout(async () => {
+      const ticket = ++destTicket;
+      let answer;
+      try {
+        answer = await ctx.api(`/api/upload/destination?${destQuery()}`);
+      } catch (e) {
+        answer = {ok: false, message: e.message};
+      }
+      if (ticket !== destTicket) return;
+      destInfo = answer;
+      for (const view of views) {
+        if (!view.container.isConnected) continue;
+        view.draw();
+        // The Run page's card asks the server where this session would go.
+        view.reload?.();
+      }
+    }, delay);
+  }
+
+  /** The field itself. Made once per view and kept across redraws, so
+   *  typing is never interrupted by a poll or a settings read. */
+  function destinationField(ctx, view) {
+    if (view.field) {
+      view.syncField();
+      return view.field;
+    }
+    const id = `up-dest-${++fieldCount}`;
+    const box = el(ctx, 'div', 'up-field up-dest-field');
+    const l = el(ctx, 'label', '', 'Upload to');
+    l.htmlFor = id;
+    const row = el(ctx, 'div', 'up-dest-row');
+    const input = el(ctx, 'input');
+    input.id = id;
+    input.spellcheck = false;
+    input.autocomplete = 'off';
+    input.placeholder = '/path/to/backup  or  user@host:/path/to/data';
+    const list = el(ctx, 'datalist');
+    list.id = `${id}-saved`;
+    input.setAttribute('list', list.id);
+    const forget = button(ctx, 'Forget', 'quiet up-forget', async () => {
+      try {
+        const answer = await ctx.api('/api/upload/destinations',
+          {action: 'forget', destination: destText()});
+        savedDests = answer.saved || [];
+        view.syncField();
+      } catch (e) {
+        state.replaceChildren(message(ctx, 'error', e.message));
+      }
+    });
+    row.append(input, forget);
+    const check = el(ctx, 'label', 'up-check');
+    const tick = el(ctx, 'input');
+    tick.type = 'checkbox';
+    check.append(tick, el(ctx, 'span', '', 'Remember on this computer'));
+    const state = el(ctx, 'div', 'up-dest-state');
+    box.append(l, row, list, check, state);
+    input.addEventListener('input', () => {
+      typed = input.value;
+      destInfo = null;  // read again below; until then say nothing stale
+      for (const v of views) v.syncField?.();
+      readDestination(ctx);
+    });
+    tick.addEventListener('change', () => {
+      remember = tick.checked;
+      for (const v of views) if (v !== view) v.syncField?.();
+    });
+    view.syncField = () => {
+      if (document.activeElement !== input) input.value = typed ?? defaultDest;
+      tick.checked = remember;
+      list.replaceChildren(...savedDests.map((d) => {
+        const o = el(ctx, 'option');
+        o.value = d;
+        return o;
+      }));
+      const text = destText();
+      forget.hidden = !savedDests.includes(text);
+      // Remember means something only for a destination not yet the default.
+      check.hidden = !text || (text === defaultDest && savedDests.includes(text));
+      state.replaceChildren();
+      if (!text) {
+        state.append(el(ctx, 'p', 'up-hint', 'A folder on this computer or a mounted share, or '
+          + 'a folder on another computer as user@host:/path. Each experiment gets a folder of '
+          + 'its own name inside it.'));
+      } else if (destInfo && destInfo.ok === false) {
+        state.append(message(ctx, 'error', destInfo.message));
+      } else if (destInfo?.transport) {
+        state.append(el(ctx, 'p', 'up-hint', destInfo.transport === 'local'
+          ? 'A folder on this computer.'
+          : `On ${destInfo.host}, over ${destInfo.transport === 'rsync' ? 'rsync' : 'SFTP'}.`));
+      }
+    };
+    view.field = box;
+    view.syncField();
+    return box;
+  }
+
+  /** The kind of copy the field chooses (the saved one until it is read). */
+  function destKind() {
+    return destInfo?.ok ? destInfo.transport : transportKind;
+  }
+
   /* -- connection and settings --------------------------------------------- */
 
   /** The SFTP login on the page: the host key on first contact, then each
@@ -196,7 +339,7 @@
     let state;
     try {
       state = action
-        ? await ctx.api('/api/upload/login', {action, ...body})
+        ? await ctx.api('/api/upload/login', {action, ...destBody(), ...body})
         : await ctx.api('/api/upload/login');
     } catch (e) {
       where.replaceChildren(message(ctx, 'error', e.message));
@@ -278,7 +421,7 @@
     where.replaceChildren(el(ctx, 'p', 'up-note', 'Checking the connection…'));
     let answer;
     try {
-      answer = await ctx.api('/api/upload/check');
+      answer = await ctx.api(`/api/upload/check?${destQuery()}`);
     } catch (e) {
       answer = {ok: false, message: e.message};
     }
@@ -317,14 +460,19 @@
   /** The line under a view's actions: whether the SFTP connection is up,
    *  with Connect when it is not. Nothing for the other transports. */
   function connectionLine(ctx, box) {
-    if (transportKind !== 'sftp') return el(ctx, 'span');
+    if (destKind() !== 'sftp') return el(ctx, 'span');
     const line = el(ctx, 'div', 'up-connection');
     const state = loginState?.state;
-    if (state === 'connected') {
+    // Connected, but to another host than the field names: not for this.
+    const other = destInfo?.ok && destInfo.host && loginState?.host
+      && loginState.host !== destInfo.host;
+    if (state === 'connected' && !other) {
       line.append(lamp(ctx, 'ok', `CONNECTED · ${loginState.user}@${loginState.host}`));
     } else {
-      line.append(lamp(ctx, 'off', 'NOT CONNECTED'),
-        button(ctx, 'Connect…', 'quiet', () => login(ctx, box, 'connect')));
+      line.append(lamp(ctx, 'off', other ? `CONNECTED TO ${loginState.host.toUpperCase()}`
+        : 'NOT CONNECTED'),
+        button(ctx, other ? `Connect to ${destInfo.host}…` : 'Connect…', 'quiet',
+          () => login(ctx, box, 'connect')));
     }
     return line;
   }
@@ -417,7 +565,8 @@
         return;
       }
       status.replaceChildren(message(ctx, 'ok', 'Saved on this computer.'));
-      readLabel(ctx, true);
+      typed = null;
+      readLabel(ctx, true).then(() => readDestination(ctx, 0));
       if (onSaved) onSaved();
     });
     container.replaceChildren(form);
@@ -480,7 +629,7 @@
     let preview;
     try {
       preview = await ctx.api('/api/upload/preview',
-        {project: ctx.project, selection, include_incomplete: include});
+        {project: ctx.project, selection, include_incomplete: include, ...destBody()});
     } catch (e) {
       where.replaceChildren(message(ctx, 'error', e.message), ready);
       connection(ctx, ready);
@@ -519,7 +668,7 @@
       go.disabled = true;
       try {
         await ctx.api('/api/upload/start', {project: ctx.project, selection,
-          include_incomplete: include});
+          include_incomplete: include, ...destBody(), remember: remember && Boolean(destText())});
       } catch (e) {
         go.disabled = false;
         status.replaceChildren(message(ctx, 'error', e.message));
@@ -527,6 +676,12 @@
         return;
       }
       where.replaceChildren();
+      if (remember) {
+        // Remembered now: it is the default, and the tick has done its job.
+        remember = false;
+        typed = null;
+        readLabel(ctx, true).then(() => readDestination(ctx, 0));
+      }
       if (onStarted) onStarted();
       poll(ctx);
     });
@@ -556,6 +711,7 @@
         el(ctx, 'h2', 'up-title', 'Upload this session'),
       );
       head.append(titles, stateLamp(ctx, s.upload));
+      const focused = view.field?.contains(document.activeElement) ? document.activeElement : null;
       const where = el(ctx, 'p', 'up-dest');
       where.append(el(ctx, 'span', 'up-run', s.run));
       where.append(el(ctx, 'span', 'up-arrow', ' → '),
@@ -581,8 +737,10 @@
       view.box = view.box || el(ctx, 'div', 'up-box');
       const what = el(ctx, 'p', 'up-note', 'With the data folder’s other files (participants, '
         + 'calibrations, logs) and the people registry; anything already there is left as it is.');
-      panel.replaceChildren(head, where, what, actions, connectionLine(ctx, view.box), notes,
-        progressBlock(ctx, keys) || el(ctx, 'span'), view.box);
+      panel.replaceChildren(head, destinationField(ctx, view), where, what, actions,
+        connectionLine(ctx, view.box), notes, progressBlock(ctx, keys) || el(ctx, 'span'),
+        view.box);
+      if (focused && document.activeElement !== focused) focused.focus({preventScroll: true});
     };
     const refresh = async () => {
       const ticket = ++loaded;
@@ -590,7 +748,7 @@
       let answer;
       try {
         answer = await ctx.api(`/api/upload/launch-session?project=${encodeURIComponent(ctx.project)}`
-          + `&launch=${encodeURIComponent(launchId)}`);
+          + `&launch=${encodeURIComponent(launchId)}&${destQuery()}`);
       } catch (e) {
         if (ticket !== loaded) return;
         container.hidden = false;
@@ -604,8 +762,9 @@
       view.draw();
     };
     view.refresh = refresh;
+    view.reload = refresh;
     views.add(view);
-    readLabel(ctx);
+    readLabel(ctx).then(() => readDestination(ctx, 0));
     refresh();
     poll(ctx);
     return view;
@@ -629,16 +788,18 @@
         () => previewThenConfirm(ctx, box, chosen.all));
       all.disabled = busy || !chosen.all?.length;
       bar.append(some, all, button(ctx, 'Settings', 'quiet', () => settings(box, ctx)));
-      const parts = [bar, connectionLine(ctx, box)];
+      const focused = view.field?.contains(document.activeElement) ? document.activeElement : null;
+      const parts = [destinationField(ctx, view), bar, connectionLine(ctx, box)];
       if (settingsProblem) parts.push(message(ctx, 'error', settingsProblem));
       const progress = progressBlock(ctx, null);
       if (progress) parts.push(progress);
       parts.push(box);
       container.replaceChildren(...parts);
+      if (focused && document.activeElement !== focused) focused.focus({preventScroll: true});
     };
     view.refresh = () => selection().after?.();
     views.add(view);
-    readLabel(ctx);
+    readLabel(ctx).then(() => readDestination(ctx, 0));
     view.draw();
     poll(ctx);
     return view;

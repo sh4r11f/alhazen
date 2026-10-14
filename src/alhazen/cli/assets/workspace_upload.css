@@ -212,3 +212,10 @@
   grid-template-columns: minmax(0, 1fr) 96px;
   gap: 12px;
 }
+
+/* The destination field (where an upload goes), on every upload view. */
+.up-dest-field { display: grid; gap: 6px; max-width: 720px; }
+.up-dest-row { display: flex; gap: 8px; align-items: center; }
+.up-dest-row input { flex: 1; min-width: 0; font-family: var(--mono); }
+.up-dest-state:empty { display: none; }
+.up-dest-field [hidden] { display: none; }

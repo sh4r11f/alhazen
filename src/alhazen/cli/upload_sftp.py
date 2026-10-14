@@ -201,6 +201,11 @@ class SftpSession:
             self._transport.close()
             self._transport = None
 
+    def target(self) -> tuple[str, str, int] | None:
+        """Who and where the connection logs in as: (user, host, port)."""
+        with self._cond:
+            return self._target
+
     def transport(self) -> paramiko.Transport:
         """The live connection, or UploadError saying what to do."""
         with self._cond:
@@ -390,6 +395,8 @@ class SftpTransport:
                 "login": True,
                 "message": state.get("message") or f"Not connected to {self.settings.host}",
             }
+        if self._wrong_host():
+            return {"ok": False, "login": True, "message": self._wrong_host()}
         try:
             with self._sftp() as sftp:
                 if not stat.S_ISDIR(sftp.stat(self.settings.base_path).st_mode or 0):
@@ -401,7 +408,23 @@ class SftpTransport:
             }
         return {"ok": True, "message": state.get("message", "Connected")}
 
+    def _wrong_host(self) -> str | None:
+        """Why the connection cannot serve this destination: it is logged in
+        to another host or as another user (a destination typed on the page
+        can name a different one than the last Connect)."""
+        want = (self.settings.user, self.settings.host, self.settings.port)
+        have = self.session.target()
+        if have is None or have == want:
+            return None
+        return (
+            f"Connected as {have[0]}@{have[1]}, not {self.settings.login()}: "
+            f"connect to {self.settings.host} first"
+        )
+
     def _sftp(self) -> paramiko.SFTPClient:
+        wrong = self._wrong_host()
+        if wrong:
+            raise UploadError(wrong)
         client = self.session.transport().open_sftp_client()
         if client is None:
             raise UploadError("The host did not open an SFTP channel")
