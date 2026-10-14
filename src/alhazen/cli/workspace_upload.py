@@ -2,8 +2,11 @@
 
 Routes (dashboard.py, all behind the API token):
 
-  GET  /api/upload/settings          this computer's settings
+  GET  /api/upload/settings          this computer's settings, its default
+                                     destination and the remembered ones
   POST /api/upload/settings          save them (validated; nothing on error)
+  GET  /api/upload/destination       read a typed destination: where it goes
+  POST /api/upload/destinations      remember or forget a typed destination
   GET  /api/upload/check             can an upload start now
   GET  /api/upload/login             the SFTP connection's login state
   POST /api/upload/login             connect / trust / answer / disconnect
@@ -24,7 +27,14 @@ and every non-session file of their data folder; "all" uploads the whole
 folder. SQLite files are uploaded as snapshots (the backup API), never
 copied while something may be writing them.
 
-WHERE. ``<base>/<experiment>/<path inside the data folder>``, the
+WHERE. The page's destination field says it: a folder on this computer or
+a remote ``user@host:/path``, typed for this upload (``destination`` on
+check, login, preview and start) or, left as it is, the saved default. The
+operator may tick Remember: the typed destination becomes this computer's
+default (``upload.json``) and joins the remembered ones
+(``upload-destinations.json``), both in the workspace's state directory and
+never in a repository. Inside it: ``<base>/<experiment>/<path inside the
+data folder>``, the
 experiment's [project] name as its folder; a rehearsal data folder goes to
 ``<experiment>-rehearsal``, never among the real sessions; the registry to
 ``<experiment>/people/``.
@@ -65,9 +75,14 @@ from alhazen.cli.upload_transport import (
     Transport,
     UploadError,
     UploadSettings,
+    destination_text,
+    forget_destination,
     is_version_of,
+    load_destinations,
     load_settings,
     local_tree,
+    parse_destination,
+    remember_destination,
     save_settings,
     sha256_file,
     versioned,
@@ -138,13 +153,18 @@ class Uploads:
 
     # -- settings and the connection --------------------------------------------
 
-    def settings(self) -> UploadSettings:
-        return load_settings(self.workspace.directory)
+    def settings(self, destination: Any = None) -> UploadSettings:
+        """The saved settings, or with ``destination`` (typed on the page)
+        the settings that destination makes of them."""
+        saved = load_settings(self.workspace.directory)
+        if destination is None or destination == "":
+            return saved
+        return parse_destination(destination, saved)
 
-    def transport(self) -> Transport:
+    def transport(self, destination: Any = None) -> Transport:
         if self._transport is not None:
             return self._transport
-        settings = self.settings()
+        settings = self.settings(destination)
         if settings.transport == "local":
             return LocalCopy.from_settings(settings)
         if settings.transport == "rsync":
@@ -164,18 +184,37 @@ class Uploads:
             "defaults": UploadSettings().model_dump(),
             "open_command": command,
             "login": self.sftp.snapshot() if settings.transport == "sftp" else None,
+            # The destination field's default, and the remembered choices.
+            "destination": destination_text(settings),
+            "saved": load_destinations(self.workspace.directory),
         }
 
-    def check(self) -> dict[str, Any]:
+    def describe_destination(self, text: Any) -> dict[str, Any]:
+        """A typed destination read back: how it goes and its normal
+        spelling, or why it cannot be one. Nothing is contacted."""
         try:
-            return dict(self.transport().check())
+            settings = self.settings(text if text else None)
+            if not destination_text(settings):
+                raise UploadError("Type the folder to upload to")
+        except UploadError as exc:
+            return {"ok": False, "message": str(exc)}
+        return {
+            "ok": True,
+            "transport": settings.transport,
+            "destination": destination_text(settings),
+            "host": settings.host if settings.transport != "local" else None,
+        }
+
+    def check(self, destination: Any = None) -> dict[str, Any]:
+        try:
+            return dict(self.transport(destination).check())
         except UploadError as exc:
             return {"ok": False, "message": str(exc)}
 
     def login(self, body: dict[str, Any]) -> dict[str, Any]:
         action = body.get("action")
         if action == "connect":
-            settings = self.settings()
+            settings = self.settings(body.get("destination"))
             if settings.transport != "sftp":
                 raise ValueError("Connect is for the SFTP transport; the settings choose another")
             return self.sftp.connect(settings)
@@ -334,10 +373,12 @@ class Uploads:
                 else:
                     e.state, e.target = "version", versioned(e.remote, stamp)
 
-    def preview(self, project_id: str, selection: Any, include_incomplete: bool) -> dict[str, Any]:
+    def preview(
+        self, project_id: str, selection: Any, include_incomplete: bool, destination: Any = None
+    ) -> dict[str, Any]:
         """A quick dry run: names and sizes only (content is compared when
         the upload runs)."""
-        transport = self.transport()
+        transport = self.transport(destination)
         with tempfile.TemporaryDirectory(prefix="alhazen-upload-") as stage:
             groups = self.groups(project_id, selection, include_incomplete, Path(stage))
             out = []
@@ -360,8 +401,16 @@ class Uploads:
         with self._lock:
             return {"job": dict(self._job) if self._job else None}
 
-    def start(self, project_id: str, selection: Any, include_incomplete: bool) -> dict[str, Any]:
-        transport = self.transport()
+    def start(
+        self,
+        project_id: str,
+        selection: Any,
+        include_incomplete: bool,
+        destination: Any = None,
+        remember: bool = False,
+    ) -> dict[str, Any]:
+        settings = self.settings(destination)
+        transport = self.transport(destination)
         stage = tempfile.TemporaryDirectory(prefix="alhazen-upload-")
         try:
             groups = self.groups(project_id, selection, include_incomplete, Path(stage.name))
@@ -395,14 +444,20 @@ class Uploads:
                     "error": None,
                 }
                 job_id = self._job["id"]
+                kind = settings.transport if self._transport is None else "custom"
                 self._thread = threading.Thread(
-                    target=self._run, args=(job_id, transport, groups, stage), daemon=True
+                    target=self._run, args=(job_id, transport, groups, stage, kind), daemon=True
                 )
                 self._thread.start()
-                return {"job": dict(self._job)}
+                answer = {"job": dict(self._job)}
         except BaseException:
             stage.cleanup()
             raise
+        if remember and destination:
+            # After the job is accepted, so a refused upload remembers
+            # nothing; a destination that reached here has been read.
+            remember_destination(self.workspace.directory, str(destination))
+        return answer
 
     def cancel(self) -> None:
         with self._lock:
@@ -421,6 +476,7 @@ class Uploads:
         transport: Transport,
         groups: list[Group],
         stage: tempfile.TemporaryDirectory[str],
+        kind: str = "custom",
     ) -> None:
         results: dict[str, dict[str, Any]] = {}
         phase, error = "done", None
@@ -459,13 +515,17 @@ class Uploads:
                     missing = self._verify(transport, group, written)
                 except Cancelled as exc:
                     phase, error = "cancelled", str(exc)
-                    self._receipts(group, destination, started, "cancelled", str(exc), [], results)
+                    self._receipts(
+                        group, destination, started, "cancelled", str(exc), [], results, kind
+                    )
                     break
                 except (UploadError, OSError, ValueError, AlhazenError, sqlite3.Error) as exc:
                     phase, error = "failed", str(exc)
-                    self._receipts(group, destination, started, "failed", str(exc), [], results)
+                    self._receipts(
+                        group, destination, started, "failed", str(exc), [], results, kind
+                    )
                     break
-                self._receipts(group, destination, started, None, None, missing, results)
+                self._receipts(group, destination, started, None, None, missing, results, kind)
                 self._set(job_id, results=dict(results))
         finally:
             stage.cleanup()
@@ -499,10 +559,12 @@ class Uploads:
         error: str | None,
         missing: list[str],
         results: dict[str, dict[str, Any]],
+        kind: str,
     ) -> None:
         """One receipt per session, one for the folder's other files and one
-        for the registry, each noted in ``results``."""
-        settings = self.settings()
+        for the registry, each noted in ``results``. ``kind`` is the
+        transport this upload used (a typed destination can differ from the
+        saved settings)."""
         by_item: dict[str, list[Entry]] = {}
         for e in group.entries:
             by_item.setdefault(e.item, []).append(e)
@@ -523,7 +585,7 @@ class Uploads:
                 "started": started,
                 "finished": now(),
                 "destination": {
-                    "transport": settings.transport if self._transport is None else "custom",
+                    "transport": kind,
                     "path": destination if item in (SHARED, PEOPLE) else f"{destination}/{item}",
                 },
                 "files": files,
@@ -612,8 +674,10 @@ class Uploads:
 
         if route == "settings":
             return self.describe_settings()
+        if route == "destination":
+            return self.describe_destination(arg("destination"))
         if route == "check":
-            return self.check()
+            return self.check(arg("destination") or None)
         if route == "login":
             return self.sftp.snapshot()
         if route == "job":
@@ -630,13 +694,29 @@ class Uploads:
             return self.describe_settings()
         if route == "login":
             return self.login(body)
+        if route == "destinations":
+            text = body.get("destination")
+            if body.get("action") == "forget":
+                forget_destination(self.workspace.directory, str(text or ""))
+            elif body.get("action") == "remember":
+                remember_destination(self.workspace.directory, text)
+            else:
+                raise ValueError("Say remember or forget")
+            return self.describe_settings()
         if route == "preview":
             return self.preview(
-                _project(body), body.get("selection"), body.get("include_incomplete") is True
+                _project(body),
+                body.get("selection"),
+                body.get("include_incomplete") is True,
+                body.get("destination"),
             )
         if route == "start":
             return self.start(
-                _project(body), body.get("selection"), body.get("include_incomplete") is True
+                _project(body),
+                body.get("selection"),
+                body.get("include_incomplete") is True,
+                body.get("destination"),
+                body.get("remember") is True,
             )
         if route == "cancel":
             self.cancel()

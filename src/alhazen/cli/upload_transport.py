@@ -182,6 +182,120 @@ def save_settings(directory: Path, fields: object) -> UploadSettings:
     return settings
 
 
+# -- a destination typed on the page ----------------------------------------------
+
+DESTINATIONS_FILE = "upload-destinations.json"
+SAVED_MAX = 10
+# user@host:/path (scp style) and sftp://user@host:port/path (ssh:// too).
+_SCP = re.compile(r"(?:(?P<user>[^@/\\:\s]+)@)?(?P<host>[A-Za-z0-9][A-Za-z0-9.-]*):(?P<path>/.*)")
+_URL = re.compile(
+    r"(?:sftp|ssh)://(?:(?P<user>[^@/\s]+)@)?(?P<host>[A-Za-z0-9][A-Za-z0-9.-]*)"
+    r"(?::(?P<port>\d{1,5}))?(?P<path>/.*)"
+)
+# A Windows drive (C:\ or C:/) is a folder here, never a host named "C".
+_DRIVE = re.compile(r"[A-Za-z]:[\\/]")
+
+
+def parse_destination(text: object, saved: UploadSettings) -> UploadSettings:
+    """The settings an upload uses when the operator types where it goes.
+
+    ``text`` is a folder on this computer (``/mnt/share/data``, ``~/backup``,
+    ``D:\\data``, a mounted share) or a folder on a remote host
+    (``user@host:/path``, ``sftp://user@host:2222/path``). Everything not in
+    the text (the archive's name, the rsync socket, the port of the saved
+    host) comes from ``saved``; a remote folder goes by rsync when the saved
+    settings choose rsync, else by SFTP. Refused, with the reason, when it
+    cannot be a destination; nothing is saved here."""
+    if not isinstance(text, str) or not text.strip():
+        raise UploadError("Type the folder to upload to")
+    text = text.strip()
+    if len(text) > 1024:
+        raise UploadError("That destination is too long")
+    match = None if _DRIVE.match(text) else (_URL.fullmatch(text) or _SCP.fullmatch(text))
+    try:
+        if match is None:
+            if not os.path.isabs(os.path.expanduser(text)):
+                raise UploadError(
+                    "Type a full path: a folder on this computer such as /path/to/backup, "
+                    "or a remote one such as user@host:/path/to/data"
+                )
+            return saved.model_copy(update={"transport": "local", "local_path": text})
+        host = match["host"]
+        user = match["user"] or (saved.user if host == saved.host else "")
+        if not user:
+            raise UploadError(f"Say who to log in as: user@{host}:{match['path']}")
+        port = match.groupdict().get("port")
+        fields = {
+            **saved.model_dump(),
+            "transport": "rsync" if saved.transport == "rsync" else "sftp",
+            "user": user,
+            "host": host,
+            "port": int(port) if port else (saved.port if host == saved.host else 22),
+            "base_path": match["path"],
+        }
+        return UploadSettings.model_validate(fields)
+    except ValueError as exc:  # pydantic's ValidationError is one
+        if isinstance(exc, UploadError):
+            raise
+        errors = getattr(exc, "errors", None)
+        reasons = (
+            [str(e.get("msg", "")).removeprefix("Value error, ") for e in errors()]
+            if errors
+            else []
+        )
+        raise UploadError("; ".join(r for r in reasons if r) or str(exc)) from exc
+
+
+def destination_text(settings: UploadSettings) -> str:
+    """The settings' destination written as the page's field takes it
+    (`parse_destination` reads it back); empty while it is not set."""
+    if settings.transport == "local":
+        return settings.local_path
+    if not (settings.user and settings.host and settings.base_path):
+        return ""
+    if settings.port == 22:
+        return f"{settings.user}@{settings.host}:{settings.base_path}"
+    return f"sftp://{settings.user}@{settings.host}:{settings.port}{settings.base_path}"
+
+
+def load_destinations(directory: Path) -> list[str]:
+    """Destinations the operator chose to remember on this computer, newest
+    first. A file that cannot be read counts as none (it only offers
+    choices; the settings stay the default)."""
+    try:
+        data = json.loads((directory / DESTINATIONS_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    found = data.get("destinations") if isinstance(data, dict) else None
+    if not isinstance(found, list):
+        return []
+    return [d for d in found if isinstance(d, str) and d.strip()][:SAVED_MAX]
+
+
+def _write_destinations(directory: Path, destinations: list[str]) -> list[str]:
+    destinations = list(dict.fromkeys(destinations))[:SAVED_MAX]
+    replace_atomically(
+        directory / DESTINATIONS_FILE, json.dumps({"destinations": destinations}, indent=2)
+    )
+    return destinations
+
+
+def remember_destination(directory: Path, text: str) -> UploadSettings:
+    """Make a typed destination this computer's default (``upload.json``)
+    and add it to the remembered ones. Validated first; nothing is written
+    when it is refused."""
+    settings = parse_destination(text, load_settings(directory))
+    save_settings(directory, settings.model_dump())
+    _write_destinations(directory, [destination_text(settings), *load_destinations(directory)])
+    return settings
+
+
+def forget_destination(directory: Path, text: str) -> list[str]:
+    """Take one destination off the remembered list. The default in
+    ``upload.json`` is left as it is (the settings form changes that)."""
+    return _write_destinations(directory, [d for d in load_destinations(directory) if d != text])
+
+
 def experiment_folder(name: str) -> str:
     """The archive folder an experiment's files go in: its name exactly,
     refused rather than rewritten when it could not be one folder."""
