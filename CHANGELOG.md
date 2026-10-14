@@ -25,6 +25,85 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+### Added
+- Reward backend `datapixx`: a pump's TTL gate (e.g. a WPI SP220i's Gate
+  input) driven from a DATAPixx3 digital output (`channel: dout0`-`dout15`)
+  by a finite, hardware-timed DOUT schedule. `polarity` (`active_low` rests
+  HIGH and holds LOW to dispense) and `pump` (`model`, `syringe_diameter_mm`,
+  `rate_ul_per_min`, as set on the pump) are required; `dout_buffer_address`
+  defaults to 8000000. Refused before any write: Pixel Mode, Pixel Mode GB,
+  Pixel Mode B, DOUT button schedules, the backlight pulse, a DOUT schedule
+  already running, a buffer on the TRACKPixx3's RAM regions. Only the gate's
+  bit is ever written; its register is set to rest and read back at open,
+  before and after every train and at close. A fault stops the schedule,
+  writes rest once and reports the delivery as uncertain; it is never
+  retried. Not verified on hardware: see docs/datapixx-reward.md.
+  Each train is written to DATAPixx3 RAM in chunks of at most 16,380 words
+  (pypixxlib's `DPxWriteRam` silently drops anything past 65,535 bytes per
+  call), read back and compared word for word before it starts; a train
+  longer than the 524,288-word buffer is refused, never shortened. A
+  pypixxlib without one of the calls used, or one that cannot read Pixel
+  Mode B on firmware 27+, is refused before the device is opened or written.
+- `alhazen.errors.RewardUncertainError` (a `RewardError`): a delivery that
+  failed after its train started, or whose resting level could not be read
+  back. `REWARD_FAILED` payloads gain `error` and `uncertain` (end of trial,
+  mid-trial and manual), and an uncertain delivery leaves the row's
+  `rewarded` empty instead of `False`. `RewardCompletion.uncertain`.
+- Reward gate on a DATAPixx3 **analog output**: backend `datapixx` with
+  `channel: dac0`-`dac3` (Analog I/O DB25), timed by the DAC schedule at two
+  levels only, 0 V and `voltage` (the HIGH level, in (2.0, 5.0] V, default
+  5.0); `dac_buffer_address` (default 10,000,000) is kept clear of the
+  digital-output gate's region and the TRACKPixx3's RAM. Codes are computed
+  with pypixxlib's formula from the channel's range, written in chunks and
+  read back before the schedule starts; rest is set and read back (one code
+  of tolerance) before and after every train and after any stop. Refused
+  before any write: DAC-ADC loopback, DAC raw mode, a running DAC schedule,
+  another buffered DAC channel, any TRACKPixx3 analog output (its channel
+  layout is undocumented) or one that cannot be read, a range or rounding outside the pump's
+  bands, a missing call. Uses no digital output, so it and DATAPixx3 sync
+  lines share one DATAPixx3 (the rig validator allows that pair; a
+  digital-output gate with DATAPixx3 sync stays refused). Not verified on
+  hardware: docs/datapixx-reward.md.
+- Reward calibrations record and match the backend family (`datapixx`) as
+  part of a gated line's identity; a simulated stand-in of a DATAPixx3 gate
+  keeps it.
+- Measure rig "Juice per pulse" on a pump gate (a line with `pump`): the arm
+  prompt says "ARM THE PUMP" and states the expected volume (pump rate ×
+  total gate time); after the beaker reading it shows both, flags a reading
+  more than 20% off with likely causes, and stores it only after a second
+  confirmation. The calibration entry records `expected_ul` and
+  `read_vs_expected`; the reading stays the stored value. NI-DAQ valve lines
+  are unchanged apart from neutral wording in the open-time limit.
+- Sync backend `datapixx`: active-high pulses on DATAPixx3 digital outputs
+  (`DATAPIXX3/dout<N>`), refused on bits a Pixel Mode, button schedules or
+  the backlight pulse drive. It cannot be combined with a `datapixx` reward
+  on a digital output (that schedule writes DOUT 0-15 as a whole and VPixx
+  does not document whether DOUT 16-23 stay independent); a reward on an
+  analog output (`dac<N>`) shares the device with it.
+- `alhazen.devices.vpixx`: one DATAPixx3 link per process. The TRACKPixx3
+  tracker, the reward gate and sync lines share its lock and select the
+  DATAPixx3 before each operation; the device is closed only by its last
+  holder, so a tracker shut down first no longer closes it under the gate.
+- Reward calibrations of a gated line record and match its polarity and
+  pump settings: an NI-DAQ calibration, or one made at another pump rate or
+  syringe, never counts for it. `RewardHwConfig.line` and
+  `RewardHwConfig.calibration_identity()`; `ul_per_pulse(identity=...)`.
+
+### Changed
+- A dumped `RewardHwConfig` carries `polarity`, `pump` and
+  `dout_buffer_address` (None, None and the default on an NI-DAQ line).
+- check-rig closes the reward line after a failed `--pulse` as well.
+- `build_session` connects the eye tracker before it builds the reward and
+  sync lines (pypixxlib's TRACKPixx3 opens the DATAPixx3 itself; a tracker
+  connected after a DATAPixx3 gate is refused). The Measure rig opens a
+  TRACKPixx3 before a DATAPixx3 gate.
+- A TRACKPixx3 gaze read's libdpx fault is read in the read's own lock hold
+  and kept as the tracker's dropout until the next trial's device check, so
+  another libdpx user cannot clear it; a device that goes away is now named
+  at the gaze read ("did not answer a gaze read").
+
 ## 2.15.0 - 2026-10-09
 
 ### Added

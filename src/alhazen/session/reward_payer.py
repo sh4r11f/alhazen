@@ -35,6 +35,7 @@ from alhazen.core.engine import TrialResult
 from alhazen.core.trial import PAUSED, Outcome, TrialContext
 from alhazen.devices.reward import RewardDispenser
 from alhazen.display.backend import DisplayBackend
+from alhazen.errors import RewardUncertainError
 from alhazen.session.streaks import cut_short_by_device
 from alhazen.task.reward_policy import RewardPolicy
 
@@ -142,13 +143,36 @@ class RewardPayer:
             return False
         try:
             self._device.deliver(pulses)
-        except Exception:
+        except Exception as error:
             log.exception("reward delivery failed on trial %d", ctx.trial_index)
-            # False unless a mid-trial drop already arrived: `rewarded` says
-            # whether any juice reached the subject this trial.
-            ctx.record.setdefault("rewarded", False)
-            self._emit(ctx, "REWARD_FAILED", paid_for)
-            self._display.show_message("REWARD FAILURE — check the pump")
+            # An uncertain delivery (RewardUncertainError: a train was started,
+            # or the line could not be confirmed at rest, and then something
+            # failed) may have reached the pump in part or whole. It is never
+            # recorded as "nothing delivered": the row's `rewarded` is left
+            # unset (empty) unless a mid-trial drop already arrived, and the
+            # event says uncertain. A failure before anything was played
+            # keeps the old record: `rewarded` False unless a drop arrived.
+            uncertain = isinstance(error, RewardUncertainError)
+            if uncertain:
+                # Explicit None serializes as an empty CSV cell and survives
+                # a later definite failure's setdefault(False). It also
+                # replaces an earlier definite failure, but not a known drop.
+                if ctx.record.get("rewarded") is not True:
+                    ctx.record["rewarded"] = None
+            else:
+                ctx.record.setdefault("rewarded", False)
+            # error and uncertain are additive keys: an older reader of
+            # events.csv sees the payload it always did, plus two.
+            self._emit(
+                ctx,
+                "REWARD_FAILED",
+                {**paid_for, "error": f"{type(error).__name__}: {error}", "uncertain": uncertain},
+            )
+            self._display.show_message(
+                "REWARD UNCERTAIN — check the pump"
+                if uncertain
+                else "REWARD FAILURE — check the pump"
+            )
             return True
         ctx.record["rewarded"] = True
         self._emit(

@@ -72,6 +72,7 @@ class Operator:
         self.numbers = list(numbers)
         self.confirms = list(confirms)
         self.asked = []
+        self.prompts = {}
 
     def ask_number(self, key, prompt, *, unit, low, high):
         self.asked.append(key)
@@ -82,6 +83,7 @@ class Operator:
 
     def confirm(self, key, prompt):
         self.asked.append(key)
+        self.prompts[key] = prompt
         return self.confirms.pop(0)
 
     def tell(self, prompt):
@@ -526,10 +528,16 @@ class Dispenser:
 
 
 NIDAQ = RewardHwConfig(backend="nidaq", device="Dev1", channel="ao0")
+PUMP_GATE = RewardHwConfig(
+    backend="datapixx",
+    channel="dac0",
+    polarity="active_low",
+    pump={"model": "WPI SP220i", "syringe_diameter_mm": 14.5, "rate_ul_per_min": 3000.0},
+)
 
 
 class TestRewardVolume:
-    def _run(self, tmp_path, dispenser, operator, inputs=None):
+    def _run(self, tmp_path, dispenser, operator, inputs=None, reward=NIDAQ):
         devices = Devices({"reward": lambda stack: (stack.callback(dispenser.close), dispenser)[1]})
         return run(
             [builtin_job("reward.volume")],
@@ -537,8 +545,62 @@ class TestRewardVolume:
             devices=devices,
             operator=operator,
             inputs=inputs or {},
-            rig_cfg=rig(reward=NIDAQ),
+            rig_cfg=rig(reward=reward),
         )
+
+    def test_a_valve_has_no_expected_volume(self, tmp_path):
+        operator = Operator([4, 25, 50, 200, 2.5], [True])
+        record = self._run(tmp_path, Dispenser(), operator).records[0]
+        assert operator.prompts["reward.volume.arm"].startswith("ARM THE VALVE?")
+        assert "should be about" not in operator.prompts["reward.volume.arm"]
+        assert record.detail["expected"] is None and "expected_ul" not in record.detail["plan"]
+        entry = load_reward_calibration(tmp_path / "rig-test.yaml")["widths"][50]
+        assert "expected_ul" not in entry and "read_vs_expected" not in entry
+
+    def test_a_pump_states_the_expected_volume_and_compares_the_reading(self, tmp_path):
+        # 4 trains × 25 pulses × 50 ms = 5 s of gate at 3000 µL/min = 250 µL.
+        operator = Operator([4, 25, 50, 200, 0.24], [True])
+        record = self._run(tmp_path, Dispenser(), operator, reward=PUMP_GATE).records[0]
+        prompt = operator.prompts["reward.volume.arm"]
+        assert prompt.startswith("ARM THE PUMP?") and "about 250 µL" in prompt
+        assert record.state == MEASURED and not record.summary.startswith("CHECK")
+        assert record.detail["plan"]["expected_ul"] == pytest.approx(250.0)
+        assert record.detail["expected"]["ratio"] == pytest.approx(0.96)
+        assert record.detail["expected"]["within_tolerance"]
+        assert "reward.volume.store_off_expected" not in operator.asked
+        entry = load_reward_calibration(tmp_path / "rig-test.yaml")["widths"][50]
+        # The reading is what is stored; the expectation sits beside it.
+        assert entry["ul_per_pulse"] == pytest.approx(2.4)
+        assert entry["expected_ul"] == pytest.approx(250.0)
+        assert entry["read_vs_expected"] == pytest.approx(0.96)
+
+    @pytest.mark.parametrize("store", [True, False])
+    def test_a_reading_far_off_the_expectation_is_flagged_and_stored_only_if_confirmed(
+        self, tmp_path, store
+    ):
+        operator = Operator([4, 25, 50, 200, 0.1], [True, store])  # 100 of 250 µL: 40%
+        record = self._run(tmp_path, Dispenser(), operator, reward=PUMP_GATE).records[0]
+        assert record.state == MEASURED and record.summary.startswith("CHECK:")
+        assert "40%" in operator.prompts["reward.volume.store_off_expected"]
+        assert not record.detail["expected"]["within_tolerance"]
+        assert any(n.startswith("CHECK:") for n in record.detail["notes"])
+        stored = load_reward_calibration(tmp_path / "rig-test.yaml")
+        if store:
+            assert stored["widths"][50]["ul_per_pulse"] == pytest.approx(1.0)
+            assert stored["widths"][50]["read_vs_expected"] == pytest.approx(0.4)
+        else:
+            assert stored is None and record.detail["calibration_file"] is None
+
+    def test_reading_versus_expected(self):
+        r = stats.reward_volume_vs_expected(read_ul=300.0, expected_ul=250.0, tolerance=0.2)
+        assert r["ratio"] == pytest.approx(1.2) and r["within_tolerance"]
+        r = stats.reward_volume_vs_expected(read_ul=301.0, expected_ul=250.0, tolerance=0.2)
+        assert not r["within_tolerance"]
+        for bad in (dict(read_ul=0), dict(expected_ul=-1), dict(tolerance=1.5)):
+            with pytest.raises(ValueError):
+                stats.reward_volume_vs_expected(
+                    **(dict(read_ul=300.0, expected_ul=250.0, tolerance=0.2) | bad)
+                )
 
     def test_nothing_is_delivered_without_arming(self, tmp_path):
         dispenser = Dispenser()

@@ -41,10 +41,11 @@ from pathlib import Path
 from typing import Any
 
 from alhazen.config.gamma import fit_gamma, gamma_path, load_gamma, read_measurements
-from alhazen.config.models import RewardPulses, RigConfig
+from alhazen.config.models import RewardHwConfig, RewardPulses, RigConfig, dac_channel_of
 from alhazen.config.reward_calibration import record_reward_calibration
 from alhazen.display.ruler import draw_ruler_on
 from alhazen.display.screen import Screen
+from alhazen.errors import RewardError
 from alhazen.modes import measure_stats as stats
 from alhazen.modes.measure import (
     DEFAULT_ACCURACY_TARGETS_DVA,
@@ -71,6 +72,11 @@ log = logging.getLogger(__name__)
 # mL in a beaker) without ever holding a valve open long enough to flood a
 # rig: these bound the plan, all trains together, before anything is armed.
 MAX_TRAINS = 50
+# A syringe pump's volume is its set rate × the time its gate is held: the
+# measurement shows that expectation and compares the beaker reading with it.
+# A reading further off than this fraction is flagged and storing it needs a
+# second confirmation (the reading is still what gets stored).
+EXPECTED_VOLUME_TOLERANCE = 0.20
 INTER_TRAIN_S = 1.0
 MAX_PULSES = 500
 MAX_PULSE_MS = 1000
@@ -466,9 +472,57 @@ def mouse_dragger(display: Any) -> Callable[[str], float]:
     return drag
 
 
+def _datapixx_connection(cfg: RewardHwConfig) -> Measurement:
+    """Like the NI-DAQ check, it changes no output: the DATAPixx3 is opened,
+    what decides the gate's safety (digital-output modes for a DOUT gate; DAC
+    settings and the TRACKPixx3 analog-output mode for a DAC gate) and the
+    gate's register are read, and it is released. No output value is
+    written, not even the rest level;
+    reading the registers takes one register-cache round trip
+    (DPxUpdateRegCache writes libdpx's cache back to the device, then
+    reads), the only refresh pypixxlib offers."""
+    from alhazen.devices.reward import probe_datapixx_gate
+
+    detail: dict[str, Any] = {
+        "backend": cfg.backend,
+        "line": cfg.line,
+        "polarity": cfg.polarity,
+        "pump": cfg.pump.model_dump() if cfg.pump is not None else None,
+        "notes": [
+            "No output value was written, not even the gate's rest level. Reading the "
+            "registers took one register-cache round trip (DPxUpdateRegCache writes libdpx's "
+            "cache back, then reads). Register values are what libdpx reads back, not "
+            "voltages on the pins.",
+            "Whether the pump runs, and how much it delivers, is reward.volume's question.",
+        ],
+    }
+    try:
+        state = probe_datapixx_gate(cfg)
+    except RewardError as error:
+        return Measurement("reward connection", str(error), False, {**detail, "error": str(error)})
+    detail["state"] = state
+    refusal = state["refusal"]
+    if refusal is not None:
+        return Measurement(
+            "reward connection",
+            f"{cfg.line} answers, but a gate would be refused: {refusal}",
+            False,
+            detail,
+        )
+    return Measurement(
+        "reward connection",
+        f"{cfg.line} answers; gate register reads {state['gate_level_before']} "
+        f"({cfg.polarity}: rests {'HIGH' if cfg.polarity == 'active_low' else 'LOW'})",
+        True,
+        detail,
+    )
+
+
 def _reward_connection(ctx: JobContext) -> Measurement:
     cfg = ctx.rig.devices.reward
     assert cfg is not None  # unavailable() refused a rig without one
+    if cfg.backend == "datapixx":
+        return _datapixx_connection(cfg)
     try:
         import nidaqmx.system
     except ImportError as error:
@@ -554,12 +608,30 @@ def _reward_volume(ctx: JobContext) -> Measurement:
         )
     if open_s > MAX_TOTAL_OPEN_S:
         raise ValueError(
-            f"{total_pulses} × {pulse_ms} ms holds the valve open {open_s:g} s in total; the "
+            f"{total_pulses} × {pulse_ms} ms holds the line open {open_s:g} s in total; the "
             f"limit is {MAX_TOTAL_OPEN_S:g} s — use fewer or shorter pulses"
         )
     pulses = RewardPulses(n_pulses=n_pulses, pulse_ms=pulse_ms, inter_pulse_ms=gap_ms)
-    line = f"{hardware.device}/{hardware.channel}"
+    line = hardware.line
+    # A DATAPixx3 gate: the pump's own settings decide the volume, so the arm
+    # prompt states them and the calibration records them (gate_identity).
+    gate_identity: dict[str, Any] = hardware.calibration_identity() if hardware.gated else {}
+    level = (
+        f" at {hardware.voltage:g} V / 0 V" if dac_channel_of(hardware.channel) is not None else ""
+    )
+    where = (
+        f"{line} ({hardware.polarity} gate{level}; pump {hardware.pump.model}, "
+        f"{hardware.pump.rate_ul_per_min:g} µL/min, {hardware.pump.syringe_diameter_mm:g} mm "
+        f"syringe — as set on the pump)"
+        if hardware.pump is not None
+        else f"{line} at {hardware.voltage:g} V"
+    )
     train_s = n_pulses * (pulse_ms + gap_ms) / 1000.0
+    # A pump dispenses at its set rate while the gate is held, so the plan has
+    # an expected volume; a valve (NI-DAQ solenoid) has none worth stating.
+    expected_ul = (
+        hardware.pump.rate_ul_per_min / 60.0 * open_s if hardware.pump is not None else None
+    )
     plan = {
         "trains": trains,
         "pulses_per_train": n_pulses,
@@ -569,13 +641,24 @@ def _reward_volume(ctx: JobContext) -> Measurement:
         "inter_train_s": INTER_TRAIN_S,
         "line": line,
         "voltage": hardware.voltage,
+        **gate_identity,
         "total_open_s": open_s,
         "run_s": trains * train_s + (trains - 1) * INTER_TRAIN_S,
     }
+    if expected_ul is not None:
+        plan["expected_ul"] = round(expected_ul, 1)
+    thing = "PUMP" if hardware.pump is not None else "VALVE"
+    held = "gate held" if hardware.pump is not None else "valve open"
+    expect = (
+        f" At the pump's set rate that should be about {expected_ul:.0f} µL "
+        f"({expected_ul / 1000.0:.3g} mL)."
+        if expected_ul is not None
+        else ""
+    )
     armed = ctx.confirm(
         "arm",
-        f"ARM THE VALVE? {trains} train(s) of {n_pulses} pulses × {pulse_ms} ms on {line} at "
-        f"{hardware.voltage:g} V (valve open {open_s:g} s in total, about {plan['run_s']:.0f} s). "
+        f"ARM THE {thing}? {trains} train(s) of {n_pulses} pulses × {pulse_ms} ms on {where} "
+        f"({held} {open_s:g} s in total, about {plan['run_s']:.0f} s).{expect} "
         "An empty beaker must be under the spout. Y delivers once; N or ESC cancels.",
     )
     if not armed:
@@ -614,13 +697,56 @@ def _reward_volume(ctx: JobContext) -> Measurement:
         "The volume is the operator's reading of the beaker, not the command: a returned "
         "command proves the trains were played out, not that liquid flowed.",
         "Valid for this pulse width on this line at this voltage only; another width is "
-        "a separate measurement (the valve is not linear near its opening time).",
+        "a separate measurement (the valve is not linear near its opening time)."
+        if hardware.pump is None
+        else "Valid for this pulse width on this line with these pump settings only; another "
+        "width is a separate measurement (motor start-up and syringe compliance weigh more "
+        "in short pulses).",
     ]
+    comparison: dict[str, Any] | None = None
+    if expected_ul is not None:
+        comparison = stats.reward_volume_vs_expected(
+            read_ul=result["volume_ul"],
+            expected_ul=expected_ul,
+            tolerance=EXPECTED_VOLUME_TOLERANCE,
+        )
+        if comparison["within_tolerance"]:
+            notes.append(
+                f"The reading ({result['volume_ul']:.0f} µL) is {comparison['percent']:.0f}% of "
+                f"what the pump's set rate gives for this gate time ({expected_ul:.0f} µL)."
+            )
+        else:
+            notes.append(
+                f"CHECK: the reading ({result['volume_ul']:.0f} µL) is "
+                f"{comparison['percent']:.0f}% of what the pump's set rate gives for this gate "
+                f"time ({expected_ul:.0f} µL), more than "
+                f"{EXPECTED_VOLUME_TOLERANCE * 100:.0f}% off. Likely causes: the rate or syringe "
+                "diameter set on the pump differs from the rig file; the pump stopped at its "
+                "target volume; motor start-up lag or syringe compliance eats short pulses; "
+                "air in the line; a misread beaker."
+            )
     stored: str | None = None
+    keep = True
+    if (
+        comparison is not None
+        and not comparison["within_tolerance"]
+        and not _inside_alhazen(ctx.rig_path)
+    ):
+        keep = ctx.confirm(
+            "store_off_expected",
+            f"The reading is {comparison['percent']:.0f}% of the expected "
+            f"{expected_ul:.0f} µL. Store it as the rig's calibration anyway? Y stores the "
+            "reading; N keeps it in this report only.",
+        )
     if _inside_alhazen(ctx.rig_path):
         notes.append(
             "Not stored as the rig's calibration: the rig file is one of alhazen's shared rigs. "
             "Measure on the experiment's own rig file to store it."
+        )
+    elif not keep:
+        notes.append(
+            "Not stored as the rig's calibration: the operator declined after the reading "
+            "differed from the expected volume."
         )
     else:
         stored = str(
@@ -631,22 +757,42 @@ def _reward_volume(ctx: JobContext) -> Measurement:
                     "ul_per_pulse": round(result["ul_per_pulse"], 3),
                     "line": line,
                     "voltage": hardware.voltage,
+                    **gate_identity,
                     "measured_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                     "trains": trains,
                     "pulses_per_train": n_pulses,
                     "inter_pulse_ms": gap_ms,
                     "volume_ml": volume_ml,
+                    **(
+                        {
+                            "expected_ul": round(comparison["expected_ul"], 1),
+                            "read_vs_expected": round(comparison["ratio"], 3),
+                        }
+                        if comparison is not None
+                        else {}
+                    ),
                 },
             )
         )
         notes.append(f"Stored as the rig's reward calibration for {pulse_ms} ms pulses: {stored}.")
+    summary = (
+        f"{result['ul_per_pulse']:.1f} µL per {pulse_ms} ms pulse "
+        f"({result['volume_ul']:.0f} µL over {total_pulses} pulses in {trains} train(s))"
+    )
+    if comparison is not None:
+        summary += (
+            f"; expected about {comparison['expected_ul']:.0f} µL from the pump's set rate "
+            f"({comparison['percent']:.0f}%)"
+        )
+        if not comparison["within_tolerance"]:
+            summary = "CHECK: " + summary
     return Measurement(
         "reward volume",
-        f"{result['ul_per_pulse']:.1f} µL per {pulse_ms} ms pulse "
-        f"({result['volume_ul']:.0f} µL over {total_pulses} pulses in {trains} train(s))",
+        summary,
         None,
         {
             **result,
+            "expected": comparison,
             "plan": plan,
             "delivered": f"{delivered} train(s), commanded once each",
             "command_returned_after_s": round(commanded_s, 3),
@@ -915,7 +1061,8 @@ def builtin_jobs() -> list[MeasurementJob]:
             "reward.connection",
             "Reward",
             "Reward connection",
-            "Read-only: driver, device and output channel are present. Sends nothing.",
+            "Driver, device and output channel are present. Writes no output value (a "
+            "DATAPixx3 check makes one register-cache round trip).",
             30,
             _reward_connection,
             unavailable=_needs_real_reward,
@@ -1083,6 +1230,17 @@ def rig_devices(rig: RigConfig, *, windowed: bool = False) -> Devices:
         from alhazen.devices.reward import make_reward
 
         assert rig.devices.reward is not None
+        tracker_cfg = rig.devices.eyetracker
+        if (
+            rig.devices.reward.backend == "datapixx"
+            and tracker_cfg is not None
+            and tracker_cfg.backend == "viewpixx"
+        ):
+            # The TRACKPixx3 first, as the session builder does: both are on
+            # one DATAPixx3, pypixxlib's TRACKPixx3() opens it itself, and a
+            # tracker connected after the gate would have to open it again
+            # (it refuses). Held for the rest of the run like any device.
+            devices.get("tracker")
         dispenser = make_reward(rig.devices.reward)
         stack.callback(dispenser.close)
         return dispenser

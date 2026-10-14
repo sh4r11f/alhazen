@@ -606,14 +606,40 @@ function rigFacts(facts) {
  */
 function rewardFact(reward, calibration) {
   if (!reward) return [];
-  const line = `${reward.device || 'Dev1'}/${reward.channel || 'ao0'}`;
+  // A DATAPixx3 gate's device has one right answer, which the rig file may
+  // leave out; its gate polarity and the pump settings declared beside it are
+  // part of what a calibration must match (config/reward_calibration.py).
+  const gated = reward.backend === 'datapixx' || reward.polarity != null;
+  const device = reward.device || (gated ? 'DATAPIXX3' : 'Dev1');
+  const line = `${device}/${reward.channel || 'ao0'}`;
   const voltage = reward.voltage ?? 5.0;
-  const parts = [reward.backend === 'simulated' ? 'simulated' : `${line} at ${voltage} V`];
+  const polarity = reward.polarity ?? null;
+  const pump = reward.pump ?? null;
+  // The backend family a calibration records (RewardHwConfig.calibration_identity).
+  const family = gated ? 'datapixx' : null;
+  // An analog-output gate's HIGH level is a setting (0 V and `voltage`).
+  const analog = /^dac[0-3]$/.test(reward.channel || '');
+  // JSON object member order is not part of a pump's calibration identity.
+  const samePump = (entry) => {
+    const measured = entry.pump ?? null;
+    if (measured === null || pump === null) return measured === pump;
+    const keys = Object.keys(pump);
+    return Object.keys(measured).length === keys.length
+      && keys.every(key => Object.prototype.hasOwnProperty.call(measured, key)
+        && measured[key] === pump[key]);
+  };
+  const where = gated
+    ? `${line}, ${polarity} gate` + (analog ? ` at ${voltage} V` : '')
+      + (pump ? `, pump ${pump.rate_ul_per_min} µL/min, ${pump.syringe_diameter_mm} mm syringe` : '')
+    : `${line} at ${voltage} V`;
+  const parts = [reward.backend === 'simulated' ? 'simulated' : where];
   if (typeof calibration === 'string') {
     parts.push(`calibration ${calibration}`);
   } else {
     const measured = Object.entries(calibration || {})
-      .filter(([, entry]) => entry.line === line && Number(entry.voltage) === Number(voltage))
+      .filter(([, entry]) => entry.line === line && Number(entry.voltage) === Number(voltage)
+        && (entry.backend ?? null) === family
+        && (entry.polarity ?? null) === polarity && samePump(entry))
       .map(([width, entry]) => `${Number(entry.ul_per_pulse).toFixed(1)} µL per ${width} ms pulse`
         + (entry.measured_at ? ` (${String(entry.measured_at).slice(0, 10)})` : ''));
     parts.push(...(measured.length ? measured : ['volume not measured (Measure rig, Reward)']));

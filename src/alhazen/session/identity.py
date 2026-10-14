@@ -58,7 +58,7 @@ import yaml
 
 from alhazen.config.experiment import Experiment
 from alhazen.config.models import SessionConfig, age_number, normalize_age, normalize_sex
-from alhazen.config.reward_calibration import load_reward_calibration, ul_per_pulse
+from alhazen.config.reward_calibration import load_reward_calibration, ul_per_pulse_on
 from alhazen.config.rigs import rig_mapping
 from alhazen.config.snapshot import build_provenance, write_snapshot
 from alhazen.data.atomic import replace_atomically
@@ -332,16 +332,13 @@ def reward_record(
     volumes: dict[str, Any] | None = None
     if line_open and hardware is not None and isinstance(policy, dict):
         calibration = load_reward_calibration(rig_path) if rig_path is not None else None
-        line = f"{hardware.device}/{hardware.channel}"
         entries = dict(policy.get("by_outcome") or {})
         if policy.get("on_fault"):
             entries["on_fault"] = policy["on_fault"]
         volumes = {}
         for name, pulses in entries.items():
             width = int(pulses.get("pulse_ms", 200))
-            measured = ul_per_pulse(
-                calibration, pulse_ms=width, line=line, voltage=hardware.voltage
-            )
+            measured = ul_per_pulse_on(calibration, pulse_ms=width, hardware=hardware)
             per = float(measured["ul_per_pulse"]) if measured else None
             asked = pulses.get("volume_ul")
             if asked is not None and per:
@@ -356,7 +353,7 @@ def reward_record(
                 "ul": round(count * per, 1) if per else None,
                 "measured_at": measured.get("measured_at") if measured else None,
             }
-    return {
+    card: dict[str, Any] = {
         "line_open": line_open,
         "backend": hardware.backend if line_open and hardware is not None else None,
         "line": (
@@ -366,6 +363,13 @@ def reward_record(
         "policy": policy,
         "volumes": volumes,
     }
+    if line_open and hardware is not None and hardware.polarity is not None:
+        # A gated line (DATAPixx3): the gate's polarity and the pump settings
+        # the operator declared, which set the volume a gate delivers. Added
+        # only for such a line, so an NI-DAQ card is exactly what it was.
+        card["polarity"] = hardware.polarity
+        card["pump"] = hardware.pump.model_dump() if hardware.pump is not None else None
+    return card
 
 
 def record_reward_delivered(path: Path, totals: dict[str, Any]) -> None:

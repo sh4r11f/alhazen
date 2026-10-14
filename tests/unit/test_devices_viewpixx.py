@@ -354,9 +354,16 @@ class TestConnect:
         # libdpx's free functions do not raise: they set a sticky flag and
         # carry on. Left unread, a failed wake-up would surface later as a
         # session that recorded nothing.
+        # The fault is left by the wake-up itself: one left before connect()
+        # would be cleared by pypixxlib's DPxSelectDevice (it calls
+        # DPxClearError first), which the stand-in now does too.
         libdpx = fake_pypixxlib.libdpx
-        libdpx.error = "DPX_ERR_SETREG16_ADDR_RANGE"
-        libdpx.error_string = "DPxSetReg16 passed an address which was out of range"
+
+        def failed_wake() -> None:
+            libdpx.error = "DPX_ERR_SETREG16_ADDR_RANGE"
+            libdpx.error_string = "DPxSetReg16 passed an address which was out of range"
+
+        libdpx.DPxSetTPxAwake = failed_wake  # type: ignore[method-assign]
         with pytest.raises(TrackerError, match="DPX_ERR_SETREG16_ADDR_RANGE") as excinfo:
             make_viewpixx().connect()
         assert "out of range" in str(excinfo.value)
@@ -1450,8 +1457,32 @@ class TestDropoutDetection:
         clock.advance(0.050)
         detail = tracker.recording_fault()
         assert detail is not None
-        assert detail.startswith("the TRACKPixx3 did not answer a register read (")
+        # The gaze read is the first transfer to fail, and its fault is read
+        # in the read's own hold of the device lock (GazeReader read_fault),
+        # so it is the one named; the recording check's register read fails
+        # too, after it.
+        assert detail.startswith("the TRACKPixx3 did not answer a gaze read (")
         assert "DPX_ERR_USB_REQ_FAILED" in detail
+        assert fake_pypixxlib.libdpx.error == "DPX_SUCCESS"  # consumed by the tracker
+
+    def test_a_register_read_that_fails_alone_is_still_named(self, fake_pypixxlib, monkeypatch):
+        # The gaze report carries on; only the recording check's register
+        # round trip fails: the check's own wording, as before.
+        clock = FakeClock(start=10.0)
+        tracker = recording_trial(clock)
+        libdpx = fake_pypixxlib.libdpx
+        update = libdpx.DPxUpdateRegCache
+
+        def failing_update() -> None:
+            update()
+            libdpx.error = "DPX_ERR_USB_REQ_FAILED"
+            libdpx.error_string = "USB request failed"
+
+        monkeypatch.setattr(libdpx, "DPxUpdateRegCache", failing_update)
+        clock.advance(0.050)
+        detail = tracker.recording_fault()
+        assert detail is not None
+        assert detail.startswith("the TRACKPixx3 did not answer a register read (")
 
     def test_blinks_never_read_as_a_dropout(self, fake_pypixxlib):
         # A blink is the device reporting "no eye", at full rate.

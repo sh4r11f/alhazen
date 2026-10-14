@@ -89,6 +89,10 @@ from alhazen.devices.eyetracker.protocol import (
     HostShape,
     ProgressHook,
 )
+from alhazen.devices.vpixx import HOST_DEVICE as HOST_DEVICE
+from alhazen.devices.vpixx import LOCK_TIMEOUT_S as LINK_LOCK_TIMEOUT_S
+from alhazen.devices.vpixx import DpxLink, dpx_link
+from alhazen.devices.vpixx import dpx_fault as dpx_fault
 from alhazen.display.backend import DisplayBackend
 from alhazen.display.palette import TERMINAL_GREEN
 from alhazen.display.screen import Screen
@@ -248,8 +252,10 @@ CAMERA_MAX_PX = 320
 # libdpx addresses one device at a time (``DPxSelectDevice``). The TRACKPixx3's
 # registers — overlay, wake/sleep, LED, the sample ring buffer, the gaze
 # polynomial — live on the DATAPixx3 that hosts the camera, so that is the
-# device every call in this backend must find selected.
-HOST_DEVICE = "DATAPIXX3"
+# device every call in this backend must find selected. HOST_DEVICE and
+# dpx_fault live in devices/vpixx.py, with the link this backend shares with
+# the DATAPixx3 reward gate and sync lines; both are imported above and
+# remain importable from here.
 
 _OPEN_FAILED = (
     "TRACKPixx3 could not be opened: {reason}. Check that the DATAPixx3 is powered "
@@ -416,23 +422,6 @@ def wake_tracker(libdpx: Any) -> None:
     libdpx.TPxHideOverlay()
     libdpx.DPxSetTPxAwake()
     libdpx.DPxUpdateRegCache()
-
-
-def dpx_fault(libdpx: Any) -> str | None:
-    """The fault libdpx's free functions left behind, cleared — or None.
-
-    libdpx does not raise: a failed register access sets a sticky error code
-    and later calls carry on. pypixxlib's device classes check the flag after
-    each method (their ``DpxExceptionDecorate``); its free functions do not,
-    so a caller of those has to. Clearing it here is what keeps one fault
-    from being reported again by the next unrelated check.
-    """
-    error = libdpx.DPxGetError()
-    if error == "DPX_SUCCESS":
-        return None
-    detail = libdpx.DPxGetErrorString()
-    libdpx.DPxClearError()
-    return f"{error} ({detail})"
 
 
 def recording_problem(libdpx: Any, tracker: Any) -> str | None:
@@ -751,6 +740,7 @@ class GazeReader:
         interval_s: float = 0.004,
         check: Callable[[], str | None] | None = None,
         check_every_s: float = 0.05,
+        read_fault: Callable[[], str | None] | None = None,
     ) -> None:
         self._read = read
         self._clock = clock
@@ -758,6 +748,15 @@ class GazeReader:
         self._interval = interval_s
         self._check = check
         self._check_every_s = check_every_s
+        # Asked right after each read, in the same hold of the lock: what the
+        # read left in libdpx's sticky error, if anything. Read there and
+        # nowhere later, because the lock is shared with the DATAPixx3
+        # reward gate and sync lines, whose next DPxSelectDevice clears any
+        # error left unread (devices/vpixx.py). A fault found this way is
+        # kept, as (what, when), until a fresh device answer replaces it
+        # (note_check) or the reader is restarted.
+        self._read_fault = read_fault
+        self._gaze_fault: tuple[str, float] | None = None
         self._latest: tuple[DeviceGaze, float] | None = None
         # The device's latest answer to `check` — None (recording) or what is
         # wrong — and the session time it was asked; None before the first.
@@ -816,9 +815,12 @@ class GazeReader:
         try:
             with self._lock:
                 report = self._read()
+                fault = self._read_fault() if self._read_fault is not None else None
         except Exception as e:  # pypixxlib's exception type cannot be named off the rig
             self._fault = e
             raise TrackerError(f"the TRACKPixx3 stopped answering: {e}") from e
+        if fault is not None and self._gaze_fault is None:
+            self._gaze_fault = (fault, self._clock.now())
         self._latest = (report, self._clock.now())
         checked = self._checked
         if self._check is not None and (
@@ -850,8 +852,12 @@ class GazeReader:
         """Keep an answer the caller got from the device on its own thread
         (start_trial asks before a trial relies on the recording), so a
         verdict from before it is never read as the device's latest. Call it
-        with the device lock still held, for the reason check_now gives."""
+        with the device lock still held, for the reason check_now gives.
+
+        It also replaces a gaze-read fault kept from before it: start_trial's
+        own question to the device is the answer that stands from then on."""
         self._checked = (verdict, self._clock.now())
+        self._gaze_fault = None
 
     @property
     def fault(self) -> BaseException | None:
@@ -863,8 +869,21 @@ class GazeReader:
     def device_check(self) -> tuple[str | None, float] | None:
         """The device's latest answer about its recording — None while it
         records, else what is wrong — with the session time it was asked;
-        None before the first answer."""
-        return self._checked
+        None before the first answer.
+
+        A fault a gaze read left (``read_fault``) is a wrong answer too, and
+        the first fault found is the one reported: a gaze read that failed
+        before the recording check asked is what stopped first. Kept apart
+        from the check because the check runs in a separate hold of the
+        shared lock, by which time another libdpx user (the DATAPixx3 reward
+        gate's DPxSelectDevice) may have cleared the read's error."""
+        checked = self._checked
+        gaze_fault = self._gaze_fault
+        if gaze_fault is not None and (
+            checked is None or checked[0] is None or gaze_fault[1] <= checked[1]
+        ):
+            return gaze_fault
+        return checked
 
     @property
     def newest_read_t(self) -> float | None:
@@ -886,6 +905,7 @@ class GazeReader:
         self.stop()
         self._fault = None
         self._checked = None
+        self._gaze_fault = None
         self.read_now()
         if background:
             self.start()
@@ -1094,7 +1114,11 @@ class ViewPixxTracker:
         self._tracker: Any = None  # pypixxlib TRACKPixx3 handle, once open
         self._libdpx: Any = None  # pypixxlib's free functions, once imported
         # One lock around every call into the device library (see GazeReader).
+        # Until connect() this one is private; connect() replaces it with the
+        # lock of the DATAPixx3 link (devices/vpixx.py), which the reward gate
+        # and DATAPixx3 sync lines take too: libdpx is one process-wide state.
         self._device_lock = threading.Lock()
+        self._link: DpxLink | None = None
         # False only for callers that want every read on their own thread —
         # the unit tests, which then see exactly the report they queued.
         self._background_gaze = background_gaze
@@ -1154,20 +1178,46 @@ class ViewPixxTracker:
         except ImportError as e:
             raise pypixxlib_missing() from e
 
+        link = dpx_link(libdpx)
+        # Opened under the link's lock: TRACKPixx3() selects its own device
+        # before wake_tracker() selects the DATAPixx3 again, and a reward gate
+        # or sync line on the same DATAPixx3 must not write a register in
+        # between (devices/vpixx.py).
+        link.acquire("opening the TRACKPixx3", TrackerError)
         try:
-            self._tracker = TRACKPixx3()
-            self._libdpx = libdpx
-            wake_tracker(libdpx)
-            fault = dpx_fault(libdpx)
-        except Exception as e:
-            # Deliberately broad: pypixxlib signals device faults with its own
-            # DpxException, which cannot be imported here to name in an
-            # `except` clause — this module must import on machines with no
-            # VPixx software at all. `from e` keeps the original traceback, so
-            # nothing is hidden by the widening.
-            raise TrackerError(_OPEN_FAILED.format(reason=e)) from e
-        if fault is not None:
-            raise TrackerError(_OPEN_FAILED.format(reason=fault))
+            if link.opened_by_link_for_others(self):
+                # pypixxlib's TRACKPixx3() calls DPxOpen on a library a
+                # DATAPixx3 reward gate or sync line already opened, which
+                # VPixx does not document. Refused before that call; the
+                # session builder connects the tracker first for this reason.
+                raise TrackerError(
+                    "the TRACKPixx3 must be connected before the DATAPixx3 reward gate or "
+                    "sync lines open the same DATAPixx3: pypixxlib's TRACKPixx3() would open "
+                    "the device a second time, which VPixx does not document. Close them, "
+                    "connect the tracker, then open them again"
+                )
+            try:
+                self._tracker = TRACKPixx3()
+                self._libdpx = libdpx
+                wake_tracker(libdpx)
+                fault = dpx_fault(libdpx)
+            except Exception as e:
+                # Deliberately broad: pypixxlib signals device faults with its own
+                # DpxException, which cannot be imported here to name in an
+                # `except` clause — this module must import on machines with no
+                # VPixx software at all. `from e` keeps the original traceback, so
+                # nothing is hidden by the widening.
+                raise TrackerError(_OPEN_FAILED.format(reason=e)) from e
+            if fault is not None:
+                raise TrackerError(_OPEN_FAILED.format(reason=fault))
+            # pypixxlib's constructor opened the device (DPxOpen); the link
+            # records this tracker as one of its holders, so a reward gate
+            # released before or after it never closes it under the other.
+            link.adopt(self)
+        finally:
+            link.lock.release()
+        self._link = link
+        self._device_lock = link.lock
 
     def configure(self, screen: Screen, clock: Clock) -> None:
         """Apply the rig's tracker settings and start the device recording.
@@ -1249,6 +1299,7 @@ class ViewPixxTracker:
             self._device_lock,
             check=self._check_recording,
             check_every_s=self._max_gap_s / 2,
+            read_fault=self._gaze_read_fault,
         )
         if self._background_gaze:
             self._reader.start()
@@ -2115,6 +2166,19 @@ class ViewPixxTracker:
             return f"stopped recording samples into the session's buffer: {problem}"
         return None
 
+    def _gaze_read_fault(self) -> str | None:
+        """What the gaze read just left in libdpx's sticky error, in words, or
+        None. Called by the reader in the read's own hold of the lock
+        (GazeReader read_fault): the read is a USB transfer like any other,
+        and a device that went away mid-session shows here first."""
+        fault = dpx_fault(self._libdpx)
+        if fault is None:
+            return None
+        return (
+            f"did not answer a gaze read ({fault}): the USB link or the DATAPixx3 stopped "
+            f"responding"
+        )
+
     def simulate_dropout(self) -> str:
         """Optional capability (protocol.py), for ``alhazen check-rig`` only:
         switch the device's free-run sampling off through pypixxlib without
@@ -2361,7 +2425,53 @@ class ViewPixxTracker:
         finally:
             # Whatever happened to the files, the device link is released —
             # a held DATAPixx3 blocks the next session from opening it.
+            self._release_link()
+
+    def _release_link(self) -> None:
+        """Close the tracker, and the DATAPixx3 with it only as the link's
+        last holder.
+
+        Alone on the link (the usual rig) this is pypixxlib's own
+        ``TRACKPixx3.close()``, exactly as before. With a reward gate or sync
+        line still holding the same DATAPixx3, ``DPxClose`` would close the
+        device under them (it closes the device, not the tracker), so the
+        tracker runs the rest of pypixxlib's close — uninitialise the
+        tracker, put the camera to sleep, write the registers — and leaves
+        the device open for the last holder to close (devices/vpixx.py).
+        """
+        link = self._link
+        if link is None:
             self._tracker.close()
+            return
+        if not link.lock.acquire(timeout=LINK_LOCK_TIMEOUT_S):
+            # A libdpx call is stuck. Waiting behind it would hang teardown;
+            # closing without the lock could interleave with it. Said loudly.
+            log.error(
+                "the TRACKPixx3 could not be closed: another call into the DATAPixx3 has "
+                "not returned in %g s. Unplug and replug the DATAPixx3's USB before the "
+                "next session.",
+                LINK_LOCK_TIMEOUT_S,
+            )
+            return
+        try:
+            if link.release(self):
+                self._tracker.close()
+            else:
+                libdpx = self._libdpx
+                try:
+                    # pypixxlib's TRACKPixx3.close() without its DPxClose.
+                    libdpx.TPxUninitialize()
+                    libdpx.TPxSetSleepPictureRequest()
+                    libdpx.DPxUpdateRegCache()
+                finally:
+                    libdpx.DPxClearError()
+                log.info(
+                    "TRACKPixx3 closed; the DATAPixx3 stays open for the %d other holder(s) "
+                    "on its link (reward gate, sync), which close it last",
+                    link.holders(),
+                )
+        finally:
+            link.lock.release()
 
     def _hand_over_recording(self, destination: Path | None) -> bool:
         """Deliver the recording to ``destination``, or discard it when there

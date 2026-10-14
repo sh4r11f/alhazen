@@ -21,6 +21,7 @@ from alhazen.core.trial import (
     PAUSED,
     Outcome,
 )
+from alhazen.errors import RewardUncertainError
 from alhazen.session.reward_payer import RewardPayer
 from alhazen.task.reward_policy import RewardPolicy
 from alhazen.testing import FakeClock, FakeDisplay, ScriptedReward
@@ -115,8 +116,55 @@ class TestAPumpFailure:
         payer = Payer(RewardPolicy(by_outcome={"CORRECT": PAID}), ScriptedReward(fail=[1]))
         assert payer.deliver(CORRECT) is True
         assert payer.ctx.record["rewarded"] is False
-        assert payer.events == [("REWARD_FAILED", {"outcome": "CORRECT"})]
+        # The failure's words and whether its outcome is uncertain ride along,
+        # additively (2.16); a plain RewardError played nothing: not uncertain.
+        assert payer.events == [
+            (
+                "REWARD_FAILED",
+                {
+                    "outcome": "CORRECT",
+                    "error": "RewardError: scripted failure on delivery 1",
+                    "uncertain": False,
+                },
+            )
+        ]
         assert payer.display.message_calls[-1][0] == "REWARD FAILURE — check the pump"
+
+    def test_an_uncertain_delivery_is_not_recorded_as_nothing(self):
+        class Uncertain:
+            def deliver(self, pulses: RewardPulses) -> None:
+                raise RewardUncertainError("train started, then the link failed")
+
+            def close(self) -> None:
+                return
+
+        payer = Payer(RewardPolicy(by_outcome={"CORRECT": PAID}), Uncertain())
+        assert payer.deliver(CORRECT) is True
+        # Explicit unknown survives later definite failures; CSV stays empty.
+        assert payer.ctx.record["rewarded"] is None  # neither True nor False
+        assert payer.events == [
+            (
+                "REWARD_FAILED",
+                {
+                    "outcome": "CORRECT",
+                    "error": "RewardUncertainError: train started, then the link failed",
+                    "uncertain": True,
+                },
+            )
+        ]
+        assert payer.display.message_calls[-1][0] == "REWARD UNCERTAIN — check the pump"
+
+    def test_an_uncertain_delivery_keeps_a_drop_that_arrived(self):
+        class Uncertain:
+            def deliver(self, pulses: RewardPulses) -> None:
+                raise RewardUncertainError("train started, then the link failed")
+
+            def close(self) -> None:
+                return
+
+        payer = Payer(RewardPolicy(by_outcome={"CORRECT": PAID}), Uncertain())
+        payer.deliver(CORRECT, rewarded=True)
+        assert payer.ctx.record["rewarded"] is True
 
     def test_a_drop_that_already_arrived_keeps_the_trial_rewarded(self):
         payer = Payer(RewardPolicy(by_outcome={"CORRECT": PAID}), ScriptedReward(fail=[1]))

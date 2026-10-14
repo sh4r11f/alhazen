@@ -23,10 +23,13 @@ from alhazen.devices.eyetracker import make_tracker as make_tracker
 from alhazen.devices.response import NullResponse as NullResponse
 from alhazen.devices.response import ResponseDevice, ResponseSample
 from alhazen.devices.response import SubjectKeyboard as SubjectKeyboard
+from alhazen.devices.reward import DatapixxReward as DatapixxReward
 from alhazen.devices.reward import NidaqReward as NidaqReward
 from alhazen.devices.reward import RewardDispenser, SimulatedReward
+from alhazen.devices.reward import build_gate_words as build_gate_words
 from alhazen.devices.reward import build_reward_waveform as build_reward_waveform
 from alhazen.devices.reward import make_reward as make_reward
+from alhazen.devices.sync import DatapixxSync as DatapixxSync
 from alhazen.devices.sync import NidaqSync as NidaqSync
 from alhazen.devices.sync import NullSync as NullSync
 from alhazen.devices.sync import SimulatedSync, SyncOutput

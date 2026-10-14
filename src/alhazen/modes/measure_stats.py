@@ -206,6 +206,28 @@ def reward_volume(
     }
 
 
+def reward_volume_vs_expected(
+    *, read_ul: float, expected_ul: float, tolerance: float
+) -> dict[str, Any]:
+    """A beaker reading against what a syringe pump should have given: its
+    set rate × the time its gate was held. The reading stays the measurement;
+    this only says how far off the expectation it is."""
+    read_ul = _finite_positive("volume read", read_ul)
+    expected_ul = _finite_positive("expected volume", expected_ul)
+    if not (0.0 < tolerance < 1.0):
+        raise ValueError(f"tolerance must be a fraction between 0 and 1, not {tolerance!r}")
+    ratio = read_ul / expected_ul
+    return {
+        "expected_ul": expected_ul,
+        "read_ul": read_ul,
+        "ratio": ratio,
+        "percent": ratio * 100.0,
+        "tolerance": tolerance,
+        "within_tolerance": abs(ratio - 1.0) <= tolerance,
+        "basis": "pump rate set on the pump (as declared in the rig file) × total gate time",
+    }
+
+
 def reward_volume_read(*, volume_ml: float, n_pulses: int, pulse_ms: float) -> dict[str, Any]:
     """Volume per pulse from the volume the operator read off a beaker.
 

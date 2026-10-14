@@ -540,7 +540,15 @@ class TestATrackerStoppedTrial:
         harness = run_session(tmp_path, [tracker_stops(), clean()], reward=reward)
 
         (failed,) = events_of(harness, 1, "REWARD_FAILED")
-        assert failed.payload == {"outcome": "ABORTED", "fault": "tracker_stopped"}
+        # Since the DATAPixx3 gate (2.16): the failure's own words and whether
+        # its outcome is uncertain ride along, additively; a plain RewardError
+        # is a failure before anything was played, so not uncertain.
+        assert failed.payload == {
+            "outcome": "ABORTED",
+            "fault": "tracker_stopped",
+            "error": "RewardError: solenoid did not open",
+            "uncertain": False,
+        }
         assert events_of(harness, 1, "REWARD") == []
         assert rows(harness)[0]["rewarded"] == "False"
         # The pause the pump failure opens, with its heading, as on any trial.
