@@ -53,3 +53,50 @@ Measurements of the person or animal in the chair (`tracker.calibration`,
 `tracker.accuracy`, `kde.bead`) need `--sub`; the subject is recorded only in
 the measurement report. `input.keys` takes one if given. No participant record
 is written.
+
+## The live monitor during tracker measurements
+
+A run that includes a measurement of the eye tracker opens the
+[live monitor](live_monitor.md), as a session does, and shows the tracker on
+it while it is measured:
+
+| Panel | What it shows | When |
+|---|---|---|
+| Camera | the tracker's eye image with the eyes it found marked, the eye line, and the iris size control | live through the calibration, while each accuracy target waits for its key, and while any prompt is up. A tracker with no camera the session can read (the EyeLink) has no such panel |
+| Calibration | each target and where the fitted model puts each eye on it, with the verdict | from the end of `tracker.calibration` |
+| Validation | each target of `tracker.accuracy` and the mean gaze measured on it, with mean and worst error, precision and the verdict against the 1° limit | from the end of `tracker.accuracy` |
+
+The message under the header names the measurement that is running, in the
+console's words (`[1/2] Calibration`), followed by the tracker's own progress
+(`calibrating: target 3 of 9`).
+
+```mermaid
+flowchart LR
+    R["run_jobs<br/>(the queue)"] -- "which job is running" --> V
+    C["tracker.calibration"] -- "calibrate()" --> V
+    A["tracker.accuracy"] -- "idle() while a target waits<br/>the accuracy numbers" --> V
+    O["a prompt's wait<br/>(WindowOperator)"] -- "idle()" --> V
+    V["MeasureLiveView<br/>modes/measure_live.py"] --> M["EyeTrackerMonitor<br/>camera frames, iris size,<br/>Camera and Calibration panels"]
+    V --> S["live monitor server<br/>its own process"]
+    M --> T["the tracker"]
+    S --> B["the page<br/>(a browser tab, or the workspace's Live monitor tab)"]
+```
+
+- **When it opens.** Only when a selected measurement uses the tracker and can
+  run on this rig, and the rig has `live_monitor.enabled: true` (or the command
+  says `--live-monitor`). `--no-live-monitor` measures without it, and
+  `--no-live-monitor-browser` serves it without opening a browser tab. The
+  command prints its address (`live monitor: http://127.0.0.1:...`); the
+  experiment workspace reads that line and shows the page in its Live monitor
+  tab.
+- **Nothing measured changes.** The calibration is the tracker's own, called
+  once; the numbers on the Validation panel are the report's. A session
+  validates after a calibration when the rig says so; a measurement run does
+  not, because `tracker.accuracy` is that measurement.
+- **The run waits at the end.** The page is served by the run and closes with
+  it, so once every measurement is done the rig's window asks whether to end
+  the run. Press **Y** when the results have been read. Nothing of the page is
+  saved: the numbers are in the report, and the image is a picture of the
+  subject.
+- **If the page cannot be served**, the run stops before any device opens and
+  says so.

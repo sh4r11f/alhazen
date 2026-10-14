@@ -12,10 +12,11 @@
 # they are different rooms with different hardware:
 #
 #   rig-vpixx.yaml   the VPixx booth — VIEWPixx panel, TRACKPixx3 inside the
-#                    chassis, no reward line, no sync lines. Human volunteers.
+#                    chassis, a syringe pump gated from the DATAPixx3 as its
+#                    reward line, no sync lines.
 #   rig-lab.yaml     this file — EyeLink 1000 + NI DAQ, a reward line and four
-#                    TTLs. The machine a monkey can be run on, and the one
-#                    whose events a neural recording can be aligned to.
+#                    TTLs. The machine whose events a neural recording can be
+#                    aligned to.
 #
 # Which of alhazen's six modes you run here is not this file's business:
 #

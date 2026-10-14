@@ -233,6 +233,24 @@ describe('the Live monitor tab', () => {
     assert.equal(app.byId('monitor').hidden, true);
   });
 
+  it('says a finished measurement run saved no copy of its monitor', async () => {
+    /* A measurement run's monitor shows the eye tracker's camera, calibration
+     * and accuracy check. It has no run folder, so there is no saved page to
+     * point at: the note must not send the reader looking for one. */
+    const app = await pageWith({ run: runDetail({ mode: 'measure', monitor: MONITOR_URL }) });
+    assert.equal(app.byId('monitor-frame').src, MONITOR_URL);
+
+    await redraw(app, runDetail({
+      mode: 'measure', monitor: MONITOR_URL, status: 'completed', returncode: 0,
+    }));
+    const note = app.byId('monitor-note');
+    assert.equal(app.byId('monitor-frame').src, 'about:blank');
+    assert.equal(note.hidden, false);
+    assert.match(note.textContent, /closes with the measurement run/i);
+    assert.match(note.textContent, /report written beside the rig file/);
+    assert.doesNotMatch(note.textContent, /figures\//);
+  });
+
   it('opens when its tab is clicked, like the Media and Console tabs', async () => {
     const app = await pageWith();
     app.byId('monitor-tab').fire('click');

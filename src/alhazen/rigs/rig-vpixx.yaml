@@ -1,5 +1,6 @@
 # MACHINE: the VPixx booth — a VPixx VIEWPixx display driven by a DATAPixx3,
-# with a TRACKPixx3 eye camera inside the same chassis.
+# with a TRACKPixx3 eye camera inside the same chassis, and a WPI SP220i
+# syringe pump whose gate the DATAPixx3 drives (the reward line, below).
 #
 # One of alhazen's SHARED rigs (`--rig vpixx`), taken from amodal-averaging's
 # configs/rig-vpixx.yaml. An experiment that does something differently here
@@ -118,6 +119,43 @@ devices:
     # <base>_gaze.csv (VPixx's own sample format) and <base>_gaze-messages.csv
     # (every event stamped on both the device and session clocks), and the
     # analysis fits the two clocks together from those pairs.
+
+  # The reward line: a WPI SP220i syringe pump, its TTL Gate driven from the
+  # DATAPixx3 (docs/datapixx-reward.md has the wiring, the power-up order and
+  # the bench steps). WHAT is paid for is not here: a task's params file names
+  # the outcomes and their pulses, and a human session (subject_kind: human)
+  # never opens this line at all.
+  #
+  # `alhazen check-rig --rig vpixx` is not read-only on this line: it opens
+  # the DATAPixx3 and drives the gate to its rest level. --pulse adds one
+  # 50 ms reward. Simulate mode, or `--simulate reward` in another mode,
+  # stands the line down (deliveries are logged, not pumped); simulating only
+  # other devices leaves the real pump live.
+  reward:
+    backend: datapixx
+    device: DATAPIXX3
+    # The output wired to the pump's Gate: Digital Out 0, the Digital Out
+    # port's DB25 pin 1 (ground on pin 13), to the pump's TTL I/O DE9 pin 4
+    # (ground on pin 3). A digital-output gate cannot share the DATAPixx3 with
+    # DATAPixx3 sync lines, and this booth has none.
+    channel: dout0
+    # The SP220i's Gate runs the pump while LOW and stops it while HIGH, so
+    # the line RESTS HIGH. The wrong polarity runs the pump whenever it should
+    # be stopped.
+    polarity: active_low
+    pump:
+      model: WPI SP220i
+      # What the pump's own panel is set to; alhazen cannot read either (the
+      # pump's RS232 is not used). They decide the volume a gate of a given
+      # width delivers and the expected volume the Measure rig's "Juice per
+      # pulse" states, and a stored reward calibration counts only for the
+      # numbers it was measured at. Change them here whenever they are
+      # changed on the pump, and measure again.
+      #
+      # No reward calibration is kept for this line yet: until one is
+      # measured, a session reports pulses, not volumes.
+      syringe_diameter_mm: 38     # the syringe's inner diameter, as entered on the pump
+      rate_ul_per_min: 100000     # the infusion rate, as entered on the pump (100 mL/min)
 
 data_root: data
 

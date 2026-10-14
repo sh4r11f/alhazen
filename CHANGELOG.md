@@ -28,6 +28,21 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 ## Unreleased
 
 ### Added
+- Measure rig shows the eye tracker on the live monitor. A run that includes a
+  tracker measurement (`tracker.calibration`, `tracker.accuracy`, or a
+  package's own) on a rig with `live_monitor.enabled` opens the page and
+  prints its address, as a session does: the Camera panel streams through the
+  calibration, while each accuracy target waits for its key and while a prompt
+  is up, with the iris size control live; the Calibration panel plots the fit;
+  the Validation panel plots the accuracy check with its mean and worst error.
+  The experiment workspace shows it in its Live monitor tab. No measured
+  number changes, and no validation walk is added after the calibration. Once
+  every measurement is done the rig's window asks before the run ends, since
+  the page closes with it. `--no-live-monitor` measures without the page; a
+  page that cannot be served stops the run before any device opens.
+  `JobContext.live` (None without one) and `run_jobs(live=...)`;
+  `gaze_collector(..., idle)`, `WindowOperator(idle=...)` and
+  `rig_devices(clock=...)`; `alhazen.modes.measure_live`.
 - Reward backend `datapixx`: a pump's TTL gate (e.g. a WPI SP220i's Gate
   input) driven from a DATAPixx3 digital output (`channel: dout0`-`dout15`)
   by a finite, hardware-timed DOUT schedule. `polarity` (`active_low` rests
@@ -92,6 +107,12 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   `RewardHwConfig.calibration_identity()`; `ul_per_pulse(identity=...)`.
 
 ### Changed
+- The shared `vpixx` rig declares the booth's reward line: a WPI SP220i gated
+  from the DATAPixx3's Digital Out 0 (`backend: datapixx`, `channel: dout0`,
+  `polarity: active_low`, the pump's syringe and rate as set on its panel).
+  `alhazen check-rig --rig vpixx` now opens the gate and drives it to its
+  rest level, and needs a pypixxlib with the gate's calls. A human session
+  still opens no reward line. No reward calibration ships with it.
 - A dumped `RewardHwConfig` carries `polarity`, `pump` and
   `dout_buffer_address` (None, None and the default on an NI-DAQ line).
 - check-rig closes the reward line after a failed `--pulse` as well.

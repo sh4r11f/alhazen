@@ -2541,6 +2541,13 @@ function renderMonitor(run, active) {
   note.hidden = false;
   if (!run) {
     setMonitorNote('Start a run to watch its live monitor here.');
+  } else if (!active && run.mode === 'measure') {
+    // A measurement run saves no copy of the page: it has no run folder, and
+    // its numbers are in the report it wrote beside the rig file.
+    setMonitorNote(
+      'The live monitor closes with the measurement run. Nothing of it is saved: the '
+      + 'calibration and accuracy numbers are in the report written beside the rig file.',
+    );
   } else if (!active) {
     // The file is named by the alhazen the session ran, which is the
     // project's, not this page's. alhazen 2.0 renamed it; a run recorded by
