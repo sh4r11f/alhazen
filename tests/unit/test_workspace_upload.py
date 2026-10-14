@@ -36,10 +36,15 @@ from alhazen.cli.upload_transport import (
     UploadError,
     UploadSettings,
     _version,
+    destination_text,
     experiment_folder,
+    forget_destination,
     is_version_of,
+    load_destinations,
     load_settings,
+    parse_destination,
     parse_sha256,
+    remember_destination,
     save_settings,
     sha256_file,
     versioned,
@@ -872,3 +877,153 @@ def test_paramiko_is_a_core_dependency():
     core = text.split("[project.optional-dependencies]")[0]
     assert '"paramiko>=' in core
     assert paramiko.__version__
+
+
+# -- a destination typed on the page ---------------------------------------------
+
+
+class TestTypedDestination:
+    def test_a_folder_here(self, tmp_path):
+        s = parse_destination(str(tmp_path), UploadSettings())
+        assert (s.transport, s.local_path) == ("local", str(tmp_path))
+        assert parse_destination("~/backup", UploadSettings()).transport == "local"
+        # A drive letter is a folder, never a host named "D".
+        if sys.platform == "win32":
+            assert parse_destination("D:\\lab\\data", UploadSettings()).transport == "local"
+        else:
+            with pytest.raises(UploadError, match="full path"):
+                parse_destination("D:\\lab\\data", UploadSettings())
+
+    @pytest.mark.parametrize(
+        ("text", "user", "host", "port", "path"),
+        [
+            (
+                "alice@archive.example.org:/data/lab",
+                "alice",
+                "archive.example.org",
+                22,
+                "/data/lab",
+            ),
+            ("sftp://bob@10.0.0.5:2222/srv/x", "bob", "10.0.0.5", 2222, "/srv/x"),
+            ("ssh://bob@host/srv/x/", "bob", "host", 22, "/srv/x"),
+        ],
+    )
+    def test_a_remote_folder(self, text, user, host, port, path):
+        s = parse_destination(text, UploadSettings(label="lab archive"))
+        assert (s.transport, s.user, s.host, s.port, s.base_path) == (
+            "sftp",
+            user,
+            host,
+            port,
+            path,
+        )
+        assert s.label == "lab archive"  # what the text does not say stays
+        assert parse_destination(destination_text(s), UploadSettings()) == s.model_copy(
+            update={"label": "archive"}
+        )
+
+    def test_the_saved_host_lends_its_user_port_and_rsync(self):
+        saved = UploadSettings(
+            transport="rsync", user="alice", host="h.org", port=2200, base_path="/a"
+        )
+        s = parse_destination("h.org:/b", saved)
+        assert (s.transport, s.user, s.port, s.base_path) == ("rsync", "alice", 2200, "/b")
+        with pytest.raises(UploadError, match="who to log in as"):
+            parse_destination("other.org:/b", saved)
+
+    @pytest.mark.parametrize(
+        ("text", "why"),
+        [
+            ("", "Type the folder"),
+            ("relative/path", "full path"),
+            ("alice@host:/has space", "absolute, without"),
+            ("alice@host:/a/../b", "absolute, without"),
+            ("al ice@host:/a", "full path"),
+            ("@host:/a", "full path"),
+        ],
+    )
+    def test_refused_with_a_reason(self, text, why):
+        with pytest.raises(UploadError, match=why):
+            parse_destination(text, UploadSettings())
+
+    def test_remember_makes_it_the_default_and_forget_only_drops_it(self, tmp_path):
+        remember_destination(tmp_path, "alice@a.org:/one")
+        remember_destination(tmp_path, str(tmp_path))
+        remember_destination(tmp_path, "alice@a.org:/one")
+        assert load_destinations(tmp_path) == ["alice@a.org:/one", str(tmp_path)]
+        assert load_settings(tmp_path).base_path == "/one"
+        assert forget_destination(tmp_path, "alice@a.org:/one") == [str(tmp_path)]
+        assert load_settings(tmp_path).base_path == "/one"  # the default stays
+        with pytest.raises(UploadError):
+            remember_destination(tmp_path, "nope")
+        assert load_destinations(tmp_path) == [str(tmp_path)]  # nothing written
+
+    def test_an_unreadable_list_is_no_list(self, tmp_path):
+        (tmp_path / "upload-destinations.json").write_text("{not json")
+        assert load_destinations(tmp_path) == []
+
+    def test_upload_to_a_typed_folder_and_remember_it(self, http, workspace, tmp_path):  # noqa: F811
+        call, _ = http
+        key = pid(workspace)
+        session(Path(workspace.project(key)["path"]))
+        selection = [{"root": roots(call, key)["real"], "all": True}]
+        typed = tmp_path / "typed"
+        typed.mkdir()
+        status, out = call(f"/api/upload/destination?destination={typed}")
+        assert status == 200 and out["ok"] and out["transport"] == "local", out
+        status, out = call(f"/api/upload/check?destination={typed}")
+        assert out["ok"] is True, out
+        status, out = call(
+            "/api/upload/preview",
+            {"project": key, "selection": selection, "destination": str(typed)},
+        )
+        assert status == 200 and out["groups"][0]["destination"] == str(typed / SLUG), out
+        job = upload(call, key, selection, destination=str(typed), remember=True)
+        assert job["phase"] == "done", job
+        assert (typed / SLUG / RUN / "session.json").is_file()
+        status, out = call("/api/upload/settings")
+        assert out["destination"] == str(typed) and out["saved"] == [str(typed)]
+        status, out = call(
+            "/api/upload/destinations", {"action": "forget", "destination": str(typed)}
+        )
+        assert status == 200 and out["saved"] == [] and out["destination"] == str(typed)
+
+    def test_a_refused_upload_remembers_nothing(self, http, workspace, tmp_path):  # noqa: F811
+        call, _ = http
+        key = pid(workspace)
+        session(Path(workspace.project(key)["path"]))
+        selection = [{"root": roots(call, key)["real"], "all": True}]
+        status, out = call(
+            "/api/upload/start",
+            {
+                "project": key,
+                "selection": selection,
+                "destination": str(tmp_path / "missing"),
+                "remember": True,
+            },
+        )
+        assert status == 400, out
+        assert call("/api/upload/settings")[1]["saved"] == []
+
+    def test_a_typed_bad_destination_is_said(self, http):  # noqa: F811
+        call, _ = http
+        status, out = call("/api/upload/destination?destination=relative")
+        assert status == 200 and out["ok"] is False and "full path" in out["message"]
+        status, out = call("/api/upload/check?destination=relative")
+        assert out["ok"] is False and "full path" in out["message"]
+
+
+def test_the_connection_serves_only_its_own_host(tmp_path):
+    remote = tmp_path / "remote"
+    remote.mkdir()
+    with StandIn() as server:
+        session = logged_in(tmp_path, server, remote)
+        here = settings_for(server, remote)
+        assert SftpTransport(session, here).check()["ok"] is True
+        elsewhere = here.model_copy(update={"host": "other.example.org"})
+        answer = SftpTransport(session, elsewhere).check()
+        assert answer["ok"] is False and answer["login"] is True
+        assert "not alice@other.example.org" in answer["message"]
+        with pytest.raises(UploadError, match="connect to other.example.org"):
+            SftpTransport(session, elsewhere).listing("x")
+        session.close()

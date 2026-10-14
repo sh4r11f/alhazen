@@ -411,6 +411,12 @@ class Uploads:
     ) -> dict[str, Any]:
         settings = self.settings(destination)
         transport = self.transport(destination)
+        if remember and destination:
+            # Remember only a destination that can take the upload now: a
+            # typo'd folder must not become this computer's default.
+            ready = transport.check()
+            if not ready.get("ok"):
+                raise UploadError(str(ready.get("message") or "That destination cannot be used"))
         stage = tempfile.TemporaryDirectory(prefix="alhazen-upload-")
         try:
             groups = self.groups(project_id, selection, include_incomplete, Path(stage.name))
@@ -622,7 +628,9 @@ class Uploads:
 
     # -- the Run page -------------------------------------------------------------------
 
-    def launch_session(self, project_id: str, launch_id: str) -> dict[str, Any]:
+    def launch_session(
+        self, project_id: str, launch_id: str, destination: Any = None
+    ) -> dict[str, Any]:
         """The session folder a launch from this workspace wrote, with its
         upload state; ``{"session": None}`` when its console names none."""
         with self.workspace.lock:
@@ -642,7 +650,9 @@ class Uploads:
                 slug = self._slug(described)
                 name = f"{slug}-rehearsal" if root.kind == "rehearsal" else slug
                 try:
-                    where: str | None = f"{self.transport().destination(name)}/{run_id}"
+                    where: str | None = (
+                        f"{self.transport(destination or None).destination(name)}/{run_id}"
+                    )
                     unset = None
                 except UploadError as exc:
                     where, unset = None, str(exc)
@@ -683,7 +693,7 @@ class Uploads:
         if route == "job":
             return self.job()
         if route == "launch-session":
-            return self.launch_session(arg("project"), arg("launch"))
+            return self.launch_session(arg("project"), arg("launch"), arg("destination"))
         if route == "receipts":
             return self.receipts(arg("project"), arg("root"), arg("run"))
         raise FileNotFoundError(f"No upload route {route!r}")
