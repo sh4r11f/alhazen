@@ -240,7 +240,10 @@
       if (ticket !== destTicket) return;
       destInfo = answer;
       for (const view of views) {
-        if (view.refresh) view.refresh(); else view.draw();
+        if (!view.container.isConnected) continue;
+        view.draw();
+        // The Run page's card asks the server where this session would go.
+        view.reload?.();
       }
     }, delay);
   }
@@ -284,7 +287,8 @@
     box.append(l, row, list, check, state);
     input.addEventListener('input', () => {
       typed = input.value;
-      for (const v of views) if (v !== view) v.syncField?.();
+      destInfo = null;  // read again below; until then say nothing stale
+      for (const v of views) v.syncField?.();
       readDestination(ctx);
     });
     tick.addEventListener('change', () => {
@@ -758,6 +762,7 @@
       view.draw();
     };
     view.refresh = refresh;
+    view.reload = refresh;
     views.add(view);
     readLabel(ctx).then(() => readDestination(ctx, 0));
     refresh();
