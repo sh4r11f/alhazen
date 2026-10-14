@@ -744,6 +744,31 @@ their `v<version>/sub-<ID>/ses-<NNN>/run-<NN>_task-<task>` layout. Rehearsal
 data (test, simulate) goes to `<experiment>-rehearsal`, never among the real
 sessions; the registry goes to `<experiment>/people/`.
 
+**Upload to.** Every upload view (the Run page's card, the bar on History
+and Data) has an *Upload to* field above its buttons. Type where this upload
+goes:
+
+| You type | It goes |
+|---|---|
+| `/mnt/share/lab-data`, `~/backup`, `D:\lab-data` | to that folder on this computer (a mounted share or a backup disk) |
+| `alice@archive.example.org:/data/lab` | over SFTP to that folder on the host, port 22 |
+| `sftp://alice@archive.example.org:2222/data/lab` | the same on another port |
+
+The field starts on this computer's default and offers the remembered
+destinations; under it a line says how the text was read, or why it cannot
+be a destination. A typed host the saved settings use for rsync goes by
+rsync; any other host goes by SFTP. The SFTP connection serves only the host
+and user it logged in as: when the field names another, the page says so and
+offers *Connect* to that one, and nothing is sent elsewhere.
+
+Tick *Remember on this computer* before uploading to make the destination
+this computer's default and add it to the list (`upload-destinations.json`
+beside `upload.json`). It is remembered only once the upload is accepted and
+the destination answers its check, so a mistyped folder never becomes the
+default. *Forget* takes a destination off the list; the default stays until
+another is remembered or the settings change it. Without the tick, a typed
+destination is used for that upload only.
+
 **Settings.** Open *Settings* beside any Upload button. They are this
 computer's, kept only in the workspace's state directory (`upload.json`,
 and `upload_known_hosts` for trusted host keys), never in an experiment or

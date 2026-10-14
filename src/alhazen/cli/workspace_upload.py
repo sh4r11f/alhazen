@@ -709,7 +709,7 @@ class Uploads:
             if body.get("action") == "forget":
                 forget_destination(self.workspace.directory, str(text or ""))
             elif body.get("action") == "remember":
-                remember_destination(self.workspace.directory, text)
+                remember_destination(self.workspace.directory, str(text or ""))
             else:
                 raise ValueError("Say remember or forget")
             return self.describe_settings()

@@ -25,6 +25,29 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+### Added
+
+- The dashboard's upload views have an *Upload to* field: type a folder on
+  this computer or a remote `user@host:/path` (`sftp://user@host:port/path`)
+  for one upload, and tick *Remember on this computer* to make it the default
+  and keep it in a list of remembered destinations
+  (`upload-destinations.json` in the workspace's state directory, never in a
+  repository). A destination is remembered only once its upload is accepted
+  and its check passes; *Forget* removes it from the list. New routes
+  `GET /api/upload/destination` and `POST /api/upload/destinations`;
+  `destination` is accepted by check, login, preview, start and
+  launch-session, and `remember` by start.
+
+### Changed
+
+- The SFTP transport refuses to list, copy or check through a connection
+  logged in to another host or user than the destination names, rather than
+  writing to the wrong archive.
+- Upload receipts record the transport the upload actually used, which a
+  typed destination can make differ from the saved settings.
+
 ## 2.16.0 - 2026-10-13
 
 ### Added
