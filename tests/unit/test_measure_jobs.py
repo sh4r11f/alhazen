@@ -122,6 +122,7 @@ def run(
     status=None,
     rig_cfg=None,
     subject=None,
+    live=None,
 ):
     rig_file = tmp_path / "rig-test.yaml"
     rig_file.write_text("monitor: {}\n", encoding="utf-8")
@@ -136,6 +137,7 @@ def run(
         status=status,
         echo=lambda _line: None,
         subject=subject,
+        live=live,
     )
 
 
@@ -878,6 +880,225 @@ class TestTracker:
         assert report.records[0].state == UNAVAILABLE and "stand-in" in report.records[0].summary
 
 
+class Live:
+    """The run's live monitor, as the runner and the jobs use it: records
+    every call, and runs the tracker's own calibration when asked to."""
+
+    def __init__(self):
+        self.calls = []
+        self.accuracy = None
+
+    def note(self, message):
+        self.calls.append(("note", message))
+
+    def watch(self, tracker, display):
+        self.calls.append(("watch", tracker, display))
+
+    def calibrate(self, tracker, display):
+        self.calls.append(("calibrate", tracker, display))
+        return tracker.calibrate()
+
+    def idle(self):
+        self.calls.append(("idle",))
+
+    def show_accuracy(self, targets_px, quality, *, window_ms):
+        self.accuracy = (list(targets_px), dict(quality), window_ms)
+        self.calls.append(("show_accuracy",))
+
+    def named(self, name):
+        return [call for call in self.calls if call[0] == name]
+
+
+class TestTheLiveView:
+    """What a run with a live monitor does differently: it says which job is
+    running, runs the calibration through the page, hands the accuracy check
+    over, and waits at the end. And what it must not: change a number."""
+
+    def _run(self, tmp_path, monkeypatch, tracker, live, operator=None, samples=None):
+        collectors = []
+        if samples is not None:
+
+            def collector(*args):
+                collectors.append(args)
+                return lambda position, seconds, echo: samples(position)
+
+            monkeypatch.setattr(builtin, "gaze_collector", collector)
+        devices = Devices({"tracker": lambda stack: tracker, "display": lambda stack: "window"})
+        ordered = plan(installed_jobs(lambda: []), ["tracker.accuracy", "tracker.calibration"])
+        report = run(
+            ordered,
+            tmp_path,
+            devices=devices,
+            operator=operator or Operator(confirms=[True]),
+            rig_cfg=rig(eyetracker=EYELINK),
+            subject="s01",
+            live=live,
+        )
+        return report, collectors
+
+    def test_the_page_is_told_which_measurement_runs_in_the_consoles_words(
+        self, tmp_path, monkeypatch
+    ):
+        live = Live()
+        tracker = Tracker(calibration())
+        self._run(tmp_path, monkeypatch, tracker, live, samples=lambda p: [p] * 5)
+        assert [call[1] for call in live.named("note")][:2] == [
+            "[1/2] Calibration",
+            "[2/2] Accuracy, precision & gain",
+        ]
+
+    def test_the_calibration_runs_once_through_the_page(self, tmp_path, monkeypatch):
+        live = Live()
+        tracker = Tracker(calibration())
+        report, _ = self._run(tmp_path, monkeypatch, tracker, live, samples=lambda p: [p] * 5)
+        assert live.named("calibrate") == [("calibrate", tracker, "window")]
+        assert tracker.calibrations == 1
+        assert report.records[0].state == PASSED
+
+    def test_the_accuracy_check_keeps_the_camera_live_and_is_handed_over(
+        self, tmp_path, monkeypatch
+    ):
+        live = Live()
+        tracker = Tracker(calibration())
+        one = SCREEN.deg2px(1.0)
+        report, collectors = self._run(
+            tmp_path, monkeypatch, tracker, live, samples=lambda p: [(p[0] + 0.3 * one, p[1])] * 5
+        )
+        # The collector is given the page's idle, to call while a target
+        # waits for the operator's key.
+        assert collectors == [(tracker, "window", SCREEN, live.idle)]
+        assert ("watch", tracker, "window") in live.calls
+        targets, quality, window_ms = live.accuracy
+        assert len(targets) == 5 and window_ms == 500.0
+        # The numbers on the page are the report's own.
+        assert quality["accuracy_max_dva"] == report.records[1].detail["accuracy_max_dva"]
+
+    def test_the_numbers_are_the_same_with_and_without_the_page(self, tmp_path, monkeypatch):
+        one = SCREEN.deg2px(1.0)
+        samples = lambda p: [(p[0] + 0.3 * one, p[1] - 0.1 * one)] * 5  # noqa: E731
+        (tmp_path / "with").mkdir()
+        (tmp_path / "without").mkdir()
+        shown, _ = self._run(
+            tmp_path / "with", monkeypatch, Tracker(calibration()), Live(), samples=samples
+        )
+        plain, _ = self._run(
+            tmp_path / "without", monkeypatch, Tracker(calibration()), None, samples=samples
+        )
+        for with_page, without in zip(shown.records, plain.records, strict=True):
+            assert (with_page.state, with_page.summary) == (without.state, without.summary)
+        keys = ("accuracy_mean_dva", "accuracy_max_dva", "gain", "per_target", "samples_px")
+        assert {k: shown.records[1].detail[k] for k in keys} == {
+            k: plain.records[1].detail[k] for k in keys
+        }
+
+    def test_the_run_waits_at_the_end_until_the_operator_ends_it(self, tmp_path, monkeypatch):
+        live = Live()
+        # No, no, then yes: only the yes ends the wait.
+        operator = Operator(confirms=[False, False, True])
+        self._run(tmp_path, monkeypatch, Tracker(calibration()), live, operator, lambda p: [p] * 5)
+        assert operator.asked == ["live.close", "live.close", "live.close"]
+        assert "live monitor" in operator.prompts["live.close"]
+        # And the page says how to end it, after the last job's note.
+        assert live.named("note")[-1][1].startswith("done — press Y at the rig")
+
+    def test_a_run_without_the_page_asks_nothing_at_the_end(self, tmp_path, monkeypatch):
+        operator = Operator()
+        self._run(tmp_path, monkeypatch, Tracker(calibration()), None, operator, lambda p: [p] * 5)
+        assert operator.asked == []
+
+    def test_a_run_whose_tracker_never_opened_does_not_wait(self, tmp_path):
+        # The page has nothing of the tracker to show, so nothing to hold for.
+        live = Live()
+        operator = Operator()
+        run([job("a.one", 1, OK)], tmp_path, operator=operator, live=live)
+        assert operator.asked == []
+        assert live.named("note") == [("note", "[1/1] a.one")]
+
+    def test_every_job_is_handed_the_page(self, tmp_path):
+        live = Live()
+        seen = []
+
+        def look(ctx):
+            seen.append(ctx.live)
+            return OK
+
+        run([job("a.one", 1, run=look)], tmp_path, live=live)
+        assert seen == [live]
+
+    def test_a_job_in_a_run_without_one_is_handed_none(self, tmp_path):
+        seen = []
+
+        def look(ctx):
+            seen.append(ctx.live)
+            return OK
+
+        run([job("a.one", 1, run=look)], tmp_path)
+        assert seen == [None]
+
+
+class TestTheGazeCollectorsWait:
+    """``gaze_collector`` on a stand-in psychopy: how the dot waits for the
+    operator's key with and without something to do meanwhile."""
+
+    def _psychopy(self, monkeypatch, *, waited=None, polled=None):
+        """A psychopy whose keyboard answers from the given scripts, and whose
+        Circle draws nothing."""
+        calls = {"waitKeys": 0, "getKeys": 0}
+
+        def wait_keys():
+            calls["waitKeys"] += 1
+            return next(waited)
+
+        def get_keys():
+            calls["getKeys"] += 1
+            return next(polled)
+
+        event = types.SimpleNamespace(
+            clearEvents=lambda: None, waitKeys=wait_keys, getKeys=get_keys
+        )
+        dot = SimpleNamespace(pos=None, draw=lambda: None)
+        visual = types.SimpleNamespace(Circle=lambda *args, **kwargs: dot)
+        monkeypatch.setitem(
+            sys.modules, "psychopy", types.SimpleNamespace(event=event, visual=visual)
+        )
+        monkeypatch.setitem(sys.modules, "psychopy.event", event)
+        monkeypatch.setitem(sys.modules, "psychopy.visual", visual)
+        # No real pause between looks at the keyboard.
+        monkeypatch.setattr(builtin.time, "sleep", lambda _s: None)
+        return calls
+
+    def _devices(self):
+        gaze = SimpleNamespace(gx=960.0, gy=540.0)
+        tracker = SimpleNamespace(get_gaze=lambda: gaze)
+        display = SimpleNamespace(window="window", flip=lambda: None)
+        return tracker, display
+
+    def test_without_idle_work_it_blocks_on_the_keyboard_as_before(self, monkeypatch):
+        calls = self._psychopy(monkeypatch, waited=iter([["space"]]))
+        tracker, display = self._devices()
+        collect = builtin.gaze_collector(tracker, display, SCREEN)
+        points = collect((0.0, 0.0), 0.01, lambda _line: None)
+        assert points and calls == {"waitKeys": 1, "getKeys": 0}
+
+    def test_with_idle_work_it_polls_and_does_the_work_between_looks(self, monkeypatch):
+        # Nothing pressed on the first two looks, SPACE on the third.
+        calls = self._psychopy(monkeypatch, polled=iter([[], [], ["space"]]))
+        tracker, display = self._devices()
+        idled = []
+        collect = builtin.gaze_collector(tracker, display, SCREEN, lambda: idled.append(1))
+        points = collect((0.0, 0.0), 0.01, lambda _line: None)
+        assert points and calls == {"waitKeys": 0, "getKeys": 3}
+        # Once per look that found no key, and never during the sampling.
+        assert len(idled) == 2
+
+    def test_esc_still_stops_the_check_while_polling(self, monkeypatch):
+        self._psychopy(monkeypatch, polled=iter([[], ["escape"]]))
+        tracker, display = self._devices()
+        collect = builtin.gaze_collector(tracker, display, SCREEN, lambda: None)
+        with pytest.raises(OperatorCancelled):
+            collect((0.0, 0.0), 0.01, lambda _line: None)
+
+
 class TestMonitorJobs:
     def test_geometry_from_given_tape_readings(self, tmp_path):
         bar_cm = SCREEN.deg2px(10.0) * 52.0 / 1920
@@ -1063,6 +1284,34 @@ class TestWindowOperator:
         operator, *_ = self._operator([["y"]])
         assert operator.confirm("k", "arm?") is True
 
+    def test_idle_work_runs_on_every_pass_of_a_prompts_wait(self):
+        # The run's live monitor is kept current while a prompt is up: once
+        # per look at the keyboard that did not answer the prompt.
+        display = self.Display()
+        devices = Devices({"display": lambda stack: display})
+        idled = []
+        confirms = iter([[], [], ["y"]])
+        operator = builtin.WindowOperator(
+            devices,
+            get_keys=lambda: next(confirms),
+            clear=lambda: None,
+            sleep=lambda s: None,
+            idle=lambda: idled.append("confirm"),
+        )
+        assert operator.confirm("k", "end the run?") is True
+        assert idled == ["confirm", "confirm"]
+
+        numbers = iter([["4"], [], ["return"]])
+        operator = builtin.WindowOperator(
+            devices,
+            get_keys=lambda: next(numbers),
+            clear=lambda: None,
+            sleep=lambda s: None,
+            idle=lambda: idled.append("number"),
+        )
+        assert operator.ask_number("k", "trains", unit="trains", low=1, high=50) == 4
+        assert idled[2:] == ["number", "number"]
+
 
 class TestCommandLine:
     """``alhazen run --mode measure`` with the new flags, end to end, with a
@@ -1114,6 +1363,8 @@ class TestCommandLine:
         )
         out = capsys.readouterr().out
         assert "measuring, in this order: monitor.geometry, monitor.colour" in out
+        # No tracker measurement was selected, so no live monitor was opened.
+        assert "live monitor:" not in out
         # One passed, one unavailable: not a clean bill of health.
         assert code == 1
         reports = list((tmp_path / "measurements").glob("rig-bench_*.json"))
@@ -1177,6 +1428,131 @@ class TestCommandLine:
             )
             == 2
         )
+        assert not (tmp_path / "measurements").exists()
+
+
+class TestTheCommandsLiveMonitor:
+    """When ``alhazen run --mode measure`` opens a live monitor, what it
+    prints, and what it does when the page cannot be served."""
+
+    URL = "http://127.0.0.1:4242/?token=abc-123"
+
+    def _args(self, **given):
+        from argparse import Namespace
+
+        base = dict(live_monitor=None, no_live_monitor_browser=False, sub="s01")
+        return Namespace(**{**base, **given})
+
+    def _tracker_run(self):
+        ordered = plan(installed_jobs(lambda: []), ["tracker.calibration"])
+        tracked = RigConfig(
+            monitor=MONITOR,
+            data_root="data",
+            devices={"eyetracker": EYELINK},
+            live_monitor={"enabled": True},
+        )
+        return tracked, ordered
+
+    def _opens(self, monkeypatch):
+        """Replace the server's start with a recorder; returns what it saw."""
+        from alhazen.modes import measure_live
+
+        opened = []
+
+        def open_live_view(rig_cfg, *, subject, clock, open_browser=None):
+            opened.append({"subject": subject, "clock": clock, "open_browser": open_browser})
+            return SimpleNamespace(url=self.URL)
+
+        monkeypatch.setattr(measure_live, "open_live_view", open_live_view)
+        return opened
+
+    def test_a_tracker_measurement_opens_one_and_prints_its_address(self, monkeypatch, capsys):
+        from alhazen.cli.main import _measure_live_view
+
+        opened = self._opens(monkeypatch)
+        tracked, ordered = self._tracker_run()
+        live = _measure_live_view(self._args(), tracked, ordered, {}, "the run's clock")
+        assert live.url == self.URL
+        # The line the experiment workspace reads the address from, worded as
+        # a session's is.
+        assert f"live monitor: {self.URL}" in capsys.readouterr().out
+        assert opened == [{"subject": "s01", "clock": "the run's clock", "open_browser": None}]
+
+    def test_no_browser_window_when_the_command_says_so(self, monkeypatch):
+        from alhazen.cli.main import _measure_live_view
+
+        opened = self._opens(monkeypatch)
+        tracked, ordered = self._tracker_run()
+        _measure_live_view(self._args(no_live_monitor_browser=True), tracked, ordered, {}, None)
+        assert opened[0]["open_browser"] is False
+
+    def test_no_live_monitor_on_the_command_line_opens_none(self, monkeypatch, capsys):
+        from alhazen.cli.main import _measure_live_view
+
+        opened = self._opens(monkeypatch)
+        tracked, ordered = self._tracker_run()
+        assert (
+            _measure_live_view(self._args(live_monitor=False), tracked, ordered, {}, None) is None
+        )
+        assert opened == [] and "live monitor:" not in capsys.readouterr().out
+
+    def test_a_rig_with_the_live_monitor_off_opens_none_unless_asked(self, monkeypatch):
+        from alhazen.cli.main import _measure_live_view
+
+        opened = self._opens(monkeypatch)
+        tracked, ordered = self._tracker_run()
+        off = tracked.model_copy(
+            update={"live_monitor": tracked.live_monitor.model_copy(update={"enabled": False})}
+        )
+        assert _measure_live_view(self._args(), off, ordered, {}, None) is None
+        assert _measure_live_view(self._args(live_monitor=True), off, ordered, {}, None) is not None
+        assert len(opened) == 1
+
+    def test_a_run_with_no_tracker_measurement_opens_none(self, monkeypatch):
+        from alhazen.cli.main import _measure_live_view
+
+        opened = self._opens(monkeypatch)
+        tracked, _ = self._tracker_run()
+        ordered = plan(installed_jobs(lambda: []), ["monitor.geometry"])
+        assert _measure_live_view(self._args(), tracked, ordered, {}, None) is None
+        assert opened == []
+
+    def test_a_page_that_cannot_be_served_stops_the_run_before_any_device_opens(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        from alhazen.cli.main import main
+        from alhazen.errors import SessionError
+        from alhazen.modes import measure_live
+
+        def refuse(*args, **kwargs):
+            raise SessionError("live monitor server failed to start: port in use")
+
+        monkeypatch.setattr(measure_live, "open_live_view", refuse)
+        # Any device opened would be a real one: the test fails if one is.
+        monkeypatch.setattr(
+            builtin,
+            "rig_devices",
+            lambda *args, **kwargs: Devices(
+                dict.fromkeys(("display", "tracker", "operator"), pytest.fail)
+            ),
+        )
+        monkeypatch.chdir(tmp_path)
+        rig_file = tmp_path / "rig-bench.yaml"
+        rig_file.write_text(
+            "monitor: {width_px: 1920, height_px: 1080, width_cm: 52.0, distance_cm: 57.0, "
+            "refresh_rate_hz: 60.0}\ndata_root: data\nlive_monitor: {enabled: true}\n"
+            "devices: {eyetracker: {backend: eyelink}}\n",
+            encoding="utf-8",
+        )
+        code = main(
+            ["run", "--mode", "measure", "--rig", str(rig_file)]
+            + ["--measure", "tracker.calibration", "--sub", "s01"]
+        )
+        err = capsys.readouterr().err
+        assert code == 1
+        assert "CANNOT MEASURE: live monitor server failed to start: port in use" in err
+        # And what to do about it.
+        assert "--no-live-monitor" in err
         assert not (tmp_path / "measurements").exists()
 
 

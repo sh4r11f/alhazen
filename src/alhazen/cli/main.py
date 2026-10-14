@@ -45,7 +45,7 @@ from alhazen.config.rigs import (
     resolve_rig,
     rig_extends,
 )
-from alhazen.errors import AlhazenError, ConfigError, DataError, DisplayError
+from alhazen.errors import AlhazenError, ConfigError, DataError, DisplayError, SessionError
 from alhazen.modes import Mode, flag_refusal, real_data_refusal
 from alhazen.modes.simulation import ALL, GAZE_SOURCES, SIMULATABLE, SimulateChoice
 from alhazen.session.checks import check_rig, format_result
@@ -1305,6 +1305,7 @@ def _list_measurements() -> int:
 def _measure_selected(args: argparse.Namespace, rig: Any, beside: Path) -> int:
     """Run the measurements named with --measure, in their own order, into
     one report beside the rig config (alhazen.modes.measure_jobs)."""
+    from alhazen.core.clock import MonotonicClock
     from alhazen.modes.measure_builtin import WindowOperator, rig_devices
     from alhazen.modes.measure_jobs import (
         StatusFile,
@@ -1332,28 +1333,78 @@ def _measure_selected(args: argparse.Namespace, rig: Any, beside: Path) -> int:
         )
         return 2
     destination = _measurement_path(beside)
-    devices = rig_devices(rig, windowed=args.windowed)
+    # One clock for the run: the tracker stamps its camera frames and its
+    # calibration with it, and the live monitor reads those times.
+    clock = MonotonicClock()
+    devices = rig_devices(rig, windowed=args.windowed, clock=clock)
     status = StatusFile(Path(args.measure_status) if args.measure_status else None)
+    try:
+        live = _measure_live_view(args, rig, ordered, inputs, clock)
+    except SessionError as e:
+        # The page's server did not start. Said and stopped, before any device
+        # opens: a run that went on without the page it was asked for would
+        # have the operator calibrating blind and wondering where it is.
+        print(
+            f"CANNOT MEASURE: {e}. Give --no-live-monitor to measure without the live monitor.",
+            file=sys.stderr,
+        )
+        return 1
     print("measuring, in this order: " + ", ".join(job.key for job in ordered))
     saved: list[Path] = []
-    report = run_jobs(
-        rig,
-        str(args.rig),
-        ordered,
-        devices=devices,
-        operator=WindowOperator(devices),
-        inputs=inputs,
-        output_dir=destination.with_suffix(""),
-        status=status,
-        argv=sys.argv,
-        on_finish=lambda r: saved.append(r.save(destination)),
-        subject=args.sub,
-    )
+    try:
+        report = run_jobs(
+            rig,
+            str(args.rig),
+            ordered,
+            devices=devices,
+            # With a live monitor, every prompt's wait keeps it current (the
+            # camera image, the panels), the wait at the end of the run too.
+            operator=WindowOperator(devices, idle=live.idle if live is not None else None),
+            inputs=inputs,
+            output_dir=destination.with_suffix(""),
+            status=status,
+            argv=sys.argv,
+            on_finish=lambda r: saved.append(r.save(destination)),
+            subject=args.sub,
+            live=live,
+        )
+    finally:
+        # The page's server is this process's child: stopped here whatever
+        # the run did, so none is left serving a run that is over.
+        if live is not None:
+            live.close()
     print(report.render())
     print(f"written: {saved[0]}")
     # Non-zero unless every selected measurement produced a result and none
     # failed: an unavailable or cancelled one is not a clean bill of health.
     return 0 if report.ok else 1
+
+
+def _measure_live_view(
+    args: argparse.Namespace, rig: Any, ordered: Any, inputs: dict[str, str], clock: Any
+) -> Any:
+    """The run's live monitor, or None when it has none.
+
+    It has one when a selected measurement uses the eye tracker and can run
+    on this rig (the page shows the tracker's camera, its calibration and the
+    accuracy check, and nothing else), and the live monitor is on: the rig's
+    ``live_monitor.enabled``, or ``--live-monitor`` / ``--no-live-monitor``
+    when given. Its address is printed as a session's is, which is also where
+    the experiment workspace reads it from to show the page.
+    """
+    from alhazen.modes.measure_live import open_live_view, wants_live_view
+
+    enabled = rig.live_monitor.enabled if args.live_monitor is None else args.live_monitor
+    if not enabled or not wants_live_view(rig, ordered, inputs):
+        return None
+    live = open_live_view(
+        rig,
+        subject=args.sub,
+        clock=clock,
+        open_browser=False if args.no_live_monitor_browser else None,
+    )
+    print(f"live monitor: {live.url}")
+    return live
 
 
 def _measure_rig(args: argparse.Namespace, rig: Any, root: Callable[[], Path]) -> int:

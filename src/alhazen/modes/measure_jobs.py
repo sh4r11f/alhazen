@@ -103,6 +103,40 @@ class Operator(Protocol):
     def tell(self, prompt: str) -> None: ...
 
 
+class LiveView(Protocol):
+    """The run's live monitor, as a job sees it (``measure_live
+    .MeasureLiveView``): the page that shows the eye tracker's camera, its
+    calibration and the accuracy check while they are measured.
+
+    A run has one only when a tracker measurement is selected and the rig's
+    live monitor is on; ``JobContext.live`` is None otherwise, and a job then
+    measures exactly as it does with one. Nothing here changes a number.
+    """
+
+    def note(self, message: str) -> None:
+        """Say which measurement is running now."""
+
+    def watch(self, tracker: Any, display: Any) -> None:
+        """Start showing this tracker's camera; safe to call again."""
+
+    def calibrate(self, tracker: Any, display: Any) -> Any:
+        """Run ``tracker.calibrate()`` with the page following it, and
+        return its result."""
+
+    def idle(self) -> None:
+        """Keep the camera and the panels current; called on every pass of a
+        loop that waits for the operator."""
+
+    def show_accuracy(
+        self,
+        targets_px: Sequence[tuple[float, float]],
+        quality: Mapping[str, Any],
+        *,
+        window_ms: float,
+    ) -> None:
+        """Put the accuracy check's targets, gaze and errors on the page."""
+
+
 def _always_available(_rig: RigConfig, _inputs: Mapping[str, str]) -> str | None:
     return None
 
@@ -363,6 +397,8 @@ class JobContext:
     set_waiting: Callable[[str | None], None]
     later_needs: frozenset[str] = frozenset()
     provided: dict[str, Any] = field(default_factory=dict)
+    # The run's live monitor, or None when it has none (see LiveView).
+    live: LiveView | None = None
 
     def keep_tracker_recording(self, destination: Path) -> Path:
         """End the tracker now and leave its native recording at
@@ -602,6 +638,30 @@ class StatusFile:
         replace_atomically(self._path, json.dumps(payload, indent=2, default=_json_default))
 
 
+# What the rig's window asks once every job is done and the run has a live
+# monitor showing a tracker (see _hold_for_the_live_view).
+LIVE_HOLD_PROMPT = (
+    "The measurements are done.\n\n"
+    "The live monitor shows the eye tracker's calibration and accuracy check. "
+    "It closes when this run ends.\n\n"
+    "End the run and close it?"
+)
+
+
+def _hold_for_the_live_view(live: LiveView, operator: Operator) -> None:
+    """Keep the run, and so its live monitor, open until the operator ends it.
+
+    The page is served by this process and goes when it does. The last
+    measurement's result reaches it as the run finishes, so without this the
+    accuracy check would be on screen for an instant and then gone. Only a
+    yes ends the wait: a no asks again, and stopping the run (Ctrl-C; the
+    workspace's Stop run) ends it as it ends any prompt.
+    """
+    live.note("done — press Y at the rig to end the run; this page closes with it")
+    while not operator.confirm("live.close", LIVE_HOLD_PROMPT):
+        pass
+
+
 def run_jobs(
     rig: RigConfig,
     rig_path: str,
@@ -617,6 +677,7 @@ def run_jobs(
     clock: Callable[[], float] = time.monotonic,
     on_finish: Callable[[JobsReport], None] | None = None,
     subject: str | None = None,
+    live: LiveView | None = None,
 ) -> JobsReport:
     """Run the planned jobs in order and return the report.
 
@@ -628,6 +689,13 @@ def run_jobs(
     job running and every one still queued. Devices are released in every
     case, and the report keeps whatever finished. ``on_finish`` sees the
     report after the devices are released (where it is saved).
+
+    ``live`` is the run's live monitor, when it has one: it is told which
+    job is running and handed to each job (``JobContext.live``). The caller
+    opened it and closes it; nothing here depends on it being there. With
+    one, and a tracker opened for it to show, the run waits at the end for
+    the operator to end it (``_hold_for_the_live_view``), so the last result
+    can be read on the page before the page goes.
     """
     inputs = dict(inputs or {})
     status = status or StatusFile(None)
@@ -693,10 +761,15 @@ def run_jobs(
                 results=records,
                 set_waiting=waiting,
                 later_needs=later,
+                live=live,
             )
             record.state, record.started = RUNNING, _stamp()
             status.write(report, job.key)
             echo(f"[{index + 1}/{len(ordered)}] {job.title}...")
+            if live is not None:
+                # The page's message names the measurement in the same words
+                # the console does, so the two can be read side by side.
+                live.note(f"[{index + 1}/{len(ordered)}] {job.title}")
             started = clock()
             try:
                 measurement = job.run(ctx)
@@ -727,6 +800,8 @@ def run_jobs(
                 record.finished = _stamp()
                 record.waiting_for = None
                 status.write(report, None)
+        if live is not None and devices.is_open("tracker"):
+            _hold_for_the_live_view(live, operator)
     except KeyboardInterrupt:
         report.stopped = True
         for record in report.records:

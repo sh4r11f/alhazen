@@ -85,6 +85,11 @@ MAX_TOTAL_OPEN_S = 60.0
 # How long the accuracy job samples gaze once the operator says the eye is
 # on a target, and its bounds.
 DEFAULT_SAMPLE_MS = 500.0
+# How long the accuracy job sleeps between looks at the keyboard while a
+# target waits for the operator's key and the run's live monitor is being kept
+# current (gaze_collector). Far shorter than a person's key press, and long
+# enough that the wait does not spin a core.
+KEY_POLL_S = 0.005
 
 # The neural stream's listening window, in seconds, and its bounds.
 DEFAULT_LISTEN_S = 2.0
@@ -893,7 +898,13 @@ def _neural(ctx: JobContext) -> Measurement:
 
 def _tracker_calibration(ctx: JobContext) -> Measurement:
     tracker = ctx.devices.get("tracker")
-    result = tracker.calibrate()
+    if ctx.live is None:
+        result = tracker.calibrate()
+    else:
+        # The same one calibrate() call, with the run's live monitor
+        # following it: the camera image, each stage of the walk and the
+        # fitted points when it ends (measure_live.MeasureLiveView.calibrate).
+        result = ctx.live.calibrate(tracker, ctx.devices.get("display"))
     proceed, line = calibration_verdict(result)
     detail: dict[str, Any] = {"calibration": line}
     if result is not None:
@@ -928,7 +939,15 @@ def _tracker_accuracy(ctx: JobContext) -> Measurement:
         raise ValueError("tracker.accuracy.window_ms must be between 100 and 3000")
     screen = ctx.screen
     targets = [(screen.deg2px(x), screen.deg2px(y)) for x, y in DEFAULT_ACCURACY_TARGETS_DVA]
-    collect = gaze_collector(tracker, display, screen)
+    idle = None
+    if ctx.live is not None:
+        # The camera stays on the run's live monitor while each target waits
+        # for the operator's key: that wait is when somebody checks the eye
+        # is still in the image. Nothing is read from the camera during the
+        # sampling window itself.
+        ctx.live.watch(tracker, display)
+        idle = ctx.live.idle
+    collect = gaze_collector(tracker, display, screen, idle)
     samples = []
     tracker.start_trial(0, "accuracy check")
     try:
@@ -943,6 +962,10 @@ def _tracker_accuracy(ctx: JobContext) -> Measurement:
     finally:
         tracker.stop_trial()
     quality = stats.gaze_quality(targets, samples, screen)
+    if ctx.live is not None:
+        # The page's Validation panel: the targets, the mean gaze on each and
+        # the errors, from the numbers just computed.
+        ctx.live.show_accuracy(targets, quality, window_ms=window_ms)
     calibration = ctx.results.get("tracker.calibration")
     ok = quality["accuracy_max_dva"] <= 1.0
     gain = quality["gain"]
@@ -978,12 +1001,31 @@ def _tracker_accuracy(ctx: JobContext) -> Measurement:
 
 
 def gaze_collector(
-    tracker: Any, display: Any, screen: Screen
+    tracker: Any, display: Any, screen: Screen, idle: Callable[[], None] | None = None
 ) -> Callable[..., list[tuple[float, float]]]:
     """On the real window: draw the dot, wait for the operator's key, then
     poll gaze once per flip for the window. A window with no valid sample
-    (a blink, a look away) asks again rather than inventing one."""
+    (a blink, a look away) asks again rather than inventing one.
+
+    ``idle`` is called over and over while the dot waits for the key (the
+    run's live monitor passes its ``idle``, which keeps the camera image
+    moving). Without one the wait blocks on the keyboard as it always did.
+    """
     from psychopy import event, visual
+
+    def wait_for_key() -> list[str]:
+        if idle is None:
+            return list(event.waitKeys() or [])
+        # Polled rather than blocked on, so the caller's idle work runs
+        # between looks at the keyboard. getKeys also lets the window handle
+        # its events, as waitKeys does. The short sleep keeps the loop from
+        # spinning a core while a person decides the eye is steady.
+        while True:
+            keys = list(event.getKeys())
+            if keys:
+                return keys
+            idle()
+            time.sleep(KEY_POLL_S)
 
     dot = visual.Circle(
         display.window,
@@ -1001,7 +1043,7 @@ def gaze_collector(
             dot.draw()
             display.flip()
             event.clearEvents()
-            keys = event.waitKeys()
+            keys = wait_for_key()
             if keys and keys[0] == "escape":
                 raise OperatorCancelled("the operator stopped the accuracy check")
             points = []
@@ -1195,9 +1237,14 @@ def _unsupported(ctx: JobContext) -> Measurement:  # never reached: unavailable(
 # ----------------------------------------------------------------------
 
 
-def rig_devices(rig: RigConfig, *, windowed: bool = False) -> Devices:
+def rig_devices(rig: RigConfig, *, windowed: bool = False, clock: Any = None) -> Devices:
     """Factories for a real measurement run. Each registers its release on
-    the run's stack as soon as it holds the device."""
+    the run's stack as soon as it holds the device.
+
+    ``clock`` is the run's clock, for the tracker to stamp its frames and
+    results with; given when something else reads those times on the same
+    timebase (the run's live monitor). None: the tracker gets one of its own.
+    """
 
     def open_display(stack: ExitStack) -> Any:
         from alhazen.display.psychopy_backend import PsychoPyDisplay
@@ -1214,8 +1261,8 @@ def rig_devices(rig: RigConfig, *, windowed: bool = False) -> Devices:
         assert rig.devices.eyetracker is not None
         window = devices.get("display")
         screen = Screen.from_monitor(rig.monitor)
-        clock = MonotonicClock()
-        device = make_tracker(rig.devices.eyetracker, window, screen, clock)
+        tracker_clock = clock if clock is not None else MonotonicClock()
+        device = make_tracker(rig.devices.eyetracker, window, screen, tracker_clock)
         device.connect()
         # shutdown(None): measure mode keeps no native eye recording — unless
         # a job ended the tracker itself to keep one (JobContext
@@ -1223,7 +1270,7 @@ def rig_devices(rig: RigConfig, *, windowed: bool = False) -> Devices:
         stack.callback(
             lambda: None if devices.was_handed_back("tracker") else device.shutdown(None)
         )
-        device.configure(screen, clock)
+        device.configure(screen, tracker_clock)
         return device
 
     def reward(stack: ExitStack) -> Any:
@@ -1277,6 +1324,11 @@ class WindowOperator:
     (the one that launched the run, the last measurement's) can never answer
     it. Numbers are typed (digits, '.', '-'), BACKSPACE edits, ENTER accepts,
     ESC cancels the job. ``get_keys`` and ``sleep`` are injected for tests.
+
+    ``idle`` is called on every pass of a prompt's wait, between looks at
+    the keyboard: the run's live monitor passes its ``idle``, so the camera
+    image and the panels stay current while a prompt is up. That includes
+    the wait at the end of the run, which is when the last result is read.
     """
 
     def __init__(
@@ -1285,11 +1337,19 @@ class WindowOperator:
         get_keys: Callable[[], list[str]] | None = None,
         clear: Callable[[], None] | None = None,
         sleep: Callable[[float], None] = time.sleep,
+        idle: Callable[[], None] | None = None,
     ) -> None:
         self._devices = devices
         self._get_keys = get_keys
         self._clear = clear
         self._sleep = sleep
+        self._idle = idle
+
+    def _pause(self) -> None:
+        """One pass of a prompt's wait: the idle work, then a short sleep."""
+        if self._idle is not None:
+            self._idle()
+        self._sleep(0.01)
 
     def _keys(self) -> list[str]:
         if self._get_keys is not None:
@@ -1343,7 +1403,7 @@ class WindowOperator:
                     typed += name[4:]
                 elif len(name) == 1 and name.isdigit():
                     typed += name
-            self._sleep(0.01)
+            self._pause()
 
     def confirm(self, key: str, prompt: str) -> bool:
         self._clear_keys()
@@ -1354,4 +1414,4 @@ class WindowOperator:
                     return True
                 if name in {"n", "escape"}:
                     return False
-            self._sleep(0.01)
+            self._pause()
