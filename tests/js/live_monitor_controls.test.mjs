@@ -135,6 +135,19 @@ describe('the operator controls', () => {
       /^Validate works only while the task is paused; pause it first\.$/);
   });
 
+  it('keep the focus on an off button after a click on it says why, in its own host only', async () => {
+    const live_monitor = await livePage({ state: running(), command: () => response({ status: 202 }) });
+    const host = live_monitor.byId('trial-controls');
+    button(host, 'calibrate').focus();
+    button(host, 'calibrate').onclick();
+    await settle();
+    const again = button(host, 'calibrate');
+    assert.equal(live_monitor.document.activeElement, again, 'the redrawn Calibrate has the focus');
+    assert.equal(again.getAttribute('aria-disabled'), 'true');
+    assert.notEqual(live_monitor.document.activeElement, button(live_monitor.byId('controls'), 'calibrate'));
+    assert.equal(posts(live_monitor).length, 0);
+  });
+
   it('send a click once, show it pending, and follow it to its acknowledgement', async () => {
     let answerAck;
     const live_monitor = await livePage({

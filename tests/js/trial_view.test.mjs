@@ -180,6 +180,93 @@ describe('the trial picture', () => {
     assert.ok(!items.map((item) => item.textContent).includes('Outline or path'), 'a label alone has no key');
   });
 
+  it('sizes words on the picture with the picture: the desktop size on a wide one, smaller on a phone', () => {
+    const trialLabelSize = loadLiveMonitor().get('trialLabelSize');
+    assert.equal(trialLabelSize(1200), 12);
+    assert.equal(trialLabelSize(480), 12);
+    assert.equal(trialLabelSize(400), 11);
+    assert.equal(trialLabelSize(320), 10);
+    assert.equal(trialLabelSize(200), 10, 'never under the minimum');
+  });
+
+  describe('a label that would not fit', () => {
+    const live_monitor = loadLiveMonitor();
+    const fitTrialLabel = live_monitor.get('fitTrialLabel');
+    const trialFit = live_monitor.get('trialFit');
+    // The fake canvas measures 6 px a character whatever the size.
+    const CHAR = 6;
+    const KDE = 'Target path: cue 1.54 s after onset, pursuit over by +5.0 s';
+
+    it('stays as it was, one line where the task put it, when it fits', () => {
+      const fit = trialFit(40, 30, 800, 1000);
+      const label = fitTrialLabel('strip slides', 400, 200, fit);
+      assert.deepEqual(plain(label.lines), ['strip slides']);
+      assert.deepEqual([label.x, label.y, label.fontSize, label.shortened], [400, 200, 12, false]);
+    });
+
+    it('wraps onto two whole lines on a phone-sized picture, each inside the picture', () => {
+      const fit = trialFit(40, 22.5, 300, 1000);
+      const label = fitTrialLabel(KDE, 150, 140, fit);
+      assert.equal(label.fontSize, 10);
+      assert.equal(label.lines.length, 2);
+      assert.equal(label.lines.join(' '), KDE, 'nothing lost');
+      assert.equal(label.shortened, false);
+      const room = 300 - 2 * 6;
+      label.lines.forEach((line) => assert.ok(line.length * CHAR <= room, line));
+      // Two lines a line height apart, centred on the label's point.
+      assert.equal(label.lineHeight, 12.5);
+      assert.equal(label.y, 140 - label.lineHeight / 2);
+    });
+
+    it('ends in an ellipsis past two lines, and keeps the whole text for the hover', () => {
+      const fit = trialFit(40, 22.5, 300, 1000);
+      const long = KDE + ', then a second sentence that no phone has room for at all';
+      const label = fitTrialLabel(long, 150, 100, fit);
+      assert.equal(label.lines.length, 2);
+      assert.ok(label.lines[1].endsWith('…'), label.lines[1]);
+      assert.equal(label.shortened, true);
+      label.lines.forEach((line) => assert.ok(line.length * CHAR <= 300 - 12, line));
+    });
+
+    it('moves in from an edge so its widest line is not cut by the border', () => {
+      const fit = trialFit(40, 30, 800, 1000);
+      const label = fitTrialLabel('a label at the edge', 790, 595, fit);
+      const half = ('a label at the edge'.length * CHAR) / 2;
+      assert.equal(label.x, 800 - 6 - half);
+      assert.equal(label.y, 600 - 6 - label.lineHeight / 2);
+    });
+
+    it('sizes for the picture as shown when the page shows it smaller than drawn', () => {
+      const fit = { ...trialFit(40, 22.5, 600, 1000), unit: 2 };
+      // Drawn 600 wide, shown 300 wide: 10 px on screen is 20 drawing units.
+      const label = fitTrialLabel(KDE, 300, 200, fit);
+      assert.equal(label.fontSize, 20);
+      assert.equal(label.lines.length, 2);
+      label.lines.forEach((line) => assert.ok(line.length * CHAR <= 300 - 12, line));
+    });
+  });
+
+  it('draws a wrapped label as lines, and a shortened one with its whole text on hover', () => {
+    const KDE = 'Target path: cue 1.54 s after onset, pursuit over by +5.0 s';
+    const phone = (text) => {
+      const live_monitor = loadLiveMonitor();
+      live_monitor.byId('trial-stage').clientWidth = 300;
+      const tv = live_monitor.get('trialView');
+      tv.view = { ...VIEW, screen: { width_dva: 40, height_dva: 22.5 },
+        shapes: [{ kind: 'label', role: 'annotation', name: 'path', at: [0, -5], text: text }] };
+      live_monitor.get('drawTrialStage')();
+      return live_monitor.byId('trial-stage').querySelector('text.trial-shape');
+    };
+    let text = phone(KDE);
+    assert.equal(text.getAttribute('style'), 'font-size: 10px');
+    assert.equal(text.querySelectorAll('tspan').map((t) => t.textContent).join(' '), KDE);
+    assert.equal(text.querySelector('title').textContent, 'path', 'the name, as before');
+    text = phone(KDE + ', and far too much more for two lines on a phone screen');
+    assert.ok(text.querySelectorAll('tspan')[1].textContent.endsWith('…'));
+    assert.equal(text.querySelector('title').textContent,
+      'path: ' + KDE + ', and far too much more for two lines on a phone screen');
+  });
+
   it('a task with no picture shows its gaze windows alone and says so once', () => {
     const regionsOnly = {
       ...VIEW,

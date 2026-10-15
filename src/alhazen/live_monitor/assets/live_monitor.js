@@ -3128,6 +3128,7 @@ function drawTrialShape(parent, fit, shape) {
   const cls = 'trial-shape role-' + (shape.role || 'stimulus') + (shape.approximate ? ' approximate' : '');
   const s = fit.scale;
   let element = null;
+  let label = null;
   if (shape.kind === 'circle') {
     const [cx, cy] = trialMap(fit, shape.center[0], shape.center[1]);
     element = svgEl('circle', { class: cls, cx: cx, cy: cy, r: Math.max(1, shape.radius * s) }, parent);
@@ -3154,15 +3155,98 @@ function drawTrialShape(parent, fit, shape) {
     });
   } else if (shape.kind === 'label') {
     const [x, y] = trialMap(fit, shape.at[0], shape.at[1]);
-    element = svgEl('text', { class: cls, x: x, y: y, 'text-anchor': 'middle', 'dominant-baseline': 'middle' }, parent);
-    element.textContent = shape.text;
+    label = fitTrialLabel(shape.text, x, y, fit);
+    element = svgEl('text', {
+      class: cls, x: label.x, y: label.y, 'text-anchor': 'middle', 'dominant-baseline': 'middle',
+      style: 'font-size: ' + label.fontSize + 'px',
+    }, parent);
+    if (label.lines.length === 1) {
+      element.textContent = label.lines[0];
+    } else {
+      label.lines.forEach((line, i) => {
+        svgEl('tspan', { x: label.x, y: label.y + i * label.lineHeight }, element).textContent = line;
+      });
+    }
   }
-  if (element && shape.name) {
-    /* The name on hover: a label on every shape would crowd the picture. */
-    const title = svgEl('title', {}, element);
-    /* The name as the task gave it (alhazen names its own windows "… window"). */
-    title.textContent = shape.name + (shape.approximate ? ' (approximate)' : '');
+  /* The name on hover: a label on every shape would crowd the picture. The
+   * name is as the task gave it (alhazen names its own windows "… window");
+   * a label cut short to fit gives its whole text there. */
+  let hover = shape.name ? shape.name + (shape.approximate ? ' (approximate)' : '') : '';
+  if (label && label.shortened) hover = (shape.name ? shape.name + ': ' : '') + shape.text;
+  if (element && hover) svgEl('title', {}, element).textContent = hover;
+}
+
+/* Words on the trial picture (a schematic Label). Their size follows the
+ * picture as it is shown: TRIAL_LABEL_PX.max on a picture at least
+ * TRIAL_LABEL_FULL px wide (any desktop page), down to TRIAL_LABEL_PX.min on
+ * a phone. What still does not fit is wrapped onto at most TRIAL_LABEL_LINES
+ * lines, the last ending in an ellipsis if need be, and moved in from an
+ * edge, so a label is never cut off by the picture's border. */
+const TRIAL_LABEL_PX = { min: 10, max: 12 };
+const TRIAL_LABEL_FULL = 480;
+const TRIAL_LABEL_LINES = 2;
+const TRIAL_LABEL_MARGIN = 6;
+
+/** A label's text size in CSS px for a picture `shown` px wide on screen. */
+function trialLabelSize(shown) {
+  const { min, max } = TRIAL_LABEL_PX;
+  const size = min + ((max - min) * (shown - 320)) / (TRIAL_LABEL_FULL - 320);
+  return Math.round(Math.max(min, Math.min(max, size)) * 2) / 2;
+}
+
+/** The page's own typeface, for measuring words the way they are drawn. */
+function trialLabelFamily() {
+  const family = getComputedStyle(document.documentElement).getPropertyValue('--font');
+  return (family && family.trim()) || SANS;
+}
+
+/** Lay out a label centred at (x, y) on the drawing `fit` (task/schematic.py's
+ *  Label; x, y in drawing units). `fit.unit` is drawing units per CSS px (1
+ *  when the picture is shown at the size it was drawn). Returns the lines,
+ *  the centre of the first line, the line height and font size in drawing
+ *  units, and whether any text was cut (an ellipsis). */
+function fitTrialLabel(text, x, y, fit) {
+  const unit = fit.unit || 1;
+  const px = trialLabelSize(fit.width / unit);
+  const font = px + 'px ' + trialLabelFamily();
+  const room = Math.max(1, (fit.width - 2 * TRIAL_LABEL_MARGIN * unit) / unit);
+  const width = (line) => textWidth(line, font);
+  const lines = [];
+  let shortened = false;
+  let words = String(text).trim().split(/\s+/);
+  while (words.length) {
+    if (lines.length === TRIAL_LABEL_LINES - 1) {
+      const rest = words.join(' ');
+      const cut = ellipsize(rest, room, font);
+      if (cut !== rest) shortened = true;
+      lines.push(cut);
+      break;
+    }
+    let n = 1;
+    while (n < words.length && width(words.slice(0, n + 1).join(' ')) <= room) n += 1;
+    let line = words.slice(0, n).join(' ');
+    if (width(line) > room) {
+      line = ellipsize(line, room, font);
+      shortened = true;
+    }
+    lines.push(line);
+    words = words.slice(n);
   }
+  const widest = Math.max(...lines.map(width)) * unit;
+  const lineHeight = px * 1.25 * unit;
+  const block = lines.length * lineHeight;
+  const margin = TRIAL_LABEL_MARGIN * unit;
+  const within = (value, lo, hi) => (lo > hi ? (lo + hi) / 2 : Math.max(lo, Math.min(hi, value)));
+  const cx = within(x, margin + widest / 2, fit.width - margin - widest / 2);
+  const cy = within(y, margin + block / 2, fit.height - margin - block / 2);
+  return {
+    lines: lines,
+    x: cx,
+    y: cy - ((lines.length - 1) * lineHeight) / 2,
+    lineHeight: lineHeight,
+    fontSize: px * unit,
+    shortened: shortened,
+  };
 }
 
 /** A degree grid every 5°, the screen's centre lines and a scale bar: the
@@ -3217,6 +3301,10 @@ function drawTrialStage() {
     role: 'img',
     'aria-label': 'Trial ' + view.trial_index + ': the screen in degrees, with the gaze',
   }, host);
+  /* The page may show the drawing smaller than drawn (a narrow page holds it
+   * under half the window's height): words on it are sized for what is seen. */
+  const shown = svg.getBoundingClientRect ? svg.getBoundingClientRect().width : 0;
+  fit.unit = shown > 0 ? fit.width / shown : 1;
   svgEl('rect', { class: 'trial-screen', x: 0.5, y: 0.5, width: fit.width - 1, height: fit.height - 1 }, svg);
   drawTrialGrid(svg, fit);
   const shapes = svgEl('g', { class: 'trial-shapes' }, svg);
@@ -3604,6 +3692,12 @@ function renderControls() {
 }
 
 function fillControlsHost(host) {
+  /* The buttons are drawn anew on every state; the one the operator had
+   * focused (a key press, or a click on an off button to read why) keeps the
+   * focus rather than dropping it to the page. */
+  const focused = [...host.querySelectorAll('button.control')]
+    .find((button) => button === document.activeElement);
+  const focusName = focused ? focused.dataset.command : null;
   host.replaceChildren();
   const controls = state && state.controls;
   if (!controls) {
@@ -3630,6 +3724,7 @@ function fillControlsHost(host) {
     if (off) button.title = (controls.refused || {})[name] || '';
     if (sending.has(name)) button.dataset.pending = 'true';
     button.onclick = () => pressControl(name);
+    if (name === focusName) button.focus({ preventScroll: true });
   });
   if (controlFeedback) htmlEl('p', 'control-feedback', controlFeedback, host);
   const log = htmlEl('ol', 'command-log', null, host);

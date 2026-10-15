@@ -217,7 +217,7 @@ button.control {
   text-align: left;
   cursor: pointer;
 }
-button.control:hover:not(:disabled) { background: var(--wash); }
+button.control:hover:not(:disabled):not([aria-disabled="true"]) { background: var(--wash); }
 button.control:disabled { opacity: 0.42; cursor: not-allowed; }
 button.control.danger:not(:disabled) { color: var(--critical); }
 
@@ -624,7 +624,6 @@ button.control kbd {
   font: 600 11px/1.5 var(--mono);
 }
 button.control[aria-disabled="true"] { opacity: 0.42; cursor: not-allowed; }
-button.control[aria-disabled="true"]:hover { background: var(--surface); }
 button.control.danger[aria-disabled="true"] { color: var(--ink); }
 button.control[data-pending="true"] { opacity: 1; border-style: dashed; color: var(--ink-2); }
 button.control:focus-visible { outline: 2px solid var(--series-1); outline-offset: 1px; }
@@ -836,6 +835,17 @@ button.control kbd {
 }
 button.control[aria-disabled="true"] { opacity: 1; color: var(--muted); background: var(--wash); border-color: transparent; }
 button.control[aria-disabled="true"] kbd { color: var(--muted); background: transparent; }
+/* An off button looks off under the pointer, while pressed, after a tap and
+ * once clicked (a click on it only says why it is off): no hover, press or
+ * focus look, and no tap flash on a phone. It stays focusable, and a key
+ * press still shows the focus ring (:focus-visible, below). A command waiting
+ * for the task keeps its own look. */
+button.control[aria-disabled="true"] { -webkit-tap-highlight-color: transparent; }
+button.control[aria-disabled="true"]:not([data-pending="true"]):is(:hover, :active, :focus) {
+  color: var(--muted);
+  background: var(--wash);
+  border-color: transparent;
+}
 button.control.danger:not([aria-disabled="true"]) { color: var(--critical); }
 button.control[data-pending="true"] {
   color: var(--accent);
@@ -879,8 +889,10 @@ button.control:focus-visible,
 
 
 /* The dashboard's instrument column and a phone (860 px and under): the
- * sidebar is a band above the page. The panel list is one row that scrolls
- * sideways; its titles go (the row and the button say what they are). While
+ * sidebar is a band above the page. The panel list wraps onto as many rows
+ * as it needs, every name whole (a row that scrolled sideways hid the last
+ * one behind the theme button); its titles go (the row and the button say
+ * what they are). While
  * the Trial view is shown it carries the operator buttons under the screen,
  * so the band leaves out its own copy and the trial comes up the page. */
 @media (max-width: 860px) {
@@ -888,9 +900,7 @@ button.control:focus-visible,
   .sidebar > .side-title:first-child,
   .sidebar .side-title:has(+ .controls:not([data-controls-host])) { display: none; }
   .sections {
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    scrollbar-width: thin;
+    flex-wrap: wrap;
     margin: 0 -4px;
     padding: 2px 4px 4px;
   }
@@ -917,12 +927,14 @@ button.control:focus-visible,
   .trial-camera[data-camera="none"] .trial-camera-empty { padding: 0; max-width: none; white-space: nowrap; }
 }
 
-/* The band's panel row and the theme button share one line. */
+/* The band's panel rows and the theme button share one line: the panels
+ * wrap in the room left of the button, which keeps its own space at the top
+ * right, so nothing ever sits under it. */
 @media (max-width: 860px) {
-  .sidebar { display: flex; flex-wrap: wrap; align-items: center; column-gap: 10px; }
+  .sidebar { display: flex; flex-wrap: wrap; align-items: flex-start; column-gap: 10px; }
   .sidebar > * { flex: 1 1 100%; min-width: 0; }
   .sidebar > .sections { flex: 1 1 0; }
-  .sidebar > .controls:not([data-controls-host]) { flex: 0 0 auto; margin-top: 0; }
+  .sidebar > .controls:not([data-controls-host]) { flex: 0 0 auto; margin-top: 2px; }
   .sidebar > .side-title:has(+ .controls:not([data-controls-host])) { display: none; }
   #theme { min-height: 34px; padding: 5px 12px; white-space: nowrap; }
 }
@@ -935,6 +947,14 @@ button.control:focus-visible,
   .sidebar > .sections { order: 0; }
   .sidebar > .controls:not([data-controls-host]) { order: 1; }
   #notice:empty { display: none; }
+}
+
+/* A phone: the panels take the whole width (on a 320 px screen, three short
+ * names on one row rather than one a row beside the button) and the theme
+ * button sits under them at the right. */
+@media (max-width: 480px) {
+  .sidebar > .sections { flex: 1 1 100%; }
+  .sidebar > .controls:not([data-controls-host]) { margin: 6px 0 0 auto; }
 }
 
 /* A narrow page (the dashboard's column, a phone): the screen picture is

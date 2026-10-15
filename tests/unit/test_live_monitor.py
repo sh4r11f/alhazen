@@ -1686,6 +1686,66 @@ class TestTheChildDoesNotLeak:
         assert len(started) == 1 and len(stopped) == 1
 
 
+def _declarations(body: str) -> dict[str, str]:
+    """A CSS rule's declarations as {property: value}."""
+    pairs = (part.split(":", 1) for part in body.split(";") if ":" in part)
+    return {name.strip(): value.strip() for name, value in pairs}
+
+
+class TestOffButtonsAndThePanelBand:
+    """The stylesheet's part of two phone and pointer fixes, checked against
+    the file (tests/js does not run CSS; the screenshots are in the round-3
+    report). An off command button (aria-disabled) once looked hovered under
+    the pointer after a click on it; the panel row on a phone scrolled
+    sideways and hid its last name under the theme button."""
+
+    @staticmethod
+    def _rules():
+        """(selector, declarations) for every rule, a selector list split at
+        its top-level commas (not the ones inside :is(…) or :not(…))."""
+        from alhazen.live_monitor import runtime
+
+        css = (runtime._ASSETS / "live_monitor.css").read_text(encoding="utf-8")
+        css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+        for selectors, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css):
+            depth, start = 0, 0
+            for i, char in enumerate(selectors + ","):
+                depth += {"(": 1, ")": -1}.get(char, 0)
+                if char == "," and depth == 0:
+                    yield " ".join(selectors[start:i].split()), _declarations(body)
+                    start = i + 1
+
+    def test_no_hover_or_press_rule_restyles_an_off_button(self):
+        """Every `button.control` :hover/:active rule either leaves an off
+        button out or is the one guard that keeps the off look."""
+        guards = []
+        for selector, body in self._rules():
+            if "button.control" not in selector or not re.search(r":hover|:active", selector):
+                continue
+            if ':not([aria-disabled="true"])' in selector:
+                continue
+            assert '[aria-disabled="true"]' in selector, selector
+            guards.append((selector, body))
+        assert len(guards) == 1, guards
+        selector, body = guards[0]
+        for state in (":hover", ":active", ":focus"):
+            assert state in selector, selector
+        assert ':not([data-pending="true"])' in selector, "a waiting command keeps its own look"
+        off = [
+            b
+            for s, b in self._rules()
+            if s == 'button.control[aria-disabled="true"]' and "background" in b
+        ][-1]
+        assert body and all(off.get(prop) == value for prop, value in body.items()), (body, off)
+
+    def test_the_narrow_band_wraps_its_panel_row(self):
+        """Under 860 px the panel row wraps rather than scrolling sideways."""
+        sections = [body for selector, body in self._rules() if selector == ".sections"]
+        assert sections, "no .sections rule"
+        assert not any("overflow-x" in body for body in sections)
+        assert all(body.get("flex-wrap", "wrap") == "wrap" for body in sections)
+
+
 class TestFigureConventionsInTheRenderer:
     """Checked against the stylesheet, which tests/js does not execute. The
     renderer's own figure conventions (colour slots, error-bar legends,
