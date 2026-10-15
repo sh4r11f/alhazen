@@ -778,17 +778,20 @@ as `TrialPlan.schematic`; it replaces the default whole:
 from alhazen.display.schematic import Circle, Dots, Rect
 from alhazen.task.schematic import region_shapes
 
-return TrialPlan(
-    phases=...,
-    stimuli=...,
-    regions=regions,
-    schematic=[
-        Dots(dot_positions_dva, radius=0.1, name="cylinder"),
-        Rect((0.0, 0.0), (26.0, 14.0), name="aperture", role="annotation"),
-        Circle((0.0, 0.0), 0.15, name="fixation"),
-        *region_shapes(regions, setup.screen),  # the default's window outlines
-    ],
-)
+
+def build_trial(self, setup):
+    ...
+    return TrialPlan(
+        phases=phases,
+        stimuli=stimuli,
+        regions=regions,
+        schematic=[
+            Dots(dot_positions_dva, radius=0.1, name="cylinder"),
+            Rect((0.0, 0.0), (26.0, 14.0), name="aperture", role="annotation"),
+            Circle((0.0, 0.0), 0.15, name="fixation"),
+            *region_shapes(regions, setup.screen),  # the default's window outlines
+        ],
+    )
 ```
 
 Without one, the session draws a default: every stimulus that describes its
