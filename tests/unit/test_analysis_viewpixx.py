@@ -655,14 +655,43 @@ class TestReading:
             fit_clock(marks, tolerance_s=0.0005)
         assert "run's first mark" in str(error.value)
 
-    def test_two_off_line_marks_in_a_row_are_a_clock_that_moved(self):
-        """Neighbours have to be on the line for a mark to be a stamping
-        delay. Two in a row is the beginning of a step, and a step that
+    def test_a_short_run_of_late_marks_is_a_busy_scheduler_when_the_line_resumes(self):
+        """A real run (amodal-averaging sub-03 ses-002, 2026-10-14) stamped
+        `fix_acquired` and `stim_on` of one trial both about 1 ms late, with
+        the next mark back at +0.03 ms, and was refused as "two in a row".
+        Two or three late stamps in one busy moment are still stamping
+        delays; what tells a step is the line NOT coming back."""
+        fit = fit_clock(self._marks(n=60, late={30: 0.004, 31: 0.004}), tolerance_s=0.0005)
+        assert fit.n_dropped == 2 and fit.n_marks == 58
+        fit = fit_clock(
+            self._marks(n=60, late={30: 0.004, 31: 0.004, 32: 0.004}), tolerance_s=0.0005
+        )
+        assert fit.n_dropped == 3
+
+    def test_a_longer_run_of_off_line_marks_is_a_clock_that_moved(self):
+        """Four in a row is past what a busy moment delays: a step that
         happens to be short is still a step."""
-        marks = self._marks(n=60, late={30: 0.004, 31: 0.004})
+        # 100 marks, so four are inside the 5% budget and it is the shape of
+        # the run, not its count, that refuses it.
+        late = {50: 0.004, 51: 0.004, 52: 0.004, 53: 0.004}
         with pytest.raises(DataError, match="a stamping delay cannot explain") as error:
-            fit_clock(marks, tolerance_s=0.0005)
-        assert "next to another off-line mark" in str(error.value)
+            fit_clock(self._marks(n=100, late=late), tolerance_s=0.0005)
+        assert "4 off-line marks in a row is a clock that moved" in str(error.value)
+
+    def test_the_refit_is_repeated_until_the_line_settles(self):
+        """The late marks pull the first line toward themselves; the refit
+        over the rest moves it back, and a mark just inside the tolerance
+        against the pulled line can be just outside it against the true
+        one. A real run was refused at 0.51 ms over 0.50 with a residual sd
+        of 0.03 ms. Here one late mark pulls the line by a few hundredths of
+        a millisecond and a second sits a hair past the tolerance: on the
+        first pass only the big one is out, and the small one comes out
+        against the refit. Both are dropped and the fit over the rest is
+        tight; a single pass left the small one in and refused the run."""
+        marks = self._marks(n=100, late={50: 0.004, 70: 0.00053})
+        fit = fit_clock(marks, tolerance_s=0.0005)
+        assert fit.n_dropped == 2 and fit.n_marks == 98
+        assert fit.max_residual_s < 0.0005
 
     def test_an_early_mark_is_not_a_stamping_delay(self):
         """The backend reads the device clock and then the session clock, so

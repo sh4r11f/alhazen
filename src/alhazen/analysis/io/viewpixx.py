@@ -624,6 +624,22 @@ def read_run_binocular(
 # the marks that show it.
 OUTLIER_MARK_FRACTION = 0.05
 
+# How many late marks in a row can still be stamping delays. A scheduler busy
+# for a moment delays the two or three stamps written in that moment; a run
+# longer than this is a clock that moved. Three, not two: a real run stamped
+# `fix_acquired` and `stim_on` of one trial both about 1 ms late and was
+# refused for it, with the mark after them back on the line.
+MAX_LATE_RUN = 3
+
+
+def _runs_of(flags: np.ndarray) -> list[tuple[int, int]]:
+    """Inclusive (start, end) index pairs of each run of True in ``flags``."""
+    if not flags.any():
+        return []
+    padded = np.concatenate(([False], flags, [False]))
+    edges = np.flatnonzero(padded[1:] != padded[:-1])
+    return [(int(a), int(b) - 1) for a, b in zip(edges[::2], edges[1::2], strict=True)]
+
 
 def fit_clock(messages: pd.DataFrame, tolerance_s: float) -> ClockFit:
     """Least-squares device→session map, refused if it is not tight.
@@ -673,25 +689,36 @@ def fit_clock(messages: pd.DataFrame, tolerance_s: float) -> ClockFit:
     n_dropped = 0
     if outliers.any():
         allowed = max(1, int(len(device) * OUTLIER_MARK_FRACTION))
-        if int(outliers.sum()) > allowed or int((~outliers).sum()) < 3:
+
+        def refuse_count(count: int) -> None:
             raise DataError(
                 f"the device and session clocks do not fit a straight line: "
-                f"{int(outliers.sum())} of {len(device)} alignment marks are more than "
+                f"{count} of {len(device)} alignment marks are more than "
                 f"{tolerance_s * 1000:.2f} ms off the fit, too many to be stamping delays "
                 f"(at most {allowed} would be dropped). Worst: {worst_marks(residuals)}. "
                 f"Every latency in this run would inherit that error. Check whether the "
                 f"session was paused or the device re-clocked mid-run before analysing it."
             )
-        keep = ~outliers
-        slope, intercept, residuals = fit(keep)
-        if float(np.max(np.abs(residuals[keep]))) > tolerance_s:
-            raise DataError(
-                f"the device and session clocks do not fit a straight line even with "
-                f"{int(outliers.sum())} late mark(s) left out: the worst of the rest is "
-                f"{float(np.max(np.abs(residuals[keep]))) * 1000:.2f} ms off, past the "
-                f"{tolerance_s * 1000:.2f} ms tolerance. Worst: {worst_marks(residuals)}. "
-                f"That is drift or a step, not a stamping delay."
-            )
+
+        # Drop and refit UNTIL THE LINE SETTLES, not once. The late marks pull
+        # the first line toward themselves by a few hundredths of a
+        # millisecond; the refit over the rest moves it back, and a mark that
+        # sat just inside the tolerance against the pulled line can sit just
+        # outside it against the true one (a real run: refused at 0.51 ms
+        # over a 0.50 ms tolerance, with a residual sd of 0.03 ms and no step
+        # or drift anywhere in it). Each pass may only ADD to the dropped set,
+        # the budget bounds the total, and the loop ends when a pass finds
+        # nothing new — so a drift, whose marks keep coming off the line pass
+        # after pass, runs into the budget and is refused as before.
+        while True:
+            if int(outliers.sum()) > allowed or int((~outliers).sum()) < 3:
+                refuse_count(int(outliers.sum()))
+            keep = ~outliers
+            slope, intercept, residuals = fit(keep)
+            more = (np.abs(residuals) > tolerance_s) & keep
+            if not more.any():
+                break
+            outliers = outliers | more
         # Being past the tolerance is not on its own a reason to drop a mark,
         # and dropping on size alone would let a real clock step through
         # whenever it happened to touch few enough marks. A stamping delay has
@@ -702,8 +729,13 @@ def fit_clock(messages: pd.DataFrame, tolerance_s: float) -> ClockFit:
         #     the session clock; a scheduler that blocks between the two reads
         #     can only make the session stamp look later than it was. An early
         #     mark is something else.
-        #   - ISOLATED. Both neighbours have to be on the line. Two off-line
-        #     marks in a row is a clock that moved, not a read that was slow.
+        #   - THE LINE RESUMES. The marks on either side of a late one, or of
+        #     a short run of late ones, have to be on the line. A run of up to
+        #     MAX_LATE_RUN marks is a scheduler busy for a moment — a real run
+        #     stamped `fix_acquired` and `stim_on` half a second apart both
+        #     about 1 ms late, with the next mark back at +0.03 ms — and a
+        #     longer run, or one the line never comes back from, is a clock
+        #     that moved. (Until 2.17 any two in a row were refused.)
         #   - INTERIOR. The first and last marks have no neighbour on one
         #     side, so nothing shows the line resumed after them — a step
         #     starting at the last mark looks exactly like one late mark.
@@ -712,20 +744,23 @@ def fit_clock(messages: pd.DataFrame, tolerance_s: float) -> ClockFit:
         # pull, so the signs and sizes here are the ones that mean something.
         edge = len(device) - 1
         unexplained = []
-        for i in np.flatnonzero(outliers):
-            where = f"{texts[i]!r} at {session[i]:.3f} s ({residuals[i] * 1000:+.2f} ms)"
-            if i == 0 or i == edge:
-                side = "first" if i == 0 else "last"
+        for start, end in _runs_of(outliers):
+            run = range(start, end + 1)
+            where = "; ".join(
+                f"{texts[i]!r} at {session[i]:.3f} s ({residuals[i] * 1000:+.2f} ms)" for i in run
+            )
+            if start == 0 or end == edge:
+                side = "first" if start == 0 else "last"
                 unexplained.append(
                     f"{where} is the run's {side} mark — nothing on the other side of it "
                     f"shows the clocks back on the line"
                 )
-            elif outliers[i - 1] or outliers[i + 1]:
+            elif len(run) > MAX_LATE_RUN:
                 unexplained.append(
-                    f"{where} sits next to another off-line mark — two in a row is a clock "
-                    f"that moved, not a stamp that was slow"
+                    f"{where}: {len(run)} off-line marks in a row is a clock that moved, "
+                    f"not a stamp that was slow (up to {MAX_LATE_RUN} in a row can be)"
                 )
-            elif residuals[i] < 0:
+            elif any(residuals[i] < 0 for i in run):
                 unexplained.append(f"{where} is EARLY, and a stamping delay can only ever be late")
         if unexplained:
             raise DataError(
@@ -739,9 +774,9 @@ def fit_clock(messages: pd.DataFrame, tolerance_s: float) -> ClockFit:
             )
         n_dropped = int(outliers.sum())
         log.warning(
-            "clock fit dropped %d of %d alignment marks as stamping delays — isolated, "
-            "past the %.2f ms tolerance, with every neighbour on the line: %s. The fit over "
-            "the rest has a worst residual of %.3f ms.",
+            "clock fit dropped %d of %d alignment marks as stamping delays — late, "
+            "past the %.2f ms tolerance, with the line resuming on either side: %s. The fit "
+            "over the rest has a worst residual of %.3f ms.",
             n_dropped,
             len(device),
             tolerance_s * 1000,
