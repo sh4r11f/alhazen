@@ -243,3 +243,76 @@ test('the default timers are called as plain functions, as browsers require', as
   assert.equal(asked, 1);
   assert.equal(container.children[0].dataset.state, 'ok');
 });
+
+/* ---- Conditions and the trials of each (per_condition, from the drain) ---- */
+
+const PLANNED = {
+  kind: 'planned', trials: 576, trials_max: 576, blocks: 8, breaks: 7, conditions: 72,
+  per_condition: {
+    conditions: 72, groups: [{trials: 8, conditions: 72}], rows_total: 72,
+    rows: [{label: 'stimulus=bars, alignment=aligned, separation=near, motion=static', trials: 8}],
+  },
+};
+
+test('the line says how many conditions run and how many trials of each, beside the total', () => {
+  const DE = load();
+  const view = DE.describe({...ANSWER, counts: PLANNED});
+  assert.equal(view.counts, '72 conditions × 8 trials = 576 trials · 8 blocks');
+  const section = view.details.find((d) => d.heading === 'Conditions');
+  assert.deepEqual(Array.from(section.lines), [
+    '72 conditions × 8 trials',
+    'stimulus=bars, alignment=aligned, separation=near, motion=static: 8 trials',
+    '… and 71 more conditions',
+  ]);
+  // Every uncertainty section the estimate had is still there.
+  const headings = Array.from(view.details, (d) => d.heading);
+  for (const h of ['One trial', 'Not included: up to a person', 'Not included', 'Basis']) {
+    assert.ok(headings.includes(h), h);
+  }
+});
+
+test('unequal counts give the range each condition runs, and every group in the disclosure', () => {
+  const DE = load();
+  const counts = {
+    kind: 'planned', trials: 288, trials_max: 288, blocks: 4, conditions: 24,
+    per_condition: {conditions: 24, rows: [], rows_total: 0,
+      groups: [{trials: 16, conditions: 12}, {trials: 8, conditions: 12}]},
+  };
+  const view = DE.describe({...ANSWER, counts});
+  assert.equal(view.counts, '24 conditions, 8–16 trials each = 288 trials · 4 blocks');
+  assert.deepEqual(Array.from(view.details.find((d) => d.heading === 'Conditions').lines),
+    ['12 conditions × 16 trials', '12 conditions × 8 trials']);
+});
+
+test('one condition and one trial are singular', () => {
+  const DE = load();
+  const counts = {kind: 'planned', trials: 1, trials_max: 1, blocks: 1, conditions: 1,
+    per_condition: {conditions: 1, groups: [{trials: 1, conditions: 1}], rows: [], rows_total: 1}};
+  assert.equal(DE.countsText(counts), '1 condition × 1 trial = 1 trial · 1 block');
+});
+
+test('an adaptive plan says who decides each condition\u2019s trials, with each estimator\u2019s bounds', () => {
+  const DE = load();
+  const counts = {kind: 'adaptive', trials: 16, trials_max: 80, conditions: 4,
+    per_condition: {conditions: 4, decided_by: 'the staircase', estimators: 2,
+      per_estimator: {min: 8, max: 40}}};
+  const view = DE.describe({...ANSWER, counts});
+  assert.equal(view.counts, '16–80 trials · 4 conditions, trials decided by the staircase');
+  assert.deepEqual(Array.from(view.details.find((d) => d.heading === 'Conditions').lines),
+    ['2 estimators (the staircase), 8–40 trials each']);
+  // The stopping-rule line the adaptive answer always had stays.
+  assert.ok(view.details.some((d) => d.heading === 'Trials' && /stopping rule/.test(d.lines[0])));
+  const search = {kind: 'adaptive', trials: 150, trials_max: 209, conditions: null,
+    per_condition: {conditions: null, decided_by: 'the stopping rule', estimators: null,
+      per_estimator: null}};
+  assert.equal(DE.countsText(search), '150–209 trials · trials decided by the stopping rule');
+  assert.match(DE.describe({...ANSWER, counts: search}).details
+    .find((d) => d.heading === 'Conditions').lines[0], /decided by the stopping rule as the session runs/);
+});
+
+test('an answer from an older alhazen, without per-condition counts, keeps the total alone', () => {
+  const DE = load();
+  const view = DE.describe(ANSWER);
+  assert.equal(view.counts, '576 trials · 6 blocks');
+  assert.ok(!view.details.some((d) => d.heading === 'Conditions'));
+});
