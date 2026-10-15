@@ -2861,15 +2861,15 @@ function setTheme(choice, remember = true) {
   if (remember) localStorage.setItem(THEME_KEY, choice);
 }
 
-/** The theme remembered from the last visit, 'system' when none was; a
+/** The theme remembered from the last visit, 'light' when none was; a
  *  stored value this page does not know is reported in the console and
  *  replaced by the default rather than applied half-way. */
 function rememberedTheme() {
   const stored = localStorage.getItem(THEME_KEY);
-  if (stored === null) return 'system';
+  if (stored === null) return 'light';
   if (THEMES.includes(stored)) return stored;
   console.warn(`Ignoring the unknown colour theme ${JSON.stringify(stored)}`);
-  return 'system';
+  return 'light';
 }
 
 /* ------------------------------------------------------------------ */

@@ -2191,10 +2191,10 @@ describe('the colour theme', () => {
     (name) => app.byId(`theme-${name}`).getAttribute('aria-pressed'),
   );
 
-  it('follows the system until the reader chooses, and remembers the choice', async () => {
+  it('starts light until the reader chooses, and remembers the choice', async () => {
     const app = await pageWith();
-    assert.equal(theme(app), null);
-    assert.deepEqual(pressed(app), ['true', 'false', 'false']);
+    assert.equal(theme(app), 'light');
+    assert.deepEqual(pressed(app), ['false', 'true', 'false']);
     app.byId('theme-dark').fire('click');
     assert.equal(theme(app), 'dark');
     assert.deepEqual(pressed(app), ['false', 'false', 'true']);
@@ -2214,8 +2214,8 @@ describe('the colour theme', () => {
 
   it('ignores a remembered theme it does not know', async () => {
     const app = await pageWith({ storage: { 'alhazen-workspace-theme': 'sepia' } });
-    assert.equal(theme(app), null);
-    assert.deepEqual(pressed(app), ['true', 'false', 'false']);
+    assert.equal(theme(app), 'light');
+    assert.deepEqual(pressed(app), ['false', 'true', 'false']);
   });
 
   it('keeps the two copies of the dark palette in the stylesheet identical', () => {
