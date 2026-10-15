@@ -3211,9 +3211,24 @@ function fitTrialLabel(text, x, y, fit) {
   const font = px + 'px ' + trialLabelFamily();
   const room = Math.max(1, (fit.width - 2 * TRIAL_LABEL_MARGIN * unit) / unit);
   const width = (line) => textWidth(line, font);
-  const lines = [];
+  const words0 = String(text).trim().split(/\s+/);
+  let lines = [];
   let shortened = false;
-  let words = String(text).trim().split(/\s+/);
+  let words = words0;
+  /* Two lines that fit: split where the longer of the two is shortest, so
+   * the label reads as one block rather than a long line and a stray word. */
+  if (TRIAL_LABEL_LINES === 2 && width(words0.join(' ')) > room) {
+    let best = null;
+    for (let k = 1; k < words0.length; k += 1) {
+      const pair = [words0.slice(0, k).join(' '), words0.slice(k).join(' ')];
+      const widest = Math.max(width(pair[0]), width(pair[1]));
+      if (widest <= room && (best === null || widest < best.widest)) best = { pair: pair, widest: widest };
+    }
+    if (best) {
+      lines = best.pair;
+      words = [];
+    }
+  }
   while (words.length) {
     if (lines.length === TRIAL_LABEL_LINES - 1) {
       const rest = words.join(' ');

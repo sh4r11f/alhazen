@@ -211,6 +211,9 @@ describe('the trial picture', () => {
       assert.equal(label.lines.length, 2);
       assert.equal(label.lines.join(' '), KDE, 'nothing lost');
       assert.equal(label.shortened, false);
+      // Split where the longer line is shortest, not a long line and a stray word.
+      const [a, b] = label.lines.map((line) => line.length);
+      assert.ok(Math.abs(a - b) <= 6, label.lines.join(' | '));
       const room = 300 - 2 * 6;
       label.lines.forEach((line) => assert.ok(line.length * CHAR <= room, line));
       // Two lines a line height apart, centred on the label's point.
