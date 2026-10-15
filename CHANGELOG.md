@@ -110,6 +110,10 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   resumes on both sides, and a longer run, an early mark, or a run at either
   end of the recording is refused as before.
 
+- The Run page's parameter editor labels a `Duration` row by the duration,
+  its unit beside ("fixation hold (ms)"), where it showed "ms" under
+  `fixation_hold`. The estimate's counts line reads at body size.
+
 ## 2.16.0 - 2026-10-13
 
 ### Added

@@ -201,11 +201,17 @@ const ParameterSections = (() => {
    * (an optional field is anyOf [model, null], and the model's own config
    * sits on the model). Only a known name counts: anything else is read as
    * no declaration, so a newer alhazen's section never breaks this page. */
-  function declared(node, root) {
+  function declared(node, root, seen = new Set()) {
+    // A recursive model refers back to itself through its alternatives;
+    // each $ref is followed once.
+    if (node?.$ref) {
+      if (seen.has(node.$ref)) return null;
+      seen.add(node.$ref);
+    }
     const own = resolve(node, root);
     if (SECTIONS.includes(own[KEY])) return own[KEY];
     for (const alt of [...(own.anyOf || []), ...(own.oneOf || []), ...(own.allOf || [])]) {
-      const found = declared(alt, root);
+      const found = declared(alt, root, seen);
       if (found) return found;
     }
     return null;

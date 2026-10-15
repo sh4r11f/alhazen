@@ -250,3 +250,10 @@ test('a duration row is labelled by the duration, its unit beside', () => {
   // A plain _ms field is not a Duration: its own name stays.
   assert.ok(labels.includes('pulse msreward / on_fault'), labels.join(' | '));
 });
+
+test('a recursive model does not loop: each reference is followed once', () => {
+  const PS = sections();
+  const schema = {properties: {tree: {$ref: '#/$defs/Node'}}, $defs: {Node: {
+    anyOf: [{$ref: '#/$defs/Node'}, {type: 'null'}], properties: {size_dva: {}}}}};
+  assert.equal(PS.of(schema, ['tree', 'size_dva']).section, 'other');
+});
