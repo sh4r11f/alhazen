@@ -262,6 +262,9 @@ describe('the live page', () => {
     const box = live_monitor.byId('trial-camera');
     assert.equal(box.querySelector('canvas'), null);
     assert.equal(live_monitor.byId('trial-camera-note').textContent, VIEW.camera.reason);
+    /* Marked for its layout: a tracker with no camera gets one line on a
+     * narrow page, not an empty picture. */
+    assert.equal(box.parentElement.dataset.camera, 'none');
   });
 
   it('shows the last real frame and its age when the tracker has a camera', async () => {
@@ -277,6 +280,7 @@ describe('the live page', () => {
     await settle();
     const canvas = live_monitor.byId('trial-camera').querySelector('canvas');
     assert.ok(canvas, 'the frame is drawn');
+    assert.equal(live_monitor.byId('trial-camera').parentElement.dataset.camera, 'frame');
     assert.equal(live_monitor.byId('trial-camera-note').textContent,
       'Last frame, taken 30 s before this trial (paused or calibrating). Read while paused.');
   });

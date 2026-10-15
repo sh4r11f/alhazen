@@ -73,7 +73,10 @@ describe('the operator controls', () => {
     const sidebar = live_monitor.byId('controls');
     assert.deepEqual(buttons(sidebar).map((b) => b.dataset.command), RUNNING_CONTROLS.shown);
     assert.equal(button(sidebar, 'pause').querySelector('kbd').textContent, 'P');
-    assert.equal(button(sidebar, 'skip_trial').querySelector('kbd').textContent, 'ESC');
+    /* Named keys are printed as on the key, in sentence case (the session
+     * sends ESC, SPACE, CTRL-C); a single letter stays as it is. */
+    assert.equal(button(sidebar, 'skip_trial').querySelector('kbd').textContent, 'Esc');
+    assert.equal(button(sidebar, 'quit').querySelector('kbd').textContent, 'Ctrl-C');
     assert.equal(button(sidebar, 'pause').getAttribute('aria-disabled'), 'false');
     assert.equal(button(sidebar, 'resume').getAttribute('aria-disabled'), 'true');
     assert.equal(button(sidebar, 'resume').title, RUNNING_CONTROLS.refused.resume);

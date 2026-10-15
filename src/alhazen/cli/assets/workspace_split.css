@@ -556,3 +556,19 @@ main { padding: 0 32px; max-width: none; }
   .output-toolbar { flex-wrap: wrap; row-gap: 4px; }
   .output-actions { margin-left: auto; }
 }
+
+
+/* ---- Parameter sections (2026-10-14) ----
+ * The editor's headings (Stimulus, Timing, Session, Other) sit on the
+ * settings pane's paper, so the sticky heading hides the rows passing under
+ * it without a band of another colour; a hairline, not a rule in ink, under
+ * the bold title. */
+.parameter-section-title {
+  background: var(--paper);
+  border-bottom: 1px solid var(--line);
+  padding: 10px 0 8px;
+  font-size: 14.5px;
+  font-weight: 700;
+}
+.parameter-section-count { font-size: 13px; font-weight: 600; color: var(--muted); }
+.parameter-section + .parameter-section { margin-top: 14px; }

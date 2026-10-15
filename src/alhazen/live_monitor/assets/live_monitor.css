@@ -784,3 +784,144 @@ line.trial-shape { fill: none; }
 }
 .stat-value { font-family: var(--font); font-weight: 700; }
 .panel { border-radius: 10px; }
+
+
+/* ---- Split, continued (2026-10-14): the operator controls and the Trial
+ * view in the dashboard's language. Manrope where installed (the page ships
+ * no font: it must open from a saved file with no server), 8 px controls on
+ * hairlines, keys as quiet chips in sentence case, the oxblood accent for
+ * selection, focus and a command waiting for the task. Chart and gaze
+ * colours (the series and ramp tokens) are untouched. */
+:root { --accent: #7f1d1d; --accent-soft: #f4e4e0; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --accent: #d8706a; --accent-soft: #3a1d1d; }
+}
+:root[data-theme="dark"] { --accent: #d8706a; --accent-soft: #3a1d1d; }
+
+body { font-family: var(--font); }
+header { padding: 14px 28px; }
+#identity { font-size: 13.5px; }
+#counts { font-family: var(--font); font-size: 13px; font-weight: 600; }
+
+.side-title { margin-bottom: 8px; color: var(--muted); }
+.side-title:not(:first-child) { margin-top: 24px; }
+.sections button { border-radius: 8px; font-size: 14px; font-weight: 600; padding: 7px 10px; }
+.sections button[aria-current="true"] {
+  background: var(--accent-soft);
+  border-left-color: transparent;
+  color: var(--accent);
+  font-weight: 700;
+}
+.sections button[aria-current="true"] .count { color: var(--accent); }
+.sections .count { font-size: 12.5px; font-weight: 600; }
+
+button.control {
+  min-height: 38px;
+  padding: 7px 8px 7px 12px;
+  border-radius: 8px;
+  font: 600 14px/1.25 var(--font);
+}
+button.control:hover:not(:disabled):not([aria-disabled="true"]) { border-color: var(--ink-2); background: var(--surface); }
+button.control kbd {
+  min-width: 26px;
+  padding: 2px 7px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--page);
+  color: var(--ink-2);
+  font: 650 12px/1.3 var(--font);
+  letter-spacing: 0;
+  text-align: center;
+}
+button.control[aria-disabled="true"] { opacity: 1; color: var(--muted); background: var(--wash); border-color: transparent; }
+button.control[aria-disabled="true"] kbd { color: var(--muted); background: transparent; }
+button.control.danger:not([aria-disabled="true"]) { color: var(--critical); }
+button.control[data-pending="true"] {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px dashed var(--accent);
+}
+button.control[data-pending="true"] kbd { color: var(--accent); border-color: var(--accent); background: transparent; }
+button.control:focus-visible,
+.sections button:focus-visible,
+.trial-trail select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.quit-confirm { border-radius: 10px; padding: 12px; }
+.quit-confirm p { font-size: 14px; font-weight: 600; }
+.quit-actions button.control { justify-content: center; }
+.control-feedback { font-size: 13px; }
+.command-log { font-size: 13px; }
+.command-log .command-name { font-weight: 700; }
+
+.panel { padding: 18px 20px 14px; }
+.panel h2 { font-size: 15px; font-weight: 700; }
+
+.trial-view { border-radius: 10px; padding: 18px 20px 18px; }
+.trial-head h2 { font-size: 17px; font-weight: 750; letter-spacing: -.01em; }
+#trial-meta { font-size: 13.5px; }
+.trial-trail { font-size: 13.5px; font-weight: 600; }
+.trial-trail select { height: 32px; padding: 0 8px; border-radius: 8px; font-weight: 600; }
+.trial-body figcaption, .trial-camera-empty { font-size: 13.5px; }
+.trial-stage-box svg { border-radius: 6px; }
+.trial-camera-box { border-radius: 8px; }
+.trial-controls { margin-top: 18px; padding-top: 16px; }
+
+/* A phone, or the dashboard's column at its narrowest: the header's counts
+ * go under the name instead of squeezing into a column beside it. */
+@media (max-width: 640px) {
+  header { flex-wrap: wrap; gap: 6px 14px; padding: 12px 16px; }
+  .right { width: 100%; justify-content: space-between; }
+  main { padding: 16px 16px 40px; }
+  .trial-view { padding: 14px 14px 16px; }
+  .trial-trail { margin-left: 0; }
+}
+
+
+/* The dashboard's instrument column and a phone (860 px and under): the
+ * sidebar is a band above the page. The panel list is one row that scrolls
+ * sideways; its titles go (the row and the button say what they are). While
+ * the Trial view is shown it carries the operator buttons under the screen,
+ * so the band leaves out its own copy and the trial comes up the page. */
+@media (max-width: 860px) {
+  .sidebar { padding: 10px 16px 12px; }
+  .sidebar > .side-title:first-child,
+  .sidebar .side-title:has(+ .controls:not([data-controls-host])) { display: none; }
+  .sections {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: thin;
+    margin: 0 -4px;
+    padding: 2px 4px 4px;
+  }
+  .sections button { white-space: nowrap; }
+  .sidebar > .controls:not([data-controls-host]) { display: flex; margin-top: 8px; }
+  .sidebar > .side-title:not(:first-child) { margin-top: 14px; }
+  .shell:has(#trial-view:not([hidden])) .sidebar :is(#controls, .side-title:has(+ #controls)) {
+    display: none;
+  }
+}
+
+
+/* A tracker with no camera at all (the mouse stand-in, EyeLink during a
+ * session): on a narrow page the box is one quiet line with the tracker's
+ * reason beside it, not an empty picture pushing the buttons down. */
+@media (max-width: 1000px) {
+  .trial-camera[data-camera="none"] { grid-template-columns: auto minmax(0, 1fr); align-items: baseline; }
+  .trial-camera[data-camera="none"] .trial-camera-box {
+    aspect-ratio: auto;
+    padding: 6px 12px;
+    border-style: dashed;
+    background: transparent;
+  }
+  .trial-camera[data-camera="none"] .trial-camera-empty { padding: 0; max-width: none; white-space: nowrap; }
+}
+
+/* The band's panel row and the theme button share one line. */
+@media (max-width: 860px) {
+  .sidebar { display: flex; flex-wrap: wrap; align-items: center; column-gap: 10px; }
+  .sidebar > * { flex: 1 1 100%; min-width: 0; }
+  .sidebar > .sections { flex: 1 1 0; }
+  .sidebar > .controls:not([data-controls-host]) { flex: 0 0 auto; margin-top: 0; }
+  .sidebar > .side-title:has(+ .controls:not([data-controls-host])) { display: none; }
+  #theme { min-height: 34px; padding: 5px 12px; white-space: nowrap; }
+}

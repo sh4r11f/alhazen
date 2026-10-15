@@ -3337,18 +3337,26 @@ function paintTrialCamera() {
   const view = trialView.view;
   const camera = (view && view.camera) || null;
   const paused = !!state && (state.status === 'paused' || state.status === 'calibrating');
+  /* What the box holds, for its layout: 'none' (this tracker shows no camera
+   * at all, so a narrow page gives it one line, not an empty picture),
+   * 'waiting' (no frame yet) or 'frame'. */
+  const figure = host.parentElement;
+  const holds = (kind) => { if (figure) figure.dataset.camera = kind; };
   if (!camera) {
+    holds('waiting');
     host.replaceChildren(htmlEl('div', 'trial-camera-empty', 'No camera information yet.'));
     note.textContent = '';
     return;
   }
   if (!camera.has_frames || !cameraFrame) {
+    holds(camera.has_frames ? 'waiting' : 'none');
     host.replaceChildren(htmlEl('div', 'trial-camera-empty',
       camera.has_frames ? 'No camera frame yet. Frames are read while paused or calibrating.'
         : 'No camera image.'));
     note.textContent = camera.reason;
     return;
   }
+  holds('frame');
   let canvas = host.querySelector('canvas');
   if (!canvas) {
     host.replaceChildren();
@@ -3529,6 +3537,14 @@ const ACKNOWLEDGEMENTS_SHOWN = 3;
 const ACKNOWLEDGEMENT_MEMORY = 20;
 const TERMINAL_STATUSES = ['complete', 'failed', 'cancelled', 'stopping'];
 
+/** A rig key as printed on the key: a letter or symbol as it is, a named key
+ *  in sentence case ("Space", "Esc", "Ctrl-C"), not shouted in capitals. */
+function keyLabel(key) {
+  return String(key).split('-')
+    .map((part) => (/^[A-Za-z]{2,}$/.test(part) ? part[0].toUpperCase() + part.slice(1).toLowerCase() : part))
+    .join('-');
+}
+
 function commandLabel(name) {
   const labels = (state && state.controls && state.controls.labels) || {};
   return labels[name] || name.replace(/_/g, ' ');
@@ -3592,7 +3608,7 @@ function fillControlsHost(host) {
     button.dataset.command = name;
     htmlEl('span', 'control-label', commandLabel(name), button);
     const key = (controls.keys || {})[name];
-    if (key) htmlEl('kbd', null, key, button);
+    if (key) htmlEl('kbd', null, keyLabel(key), button);
     const off = !available.has(name);
     button.setAttribute('aria-disabled', String(off || sending.has(name)));
     if (off) button.title = (controls.refused || {})[name] || '';
