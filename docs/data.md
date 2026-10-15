@@ -28,8 +28,9 @@ graph TD
     SES --> RUN["run-&lt;NN&gt;_task-&lt;name&gt;/<br/><i>one run</i>"]
     RUN --> SJ["session.json<br/><i>the identity card</i>"]
     RUN --> SNAP["config_snapshot.yaml<br/><i>everything that ran</i>"]
-    RUN --> RIG["rig.yaml · params.yaml<br/><i>the files it started from</i>"]
-    RUN --> RIGM["rig-merged.yaml<br/><i>the whole rig, when rig.yaml extends a shared one</i>"]
+    RUN --> RIG["rig.yaml<br/><i>the complete rig, defaults included</i>"]
+    RUN --> SRC["rig-source.yaml · params.yaml<br/><i>the files it started from, as written</i>"]
+    RUN --> RIGM["rig-merged.yaml<br/><i>the two rig files merged, when the rig extends a shared one</i>"]
     RUN --> CSV["&lt;base&gt;_trials.csv · _events.csv · _frames.csv"]
     RUN --> LOG["session.log · figures/"]
     RUN --> MAN["manifest.yaml<br/><i>a hash of every file, written last</i>"]
@@ -48,7 +49,8 @@ data/
             └── run-01_task-saccade-bias/
                 ├── session.json
                 ├── config_snapshot.yaml
-                ├── rig.yaml
+                ├── rig.yaml                    the complete rig
+                ├── rig-source.yaml             the rig file as written (runs after 2.16)
                 ├── rig-merged.yaml             only for a rig file that extends a shared rig
                 ├── params.yaml
                 ├── sub-01_ses-001_run-01_20260928_trials.csv
@@ -83,8 +85,9 @@ the experimenter's own, given on the command line; alhazen does not count it.
 | --- | --- | --- | --- |
 | `session.json` | before trial 1 | Which experiment and version, task, mode, subject, session, run, rig and params file, the command the session was started with, alhazen, and where the run's other files are (§3). | You want to know what a folder is without opening anything long. |
 | `config_snapshot.yaml` | before trial 1 | The fully merged config the session ran — rig, params *as run*, seed, identity, the files each came from — its provenance (the experiment and version, both git trees, versions, the environment's digest) and the `command` it was started with. | You need to reproduce the session, or know a value exactly. |
-| `rig.yaml` | before trial 1 | The rig file the session was started with, byte for byte. Absent when the rig was built in code. | You want what a person wrote, comments and all. |
-| `rig-merged.yaml` | before trial 1 | For a rig file that `extends` one of alhazen's shared rigs: the whole rig, that file merged over the shared one exactly as the session loaded it, with the monitor's registration name written in. Absent for a rig that extends nothing (its `rig.yaml` is already whole). | You want the machine as it was, without the alhazen that shipped the shared half. |
+| `rig.yaml` | before trial 1 | The complete rig the session was started with: the rig file merged over any shared rig it `extends`, every setting written out with the defaults alhazen filled in, and the monitor's registration name. A default the rig refuses written out, because it does nothing under the settings chosen, is left out. Loads as a rig file that gives the same rig. Up to 2.16 this was the rig file byte for byte (now `rig-source.yaml`). Absent when the rig was built in code. | You want every setting the machine had, in one file. |
+| `rig-source.yaml` | before trial 1 | The rig file the session was started with, byte for byte. Absent when the rig was built in code, and from runs recorded by 2.16 or earlier (their `rig.yaml` is this file). | You want what a person wrote, comments and all. |
+| `rig-merged.yaml` | before trial 1 | For a rig file that `extends` one of alhazen's shared rigs: that file merged over the shared one, only the settings the two files write. `rig.yaml` holds all of it and the defaults too; this is still written so that no file a script looks for disappears outside a major version. Absent for a rig that extends nothing. | Reading a run from 2.16 or earlier, whose `rig.yaml` is only the experiment's half. |
 | `params.yaml` | before trial 1 | The params file the session was started with, byte for byte. Absent when the task ran on its params model's defaults. | Same, for the task's parameters. |
 | `<base>_trials.csv` | teardown | One row per trial that produced a measurement; every row carries `experiment_version`. | Analysing behaviour. |
 | `<base>_events.csv` | teardown | Every event, stamped with the flip that showed it. | Timing, alignment. |
@@ -95,7 +98,7 @@ the experimenter's own, given on the command line; alhazen does not count it.
 | `recording_pointer.yaml` | right after the snapshot, before trial 1 (at build before 2.7) | Where the external recording of this run is, when the rig names a recorder. | Aligning to neural data. |
 | `manifest.yaml` | last | A sha256 of every other file, and the experiment version (schema 2). | Checking nothing changed since (`alhazen report`, `verify_manifest`). |
 
-`session.json`, the snapshot, the copies and the merged rig are written
+`session.json`, the snapshot, the rig files and the params copy are written
 together, before trial 1, **all or none**: the snapshot goes last, and a
 failure part-way removes what was already written. So a folder with a
 snapshot always has the others the session had, and a folder whose record
@@ -140,14 +143,23 @@ authority on what ran:
   parameters;
 - a mode stands devices down (`simulate`) or puts the mouse in for a
   missing tracker (`test`); the snapshot's rig is the one that ran, after
-  that, where `rig-merged.yaml` is the rig as its files describe it.
+  that, where `rig.yaml` is the rig as its files describe it.
 
-A rig file that builds on another (`extends:`) is only part of the rig on its
-own, so it is not left at that: `rig.yaml` stays the file that was named,
-byte for byte, and `rig-merged.yaml` beside it is the whole rig, readable
-without whichever alhazen shipped the shared half. Load it as a rig file
-(`--rig path/to/rig-merged.yaml`) and it is the same machine, registered
-under the same monitor name.
+`rig.yaml` is the whole machine in one file. A rig file that builds on
+another (`extends:`) is only part of the rig on its own, and any rig file
+leaves unsaid every setting it takes alhazen's default for; `rig.yaml` writes
+all of them out, readable without whichever alhazen shipped the shared half
+or set the defaults. Load it as a rig file (`--rig path/to/rig.yaml`) and it
+is the same machine, registered under the same monitor name. The one thing
+it leaves out is a default that does nothing under the settings chosen (a
+`max_dropped_per_trial` under a frame-QA policy other than `abort_run`): the
+rig refuses such a setting written out, and `rig.yaml` has to load. The file
+as written, with its comments, is `rig-source.yaml`.
+
+**Runs recorded by 2.16 or earlier** have no `rig-source.yaml`, and their
+`rig.yaml` is the rig file byte for byte. For one that extends a shared rig,
+`rig-merged.yaml` is the whole rig without the defaults; a run's
+`config_snapshot.yaml` (`config.rig`) has every value, in any version.
 
 ## 3. `session.json`
 
@@ -181,6 +193,7 @@ schema versions in [versioning](versioning.md) §3); a reader gates on it.
     "snapshot": "config_snapshot.yaml",
     "manifest": "manifest.yaml",
     "rig": "rig.yaml",
+    "rig_source": "rig-source.yaml",
     "rig_merged": "rig-merged.yaml",
     "params": "params.yaml",
     "trials": "sub-01_ses-001_run-01_20260928_trials.csv",
@@ -203,7 +216,7 @@ schema versions in [versioning](versioning.md) §3); a reader gates on it.
 | `rig.name`, `rig.source` | For a rig chosen by name, the name and where it was found; null for a rig given as a path. |
 | `rig.file`, `params_file` | Where the originals were, on the machine that ran the session; null when that layer came from no file. |
 | `command` | The command line the session was started with, as a list: the program, then the arguments exactly as the parser received them. A `run.py` inside the experiment's folder is written relative to it (`run.py`); `alhazen run` is written as `alhazen`, `run`, …; a program outside the experiment is kept as it was started. The arguments are never rewritten, so a `--params` path is the one that was passed — for a launch from the [experiment workspace](workspace.md), the edited parameters it saved for that launch. Null for a session built in code (`build_session` directly). The snapshot's top-level `command` holds the same list. Added in 2.1.0; a card without it is older. |
-| `files` | Paths relative to the run folder, with forward slashes, so the card still reads right after the folder is moved. A file that was not written (no rig or params file, or a rig that extends nothing and so has no `rig_merged`) is null. |
+| `files` | Paths relative to the run folder, with forward slashes, so the card still reads right after the folder is moved. A file that was not written (no rig or params file, or a rig that extends nothing and so has no `rig_merged`) is null. `rig_source` was added after 2.16, without a schema bump; an older card has no such key, and its `rig` is the file as written. |
 
 ## 4. The experiment's version
 

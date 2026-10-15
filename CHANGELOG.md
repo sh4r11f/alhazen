@@ -25,6 +25,30 @@ newest one always matches `version` in `pyproject.toml`. `Unreleased` collects
 changes that have landed on `main` but not shipped; cutting a release renames
 it to the new version. `scripts/release_check.py` enforces all of that.
 
+## Unreleased
+
+### Changed
+- A run folder's `rig.yaml` is the complete rig the session was started with:
+  the rig file merged over any shared rig it `extends`, with every setting
+  written out, the defaults alhazen filled in included. Before, it was the rig
+  file byte for byte, which for a rig that extends a shared one (every
+  experiment's) showed only the experiment's half, and for any rig left the
+  defaults unsaid. It loads as a rig file that gives the same rig
+  (`--rig .../rig.yaml`). A default the rig refuses written out, because it
+  does nothing under the settings chosen (`max_dropped_per_trial` under a
+  frame-QA policy other than `abort_run`, a `pulse` on a still calibration
+  target), is left out, and the file's header says so. A script that loaded a
+  run's `rig.yaml` as a rig gets the same rig as before; one that compared its
+  bytes with the rig file should read `rig-source.yaml` instead
+  (docs/data.md §2).
+
+### Added
+- `rig-source.yaml` in every run folder with a rig file: the file as written,
+  byte for byte, comments and all (what `rig.yaml` was). `session.json` names
+  it as `files.rig_source`. `rig-merged.yaml` is still written for a rig that
+  extends a shared one, unchanged, so no file a script looks for disappears.
+  The run layout baseline (`tests/fixtures/contracts.json`) gains the one name.
+
 ## 2.16.0 - 2026-10-13
 
 ### Added

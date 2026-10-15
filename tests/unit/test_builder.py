@@ -1194,7 +1194,11 @@ class TestTheExperimentVersionFilesTheRun:
         ).run()
 
         (run_dir,) = (p.parent for p in (tmp_path / "data").rglob("session.json"))
-        assert (run_dir / "rig.yaml").read_bytes() == rig_file.read_bytes()
+        assert (run_dir / "rig-source.yaml").read_bytes() == rig_file.read_bytes()
+        # rig.yaml is the rig as its file describes the machine: the file's
+        # own data_root, not the override this caller handed in (which the
+        # snapshot records, as what ran).
+        assert load_rig(run_dir / "rig.yaml").model_dump() == load_rig(rig_file).model_dump()
         assert (run_dir / "params.yaml").read_bytes() == params_file.read_bytes()
         card = json.loads((run_dir / "session.json").read_text(encoding="utf-8"))
         assert card["mode"] == "run"
@@ -1209,7 +1213,11 @@ class TestTheExperimentVersionFilesTheRun:
         self.session(tmp_path, task, rig=repo / "rig-sim.yaml").run()
 
         (run_dir,) = (p.parent for p in (tmp_path / "data").rglob("session.json"))
-        assert (run_dir / "rig.yaml").read_bytes() == (repo / "rig-sim.yaml").read_bytes()
+        assert (run_dir / "rig-source.yaml").read_bytes() == (repo / "rig-sim.yaml").read_bytes()
+        assert (
+            load_rig(run_dir / "rig.yaml").model_dump()
+            == load_rig(repo / "rig-sim.yaml").model_dump()
+        )
         # No params file was named, so none is copied, and the card says so.
         assert not (run_dir / "params.yaml").exists()
         card = json.loads((run_dir / "session.json").read_text(encoding="utf-8"))
@@ -1227,7 +1235,7 @@ class TestTheExperimentVersionFilesTheRun:
         self.session(tmp_path, task, rig=repo / "rig-sim.yaml", sources={"rig": str(other)}).run()
 
         (run_dir,) = (p.parent for p in (tmp_path / "data").rglob("session.json"))
-        assert (run_dir / "rig.yaml").read_bytes() == (repo / "rig-sim.yaml").read_bytes()
+        assert (run_dir / "rig-source.yaml").read_bytes() == (repo / "rig-sim.yaml").read_bytes()
 
     def test_the_command_is_recorded_with_run_py_relative_to_the_experiment(
         self, tmp_path, monkeypatch
@@ -1262,11 +1270,14 @@ class TestTheExperimentVersionFilesTheRun:
         # A whole rig file needs no merged copy: rig.yaml is the whole rig.
         assert not (run_dir / "rig-merged.yaml").exists()
         assert card["files"]["rig_merged"] is None
+        assert card["files"]["rig"] == "rig.yaml"
+        assert card["files"]["rig_source"] == "rig-source.yaml"
 
     def test_a_rig_that_extends_a_shared_one_is_also_recorded_whole(self, tmp_path):
-        # rig.yaml is the experiment's half, byte for byte; rig-merged.yaml
-        # is the rig the session loaded, readable without the alhazen that
-        # shipped the other half.
+        # rig.yaml is the complete rig the session loaded, readable without
+        # the alhazen that shipped the shared half; rig-source.yaml is the
+        # experiment's half, byte for byte; rig-merged.yaml, the two files
+        # merged without the defaults, is still written beside them.
         repo, task = self.experiment_project(tmp_path)
         rig_file = repo / "rig-laptop.yaml"
         rig_file.write_text(
@@ -1281,13 +1292,24 @@ class TestTheExperimentVersionFilesTheRun:
         self.session(tmp_path, task, rig=rig_file).run()
 
         (run_dir,) = (p.parent for p in (tmp_path / "data").rglob("session.json"))
-        assert (run_dir / "rig.yaml").read_bytes() == rig_file.read_bytes()
+        assert (run_dir / "rig-source.yaml").read_bytes() == rig_file.read_bytes()
+        assert load_rig(run_dir / "rig.yaml").model_dump() == load_rig(rig_file).model_dump()
         assert load_rig(run_dir / "rig-merged.yaml").model_dump() == load_rig(rig_file).model_dump()
+        complete = yaml.safe_load((run_dir / "rig.yaml").read_text(encoding="utf-8"))
+        # The shared rig's half is in it (the laptop's monitor geometry, which
+        # the experiment's file never wrote), and so are defaults neither
+        # file wrote.
+        assert complete["monitor"]["width_px"] == load_rig(rig_file).monitor.width_px
+        assert "max_rows" in complete["live_monitor"]
+        assert "database" in complete
+        assert "extends" not in complete
         card = json.loads((run_dir / "session.json").read_text(encoding="utf-8"))
         assert card["files"]["rig_merged"] == "rig-merged.yaml"
-        # And the manifest vouches for it like every other file.
+        assert card["files"]["rig_source"] == "rig-source.yaml"
+        # And the manifest vouches for them like every other file.
         manifest = yaml.safe_load((run_dir / "manifest.yaml").read_text(encoding="utf-8"))
-        assert "rig-merged.yaml" in {entry["path"] for entry in manifest["artifacts"]}
+        listed = {entry["path"] for entry in manifest["artifacts"]}
+        assert {"rig.yaml", "rig-source.yaml", "rig-merged.yaml"} <= listed
 
     def test_a_database_from_a_newer_alhazen_is_refused_before_the_run_folder(self, tmp_path):
         # 2.0.1: one from an OLDER schema is moved aside instead (below); a

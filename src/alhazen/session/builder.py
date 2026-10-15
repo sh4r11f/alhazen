@@ -75,6 +75,7 @@ from alhazen.session.identity import (
     Experimenter,
     RunIdentity,
     SubjectDemographics,
+    complete_rig,
     merged_rig,
     recorded_command,
     source_file,
@@ -626,16 +627,17 @@ def build_session(
     rig_file = source_file(rig, "rig") if not isinstance(rig, RigConfig) else None
     if rig_file is None:
         rig_file = source_file(given_sources.get("rig"), "rig")
-    # The whole rig beside the copy, for a rig file that extends a shared
-    # one (rig-merged.yaml), merged now for the same reason the files are
-    # read now; and the command line, its program made relative to the
-    # experiment's folder.
+    # The complete rig (rig.yaml) and, for a rig file that extends a shared
+    # one, the two files merged (rig-merged.yaml), both made now for the same
+    # reason the files are read now; and the command line, its program made
+    # relative to the experiment's folder.
     identity = RunIdentity(
         experiment=experiment,
         mode=mode,
         rig_file=rig_file,
         params_file=source_file(given_sources.get("task"), "params"),
         rig_merged=merged_rig(rig_file),
+        rig_complete=complete_rig(rig_file),
         command=recorded_command(command, experiment.root) if command is not None else None,
         experimenter=experimenter,
         demographics=demographics,

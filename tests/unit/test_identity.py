@@ -2,7 +2,8 @@
 
 Since alhazen 2.0 a run folder holds, beside its snapshot, a compact
 session.json and byte copies of the rig and params files the session started
-from. These tests pin what each holds, that they are written together with
+from; after 2.16 its rig.yaml is the complete rig and the rig file's byte
+copy is rig-source.yaml. These tests pin what each holds, that they are written together with
 the snapshot or not at all, and that a session actually writes them and
 stamps its experiment's version everywhere the data goes.
 """
@@ -22,10 +23,12 @@ from alhazen.config.loader import load_rig
 from alhazen.data.manifest import verify_manifest
 from alhazen.data.paths import SessionPaths
 from alhazen.errors import ConfigError
+from alhazen.session import identity as identity_module
 from alhazen.session.identity import (
     SESSION_JSON_SCHEMA_VERSION,
     RunIdentity,
     SourceFile,
+    complete_rig,
     merged_rig,
     recorded_command,
     session_card,
@@ -42,6 +45,9 @@ EXPERIMENT = Experiment(
 # Windows line endings, none of which a re-dump of the parsed config keeps.
 RIG_BYTES = "# the lab rig — do not edit mid-season\r\ndata_root: data\r\n".encode()
 PARAMS_BYTES = b"# pilot\nparadigm:\n  n_per_condition: 8\n"
+# What stands for rig.yaml (`complete_rig`'s output) where a test builds the
+# record by hand: distinct bytes, so a test can tell which file got which.
+COMPLETE_BYTES = b"# complete rig, as alhazen writes it\ndata_root: data\n"
 
 
 def paths_for(tmp_path) -> SessionPaths:
@@ -55,6 +61,7 @@ def identity_with_files(tmp_path, mode="run") -> RunIdentity:
         experiment=EXPERIMENT,
         mode=mode,
         rig_file=SourceFile(path=tmp_path / "configs" / "rig-lab.yaml", content=RIG_BYTES),
+        rig_complete=COMPLETE_BYTES,
         params_file=SourceFile(path=tmp_path / "configs" / "task.yaml", content=PARAMS_BYTES),
     )
 
@@ -127,6 +134,7 @@ class TestSessionCard:
             "snapshot": "config_snapshot.yaml",
             "manifest": "manifest.yaml",
             "rig": "rig.yaml",
+            "rig_source": "rig-source.yaml",
             # identity_with_files names a rig that extends nothing, so there
             # is no merged rig beside the copy (TestTheMergedRig has one).
             "rig_merged": None,
@@ -154,6 +162,7 @@ class TestSessionCard:
         assert card["params_file"] is None
         assert card["files"]["rig"] is None and card["files"]["params"] is None
         assert card["files"]["rig_merged"] is None
+        assert card["files"]["rig_source"] is None
         assert card["mode"] is None
 
     def test_it_records_the_command_the_session_was_started_with(self, tmp_path):
@@ -266,14 +275,19 @@ class TestTheMergedRig:
         path = self.extending_rig(tmp_path)
         rig_file = source_file(path, "rig")
         identity = RunIdentity(
-            experiment=EXPERIMENT, rig_file=rig_file, rig_merged=merged_rig(rig_file)
+            experiment=EXPERIMENT,
+            rig_file=rig_file,
+            rig_merged=merged_rig(rig_file),
+            rig_complete=complete_rig(rig_file),
         )
         paths = paths_for(tmp_path)
 
         write_run_identity(make_session_config(tmp_path), paths, identity)
 
-        # rig.yaml is still the file as written, byte for byte.
-        assert paths.rig_copy_path.read_bytes() == path.read_bytes()
+        # rig-source.yaml is the file as written, byte for byte; rig.yaml the
+        # complete rig; rig-merged.yaml the two files merged.
+        assert paths.rig_source_path.read_bytes() == path.read_bytes()
+        assert paths.rig_copy_path.read_bytes() == identity.rig_complete
         assert paths.rig_merged_path.read_bytes() == identity.rig_merged
         card = json.loads(paths.session_json_path.read_text(encoding="utf-8"))
         assert card["files"]["rig_merged"] == "rig-merged.yaml"
@@ -281,7 +295,10 @@ class TestTheMergedRig:
     def test_a_failed_record_takes_the_merged_rig_with_it(self, tmp_path):
         rig_file = source_file(self.extending_rig(tmp_path), "rig")
         identity = RunIdentity(
-            experiment=EXPERIMENT, rig_file=rig_file, rig_merged=merged_rig(rig_file)
+            experiment=EXPERIMENT,
+            rig_file=rig_file,
+            rig_merged=merged_rig(rig_file),
+            rig_complete=complete_rig(rig_file),
         )
         paths = paths_for(tmp_path)
         paths.snapshot_path.mkdir()
@@ -292,6 +309,146 @@ class TestTheMergedRig:
         assert [p for p in paths.run_dir.rglob("*") if p.is_file()] == []
 
 
+# A rig file that extends nothing, as small as a valid one gets.
+WHOLE_RIG = (
+    "monitor:\n"
+    "  width_px: 800\n"
+    "  height_px: 600\n"
+    "  width_cm: 40.0\n"
+    "  distance_cm: 57.0\n"
+    "  refresh_rate_hz: 60.0\n"
+    "display:\n"
+    "  backend: simulated\n"
+    "data_root: data\n"
+)
+
+
+class TestTheCompleteRig:
+    """rig.yaml: the complete rig, every setting written out, defaults
+    included, loadable as a rig file that gives the same rig."""
+
+    def extending_rig(self, tmp_path) -> Path:
+        # Only what differs from the shared rehearsal rig, as an experiment
+        # writes it.
+        path = tmp_path / "configs" / "rig-lab-rehearsal.yaml"
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            "# this lab's rehearsal, only what differs\r\n"
+            "extends: lab-rehearsal\r\n"
+            "monitor:\r\n"
+            "  distance_cm: 43.0  # measured\r\n",
+            encoding="utf-8",
+        )
+        return path
+
+    def complete(self, path: Path) -> dict:
+        text = complete_rig(source_file(path, "rig"))
+        assert text is not None
+        return yaml.safe_load(text.decode("utf-8"))
+
+    def test_it_loads_as_the_same_rig_under_any_file_name(self, tmp_path):
+        path = self.extending_rig(tmp_path)
+        copy = tmp_path / "rig.yaml"
+        copy.write_bytes(complete_rig(source_file(path, "rig")))
+
+        # The monitor's registration name included, which a file named
+        # rig.yaml would otherwise take from its own stem.
+        assert load_rig(copy).model_dump() == load_rig(path).model_dump()
+        assert load_rig(copy).monitor.name == "rig-lab-rehearsal"
+
+    def test_it_has_the_shared_half_and_the_defaults_neither_file_wrote(self, tmp_path):
+        path = self.extending_rig(tmp_path)
+        values = self.complete(path)
+        rig = load_rig(path)
+
+        assert "extends" not in values
+        # The experiment's own setting...
+        assert values["monitor"]["distance_cm"] == 43.0
+        # ...the shared rig's, which the experiment's file never wrote...
+        assert values["monitor"]["width_px"] == rig.monitor.width_px
+        assert values["display"]["backend"] == rig.display.backend
+        # ...and alhazen's defaults, which neither file wrote.
+        assert values["live_monitor"]["max_rows"] == rig.live_monitor.max_rows
+        assert values["database"]["enabled"] == rig.database.enabled
+
+    def test_a_rig_that_extends_nothing_is_written_out_complete_too(self, tmp_path):
+        path = tmp_path / "rig-sim.yaml"
+        path.write_text(WHOLE_RIG, encoding="utf-8")
+
+        values = self.complete(path)
+
+        assert values["display"]["backend"] == "simulated"
+        assert "monitor" in values and "live_monitor" in values
+        copy = tmp_path / "rig.yaml"
+        copy.write_bytes(complete_rig(source_file(path, "rig")))
+        assert load_rig(copy).model_dump() == load_rig(path).model_dump()
+
+    def test_a_default_that_does_not_apply_is_left_out(self, tmp_path):
+        # max_dropped_per_trial applies only under abort_run, and the rig
+        # refuses it written out under any other policy. The complete rig
+        # holds itself to the same rule, so it loads again.
+        path = tmp_path / "rig-sim.yaml"
+        path.write_text(
+            WHOLE_RIG.replace(
+                "  backend: simulated\n",
+                "  backend: simulated\n  frame_qa:\n    policy: mark_trial\n",
+            ),
+            encoding="utf-8",
+        )
+
+        frame_qa = self.complete(path)["display"]["frame_qa"]
+
+        assert frame_qa["policy"] == "mark_trial"
+        assert "max_dropped_per_trial" not in frame_qa
+        assert "tolerance" in frame_qa  # a default that does apply is there
+
+    def test_its_header_names_the_files_without_a_full_path(self, tmp_path):
+        text = complete_rig(source_file(self.extending_rig(tmp_path), "rig")).decode("utf-8")
+
+        assert text.startswith("#")
+        assert "rig-lab-rehearsal.yaml" in text and "'lab-rehearsal'" in text
+        assert "rig-source.yaml" in text
+        assert str(tmp_path) not in text
+
+    @pytest.mark.parametrize(
+        "shared", sorted((Path(identity_module.__file__).parents[1] / "rigs").glob("rig-*.yaml"))
+    )
+    def test_every_shared_rig_loads_back_the_same(self, tmp_path, shared):
+        copy = tmp_path / "rig.yaml"
+        copy.write_bytes(complete_rig(source_file(shared, "rig")))
+        assert load_rig(copy).model_dump() == load_rig(shared).model_dump()
+
+    def test_no_rig_file_means_no_complete_rig(self):
+        assert complete_rig(None) is None
+
+    def test_a_result_that_would_load_as_another_rig_is_refused(self, tmp_path, monkeypatch):
+        # The final check: if the collected settings ever loaded as a rig
+        # other than the session's, rig.yaml would describe another machine.
+        # Simulated here by a validation that drifts one value.
+        real = identity_module.RigConfig
+
+        class Drifting:
+            @staticmethod
+            def model_validate(values):
+                return real.model_validate(values).model_copy(
+                    update={"data_root": Path("elsewhere")}
+                )
+
+        path = tmp_path / "rig-sim.yaml"
+        path.write_text(WHOLE_RIG, encoding="utf-8")
+        monkeypatch.setattr(identity_module, "RigConfig", Drifting)
+
+        with pytest.raises(ConfigError, match="different rig"):
+            complete_rig(source_file(path, "rig"))
+
+    def test_the_record_takes_both_rig_files_or_neither(self, tmp_path):
+        rig_file = SourceFile(path=tmp_path / "rig.yaml", content=RIG_BYTES)
+        with pytest.raises(ValueError, match="rig_file without rig_complete"):
+            RunIdentity(experiment=EXPERIMENT, rig_file=rig_file)
+        with pytest.raises(ValueError, match="rig_complete alone"):
+            RunIdentity(experiment=EXPERIMENT, rig_complete=COMPLETE_BYTES)
+
+
 class TestWritingTheRecord:
     def test_all_four_are_written_and_the_copies_are_byte_for_byte(self, tmp_path):
         paths = paths_for(tmp_path)
@@ -299,7 +456,8 @@ class TestWritingTheRecord:
 
         write_run_identity(cfg, paths, identity_with_files(tmp_path))
 
-        assert paths.rig_copy_path.read_bytes() == RIG_BYTES
+        assert paths.rig_copy_path.read_bytes() == COMPLETE_BYTES
+        assert paths.rig_source_path.read_bytes() == RIG_BYTES
         assert paths.params_copy_path.read_bytes() == PARAMS_BYTES
         card = json.loads(paths.session_json_path.read_text(encoding="utf-8"))
         snapshot = yaml.safe_load(paths.snapshot_path.read_text(encoding="utf-8"))
@@ -328,6 +486,7 @@ class TestWritingTheRecord:
         # The copies written before it are gone again, and there is no
         # snapshot: the folder is left as the build left it, not a run.
         assert not paths.rig_copy_path.exists()
+        assert not paths.rig_source_path.exists()
         assert not paths.params_copy_path.exists()
         assert not paths.snapshot_path.exists()
         # What was there before the call is not this call's to delete.
@@ -358,19 +517,27 @@ class TestASessionRecordsItsSetup:
             experiment=TEST_EXPERIMENT,
             mode="test",
             rig_file=SourceFile(path=tmp_path / "rig.yaml", content=RIG_BYTES),
+            rig_complete=COMPLETE_BYTES,
             params_file=SourceFile(path=tmp_path / "task.yaml", content=PARAMS_BYTES),
         )
         harness = self.run(tmp_path, identity=identity)
         paths = harness.paths
 
-        assert paths.rig_copy_path.read_bytes() == RIG_BYTES
+        assert paths.rig_copy_path.read_bytes() == COMPLETE_BYTES
+        assert paths.rig_source_path.read_bytes() == RIG_BYTES
         assert paths.params_copy_path.read_bytes() == PARAMS_BYTES
         card = json.loads(paths.session_json_path.read_text(encoding="utf-8"))
         assert card["mode"] == "test"
         assert card["experiment"]["version"] == TEST_EXPERIMENT.version
         manifest = yaml.safe_load(paths.manifest_path.read_text(encoding="utf-8"))
         listed = {entry["path"] for entry in manifest["artifacts"]}
-        assert {"session.json", "rig.yaml", "params.yaml", "config_snapshot.yaml"} <= listed
+        assert {
+            "session.json",
+            "rig.yaml",
+            "rig-source.yaml",
+            "params.yaml",
+            "config_snapshot.yaml",
+        } <= listed
         assert verify_manifest(paths.run_dir, paths.manifest_path) == []
 
     def test_the_version_is_on_every_row_the_manifest_and_the_snapshot(self, tmp_path):
