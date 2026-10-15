@@ -92,14 +92,17 @@ const DurationEstimate = (() => {
     return n ? `${plural(n, 'condition')}, ${decided}` : decided;
   }
 
-  function countsText(counts) {
-    if (!counts) return '';
+  function trialsText(counts) {
     const t = counts.trials;
     const hi = counts.trials_max;
-    let text;
-    if (hi === t) text = plural(t, 'trial');
-    else if (hi === null || hi === undefined) text = `${t}+ trials`;
-    else text = `${t}–${hi} trials`;
+    if (hi === t) return plural(t, 'trial');
+    if (hi === null || hi === undefined) return `${t}+ trials`;
+    return `${t}–${hi} trials`;
+  }
+
+  function countsText(counts) {
+    if (!counts) return '';
+    let text = trialsText(counts);
     const each = conditionsText(counts);
     if (each) text = counts.kind === 'planned' ? `${each} = ${text}` : `${text} · ${each}`;
     if (counts.blocks) text += ` · ${plural(counts.blocks, 'block')}`;
@@ -168,7 +171,7 @@ const DurationEstimate = (() => {
     const conditions = conditionLines(counts);
     if (conditions.length) details.push({heading: 'Conditions', lines: conditions});
     if (counts && counts.kind === 'adaptive') {
-      details.push({heading: 'Trials', lines: [countsText(counts) + ', set by the stopping rule']});
+      details.push({heading: 'Trials', lines: [trialsText(counts) + ', set by the stopping rule']});
     }
     if (answer.manual && answer.manual.length) {
       details.push({heading: 'Not included: up to a person', lines: answer.manual});

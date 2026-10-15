@@ -300,8 +300,9 @@ test('an adaptive plan says who decides each condition\u2019s trials, with each 
   assert.equal(view.counts, '16–80 trials · 4 conditions, trials decided by the staircase');
   assert.deepEqual(Array.from(view.details.find((d) => d.heading === 'Conditions').lines),
     ['2 estimators (the staircase), 8–40 trials each']);
-  // The stopping-rule line the adaptive answer always had stays.
-  assert.ok(view.details.some((d) => d.heading === 'Trials' && /stopping rule/.test(d.lines[0])));
+  // The stopping-rule line the adaptive answer always had stays, as before.
+  assert.deepEqual(Array.from(view.details.find((d) => d.heading === 'Trials').lines),
+    ['16–80 trials, set by the stopping rule']);
   const search = {kind: 'adaptive', trials: 150, trials_max: 209, conditions: null,
     per_condition: {conditions: null, decided_by: 'the stopping rule', estimators: null,
       per_estimator: null}};

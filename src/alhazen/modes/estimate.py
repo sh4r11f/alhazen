@@ -111,7 +111,8 @@ def planned_conditions(schedule: PlannedSchedule) -> dict[str, Any]:
     """The conditions a fixed plan serves and how many trials of each:
     ``conditions`` (how many), ``groups`` (``[{trials, conditions}]``, most
     trials first: every condition, by its count) and ``rows`` (each
-    condition's label and count, the first ``MAX_CONDITION_ROWS``)."""
+    condition's label and count, sorted by label, the first
+    ``MAX_CONDITION_ROWS``)."""
     if schedule.cell_counts is not None:
         cells = list(schedule.cell_counts)
     else:
@@ -125,14 +126,13 @@ def planned_conditions(schedule: PlannedSchedule) -> dict[str, Any]:
     by_count: dict[int, int] = {}
     for _, n in cells:
         by_count[n] = by_count.get(n, 0) + 1
+    rows = sorted(((_condition_label(c), n) for c, n in cells), key=lambda row: row[0])
     return {
         "conditions": len(cells),
         "groups": [
             {"trials": t, "conditions": by_count[t]} for t in sorted(by_count, reverse=True)
         ],
-        "rows": [
-            {"label": _condition_label(c), "trials": n} for c, n in cells[:MAX_CONDITION_ROWS]
-        ],
+        "rows": [{"label": label, "trials": n} for label, n in rows[:MAX_CONDITION_ROWS]],
         "rows_total": len(cells),
     }
 
