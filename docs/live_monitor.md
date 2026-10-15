@@ -170,6 +170,18 @@ shows the result line and the *Eye tracker* panels update. A walk whose rig
 advances targets by hand (`calibration_advance: manual`) still takes SPACE at
 each target from the rig's keyboard. See [eye-tracker.md](eye-tracker.md).
 
+The notice is the operator's view of a calibration: the subject's screen
+shows nothing but the targets, so what used to be written on it is here.
+Before the first target it says what the wait is for — `calibration guide:
+eyes: both tracked · press SPACE to start, P or ESC to go back to the pause
+menu` on a TRACKPixx3, `calibration guide: press SPACE to open the Host PC
+setup, ESC to skip` on an EyeLink — then the target and, on a TRACKPixx3, the
+eyes the camera sees (`calibrating: target 2 of 5 · eyes: left only`), and
+`calibration failed: the tracker reports no calibration` when the device did
+not keep the fit. A new stage's first line is published at once, whatever
+the progress throttle. The full guide (eye, layout, advance mode, keys) is
+in the session log.
+
 ## The plots
 
 Every quantity gets the mark that answers the question being asked of it. A

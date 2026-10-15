@@ -2224,7 +2224,7 @@ a pure function with no renderer behind it:
 flowchart LR
     SRC["instructions.md<br/>(hard-wrapped)"] --> RUN["SessionRunner"]
     RUN -->|"show_message(text)"| BE["display backend"]
-    CAL["TRACKPixx3: Calibration FAILED<br/>(two paragraphs)"] -->|"show_message(text)"| BE
+    RW["REWARD FAILURE — check the pump"] -->|"show_message(text)"| BE
     BE -->|"reflow=True"| RF["display.text.reflow<br/>(pure string work)"]
     RF --> LAY["layout: wrap at the measure,<br/>size the box, shrink if too tall"]
     BE -->|"reflow=False"| LAY

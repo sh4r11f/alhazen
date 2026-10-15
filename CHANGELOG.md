@@ -108,6 +108,16 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   outline rule had drawn them as hollow letters). The 5° scale bar moves to
   another corner when a label sits on its bottom-left one. docs/live_monitor.md,
   "Trial view".
+- `CalibrationTargets` is offered by the EyeLink and TRACKPixx3 backends as
+  the optional capability `calibration_targets` (protocol.py), and
+  `procedures.validate` / `procedures.drift_correct` take
+  `calibration_targets=` to draw it. `ValidationResult` and `DriftResult`
+  gain `target_style` and `shown`; the VALIDATION and DRIFT_CORRECTION events
+  gain `target_style` and `targets_shown` (ordinal, position, picture, time)
+  in the CALIBRATION event's shape, only when a target was drawn (a simulated
+  display's events are unchanged). `procedures.target_maker` makes the
+  calibration's target for one procedure; `procedures.target_record` is the
+  shared event shape.
 
 ### Changed
 - Measure mode writes its report under the rig's data root,
@@ -168,6 +178,30 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 - The Run page's parameter editor labels a `Duration` row by the duration,
   its unit beside ("fixation hold (ms)"), where it showed "ms" under
   `fixation_hold`. The estimate's counts line reads at body size.
+- Validation and drift correction draw the calibration's target (user
+  decision, 2026-10-15): `eyetracker.calibration_target` — the standard disc
+  with a hole or a picture, still or pulsating, the same size and pulse — on
+  every tracker, through the presenter the calibration draws with, instead
+  of the 0.5° white disc. On an EyeLink and a TRACKPixx3 it is the tracker's
+  own, so the picture deck carries on from the calibration (a chosen set in
+  its order, a random one from the session seed's `calibration_target`
+  stream, never the same picture twice in a row); a stand-in draws the
+  standard target, still. `procedures.TARGET_SIZE_DVA` and `TARGET_COLOR`
+  are gone.
+- A calibration shows nothing but its targets on the subject's screen (user
+  decision, 2026-10-15), on every tracker path. The calibration guide is no
+  longer drawn: it goes to the session log once per calibration, and the
+  live monitor's procedure line says what the wait is for and the keys that
+  answer it (`calibration guide: eyes: both tracked · press SPACE to start,
+  P or ESC to go back to the pause menu`). The TRACKPixx3 walk draws no eye
+  status line (the live monitor gets it at every refresh, the log per target
+  and on change) and no *Calibration FAILED* message (the log, the live
+  monitor and the pause menu's heading say it, with what to check; the 2.5 s
+  hold is gone). The EyeLink graphics no longer draw the Host PC's caption
+  under the camera image (logged when it changes). The screen is cleared to
+  the background when C is pressed. A new stage's first progress line is
+  published to the live monitor at once, whatever the throttle.
+  `make_calibration_graphics` lost its unused `foreground` argument.
 
 ### Fixed
 - `alhazen.analysis.io.viewpixx.fit_clock` refused two good recordings. It
