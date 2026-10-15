@@ -311,7 +311,65 @@ the light theme; the dark theme is unchanged.
    Measure rig hides the task parameters entirely, as do standalone scripts
    without a parameter-file option. Hidden task parameters are not sent to
    those jobs.
-5. Add any extra `run.py` arguments (below), and start the run. Run and test require a subject ID and the subject's **Initials**
+
+   The fields are grouped under four headings, in this order, each with the
+   number of its rows: **Stimulus** (what is drawn: sizes, positions,
+   colours, the levels a session runs), **Timing** (how long each part of a
+   trial lasts), **Session** (trials, blocks, repeats, their order, who the
+   session is for, what pays) and **Other** (anything else: gaze windows,
+   response keys, a simulated subject's model). A heading with no rows is
+   left out, and the search hides a heading whose rows it hides; nothing is
+   ever dropped. Rows keep the file's order under their heading.
+
+   A params model says where a field goes with `alhazen.section`, in the
+   field's JSON schema (`x-alhazen-section`):
+
+   ```python
+   from pydantic import ConfigDict, Field
+   from alhazen import Model, section
+
+   class MyParams(Model):
+       hemifields: tuple[str, ...] = Field(("left", "right"),
+                                           json_schema_extra=section("stimulus"))
+
+   class Lapse(Model):           # a nested model: all its fields at once
+       model_config = ConfigDict(json_schema_extra=section("other"))
+   ```
+
+   The names are `stimulus`, `timing`, `session` and `other`; any other
+   name fails when the module is imported. alhazen's own models declare
+   theirs: every `Duration` is Timing, `paradigm` (`SchedulerConfig`), the
+   `reward` policy and `subject_kind` are Session. For each row the page
+   takes the field's own declaration, else the nearest enclosing field's or
+   model's, else infers one from the field's top-level name (so a group
+   such as `paradigm` or `simulation` stays together), first rule first:
+
+   | The top-level field | Goes under |
+   |---|---|
+   | a `Duration` (`{ms}` or `{frames}`), or a name ending `_ms`, `_frames`, or `_s` that is not a rate | Timing |
+   | a session word: `paradigm`, `block(s)`, `trial(s)`, `repeat(s)`, `break(s)`, `session`, `failures`, `order`, `shuffle`, `seed`, `reward`, `subject`, `stages`, or `n_per_…` | Session |
+   | a response criterion: `window`, `tolerance`, `threshold`, `clearance`, `key(s)`, `error`, `settle` | Other |
+   | a timing word: `timeout`, `duration`, `jitter`, `iti`, `hold`, `dwell`, `delay`, `interval`, `soa`, `latency`, `lifetime`, `period`, `gap` | Timing |
+   | a spatial unit last (`_dva`, `_deg`, `_cpd`, `_px`, `_cm`), a rate (`_dva_s`, `_rev_s`, `_deg_s`), or a stimulus word (`color`, `contrast`, `luminance`, `palette`, `background`, `ink`, `size`, `radius`, `diam`, `eccentricity`, `speed`, `coherence`, `dot(s)`, `stimulus`, `stimuli`, `gabor`, `orientation`, `pedestal`, `aperture`, `opacity`) | Stimulus |
+   | anything else | Other |
+
+   So an experiment on an older alhazen, whose schema declares nothing,
+   still shows every field, each where its name puts it; a declaration is
+   how an experiment overrides an inference it disagrees with.
+5. Above the launch button, the estimate says how long the launch would
+   take, and beside it how many conditions run and how many trials of each,
+   then the total: "72 conditions × 8 trials = 576 trials · 8 blocks", or
+   "24 conditions, 8–16 trials each = 288 trials" when the counts differ.
+   The counts are those of the task's own schedule drained to its end, the
+   same that gives the total; **How this is worked out** lists the groups
+   and each condition's levels and count. An adaptive plan gives its range
+   and who decides ("16–80 trials · 4 conditions, trials decided by the
+   staircase", with each staircase's bounds in the disclosure), or "trials
+   decided by the stopping rule" for a task that chooses its stimuli as it
+   runs. What the number leaves out (calibration, rests until SPACE,
+   re-served trials, adaptive bounds) is listed under it as before. A
+   project on an alhazen older than these counts shows the total alone.
+6. Add any extra `run.py` arguments (below), and start the run. Run and test require a subject ID and the subject's **Initials**
    (1 to 5 letters, sent uppercase as `--initials`); simulate can use its own
    default subject and needs no initials. Initials that break the rule are
    refused on the page in the command line's words ("initials must be 1 to 5
@@ -326,7 +384,7 @@ the light theme; the dark theme is unchanged.
    headless, and only test accepts mouse gaze. A Training launch with
    **Rehearse this stage** ticked is a simulation too, so it shows the
    Headless box: untick it to watch the stage in a window.
-6. Follow the console or view generated media. Images can be enlarged or saved.
+7. Follow the console or view generated media. Images can be enlarged or saved.
    Movies appear once recording finishes, with native playback and seeking.
 
 ### The random seed

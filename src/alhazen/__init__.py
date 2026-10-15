@@ -28,6 +28,7 @@ from alhazen.config.models import (
     SessionInfo,
     SyncHwConfig,
 )
+from alhazen.config.sections import section
 from alhazen.core.engine import QuitRequested, TrialEngine, TrialResult
 from alhazen.core.events import Event, EventBus, EventSchema
 from alhazen.core.trial import (
@@ -120,6 +121,7 @@ __all__ = [
     "RigConfig",
     "SchedulerConfig",
     "Screen",
+    "section",
     "SessionConfig",
     "SessionError",
     "SessionInfo",

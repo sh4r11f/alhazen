@@ -65,6 +65,24 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   `result` (`applied`, `refused`, `failed` or `discarded`) and a `note`. The
   newest 20 travel in each live monitor state as `commands`, and at once on
   `GET /api/commands`.
+- **Task parameters in sections on the Run page.** The fields editor groups
+  rows under Stimulus, Timing, Session and Other, each with its count; the
+  search hides emptied headings. A params model declares a field's section
+  with `alhazen.section("stimulus" | "timing" | "session" | "other")` in the
+  field's or a nested model's `json_schema_extra` (`x-alhazen-section`;
+  `alhazen.config.sections`). Undeclared fields are inferred from their
+  top-level name (documented rules, docs/workspace.md), so experiments on an
+  older alhazen render fully inferred. alhazen's `Duration` declares Timing,
+  `SchedulerConfig` and `RewardPolicy` Session, `SubjectParams.subject_kind`
+  Session (additive JSON-schema keys; validation unchanged).
+- **The estimate says how many conditions run and how many trials of each**,
+  beside the total ("72 conditions × 8 trials = 576 trials · 8 blocks";
+  "24 conditions, 8–16 trials each" when unequal; "trials decided by the
+  staircase" with each estimator's bounds for adaptive plans). The counts
+  come from the drained schedule: `PlannedSchedule.cell_counts` (filled by
+  `drain`), `AdaptiveSchedule.estimators` / `per_estimator` / `decided_by`
+  (filled by `adaptive_bounds`), all optional with defaults. The answer's
+  `counts` gain `per_condition`; every uncertainty line is kept.
 
 ### Changed
 - Measure mode writes its report under the rig's data root,
@@ -100,6 +118,11 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   the PsychoPy window.
 - Commands discarded at the start of a pause or after a procedure are
   acknowledged as `discarded` instead of being dropped silently.
+
+
+- The Run page's parameter editor labels a `Duration` row by the duration,
+  its unit beside ("fixation hold (ms)"), where it showed "ms" under
+  `fixation_hold`. The estimate's counts line reads at body size.
 
 ### Fixed
 - `alhazen.analysis.io.viewpixx.fit_clock` refused two good recordings. It

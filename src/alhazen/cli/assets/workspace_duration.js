@@ -20,6 +20,9 @@
  * Interface for a shell:
  *   DurationEstimate.signature(draft)              -> string ('' for null)
  *   DurationEstimate.describe(answer)              -> {state, value, counts, plus, details}
+ *     counts: the conditions, the trials of each and the total, e.g.
+ *     "72 conditions × 8 trials = 576 trials · 8 blocks" (answers from an
+ *     older alhazen carry no per-condition counts: "576 trials · 8 blocks")
  *   DurationEstimate.mount(container, {ask, read, debounceMs, document, timers})
  *       -> {update(), refresh(), dispose(), current()}
  *     ask(draft, signal) -> Promise<answer>   (POST /api/estimate)
@@ -69,16 +72,66 @@ const DurationEstimate = (() => {
     return range;
   }
 
-  function countsText(counts) {
-    if (!counts) return '';
+  const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+  /* What each condition runs, from the answer's per_condition (an alhazen
+   * older than these counts sends none, and the line is the total alone):
+   * "72 conditions × 8 trials", "24 conditions, 8–16 trials each",
+   * "6 conditions, trials decided by the staircase". */
+  function conditionsText(counts) {
+    const per = counts?.per_condition;
+    if (!per) return '';
+    const n = counts.conditions;
+    if (counts.kind === 'planned') {
+      const groups = per.groups || [];
+      if (!groups.length || !n) return '';
+      if (groups.length === 1) return `${plural(n, 'condition')} × ${plural(groups[0].trials, 'trial')}`;
+      return `${plural(n, 'condition')}, ${groups.at(-1).trials}–${groups[0].trials} trials each`;
+    }
+    const decided = `trials decided by ${per.decided_by || 'the stopping rule'}`;
+    return n ? `${plural(n, 'condition')}, ${decided}` : decided;
+  }
+
+  function trialsText(counts) {
     const t = counts.trials;
     const hi = counts.trials_max;
-    let text;
-    if (hi === t) text = `${t} trial${t === 1 ? '' : 's'}`;
-    else if (hi === null || hi === undefined) text = `${t}+ trials`;
-    else text = `${t}–${hi} trials`;
-    if (counts.blocks) text += ` · ${counts.blocks} block${counts.blocks === 1 ? '' : 's'}`;
+    if (hi === t) return plural(t, 'trial');
+    if (hi === null || hi === undefined) return `${t}+ trials`;
+    return `${t}–${hi} trials`;
+  }
+
+  function countsText(counts) {
+    if (!counts) return '';
+    let text = trialsText(counts);
+    const each = conditionsText(counts);
+    if (each) text = counts.kind === 'planned' ? `${each} = ${text}` : `${text} · ${each}`;
+    if (counts.blocks) text += ` · ${plural(counts.blocks, 'block')}`;
     return text;
+  }
+
+  /* The disclosure's Conditions section: the groups by trial count, then
+   * each condition's levels and count as far as the answer lists them. */
+  function conditionLines(counts) {
+    const per = counts?.per_condition;
+    if (!per) return [];
+    if (counts.kind === 'planned') {
+      const lines = (per.groups || []).map(
+        (g) => `${plural(g.conditions, 'condition')} × ${plural(g.trials, 'trial')}`);
+      (per.rows || []).forEach((r) => lines.push(`${r.label}: ${plural(r.trials, 'trial')}`));
+      const more = (per.rows_total || 0) - (per.rows || []).length;
+      if (more > 0) lines.push(`… and ${plural(more, 'more condition')}`);
+      return lines;
+    }
+    const lines = [];
+    const est = per.per_estimator;
+    if (est && per.estimators) {
+      const span = est.max === null || est.max === undefined
+        ? `at least ${est.min}` : (est.min === est.max ? `${est.min}` : `${est.min}–${est.max}`);
+      lines.push(`${plural(per.estimators, 'estimator')} (${per.decided_by}), ${span} trials each`);
+    } else {
+      lines.push(`Which conditions run, and how many trials of each, is decided by ${per.decided_by} as the session runs`);
+    }
+    return lines;
   }
 
   const STATES = {
@@ -115,8 +168,10 @@ const DurationEstimate = (() => {
       });
     }
     const counts = answer.counts;
+    const conditions = conditionLines(counts);
+    if (conditions.length) details.push({heading: 'Conditions', lines: conditions});
     if (counts && counts.kind === 'adaptive') {
-      details.push({heading: 'Trials', lines: [countsText(counts) + ', set by the stopping rule']});
+      details.push({heading: 'Trials', lines: [trialsText(counts) + ', set by the stopping rule']});
     }
     if (answer.manual && answer.manual.length) {
       details.push({heading: 'Not included: up to a person', lines: answer.manual});
@@ -180,7 +235,12 @@ const DurationEstimate = (() => {
     function paint(view) {
       root.dataset.state = view.state;
       value.textContent = view.value;
-      counts.textContent = view.counts;
+      // " · "-separated parts; each after the first ("8 blocks") stays on
+      // one line, so a narrow column breaks between parts, not inside one.
+      counts.replaceChildren(...String(view.counts || '').split(' · ').flatMap((part, i) => {
+        const span = node('span', i ? 'duration-part' : '', part);
+        return i ? [node('span', '', ' · '), span] : [span];
+      }));
       counts.hidden = !view.counts;
       plus.textContent = view.plus;
       plus.hidden = !view.plus;
@@ -283,7 +343,7 @@ const DurationEstimate = (() => {
     };
   }
 
-  return {signature, describe, mount, spanText, countsText};
+  return {signature, describe, mount, spanText, countsText, conditionsText};
 })();
 
 if (typeof window !== 'undefined') window.DurationEstimate = DurationEstimate;

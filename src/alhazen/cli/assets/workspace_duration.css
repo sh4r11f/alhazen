@@ -78,9 +78,16 @@
   color: var(--bad-ink);
 }
 
+/* The conditions, the trials of each and the total: what the operator
+ * checks against the design, so it reads at body size, not as a caption. */
 .duration-counts {
-  font: 600 12px/1.4 var(--mono);
-  color: var(--muted);
+  font: 600 14px/1.4 var(--sans);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+
+.duration-counts .duration-part {
+  white-space: nowrap;
 }
 
 .duration-plus {

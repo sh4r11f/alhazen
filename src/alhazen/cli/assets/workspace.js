@@ -1889,8 +1889,12 @@ function setValue(path, value) {
  * Draw the parameter editor: the two tab buttons' pressed state, which of
  * the fields list and the text area is visible, and — for the fields
  * editor — one row per leaf value in `values`, with nested mappings
- * flattened into "group / key" labels. Every row writes straight into
- * `values` on change, so a launch sends exactly what is on screen.
+ * flattened into "group / key" labels, grouped under the Stimulus, Timing,
+ * Session and Other headings (ParameterSections says which; a heading with
+ * no rows is left out). Within a heading, rows keep the file's order, and
+ * controls are numbered in the file's order whatever heading they land
+ * under. Every row writes straight into `values` on change, so a launch
+ * sends exactly what is on screen.
  */
 function renderEditor() {
   $('fields-tab').setAttribute('aria-pressed', String(editor === 'fields'));
@@ -1913,9 +1917,15 @@ function renderEditor() {
     host.append(node('p', 'help', noValuesHint(project())));
     return;
   }
-  // Controls are numbered param-0, param-1, … in document order, and each
+  // Controls are numbered param-0, param-1, … in the file's order, and each
   // label points at its control by that id.
   let number = 0;
+  const buckets = new Map(ParameterSections.ORDER.map((name) => [name, []]));
+  function place(row, path) {
+    const where = ParameterSections.of(parameterSchema, path);
+    row.dataset.section = where.section;
+    buckets.get(where.section).push(row);
+  }
   function addFields(object, prefix = []) {
     for (const [key, value] of Object.entries(object)) {
       const path = [...prefix, key];
@@ -1928,9 +1938,15 @@ function renderEditor() {
       const row = node('div', 'parameter-row');
       // The search box filters rows on this lower-cased dotted path.
       row.dataset.key = path.join('.').toLowerCase();
-      const lab = node('label', '', key.replaceAll('_', ' '));
+      // A Duration's one value ({ms} or {frames}) is labelled by the
+      // duration it is, its unit beside: "fixation hold (ms)", not "ms"
+      // under "fixation_hold".
+      const unit = prefix.length && (key === 'ms' || key === 'frames');
+      const named = unit ? prefix.at(-1) : key;
+      const group = unit ? prefix.slice(0, -1) : prefix;
+      const lab = node('label', '', named.replaceAll('_', ' ') + (unit ? ` (${key})` : ''));
       lab.htmlFor = `param-${number++}`;
-      if (prefix.length) lab.append(node('small', '', prefix.join(' / ')));
+      if (group.length) lab.append(node('small', '', group.join(' / ')));
       const selection = ParameterChoices.describe(parameterSchema, path, value);
       if (selection) {
         if (selection.multiple) {
@@ -1968,7 +1984,7 @@ function renderEditor() {
           select.addEventListener('change', () => setValue(path, select.value));
           row.append(lab, select);
         }
-        host.append(row);
+        place(row, path);
         continue;
       }
       // Everything else: a checkbox for a boolean, a number input for a
@@ -2011,19 +2027,43 @@ function renderEditor() {
         }
       });
       row.append(lab, input);
-      host.append(row);
+      place(row, path);
     }
   }
   addFields(values);
+  for (const [name, rows] of buckets) {
+    if (!rows.length) continue;
+    const section = node('section', 'parameter-section');
+    section.dataset.section = name;
+    const heading = node('h4', 'parameter-section-title');
+    heading.id = `parameter-section-${name}`;
+    section.setAttribute('aria-labelledby', heading.id);
+    heading.append(
+      node('span', 'parameter-section-name', ParameterSections.LABELS[name]),
+      node('span', 'parameter-section-count', String(rows.length)),
+    );
+    section.append(heading, ...rows);
+    host.append(section);
+  }
   filterParameters();
 }
 
-/** Hide the rows whose dotted path does not contain the search text. A
+/** Hide the rows whose dotted path does not contain the search text, and
+ *  each heading left with no row; a heading's count is its rows shown. A
  *  space in the query stands for an underscore, as the labels show them. */
 function filterParameters() {
   const query = $('parameter-search').value.toLowerCase().replaceAll(' ', '_');
-  for (const row of $('parameter-fields').children) {
-    if (row.dataset.key) row.hidden = !row.dataset.key.includes(query);
+  for (const section of $('parameter-fields').children) {
+    if (!section.dataset.section) continue;
+    let shown = 0;
+    for (const row of section.children) {
+      if (!row.dataset.key) continue;
+      row.hidden = !row.dataset.key.includes(query);
+      if (!row.hidden) shown += 1;
+    }
+    section.hidden = shown === 0;
+    const count = section.querySelector('.parameter-section-count');
+    if (count) count.textContent = String(shown);
   }
 }
 
