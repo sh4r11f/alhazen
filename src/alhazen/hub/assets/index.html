@@ -1,0 +1,60 @@
+<!doctype html>
+<!--
+  Alhazen Experiment Hub: the one page, shared by the central hub (served at /)
+  and a rig's loopback dashboard (served at /hub). Static on purpose: no
+  templating, no inline script or style, so it runs under the dashboard's
+  policy (everything from 'self'). Which host it is on comes from
+  GET /api/hub/v1/config (role "server" or "rig"); on a rig the dashboard
+  token arrives in the address fragment, as for the workspace.
+
+  Every file it loads is under /hub/assets/ (each host serves a fixed table
+  of them): hub.css, hub_docs.css, hub_core.js (pure helpers), hub_docs.js
+  (the documentation viewer, its own module), hub.js (views and controller,
+  which finds the elements below by id). #main holds one screen at a time,
+  each a real address (?view=...; HubCore.parseRoute).
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Alhazen Experiment Hub</title>
+  <link rel="icon" href="/hub/assets/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/hub/assets/hub.css">
+  <link rel="stylesheet" href="/hub/assets/hub_docs.css">
+  <script src="/hub/assets/hub_core.js" defer></script>
+  <script src="/hub/assets/hub_docs.js" defer></script>
+  <script src="/hub/assets/hub.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="masthead">
+    <div class="masthead-inner">
+      <a class="brand" id="brand" href="?">
+        <svg class="brand-mark" viewBox="0 0 64 64" width="28" height="28" aria-hidden="true" focusable="false"><path class="mark-ink" d="M7.83 56.61L11.81 49.72L11.98 49.52L12.21 49.35L12.38 49.28L12.64 49.24L20.6 49.24L16.62 42.35L16.55 42.2L16.51 42.01L16.5 41.82L16.53 41.64L16.62 41.39L26.31 24.61L26.49 24.39L26.73 24.23L26.92 24.16L27.12 24.13L27.41 24.16L27.6 24.23L27.77 24.33L27.92 24.47L28.02 24.61L37.41 40.87L44.77 40.87L27.17 10.39L4.15 50.24ZM55.59 57.61L59.27 51.24L13.24 51.24L9.57 57.61ZM26.59 40.87L30.85 33.5L27.17 27.13L19.23 40.87Z"/><path class="mark-face" d="M22.91 49.24L59.27 49.24L36.26 9.39L28.9 9.39L47.38 41.39L47.45 41.55L47.49 41.75L47.5 41.95L47.46 42.14L47.34 42.41L47.14 42.64L46.89 42.79L46.7 42.85L46.52 42.87L19.23 42.87Z"/></svg>
+        <span class="brand-word">Alhazen</span>
+        <span class="brand-sub">Experiment Hub</span>
+      </a>
+      <p class="role" id="role-badge" aria-live="polite"></p>
+      <nav class="primary-nav" id="primary-nav" aria-label="Hub"></nav>
+      <div class="account" id="account"></div>
+    </div>
+  </header>
+  <div class="banner" id="banner" role="status" aria-live="polite" hidden></div>
+  <main class="main" id="main" tabindex="-1">
+    <p class="loading"><span class="spinner" aria-hidden="true"></span>Starting the hub page&hellip;</p>
+    <noscript><p class="callout callout-warn">This page needs JavaScript. The rig&rsquo;s own workspace and recorded data do not depend on it.</p></noscript>
+  </main>
+  <footer class="footer">
+    <div class="footer-inner">
+      <p class="footer-note"><span class="footer-word">Alhazen</span><span>Experiment Hub</span></p>
+      <p class="footer-links"><a href="?view=guide" id="footer-guide">Guide</a></p>
+      <div class="theme" role="group" aria-label="Colour theme">
+        <button type="button" class="theme-btn" id="theme-system" aria-pressed="true">Auto</button>
+        <button type="button" class="theme-btn" id="theme-light" aria-pressed="false">Light</button>
+        <button type="button" class="theme-btn" id="theme-dark" aria-pressed="false">Dark</button>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

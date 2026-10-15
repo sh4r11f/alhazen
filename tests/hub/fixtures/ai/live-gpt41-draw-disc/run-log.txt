@@ -1,0 +1,6 @@
+2026-10-09 18:14:46,605 INFO alhazen.session.runner: trial 1 attempt 1: FIXATED
+Traceback (most recent call last):
+  File "src/fixation_flash/task.py", line 102, in draw
+    self.display.draw_disc(
+AttributeError: 'SimulatedDisplay' object has no attribute 'draw_disc'
+2026-10-09 18:14:47,129 ERROR alhazen.session.runner: session end: FAILED on trial 2 after 1 rows (FIXATED 1) — AttributeError: 'SimulatedDisplay' object has no attribute 'draw_disc'

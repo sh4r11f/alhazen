@@ -1,0 +1,335 @@
+{
+ "schema_version": 1,
+ "title": "Alhazen guide",
+ "alhazen_version": "2.13.0",
+ "intro": "Every experiment starts in one of 7 modes. Simulate, test and run share one code path and differ only in trial counts, who supplies the gaze and keys, and where the data goes.",
+ "modes": [
+  {
+   "id": "measure",
+   "summary": "measure what this rig actually does: display, response keys, eye tracker",
+   "runs_trials": false,
+   "drives_subject": false,
+   "writes_real_data": false,
+   "refuses_development_rig": false,
+   "accepts": {
+    "headless": false,
+    "mouse": false,
+    "calibration_target": false
+   },
+   "data": "a measurement report, printed and written next to the rig file",
+   "source": "alhazen.modes:Mode"
+  },
+  {
+   "id": "demo",
+   "summary": "look at the stimulus, with no trials and no data",
+   "runs_trials": false,
+   "drives_subject": false,
+   "writes_real_data": false,
+   "refuses_development_rig": false,
+   "accepts": {
+    "headless": false,
+    "mouse": false,
+    "calibration_target": false
+   },
+   "data": "nothing: no trials and no data",
+   "source": "alhazen.modes:Mode"
+  },
+  {
+   "id": "movie",
+   "summary": "write the stimulus to movie files, for a demo you can send",
+   "runs_trials": false,
+   "drives_subject": false,
+   "writes_real_data": false,
+   "refuses_development_rig": false,
+   "accepts": {
+    "headless": false,
+    "mouse": false,
+    "calibration_target": false
+   },
+   "data": "movie files and a contact sheet in the folder given with --out",
+   "source": "alhazen.modes:Mode"
+  },
+  {
+   "id": "simulate",
+   "summary": "the whole session, driven by a simulated subject",
+   "runs_trials": true,
+   "drives_subject": false,
+   "writes_real_data": false,
+   "refuses_development_rig": false,
+   "accepts": {
+    "headless": true,
+    "mouse": false,
+    "calibration_target": false
+   },
+   "data": "<data root>-rehearsal, a sibling the analysis never reads as subjects",
+   "source": "alhazen.modes:Mode"
+  },
+  {
+   "id": "test",
+   "summary": "the whole session with fewer trials, for a person to sit through once",
+   "runs_trials": true,
+   "drives_subject": false,
+   "writes_real_data": false,
+   "refuses_development_rig": false,
+   "accepts": {
+    "headless": false,
+    "mouse": true,
+    "calibration_target": true
+   },
+   "data": "<data root>-rehearsal, a sibling the analysis never reads as subjects",
+   "source": "alhazen.modes:Mode"
+  },
+  {
+   "id": "run",
+   "summary": "the experiment",
+   "runs_trials": true,
+   "drives_subject": true,
+   "writes_real_data": true,
+   "refuses_development_rig": true,
+   "accepts": {
+    "headless": false,
+    "mouse": false,
+    "calibration_target": true
+   },
+   "data": "the rig's data root",
+   "source": "alhazen.modes:Mode"
+  },
+  {
+   "id": "training",
+   "summary": "one stage of the monkey training ladder, paid on that stage's success",
+   "runs_trials": true,
+   "drives_subject": true,
+   "writes_real_data": false,
+   "refuses_development_rig": true,
+   "accepts": {
+    "headless": false,
+    "mouse": false,
+    "calibration_target": true
+   },
+   "data": "<data root>-training/<ladder>/<stage>/, never the experiment's own root",
+   "source": "alhazen.modes:Mode"
+  }
+ ],
+ "sections": [
+  {
+   "id": "timing",
+   "title": "Timing",
+   "items": [
+    {
+     "id": "frames",
+     "title": "Phases last whole frames",
+     "text": "A phase of d seconds is on screen for d to the nearest display frame. The frame its time runs out on is drawn by the next phase, so nothing stays up a frame late.",
+     "sources": [
+      "alhazen.core.engine:TrialEngine"
+     ],
+     "values": []
+    },
+    {
+     "id": "flip-stamps",
+     "title": "Events carry the flip's time",
+     "text": "A visual event is stamped with the time of the screen flip that showed it, not the moment the code asked for it; device messages and sync pulses follow that flip.",
+     "sources": [
+      "alhazen.core.engine:TrialEngine"
+     ],
+     "values": []
+    },
+    {
+     "id": "durations",
+     "title": "Durations in milliseconds or frames",
+     "text": "A Duration is given in ms or in display frames and is resolved once, against the measured refresh rate, when the session is built.",
+     "sources": [
+      "alhazen.config.models:Duration"
+     ],
+     "values": []
+    },
+    {
+     "id": "refresh",
+     "title": "The refresh rate is measured and checked",
+     "text": "Frame arithmetic uses the measured refresh rate after checking it agrees with the rig file's rate within its tolerance; a disagreement stops the session instead of silently changing every frame-based duration.",
+     "sources": [
+      "alhazen.config.models:resolve_refresh"
+     ],
+     "values": []
+    },
+    {
+     "id": "frame-qa",
+     "title": "Dropped frames are counted",
+     "text": "Every frame interval is logged. The rig's frame-QA policy decides what a trial with dropped frames does; under recycle_trial it ends as DROPPED_FRAMES and its condition is served again.",
+     "sources": [
+      "alhazen.config.models:FrameQAConfig"
+     ],
+     "values": [
+      "log",
+      "warn",
+      "mark_trial",
+      "recycle_trial",
+      "abort_run"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "hardware",
+   "title": "Rigs and hardware",
+   "items": [
+    {
+     "id": "real-data",
+     "title": "Development rigs never collect real data",
+     "text": "Run and training modes refuse a rig whose file says real_data: false before anything is opened or written. Every other mode may rehearse on it.",
+     "sources": [
+      "alhazen.modes:real_data_refusal"
+     ],
+     "values": []
+    },
+    {
+     "id": "flags",
+     "title": "Flags belong to one mode",
+     "text": "--headless is honoured only by simulate, --mouse only by test; any other mode refuses the flag by name rather than ignoring it.",
+     "sources": [
+      "alhazen.modes:flag_refusal"
+     ],
+     "values": []
+    },
+    {
+     "id": "device-faults",
+     "title": "A failed device aborts the trial",
+     "text": "If a device stops while the measurement is being made, the trial ends as ABORTED with the fault on its row and its condition is served again; during the closing phase the fault is only flagged.",
+     "sources": [
+      "alhazen.core.engine:TrialEngine"
+     ],
+     "values": []
+    },
+    {
+     "id": "measure",
+     "title": "Measure the rig itself",
+     "text": "Measure mode checks the display, the response keys and the eye tracker through the same code a session uses, and reports what it measured.",
+     "sources": [
+      "alhazen.modes.measure"
+     ],
+     "values": []
+    }
+   ]
+  },
+  {
+   "id": "reward",
+   "title": "Subjects and reward",
+   "items": [
+    {
+     "id": "subject-kind",
+     "title": "The params file declares the subject",
+     "text": "A human session opens no reward line, whatever the rig has. A monkey session requires a reward block and pays only the outcomes it names. A file that declares neither keeps the behaviour of versions before 2.12.",
+     "sources": [
+      "alhazen.task.subject_kind:SubjectParams"
+     ],
+     "values": [
+      "human",
+      "monkey"
+     ]
+    },
+    {
+     "id": "training",
+     "title": "Training pays one stage's success",
+     "text": "Training mode runs the stage the operator chooses, pays only that stage's success (and the device-fault reward), refuses a human subject, and never advances a subject by itself: criteria are recommendations.",
+     "sources": [
+      "alhazen.training.ladder:resolve_stage"
+     ],
+     "values": []
+    }
+   ]
+  },
+  {
+   "id": "calibration",
+   "title": "Eye-tracker calibration",
+   "items": [
+    {
+     "id": "startup",
+     "title": "Calibrate before trial 1",
+     "text": "With a real tracker the session asks for a calibration before the first trial. Calibrating is the default; reusing the previous calibration is a separate key, offered only when this rig's own record says it fits. Stand-ins (mouse, simulation) are never asked.",
+     "sources": [
+      "alhazen.session.startup_calibration:StartupCalibration"
+     ],
+     "values": []
+    },
+    {
+     "id": "targets",
+     "title": "Calibration targets",
+     "text": "Run, test and training can choose what the tracker draws: the standard target, chosen pictures or random pictures, still or pulsating.",
+     "sources": [
+      "alhazen.config.models:CalibrationTargetConfig",
+      "alhazen.modes:flag_refusal"
+     ],
+     "values": [
+      "standard",
+      "images",
+      "random_images",
+      "still",
+      "pulse"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "designs",
+   "title": "Trial schedules",
+   "items": [
+    {
+     "id": "schedulers",
+     "title": "How conditions are served",
+     "text": "A task's paradigm block chooses the scheduler. A trial that did not complete (a fixation break, an abort) is served again rather than counted.",
+     "sources": [
+      "alhazen.paradigms.config:SchedulerConfig"
+     ],
+     "values": [
+      "sequence",
+      "constant",
+      "staircase",
+      "questplus",
+      "adjustment"
+     ]
+    },
+    {
+     "id": "estimate",
+     "title": "Session length before launch",
+     "text": "The workspace estimates a session's length from the effective parameters, mode and rig, and says what it cannot know (waits on the subject, adaptive designs).",
+     "sources": [
+      "alhazen.modes.estimate:estimate_trials"
+     ],
+     "values": []
+    }
+   ]
+  },
+  {
+   "id": "documentation",
+   "title": "Experiment documentation",
+   "items": [
+    {
+     "id": "methods",
+     "title": "Methods travel with the code",
+     "text": "An experiment's methods, parameter reference, timelines and stimulus schematics are written by its authors and versioned with its package. Defaults are checked against the package's params file when it is uploaded.",
+     "sources": [
+      "alhazen.hub.documentation:read_documentation"
+     ],
+     "values": []
+    },
+    {
+     "id": "figures",
+     "title": "Figures explain; they do not measure",
+     "text": "Timelines draw only known durations to scale; phases that wait on the subject or happen only sometimes are marked as such. Schematics show the design in degrees of visual angle, not a measurement of your rig.",
+     "sources": [
+      "alhazen.hub.documentation:read_documentation"
+     ],
+     "values": []
+    },
+    {
+     "id": "missing",
+     "title": "Missing documentation is said plainly",
+     "text": "A package without documentation is shown as undocumented. Read its source and parameter files before running it.",
+     "sources": [
+      "alhazen.hub.documentation:read_documentation"
+     ],
+     "values": []
+    }
+   ]
+  }
+ ]
+}

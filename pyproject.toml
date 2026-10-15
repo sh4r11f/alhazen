@@ -72,6 +72,26 @@ analysis = ["scipy>=1.10"]
 # alhazen.devices.spikes imports it lazily and raises a SpikeSourceError
 # naming this extra if it is missing.
 zmq = ["pyzmq>=25"]
+# The experiment hub SERVICE (alhazen.hub.app): the central catalogue,
+# accounts and private data store that a lab runs on one host. Rigs never
+# need it: the rig client and the package format use only the core
+# dependencies, and nothing in the core imports these. FastAPI/uvicorn serve
+# the API, SQLAlchemy Core keeps one schema for PostgreSQL (deployment, via
+# psycopg 3) and SQLite (local development), argon2-cffi hashes passwords.
+# psycopg's binary extra bundles libpq, so the host needs no PostgreSQL
+# client libraries. AI-assisted authoring (alhazen.hub.ai, off unless the
+# operator configures [ai]) calls providers with httpx and encrypts users'
+# provider keys with cryptography's Fernet (already a core dependency
+# through paramiko; named here because the hub uses it directly).
+hub = [
+  "fastapi>=0.115",
+  "uvicorn>=0.30",
+  "sqlalchemy>=2.0.30",
+  "psycopg[binary]>=3.2",
+  "argon2-cffi>=23.1",
+  "httpx>=0.27",
+  "cryptography>=42",
+]
 # The documentation site. Not needed to use alhazen, only to build its docs.
 docs = [
   "mkdocs-material>=9.5",
@@ -89,6 +109,11 @@ dev = [
   # exercising the real encoder, and a writer whose only test skips itself is
   # a writer nobody is testing.
   "alhazen-vision[movie]",
+  # The hub service's tests run the real app in-process (Starlette's
+  # TestClient, which needs httpx) against real SQLite, and against
+  # PostgreSQL when a test database is named; no network.
+  "alhazen-vision[hub]",
+  "httpx>=0.27",
   # Same argument as movie: the sorted_stream backend's socket needs no
   # sorter and no probe — a PUB socket in the test process is a complete
   # far end — so the real transport is tested rather than skipped.
@@ -151,6 +176,15 @@ alhazen = [
   # with them offline. tests/unit/test_calibration_targets.py checks a built
   # wheel carries every file the manifest names.
   "calibration_images/*",
+  # The experiment hub's web interface (index.html, scripts, styles, font),
+  # served by the hub service and by `alhazen dashboard` at /hub.
+  "hub/assets/*",
+  "hub/assets/fonts/*",
+  # The documented scaffold that AI authoring shows a provider as the worked
+  # example of experiment documentation (tests/hub/test_ai_author.py keeps it
+  # equal to tests/hub/fixtures/documentation/scaffold/docs).
+  "hub/ai/example/*",
+  "hub/ai/example/tasks/*",
 ]
 
 [project.urls]
@@ -320,6 +354,9 @@ type = "layers"
 # nothing above config, and stay mutually independent of core.
 layers = [
   "alhazen.cli",
+  # The experiment hub: the central service and the rig client. cli adapts
+  # it (cli/hub.py, the dashboard routes); it never imports cli.
+  "alhazen.hub",
   "alhazen.modes",
   "alhazen.session | alhazen.testing | alhazen.analysis",
   "alhazen.training",

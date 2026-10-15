@@ -1175,21 +1175,26 @@ class TestHTTP:
         """The workspace ships its own font (the page may load nothing from
         outside, and a rig may have no internet) and its logo as the icon."""
         call, _ = http
-        status, headers, font = call("/fonts/Nunito-latin.woff2")
+        status, headers, font = call("/fonts/Manrope-latin.woff2")
         assert status == 200 and headers["Content-Type"] == "font/woff2"
         assert font[:4] == b"wOF2"
         # The CSP names fonts explicitly: from this server only.
         assert "font-src 'self'" in headers["Content-Security-Policy"]
         status, headers, icon = call("/favicon.svg")
         assert status == 200 and headers["Content-Type"] == "image/svg+xml"
-        assert icon.startswith(b"<svg") and b"logo-bricks-turned" in icon
+        assert icon.startswith(b"<svg")
         # An image must be well-formed XML, or the browser shows no icon at
         # all and says nothing (a "--" inside an XML comment is enough). The
-        # letter A is a path clipping the upright bricks, not text.
+        # mark is the Penrose A as two paths (ink, face), not text.
         root = ElementTree.fromstring(icon)
         svg = "{http://www.w3.org/2000/svg}"
-        assert root.find(f".//{svg}clipPath[@id='logo-letter']/{svg}path") is not None
+        assert [p.get("class") for p in root.iter(f"{svg}path")] == ["mark-ink", "mark-face"]
         assert root.find(f".//{svg}text") is None
+        # The sidebar's page icons are served the same way.
+        for name in ("experiments", "general", "run", "data", "history"):
+            status, headers, body = call(f"/icon-{name}.svg")
+            assert status == 200 and headers["Content-Type"] == "image/svg+xml"
+            ElementTree.fromstring(body)
         # Only the named files: nothing else under assets/ by URL.
         assert call("/fonts/OFL.txt")[0] == 404
         assert call("/fonts/../workspace.css")[0] in {400, 404}
@@ -1209,7 +1214,7 @@ class TestHTTP:
         # cli/assets/* covers it).
         package = root / "src" / "alhazen"
         fonts = package / "cli" / "assets" / "fonts"
-        assert sorted(p.name for p in fonts.iterdir()) == ["Nunito-latin.woff2", "OFL.txt"]
+        assert sorted(p.name for p in fonts.iterdir()) == ["Manrope-latin.woff2", "OFL.txt"]
         for path in fonts.iterdir():
             relative = path.relative_to(package)
             assert any(relative.match(pattern) for pattern in patterns), relative
@@ -1400,6 +1405,101 @@ class TestInterpreters:
         workspace.schema(workspace.projects[0]["id"])
         assert seen == {"launch": expected, "schema": expected}
         assert launcher_root not in expected
+
+    def test_an_inherited_launcher_checkout_does_not_reach_another_interpreter(
+        self, tmp_path, monkeypatch
+    ):
+        """A dashboard started from a source checkout with PYTHONPATH=<checkout>/src
+        passed that entry on, so an experiment's own venv ran the launcher's
+        alhazen instead of its pinned one (found importing amodal-averaging into
+        the hub). Dropped for another interpreter; kept for the launcher's own;
+        every other inherited entry kept, in order."""
+        launcher = str(workspace_module._launcher_root())
+        monkeypatch.setenv("PYTHONPATH", os.pathsep.join(["FIRST", launcher, "LAST"]))
+        root = tmp_path / "exp"
+        other = tmp_path / "venv" / "bin" / "python"
+        other.parent.mkdir(parents=True)
+        other.write_text("", encoding="utf-8")
+        base = [str(root / "src"), str(root)]
+        env = workspace_module._child_env({"path": str(root), "python": str(other)})
+        assert env["PYTHONPATH"].split(os.pathsep) == [*base, "FIRST", "LAST"]
+        env = workspace_module._child_env({"path": str(root), "python": sys.executable})
+        assert env["PYTHONPATH"].split(os.pathsep) == [*base, "FIRST", launcher, "LAST"]
+        # No interpreter recorded (an old registry entry): treated as another one.
+        env = workspace_module._child_env({"path": str(root)})
+        assert launcher not in env["PYTHONPATH"].split(os.pathsep)
+
+    def test_a_virtual_environments_python_is_another_interpreter(self, tmp_path, monkeypatch):
+        """A virtual environment's python is a symlink to the base interpreter:
+        still another interpreter, with its own site-packages, so it loses
+        the launcher's entry like any other. Its own test: making the symlink
+        needs a privilege many Windows accounts lack, and as part of the test
+        above it took that test's other cases down with it."""
+        launcher = str(workspace_module._launcher_root())
+        monkeypatch.setenv("PYTHONPATH", os.pathsep.join(["FIRST", launcher, "LAST"]))
+        root = tmp_path / "exp"
+        venv_python = tmp_path / "venv2" / "bin" / "python"
+        venv_python.parent.mkdir(parents=True)
+        try:
+            venv_python.symlink_to(Path(sys.executable).resolve())
+        except OSError as exc:
+            # ERROR_PRIVILEGE_NOT_HELD (1314), as in
+            # test_traversal_and_symlink_media; CI runners have the privilege,
+            # so this runs there. Any other error is a real one.
+            if getattr(exc, "winerror", None) != 1314:
+                raise
+            pytest.skip("symlink creation needs a privilege this account lacks")
+        env = workspace_module._child_env({"path": str(root), "python": str(venv_python)})
+        assert env["PYTHONPATH"].split(os.pathsep) == [
+            str(root / "src"),
+            str(root),
+            "FIRST",
+            "LAST",
+        ]
+
+    def test_another_interpreter_loses_exactly_the_launcher_entry(self, tmp_path, monkeypatch):
+        """A dashboard started from a source checkout (PYTHONPATH=src) put
+        that src/ on every project interpreter's path, so a hub install whose
+        own env pins alhazen ran the launcher's alhazen while the probe
+        reported the env's version (found importing kde-vergence). Another
+        interpreter loses exactly that entry and keeps the rest; the
+        launcher's own interpreter keeps it, since it imports alhazen there.
+
+        Integration (fix/import-round): the kde-vergence and amodal-averaging
+        fixes disagreed on a project with no recorded interpreter; the
+        amodal-averaging rule is kept (an unknown interpreter is treated as
+        another one, so it never silently runs the launcher's alhazen)."""
+        launcher_root = str(Path(workspace_module.__file__).resolve().parents[2])
+        monkeypatch.setenv("PYTHONPATH", os.pathsep.join(["BEFORE", launcher_root, "AFTER"]))
+        root = tmp_path / "project"
+        other = str(tmp_path / "venv" / "bin" / "python")
+        env = workspace_module._child_env({"path": str(root), "python": other})
+        assert env["PYTHONPATH"].split(os.pathsep) == [
+            str(root / "src"),
+            str(root),
+            "BEFORE",
+            "AFTER",
+        ]
+        own = workspace_module._child_env({"path": str(root), "python": sys.executable})
+        assert launcher_root in own["PYTHONPATH"].split(os.pathsep)
+        unnamed = workspace_module._child_env({"path": str(root)})
+        assert launcher_root not in unnamed["PYTHONPATH"].split(os.pathsep)
+        assert unnamed["PYTHONPATH"].split(os.pathsep)[-2:] == ["BEFORE", "AFTER"]
+
+    def test_the_probe_sees_the_environment_the_launch_gets(self, tmp_path, monkeypatch):
+        launcher = str(workspace_module._launcher_root())
+        monkeypatch.setenv("PYTHONPATH", launcher)
+        seen = {}
+
+        def run(command, **kwargs):
+            seen["path"] = kwargs["env"]["PYTHONPATH"]
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="no alhazen")
+
+        monkeypatch.setattr(subprocess, "run", run)
+        other = tmp_path / "python"
+        with pytest.raises(ValueError):
+            workspace_module.probe_interpreter(str(other), str(tmp_path))
+        assert launcher not in seen["path"].split(os.pathsep)
 
     def test_registration_records_which_alhazen_the_interpreter_has(self, workspace, monkeypatch):
         monkeypatch.setattr(workspace_module, "probe_interpreter", REAL_PROBE)

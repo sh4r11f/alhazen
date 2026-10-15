@@ -594,3 +594,27 @@ details.table th { color: var(--muted); font-weight: 600; }
 }
 .stat-label i { text-transform: none; }
 .stat-value { font-family: var(--mono); font-size: 17px; font-variant-numeric: tabular-nums; }
+
+
+/* ---- Split (2026-10-09): the dashboard's chrome language ----
+ * The monitor's chrome follows the workspace: plain sans labels (no mono,
+ * no capitals or tracking), mono kept only for the trial and event counts,
+ * the warm paper the workspace's instrument pane uses, and the brand
+ * written "Alhazen". Chart tokens, colours and axes are untouched. */
+:root { --font: "Manrope", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif; --page: #efe8dd; --wash: #ece5da; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --page: #100e0c; --wash: #23201c; }
+}
+:root[data-theme="dark"] { --page: #100e0c; --wash: #23201c; }
+.brand { font: 800 16px/1.3 var(--font); letter-spacing: -.01em; text-transform: none; }
+.brand::first-letter { text-transform: uppercase; }
+#status { font: 650 12.5px/1.2 var(--font); text-transform: lowercase; letter-spacing: normal; }
+.side-title, .stat-label {
+  font-family: var(--font);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: normal;
+  text-transform: none;
+}
+.stat-value { font-family: var(--font); font-weight: 700; }
+.panel { border-radius: 10px; }

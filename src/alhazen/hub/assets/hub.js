@@ -1,0 +1,4514 @@
+/* Experiment Hub: the page (views and controller).
+ *
+ * One static page for two hosts (see hub_core.js): the central hub, where a
+ * browser signs in with a cookie, and a rig's loopback dashboard, which adds
+ * the rig's own screens (connect to a hub, trust-and-install a release with an
+ * explicit interpreter, package a registered experiment, upload a finished
+ * session). The page never decides what a user may do; every action is a
+ * request the server checks, and a refusal is shown in the server's words.
+ *
+ * Structure. index.html holds the masthead (#brand, #role-badge, #primary-nav,
+ * #account), #banner, #main and the footer (#theme-*). HubApp.mount(env)
+ * draws one screen into #main per address (?view=…, HubCore.parseRoute):
+ *   home        landing: the experiment → rig → data path, recent releases
+ *   catalog     search the published catalogue
+ *   experiment  one experiment: description, citations, licence, release
+ *               spec sheet (hardware, versions, digests); add to library;
+ *               install (rig) or download (central)
+ *   signin, register
+ *   library     the releases this account pinned
+ *   mine        my experiments: create, edit, add a version (zip upload on
+ *               central, package a registered project on a rig), publish
+ *   data        my uploaded sessions: filters, detail, trials, exports, files
+ *   rig         (rig only) connection, installed releases, session upload
+ *
+ * Rules (tests/js/hub_page.test.mjs):
+ * - Text from the server is set with textContent; no markup is ever parsed.
+ * - Each screen draw has an epoch; an answer for an older epoch is dropped and
+ *   its request aborted, so Back/Forward never shows a stale screen.
+ * - A navigation moves focus to the new screen's heading, unless it was an
+ *   in-screen step (a pager, a filter) that names the control to keep.
+ * - Nothing reports success the server did not confirm.
+ *
+ * env (all injectable for tests): {document, location, history, fetch,
+ *   sessionStorage, localStorage, setTimeout, clearTimeout, clipboard,
+ *   scrollTo, matchMedia}
+ */
+'use strict';
+
+const HubApp = (() => {
+  const C = HubCore;
+  const SVG = 'http://www.w3.org/2000/svg';
+  const TOKEN_KEY = 'alhazen-workspace-token';
+  const THEME_KEY = 'alhazen-workspace-theme';
+  const THEMES = ['system', 'light', 'dark'];
+  const PAGE = 20;
+  const POLL_MS = 1000;
+  const POLL_MAX_MS = 8000;
+  /* The contract's package cap; the server enforces it, the page says it
+   * before sending 256 MiB for nothing. */
+  const MAX_PACKAGE_BYTES = 256 * 1024 * 1024;
+
+  function mount(env) {
+    const doc = env.document;
+    const loc = env.location;
+    const hist = env.history;
+    const timers = {set: env.setTimeout || setTimeout, clear: env.clearTimeout || clearTimeout};
+    const $ = (id) => {
+      const el = doc.getElementById(id);
+      if (!el) throw new Error(`hub page: #${id} is missing from index.html`);
+      return el;
+    };
+
+    /* ---- element helper ------------------------------------------------ */
+
+    /** h('a', {class, href, text, on: {click}}, ...children): an element.
+     *  Strings become text: alone they are the element's text, beside other
+     *  children each is its own <span>. Never parses markup. */
+    function h(tag, attrs, ...children) {
+      const el = doc.createElement(tag);
+      const a = attrs || {};
+      for (const [name, value] of Object.entries(a)) {
+        if (value === undefined || value === null || value === false) continue;
+        if (name === 'text') continue;
+        if (name === 'on') {
+          for (const [type, fn] of Object.entries(value)) el.addEventListener(type, fn);
+        } else if (name === 'class') {
+          el.className = value;
+        } else if (['value', 'checked', 'disabled', 'hidden', 'selected'].includes(name)) {
+          el[name] = value;
+        } else if (name === 'dataset') {
+          for (const [k, v] of Object.entries(value)) el.dataset[k] = String(v);
+        } else {
+          el.setAttribute(name, value === true ? '' : String(value));
+        }
+      }
+      const kids = children.flat().filter((c) => c !== null && c !== undefined && c !== false && c !== '');
+      if (a.text !== undefined && a.text !== null) {
+        if (kids.length) kids.unshift(String(a.text));
+        else el.textContent = String(a.text);
+      }
+      if (kids.length === 1 && typeof kids[0] !== 'object') {
+        el.textContent = String(kids[0]);
+      } else {
+        for (const kid of kids) el.appendChild(typeof kid === 'object' ? kid : h('span', null, String(kid)));
+      }
+      return el;
+    }
+
+    function svg(tag, attrs, ...children) {
+      const el = doc.createElementNS(SVG, tag);
+      for (const [name, value] of Object.entries(attrs || {})) el.setAttribute(name, String(value));
+      for (const kid of children) if (kid) el.appendChild(kid);
+      return el;
+    }
+
+    function inDocument(el) {
+      let node = el;
+      while (node) {
+        if (node === doc.documentElement) return true;
+        node = node.parentNode;
+      }
+      return false;
+    }
+
+    function prevent(event) {
+      if (event && typeof event.preventDefault === 'function') event.preventDefault();
+    }
+
+    /* ---- state --------------------------------------------------------- */
+
+    const state = {
+      role: null,           // 'server' | 'rig'
+      config: null,
+      api: null,
+      token: '',
+      user: null,
+      csrf: '',
+      local: null,          // GET /local/status on a rig
+      route: {view: 'home'},
+      epoch: 0,
+      controller: null,
+      pendingFocus: null,   // data-focus key to restore after a draw, or 'heading'
+      flash: null,          // one-shot message for the next screen {text, tone, username}
+      library: null,        // cached GET /library items for this account (null: not loaded)
+      catalog: null,        // {q, at, items}: the whole published catalogue for one search, kept a minute
+      createDraft: null,    // the Create form's description and choices (never the key)
+      polls: [],
+      booted: false,
+    };
+
+    /* ---- chrome: banner, masthead, account, theme ------------------------ */
+
+    function banner(text, tone, action) {
+      const el = $('banner');
+      if (!text) {
+        el.hidden = true;
+        el.replaceChildren();
+        return;
+      }
+      el.className = 'banner banner-' + (tone || 'info');
+      el.replaceChildren(h('span', {class: 'banner-text'}, text));
+      if (action) el.appendChild(h('button', {type: 'button', class: 'btn btn-quiet', on: {click: action.run}}, action.label));
+      el.hidden = false;
+    }
+
+    function link(route, label, attrs) {
+      const href = (loc.pathname || '/') + (C.formatRoute(route) || '');
+      const a = h('a', Object.assign({href}, attrs || {}), label);
+      a.addEventListener('click', (event) => {
+        if (event && (event.button > 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)) return;
+        prevent(event);
+        go(route, {focus: attrs && attrs['data-focus-next']});
+      });
+      return a;
+    }
+
+    function drawNav() {
+      const nav = $('primary-nav');
+      const items = [
+        ['catalog', 'Marketplace'],
+        ['library', 'Library'],
+        ['mine', 'My experiments'],
+        ['data', 'Data'],
+      ];
+      if (state.role === 'rig') items.push(['rig', 'This rig']);
+      const list = h('ul', {class: 'nav-list'});
+      for (const [view, label] of items) {
+        const current = state.route.view === view
+          || (view === 'catalog' && (state.route.view === 'experiment' || state.route.view === 'create'));
+        const a = link({view}, label, {class: 'nav-link', 'aria-current': current ? 'page' : null});
+        list.appendChild(h('li', null, a));
+      }
+      nav.replaceChildren(list);
+    }
+
+    function drawRoleBadge() {
+      const el = $('role-badge');
+      if (state.role === 'rig') {
+        const hub = rigLink();
+        const lamp = hub.state === 'connected' ? 'ok' : (hub.state === 'unreachable' ? 'err' : 'idle');
+        el.replaceChildren(h('span', {class: 'lamp lamp-' + lamp, 'aria-hidden': 'true'}),
+          h('span', {class: 'role-word'}, 'Rig'), h('span', {class: 'role-detail'}, hub.where));
+        el.setAttribute('title', 'This page is served by this rig\u2019s dashboard. ' + hub.sentence);
+      } else if (state.role === 'server') {
+        // The central hub needs no visible badge (the masthead already says
+        // Experiment Hub); assistive technology still hears which host this is.
+        el.replaceChildren(h('span', {class: 'visually-hidden'}, 'Hub'));
+        el.removeAttribute('title');
+      } else {
+        el.replaceChildren();
+      }
+    }
+
+    /** Where this rig's hub link stands, from GET /config (rig.connected,
+     *  checked by the dashboard) and GET /local/status (base_url). */
+    function rigLink() {
+      const rig = state.config && state.config.rig ? state.config.rig : {};
+      const base = (state.local && state.local.base_url) || rig.base_url || '';
+      if (!base) return {state: 'none', where: 'no hub connected', sentence: 'No hub connected.'};
+      if (rig.connected === false) {
+        return {state: 'unreachable', where: hostOf(base) + ' · unreachable', sentence: 'The hub is not answering; local work is unaffected.'};
+      }
+      return {state: 'connected', where: hostOf(base), sentence: 'Connected to ' + hostOf(base) + '.'};
+    }
+
+    /** The host part of a hub address for display ("hub.example.org"),
+     *  or the address itself when it has none. */
+    function hostOf(url) {
+      const match = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]+)/i.exec(String(url || ''));
+      return match ? match[1] : String(url || '');
+    }
+
+    function drawAccount() {
+      const el = $('account');
+      if (!state.role) {
+        el.replaceChildren();
+        return;
+      }
+      const create = state.role === 'server'
+        ? link({view: 'create'}, null, {class: 'btn btn-create', 'aria-current': state.route.view === 'create' ? 'page' : null})
+        : null;
+      if (create) create.append(sparkGlyph(), h('span', {class: 'create-label'}, h('span', null, 'Create'), h('span', {class: 'create-tail'}, ' with AI')));
+      if (state.user) {
+        const who = h('span', {class: 'who'},
+          h('span', {class: 'who-label'}, state.role === 'rig' ? 'Operator' : 'Signed in as'),
+          h('span', {class: 'who-name'}, state.user.display_name || state.user.username),
+          h('span', {class: 'who-handle'}, '@' + state.user.username));
+        const out = h('button', {type: 'button', class: 'btn btn-quiet', on: {click: signOut}}, 'Sign out');
+        el.replaceChildren(...[create, who, out].filter(Boolean));
+      } else {
+        el.replaceChildren(...[create,
+          link({view: 'signin', next: currentNext()}, 'Sign in', {class: 'btn btn-quiet'}),
+          link({view: 'register'}, 'Register', {class: 'btn btn-line'})].filter(Boolean));
+      }
+    }
+
+    function drawChrome() {
+      drawRoleBadge();
+      drawNav();
+      drawAccount();
+    }
+
+    function currentNext() {
+      const r = state.route;
+      if (r.view === 'signin' || r.view === 'register') return undefined;
+      return C.formatRoute(r) || undefined;
+    }
+
+    function applyTheme(choice) {
+      const root = doc.documentElement;
+      if (choice === 'light' || choice === 'dark') root.dataset.theme = choice;
+      else delete root.dataset.theme;
+      for (const name of THEMES) {
+        const button = doc.getElementById('theme-' + name);
+        if (button) button.setAttribute('aria-pressed', String(name === choice));
+      }
+    }
+
+    function setTheme(choice) {
+      if (!THEMES.includes(choice)) return;
+      applyTheme(choice);
+      try {
+        if (choice === 'system') env.localStorage.removeItem(THEME_KEY);
+        else env.localStorage.setItem(THEME_KEY, choice);
+      } catch (exc) {
+        if (!isStorageRefusal(exc)) throw exc;
+        banner('Your theme choice cannot be remembered in this browser; it applies until you leave.', 'info');
+      }
+    }
+
+    /* A browser refuses storage (private windows, blocked site data, a full
+     * quota) with these DOMException names; anything else is a bug. */
+    function isStorageRefusal(exc) {
+      return Boolean(exc && ['SecurityError', 'QuotaExceededError', 'NS_ERROR_DOM_QUOTA_REACHED'].includes(exc.name));
+    }
+
+    function storedTheme() {
+      let value = null;
+      try {
+        value = env.localStorage ? env.localStorage.getItem(THEME_KEY) : null;
+      } catch (exc) {
+        if (!isStorageRefusal(exc)) throw exc;
+        value = null;  // storage blocked: Auto, as on a first visit
+      }
+      return THEMES.includes(value) ? value : 'system';
+    }
+
+    /* ---- navigation -------------------------------------------------------- */
+
+    /** Show `route`. A new address is pushed (or replaced) and drawn; focus
+     *  goes to the heading unless `focus` names a control to keep. */
+    function go(route, opts) {
+      const o = opts || {};
+      const search = C.formatRoute(route);
+      const target = (loc.pathname || '/') + search;
+      const now = (loc.pathname || '/') + (loc.search || '');
+      if (target !== now) {
+        if (o.replace) hist.replaceState(null, '', target);
+        else hist.pushState(null, '', target);
+      }
+      state.pendingFocus = o.focus || 'heading';
+      draw();
+    }
+
+    function onPopState() {
+      state.pendingFocus = 'heading';
+      draw();
+    }
+
+    /** Put focus where the last navigation asked, once that element exists.
+     *  Called after the synchronous draw and after each async fill. */
+    function settleFocus(final) {
+      const key = state.pendingFocus;
+      if (!key) return;
+      if (key !== 'heading') {
+        /* 'a|b': the first of these controls that exists (a pager's Next
+         * may be gone on the last page; its Previous then takes focus). */
+        for (const name of key.split('|')) {
+          const el = doc.querySelector(`[data-focus="${name}"]`);
+          if (el && inDocument(el) && !el.disabled) {
+            el.focus({preventScroll: true});
+            state.pendingFocus = null;
+            return;
+          }
+        }
+        if (!final) return;
+      }
+      const heading = doc.querySelector('[data-heading]');
+      if (heading && inDocument(heading)) {
+        heading.focus({preventScroll: true});
+        if (env.scrollTo) env.scrollTo(0, 0);
+      } else if (!final) {
+        return;  // the heading arrives with the screen's data; wait for it
+      }
+      state.pendingFocus = null;
+    }
+
+    /* ---- requests ----------------------------------------------------------- */
+
+    function api(method, path, opts) {
+      return state.api.request(method, path, opts);
+    }
+
+    /** A request for the current screen: dropped (null) if the reader has
+     *  moved on by the time it answers. Errors of the current screen throw. */
+    async function screenRequest(epoch, method, path, opts) {
+      const o = Object.assign({signal: state.controller ? state.controller.signal : undefined}, opts || {});
+      try {
+        const answer = await api(method, path, o);
+        return epoch === state.epoch ? {ok: true, value: answer} : null;
+      } catch (exc) {
+        if (epoch !== state.epoch || (exc && exc.kind === 'aborted')) return null;
+        noteFailure(exc);
+        return {ok: false, error: exc};
+      }
+    }
+
+    /** Side effects of any failure: a 401 signs the page out; an offline hub
+     *  shows the banner that says local work is unaffected. */
+    function noteFailure(exc) {
+      if (!exc || !exc.kind) return;
+      if (exc.kind === 'unauthorized' && state.user) {
+        state.user = null;
+        state.csrf = '';
+        state.library = null;
+        drawChrome();
+        banner('Your session ended. Sign in again to continue.', 'warn');
+      } else if (exc.kind === 'unauthorized' && state.role === 'rig' && state.local && state.local.user) {
+        /* The adapter cleared its stored credential on that 401. */
+        state.local = Object.assign({}, state.local, {user: null, state: 'signed_out'});
+        state.user = null;
+        drawChrome();
+      } else if (exc.kind === 'offline' || exc.kind === 'unavailable' || exc.kind === 'timeout') {
+        const local = state.role === 'rig'
+          ? ' Installed experiments and the data on this rig are unaffected; uploads can resume later.'
+          : '';
+        banner(exc.message + local, 'warn', {label: 'Retry', run: () => { banner(''); go(state.route, {replace: true}); }});
+      }
+    }
+
+    /* ---- sign-in state -------------------------------------------------------- */
+
+    async function loadMe() {
+      try {
+        const me = await api('GET', '/auth/me');
+        state.user = me && me.user ? me.user : null;
+        if (me && me.csrf_token) state.csrf = String(me.csrf_token);
+      } catch (exc) {
+        state.user = null;
+        if (exc.body && exc.body.csrf_token) state.csrf = String(exc.body.csrf_token);
+        if (exc.kind !== 'unauthorized' && exc.kind !== 'not_configured') throw exc;
+      }
+    }
+
+    async function loadLocal() {
+      if (state.role !== 'rig') return;
+      try {
+        state.local = await api('GET', '/local/status');
+      } catch (exc) {
+        state.local = {state: 'error', error: exc.message};
+      }
+    }
+
+    async function signOut() {
+      let answer = null;
+      try {
+        answer = await api('POST', '/auth/logout', {json: {}});
+      } catch (exc) {
+        if (exc.kind !== 'unauthorized') {
+          banner('Signing out failed: ' + exc.message, 'err');
+          return;
+        }
+      }
+      state.user = null;
+      state.csrf = '';
+      state.library = null;
+      if (state.role === 'rig') await loadLocal();
+      if (state.role === 'server') await loadMe().catch(noteFailure);
+      drawChrome();
+      banner('');
+      let text = 'Signed out.';
+      if (answer && answer.revoked === false) {
+        text = 'Signed out on this rig. The hub could not be reached to revoke the sign-in, so it stays valid there until it expires; this rig no longer holds it.';
+      }
+      if (answer && Number(answer.paused_jobs) > 0) {
+        text += ` ${answer.paused_jobs} upload${answer.paused_jobs === 1 ? ' was' : 's were'} paused; they resume only for the same account.`;
+      }
+      state.flash = {text, tone: answer && answer.revoked === false ? 'warn' : 'ok'};
+      go({view: 'home'});
+    }
+
+    async function libraryItems(force) {
+      if (!state.user) return [];
+      if (state.library && !force) return state.library;
+      const answer = await api('GET', '/library', {query: {limit: 100}});
+      state.library = answer && Array.isArray(answer.items) ? answer.items : [];
+      return state.library;
+    }
+
+    /* ---- startup ------------------------------------------------------------- */
+
+    async function boot() {
+      applyTheme(storedTheme());
+      for (const name of THEMES) {
+        const button = doc.getElementById('theme-' + name);
+        if (button) button.addEventListener('click', () => setTheme(name));
+      }
+      let stored = '';
+      try {
+        stored = env.sessionStorage.getItem(TOKEN_KEY) || '';
+      } catch (exc) {
+        if (!isStorageRefusal(exc)) throw exc;
+        stored = '';  // blocked storage: only a token in the address can be used
+      }
+      const found = C.readToken(loc.hash, stored);
+      state.token = found.token;
+      if (found.fromFragment) {
+        try {
+          env.sessionStorage.setItem(TOKEN_KEY, found.token);
+        } catch (exc) {
+          if (!isStorageRefusal(exc)) throw exc;
+          banner('This browser blocks tab storage, so reloading this page will need the address alhazen dashboard printed.', 'info');
+        }
+        hist.replaceState(null, '', (loc.pathname || '/') + (loc.search || ''));
+      }
+      env.window && env.window.addEventListener && env.window.addEventListener('popstate', onPopState);
+      const probe = C.createApi(apiOptions(state.token ? 'rig' : 'server'));
+      try {
+        state.config = await probe.request('GET', '/config');
+      } catch (exc) {
+        drawStartupFailure(exc);
+        return;
+      }
+      state.role = state.config && state.config.role === 'rig' ? 'rig' : 'server';
+      state.api = C.createApi(apiOptions(state.role));
+      try {
+        await Promise.all([loadMe(), loadLocal()]);
+      } catch (exc) {
+        noteFailure(exc);
+      }
+      state.booted = true;
+      doc.documentElement.dataset.role = state.role;
+      state.pendingFocus = null;
+      draw();
+    }
+
+    function apiOptions(role) {
+      return {
+        fetch: env.fetch, role,
+        token: () => state.token,
+        csrf: () => state.csrf,
+        setTimeout: timers.set, clearTimeout: timers.clear,
+      };
+    }
+
+    function drawStartupFailure(exc) {
+      const main = $('main');
+      let title = 'The hub page cannot start';
+      let body = exc.message;
+      if (exc.kind === 'forbidden') {
+        title = 'Open this page from the rig dashboard\u2019s address';
+        body = 'On a rig, the hub page needs the dashboard\u2019s private address. Run '
+          + '`alhazen dashboard --hub` on this computer and open the address it prints.';
+      } else if (exc.kind === 'offline' || exc.kind === 'timeout' || exc.kind === 'unavailable') {
+        title = 'The hub is not answering';
+      }
+      main.replaceChildren(h('section', {class: 'screen'},
+        h('h1', {class: 'screen-title', tabindex: '-1', 'data-heading': ''}, title),
+        h('p', {class: 'lede'}, body),
+        h('button', {type: 'button', class: 'btn btn-primary', on: {click: () => { main.replaceChildren(); boot(); }}}, 'Try again')));
+    }
+
+    /* ---- drawing a screen --------------------------------------------------- */
+
+    function draw() {
+      if (!state.booted) return;
+      state.epoch += 1;
+      if (state.controller) state.controller.abort();
+      state.controller = new AbortController();
+      for (const id of state.polls) timers.clear(id);
+      state.polls = [];
+      let route = C.parseRoute(loc.search || '');
+      if (route.view === 'rig' && state.role !== 'rig') route = {view: 'home'};
+      if (C.PRIVATE_VIEWS.includes(route.view) && !state.user) {
+        state.flash = state.flash || {text: 'Sign in to see that page.', tone: 'info'};
+        const next = C.formatRoute(route);
+        route = {view: 'signin', next};
+        hist.replaceState(null, '', (loc.pathname || '/') + C.formatRoute(route));
+      }
+      state.route = route;
+      drawChrome();
+      const main = $('main');
+      const screen = SCREENS[route.view] || SCREENS.home;
+      const ctx = {epoch: state.epoch, route};
+      const node = screen(ctx);
+      main.replaceChildren(node);
+      titleFromHeading();
+      settleFocus(false);
+    }
+
+    /** The tab title names the screen by its heading, also when the heading
+     *  arrives with the screen's data (an experiment, a session). */
+    function titleFromHeading() {
+      const heading = $('main').querySelector('[data-heading]');
+      const text = heading ? heading.textContent.replace(/\s+/g, ' ').trim() : '';
+      doc.title = (text ? text + ' · ' : '') + 'Alhazen Experiment Hub';
+    }
+
+    function flashNode() {
+      const f = state.flash;
+      state.flash = null;
+      if (!f) return null;
+      return h('p', {class: 'note note-' + (f.tone || 'info'), role: 'status'}, f.text);
+    }
+
+    /* The first argument names the screen's section; it is no longer drawn
+     * above the heading (the navigation already says where you are). */
+    function screenShell(section_, title, lede) {
+      const section = h('section', {class: 'screen'});
+      const head = h('header', {class: 'screen-head'},
+        h('h1', {class: 'screen-title', tabindex: '-1', 'data-heading': ''}, title),
+        lede ? h('p', {class: 'lede'}, lede) : null);
+      section.appendChild(head);
+      const flash = flashNode();
+      if (flash) section.appendChild(flash);
+      return section;
+    }
+
+    /** A region that shows loading, then content, an empty state or an error
+     *  (with Retry), and is told which by the screen's loader. */
+    function region(label, extraClass) {
+      const el = h('div', {class: 'region' + (extraClass ? ' ' + extraClass : ''), 'aria-live': 'polite', 'aria-busy': 'true'},
+        h('p', {class: 'loading'}, h('span', {class: 'spinner', 'aria-hidden': 'true'}), 'Loading ' + label + '\u2026'));
+      return {
+        el,
+        fill(...nodes) {
+          el.setAttribute('aria-busy', 'false');
+          el.replaceChildren(...nodes.flat().filter(Boolean));
+          titleFromHeading();
+          settleFocus(screenSettled());
+        },
+        fail(error, retry) {
+          el.setAttribute('aria-busy', 'false');
+          el.replaceChildren(errorBox(error, retry));
+          titleFromHeading();
+          settleFocus(screenSettled());
+        },
+      };
+    }
+
+    /** Whether every region of the screen has answered: only then may a
+     *  missing focus target fall back to the heading (a pager arrives with
+     *  the last region, after the session's own data). */
+    function screenSettled() {
+      return !$('main').querySelector('[aria-busy="true"]');
+    }
+
+    function errorBox(error, retry) {
+      const box = h('div', {class: 'callout callout-err', role: 'alert'});
+      let text = error && error.message ? error.message : String(error);
+      if (error && error.kind === 'unauthorized') {
+        box.appendChild(h('p', null, 'Your session has ended.'));
+        box.appendChild(link({view: 'signin', next: currentNext()}, 'Sign in again', {class: 'btn btn-primary'}));
+        return box;
+      }
+      if (error && error.kind === 'not_configured' && state.role === 'rig') {
+        box.appendChild(h('p', null, text));
+        box.appendChild(link({view: 'rig', tab: 'connection'}, 'Connect this rig to a hub', {class: 'btn btn-primary'}));
+        return box;
+      }
+      box.appendChild(h('p', null, text));
+      if (retry) box.appendChild(h('button', {type: 'button', class: 'btn btn-line', on: {click: retry}}, 'Try again'));
+      return box;
+    }
+
+    function emptyState(title, body, ...actions) {
+      return h('div', {class: 'empty'},
+        h('p', {class: 'empty-title'}, title),
+        body ? h('p', {class: 'empty-body'}, body) : null,
+        actions.length ? h('div', {class: 'actions'}, ...actions) : null);
+    }
+
+    function retryCurrent() {
+      go(state.route, {replace: true});
+    }
+
+    /** An inline status line under a form: role=status for progress and
+     *  success, role=alert for refusals. */
+    function statusLine() {
+      const el = h('p', {class: 'form-status', hidden: true});
+      return {
+        el,
+        show(text, tone) {
+          el.className = 'form-status form-status-' + (tone || 'info');
+          el.setAttribute('role', tone === 'err' ? 'alert' : 'status');
+          el.textContent = text;
+          el.hidden = !text;
+        },
+        clear() { el.hidden = true; el.textContent = ''; },
+      };
+    }
+
+    function field(label, input, hint, error) {
+      const id = input.getAttribute('id');
+      const parts = [h('label', {class: 'field-label', for: id}, label), input];
+      if (hint) {
+        const hintId = id + '-hint';
+        input.setAttribute('aria-describedby', hintId);
+        parts.push(h('p', {class: 'field-hint', id: hintId}, hint));
+      }
+      if (error) parts.push(error);
+      return h('div', {class: 'field'}, ...parts);
+    }
+
+    let uid = 0;
+    function nextId(prefix) {
+      uid += 1;
+      return `${prefix}-${uid}`;
+    }
+
+    function input(attrs) {
+      return h('input', Object.assign({id: nextId('f'), class: 'input'}, attrs));
+    }
+
+    function textarea(attrs, value) {
+      const el = h('textarea', Object.assign({id: nextId('f'), class: 'input textarea'}, attrs));
+      el.value = value || '';
+      return el;
+    }
+
+    function checkbox(label, attrs) {
+      const box = h('input', Object.assign({type: 'checkbox', id: nextId('c'), class: 'check'}, attrs));
+      return {box, el: h('label', {class: 'check-row', for: box.getAttribute('id')}, box, h('span', null, label))};
+    }
+
+    /** A <select> of [value, label] pairs showing `value`, or the first
+     *  option when `value` is not one of them (a browser would otherwise
+     *  show the first while reporting no value). */
+    function select(options, value, attrs) {
+      const el = h('select', Object.assign({id: nextId('s'), class: 'input select'}, attrs));
+      const known = options.some(([v]) => String(v) === String(value));
+      const shown = known ? String(value) : (options[0] ? String(options[0][0]) : '');
+      for (const [v, label] of options) {
+        const opt = h('option', {value: v}, label);
+        if (String(v) === shown) opt.selected = true;
+        el.appendChild(opt);
+      }
+      el.value = shown;
+      return el;
+    }
+
+    function spec(rows) {
+      const dl = h('dl', {class: 'spec'});
+      for (const [term, value, opts] of rows) {
+        if (value === null || value === undefined || value === '') continue;
+        dl.appendChild(h('div', {class: 'spec-row'},
+          h('dt', null, term),
+          typeof value === 'object' ? h('dd', {class: opts && opts.mono ? 'mono' : null}, value)
+            : h('dd', {class: opts && opts.mono ? 'mono' : null}, String(value))));
+      }
+      return dl;
+    }
+
+    function copyButton(text, label) {
+      const button = h('button', {type: 'button', class: 'btn btn-quiet btn-small'}, label || 'Copy');
+      button.addEventListener('click', async () => {
+        if (!env.clipboard || typeof env.clipboard.writeText !== 'function') {
+          button.textContent = 'No clipboard here: select the text';
+        } else {
+          try {
+            await env.clipboard.writeText(text);
+            button.textContent = 'Copied';
+          } catch (exc) {
+            /* The browser's refusals (no permission, insecure page); said on
+             * the button. Anything else is a bug and propagates. */
+            if (!exc || !['NotAllowedError', 'SecurityError'].includes(exc.name)) throw exc;
+            button.textContent = 'Copy refused: select the text';
+          }
+        }
+        timers.set(() => { button.textContent = label || 'Copy'; }, 2500);
+      });
+      return button;
+    }
+
+    function digest(sha) {
+      if (!sha) return null;
+      return h('span', {class: 'digest'},
+        h('code', {class: 'mono digest-text', title: 'SHA-256 of the whole release archive'}, String(sha)),
+        copyButton(String(sha), 'Copy'));
+    }
+
+    function hardwareLamps(manifest, compact) {
+      const list = h('ul', {class: 'hw' + (compact ? ' hw-compact' : '')});
+      for (const item of C.hardwareList(manifest)) {
+        const word = item.required === true ? 'needed' : item.required === false ? 'not needed' : 'not declared';
+        const tone = item.required === true ? 'need' : item.required === false ? 'off' : 'idle';
+        list.appendChild(h('li', {class: 'hw-item hw-' + tone, title: item.detail + ': ' + word},
+          h('span', {class: 'hw-glyph', 'aria-hidden': 'true'}, glyph(item.key)),
+          h('span', {class: 'hw-label'}, item.label),
+          compact ? h('span', {class: 'visually-hidden'}, word) : h('span', {class: 'hw-word'}, word)));
+      }
+      return list;
+    }
+
+    /* Small line icons for the device kinds, drawn as SVG (no image files,
+     * nothing the CSP would refuse). */
+    function glyph(kind) {
+      const box = svg('svg', {viewBox: '0 0 20 20', width: '16', height: '16', class: 'glyph', focusable: 'false'});
+      const stroke = {fill: 'none', stroke: 'currentColor', 'stroke-width': '1.6', 'stroke-linecap': 'round', 'stroke-linejoin': 'round'};
+      if (kind === 'display') {
+        box.appendChild(svg('rect', Object.assign({x: '2.5', y: '3.5', width: '15', height: '10', rx: '1.5'}, stroke)));
+        box.appendChild(svg('path', Object.assign({d: 'M7 17h6M10 13.5V17'}, stroke)));
+      } else if (kind === 'eye_tracker') {
+        box.appendChild(svg('path', Object.assign({d: 'M1.8 10s3-5.5 8.2-5.5S18.2 10 18.2 10s-3 5.5-8.2 5.5S1.8 10 1.8 10z'}, stroke)));
+        box.appendChild(svg('circle', Object.assign({cx: '10', cy: '10', r: '2.4'}, stroke)));
+      } else {
+        box.appendChild(svg('path', Object.assign({d: 'M10 2.8s-4.5 5.2-4.5 8.5a4.5 4.5 0 0 0 9 0C14.5 8 10 2.8 10 2.8z'}, stroke)));
+      }
+      return box;
+    }
+
+    function pager(offset, count, nextOffset, makeRoute, focusKey) {
+      const prev = offset > 0;
+      const next = nextOffset !== null && nextOffset !== undefined;
+      if (!prev && !next) return null;
+      const nav = h('nav', {class: 'pager', 'aria-label': 'Pages'});
+      nav.appendChild(h('span', {class: 'pager-label'}, C.nextOffsetLabel(offset, count)));
+      if (prev) {
+        nav.appendChild(link(makeRoute(Math.max(0, offset - PAGE) || undefined), 'Previous',
+          {class: 'btn btn-line', 'data-focus': focusKey + '-prev', 'data-focus-next': focusKey + '-prev|' + focusKey + '-next'}));
+      }
+      if (next) {
+        nav.appendChild(link(makeRoute(nextOffset), 'Next',
+          {class: 'btn btn-line', 'data-focus': focusKey + '-next', 'data-focus-next': focusKey + '-next|' + focusKey + '-prev'}));
+      }
+      return nav;
+    }
+
+    /* ======================================================================
+     * Screens
+     * ==================================================================== */
+
+    /* ---- shared pieces ------------------------------------------------- */
+
+    function versionLabel(version) {
+      if (!version) return '';
+      const v = version.version || (version.manifest && version.manifest.version) || '';
+      const protocol = version.manifest && version.manifest.protocol_version;
+      /* A release numbered apart from its protocol (pyproject) version, as a
+       * documentation-only release is: both, since the data is filed under
+       * the protocol's (import round decision 3). */
+      if (v && protocol && protocol !== v) return 'release ' + v + ', protocol ' + protocol;
+      return v ? 'v' + v : 'version ' + String(version.id || '');
+    }
+
+    function ownerLine(experiment) {
+      const o = experiment && experiment.owner;
+      if (!o) return null;
+      return h('p', {class: 'byline'}, h('span', {class: 'byline-by'}, 'by'),
+        h('span', {class: 'byline-name'}, o.display_name || o.username),
+        h('span', {class: 'byline-handle'}, '@' + o.username));
+    }
+
+    function isOwner(experiment) {
+      return Boolean(state.user && experiment && experiment.owner && experiment.owner.id === state.user.id);
+    }
+
+    function installFor(sha) {
+      const list = state.local && Array.isArray(state.local.installed) ? state.local.installed : [];
+      return list.find((i) => i && i.sha256 === sha) || null;
+    }
+
+    function workspaceLink(install, label) {
+      const href = install ? C.sameOriginPath(install.workspace_url) : null;
+      if (!href) return null;
+      return h('a', {class: 'btn btn-primary', href}, label || 'Open in the workspace');
+    }
+
+    /** A catalogue or library entry: {experiment, version}. A card: the
+     *  stimulus picture drawn from its tags, title (the card's link), one
+     *  line, author, what it needs, version and licence. */
+    function listing(item, extra, opts) {
+      const o = opts || {};
+      const experiment = (item && item.experiment) || {};
+      const version = (item && item.version) || null;
+      const manifest = (version && version.manifest) || {};
+      const card = h('article', {class: 'card' + (o.featured ? ' card-featured' : '')});
+      card.appendChild(h('div', {class: 'card-art', 'aria-hidden': 'true'},
+        schematic(C.schematicKind(experiment.tags), experiment.id || experiment.title, o.featured ? 'wide' : 'strip')));
+      const body = h('div', {class: 'card-body'});
+      body.appendChild(h('h3', {class: 'card-title'},
+        link({view: 'experiment', id: experiment.id, version: version ? version.id : undefined}, experiment.title || 'Untitled experiment',
+          {class: 'card-link'})));
+      if (experiment.summary) body.appendChild(h('p', {class: 'card-summary'}, experiment.summary));
+      const o_ = experiment.owner;
+      if (o_) body.appendChild(h('p', {class: 'card-by'}, o_.display_name || o_.username));
+      card.appendChild(body);
+      const needs = h('ul', {class: 'card-needs', 'aria-label': 'Needs'});
+      const keys = item ? C.hardwareKeys(item) : [];
+      for (const key of keys) {
+        const label = key === 'eye_tracker' ? 'Eye tracker' : key === 'reward' ? 'Reward line' : 'Display only';
+        needs.appendChild(h('li', {class: 'card-need', title: label},
+          h('span', {class: 'card-need-glyph', 'aria-hidden': 'true'}, glyph(key)),
+          h('span', {class: key === 'display' || o.featured ? 'card-need-word' : 'visually-hidden'}, label)));
+      }
+      const subjects = item ? C.subjectKeys(item) : [];
+      const meta = [version && !o.library ? versionLabel(version) : '', experiment.license || manifest.license || ''].filter(Boolean).join(' \u00b7 ');
+      card.appendChild(h('div', {class: 'card-foot'}, needs,
+        subjects.length ? h('span', {class: 'card-subject'}, subjects.map((s) => s === 'human' ? 'Human' : 'Monkey').join(' \u00b7 ')) : null,
+        h('span', {class: 'card-meta'}, meta)));
+      if (o.owned) card.appendChild(h('p', {class: 'card-owned'}, checkGlyph(), h('span', null, 'In your library')));
+      if (extra) card.appendChild(extra);
+      return card;
+    }
+
+    /* ---- stimulus pictures ---------------------------------------------------
+     * A small diagram of the stimulus a listing names in its tags (a Gabor,
+     * random dots, a grid, rings, inducers, a target step, a disc, a fixation
+     * point). Inline SVG, every colour a token through its class. It is an
+     * index picture, not the experiment's stimulus. */
+
+    function schematic(kind, seed, shape) {
+      const wide = shape === 'wide';
+      const W_ = wide ? 360 : 240;
+      const H_ = wide ? 150 : 100;
+      const box = svg('svg', {viewBox: `0 0 ${W_} ${H_}`, class: 'sch sch-' + kind, focusable: 'false', preserveAspectRatio: 'xMidYMid slice'});
+      box.appendChild(svg('rect', {x: '0', y: '0', width: String(W_), height: String(H_), class: 'sch-bg'}));
+      const cx = W_ / 2;
+      const cy = H_ / 2;
+      const s = H_ / 100;
+      const rand = C.seededRandom(seed);
+      const fix = (x, y, r) => svg('circle', {cx: f(x), cy: f(y), r: f(r || 2.6 * s), class: 'sch-accent'});
+      const f = (n) => String(Math.round(n * 10) / 10);
+      const gabor = (x, y, r, angle, id) => {
+        const g = svg('g', {transform: `rotate(${angle} ${f(x)} ${f(y)})`});
+        const period = r / 2.6;
+        for (let k = -6; k <= 6; k += 1) {
+          const off = k * period;
+          if (Math.abs(off) > r) continue;
+          const half = Math.sqrt(r * r - off * off);
+          const env = Math.exp(-(off * off) / (2 * (r / 2.2) * (r / 2.2)));
+          g.appendChild(svg('line', {x1: f(x + off), y1: f(y - half * 0.92), x2: f(x + off), y2: f(y + half * 0.92),
+            class: 'sch-stroke', 'stroke-width': f(period * 0.5), 'stroke-linecap': 'round', opacity: f(0.12 + 0.78 * env)}));
+        }
+        return g;
+      };
+      if (kind === 'gabor') {
+        box.appendChild(gabor(cx + 26 * s, cy, 34 * s, 28));
+        box.appendChild(svg('circle', {cx: f(cx - 52 * s), cy: f(cy), r: f(12 * s), class: 'sch-ring'}));
+        box.appendChild(fix(cx - 52 * s, cy));
+      } else if (kind === 'rivalry') {
+        box.appendChild(gabor(cx - 42 * s, cy, 28 * s, 45));
+        box.appendChild(gabor(cx + 42 * s, cy, 28 * s, -45));
+        box.appendChild(svg('rect', {x: f(cx - 76 * s), y: f(cy - 36 * s), width: f(68 * s), height: f(72 * s), rx: f(4 * s), class: 'sch-ring'}));
+        box.appendChild(svg('rect', {x: f(cx + 8 * s), y: f(cy - 36 * s), width: f(68 * s), height: f(72 * s), rx: f(4 * s), class: 'sch-ring'}));
+      } else if (kind === 'dots') {
+        const R = 38 * s;
+        box.appendChild(svg('circle', {cx: f(cx), cy: f(cy), r: f(R), class: 'sch-ring sch-dash'}));
+        for (let i = 0; i < 46; i += 1) {
+          const a = rand() * Math.PI * 2;
+          const d = Math.sqrt(rand()) * (R - 4 * s);
+          const x = cx + Math.cos(a) * d;
+          const y = cy + Math.sin(a) * d;
+          if (Math.hypot(x - cx, y - cy) < 6 * s) continue;
+          const coherent = rand() < 0.55;
+          if (coherent) {
+            box.appendChild(svg('line', {x1: f(x - 6 * s), y1: f(y), x2: f(x), y2: f(y), class: 'sch-trail', 'stroke-width': f(1.6 * s), 'stroke-linecap': 'round'}));
+          }
+          box.appendChild(svg('circle', {cx: f(x), cy: f(y), r: f(1.9 * s), class: 'sch-ink'}));
+        }
+        box.appendChild(fix(cx, cy));
+      } else if (kind === 'grid') {
+        const cols = wide ? 7 : 5;
+        const rows = 3;
+        const sq = 22 * s;
+        const gap = 8 * s;
+        const w0 = cols * sq + (cols - 1) * gap;
+        const h0 = rows * sq + (rows - 1) * gap;
+        for (let r = 0; r < rows; r += 1) for (let c = 0; c < cols; c += 1) {
+          box.appendChild(svg('rect', {x: f(cx - w0 / 2 + c * (sq + gap)), y: f(cy - h0 / 2 + r * (sq + gap)), width: f(sq), height: f(sq), class: 'sch-ink'}));
+        }
+        box.appendChild(fix(cx - w0 / 2 + 2 * (sq + gap) - gap / 2, cy - h0 / 2 + (sq + gap) - gap / 2, 2.2 * s));
+      } else if (kind === 'rings') {
+        const ring = (x, n, dist, rr) => {
+          for (let i = 0; i < n; i += 1) {
+            const a = (i / n) * Math.PI * 2;
+            box.appendChild(svg('circle', {cx: f(x + Math.cos(a) * dist), cy: f(cy + Math.sin(a) * dist), r: f(rr), class: 'sch-mid'}));
+          }
+          box.appendChild(svg('circle', {cx: f(x), cy: f(cy), r: f(8 * s), class: 'sch-accent'}));
+        };
+        ring(cx - 48 * s, 6, 27 * s, 11 * s);
+        ring(cx + 52 * s, 8, 15 * s, 4 * s);
+      } else if (kind === 'inducers') {
+        const R = 30 * s;
+        const r = 10 * s;
+        for (let i = 0; i < 3; i += 1) {
+          const a = -Math.PI / 2 + (i / 3) * Math.PI * 2;
+          const x = cx + Math.cos(a) * R;
+          const y = cy + 4 * s + Math.sin(a) * R;
+          const toward = Math.atan2(cy + 4 * s - y, cx - x);
+          const a1 = toward - Math.PI / 6;
+          const a2 = toward + Math.PI / 6;
+          box.appendChild(svg('path', {class: 'sch-ink', d: `M${f(x)} ${f(y)}L${f(x + Math.cos(a2) * r)} ${f(y + Math.sin(a2) * r)}`
+            + `A${f(r)} ${f(r)} 0 1 1 ${f(x + Math.cos(a1) * r)} ${f(y + Math.sin(a1) * r)}Z`}));
+        }
+        box.appendChild(fix(cx - 96 * s, cy));
+      } else if (kind === 'step') {
+        const x0 = cx - 70 * s;
+        const x1 = cx + 46 * s;
+        box.appendChild(fix(x0, cy, 3.2 * s));
+        box.appendChild(svg('path', {d: `M${f(x0 + 10 * s)} ${f(cy)}H${f(x1 - 10 * s)}`, class: 'sch-trail sch-dash', 'stroke-width': f(1.6 * s)}));
+        box.appendChild(svg('path', {d: `M${f(x1 - 16 * s)} ${f(cy - 5 * s)}L${f(x1 - 9 * s)} ${f(cy)}L${f(x1 - 16 * s)} ${f(cy + 5 * s)}`, class: 'sch-trail', 'stroke-width': f(1.6 * s), fill: 'none'}));
+        box.appendChild(svg('circle', {cx: f(x1), cy: f(cy), r: f(4.5 * s), class: 'sch-ring'}));
+        box.appendChild(svg('circle', {cx: f(x1 + 22 * s), cy: f(cy), r: f(4.5 * s), class: 'sch-ink'}));
+        box.appendChild(svg('path', {d: `M${f(x1 + 16 * s)} ${f(cy - 12 * s)}h${f(-10 * s)}`, class: 'sch-trail', 'stroke-width': f(1.6 * s)}));
+      } else if (kind === 'disc') {
+        box.appendChild(svg('circle', {cx: f(cx), cy: f(cy), r: f(40 * s), class: 'sch-soft'}));
+        box.appendChild(svg('circle', {cx: f(cx), cy: f(cy), r: f(26 * s), class: 'sch-mid', opacity: '0.35'}));
+        box.appendChild(fix(cx, cy));
+      } else {
+        box.appendChild(svg('circle', {cx: f(cx), cy: f(cy), r: f(24 * s), class: 'sch-ring sch-dash'}));
+        let x = cx + 9 * s;
+        let y = cy - 6 * s;
+        let d = `M${f(x)} ${f(y)}`;
+        for (let i = 0; i < 22; i += 1) {
+          x += (rand() - 0.5) * 5 * s + (cx - x) * 0.18;
+          y += (rand() - 0.5) * 5 * s + (cy - y) * 0.18;
+          d += `L${f(x)} ${f(y)}`;
+        }
+        box.appendChild(svg('path', {d, class: 'sch-trail', 'stroke-width': f(1 * s), 'stroke-linejoin': 'round'}));
+        box.appendChild(svg('circle', {cx: f(cx), cy: f(cy), r: f(10 * s), class: 'sch-ring'}));
+        box.appendChild(fix(cx, cy, 3 * s));
+      }
+      return box;
+    }
+
+    function checkGlyph() {
+      const box = svg('svg', {viewBox: '0 0 20 20', width: '16', height: '16', class: 'glyph glyph-check', focusable: 'false', 'aria-hidden': 'true'});
+      box.appendChild(svg('path', {d: 'M4.5 10.5l3.5 3.5 7.5-8', fill: 'none', stroke: 'currentColor', 'stroke-width': '2', 'stroke-linecap': 'round', 'stroke-linejoin': 'round'}));
+      return box;
+    }
+
+    function sparkGlyph() {
+      const box = svg('svg', {viewBox: '0 0 20 20', width: '16', height: '16', class: 'glyph glyph-spark', focusable: 'false', 'aria-hidden': 'true'});
+      box.appendChild(svg('path', {d: 'M10 2.5l1.7 4.6 4.6 1.7-4.6 1.7L10 15.1l-1.7-4.6-4.6-1.7 4.6-1.7zM15.5 13.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z', fill: 'currentColor'}));
+      return box;
+    }
+
+    function filterGlyph() {
+      const box = svg('svg', {viewBox: '0 0 20 20', width: '16', height: '16', class: 'glyph', focusable: 'false', 'aria-hidden': 'true'});
+      box.appendChild(svg('path', {d: 'M3 5h14M6 10h8M8.5 15h3', fill: 'none', stroke: 'currentColor', 'stroke-width': '1.8', 'stroke-linecap': 'round'}));
+      return box;
+    }
+
+    /* ---- home ------------------------------------------------------------ */
+
+    /* Line icons for the landing page's three facts (SVG, nothing the CSP
+     * would refuse). */
+    function pathGlyph(kind) {
+      const box = svg('svg', {viewBox: '0 0 24 24', width: '20', height: '20', class: 'path-glyph', focusable: 'false', 'aria-hidden': 'true'});
+      const line = {fill: 'none', stroke: 'currentColor', 'stroke-width': '1.6', 'stroke-linecap': 'round', 'stroke-linejoin': 'round'};
+      if (kind === 'experiment') {
+        box.appendChild(svg('path', Object.assign({d: 'M12 2.8l8 4.6v9.2l-8 4.6-8-4.6V7.4z'}, line)));
+        box.appendChild(svg('path', Object.assign({d: 'M4 7.4l8 4.6 8-4.6M12 12v9.2'}, line)));
+      } else if (kind === 'rig') {
+        box.appendChild(svg('rect', Object.assign({x: '3', y: '4', width: '18', height: '12.5', rx: '1.8'}, line)));
+        box.appendChild(svg('path', Object.assign({d: 'M9 20.5h6M12 16.5v4'}, line)));
+        box.appendChild(svg('circle', Object.assign({cx: '12', cy: '10.2', r: '2.6'}, line)));
+      } else {
+        box.appendChild(svg('ellipse', Object.assign({cx: '12', cy: '5.5', rx: '7.5', ry: '2.7'}, line)));
+        box.appendChild(svg('path', Object.assign({d: 'M4.5 5.5v13c0 1.5 3.4 2.7 7.5 2.7s7.5-1.2 7.5-2.7v-13M4.5 12c0 1.5 3.4 2.7 7.5 2.7s7.5-1.2 7.5-2.7'}, line)));
+      }
+      return box;
+    }
+
+    /* The hub's three guarantees, one short line each. */
+    function features() {
+      const rows = [
+        ['experiment', 'Experiments are pinned releases', 'Immutable, checksummed and versioned, with licence and citations.'],
+        ['rig', 'Rigs run them offline', 'A rig installs only the release it trusts. The hub never runs code.'],
+        ['data', 'Data leaves only on upload', 'Sessions stay on the rig until you preview and opt in.'],
+      ];
+      return h('ul', {class: 'features', 'aria-label': 'How the hub works'},
+        ...rows.map(([kind, name, text]) => h('li', {class: 'feature'},
+          h('span', {class: 'feature-icon'}, pathGlyph(kind)),
+          h('h2', {class: 'feature-name'}, name),
+          h('p', {class: 'feature-text'}, text))));
+    }
+
+    /** The landing page's latest releases as one table: a row each, the
+     *  title its link, then version, hardware, licence and platforms. */
+    function releaseTable(items, caption) {
+      const heads = ['Experiment', 'Version', 'Needs', 'Licence', 'Runs on'];
+      const table = h('table', {class: 'table table-list'},
+        h('caption', {class: 'visually-hidden'}, caption),
+        h('thead', null, h('tr', null,
+          ...heads.map((t, i) => h('th', {scope: 'col', class: i === 0 ? 'col-main' : null}, t)))));
+      const tbody = h('tbody');
+      for (const item of items) tbody.appendChild(releaseRow(item));
+      table.appendChild(tbody);
+      return h('div', {class: 'table-wrap'}, table);
+    }
+
+    function releaseRow(item) {
+      const experiment = (item && item.experiment) || {};
+      const version = (item && item.version) || null;
+      const manifest = (version && version.manifest) || {};
+      const o = experiment.owner;
+      const main = h('td', {class: 'col-main'},
+        h('h3', {class: 'list-title'},
+          link({view: 'experiment', id: experiment.id, version: version ? version.id : undefined}, experiment.title || 'Untitled experiment')),
+        experiment.summary ? h('p', {class: 'list-summary'}, experiment.summary) : null,
+        o ? h('p', {class: 'list-by'}, o.display_name || o.username) : null);
+      return h('tr', null, main,
+        h('td', {class: 'list-version'}, version ? versionLabel(version) : ''),
+        h('td', null, hardwareLamps(manifest, true)),
+        h('td', {class: 'list-meta'}, experiment.license || manifest.license || 'Not stated'),
+        h('td', {class: 'list-meta'}, manifest.platforms ? C.platformsText(manifest) : ''));
+    }
+
+
+    /* The landing page's drawing, Murmuration: a random-dot kinematogram
+     * whose coherent dots form a starling in flight. It is a compact node
+     * tree built with createElementNS, never parsed from markup; the
+     * 'dots' and 'segs' shorthands expand to circles and lines. Colours
+     * come from the page: currentColor for ink, the --accent, --muted,
+     * --line-strong, --paper and --surface-2 tokens for the rest. */
+    const HERO_ART = {"spec":["g",{"fill":"none"},[["circle",{"cx":240,"cy":240,"r":224,"stroke":"var(--line-strong)","stroke-width":1.5,"stroke-dasharray":"2 7","stroke-linecap":"round"}],["segs",{"stroke":"currentColor","stroke-width":1.4,"stroke-linecap":"round","opacity":0.4},[[114.2,261.2,121.7,267.1],[86.9,246.0,80.7,237.3],[85.5,270.0,84.5,277.2],[50.3,276.7,49.3,267.4],[52.8,299.0,49.7,307.9],[37.6,311.6,29.7,317.6],[134.8,293.4,140.0,298.2],[107.9,280.3,114.2,275.8],[70.9,311.7,70.3,321.7],[56.8,241.1,52.2,236.1],[116.5,318.3,107.6,315.3],[74.1,231.0,78.8,238.9],[85.3,297.1,90.9,302.5],[155.3,296.3,161.4,299.8],[56.6,212.7,64.5,211.6],[91.7,342.4,99.9,341.9],[141.1,267.3,133.0,260.9],[117.4,241.1,114.9,235.0],[99.8,229.2,92.0,224.4],[86.5,213.8,89.2,219.7],[93.3,316.8,99.4,310.7],[68.2,348.3,71.0,356.1],[55.8,191.7,57.8,201.5],[41.4,259.2,34.9,259.1],[30.4,278.5,33.0,272.6],[37.3,239.1,36.1,245.1],[94.6,378.2,94.2,371.7],[81.1,363.9,74.7,362.8],[35.8,203.3,26.4,204.4],[59.6,330.0,51.6,328.2],[102.2,397.9,94.1,398.7],[105.8,301.6,100.4,297.9],[124.7,389.0,117.6,390.1],[106.0,358.0,113.1,349.9],[141.5,414.1,147.7,416.8],[177.8,418.8,175.3,410.3],[70.0,256.6,79.4,257.7],[119.8,414.0,127.4,411.2],[144.6,389.4,139.5,396.7],[36.2,183.3,42.9,180.6],[188.3,389.8,186.1,396.3],[158.2,432.4,152.4,426.4],[209.6,381.2,209.3,389.2],[202.4,356.5,209.7,358.1],[210.3,328.9,219.1,328.0],[160.8,402.7,158.7,413.2],[213.4,432.4,208.8,438.1],[176.9,445.2,183.5,446.7],[72.3,178.3,74.5,185.1],[210.0,404.5,215.1,399.2],[58.1,159.9,58.1,168.9],[229.4,410.2,235.8,406.5],[223.0,345.3,223.6,337.5],[196.4,450.5,188.1,447.1],[245.9,393.6,255.0,390.1],[236.7,330.4,226.5,329.9],[48.5,140.3,43.2,146.2],[183.8,365.1,192.2,362.9],[218.9,452.0,220.1,444.5],[240.6,360.9,248.4,356.3],[229.2,377.5,229.4,388.2],[251.1,436.8,243.5,438.2],[264.4,409.2,263.9,415.7],[71.8,111.7,74.7,120.7],[284.8,391.6,289.4,397.2],[273.2,440.9,264.9,443.7],[300.8,417.6,293.5,424.4],[292.9,443.8,292.6,451.6],[266.2,371.7,260.2,374.7],[293.5,371.3,294.7,377.9],[95.7,84.7,94.6,78.1],[311.3,398.8,307.8,392.6],[255.6,456.0,250.0,448.6],[254.2,340.4,247.7,348.9],[314.3,438.7,309.5,431.4],[333.6,411.7,341.2,414.0],[119.6,83.6,118.8,91.9],[145.7,104.3,155.1,100.1],[123.4,105.1,132.1,108.6],[130.7,55.8,138.7,52.3],[155.7,126.7,164.2,132.7],[161.1,88.4,151.3,93.2],[148.8,72.4,155.9,65.2],[149.6,49.2,155.4,46.5],[167.7,63.1,169.8,55.9],[193.8,120.4,199.0,126.3],[171.8,138.7,166.7,135.5],[167.7,40.9,158.3,43.9],[231.8,122.0,223.2,122.2],[191.1,150.0,188.0,160.4],[186.4,82.8,186.5,92.2],[208.8,78.3,205.1,73.5],[170.4,105.7,177.6,105.5],[190.1,56.7,200.7,55.9],[186.3,33.3,194.6,27.3],[223.0,98.6,216.5,103.6],[210.6,39.9,204.6,48.7],[232.1,79.2,238.6,80.5],[214.7,59.2,224.4,56.5],[207.8,138.6,204.9,128.2],[241.3,139.5,231.2,138.0],[232.3,33.3,222.4,37.0],[252.9,69.9,260.3,73.4],[222.7,165.8,213.9,161.1],[241.8,190.7,233.5,195.1],[245.2,51.7,253.1,50.1],[252.2,91.5,254.1,97.4],[258.0,110.3,263.4,103.9],[268.2,54.7,261.7,60.3],[259.2,176.3,264.3,181.1],[253.3,156.1,254.0,163.4],[278.6,148.8,283.1,143.2],[294.9,162.5,303.6,168.0],[276.6,126.8,270.9,124.6],[300.2,73.4,295.9,65.0],[274.6,87.3,268.8,79.3],[312.9,147.9,306.5,151.1],[292.9,105.0,292.5,95.9],[312.6,42.9,310.7,36.3],[263.1,26.5,256.6,33.3],[202.3,101.6,195.5,107.6],[297.5,124.0,287.9,125.7],[313.3,89.4,308.4,96.3],[315.4,109.6,318.9,103.0],[293.3,35.6,297.5,43.8],[334.9,134.2,341.8,141.8],[339.9,50.4,338.3,60.8],[350.9,84.6,344.3,83.2],[359.2,59.2,349.8,58.0],[325.2,68.0,316.1,68.8],[358.2,149.3,350.9,157.2],[336.2,171.3,340.8,180.2],[351.5,104.7,360.0,106.0],[379.6,92.0,385.6,94.7],[384.3,130.2,375.4,124.7],[374.0,73.1,371.0,80.5],[387.6,156.4,378.7,157.8],[359.3,180.8,354.7,187.1],[332.6,194.6,337.9,187.6],[411.6,140.6,405.5,148.7],[360.9,122.4,369.1,122.3],[380.2,179.2,387.6,179.9],[332.3,98.6,337.8,94.5],[400.2,118.4,403.3,127.9],[398.4,97.3,406.1,104.0],[413.9,166.2,415.0,174.1],[399.4,182.9,394.0,179.2],[388.4,207.7,389.6,199.7],[340.1,223.3,341.4,213.6],[438.8,180.4,447.8,185.1],[367.8,202.7,370.9,196.2],[409.5,201.8,403.6,198.0],[344.5,245.4,335.0,243.1],[432.7,199.7,426.5,205.7],[382.8,227.8,389.8,235.4],[360.3,230.9,353.2,223.7],[416.9,229.3,425.4,234.0],[377.8,260.6,385.2,265.3],[406.8,257.9,408.0,268.3],[419.5,277.9,426.0,283.1],[442.8,236.6,435.0,238.0],[440.1,274.7,448.7,278.4],[307.6,236.6,315.3,235.3],[395.7,275.6,401.8,271.1],[424.9,247.4,423.7,255.6],[454.3,220.5,464.0,218.9],[318.0,208.7,313.8,204.1],[374.8,287.4,369.1,289.3],[371.9,308.0,379.2,311.0],[396.9,319.1,397.1,325.6],[345.7,265.0,335.8,264.3],[435.3,159.7,444.8,154.9],[393.1,339.1,386.9,342.2],[391.4,245.6,399.3,243.8],[418.6,340.7,413.0,349.1],[438.8,295.0,428.8,291.2],[322.8,256.5,319.5,246.3],[417.7,314.1,423.8,322.9],[455.7,261.5,446.5,259.0],[434.8,325.4,432.5,332.2],[400.8,298.4,398.8,305.0],[415.4,362.7,421.8,361.1]]],["dots",{"r":2.3,"fill":"currentColor","opacity":0.6},[[114.2,261.2],[86.9,246.0],[85.5,270.0],[50.3,276.7],[52.8,299.0],[37.6,311.6],[134.8,293.4],[107.9,280.3],[70.9,311.7],[56.8,241.1],[116.5,318.3],[74.1,231.0],[85.3,297.1],[155.3,296.3],[56.6,212.7],[91.7,342.4],[141.1,267.3],[117.4,241.1],[99.8,229.2],[86.5,213.8],[93.3,316.8],[68.2,348.3],[55.8,191.7],[41.4,259.2],[30.4,278.5],[37.3,239.1],[94.6,378.2],[81.1,363.9],[35.8,203.3],[59.6,330.0],[102.2,397.9],[105.8,301.6],[124.7,389.0],[106.0,358.0],[141.5,414.1],[177.8,418.8],[70.0,256.6],[119.8,414.0],[144.6,389.4],[36.2,183.3],[188.3,389.8],[158.2,432.4],[209.6,381.2],[202.4,356.5],[210.3,328.9],[160.8,402.7],[213.4,432.4],[176.9,445.2],[72.3,178.3],[210.0,404.5],[58.1,159.9],[229.4,410.2],[223.0,345.3],[196.4,450.5],[245.9,393.6],[236.7,330.4],[48.5,140.3],[183.8,365.1],[218.9,452.0],[240.6,360.9],[229.2,377.5],[251.1,436.8],[264.4,409.2],[71.8,111.7],[284.8,391.6],[273.2,440.9],[300.8,417.6],[292.9,443.8],[266.2,371.7],[293.5,371.3],[95.7,84.7],[311.3,398.8],[255.6,456.0],[254.2,340.4],[314.3,438.7],[333.6,411.7],[119.6,83.6],[145.7,104.3],[123.4,105.1],[130.7,55.8],[155.7,126.7],[161.1,88.4],[148.8,72.4],[149.6,49.2],[167.7,63.1],[193.8,120.4],[171.8,138.7],[167.7,40.9],[231.8,122.0],[191.1,150.0],[186.4,82.8],[208.8,78.3],[170.4,105.7],[190.1,56.7],[186.3,33.3],[223.0,98.6],[210.6,39.9],[232.1,79.2],[214.7,59.2],[207.8,138.6],[241.3,139.5],[232.3,33.3],[252.9,69.9],[222.7,165.8],[241.8,190.7],[245.2,51.7],[252.2,91.5],[258.0,110.3],[268.2,54.7],[259.2,176.3],[253.3,156.1],[278.6,148.8],[294.9,162.5],[276.6,126.8],[300.2,73.4],[274.6,87.3],[312.9,147.9],[292.9,105.0],[312.6,42.9],[263.1,26.5],[202.3,101.6],[297.5,124.0],[313.3,89.4],[315.4,109.6],[293.3,35.6],[334.9,134.2],[339.9,50.4],[350.9,84.6],[359.2,59.2],[325.2,68.0],[358.2,149.3],[336.2,171.3],[351.5,104.7],[379.6,92.0],[384.3,130.2],[374.0,73.1],[387.6,156.4],[359.3,180.8],[332.6,194.6],[411.6,140.6],[360.9,122.4],[380.2,179.2],[332.3,98.6],[400.2,118.4],[398.4,97.3],[413.9,166.2],[399.4,182.9],[388.4,207.7],[340.1,223.3],[438.8,180.4],[367.8,202.7],[409.5,201.8],[344.5,245.4],[432.7,199.7],[382.8,227.8],[360.3,230.9],[416.9,229.3],[377.8,260.6],[406.8,257.9],[419.5,277.9],[442.8,236.6],[440.1,274.7],[307.6,236.6],[395.7,275.6],[424.9,247.4],[454.3,220.5],[318.0,208.7],[374.8,287.4],[371.9,308.0],[396.9,319.1],[345.7,265.0],[435.3,159.7],[393.1,339.1],[391.4,245.6],[418.6,340.7],[438.8,295.0],[322.8,256.5],[417.7,314.1],[455.7,261.5],[434.8,325.4],[400.8,298.4],[415.4,362.7]]],["segs",{"stroke":"var(--accent)","stroke-width":1.7,"stroke-linecap":"round","opacity":0.5},[[274.3,205.9,264.2,210.3],[278.3,220.2,268.3,224.6],[267.5,218.8,257.5,223.2],[288.0,201.6,277.9,206.1],[258.5,211.9,248.4,216.4],[272.4,228.3,262.3,232.7],[257.1,230.4,247.1,234.8],[254.2,221.3,244.2,225.8],[274.3,239.7,264.2,244.2],[267.4,200.4,257.3,204.9],[285.9,230.6,275.8,235.0],[261.8,237.3,251.7,241.8],[259.2,245.5,249.2,250.0],[249.1,233.7,239.0,238.1],[241.9,220.8,231.8,225.3],[250.9,207.3,240.9,211.8],[276.0,188.1,266.0,192.5],[284.5,211.0,274.5,215.5],[257.2,255.1,247.2,259.5],[246.6,242.2,236.5,246.7],[269.0,248.3,258.9,252.8],[268.5,257.6,258.5,262.1],[285.6,187.2,275.6,191.7],[230.7,216.5,220.7,221.0],[228.2,227.2,218.2,231.6],[279.6,199.0,269.5,203.5],[235.4,235.3,225.4,239.8],[241.6,229.3,231.5,233.8],[233.4,244.7,223.3,249.2],[297.0,194.3,286.9,198.8],[277.2,253.0,267.2,257.5],[220.4,215.2,210.3,219.7],[300.4,202.4,290.4,206.9],[250.1,268.5,240.0,273.0],[219.7,235.6,209.7,240.1],[281.5,244.5,271.5,249.0],[294.8,183.5,284.8,188.0],[236.4,204.0,226.3,208.5],[239.5,251.0,229.4,255.5],[242.3,210.4,232.2,214.9],[296.2,211.7,286.2,216.2],[209.3,227.2,199.2,231.7],[247.0,255.5,237.0,260.0],[307.7,191.5,297.6,196.0],[217.4,206.8,207.3,211.3],[259.2,267.5,249.1,272.0],[233.6,258.5,223.5,263.0],[288.8,239.0,278.8,243.4],[194.1,230.7,184.0,235.1],[298.5,235.4,288.5,239.8],[306.9,182.8,296.8,187.3],[291.9,222.1,281.8,226.6],[290.0,256.5,280.0,261.0],[259.0,198.8,249.0,203.3],[309.8,170.9,299.8,175.4],[295.2,246.8,285.1,251.3],[237.3,267.8,227.2,272.3],[312.8,206.1,302.7,210.6],[259.9,280.6,249.8,285.0],[223.5,246.0,213.5,250.5],[227.6,205.6,217.6,210.0],[280.1,177.3,270.1,181.7],[286.9,265.5,276.8,269.9],[213.7,198.3,203.6,202.8],[226.1,197.1,216.1,201.6],[296.2,269.8,286.2,274.3],[273.9,268.2,263.9,272.7],[306.1,224.3,296.1,228.8],[304.8,252.4,294.7,256.9],[183.6,221.6,173.6,226.0],[307.1,212.0,297.0,216.5],[303.0,243.8,293.0,248.3],[217.7,260.0,207.7,264.4],[282.0,272.1,271.9,276.6],[298.9,173.6,288.9,178.1],[204.0,219.6,193.9,224.0],[209.9,245.9,199.8,250.4],[226.4,253.9,216.4,258.4],[210.8,212.3,200.7,216.7],[286.0,170.7,276.0,175.2],[201.7,249.3,191.6,253.8],[202.0,206.8,192.0,211.3],[190.2,214.8,180.2,219.3],[303.4,263.6,293.4,268.1],[250.6,279.2,240.5,283.6],[316.9,190.1,306.8,194.6],[224.8,270.7,214.8,275.2],[299.8,161.4,289.7,165.9],[205.9,257.8,195.8,262.3],[317.2,174.9,307.2,179.3],[214.5,188.1,204.4,192.5],[318.2,198.9,308.1,203.4],[209.2,180.0,199.2,184.5],[220.3,225.0,210.2,229.4],[301.4,278.4,291.3,282.8],[308.9,161.4,298.9,165.9],[190.4,253.3,180.4,257.7],[250.5,290.0,240.5,294.5],[204.3,235.2,194.2,239.7],[243.2,286.2,233.1,290.6],[201.9,187.5,191.8,192.0],[317.9,260.2,307.8,264.6],[195.2,241.8,185.2,246.3],[237.0,277.2,227.0,281.7],[201.0,196.6,191.0,201.1],[178.8,206.5,168.8,210.9],[291.5,280.5,281.5,285.0],[180.5,239.0,170.5,243.5],[271.9,287.2,261.9,291.7],[171.3,227.5,161.2,231.9],[209.7,267.2,199.6,271.7],[177.0,247.5,166.9,252.0],[202.1,174.6,192.1,179.1],[263.2,288.2,253.1,292.7],[312.2,270.1,302.2,274.6],[258.9,301.7,248.9,306.2],[190.0,205.4,180.0,209.9],[174.1,193.3,164.0,197.8],[274.0,276.6,264.0,281.1],[220.1,278.0,210.0,282.5],[229.6,284.3,219.5,288.8],[175.6,257.8,165.5,262.3],[240.5,294.1,230.5,298.6],[318.3,157.3,308.3,161.8],[192.2,180.0,182.1,184.5],[316.6,165.4,306.5,169.9],[195.3,260.3,185.2,264.7],[192.0,170.5,182.0,175.0],[184.4,230.1,174.3,234.6],[238.9,307.0,228.8,311.5],[325.9,266.2,315.9,270.7],[279.4,283.7,269.3,288.2],[211.5,275.7,201.5,280.2],[273.4,296.8,263.3,301.3],[191.5,193.8,181.4,198.2],[183.3,187.8,173.2,192.2],[179.0,172.9,168.9,177.4],[201.1,273.4,191.0,277.8],[164.4,240.1,154.3,244.6],[187.4,244.3,177.4,248.8],[227.4,298.4,217.4,302.9],[325.3,184.2,315.2,188.7],[320.8,276.0,310.8,280.5],[320.0,284.8,309.9,289.3],[285.6,297.1,275.6,301.6],[173.7,184.3,163.6,188.8],[330.1,163.9,320.0,168.3],[338.6,272.1,328.6,276.6],[344.1,283.4,334.1,287.9],[249.6,300.1,239.6,304.6],[182.7,270.5,172.6,274.9],[166.1,198.2,156.1,202.7],[333.5,286.0,323.5,290.5],[329.7,173.9,319.7,178.4],[203.8,287.4,193.8,291.9],[298.1,286.4,288.1,290.9],[202.1,300.2,192.0,304.6],[317.5,300.4,307.4,304.8],[175.9,216.9,165.9,221.4],[195.8,284.4,185.7,288.8],[228.1,313.1,218.0,317.6],[183.0,289.1,172.9,293.5],[181.0,197.6,171.0,202.1],[311.4,280.8,301.4,285.3],[156.5,192.4,146.5,196.9],[247.0,319.8,236.9,324.2],[187.3,280.4,177.2,284.9],[215.9,291.9,205.8,296.4],[329.3,298.4,319.2,302.8],[288.2,288.6,278.1,293.0],[254.6,324.0,244.6,328.5],[161.0,183.5,150.9,188.0],[313.0,293.3,303.0,297.8],[167.8,247.7,157.7,252.2],[355.9,293.9,345.8,298.4],[189.7,162.3,179.6,166.7],[341.6,295.6,331.6,300.1],[165.6,270.4,155.6,274.9],[292.1,310.7,282.0,315.2],[174.1,269.0,164.1,273.5],[162.2,262.9,152.1,267.4],[163.0,254.4,152.9,258.8],[258.9,331.4,248.9,335.9],[170.8,210.3,160.8,214.8],[251.5,310.5,241.4,315.0],[340.5,163.2,330.5,167.7],[296.4,296.8,286.4,301.3],[329.9,278.3,319.8,282.8],[159.4,246.8,149.4,251.3],[161.0,226.7,151.0,231.1],[191.9,292.1,181.8,296.6],[149.4,248.5,139.4,253.0],[211.7,284.7,201.7,289.2],[151.5,261.8,141.5,266.3],[174.1,277.7,164.1,282.2],[278.4,311.0,268.3,315.5],[144.5,191.5,134.4,196.0],[148.4,233.3,138.4,237.8],[150.7,179.2,140.7,183.6],[342.1,154.1,332.0,158.6],[159.2,204.4,149.2,208.9],[344.6,303.6,334.5,308.1],[285.8,316.0,275.7,320.5],[198.5,164.3,188.5,168.8],[154.8,218.6,144.8,223.1],[267.0,210.4,257.0,214.9],[219.2,312.3,209.2,316.8],[143.0,200.6,132.9,205.1],[322.4,293.0,312.3,297.4],[261.1,318.0,251.0,322.5],[349.1,310.9,339.0,315.4],[292.3,321.6,282.2,326.1],[306.5,309.6,296.5,314.0],[161.2,212.7,151.2,217.2],[193.2,270.6,183.1,275.1],[136.6,228.2,126.6,232.7],[306.2,288.6,296.1,293.1],[305.5,300.3,295.4,304.7],[145.9,171.0,135.9,175.5],[156.1,238.1,146.1,242.6],[267.5,304.3,257.4,308.7],[238.4,316.1,228.4,320.6],[351.4,150.9,341.3,155.4],[273.7,327.8,263.7,332.3],[187.2,262.8,177.2,267.3],[137.2,185.3,127.2,189.8],[241.5,327.1,231.4,331.6],[141.7,212.8,131.7,217.3],[298.2,305.0,288.1,309.5],[155.0,274.2,144.9,278.7],[158.1,167.0,148.0,171.4],[215.4,300.3,205.4,304.8],[317.1,309.5,307.0,314.0],[147.9,224.7,137.9,229.2],[299.7,315.4,289.7,319.9],[167.4,218.8,157.3,223.3],[131.7,207.0,121.7,211.5],[146.6,268.5,136.6,272.9],[335.7,309.9,325.6,314.4],[353.1,284.8,343.1,289.2],[150.3,207.0,140.3,211.5],[326.1,314.3,316.1,318.7],[183.5,302.4,173.4,306.8],[356.9,305.1,346.9,309.6],[136.7,239.7,126.7,244.2],[140.1,259.1,130.1,263.5],[166.6,171.2,156.6,175.6],[310.2,320.0,300.1,324.5],[126.4,241.5,116.4,246.0],[318.9,322.8,308.8,327.2],[270.8,317.2,260.8,321.7],[129.1,192.0,119.0,196.5],[209.9,309.2,199.9,313.6],[196.4,314.1,186.3,318.6],[345.8,319.2,335.8,323.6],[140.9,249.5,130.8,254.0],[171.4,293.4,161.4,297.9],[357.3,313.4,347.3,317.9],[333.0,154.9,322.9,159.4],[175.1,301.9,165.1,306.4],[248.4,336.3,238.3,340.8],[302.7,324.9,292.6,329.4],[171.7,163.2,161.7,167.7],[132.5,251.9,122.5,256.4],[209.2,318.2,199.1,322.7],[254.4,348.8,244.3,353.3],[182.0,156.4,171.9,160.9],[118.3,181.2,108.3,185.6],[267.8,333.7,257.7,338.1],[334.1,324.6,324.1,329.1],[282.5,329.2,272.5,333.7],[192.0,301.8,181.9,306.2],[187.2,310.3,177.1,314.8],[113.0,188.0,103.0,192.5],[127.8,183.6,117.8,188.0],[198.9,323.0,188.8,327.4],[259.8,342.0,249.8,346.4],[106.5,175.7,96.4,180.2],[118.1,197.8,108.0,202.3],[311.5,331.2,301.4,335.7],[176.8,317.1,166.8,321.5],[189.3,319.4,179.3,323.8],[99.3,179.7,89.2,184.2],[291.3,335.7,281.2,340.1],[108.8,201.2,98.7,205.7],[365.1,306.7,355.1,311.2],[341.1,334.5,331.1,338.9],[105.7,166.4,95.6,170.9],[162.0,159.1,152.0,163.6],[215.5,323.7,205.4,328.2],[190.7,327.9,180.7,332.4],[333.0,336.4,323.0,340.9],[194.3,222.4,184.3,226.9],[131.8,175.5,121.7,179.9],[206.9,329.3,196.8,333.8],[133.7,220.1,123.7,224.6],[115.8,172.6,105.7,177.1],[98.7,161.0,88.6,165.4],[135.4,165.1,125.3,169.6],[281.2,340.2,271.2,344.7],[225.4,321.9,215.3,326.4],[352.4,345.8,342.3,350.3],[103.7,191.7,93.7,196.1],[124.3,212.7,114.2,217.2],[327.1,330.2,317.0,334.7],[123.5,204.4,113.4,208.9],[168.9,314.8,158.8,319.2],[153.1,159.1,143.0,163.5],[341.7,344.4,331.6,348.9],[162.5,307.4,152.4,311.9],[198.1,331.5,188.1,336.0],[365.1,346.4,355.0,350.9],[351.5,326.6,341.5,331.1],[301.6,337.2,291.6,341.7],[296.1,343.6,286.1,348.1],[127.1,167.9,117.1,172.3],[177.3,328.5,167.2,333.0],[187.2,343.1,177.1,347.6],[167.8,152.6,157.7,157.1],[314.3,344.8,304.2,349.3],[115.6,156.4,105.6,160.9],[323.7,343.6,313.6,348.1],[89.6,172.4,79.6,176.9],[80.4,164.3,70.4,168.8],[158.3,145.4,148.2,149.9],[306.2,348.0,296.1,352.5],[90.1,187.3,80.1,191.7],[184.6,334.5,174.6,339.0],[300.5,358.4,290.4,362.9],[94.1,203.1,84.0,207.6],[70.7,172.6,60.6,177.1],[82.0,184.7,71.9,189.1],[72.7,188.9,62.7,193.3],[314.8,357.3,304.7,361.7],[124.1,250.5,114.1,255.0],[107.5,154.8,97.5,159.3],[374.8,351.8,364.8,356.3],[177.0,340.5,166.9,345.0],[333.3,347.0,323.2,351.5],[282.5,349.4,272.4,353.8],[149.1,151.8,139.1,156.3],[82.3,153.7,72.2,158.2],[164.6,329.2,154.6,333.6],[287.3,356.4,277.3,360.9],[277.6,359.6,267.5,364.1],[319.6,335.3,309.5,339.8],[171.1,334.4,161.1,338.9],[266.9,354.5,256.8,359.0],[125.6,159.3,115.6,163.8],[80.4,174.9,70.3,179.4],[322.5,352.4,312.5,356.9],[114.2,233.4,104.1,237.8],[132.2,152.7,122.1,157.2],[126.6,229.2,116.5,233.7],[151.0,138.7,141.0,143.2],[88.7,144.8,78.6,149.3],[156.4,315.0,146.3,319.4],[320.4,364.1,310.3,368.5],[140.9,150.0,130.8,154.4],[288.5,369.1,278.5,373.6],[105.1,145.4,95.0,149.8],[330.4,357.8,320.3,362.3],[311.7,365.4,301.7,369.8],[69.8,163.2,59.8,167.7],[82.6,199.6,72.6,204.0],[269.7,346.6,259.6,351.1],[105.5,209.1,95.4,213.5],[113.8,208.8,103.7,213.2],[117.9,243.4,107.8,247.8],[173.0,351.0,163.0,355.5],[339.4,354.6,329.3,359.1],[121.8,220.6,111.8,225.1],[180.1,164.6,170.0,169.1],[337.6,370.1,327.5,374.6],[348.2,358.7,338.1,363.2],[104.8,219.2,94.8,223.7],[349.1,366.9,339.0,371.4],[57.4,172.0,47.3,176.5],[162.7,338.6,152.6,343.0],[105.0,231.5,95.0,236.0],[162.7,347.6,152.7,352.1],[76.6,138.3,66.6,142.8],[327.2,369.0,317.2,373.5],[299.3,373.8,289.2,378.3],[284.9,376.9,274.9,381.3],[356.2,354.8,346.1,359.3],[118.2,145.7,108.2,150.2],[96.2,223.0,86.1,227.4],[297.2,381.9,287.1,386.4],[139.9,177.2,129.9,181.6],[142.5,161.0,132.5,165.5],[154.5,351.1,144.4,355.5],[183.5,351.1,173.5,355.6],[361.0,331.4,350.9,335.9],[112.0,223.7,101.9,228.1],[371.3,314.5,361.3,319.0],[364.0,366.9,354.0,371.3],[98.1,212.9,88.1,217.4],[317.8,373.0,307.8,377.5],[61.7,152.9,51.6,157.4],[364.5,322.0,354.5,326.4],[376.1,327.2,366.0,331.7],[354.2,377.2,344.1,381.6],[141.6,140.0,131.5,144.5],[72.5,151.3,62.4,155.8],[348.8,338.1,338.7,342.6],[166.6,300.1,156.5,304.6],[173.1,363.6,163.0,368.1],[309.5,376.1,299.4,380.6],[320.8,385.3,310.8,389.8],[91.3,152.6,81.2,157.1],[182.6,361.4,172.5,365.9],[327.8,377.9,317.7,382.4],[124.3,134.2,114.2,138.7],[54.8,147.8,44.8,152.2],[346.4,390.2,336.4,394.7],[367.6,337.1,357.6,341.6],[314.9,394.1,304.9,398.6],[382.4,337.2,372.4,341.7],[91.1,164.2,81.0,168.7],[98.2,140.3,88.2,144.8],[148.9,361.4,138.9,365.9],[366.3,380.6,356.2,385.1],[61.8,135.8,51.8,140.3],[345.7,379.1,335.6,383.6],[173.4,374.3,163.3,378.8],[158.9,361.8,148.8,366.2],[127.5,141.8,117.4,146.3],[67.9,143.0,57.8,147.5],[359.9,386.5,349.9,390.9],[375.6,343.3,365.6,347.8],[167.0,357.6,156.9,362.1],[52.8,134.9,42.8,139.3],[391.0,338.9,380.9,343.3],[150.4,342.6,140.4,347.1],[346.7,406.2,336.7,410.6],[150.0,330.5,140.0,334.9],[131.3,126.2,121.2,130.7],[46.9,144.6,36.8,149.0],[335.4,391.4,325.4,395.9],[377.9,366.8,367.9,371.2],[370.4,359.1,360.4,363.6],[75.8,129.2,65.7,133.7],[168.8,387.6,158.8,392.1],[78.0,117.6,68.0,122.1],[117.5,128.6,107.4,133.0],[87.5,208.9,77.4,213.4],[67.4,128.2,57.4,132.7],[138.9,129.8,128.9,134.3],[139.4,357.2,129.4,361.7],[387.3,367.9,377.3,372.4],[165.0,376.2,154.9,380.7],[144.0,349.2,134.0,353.7],[350.9,398.3,340.9,402.8],[139.7,340.1,129.6,344.6],[385.9,354.7,375.8,359.2],[160.1,387.1,150.0,391.6],[338.1,407.4,328.1,411.9],[93.4,132.0,83.4,136.5],[337.6,382.6,327.5,387.0],[117.2,120.3,107.2,124.7],[398.6,374.0,388.6,378.4],[107.3,134.1,97.2,138.6],[136.8,325.8,126.7,330.3],[152.3,369.3,142.3,373.8],[394.2,348.6,384.1,353.1],[107.8,123.0,97.7,127.4],[114.8,138.1,104.7,142.6],[377.2,378.2,367.1,382.7],[161.3,399.0,151.2,403.4],[153.9,392.7,143.9,397.2],[397.8,363.1,387.7,367.6],[146.1,312.5,136.0,317.0],[170.8,397.1,160.7,401.5],[102.7,114.3,92.7,118.8],[130.5,357.5,120.4,362.0],[164.4,368.0,154.4,372.5],[143.6,372.0,133.6,376.5],[405.4,359.5,395.4,364.0],[152.8,378.1,142.7,382.6],[369.6,392.4,359.5,396.8],[99.8,124.9,89.7,129.4],[111.3,114.6,101.2,119.1],[389.7,380.9,379.6,385.4],[131.3,317.8,121.3,322.3],[364.3,402.4,354.3,406.9],[140.4,386.5,130.4,391.0],[410.8,369.3,400.7,373.8],[330.1,398.8,320.1,403.3],[353.8,410.9,343.7,415.4],[99.7,106.0,89.6,110.4],[126.2,331.6,116.2,336.1],[66.6,119.6,56.6,124.1],[149.0,321.8,139.0,326.3],[59.1,127.5,49.1,132.0],[134.5,365.2,124.5,369.7],[90.7,120.2,80.7,124.7],[84.1,108.0,74.0,112.5],[128.9,348.3,118.8,352.8],[120.3,362.0,110.3,366.5],[359.3,395.5,349.3,400.0],[91.4,104.0,81.4,108.5],[367.8,411.3,357.8,415.8],[85.3,134.6,75.2,139.0],[71.2,104.7,61.2,109.2],[374.4,404.5,364.4,409.0],[107.5,368.2,97.4,372.7],[131.7,373.7,121.6,378.2],[82.2,99.3,72.1,103.8],[121.8,370.9,111.8,375.3],[124.0,341.3,114.0,345.8],[131.6,338.0,121.5,342.5],[339.6,398.8,329.5,403.3],[111.0,359.0,101.0,363.5],[385.6,388.7,375.6,393.2],[87.7,92.4,77.7,96.9],[402.7,382.5,392.6,387.0],[117.4,321.2,107.4,325.7],[380.1,396.1,370.0,400.5],[118.8,351.4,108.8,355.8],[393.9,388.2,383.9,392.7],[153.7,306.5,143.6,310.9],[125.2,383.0,115.1,387.5],[117.1,378.6,107.0,383.1],[109.2,326.8,99.2,331.3],[117.3,336.1,107.3,340.6],[377.1,388.0,367.0,392.5],[145.4,393.3,135.4,397.8],[101.3,330.8,91.3,335.3],[109.1,349.2,99.0,353.7],[106.8,341.1,96.8,345.6],[132.7,391.3,122.6,395.7],[149.3,385.7,139.3,390.2],[102.3,354.1,92.2,358.6],[157.4,323.6,147.3,328.1],[95.0,338.6,84.9,343.1],[83.6,125.6,73.6,130.1]]],["dots",{"r":2.5,"fill":"var(--accent)"},[[274.3,205.9],[278.3,220.2],[267.5,218.8],[288.0,201.6],[258.5,211.9],[272.4,228.3],[257.1,230.4],[254.2,221.3],[274.3,239.7],[267.4,200.4],[285.9,230.6],[261.8,237.3],[259.2,245.5],[249.1,233.7],[241.9,220.8],[250.9,207.3],[276.0,188.1],[284.5,211.0],[257.2,255.1],[246.6,242.2],[269.0,248.3],[268.5,257.6],[285.6,187.2],[230.7,216.5],[228.2,227.2],[279.6,199.0],[235.4,235.3],[241.6,229.3],[233.4,244.7],[297.0,194.3],[277.2,253.0],[220.4,215.2],[300.4,202.4],[250.1,268.5],[219.7,235.6],[281.5,244.5],[294.8,183.5],[236.4,204.0],[239.5,251.0],[242.3,210.4],[296.2,211.7],[209.3,227.2],[247.0,255.5],[307.7,191.5],[217.4,206.8],[259.2,267.5],[233.6,258.5],[288.8,239.0],[194.1,230.7],[298.5,235.4],[306.9,182.8],[291.9,222.1],[290.0,256.5],[259.0,198.8],[309.8,170.9],[295.2,246.8],[237.3,267.8],[312.8,206.1],[259.9,280.6],[223.5,246.0],[227.6,205.6],[280.1,177.3],[286.9,265.5],[213.7,198.3],[226.1,197.1],[296.2,269.8],[273.9,268.2],[306.1,224.3],[304.8,252.4],[183.6,221.6],[307.1,212.0],[303.0,243.8],[217.7,260.0],[282.0,272.1],[298.9,173.6],[204.0,219.6],[209.9,245.9],[226.4,253.9],[210.8,212.3],[286.0,170.7],[201.7,249.3],[202.0,206.8],[190.2,214.8],[303.4,263.6],[250.6,279.2],[316.9,190.1],[224.8,270.7],[299.8,161.4],[205.9,257.8],[317.2,174.9],[214.5,188.1],[318.2,198.9],[209.2,180.0],[220.3,225.0],[301.4,278.4],[308.9,161.4],[190.4,253.3],[250.5,290.0],[204.3,235.2],[243.2,286.2],[201.9,187.5],[317.9,260.2],[195.2,241.8],[237.0,277.2],[201.0,196.6],[178.8,206.5],[291.5,280.5],[180.5,239.0],[271.9,287.2],[171.3,227.5],[209.7,267.2],[177.0,247.5],[202.1,174.6],[263.2,288.2],[312.2,270.1],[258.9,301.7],[190.0,205.4],[174.1,193.3],[274.0,276.6],[220.1,278.0],[229.6,284.3],[175.6,257.8],[240.5,294.1],[318.3,157.3],[192.2,180.0],[316.6,165.4],[195.3,260.3],[192.0,170.5],[184.4,230.1],[238.9,307.0],[325.9,266.2],[279.4,283.7],[211.5,275.7],[273.4,296.8],[191.5,193.8],[183.3,187.8],[179.0,172.9],[201.1,273.4],[164.4,240.1],[187.4,244.3],[227.4,298.4],[325.3,184.2],[320.8,276.0],[320.0,284.8],[285.6,297.1],[173.7,184.3],[330.1,163.9],[338.6,272.1],[344.1,283.4],[249.6,300.1],[182.7,270.5],[166.1,198.2],[333.5,286.0],[329.7,173.9],[203.8,287.4],[298.1,286.4],[202.1,300.2],[317.5,300.4],[175.9,216.9],[195.8,284.4],[228.1,313.1],[183.0,289.1],[181.0,197.6],[311.4,280.8],[156.5,192.4],[247.0,319.8],[187.3,280.4],[215.9,291.9],[329.3,298.4],[288.2,288.6],[254.6,324.0],[161.0,183.5],[313.0,293.3],[167.8,247.7],[355.9,293.9],[189.7,162.3],[341.6,295.6],[165.6,270.4],[292.1,310.7],[174.1,269.0],[162.2,262.9],[163.0,254.4],[258.9,331.4],[170.8,210.3],[251.5,310.5],[340.5,163.2],[296.4,296.8],[329.9,278.3],[159.4,246.8],[161.0,226.7],[191.9,292.1],[149.4,248.5],[211.7,284.7],[151.5,261.8],[174.1,277.7],[278.4,311.0],[144.5,191.5],[148.4,233.3],[150.7,179.2],[342.1,154.1],[159.2,204.4],[344.6,303.6],[285.8,316.0],[198.5,164.3],[154.8,218.6],[267.0,210.4],[219.2,312.3],[143.0,200.6],[322.4,293.0],[261.1,318.0],[349.1,310.9],[292.3,321.6],[306.5,309.6],[161.2,212.7],[193.2,270.6],[136.6,228.2],[306.2,288.6],[305.5,300.3],[145.9,171.0],[156.1,238.1],[267.5,304.3],[238.4,316.1],[351.4,150.9],[273.7,327.8],[187.2,262.8],[137.2,185.3],[241.5,327.1],[141.7,212.8],[298.2,305.0],[155.0,274.2],[158.1,167.0],[215.4,300.3],[317.1,309.5],[147.9,224.7],[299.7,315.4],[167.4,218.8],[131.7,207.0],[146.6,268.5],[335.7,309.9],[353.1,284.8],[150.3,207.0],[326.1,314.3],[183.5,302.4],[356.9,305.1],[136.7,239.7],[140.1,259.1],[166.6,171.2],[310.2,320.0],[126.4,241.5],[318.9,322.8],[270.8,317.2],[129.1,192.0],[209.9,309.2],[196.4,314.1],[345.8,319.2],[140.9,249.5],[171.4,293.4],[357.3,313.4],[333.0,154.9],[175.1,301.9],[248.4,336.3],[302.7,324.9],[171.7,163.2],[132.5,251.9],[209.2,318.2],[254.4,348.8],[182.0,156.4],[118.3,181.2],[267.8,333.7],[334.1,324.6],[282.5,329.2],[192.0,301.8],[187.2,310.3],[113.0,188.0],[127.8,183.6],[198.9,323.0],[259.8,342.0],[106.5,175.7],[118.1,197.8],[311.5,331.2],[176.8,317.1],[189.3,319.4],[99.3,179.7],[291.3,335.7],[108.8,201.2],[365.1,306.7],[341.1,334.5],[105.7,166.4],[162.0,159.1],[215.5,323.7],[190.7,327.9],[333.0,336.4],[194.3,222.4],[131.8,175.5],[206.9,329.3],[133.7,220.1],[115.8,172.6],[98.7,161.0],[135.4,165.1],[281.2,340.2],[225.4,321.9],[352.4,345.8],[103.7,191.7],[124.3,212.7],[327.1,330.2],[123.5,204.4],[168.9,314.8],[153.1,159.1],[341.7,344.4],[162.5,307.4],[198.1,331.5],[365.1,346.4],[351.5,326.6],[301.6,337.2],[296.1,343.6],[127.1,167.9],[177.3,328.5],[187.2,343.1],[167.8,152.6],[314.3,344.8],[115.6,156.4],[323.7,343.6],[89.6,172.4],[80.4,164.3],[158.3,145.4],[306.2,348.0],[90.1,187.3],[184.6,334.5],[300.5,358.4],[94.1,203.1],[70.7,172.6],[82.0,184.7],[72.7,188.9],[314.8,357.3],[124.1,250.5],[107.5,154.8],[374.8,351.8],[177.0,340.5],[333.3,347.0],[282.5,349.4],[149.1,151.8],[82.3,153.7],[164.6,329.2],[287.3,356.4],[277.6,359.6],[319.6,335.3],[171.1,334.4],[266.9,354.5],[125.6,159.3],[80.4,174.9],[322.5,352.4],[114.2,233.4],[132.2,152.7],[126.6,229.2],[151.0,138.7],[88.7,144.8],[156.4,315.0],[320.4,364.1],[140.9,150.0],[288.5,369.1],[105.1,145.4],[330.4,357.8],[311.7,365.4],[69.8,163.2],[82.6,199.6],[269.7,346.6],[105.5,209.1],[113.8,208.8],[117.9,243.4],[173.0,351.0],[339.4,354.6],[121.8,220.6],[180.1,164.6],[337.6,370.1],[348.2,358.7],[104.8,219.2],[349.1,366.9],[57.4,172.0],[162.7,338.6],[105.0,231.5],[162.7,347.6],[76.6,138.3],[327.2,369.0],[299.3,373.8],[284.9,376.9],[356.2,354.8],[118.2,145.7],[96.2,223.0],[297.2,381.9],[139.9,177.2],[142.5,161.0],[154.5,351.1],[183.5,351.1],[361.0,331.4],[112.0,223.7],[371.3,314.5],[364.0,366.9],[98.1,212.9],[317.8,373.0],[61.7,152.9],[364.5,322.0],[376.1,327.2],[354.2,377.2],[141.6,140.0],[72.5,151.3],[348.8,338.1],[166.6,300.1],[173.1,363.6],[309.5,376.1],[320.8,385.3],[91.3,152.6],[182.6,361.4],[327.8,377.9],[124.3,134.2],[54.8,147.8],[346.4,390.2],[367.6,337.1],[314.9,394.1],[382.4,337.2],[91.1,164.2],[98.2,140.3],[148.9,361.4],[366.3,380.6],[61.8,135.8],[345.7,379.1],[173.4,374.3],[158.9,361.8],[127.5,141.8],[67.9,143.0],[359.9,386.5],[375.6,343.3],[167.0,357.6],[52.8,134.9],[391.0,338.9],[150.4,342.6],[346.7,406.2],[150.0,330.5],[131.3,126.2],[46.9,144.6],[335.4,391.4],[377.9,366.8],[370.4,359.1],[75.8,129.2],[168.8,387.6],[78.0,117.6],[117.5,128.6],[87.5,208.9],[67.4,128.2],[138.9,129.8],[139.4,357.2],[387.3,367.9],[165.0,376.2],[144.0,349.2],[350.9,398.3],[139.7,340.1],[385.9,354.7],[160.1,387.1],[338.1,407.4],[93.4,132.0],[337.6,382.6],[117.2,120.3],[398.6,374.0],[107.3,134.1],[136.8,325.8],[152.3,369.3],[394.2,348.6],[107.8,123.0],[114.8,138.1],[377.2,378.2],[161.3,399.0],[153.9,392.7],[397.8,363.1],[146.1,312.5],[170.8,397.1],[102.7,114.3],[130.5,357.5],[164.4,368.0],[143.6,372.0],[405.4,359.5],[152.8,378.1],[369.6,392.4],[99.8,124.9],[111.3,114.6],[389.7,380.9],[131.3,317.8],[364.3,402.4],[140.4,386.5],[410.8,369.3],[330.1,398.8],[353.8,410.9],[99.7,106.0],[126.2,331.6],[66.6,119.6],[149.0,321.8],[59.1,127.5],[134.5,365.2],[90.7,120.2],[84.1,108.0],[128.9,348.3],[120.3,362.0],[359.3,395.5],[91.4,104.0],[367.8,411.3],[85.3,134.6],[71.2,104.7],[374.4,404.5],[107.5,368.2],[131.7,373.7],[82.2,99.3],[121.8,370.9],[124.0,341.3],[131.6,338.0],[339.6,398.8],[111.0,359.0],[385.6,388.7],[87.7,92.4],[402.7,382.5],[117.4,321.2],[380.1,396.1],[118.8,351.4],[393.9,388.2],[153.7,306.5],[125.2,383.0],[117.1,378.6],[109.2,326.8],[117.3,336.1],[377.1,388.0],[145.4,393.3],[101.3,330.8],[109.1,349.2],[106.8,341.1],[132.7,391.3],[149.3,385.7],[102.3,354.1],[157.4,323.6],[95.0,338.6],[83.6,125.6]]]]],"w":480,"h":480};
+
+    function svgTree(spec) {
+      const tag = spec[0], attrs = spec[1] || {}, kids = spec[2] || [];
+      if (tag === 'dots') {
+        const group = {};
+        for (const [k, v] of Object.entries(attrs)) if (k !== 'r') group[k] = v;
+        const g = svg('g', group);
+        for (const [x, y] of kids) g.appendChild(svg('circle', {cx: x, cy: y, r: attrs.r}));
+        return g;
+      }
+      if (tag === 'segs') {
+        const g = svg('g', attrs);
+        for (const [x1, y1, x2, y2] of kids) g.appendChild(svg('line', {x1, y1, x2, y2}));
+        return g;
+      }
+      const el = svg(tag, attrs);
+      for (const kid of kids) el.appendChild(svgTree(kid));
+      return el;
+    }
+
+    function heroArt() {
+      const box = svg('svg', {viewBox: '0 0 ' + HERO_ART.w + ' ' + HERO_ART.h, class: 'hero-art', focusable: 'false', 'aria-hidden': 'true'});
+      box.appendChild(svgTree(HERO_ART.spec));
+      return box;
+    }
+
+    function screenHome(ctx) {
+      const section = h('section', {class: 'screen screen-home'});
+      const actions = h('div', {class: 'actions'});
+      actions.appendChild(link({view: 'catalog'}, 'Browse the catalogue', {class: 'btn btn-primary'}));
+      if (state.user) actions.appendChild(link({view: 'library'}, 'Your library', {class: 'btn btn-line'}));
+      else actions.appendChild(link({view: 'signin'}, 'Sign in', {class: 'btn btn-line'}));
+      section.appendChild(h('div', {class: 'hero'},
+        h('div', {class: 'hero-text'},
+          h('h1', {class: 'hero-title', tabindex: '-1', 'data-heading': ''}, 'Run Experiments Now'),
+          h('p', {class: 'lede'}, 'Pinned releases your rigs install and run offline.'),
+          actions),
+        h('div', {class: 'hero-figure'}, heroArt())));
+      const flash = flashNode();
+      if (flash) section.appendChild(flash);
+      if (state.role === 'rig') section.appendChild(rigStrip());
+
+      /* The catalogue itself, live: the landing page's picture. */
+      const recent = region('the latest releases', 'preview-body');
+      section.appendChild(h('section', {class: 'preview', 'aria-label': 'Latest releases'},
+        h('div', {class: 'preview-bar'},
+          h('h2', {class: 'preview-title'}, 'Latest releases'),
+          link({view: 'catalog'}, 'View all', {class: 'btn btn-quiet btn-small'})),
+        recent.el));
+      section.appendChild(features());
+      (async () => {
+        const got = await screenRequest(ctx.epoch, 'GET', '/catalog', {query: {limit: 6}});
+        if (!got) return;
+        if (!got.ok) return recent.fail(got.error, retryCurrent);
+        const items = (got.value && got.value.items) || [];
+        if (!items.length) {
+          return recent.fill(emptyState('Nothing is published yet.',
+            'Releases appear here once their author publishes one.',
+            state.user ? link({view: 'mine'}, 'Publish one of yours', {class: 'btn btn-line'}) : null));
+        }
+        recent.fill(releaseTable(items, 'Latest releases'));
+      })();
+      return section;
+    }
+
+    function rigStrip() {
+      const local = state.local || {};
+      const linkState = rigLink();
+      const who = local.user ? (local.user.display_name || local.user.username) + ' (@' + local.user.username + ')' : 'nobody signed in';
+      const installed = Array.isArray(local.installed) ? local.installed.length : 0;
+      return h('section', {class: 'rig-strip', 'aria-label': 'This rig'},
+        h('div', {class: 'rig-strip-item'}, h('span', {class: 'meta-key'}, 'Hub'),
+          h('span', {class: 'meta-val'}, h('span', {class: 'lamp lamp-' + (linkState.state === 'connected' ? 'ok' : linkState.state === 'unreachable' ? 'err' : 'idle'), 'aria-hidden': 'true'}),
+            h('span', null, linkState.where))),
+        h('div', {class: 'rig-strip-item'}, h('span', {class: 'meta-key'}, 'Operator'), h('span', {class: 'meta-val'}, who)),
+        h('div', {class: 'rig-strip-item'}, h('span', {class: 'meta-key'}, 'Installed from the hub'), h('span', {class: 'meta-val mono'}, String(installed))),
+        h('div', {class: 'rig-strip-actions'},
+          link({view: 'rig'}, 'Manage this rig', {class: 'btn btn-line'}),
+          h('a', {class: 'btn btn-quiet', href: '/'}, 'Open the workspace')));
+    }
+
+    /* ---- catalogue ----------------------------------------------------- */
+
+    /** The whole published catalogue for one search (the server's own
+     *  search), page by page, kept a minute so ticking a filter is instant. */
+    async function catalogItems(ctx, q) {
+      const key = q || '';
+      const now = Date.now();
+      if (state.catalog && state.catalog.q === key && now - state.catalog.at < 60000) return {ok: true, value: state.catalog.items};
+      const items = [];
+      let offset = 0;
+      for (let page = 0; page < 10; page += 1) {
+        const got = await screenRequest(ctx.epoch, 'GET', '/catalog', {query: {query: q, limit: 100, offset: offset || undefined}});
+        if (!got) return null;
+        if (!got.ok) return got;
+        const batch = (got.value && got.value.items) || [];
+        items.push(...batch);
+        const next = got.value ? got.value.next_offset : null;
+        if (next === null || next === undefined || !batch.length) break;
+        offset = next;
+      }
+      state.catalog = {q: key, at: now, items};
+      return {ok: true, value: items};
+    }
+
+    /** Whether filters should apply as they are ticked (a wide page) or wait
+     *  for "Show" in the phone's sheet. */
+    function wideLayout() {
+      const w = env.window;
+      if (!w || typeof w.matchMedia !== 'function') return true;
+      return w.matchMedia('(min-width: 900px)').matches;
+    }
+
+    function catalogRoute(r, over) {
+      const base = {view: 'catalog', q: r.q, cat: r.cat, hw: r.hw, who: r.who, os: r.os, lic: r.lic, sort: r.sort};
+      return Object.assign(base, over || {});
+    }
+
+    function screenCatalog(ctx) {
+      const r = ctx.route;
+      const section = h('section', {class: 'screen screen-store'});
+      const flash = flashNode();
+      /* The store's head: title, the search bar, the category chips. */
+      const q = input({type: 'search', name: 'q', value: r.q || '', autocomplete: 'off', maxlength: '200',
+        placeholder: 'Search experiments', 'data-focus': 'catalog-q', 'aria-label': 'Search the marketplace'});
+      const form = h('form', {class: 'store-search', role: 'search'},
+        h('span', {class: 'store-search-icon', 'aria-hidden': 'true'}, searchGlyph()), q,
+        h('button', {type: 'submit', class: 'btn btn-primary', 'data-focus': 'catalog-go'}, 'Search'));
+      form.addEventListener('submit', (event) => {
+        prevent(event);
+        go(catalogRoute(r, {q: q.value, offset: undefined}), {focus: 'catalog-q'});
+      });
+      const chips = h('nav', {class: 'store-cats', 'aria-label': 'Categories'});
+      section.appendChild(h('header', {class: 'store-head'},
+        h('div', {class: 'store-head-row'},
+          h('div', null,
+            h('h1', {class: 'screen-title', tabindex: '-1', 'data-heading': ''}, 'Marketplace'),
+            h('p', {class: 'lede'}, 'Experiments their authors publish as pinned releases. Add one to your library and install it on a rig.')),
+          state.role === 'server' ? link({view: 'create'}, 'Create with AI', {class: 'btn btn-line store-create'}) : null),
+        form, chips));
+      if (flash) section.appendChild(flash);
+      const layout = h('div', {class: 'store-layout'});
+      const filters = h('aside', {class: 'store-filters', id: 'store-filters', 'aria-label': 'Filters'});
+      const results = region('the marketplace', 'store-results');
+      layout.append(filters, results.el);
+      section.appendChild(layout);
+      const offset = r.offset || 0;
+      (async () => {
+        const got = await catalogItems(ctx, r.q);
+        if (!got) return;
+        if (!got.ok) return results.fail(got.error, retryCurrent);
+        const all = got.value;
+        const owned = new Set();
+        const list = C.filterCatalog(all, r);
+        const filtered = Boolean(r.cat || C.activeFilters(r) || r.q);
+        const parts = [];
+        if (all.length) {
+          drawCategories(chips, r, all);
+          drawFilters(filters, r, all);
+          parts.push(storeToolbar(r, all, list));
+        } else {
+          filters.hidden = true;
+          layout.classList.add('store-layout-empty');
+        }
+        if (!all.length) {
+          parts.push(r.q
+            ? emptyState(`No published experiment matches \u201c${r.q}\u201d.`, 'Try fewer or different words.',
+              link({view: 'catalog'}, 'Show everything', {class: 'btn btn-line'}))
+            : emptyState('The marketplace is empty.',
+              'Nothing has been published yet. An author publishes one release at a time, with a licence, after checking it holds no participant data.'));
+          return results.fill(parts);
+        }
+        if (!list.length) {
+          parts.push(emptyState('No experiment fits these filters.', 'Remove a filter or choose another category.',
+            link(catalogRoute(r, {cat: undefined, hw: undefined, who: undefined, os: undefined, lic: undefined}), 'Clear filters', {class: 'btn btn-line'})));
+          return results.fill(parts);
+        }
+        let page = list.slice(offset, offset + PAGE);
+        const cards = [];
+        const featured = !filtered && !offset && r.sort !== 'name' && list.length >= 6;
+        if (featured) {
+          /* The first page leads with the three newest, larger; the grid
+           * continues from the fourth, so a page still holds PAGE listings. */
+          const top = list.slice(0, 3);
+          page = list.slice(3, PAGE);
+          const row = h('div', {class: 'featured-grid'});
+          for (const item of top) cards.push([item, row.appendChild(listing(item, null, {featured: true}))]);
+          parts.push(h('section', {class: 'store-block', 'aria-label': 'Latest releases'},
+            h('h2', {class: 'store-block-title'}, 'Latest releases'), row));
+        }
+        const grid = h('div', {class: 'card-grid'});
+        for (const item of page) cards.push([item, grid.appendChild(listing(item))]);
+        parts.push(h('section', {class: 'store-block', 'aria-label': filtered ? 'Results' : 'All experiments'},
+          h('h2', {class: 'store-block-title'}, filtered ? 'Results' : (featured ? 'More experiments' : 'All experiments')),
+          grid,
+          pager(offset, featured ? PAGE : page.length, offset + PAGE < list.length ? offset + PAGE : null, (o) => catalogRoute(r, {offset: o}), 'catalog')));
+        results.fill(parts);
+        /* Mark what this account already has, once the library answers. */
+        if (state.user) {
+          libraryItems(false).then((items) => {
+            if (ctx.epoch !== state.epoch) return;
+            for (const i of items) if (i && i.experiment) owned.add(i.experiment.id);
+            for (const [item, card] of cards) {
+              if (owned.has(item.experiment && item.experiment.id) && !card.querySelector('.card-owned')) {
+                card.appendChild(h('p', {class: 'card-owned'}, checkGlyph(), h('span', null, 'In your library')));
+              }
+            }
+          }).catch((exc) => { noteFailure(exc); });
+        }
+      })();
+      return section;
+    }
+
+    function searchGlyph() {
+      const box = svg('svg', {viewBox: '0 0 20 20', width: '18', height: '18', class: 'glyph', focusable: 'false'});
+      box.appendChild(svg('circle', {cx: '8.5', cy: '8.5', r: '5.5', fill: 'none', stroke: 'currentColor', 'stroke-width': '1.8'}));
+      box.appendChild(svg('path', {d: 'M12.8 12.8L17 17', fill: 'none', stroke: 'currentColor', 'stroke-width': '1.8', 'stroke-linecap': 'round'}));
+      return box;
+    }
+
+    function drawCategories(nav, r, all) {
+      const counts = C.catalogFacets(all, r).cat;
+      const list = h('ul', {class: 'cat-list'});
+      const total = C.filterCatalog(all, Object.assign({}, r, {cat: undefined})).length;
+      const all_ = link(catalogRoute(r, {cat: undefined, offset: undefined}), null,
+        {class: 'cat-chip', 'aria-current': !r.cat ? 'true' : null, 'data-focus': 'cat-all', 'data-focus-next': 'cat-all'});
+      all_.append(h('span', null, 'All'), h('span', {class: 'cat-count'}, String(total)));
+      list.appendChild(h('li', null, all_));
+      for (const [key, label] of C.CATEGORIES) {
+        const a = link(catalogRoute(r, {cat: r.cat === key ? undefined : key, offset: undefined}), null,
+          {class: 'cat-chip', 'aria-current': r.cat === key ? 'true' : null, 'data-focus': 'cat-' + key, 'data-focus-next': 'cat-' + key});
+        a.append(h('span', null, label), h('span', {class: 'cat-count'}, String(counts[key] || 0)));
+        list.appendChild(h('li', null, a));
+      }
+      nav.replaceChildren(list);
+    }
+
+    function storeToolbar(r, all, list) {
+      const bar = h('div', {class: 'store-toolbar'});
+      const n = list.length;
+      bar.appendChild(h('p', {class: 'store-count', role: 'status'},
+        n === all.length ? `${n} experiment${n === 1 ? '' : 's'}` : `${n} of ${all.length} experiments`));
+      const pills = h('ul', {class: 'store-pills', 'aria-label': 'Active filters'});
+      const names = {hw: C.FACETS.hw, who: C.FACETS.who, os: C.FACETS.os};
+      for (const name of ['hw', 'who', 'os', 'lic']) {
+        for (const key of C.facetList(r[name])) {
+          const label = name === 'lic' ? key : ((names[name].find(([k]) => k === key) || [key, key])[1]);
+          const a = link(catalogRoute(r, {[name]: C.toggleFacet(r[name], key), offset: undefined}), null,
+            {class: 'pill', 'aria-label': 'Remove filter ' + label});
+          a.append(h('span', null, label), h('span', {class: 'pill-x', 'aria-hidden': 'true'}, '\u00d7'));
+          pills.appendChild(h('li', null, a));
+        }
+      }
+      if (pills.children.length) bar.appendChild(pills);
+      const spacer = h('span', {class: 'store-spacer'});
+      bar.appendChild(spacer);
+      const count = C.activeFilters(r);
+      const open = h('button', {type: 'button', class: 'btn btn-line store-filter-open', 'aria-controls': 'store-filters', 'aria-expanded': 'false', 'data-focus': 'filters-open'},
+        filterGlyph(), h('span', null, count ? `Filters (${count})` : 'Filters'));
+      open.addEventListener('click', () => openSheet(open));
+      bar.appendChild(open);
+      const sortId = nextId('sort');
+      const sort = select(C.SORTS.map(([key, label]) => [key, label]), r.sort || 'newest', {id: sortId, 'data-focus': 'catalog-sort'});
+      sort.addEventListener('change', () => go(catalogRoute(r, {sort: sort.value, offset: undefined}), {focus: 'catalog-sort', replace: true}));
+      bar.appendChild(h('div', {class: 'store-sort'}, h('label', {for: sortId, class: 'store-sort-label'}, 'Sort'), sort));
+      return bar;
+    }
+
+    function openSheet(opener) {
+      const sheet = doc.getElementById('store-filters');
+      if (!sheet) return;
+      sheet.classList.add('is-open');
+      sheet.setAttribute('role', 'dialog');
+      sheet.setAttribute('aria-modal', 'true');
+      opener.setAttribute('aria-expanded', 'true');
+      const first = sheet.querySelector('input, button');
+      if (first && typeof first.focus === 'function') first.focus();
+    }
+
+    function closeSheet() {
+      const sheet = doc.getElementById('store-filters');
+      if (!sheet) return;
+      sheet.classList.remove('is-open');
+      sheet.removeAttribute('role');
+      sheet.removeAttribute('aria-modal');
+      const opener = $('main').querySelector('.store-filter-open');
+      if (opener) {
+        opener.setAttribute('aria-expanded', 'false');
+        if (typeof opener.focus === 'function') opener.focus();
+      }
+    }
+
+    /** The filter column (a sheet on a phone): hardware, subject, platform,
+     *  licence, each choice with how many it would show. */
+    function drawFilters(aside, r, all) {
+      const facets = C.catalogFacets(all, r);
+      let pending = Object.assign({}, r);
+      const showButton = h('button', {type: 'button', class: 'btn btn-primary btn-block'});
+      const paintShow = () => {
+        const n = C.filterCatalog(all, pending).length;
+        showButton.textContent = `Show ${n} experiment${n === 1 ? '' : 's'}`;
+      };
+      const groups = [
+        ['hw', 'Hardware', C.FACETS.hw],
+        ['who', 'Subject', C.FACETS.who],
+        ['os', 'Platform', C.FACETS.os],
+        ['lic', 'Licence', Object.keys(facets.lic).sort().map((k) => [k, k])],
+      ];
+      const head = h('div', {class: 'sheet-head'}, h('h2', {class: 'filters-title'}, 'Filters'),
+        h('button', {type: 'button', class: 'btn btn-quiet btn-small sheet-close', on: {click: closeSheet}}, 'Close'));
+      const body = h('div', {class: 'filters-body'});
+      for (const [name, title, options] of groups) {
+        if (!options.length) continue;
+        const set = h('fieldset', {class: 'facet'}, h('legend', {class: 'facet-title'}, title));
+        for (const [key, label] of options) {
+          const id = nextId('f-' + name);
+          const box = h('input', {type: 'checkbox', id, class: 'facet-box', checked: C.facetList(r[name]).includes(key),
+            'data-focus': 'f-' + name + '-' + key});
+          box.addEventListener('change', () => {
+            pending = Object.assign({}, pending, {[name]: C.toggleFacet(pending[name], key), offset: undefined});
+            if (wideLayout()) go(catalogRoute(pending), {focus: 'f-' + name + '-' + key, replace: true});
+            else paintShow();
+          });
+          set.appendChild(h('div', {class: 'facet-row'}, box,
+            h('label', {for: id, class: 'facet-label'}, h('span', null, label),
+              h('span', {class: 'facet-count'}, String(facets[name][key] || 0)))));
+        }
+        body.appendChild(set);
+      }
+      const any = C.activeFilters(r);
+      if (any) body.appendChild(link(catalogRoute(r, {hw: undefined, who: undefined, os: undefined, lic: undefined, offset: undefined}),
+        'Clear filters', {class: 'btn btn-quiet btn-small filters-clear'}));
+      showButton.addEventListener('click', () => go(catalogRoute(pending), {focus: 'filters-open', replace: true}));
+      paintShow();
+      const foot = h('div', {class: 'sheet-foot'}, showButton);
+      aside.addEventListener('keydown', (event) => { if (event && event.key === 'Escape' && aside.classList.contains('is-open')) closeSheet(); });
+      aside.replaceChildren(head, body, foot);
+    }
+
+    /* ---- one experiment ------------------------------------------------------ */
+
+    function sortVersions(versions) {
+      return (Array.isArray(versions) ? versions.slice() : []).sort((a, b) =>
+        String(b.created_at || '').localeCompare(String(a.created_at || '')));
+    }
+
+    function chooseVersion(experiment, versions, wanted) {
+      const list = sortVersions(versions);
+      return list.find((v) => v.id === wanted)
+        || list.find((v) => v.id === experiment.published_version_id)
+        || list[0] || null;
+    }
+
+    function screenExperiment(ctx) {
+      const r = ctx.route;
+      const section = h('section', {class: 'screen screen-experiment'});
+      const body = region('the experiment');
+      const flash = flashNode();
+      if (flash) section.appendChild(flash);
+      section.appendChild(body.el);
+      if (!r.id) {
+        body.fill(emptyState('No experiment chosen.', null, link({view: 'catalog'}, 'Open the marketplace', {class: 'btn btn-line'})));
+        return section;
+      }
+      (async () => {
+        const got = await screenRequest(ctx.epoch, 'GET', '/experiments/' + C.seg(r.id));
+        if (!got) return;
+        if (!got.ok) {
+          if (got.error.kind === 'not_found') {
+            return body.fill(h('div', {class: 'screen-head'},
+              h('h1', {class: 'screen-title', tabindex: '-1', 'data-heading': ''}, 'Experiment not found'),
+              h('p', {class: 'lede'}, 'It does not exist, is not published, or is private to its author.'),
+              link({view: 'catalog'}, 'Back to the marketplace', {class: 'btn btn-line'})));
+          }
+          return body.fail(got.error, retryCurrent);
+        }
+        const experiment = (got.value && got.value.experiment) || {};
+        const versions = sortVersions(got.value && got.value.versions);
+        const version = chooseVersion(experiment, versions, r.version);
+        const tab = r.tab || 'overview';
+        const main = h('div', {class: 'exp-main'},
+          experimentHead(experiment, version, versions), experimentTabs(r, tab, versions.length),
+          experimentTab(ctx, tab, experiment, version, versions));
+        body.fill(h('nav', {class: 'crumbs', 'aria-label': 'You are here'},
+          link({view: 'catalog'}, 'Marketplace'), h('span', {class: 'crumb-sep', 'aria-hidden': 'true'}, '/'),
+          h('span', {'aria-current': 'page'}, experiment.title || 'Untitled experiment')),
+        h('div', {class: 'exp-layout'}, main, releaseSheet(ctx, experiment, version, versions)));
+      })();
+      return section;
+    }
+
+    function experimentHead(experiment, version, versions) {
+      const published = experiment.published_version_id;
+      let status;
+      if (version && published && version.id === published) status = h('span', {class: 'chip chip-public'}, 'Public release');
+      else if (isOwner(experiment)) status = h('span', {class: 'chip chip-private'}, 'Private: only you can see this version');
+      const cats = new Map(C.CATEGORIES);
+      const tags = Array.isArray(experiment.tags) ? experiment.tags.slice(0, 12) : [];
+      return h('header', {class: 'exp-hero'},
+        h('div', {class: 'exp-art', 'aria-hidden': 'true'}, schematic(C.schematicKind(tags), experiment.id || experiment.title, 'wide')),
+        h('div', {class: 'exp-hero-text'},
+          h('h1', {class: 'screen-title', tabindex: '-1', 'data-heading': ''}, experiment.title || 'Untitled experiment'),
+          ownerLine(experiment),
+          experiment.summary ? h('p', {class: 'lede'}, experiment.summary) : null,
+          h('div', {class: 'chips'}, status, aiAssisted(version) ? aiChip() : null,
+            ...tags.map((t) => cats.has(t)
+              ? link({view: 'catalog', cat: t}, cats.get(t), {class: 'chip chip-tag chip-link'})
+              : h('span', {class: 'chip chip-tag'}, t)),
+            versions.length > 1 ? h('span', {class: 'chip'}, versions.length + ' versions visible to you') : null)));
+    }
+
+    function experimentTabs(r, tab, versionCount) {
+      const names = [['overview', 'Overview'], ['methods', 'Methods'], ['tasks', 'Tasks & parameters'], ['versions', 'Versions']];
+      const nav = h('nav', {class: 'tabs', 'aria-label': 'Experiment sections'});
+      for (const [key, label] of names) {
+        const text = key === 'versions' && versionCount ? `${label} (${versionCount})` : label;
+        nav.appendChild(link({view: 'experiment', id: r.id, version: r.version, tab: key === 'overview' ? undefined : key}, text,
+          {class: 'tab', 'aria-current': key === tab ? 'page' : null, 'data-focus': 'exp-tab-' + key, 'data-focus-next': 'exp-tab-' + key}));
+      }
+      return nav;
+    }
+
+    function experimentTab(ctx, tab, experiment, version, versions) {
+      if (tab === 'methods' || tab === 'tasks') return documentationTab(ctx, tab, experiment, version);
+      if (tab === 'versions') return versionsTab(ctx.route, experiment, versions, version);
+      return overviewTab(ctx, experiment, version);
+    }
+
+    /** Markdown the author wrote (a description, a Methods excerpt) as
+     *  safe DOM: the documentation renderer builds elements, never parses
+     *  markup, keeps only https links and drops images; parameter and task
+     *  references resolve against ``documentation`` when given. Without the
+     *  renderer, the text as plain paragraphs. */
+    function markdownProse(text, documentation, className) {
+      const docs = docsRenderer();
+      if (docs && typeof docs.renderMarkdown === 'function') {
+        try {
+          const rendered = docs.renderMarkdown(text, {document: doc, headingLevel: 3},
+            documentation ? {doc: documentation} : {});
+          return h('div', {class: className}, rendered);
+        } catch (exc) {
+          /* The text stays readable, and the page says why it is plain. */
+          return h('div', {class: className}, ...text.split(/\n{2,}/).map((p) => h('p', null, p)),
+            h('p', {class: 'muted small'}, 'Shown as plain text: ' + exc.message));
+        }
+      }
+      return h('div', {class: className}, ...text.split(/\n{2,}/).map((p) => h('p', null, p)));
+    }
+
+    /** Overview: what it is, a Methods excerpt and the task list (from the
+     *  release's own documentation, when it has some), the release details
+     *  and citations. */
+    function overviewTab(ctx, experiment, version) {
+      const r = ctx.route;
+      const reading = h('div', {class: 'exp-reading'});
+      reading.appendChild(h('h2', {class: 'block-title'}, 'About'));
+      reading.appendChild(experiment.description
+        ? markdownProse(String(experiment.description), null, 'prose')
+        : h('p', {class: 'muted'}, 'The author has not written a description.'));
+      if (version) {
+        const docsArea = h('div', {class: 'exp-docs', 'aria-live': 'polite', 'aria-busy': 'true'});
+        reading.appendChild(docsArea);
+        (async () => {
+          const got = await screenRequest(ctx.epoch, 'GET',
+            '/experiments/' + C.seg(experiment.id) + '/versions/' + C.seg(version.id) + '/documentation');
+          if (!got) return;
+          docsArea.setAttribute('aria-busy', 'false');
+          const documentation = got.ok && got.value ? got.value.documentation : null;
+          const methods = documentation && documentation.methods ? documentation.methods.markdown : '';
+          const tasks = documentation && Array.isArray(documentation.tasks) ? documentation.tasks : [];
+          const parts = [h('h2', {class: 'block-title'}, 'Methods')];
+          const excerpt = C.methodsExcerpt(methods, 460);
+          if (excerpt) {
+            /* Rendered as the Methods page renders it, so [[param:...]]
+             * references show their values here too (import round). */
+            parts.push(markdownProse(excerpt, documentation, 'prose prose-excerpt'),
+              link({view: 'experiment', id: r.id, version: r.version, tab: 'methods'}, 'Read the full Methods', {class: 'more-link'}));
+          } else {
+            parts.push(h('p', {class: 'muted'}, got.ok ? 'This release has no Methods document.' : 'The Methods could not be read: ' + got.error.message));
+          }
+          parts.push(h('h2', {class: 'block-title'}, 'Tasks'));
+          if (tasks.length) {
+            parts.push(h('ul', {class: 'task-cards'}, ...tasks.map((t) => h('li', {class: 'task-card'},
+              h('h3', {class: 'task-card-title'}, link({view: 'experiment', id: r.id, version: r.version, tab: 'tasks', task: t.id}, t.title || t.id)),
+              t.summary ? h('p', {class: 'task-card-text'}, t.summary) : null,
+              Array.isArray(t.parameters) ? h('p', {class: 'task-card-meta'}, t.parameters.length + ' documented parameters') : null))));
+          } else {
+            parts.push(h('p', {class: 'muted'}, 'This release does not document its tasks.'));
+          }
+          docsArea.replaceChildren(...parts);
+          settleFocus(screenSettled());
+        })();
+      }
+      if (version) {
+        const m = version.manifest || {};
+        reading.appendChild(h('h2', {class: 'block-title'}, 'Release details'));
+        reading.appendChild(spec([
+          ['Python', m.python_min ? '\u2265 ' + m.python_min : null, {mono: true}],
+          ['alhazen', m.alhazen_min ? '\u2265 ' + m.alhazen_min : null, {mono: true}],
+          ['Release', m.version || version.version || null, {mono: true}],
+          ['Protocol', m.protocol_version && m.protocol_version !== m.version
+            ? m.protocol_version + ' (data filed under v' + m.protocol_version + ')' : null, {mono: true}],
+          ['Entry point', m.entrypoint, {mono: true}],
+          ['Files', Array.isArray(m.files) ? String(m.files.length) : null],
+          ['Archive', C.formatBytes(version.size)],
+          ['Released', C.formatDate(version.created_at)],
+          ['SHA-256', digest(version.sha256)],
+        ]));
+      }
+      reading.appendChild(h('h2', {class: 'block-title'}, 'Citations'));
+      const citations = Array.isArray(experiment.citations) && experiment.citations.length
+        ? experiment.citations : (version && version.manifest && version.manifest.citations) || [];
+      if (citations.length) {
+        const ol = h('ol', {class: 'citations'});
+        for (const c of citations) {
+          const url = C.firstHttpsUrl(c);
+          ol.appendChild(h('li', null, h('span', {class: 'citation-text'}, String(c)),
+            url ? h('a', {class: 'citation-link', href: url, rel: 'noopener noreferrer', target: '_blank'}, 'Open source') : null));
+        }
+        reading.appendChild(ol);
+      } else {
+        reading.appendChild(h('p', {class: 'muted'}, 'No citations listed. Cite the release by its version and SHA-256.'));
+      }
+      return reading;
+    }
+
+    /** The action card beside the experiment (sticky on a wide page): the
+     *  library action first, then download, the version, licence, hardware. */
+    function releaseSheet(ctx, experiment, version, versions) {
+      const aside = h('aside', {class: 'sheet action-card', 'aria-label': 'Release'});
+      if (!version) {
+        aside.appendChild(h('h2', {class: 'sheet-title'}, 'No release yet'));
+        aside.appendChild(h('p', {class: 'muted'}, isOwner(experiment)
+          ? 'Add a version from My experiments.' : 'There is no release you can see.'));
+        if (isOwner(experiment)) aside.appendChild(link({view: 'mine', id: experiment.id}, 'Manage', {class: 'btn btn-line'}));
+        return aside;
+      }
+      const m = version.manifest || {};
+      const list = versions || [version];
+      const head = h('div', {class: 'action-head'});
+      if (list.length > 1) {
+        const id = nextId('version');
+        const pick = select(list.map((v) => [v.id, versionLabel(v) + (v.id === experiment.published_version_id ? ' (public)' : '')]), version.id, {id, 'data-focus': 'version-pick'});
+        pick.addEventListener('change', () => go({view: 'experiment', id: experiment.id, version: pick.value, tab: ctx.route.tab}, {focus: 'version-pick'}));
+        head.appendChild(h('div', {class: 'action-version'}, h('label', {for: id, class: 'action-key'}, 'Version'), pick));
+      } else {
+        head.appendChild(h('p', {class: 'action-version'}, h('span', {class: 'action-key'}, 'Version'),
+          h('span', {class: 'mono action-version-value'}, versionLabel(version))));
+      }
+      head.appendChild(h('p', {class: 'action-date'}, 'Released ' + C.formatDate(version.created_at, false)));
+      if (aiAssisted(version)) head.appendChild(aiChip());
+      aside.appendChild(head);
+      aside.appendChild(libraryAction(ctx, experiment, version));
+      if (state.role === 'rig') aside.appendChild(installPanel(experiment, version));
+      else aside.appendChild(downloadAction(experiment, version));
+      if (state.role === 'server') {
+        const forkAi = link({view: 'create', fork: experiment.id, version: version.id !== experiment.published_version_id ? version.id : undefined}, null, {class: 'btn btn-line btn-block btn-fork', 'data-focus': 'fork-ai'});
+        forkAi.append(sparkGlyph(), h('span', null, 'Fork with AI'));
+        aside.appendChild(h('div', {class: 'sheet-block sheet-fork'}, forkAi));
+      }
+      const subjects = C.subjectKeys({experiment}).map((s) => s === 'human' ? 'Human' : 'Monkey').join(', ');
+      aside.appendChild(spec([
+        ['Licence', experiment.license || m.license || 'not stated'],
+        ['Needs', hardwareLamps(m)],
+        ['Subjects', subjects || null],
+        ['Runs on', C.platformsText(m)],
+        ['SHA-256', h('span', {class: 'mono', title: String(version.sha256 || '')}, C.shortHash(version.sha256) + '\u2026')],
+      ]));
+      if (isOwner(experiment)) {
+        aside.appendChild(h('p', {class: 'sheet-owner'}, link({view: 'mine', id: experiment.id}, 'Manage this experiment', {class: 'btn btn-quiet'})));
+      }
+      return aside;
+    }
+
+    function libraryAction(ctx, experiment, version) {
+      const box = h('div', {class: 'sheet-block library-action'});
+      if (!state.user) {
+        box.appendChild(link({view: 'signin', next: currentNext()}, 'Add to library', {class: 'btn btn-primary btn-block'}));
+        box.appendChild(h('p', {class: 'muted small'}, 'Sign in to add it to your library.'));
+        return box;
+      }
+      const status = statusLine();
+      const button = h('button', {type: 'button', class: 'btn btn-primary btn-block', 'data-focus': 'pin'}, 'Add to library');
+      const pinned = h('div', {class: 'pin-state', hidden: true});
+      box.append(pinned, button, status.el);
+      const paint = (items) => {
+        const entry = items.find((i) => i && i.experiment && i.experiment.id === experiment.id);
+        const pinnedId = entry && entry.version ? entry.version.id : null;
+        if (pinnedId === version.id) {
+          pinned.replaceChildren(h('p', {class: 'owned'}, checkGlyph(), h('span', null, 'In your library')),
+            h('p', {class: 'muted small'}, 'Pinned to ' + versionLabel(version) + '. Newer versions are not followed automatically.'),
+            link({view: 'library'}, 'Open your library', {class: 'btn btn-line btn-block', 'data-focus': 'open-library'}));
+          pinned.hidden = false;
+          button.hidden = true;
+        } else if (entry) {
+          pinned.replaceChildren(h('p', {class: 'muted small'}, 'Your library pins ' + versionLabel(entry.version) + '.'));
+          pinned.hidden = false;
+          button.textContent = 'Pin ' + versionLabel(version) + ' instead';
+          button.hidden = false;
+        } else {
+          pinned.hidden = true;
+          button.textContent = 'Add to library';
+          button.hidden = false;
+        }
+      };
+      libraryItems(false).then((items) => { if (ctx.epoch === state.epoch) paint(items); })
+        .catch((exc) => { if (ctx.epoch === state.epoch) { noteFailure(exc); pinned.hidden = false; pinned.textContent = 'Your library could not be read: ' + exc.message; } });
+      button.addEventListener('click', async () => {
+        button.disabled = true;
+        status.show('Adding\u2026', 'info');
+        try {
+          await api('POST', '/library', {json: {experiment_id: experiment.id, version_id: version.id}});
+          const items = await libraryItems(true);
+          if (ctx.epoch !== state.epoch) return;
+          paint(items);
+          status.clear();
+          const open = box.querySelector('[data-focus="open-library"]');
+          if (open && typeof open.focus === 'function') open.focus();
+        } catch (exc) {
+          noteFailure(exc);
+          status.show(exc.message, 'err');
+        } finally {
+          button.disabled = false;
+        }
+      });
+      return box;
+    }
+
+    function downloadAction(experiment, version) {
+      const href = state.api.url('/experiments/' + C.seg(experiment.id) + '/versions/' + C.seg(version.id) + '/download');
+      return h('div', {class: 'sheet-block'},
+        h('a', {class: 'btn btn-line btn-block', href, download: ''}, 'Download the release archive'),
+        h('p', {class: 'muted small'}, 'The hub never runs experiments. Install it on a rig from your library '
+          + '(alhazen dashboard --hub).'));
+    }
+
+    /** Trust and install a release on this rig (rig only). */
+    function installPanel(experiment, version) {
+      const box = h('div', {class: 'sheet-block install'});
+      box.appendChild(h('h3', {class: 'sub-title'}, 'Install on this rig'));
+      const local = state.local || {};
+      if (local.state === 'not_configured') {
+        box.append(h('p', {class: 'muted'}, 'This rig is not connected to a hub.'),
+          link({view: 'rig', tab: 'connection'}, 'Connect this rig', {class: 'btn btn-line'}));
+        return box;
+      }
+      const existing = installFor(version.sha256);
+      const status = statusLine();
+      const result = h('div', {class: 'install-result'});
+      const showInstalled = (record) => {
+        result.replaceChildren();
+        if (!record) return;
+        const ok = record.status === 'registered' && !record.error;
+        result.appendChild(h('p', {class: 'note note-' + (ok ? 'ok' : 'warn'), role: 'status'},
+          ok ? 'Installed and registered in the workspace (' + versionLabel(record) + ').'
+            : 'Files installed and verified, but not registered: ' + ((record.error && record.error.message) || 'choose an interpreter below.')));
+        const durability = durabilityNote(record);
+        if (durability) result.appendChild(durability);
+        const open = workspaceLink(record, 'Open it in the workspace');
+        if (open) result.appendChild(open);
+      };
+      showInstalled(existing);
+      box.appendChild(result);
+      if (existing && existing.status === 'registered' && !existing.error) return box;
+      if (!local.user) {
+        box.append(h('p', {class: 'muted'}, 'Sign in on this rig to install.'),
+          link({view: 'signin', next: currentNext()}, 'Sign in', {class: 'btn btn-line'}));
+        return box;
+      }
+      box.appendChild(h('div', {class: 'callout callout-warn'},
+        h('p', {class: 'callout-title'}, 'This release is Python code from its author.'),
+        /* The rig's own statement when it gives one (rig-contract: trust_statement). */
+        h('p', null, local.trust_statement ? String(local.trust_statement)
+          : 'Trusting it lets Alhazen import and run it as your operating-system user, with your access to files, '
+          + 'collected data, saved credentials and connected devices. A virtual environment is not a sandbox. Install only code whose author you trust.'),
+        h('p', null, 'Installing downloads the archive, checks its SHA-256 and every file against the manifest, and extracts it into a new folder. '
+          + 'Existing experiments and checkouts are not changed, and nothing is installed into the interpreter.')));
+      const listId = nextId('interpreters');
+      const python = input({type: 'text', name: 'python', autocomplete: 'off', spellcheck: 'false', list: listId,
+        placeholder: '/path/to/venv/bin/python', 'data-focus': 'install-python'});
+      const datalist = h('datalist', {id: listId});
+      for (const i of Array.isArray(local.interpreters) ? local.interpreters : []) {
+        if (i && i.path) datalist.appendChild(h('option', {value: i.path}, i.label || i.path));
+      }
+      const trust = checkbox('I trust the code of ' + (experiment.title || 'this experiment') + ' ' + versionLabel(version)
+        + ', SHA-256 ' + C.shortHash(version.sha256) + '\u2026, and choose to install it.');
+      const button = h('button', {type: 'submit', class: 'btn btn-primary'}, existing ? 'Register with this interpreter' : 'Install ' + versionLabel(version));
+      const form = h('form', {class: 'form'},
+        field('Python interpreter', python,
+          'The absolute path of the interpreter that already has alhazen; the experiment will run with it. '
+          + (datalist.children.length ? 'Interpreters this rig knows are suggested.' : '')),
+        datalist, trust.el, button, status.el);
+      form.addEventListener('submit', async (event) => {
+        prevent(event);
+        const py = C.validatePython(python.value);
+        if (!py.ok) return status.show(py.reason, 'err');
+        if (!trust.box.checked) return status.show('Tick the box to confirm you trust this exact release.', 'err');
+        button.disabled = true;
+        status.show('Downloading, verifying and registering\u2026 keep this page open.', 'info');
+        try {
+          const answer = await api('POST', '/local/install', {
+            json: {experiment_id: experiment.id, version_id: version.id, sha256: version.sha256, trust_code: true, python: py.value},
+            timeoutMs: 15 * 60 * 1000,
+          });
+          await loadLocal();
+          drawChrome();
+          const record = (answer && answer.install) || installFor(version.sha256);
+          status.clear();
+          showInstalled(record);
+          if (record && record.status === 'registered' && !record.error) form.hidden = true;
+        } catch (exc) {
+          noteFailure(exc);
+          await loadLocal();
+          showInstalled(installFor(version.sha256));
+          status.show(exc.message, 'err');
+        } finally {
+          button.disabled = false;
+        }
+      });
+      box.appendChild(form);
+      return box;
+    }
+
+    function aiAssisted(version) {
+      return Boolean(version && version.manifest && version.manifest.ai_assisted === true);
+    }
+
+    function aiChip() {
+      return h('span', {class: 'chip chip-ai'}, 'AI-assisted draft');
+    }
+
+    function versionsTab(r, experiment, versions, current) {
+      const wrap = h('div', {class: 'block'});
+      if (!versions.length) {
+        wrap.appendChild(emptyState('No versions you can see.', null));
+        return wrap;
+      }
+      const table = h('table', {class: 'table'},
+        h('caption', {class: 'visually-hidden'}, 'Versions of ' + (experiment.title || 'this experiment')),
+        h('thead', null, h('tr', null, ...['Version', 'Status', 'Released', 'Size', 'SHA-256'].map((t) => h('th', {scope: 'col'}, t)))));
+      const tbody = h('tbody');
+      for (const v of versions) {
+        const published = v.id === experiment.published_version_id;
+        tbody.appendChild(h('tr', {class: v === current ? 'row-current' : null},
+          h('td', {class: 'mono'}, link({view: 'experiment', id: experiment.id, version: v.id}, versionLabel(v))),
+          h('td', null, published ? 'Public' : 'Private', aiAssisted(v) ? aiChip() : null),
+          h('td', null, C.formatDate(v.created_at)),
+          h('td', {class: 'mono num'}, C.formatBytes(v.size)),
+          h('td', {class: 'mono', title: String(v.sha256 || '')}, C.shortHash(v.sha256))));
+      }
+      table.appendChild(tbody);
+      wrap.appendChild(h('div', {class: 'table-wrap'}, table));
+      wrap.appendChild(h('p', {class: 'muted small'}, 'A release never changes after upload. Publishing one release does not publish later ones.'));
+      return wrap;
+    }
+
+    /* ---- scientific documentation (renderer: hub_docs.js) ------------------- */
+
+    /** The documentation renderer, or null when hub_docs.js did not load; the
+     *  page then says so rather than drawing a half-view. */
+    function docsRenderer() {
+      const docs = env.HubDocs || (env.window && env.window.HubDocs) || null;
+      return docs && typeof docs.renderMethods === 'function' ? docs : null;
+    }
+
+    function docsOptions(route) {
+      return {
+        document: doc,
+        headingLevel: 2,
+        idPrefix: 'hd-',
+        taskHref: route.view === 'experiment'
+          ? (taskId) => (loc.pathname || '/') + C.formatRoute({view: 'experiment', id: route.id, version: route.version, tab: 'tasks', task: taskId})
+          : () => null,
+      };
+    }
+
+    function renderDocs(kind, ...args) {
+      const docs = docsRenderer();
+      if (!docs) {
+        return h('div', {class: 'callout callout-warn', role: 'status'},
+          h('p', null, 'The documentation viewer (hub_docs.js) is not available on this server, so this section cannot be shown.'));
+      }
+      try {
+        return docs[kind](...args);
+      } catch (exc) {
+        return errorBox(new C.HubError('bad_response', 'This documentation cannot be displayed: ' + exc.message));
+      }
+    }
+
+    function documentationTab(ctx, tab, experiment, version) {
+      const r = ctx.route;
+      const wrap = h('div', {class: 'block docs-block'});
+      if (!version) {
+        wrap.appendChild(renderDocs('renderMissing', tab === 'methods' ? 'methods' : 'task', docsOptions(r)));
+        return wrap;
+      }
+      wrap.appendChild(h('p', {class: 'docs-provenance mono'},
+        'Documentation of ' + versionLabel(version) + ' \u00b7 SHA-256 ' + C.shortHash(version.sha256) + '\u2026'));
+      const area = region('the documentation');
+      wrap.appendChild(area.el);
+      (async () => {
+        const got = await screenRequest(ctx.epoch, 'GET',
+          '/experiments/' + C.seg(experiment.id) + '/versions/' + C.seg(version.id) + '/documentation');
+        if (!got) return;
+        if (!got.ok) return area.fail(got.error, retryCurrent);
+        const documentation = got.value && got.value.documentation ? got.value.documentation : null;
+        const options = docsOptions(r);
+        if (tab === 'methods') return area.fill(renderDocs('renderMethods', documentation, options));
+        const tasks = documentation && Array.isArray(documentation.tasks) ? documentation.tasks : [];
+        if (!tasks.length) return area.fill(renderDocs('renderTaskGuide', null, null, options));
+        const chosen = tasks.find((t) => t.id === r.task) || tasks[0];
+        const layout = h('div', {class: 'docs-tasks'});
+        if (tasks.length > 1) {
+          const nav = h('nav', {class: 'task-index', 'aria-label': 'Tasks'});
+          const list = h('ul', {class: 'task-list'});
+          for (const t of tasks) {
+            list.appendChild(h('li', null, link({view: 'experiment', id: r.id, version: r.version, tab: 'tasks', task: t.id},
+              t.title || t.id, {class: 'task-link', 'aria-current': t === chosen ? 'page' : null,
+                'data-focus': 'task-' + t.id, 'data-focus-next': 'task-' + t.id})));
+          }
+          nav.appendChild(list);
+          layout.appendChild(nav);
+        }
+        layout.appendChild(h('div', {class: 'task-guide'}, renderDocs('renderTaskGuide', documentation, chosen.id, options)));
+        area.fill(layout);
+      })();
+      return wrap;
+    }
+
+    function screenGuide(ctx) {
+      const section = screenShell('Guide', 'How Alhazen runs an experiment',
+        'Modes, protections and what each choice records, taken from the Alhazen version this '
+        + (state.role === 'rig' ? 'rig runs. Readable offline.' : 'hub runs.'));
+      const area = region('the guide');
+      section.appendChild(area.el);
+      (async () => {
+        const got = await screenRequest(ctx.epoch, 'GET', '/guide');
+        if (!got) return;
+        if (!got.ok) return area.fail(got.error, retryCurrent);
+        const guide = got.value && got.value.guide ? got.value.guide : got.value;
+        if (!guide) return area.fill(renderDocs('renderMissing', 'guide', docsOptions(ctx.route)));
+        area.fill(renderDocs('renderGlobalGuide', guide, docsOptions(ctx.route)));
+      })();
+      return section;
+    }
+
+    /* ---- sign in, register ------------------------------------------------- */
+
+    /** Sign-in and registration share one split card: the form on the left,
+     *  on wide screens a quiet panel with what an account gives you. Returns
+     *  {section, body}; screens append their form to body. */
+    function authShell(title, lede) {
+      const section = h('section', {class: 'screen screen-auth'});
+      const body = h('div', {class: 'auth-main'},
+        h('p', {class: 'auth-brand'}, brandMark(), h('span', {class: 'auth-brand-word'}, 'Alhazen')),
+        h('header', {class: 'screen-head'},
+          h('h1', {class: 'screen-title', tabindex: '-1', 'data-heading': ''}, title),
+          lede ? h('p', {class: 'lede'}, lede) : null));
+      const flash = flashNode();
+      if (flash) body.appendChild(flash);
+      const points = [
+        ['Library', 'Pin the releases you trust.'],
+        ['Rigs', 'Install them on any rig you sign in to.'],
+        ['Data', 'Upload sessions privately, when you choose.'],
+      ];
+      const aside = h('aside', {class: 'auth-aside', 'aria-label': 'What an account gives you'},
+        h('p', {class: 'auth-aside-title'}, 'One account for your experiments, rigs and data.'),
+        h('ul', {class: 'auth-points'}, points.map(([name, text]) => h('li', {class: 'auth-point'},
+          h('span', {class: 'auth-point-name'}, name), h('span', {class: 'auth-point-text'}, text)))));
+      section.appendChild(h('div', {class: 'auth'}, body, aside));
+      return {section, body};
+    }
+
+    /** The Alhazen mark (the Penrose "impossible A"): ink paths plus one
+     *  accent face, coloured by CSS tokens. Built as SVG nodes. */
+    const MARK_INK = 'M7.83 56.61L11.81 49.72L11.98 49.52L12.21 49.35L12.38 49.28L12.64 49.24L20.6 49.24L16.62 42.35L16.55 42.2L16.51 42.01L16.5 41.82L16.53 41.64L16.62 41.39L26.31 24.61L26.49 24.39L26.73 24.23L26.92 24.16L27.12 24.13L27.41 24.16L27.6 24.23L27.77 24.33L27.92 24.47L28.02 24.61L37.41 40.87L44.77 40.87L27.17 10.39L4.15 50.24ZM55.59 57.61L59.27 51.24L13.24 51.24L9.57 57.61ZM26.59 40.87L30.85 33.5L27.17 27.13L19.23 40.87Z';
+    const MARK_FACE = 'M22.91 49.24L59.27 49.24L36.26 9.39L28.9 9.39L47.38 41.39L47.45 41.55L47.49 41.75L47.5 41.95L47.46 42.14L47.34 42.41L47.14 42.64L46.89 42.79L46.7 42.85L46.52 42.87L19.23 42.87Z';
+    function brandMark() {
+      const box = svg('svg', {viewBox: '0 0 64 64', width: '28', height: '28', class: 'brand-mark', focusable: 'false', 'aria-hidden': 'true'});
+      box.appendChild(svg('path', {class: 'mark-ink', d: MARK_INK}));
+      box.appendChild(svg('path', {class: 'mark-face', d: MARK_FACE}));
+      return box;
+    }
+
+    /** A password field with a Show/Hide switch inside it. */
+    function passwordField(label, pw, hint) {
+      const id = pw.getAttribute('id');
+      const toggle = h('button', {type: 'button', class: 'pw-toggle', 'aria-controls': id,
+        'aria-pressed': 'false', 'aria-label': 'Show password'}, 'Show');
+      toggle.addEventListener('click', () => {
+        const reveal = pw.getAttribute('type') === 'password';
+        pw.setAttribute('type', reveal ? 'text' : 'password');
+        toggle.setAttribute('aria-pressed', String(reveal));
+        toggle.textContent = reveal ? 'Hide' : 'Show';
+      });
+      const parts = [h('label', {class: 'field-label', for: id}, label), h('div', {class: 'pw'}, pw, toggle)];
+      if (hint) {
+        pw.setAttribute('aria-describedby', id + '-hint');
+        parts.push(h('p', {class: 'field-hint', id: id + '-hint'}, hint));
+      }
+      return h('div', {class: 'field'}, ...parts);
+    }
+
+    function screenSignin(ctx) {
+      const r = ctx.route;
+      const flash = state.flash;
+      const {section, body} = authShell('Sign in', state.role === 'rig'
+        ? 'Use your account on the hub this rig is connected to.'
+        : 'Welcome back. Use your Experiment Hub account.');
+      if (state.user) {
+        body.appendChild(h('p', {class: 'note note-info'}, 'You are signed in as ' + (state.user.display_name || state.user.username) + '.'));
+        body.appendChild(link({view: 'home'}, 'Go to the start page', {class: 'btn btn-line'}));
+        return section;
+      }
+      if (state.role === 'rig' && state.local && state.local.state === 'not_configured') {
+        body.appendChild(h('div', {class: 'callout callout-info'},
+          h('p', null, 'Connect this rig to a hub first; then sign in to it.'),
+          link({view: 'rig', tab: 'connection'}, 'Connect this rig', {class: 'btn btn-primary'})));
+        return section;
+      }
+      const username = input({type: 'text', name: 'username', autocomplete: 'username', autocapitalize: 'none',
+        spellcheck: 'false', required: true, maxlength: '64', value: (flash && flash.username) || '', 'data-focus': 'signin-user'});
+      const password = input({type: 'password', name: 'password', autocomplete: 'current-password', required: true, maxlength: '1024'});
+      const status = statusLine();
+      const button = h('button', {type: 'submit', class: 'btn btn-primary'}, 'Sign in');
+      const form = h('form', {class: 'form form-narrow'}, field('Username', username), passwordField('Password', password), button, status.el,
+        h('p', {class: 'auth-alt'}, 'No account? ', link({view: 'register'}, 'Register with an invite')));
+      form.addEventListener('submit', async (event) => {
+        prevent(event);
+        if (!username.value.trim() || !password.value) return status.show('Enter your username and password.', 'err');
+        button.disabled = true;
+        status.show('Signing in\u2026', 'info');
+        try {
+          const answer = await api('POST', '/auth/login', {json: {username: username.value.trim(), password: password.value}});
+          password.value = '';
+          state.user = answer && answer.user ? answer.user : null;
+          if (answer && answer.csrf_token) state.csrf = String(answer.csrf_token);
+          state.library = null;
+          if (state.role === 'rig') await loadLocal();
+          if (!state.user) await loadMe();
+          drawChrome();
+          banner('');
+          state.flash = {text: 'Signed in as ' + (state.user ? state.user.display_name || state.user.username : username.value) + '.', tone: 'ok'};
+          const next = r.next ? C.parseRoute(r.next.slice(1)) : {view: 'home'};
+          go(next, {replace: true});
+        } catch (exc) {
+          password.value = '';
+          if (exc.kind === 'unauthorized') status.show('That username and password do not match an account.', 'err');
+          else {
+            noteFailure(exc);
+            status.show(exc.message, 'err');
+          }
+          button.disabled = false;
+        }
+      });
+      body.appendChild(form);
+      return section;
+    }
+
+    function screenRegister() {
+      const {section, body} = authShell('Create an account', state.role === 'rig'
+        ? 'Create your account on the hub, then sign in on this rig.'
+        : 'You need an invite code from the hub\u2019s operator.');
+      if (state.user) {
+        body.appendChild(h('p', {class: 'note note-info'}, 'You are already signed in as ' + (state.user.display_name || state.user.username) + '.'));
+        return section;
+      }
+      if (state.role === 'rig') {
+        body.appendChild(rigRegistration());
+        return section;
+      }
+      const username = input({type: 'text', name: 'username', autocomplete: 'username', autocapitalize: 'none', spellcheck: 'false', required: true, maxlength: '64'});
+      const display = input({type: 'text', name: 'display_name', autocomplete: 'name', required: true, maxlength: '120'});
+      const password = input({type: 'password', name: 'password', autocomplete: 'new-password', required: true, maxlength: '1024'});
+      const repeat = input({type: 'password', name: 'password_repeat', autocomplete: 'new-password', required: true, maxlength: '1024'});
+      const invite = input({type: 'text', name: 'invite_code', autocomplete: 'off', spellcheck: 'false', required: true, maxlength: '200'});
+      const status = statusLine();
+      const button = h('button', {type: 'submit', class: 'btn btn-primary'}, 'Create account');
+      const form = h('form', {class: 'form form-narrow'},
+        field('Username', username, 'Shown publicly beside anything you publish.'),
+        field('Display name', display),
+        passwordField('Password', password, 'At least 12 characters.'),
+        passwordField('Repeat the password', repeat),
+        field('Invite code', invite),
+        button, status.el,
+        h('p', {class: 'auth-alt'}, 'Have an account? ', link({view: 'signin'}, 'Sign in')));
+      form.addEventListener('submit', async (event) => {
+        prevent(event);
+        if (!username.value.trim() || !display.value.trim() || !invite.value.trim()) {
+          return status.show('Fill in every field.', 'err');
+        }
+        const pw = C.validatePassword(password.value, repeat.value);
+        if (!pw.ok) return status.show(pw.reason, 'err');
+        button.disabled = true;
+        status.show('Creating the account\u2026', 'info');
+        try {
+          const answer = await api('POST', '/auth/register', {json: {
+            username: username.value.trim(), display_name: display.value.trim(),
+            password: password.value, invite_code: invite.value.trim(),
+          }});
+          password.value = '';
+          repeat.value = '';
+          const name = answer && answer.user ? answer.user.username : username.value.trim();
+          state.flash = {text: 'Account created for @' + name + '. Sign in to continue.', tone: 'ok', username: name};
+          go({view: 'signin'}, {replace: true, focus: 'signin-user'});
+        } catch (exc) {
+          noteFailure(exc);
+          status.show(exc.message, 'err');
+          button.disabled = false;
+        }
+      });
+      body.appendChild(form);
+      return section;
+    }
+
+    /** Registration on a rig. An account is created on the hub's own page:
+     *  the rig refuses to relay registration (409 register_on_hub) because
+     *  it must not speak for the hub page's origin. So no form here, only a
+     *  link to `<hub>/?view=register`, built from the rig's configured hub
+     *  address after the same check the Connect form applies (never from an
+     *  address in an error message). Without a usable address: connect first. */
+    function rigRegistration() {
+      const rig = state.config && state.config.rig ? state.config.rig : {};
+      const configured = (state.local && state.local.base_url) || rig.base_url || '';
+      const checked = configured && !(state.local && state.local.state === 'not_configured')
+        ? C.validateHubUrl(configured) : {ok: false};
+      if (!checked.ok) {
+        return h('div', {class: 'callout callout-info'},
+          h('p', {class: 'callout-title'}, 'Connect this rig first'),
+          h('p', null, 'Accounts are created on the hub itself. Connect this rig to a hub, register on that hub\u2019s page, then sign in here.'),
+          link({view: 'rig', tab: 'connection'}, 'Connect this rig', {class: 'btn btn-primary'}));
+      }
+      const href = checked.url + '/?view=register';
+      return h('div', {class: 'callout callout-info'},
+        h('p', {class: 'callout-title'}, 'Register on the hub'),
+        h('p', null, 'Accounts are created on the hub\u2019s own page, not through this rig. Registration there needs an invite code from the hub\u2019s operator.'),
+        h('div', {class: 'actions'},
+          h('a', {class: 'btn btn-primary', href, target: '_blank', rel: 'noopener noreferrer'}, 'Register on ' + hostOf(checked.url)),
+          h('span', {class: 'muted small mono'}, checked.url)),
+        h('p', null, 'It opens in a new tab. When your account exists, come back and ',
+          link({view: 'signin'}, 'sign in on this rig'), '.'));
+    }
+
+    /* ---- library -------------------------------------------------------- */
+
+    function screenLibrary(ctx) {
+      const section = h('section', {class: 'screen screen-library'});
+      section.appendChild(h('header', {class: 'store-head store-head-plain'},
+        h('div', {class: 'store-head-row'},
+          h('div', null,
+            h('h1', {class: 'screen-title', tabindex: '-1', 'data-heading': ''}, 'Your library'),
+            h('p', {class: 'lede'}, 'Releases you added, each pinned to one version. Nothing upgrades on its own.')),
+          link({view: 'catalog'}, 'Browse the marketplace', {class: 'btn btn-line'}))));
+      const flash = flashNode();
+      if (flash) section.appendChild(flash);
+      const area = region('your library');
+      section.appendChild(area.el);
+      (async () => {
+        let items;
+        try {
+          items = await libraryItems(true);
+        } catch (exc) {
+          if (ctx.epoch !== state.epoch) return;
+          noteFailure(exc);
+          return area.fail(exc, retryCurrent);
+        }
+        if (ctx.epoch !== state.epoch) return;
+        if (!items.length) {
+          return area.fill(emptyState('Your library is empty.',
+            'Open an experiment in the marketplace and add the release you want. '
+            + (state.role === 'rig' ? 'You can then install it on this rig.' : 'A rig signed in to this account can then install it.'),
+            link({view: 'catalog'}, 'Browse the marketplace', {class: 'btn btn-primary'})));
+        }
+        area.fill(h('p', {class: 'store-count'}, `${items.length} experiment${items.length === 1 ? '' : 's'}`),
+          h('div', {class: 'card-grid card-grid-library'}, items.map((item) => listing(item, libraryExtra(ctx, item), {library: true}))));
+      })();
+      return section;
+    }
+
+    /** A library card's own part: the pinned version (and a newer public
+     *  one, when there is), Install or Download, and Remove. */
+    function libraryExtra(ctx, item) {
+      const experiment = item.experiment || {};
+      const version = item.version || {};
+      const panel = h('div', {class: 'card-library'});
+      const pin = h('p', {class: 'card-pin'}, h('span', {class: 'card-pin-key'}, 'Pinned'),
+        h('span', {class: 'mono'}, versionLabel(version)),
+        h('span', {class: 'mono card-pin-hash', title: String(version.sha256 || '')}, 'SHA-256 ' + C.shortHash(version.sha256)));
+      panel.appendChild(pin);
+      const update = h('div', {class: 'card-update', hidden: true});
+      panel.appendChild(update);
+      const row = h('div', {class: 'listing-actions'});
+      if (state.role === 'rig') {
+        const record = installFor(version.sha256);
+        const open = record && record.status === 'registered' && !record.error ? workspaceLink(record, 'Open in the workspace') : null;
+        row.appendChild(open || link({view: 'experiment', id: experiment.id, version: version.id}, record ? 'Finish installing' : 'Install on this rig', {class: 'btn btn-primary btn-small'}));
+      } else if (experiment.id && version.id) {
+        row.appendChild(h('a', {class: 'btn btn-line btn-small', download: '',
+          href: state.api.url('/experiments/' + C.seg(experiment.id) + '/versions/' + C.seg(version.id) + '/download')}, 'Download'));
+      }
+      const remove = h('button', {type: 'button', class: 'btn btn-quiet btn-small', 'data-focus': 'lib-remove-' + experiment.id}, 'Remove\u2026');
+      row.appendChild(remove);
+      panel.appendChild(row);
+      const yes = h('button', {type: 'button', class: 'btn btn-danger btn-small'}, 'Remove from library');
+      const no = h('button', {type: 'button', class: 'btn btn-quiet btn-small'}, 'Keep it');
+      const removeStatus = statusLine();
+      const confirmRow = h('div', {class: 'confirm', hidden: true},
+        h('p', null, 'Remove ' + (experiment.title || 'this experiment') + ' from your library? Installed copies on rigs stay.'), yes, no, removeStatus.el);
+      panel.appendChild(confirmRow);
+      remove.addEventListener('click', () => { confirmRow.hidden = false; remove.hidden = true; yes.focus(); });
+      no.addEventListener('click', () => { confirmRow.hidden = true; remove.hidden = false; remove.focus(); });
+      yes.addEventListener('click', async () => {
+        yes.disabled = true;
+        no.disabled = true;
+        try {
+          await api('DELETE', '/library/' + C.seg(experiment.id));
+        } catch (exc) {
+          noteFailure(exc);
+          yes.disabled = false;
+          no.disabled = false;
+          removeStatus.show(exc.message, 'err');
+          return;
+        }
+        state.library = null;
+        state.flash = {text: 'Removed ' + (experiment.title || 'the experiment') + ' from your library.', tone: 'ok'};
+        if (ctx.epoch === state.epoch) retryCurrent();
+      });
+      /* A newer public release than the pinned one: offer it, never follow it. */
+      if (experiment.id && version.id) {
+        (async () => {
+          const got = await screenRequest(ctx.epoch, 'GET', '/experiments/' + C.seg(experiment.id));
+          if (!got || !got.ok) return;
+          const detail = got.value || {};
+          const published = (detail.experiment || {}).published_version_id;
+          const newer = sortVersions(detail.versions).find((v) => v.id === published);
+          if (!newer || newer.id === version.id) return;
+          const status = statusLine();
+          const button = h('button', {type: 'button', class: 'btn btn-line btn-small'}, 'Pin ' + versionLabel(newer));
+          button.addEventListener('click', async () => {
+            button.disabled = true;
+            try {
+              await api('POST', '/library', {json: {experiment_id: experiment.id, version_id: newer.id}});
+              await libraryItems(true);
+              if (ctx.epoch === state.epoch) retryCurrent();
+            } catch (exc) {
+              noteFailure(exc);
+              status.show(exc.message, 'err');
+              button.disabled = false;
+            }
+          });
+          update.replaceChildren(h('span', null, versionLabel(newer) + ' is the public release.'), button, status.el);
+          update.hidden = false;
+        })();
+      }
+      return panel;
+    }
+
+    /* ---- create with AI (Index flow: a structured form, then a two-column plan) ----
+     * Wired to the AI authoring API (ai-authoring CONTRACT.md):
+     *   GET /ai/status, PUT|DELETE /ai/keys/{provider}, POST /ai/drafts,
+     *   GET|DELETE /ai/drafts/{id}, POST /ai/drafts/{id}/generate|accept,
+     *   GET /ai/jobs/{id}, POST /ai/jobs/{id}/cancel.
+     * A key goes from the password field straight into one PUT and the field
+     * is cleared; it is never kept in page state or browser storage. A
+     * running job is polled every AI_POLL_MS. The fixed example plan is shown
+     * only when the hub has AI authoring disabled, and is labelled so. */
+
+    const AI_POLL_MS = 2000;
+    const PROVIDERS = [['openai', 'OpenAI'], ['anthropic', 'Anthropic'], ['google', 'Google'], ['openrouter', 'OpenRouter']];
+    const EXAMPLE_PROMPTS = [
+      ['Ebbinghaus size matching', 'A size-matching task with the Ebbinghaus illusion: a target disc surrounded by large or small inducer circles on one side, a comparison disc on the other that the participant adjusts with the arrow keys until it looks the same size. Two inducer sizes by three target sizes, 20 trials each. Keep fixation on a central cross, checked with the eye tracker. Human participants.'],
+      ['Saccade adaptation', 'Saccade adaptation in monkeys: a target jumps 10 degrees left or right; during the saccade it steps back by 2 degrees. 400 adaptation trials between 50 pre- and post-test trials without the step. Juice reward on landing within 2 degrees.'],
+      ['Motion coherence threshold', 'A random-dot motion direction task: 200 dots in a 10 degree aperture, left or right motion, coherence set by a QUEST staircase to 75% correct. Key press response, no eye tracker. Human.'],
+    ];
+    /* The plan page's example, in the contract's Plan shape; drawn only when
+     * AI authoring is disabled on this hub, and labelled as an example. */
+    const EXAMPLE_PLAN = {
+      title: 'Ebbinghaus size matching with fixation control',
+      summary: 'Method of adjustment: match a comparison disc to a target ringed by large or small inducers, with gaze held on a central cross.',
+      paradigm: 'Method of adjustment. On each trial a target disc sits in the left or right hemifield, ringed by large or small inducer circles; a lone comparison disc sits mirror-symmetric on the other side. The participant scales the comparison with the arrow keys and confirms with the space bar while holding gaze on a central cross. 2 inducer sizes \u00d7 3 target sizes, 20 trials per cell in 4 blocks of 30.',
+      subject_kind: 'human',
+      hardware: {display: true, eye_tracker: true, reward: false},
+      tasks: [{name: 'adjust', description: 'Size matching with fixation control'}],
+      stimuli: [
+        {element: 'Fixation cross', size: '0.4 dva', position: 'Centre', notes: 'Black, always on'},
+        {element: 'Target disc', size: '1.0, 1.4 or 1.8 dva', position: '6 dva left or right', notes: 'Mid-grey'},
+        {element: 'Inducers (large)', size: '2.4 dva, 6 around the target', position: 'Ring at 2.6 dva from target centre', notes: 'Mid-grey'},
+        {element: 'Inducers (small)', size: '0.5 dva, 8 around the target', position: 'Ring at 1.3 dva from target centre', notes: 'Mid-grey'},
+        {element: 'Comparison disc', size: 'Starts \u00b140% of the target, random', position: 'Mirror of the target', notes: 'Arrow keys scale it by 1%'},
+      ],
+      timeline: [
+        {phase: 'Fixate', duration: 600, note: 'Gaze in a 2 dva window'},
+        {phase: 'Adjust', duration: 'event-driven', note: 'Until space, at most 8 s'},
+        {phase: 'Confirm', duration: 300, note: 'Comparison size recorded'},
+        {phase: 'Interval', duration: 700, note: 'Blank screen'},
+      ],
+      measures: [
+        {measure: 'Matched diameter', unit: 'dva', definition: 'Comparison size at confirmation'},
+        {measure: 'Illusion magnitude', unit: '%', definition: '(matched \u2212 target) / target'},
+        {measure: 'Adjustment time', unit: 's', definition: 'Stimulus onset to confirmation'},
+        {measure: 'Fixation breaks', unit: 'count', definition: 'Samples outside the window during Adjust'},
+      ],
+      parameters: [
+        {name: 'target_sizes_dva', default: '1.0, 1.4, 1.8', unit: 'dva', meaning: 'Diameters of the target disc'},
+        {name: 'inducer_large_dva', default: '2.4', unit: 'dva', meaning: 'Diameter of each large inducer'},
+        {name: 'inducer_small_dva', default: '0.5', unit: 'dva', meaning: 'Diameter of each small inducer'},
+        {name: 'eccentricity_dva', default: '6.0', unit: 'dva', meaning: 'Horizontal offset of target and comparison'},
+        {name: 'start_offset_pct', default: '40', unit: '%', meaning: 'Largest random start offset of the comparison'},
+        {name: 'step_pct', default: '1', unit: '%', meaning: 'Scaling per key press'},
+        {name: 'fix_window_dva', default: '2.0', unit: 'dva', meaning: 'Gaze window radius around the cross'},
+        {name: 'fix_duration', default: '600', unit: 'ms', meaning: 'Fixation before the stimulus appears'},
+        {name: 'max_adjust', default: '8000', unit: 'ms', meaning: 'Time limit for one adjustment'},
+        {name: 'iti', default: '700', unit: 'ms', meaning: 'Blank interval between trials'},
+        {name: 'n_per_condition', default: '20', unit: 'trials', meaning: 'Repeats of each inducer \u00d7 target cell'},
+      ],
+      tests: [
+        {name: 'Parameters load and validate', how: 'configs/task.yaml against the params model'},
+        {name: 'Stimulus geometry', how: 'Inducer rings never overlap the target at any size'},
+        {name: 'Trial schedule', how: '120 trials, 20 per cell, sides balanced in each block'},
+        {name: 'Simulated session', how: 'alhazen simulate completes with an automated observer'},
+        {name: 'Timing', how: 'Every phase lasts whole frames at 60 and 120 Hz'},
+        {name: 'Data columns', how: 'trials.csv holds every measure above'},
+      ],
+    };
+
+    function createDraft() {
+      if (!state.createDraft) state.createDraft = {description: '', start: 'blank', from: '', provider: 'openai', model: ''};
+      return state.createDraft;
+    }
+
+    /** GET /ai/status, normalized: {enabled, providers:[{id,name,models,default_model}], keys:[{provider,hint,rotated_at}]}.
+     *  A hub without the route (404) has AI disabled; other failures throw. */
+    async function aiStatus(ctx) {
+      const got = await screenRequest(ctx.epoch, 'GET', '/ai/status');
+      if (!got) return null;
+      if (!got.ok) {
+        if (got.error.kind === 'not_found' || got.error.code === 'ai_disabled') return {enabled: false, providers: [], keys: []};
+        throw got.error;
+      }
+      const v = got.value || {};
+      const providers = (Array.isArray(v.providers) ? v.providers : []).filter((p) => p && p.id)
+        .map((p) => ({id: String(p.id), name: String(p.name || p.id), models: Array.isArray(p.models) ? p.models.map(String) : [], default_model: p.default_model ? String(p.default_model) : ''}));
+      state.ai = {enabled: v.enabled === true, providers, keys: Array.isArray(v.keys) ? v.keys.filter((k) => k && k.provider) : []};
+      return state.ai;
+    }
+
+    function providerName(id) {
+      const known = state.ai && state.ai.providers.find((p) => p.id === id);
+      if (known) return known.name;
+      const fixed = PROVIDERS.find(([v]) => v === id);
+      return fixed ? fixed[1] : (id || 'the provider');
+    }
+
+    /** One AI failure in the draft rail or a form: what happened (the
+     *  server's words below it when it sent any) and the next step. */
+    function aiAdviceBox(error, provider, actions) {
+      const e = error || {};
+      const code = e.kind === 'unauthorized' ? 'unauthorized' : (C.aiErrorCode(e) || e.code || '');
+      if (code === 'unauthorized') return errorBox(e);
+      const advice = C.aiAdvice(code, providerName(provider));
+      const message = String(e.message || '');
+      return h('div', {class: 'callout callout-err ix-advice', role: 'alert', 'data-ai-code': code || 'error'},
+        h('p', {class: 'callout-title'}, advice.title),
+        message && message !== advice.title ? h('p', {class: 'small'}, message) : null,
+        advice.next ? h('p', null, advice.next) : null,
+        ...(actions || []).filter((a) => a && (!a.when || a.when === advice.action)).map((a) => a.node));
+    }
+
+    function quietProgress(text) {
+      return h('p', {class: 'ix-progress', role: 'status'}, h('span', {class: 'spinner', 'aria-hidden': 'true'}), h('span', null, text));
+    }
+
+    /** Provider & key: the saved key's hint and date with Replace / Remove,
+     *  or a password field and Save. The field's value goes into one PUT
+     *  and is cleared at once, whatever the answer. */
+    function keyPanel(getProvider, onChange) {
+      const box = h('div', {class: 'ix-key'});
+      const status = statusLine();
+      const key = input({type: 'password', name: 'api_key', autocomplete: 'off', spellcheck: 'false', placeholder: 'Paste a key', 'data-focus': 'ai-key'});
+      let replacing = false;
+      async function save() {
+        const provider = getProvider();
+        const value = String(key.value || '').trim();
+        key.value = '';
+        if (!value) { status.show('Paste a key first.', 'err'); return null; }
+        status.show('Saving\u2026', 'info');
+        try {
+          const answer = await api('PUT', '/ai/keys/' + C.seg(provider), {json: {key: value}});
+          const saved = {provider, hint: String((answer && answer.hint) || ''), rotated_at: (answer && answer.rotated_at) || null};
+          state.ai.keys = state.ai.keys.filter((k) => k.provider !== provider).concat([saved]);
+          replacing = false;
+          render();
+          status.show('Key saved.', 'ok');
+          if (onChange) onChange();
+          return saved;
+        } catch (exc) {
+          noteFailure(exc);
+          status.clear();
+          render();
+          box.appendChild(aiAdviceBox(exc, provider));
+          return null;
+        }
+      }
+      function render() {
+        const provider = getProvider();
+        const saved = state.ai && state.ai.keys.find((k) => k.provider === provider);
+        const name = providerName(provider);
+        if (saved && !replacing) {
+          const replace = h('button', {type: 'button', class: 'btn btn-line btn-small', 'data-focus': 'ai-key-replace'}, 'Replace');
+          const remove = h('button', {type: 'button', class: 'btn btn-quiet btn-small'}, 'Remove\u2026');
+          const yes = h('button', {type: 'button', class: 'btn btn-danger btn-small'}, 'Remove key');
+          const no = h('button', {type: 'button', class: 'btn btn-quiet btn-small'}, 'Keep it');
+          const confirmRow = h('div', {class: 'confirm', hidden: true}, h('p', null, 'Remove the saved ' + name + ' key from your account?'), yes, no);
+          replace.addEventListener('click', () => { replacing = true; status.clear(); render(); key.focus(); });
+          remove.addEventListener('click', () => { confirmRow.hidden = false; remove.hidden = true; yes.focus(); });
+          no.addEventListener('click', () => { confirmRow.hidden = true; remove.hidden = false; remove.focus(); });
+          yes.addEventListener('click', async () => {
+            yes.disabled = true;
+            no.disabled = true;
+            try {
+              await api('DELETE', '/ai/keys/' + C.seg(provider));
+              state.ai.keys = state.ai.keys.filter((k) => k.provider !== provider);
+              render();
+              status.show('Key removed.', 'ok');
+              if (onChange) onChange();
+            } catch (exc) {
+              noteFailure(exc);
+              yes.disabled = false;
+              no.disabled = false;
+              status.show(exc.message, 'err');
+            }
+          });
+          const when = saved.rotated_at ? ' \u00b7 saved ' + C.formatDate(saved.rotated_at, false) : '';
+          box.replaceChildren(
+            h('p', {class: 'ix-key-state'}, h('span', {class: 'lamp lamp-ok', 'aria-hidden': 'true'}),
+              h('span', {'data-key-state': 'saved'}, name + ' key saved, ending ' + (saved.hint || '\u2026') + when)),
+            h('div', {class: 'actions'}, replace, remove), confirmRow, status.el);
+          return;
+        }
+        const button = h('button', {type: 'button', class: 'btn btn-line', on: {click: save}}, 'Save key');
+        const cancel = saved ? h('button', {type: 'button', class: 'btn btn-quiet', on: {click: () => { key.value = ''; replacing = false; status.clear(); render(); }}}, 'Cancel') : null;
+        box.replaceChildren(
+          h('div', {class: 'inline-form'}, field('API key', key, 'Saved to your account only, never shown again.'), button, cancel),
+          h('p', {class: 'ix-key-state'}, h('span', {class: 'lamp lamp-idle', 'aria-hidden': 'true'}),
+            h('span', {'data-key-state': 'none'}, saved ? 'The new key replaces the saved one.' : 'No ' + name + ' key saved for this account.')),
+          status.el);
+      }
+      return {el: box, render, save, field: key, pending: () => String(key.value || '').trim().length > 0};
+    }
+
+    function screenCreate(ctx) {
+      const r = ctx.route;
+      if (r.step === 'plan') return screenCreatePlan(ctx);
+      const draft = createDraft();
+      if (r.fork) { draft.start = 'fork'; draft.from = r.fork; }
+      const section = screenShell('Create', 'Create an experiment',
+        'Describe it in plain language, choose where to start, and generate a plan to review. Nothing runs or is published without you.');
+      section.classList.add('screen-create');
+
+      /* 1 Describe */
+      const description = textarea({name: 'description', rows: '7', maxlength: '8000', 'data-focus': 'create-describe',
+        placeholder: 'What should the experiment measure, with which stimuli, for whom?'}, draft.description);
+      description.addEventListener('input', () => { draft.description = description.value; });
+      const examples = h('div', {class: 'ix-examples'}, h('span', {class: 'ix-examples-label'}, 'Examples'),
+        ...EXAMPLE_PROMPTS.map(([label, text]) => h('button', {type: 'button', class: 'btn btn-line btn-small ix-example',
+          on: {click: () => { description.value = text; draft.description = text; description.focus(); }}}, label)));
+
+      /* 2 Start from */
+      const startName = nextId('start');
+      const blank = h('input', {type: 'radio', name: startName, value: 'blank', id: nextId('r'), class: 'check', checked: draft.start !== 'fork'});
+      const fork = h('input', {type: 'radio', name: startName, value: 'fork', id: nextId('r'), class: 'check', checked: draft.start === 'fork'});
+      const listing = h('select', {id: nextId('s'), class: 'input select', name: 'from', disabled: draft.start !== 'fork'},
+        h('option', {value: ''}, 'Loading the catalogue\u2026'));
+      const versionOf = new Map();
+      const syncStart = () => {
+        draft.start = fork.checked ? 'fork' : 'blank';
+        listing.disabled = !fork.checked;
+      };
+      blank.addEventListener('change', syncStart);
+      fork.addEventListener('change', syncStart);
+      listing.addEventListener('change', () => { draft.from = listing.value; });
+      (async () => {
+        const got = await catalogItems(ctx, '');
+        if (!got) return;
+        const options = got.ok ? got.value.slice().sort((a, b) => String(a.experiment.title).localeCompare(String(b.experiment.title))) : [];
+        for (const item of options) if (item.version && item.version.id) versionOf.set(item.experiment.id, item.version.id);
+        listing.replaceChildren(h('option', {value: ''}, got.ok ? (options.length ? 'Choose a listing' : 'The catalogue is empty') : 'The catalogue could not be read'),
+          ...options.map((item) => h('option', {value: item.experiment.id, selected: item.experiment.id === draft.from},
+            (item.experiment.title || 'Untitled') + ' \u00b7 ' + versionLabel(item.version) + ' \u00b7 ' + ((item.experiment.owner && item.experiment.owner.display_name) || ''))));
+        listing.value = draft.from || '';
+      })();
+
+      /* 3 Provider and key */
+      const provider = select(PROVIDERS, draft.provider, {name: 'provider'});
+      const model = select([['', 'Default']], draft.model, {name: 'model'});
+      const modelField = field('Model', model);
+      const keys = keyPanel(() => provider.value, null);
+      const keyArea = h('div', {class: 'ix-key-area', 'aria-live': 'polite'}, quietProgress('Checking AI authoring on this hub\u2026'));
+      function fillModels() {
+        const p = state.ai && state.ai.providers.find((x) => x.id === provider.value);
+        const models = p ? p.models : [];
+        const chosen = models.includes(draft.model) ? draft.model : (p && p.default_model) || '';
+        model.replaceChildren(...(models.length ? models : ['']).map((m) => h('option', {value: m, selected: m === chosen}, m || 'Default')));
+        model.value = chosen;
+        draft.model = chosen;
+        modelField.hidden = !models.length;
+      }
+      provider.addEventListener('change', () => { draft.provider = provider.value; fillModels(); keys.render(); });
+      model.addEventListener('change', () => { draft.model = model.value; });
+
+      /* 4 Generate */
+      const status = h('div', {class: 'ix-generate-status', 'aria-live': 'polite'});
+      const button = h('button', {type: 'submit', class: 'btn btn-primary btn-large', 'data-focus': 'create-generate', disabled: true}, 'Generate plan');
+      const exampleLink = link({view: 'create', step: 'plan', fork: r.fork}, 'See an example plan', {class: 'btn btn-quiet', hidden: true});
+      const form = h('form', {class: 'ix-create', novalidate: true},
+        createStep('1', 'Describe', 'What the experiment measures, its stimuli, trials and subjects.',
+          field('Description', description, 'Plain language is fine. Numbers you give are kept; anything missing becomes a parameter to review.'),
+          examples),
+        createStep('2', 'Start from', 'A blank experiment, or a copy of a published listing you then change.',
+          h('div', {class: 'ix-choice'},
+            h('label', {class: 'check-row', for: blank.getAttribute('id')}, blank, h('span', null, 'A blank experiment')),
+            h('label', {class: 'check-row', for: fork.getAttribute('id')}, fork, h('span', null, 'Fork a catalogue listing'))),
+          field('Listing', listing, 'Its code and parameters become the starting point of your private draft.')),
+        h('div', {id: 'ai-key-step'}, createStep('3', 'Provider & key', 'Your own key, from the provider you choose. The hub never pays for or shares keys.',
+          h('div', {class: 'field-pair'}, field('Provider', provider), modelField), keyArea)),
+        createStep('4', 'Generate', 'Generation writes a plan for you to review. Nothing is created until you accept it.',
+          h('div', {class: 'actions'}, button, exampleLink),
+          status));
+
+      let ai = null;
+      (async () => {
+        try {
+          ai = await aiStatus(ctx);
+        } catch (exc) {
+          if (ctx.epoch !== state.epoch) return;
+          keyArea.replaceChildren(errorBox(exc, retryCurrent));
+          return;
+        }
+        if (!ai || ctx.epoch !== state.epoch) return;
+        if (!ai.enabled) {
+          keyArea.replaceChildren(h('p', {class: 'ix-key-state', 'data-ai': 'disabled'}, h('span', {class: 'lamp lamp-idle', 'aria-hidden': 'true'}),
+            h('span', null, 'AI authoring is not enabled on this hub.')));
+          modelField.hidden = true;
+          exampleLink.hidden = false;
+          return;
+        }
+        if (ai.providers.length) {
+          provider.replaceChildren(...ai.providers.map((p) => h('option', {value: p.id, selected: p.id === draft.provider}, p.name)));
+          provider.value = ai.providers.some((p) => p.id === draft.provider) ? draft.provider : ai.providers[0].id;
+          draft.provider = provider.value;
+        }
+        fillModels();
+        keyArea.replaceChildren(keys.el);
+        keys.render();
+        button.disabled = false;
+      })();
+
+      /** The start_from of a fork: the catalogue's public version, or the
+       *  version named in the address (Fork with AI from a private page),
+       *  or the experiment's published / newest version. */
+      async function startFrom() {
+        if (!fork.checked) return null;
+        const id = listing.value;
+        if (r.version && id === r.fork) return {experiment_id: id, version_id: r.version};
+        if (versionOf.has(id)) return {experiment_id: id, version_id: versionOf.get(id)};
+        const detail = await api('GET', '/experiments/' + C.seg(id));
+        const e = (detail && detail.experiment) || {};
+        const newest = sortVersions(detail && detail.versions)[0];
+        const vid = e.published_version_id || (newest && newest.id);
+        if (!vid) throw new C.HubError('invalid', 'That listing has no version you can start from.');
+        return {experiment_id: id, version_id: vid};
+      }
+
+      form.addEventListener('submit', async (event) => {
+        prevent(event);
+        const fail = (text) => status.replaceChildren(h('p', {class: 'form-status form-status-err', role: 'alert'}, text));
+        if (!ai || !ai.enabled) {
+          keys.field.value = '';
+          return fail('AI authoring is not enabled on this hub.');
+        }
+        if (description.value.trim().length < 20) {
+          keys.field.value = '';
+          fail('Describe the experiment in a sentence or two first.');
+          description.focus();
+          return;
+        }
+        if (fork.checked && !listing.value) {
+          keys.field.value = '';
+          return fail('Choose the listing to fork, or start from a blank experiment.');
+        }
+        const chosen = provider.value;
+        if (keys.pending() && !(await keys.save())) return;
+        if (!state.ai.keys.some((k) => k.provider === chosen)) {
+          status.replaceChildren(aiAdviceBox({code: 'key_required', kind: 'ai'}, chosen));
+          return;
+        }
+        button.disabled = true;
+        status.replaceChildren(quietProgress('Starting\u2026'));
+        try {
+          const body = {prompt: description.value.trim(), start_from: await startFrom(), provider: chosen};
+          if (model.value) body.model = model.value;
+          const answer = await api('POST', '/ai/drafts', {json: body});
+          const made = answer && answer.draft;
+          if (!made || !made.id) throw new C.HubError('bad_response', 'The hub did not return the new draft.');
+          if (ctx.epoch !== state.epoch) return;
+          go({view: 'create', step: 'plan', draft: made.id});
+        } catch (exc) {
+          if (ctx.epoch !== state.epoch) return;
+          noteFailure(exc);
+          button.disabled = false;
+          status.replaceChildren(aiAdviceBox(exc, chosen));
+          const box = status.firstChild;
+          if (box && box.focus) { box.setAttribute('tabindex', '-1'); box.focus({preventScroll: true}); }
+        }
+      });
+      section.appendChild(form);
+      return section;
+    }
+
+    function createStep(number, title, text, ...body) {
+      return h('section', {class: 'ix-step', 'aria-label': number + '. ' + title},
+        h('div', {class: 'ix-step-head'},
+          h('span', {class: 'ix-step-num', 'aria-hidden': 'true'}, number),
+          h('div', null, h('h2', {class: 'ix-step-title'}, title), h('p', {class: 'ix-step-text'}, text))),
+        h('div', {class: 'ix-step-body'}, ...body));
+    }
+
+    function planTable(caption, heads, rows, monoFirst, numCols) {
+      const table = h('table', {class: 'table ix-plan-table'},
+        h('caption', {class: 'visually-hidden'}, caption),
+        h('thead', null, h('tr', null, ...heads.map((t, i) => h('th', {scope: 'col', class: (numCols || []).includes(i) ? 'num' : null}, t)))));
+      const tbody = h('tbody');
+      for (const row of rows) {
+        tbody.appendChild(h('tr', null, ...row.map((cell, i) => h('td', {'data-label': heads[i], class: [i === 0 && monoFirst ? 'mono' : '', (numCols || []).includes(i) ? 'num' : ''].join(' ').trim() || null}, cell))));
+      }
+      table.appendChild(tbody);
+      return h('div', {class: 'table-wrap'}, table);
+    }
+
+    /** One trial's phases; a phase without a fixed length (set by a
+     *  parameter, or until an event) is drawn at the typical share. */
+    function planTimeline(phases) {
+      const fixed = phases.filter((p) => p.ms !== null);
+      const typical = fixed.length ? fixed.reduce((n, p) => n + p.ms, 0) / fixed.length : 1000;
+      const weight = (p) => (p.ms === null ? typical : p.ms);
+      const total = phases.reduce((n, p) => n + weight(p), 0) || 1;
+      const bar = h('ol', {class: 'ix-timeline', 'aria-label': 'One trial'});
+      phases.forEach((p, i) => {
+        const share = Math.max(8, Math.round((weight(p) / total) * 100));
+        bar.appendChild(h('li', {class: 'ix-phase ix-phase-' + (i % 4) + ' ix-w' + Math.min(100, Math.round(share / 4) * 4)},
+          h('span', {class: 'ix-phase-name'}, p.label),
+          h('span', {class: 'ix-phase-time' + (p.ms === null ? ' ix-phase-open' : '')}, p.time),
+          h('span', {class: 'ix-phase-note'}, p.note)));
+      });
+      return h('div', {class: 'ix-timeline-wrap'}, bar);
+    }
+
+    /** The plan's reading column (shared by a real plan and the example). */
+    function planSections(view) {
+      const parts = [];
+      if (view.paradigm || view.design.length) {
+        parts.push(h('h2', {class: 'block-title'}, 'Paradigm'));
+        if (view.paradigm) parts.push(h('p', {class: 'ix-plan-text'}, view.paradigm));
+        if (view.design.length) parts.push(spec(view.design));
+      }
+      if (view.timeline.length) parts.push(h('h2', {class: 'block-title'}, 'Trial timeline'), planTimeline(view.timeline));
+      if (view.stimuli.rows.length) parts.push(h('h2', {class: 'block-title'}, 'Stimuli'), planTable('Stimuli', view.stimuli.heads, view.stimuli.rows));
+      if (view.measures.rows.length) parts.push(h('h2', {class: 'block-title'}, 'Measures'), planTable('Measures', view.measures.heads, view.measures.rows));
+      if (view.parameters.length) parts.push(h('h2', {class: 'block-title'}, 'Parameters'), planTable('Parameters', ['Name', 'Default', 'Unit', 'Allowed', 'Meaning'], view.parameters, true));
+      if (view.tasks.length) parts.push(h('h2', {class: 'block-title'}, 'Tasks'), planTable('Tasks', ['Task', 'Description'], view.tasks, true));
+      if (view.tests.length) {
+        parts.push(h('h2', {class: 'block-title'}, 'Tests to run'),
+          h('ol', {class: 'ix-tests'}, ...view.tests.map(([name, how]) => h('li', {class: 'ix-test'},
+            h('span', {class: 'ix-test-name'}, name), h('span', {class: 'ix-test-what'}, how), h('span', {class: 'ix-test-state'}, 'On your rig')))));
+      }
+      if (view.notes) parts.push(h('h2', {class: 'block-title'}, 'Notes'), h('p', {class: 'ix-plan-text'}, view.notes));
+      return parts;
+    }
+
+    function planHead(r, title, lede, chips) {
+      return h('header', {class: 'screen-head'},
+        h('nav', {class: 'crumbs', 'aria-label': 'You are here'}, link({view: 'create', fork: r.fork}, 'Create'),
+          h('span', {class: 'crumb-sep', 'aria-hidden': 'true'}, '/'), h('span', {'aria-current': 'page'}, 'Plan')),
+        h('h1', {class: 'screen-title', tabindex: '-1', 'data-heading': ''}, title),
+        lede ? h('p', {class: 'lede'}, lede) : null,
+        h('div', {class: 'chips'}, ...chips));
+    }
+
+    function railState(lamp, word) {
+      return h('span', {class: 'ix-rail-state', 'data-focus': 'ai-state', tabindex: '-1'},
+        lamp === 'busy' ? h('span', {class: 'spinner', 'aria-hidden': 'true'}) : h('span', {class: 'lamp lamp-' + lamp, 'aria-hidden': 'true'}),
+        h('span', null, word));
+    }
+
+    function screenCreatePlan(ctx) {
+      const r = ctx.route;
+      if (r.draft) return screenDraft(ctx);
+      const section = h('section', {class: 'screen screen-create-plan'});
+      const area = region('the plan');
+      section.appendChild(area.el);
+      (async () => {
+        let ai;
+        try {
+          ai = await aiStatus(ctx);
+        } catch (exc) {
+          if (ctx.epoch !== state.epoch) return;
+          return area.fail(exc, retryCurrent);
+        }
+        if (!ai || ctx.epoch !== state.epoch) return;
+        /* A real hub writes real plans: the example belongs to a hub with
+         * AI authoring disabled. */
+        if (ai.enabled) return go({view: 'create', fork: r.fork}, {replace: true});
+        area.fill(examplePlan(ctx));
+      })();
+      return section;
+    }
+
+    function examplePlan(ctx) {
+      const r = ctx.route;
+      const draft = createDraft();
+      const view = C.aiPlanView(EXAMPLE_PLAN);
+      if (r.fork) { draft.start = 'fork'; draft.from = r.fork; }
+      const forking = draft.start === 'fork' && draft.from;
+      const startText = h('span', null, forking ? 'Fork of a listing' : 'Blank experiment');
+      if (forking) {
+        (async () => {
+          const got = await catalogItems(ctx, '');
+          if (!got || !got.ok) return;
+          const item = got.value.find((i) => i.experiment && i.experiment.id === draft.from);
+          if (item) startText.textContent = 'Fork of a listing: ' + (item.experiment.title || 'Untitled') + ' ' + versionLabel(item.version);
+        })();
+      }
+      const rail = h('aside', {class: 'sheet ix-rail', 'aria-label': 'Draft'},
+        h('h2', {class: 'sheet-title'}, h('span', null, 'Draft'), h('span', {class: 'sheet-version'}, 'example')),
+        spec([
+          ['Status', railState('idle', 'Not generated')],
+          ['Goes to', 'My experiments, as a private draft'],
+          ['Name', view.slug, {mono: true}],
+          ['Start', startText],
+          ['Parameters', String(view.parameters.length)],
+          ['Tests to run', String(view.tests.length)],
+        ]),
+        h('div', {class: 'sheet-block'},
+          h('div', {class: 'ix-not-connected'}, h('p', {class: 'ix-nc-title'}, 'AI authoring is not enabled on this hub')),
+          h('button', {type: 'button', class: 'btn btn-primary', disabled: true}, 'Create private draft version'),
+          link({view: 'create', fork: r.fork}, 'Back to the description', {class: 'btn btn-quiet'})));
+      return [
+        planHead(r, view.title, 'An example of what generation produces. It was not generated from your description.',
+          [h('span', {class: 'chip chip-private'}, 'Example plan'), h('span', {class: 'chip'}, 'Not generated')]),
+        h('div', {class: 'exp-grid ix-plan-grid'}, h('div', {class: 'ix-plan'}, ...planSections(view)), rail),
+      ];
+    }
+
+    /** The job a draft is waiting on, or the last one of `kind`. */
+    function draftJob(detail, kind) {
+      const d = detail.draft || {};
+      const jobs = Array.isArray(detail.jobs) ? detail.jobs : [];
+      const wanted = kind === 'plan' ? d.plan_job_id : (kind === 'source' ? d.source_job_id : d.repair_job_id);
+      const byId = wanted ? jobs.find((j) => j && String(j.id) === String(wanted)) : null;
+      if (byId) return byId;
+      const ofKind = jobs.filter((j) => j && j.kind === kind).sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
+      return ofKind[0] || null;
+    }
+
+    /** One AI draft: the plan being written, the plan, the generated
+     *  source and its validation report, acceptance, or a discarded or
+     *  failed draft, each with its next step in the rail. */
+    function screenDraft(ctx) {
+      const r = ctx.route;
+      const section = h('section', {class: 'screen screen-create-plan'});
+      const flash = flashNode();
+      if (flash) section.appendChild(flash);
+      const area = region('the draft');
+      section.appendChild(area.el);
+      (async () => {
+        const got = await screenRequest(ctx.epoch, 'GET', '/ai/drafts/' + C.seg(r.draft));
+        if (!got) return;
+        if (!got.ok) return area.fail(got.error, retryCurrent);
+        area.fill(draftPage(ctx, got.value || {}));
+      })();
+      return section;
+    }
+
+    function pollJob(ctx, jobId) {
+      const tick = async () => {
+        const got = await screenRequest(ctx.epoch, 'GET', '/ai/jobs/' + C.seg(jobId));
+        if (!got) return;
+        const job = got.ok ? C.aiJob((got.value && got.value.job) || got.value) : null;
+        if (job && !job.active) {
+          go(state.route, {replace: true, focus: 'ai-state'});
+          return;
+        }
+        if (!got.ok && !['offline', 'unavailable', 'timeout'].includes(got.error.kind)) {
+          const where = $('main').querySelector('[data-ai-live]');
+          if (where) where.replaceChildren(aiAdviceBox(got.error, ''));
+          return;
+        }
+        state.polls.push(timers.set(tick, AI_POLL_MS));
+      };
+      state.polls.push(timers.set(tick, AI_POLL_MS));
+    }
+
+    function draftPage(ctx, detail) {
+      const r = ctx.route;
+      const d = detail.draft || {};
+      const plan = detail.plan || d.plan || d.plan_json || null;
+      const view = plan ? C.aiPlanView(plan) : null;
+      const planJob = draftJob(detail, 'plan');
+      const sourceJob = draftJob(detail, 'source');
+      const repairJob = draftJob(detail, 'repair');
+      const pj = C.aiJob(planJob);
+      const sj = sourceJob ? C.aiJob(sourceJob) : null;
+      const rj = repairJob ? C.aiJob(repairJob) : null;
+      const versions = sortVersions(Array.isArray(detail.versions) ? detail.versions : (Array.isArray(d.versions) ? d.versions : []));
+      const status = String(d.status || '');
+      const providerId = String(d.provider || (sourceJob && sourceJob.provider) || (planJob && planJob.provider) || '');
+      const modelName = String(d.model || (sourceJob && sourceJob.model) || (planJob && planJob.model) || '');
+      const reportOf = (job, j) => (job && (j.done || j.code === 'generation_invalid')
+        ? C.aiValidation(job.result || job.result_json || null) : null);
+      const sourceReport = reportOf(sourceJob, sj);
+      const repairReport = reportOf(repairJob, rj);
+      const discarded = status === 'discarded';
+      const hasVersion = Boolean(d.version_id) || versions.length > 0;
+
+      /* Which stage the draft is in; the rail and the progress follow it.
+       * After acceptance a repair job (kind 'repair') from a run log leads
+       * back to a validation report and the next version. */
+      let stage;
+      if (discarded) stage = 'discarded';
+      else if (rj && rj.active) stage = 'repairing';
+      else if (rj && rj.done && status === 'generated' && repairReport && repairReport.ok) stage = 'repaired';
+      else if (status === 'accepted' || (hasVersion && status !== 'generated' && !(sj && sj.active))) stage = 'accepted';
+      else if (!view && planJob && pj.active) stage = 'planning';
+      else if (!view) stage = 'plan-failed';
+      else if (sj && sj.active) stage = 'generating';
+      else if (sj && sj.done && sourceReport && sourceReport.ok) stage = 'generated';
+      else stage = 'planned';
+      const repairFailed = stage === 'accepted' && rj && (rj.failed || rj.cancelled);
+      const report = ['repairing', 'repaired'].includes(stage) || repairFailed ? repairReport : (stage === 'accepted' ? null : sourceReport);
+
+      const title = view ? view.title : 'Draft';
+      const lede = view ? view.summary : '';
+      const word = stage === 'planning' ? 'Writing the plan' : stage === 'generating' ? 'Writing the source'
+        : stage === 'repairing' ? 'Repairing from the run log' : stage === 'repaired' ? 'Repair ready'
+          : repairFailed ? (rj.cancelled ? 'Repair cancelled' : 'Repair failed')
+            : stage === 'plan-failed' ? (pj.cancelled ? 'Cancelled' : 'Plan failed')
+              : stage === 'planned' && sj && (sj.failed || sj.cancelled) ? (sj.cancelled ? 'Cancelled' : 'Source failed')
+                : stage === 'accepted' ? C.aiDraftWord('accepted') : C.aiDraftWord(status || stage);
+      const chips = [h('span', {class: 'chip chip-private'}, 'Private draft')];
+      if (hasVersion) chips.push(h('span', {class: 'chip chip-public'}, 'Saved as a version'));
+
+      /* main column */
+      const main = h('div', {class: 'ix-plan'});
+      if (stage === 'planning') {
+        main.appendChild(quietProgress('Writing the plan from your description. This page updates on its own.'));
+      }
+      if (stage === 'accepted') main.appendChild(repairSection(ctx, d, providerId, repairFailed ? rj : null));
+      if (stage === 'repairing') main.appendChild(quietProgress('Repairing the source from your run log. This page updates on its own.'));
+      if (!view && d.prompt) {
+        main.append(h('h2', {class: 'block-title'}, 'Your description'), h('p', {class: 'ix-plan-text ix-prompt'}, String(d.prompt)));
+      }
+      if (report) main.append(validationBlock(report));
+      if (stage === 'generating') main.appendChild(quietProgress('Writing the source files. This page updates on its own.'));
+      if (view) main.append(...planSections(view));
+
+      /* rail */
+      const live = h('div', {class: 'sheet-block', 'data-ai-live': ''});
+      const lamp = ['planning', 'generating', 'repairing'].includes(stage) ? 'busy'
+        : stage === 'plan-failed' || (stage === 'planned' && sj && sj.failed) || (repairFailed && rj.failed) ? 'err'
+          : (['accepted', 'generated', 'planned', 'repaired'].includes(stage) ? 'ok' : 'idle');
+      const startFrom = (d.start_from && d.start_from.experiment_id) || d.start_experiment_id ? 'Fork of a listing' : 'Blank experiment';
+      const disclosed = C.aiDisclosed((repairJob && repairJob.disclosed) || (sourceJob && sourceJob.disclosed) || (planJob && planJob.disclosed));
+      const eid = d.experiment_id;
+      const versionList = versions.length && eid
+        ? h('ul', {class: 'ix-versions'}, ...versions.map((v) => h('li', null,
+          link({view: 'experiment', id: eid, version: v.id}, versionLabel(v), {class: 'mono'}),
+          h('span', {class: 'muted small'}, ' ' + C.formatDate(v.created_at, false)))))
+        : '';
+      const rail = h('aside', {class: 'sheet ix-rail', 'aria-label': 'Draft'},
+        h('h2', {class: 'sheet-title'}, 'Draft'),
+        spec([
+          ['Status', railState(lamp, word)],
+          ['Goes to', 'My experiments, as a private draft'],
+          ['Name', view ? view.slug : '', {mono: true}],
+          ['Start', startFrom],
+          ['Provider', providerId ? providerName(providerId) + (modelName ? ' \u00b7 ' + modelName : '') + ', your key' : ''],
+          ['Sent', disclosed],
+          ['Versions', versionList],
+          ['Parameters', view ? String(view.parameters.length) : ''],
+          ['Tests to run', view ? String(view.tests.length) : ''],
+        ]),
+        live);
+
+      const discard = discardControl(ctx, d);
+      const back = link({view: 'create', fork: r.fork}, 'Back to the description', {class: 'btn btn-quiet',
+        on: {click: () => { const cd = createDraft(); if (d.prompt) cd.description = String(d.prompt); }}});
+      const keyLink = () => link({view: 'create'}, 'Open Provider & key', {class: 'btn btn-line', 'data-focus-next': 'ai-key|ai-key-replace'});
+      if (stage === 'planning' || stage === 'generating' || stage === 'repairing') {
+        const job = stage === 'planning' ? planJob : (stage === 'generating' ? sourceJob : repairJob);
+        live.append(...[cancelControl(ctx, job), stage === 'repairing' ? null : discard].filter(Boolean));
+        if (job && job.id) pollJob(ctx, job.id);
+      } else if (stage === 'plan-failed') {
+        const retry = link({view: 'create', fork: r.fork}, 'Back to the description', {class: 'btn btn-primary',
+          on: {click: () => { if (d.prompt) createDraft().description = String(d.prompt); }}});
+        const keyStep = link({view: 'create', fork: r.fork}, 'Open Provider & key', {class: 'btn btn-line', 'data-focus-next': 'ai-key|ai-key-replace'});
+        live.append(aiAdviceBox(pj.cancelled ? {kind: 'cancelled', message: ''} : {code: pj.code || 'error', kind: 'ai', message: pj.message, status: 0},
+          providerId, [{node: keyStep, when: 'key'}]), retry, discard);
+      } else if (stage === 'planned') {
+        if (sj && (sj.failed || sj.cancelled)) {
+          live.appendChild(aiAdviceBox(sj.cancelled ? {kind: 'cancelled', message: ''} : {code: sj.code || 'error', kind: 'ai', message: sj.message},
+            providerId, [{node: keyLink(), when: 'key'}]));
+        }
+        live.append(generateControl(ctx, d, view, providerId), discard, back);
+      } else if (stage === 'generated') {
+        live.append(acceptControl(ctx, d, view, sourceJob, providerId, 'Create private draft version'), discard);
+      } else if (stage === 'repaired') {
+        const latest = versions[0];
+        live.append(acceptControl(ctx, d, view, repairJob, providerId, 'Create version', latest));
+      } else if (stage === 'accepted') {
+        const vid = (versions[0] && versions[0].id) || d.version_id;
+        live.append(h('div', {class: 'ix-done', role: 'status'}, h('p', {class: 'ix-nc-title'}, 'Saved as a private version in My experiments.')),
+          eid ? link({view: 'mine', id: eid}, 'Open in My experiments', {class: 'btn btn-primary', 'data-focus': 'ai-mine'}) : null,
+          eid && vid ? h('a', {class: 'btn btn-line', download: '', href: state.api.url('/experiments/' + C.seg(eid) + '/versions/' + C.seg(vid) + '/download')}, 'Download') : null);
+      } else {
+        live.append(h('p', {class: 'muted'}, 'This draft was discarded.'), link({view: 'create'}, 'Start a new draft', {class: 'btn btn-line'}));
+      }
+      return [planHead(r, title, lede, chips), h('div', {class: 'exp-grid ix-plan-grid'}, main, rail)];
+    }
+
+    /** After acceptance: paste a run log or traceback from the rig and
+     *  repair the source from it (POST /ai/drafts/{id}/repair {log}); a
+     *  failed repair job's advice sits above the form. */
+    function repairSection(ctx, d, providerId, failedJob) {
+      const log = textarea({name: 'log', rows: '8', maxlength: '200000', spellcheck: 'false', 'data-focus': 'ai-repair-log',
+        class: 'input textarea mono ix-repair-log'});
+      const button = h('button', {type: 'submit', class: 'btn btn-primary', 'data-focus': 'ai-repair'}, 'Repair');
+      const out = h('div', {'aria-live': 'polite'});
+      const form = h('form', {class: 'form ix-repair', novalidate: true},
+        field('Paste the run log or traceback from your rig', log), h('div', {class: 'actions'}, button), out);
+      form.addEventListener('submit', async (event) => {
+        prevent(event);
+        const text = String(log.value || '').trim();
+        if (!text) { out.replaceChildren(h('p', {class: 'form-status form-status-err', role: 'alert'}, 'Paste the log first.')); log.focus(); return; }
+        button.disabled = true;
+        out.replaceChildren(quietProgress('Starting\u2026'));
+        try {
+          await api('POST', '/ai/drafts/' + C.seg(d.id) + '/repair', {json: {log: text}});
+        } catch (exc) {
+          if (ctx.epoch !== state.epoch) return;
+          noteFailure(exc);
+          button.disabled = false;
+          out.replaceChildren(aiAdviceBox(exc, providerId, [{node: link({view: 'create'}, 'Open Provider & key', {class: 'btn btn-line', 'data-focus-next': 'ai-key|ai-key-replace'}), when: 'key'}]));
+          return;
+        }
+        if (ctx.epoch === state.epoch) go(state.route, {replace: true, focus: 'ai-state'});
+      });
+      return h('section', {class: 'ix-repair-block', 'aria-label': 'Repair from a run'},
+        h('h2', {class: 'block-title'}, 'Repair from a run'),
+        h('p', {class: 'ix-plan-text'}, 'Install the version on a rig, run a simulation, paste the log here if it fails.'),
+        failedJob ? aiAdviceBox(failedJob.cancelled ? {kind: 'cancelled', message: ''} : {code: failedJob.code || 'error', kind: 'ai', message: failedJob.message}, providerId) : null,
+        form);
+    }
+
+    /** The generated source's validation report: files with sizes, then
+     *  every check passed or failed. */
+    function validationBlock(report, job) {
+      const fileRows = report.files.map((f) => [f.path, f.size === null ? '' : C.formatBytes(f.size)]);
+      const list = h('ul', {class: 'ix-checks'}, ...report.checks.map((c) => h('li', {class: 'ix-check ix-check-' + (c.ok ? 'ok' : 'fail')},
+        h('span', {class: 'lamp lamp-' + (c.ok ? 'ok' : 'err'), 'aria-hidden': 'true'}),
+        h('span', {class: 'ix-check-name'}, c.name),
+        h('span', {class: 'ix-check-state'}, c.ok ? 'Passed' : 'Failed'),
+        c.detail ? h('span', {class: 'ix-check-detail'}, c.detail) : null)));
+      return h('section', {class: 'ix-validation', 'aria-label': 'Validation report'},
+        h('h2', {class: 'block-title'}, 'Generated source'),
+        h('p', {class: 'ix-plan-text', 'data-validation': report.ok ? 'ok' : 'failed'},
+          `${report.files.length} file${report.files.length === 1 ? '' : 's'} \u00b7 ${C.formatBytes(report.bytes)} \u00b7 `
+          + `${report.passed} check${report.passed === 1 ? '' : 's'} passed` + (report.failed ? `, ${report.failed} failed` : '')),
+        fileRows.length ? planTable('Files', ['File', 'Size'], fileRows, true, [1]) : null,
+        report.checks.length ? list : null);
+    }
+
+    function cancelControl(ctx, job) {
+      if (!job || !job.id) return null;
+      const button = h('button', {type: 'button', class: 'btn btn-line'}, 'Cancel');
+      button.addEventListener('click', async () => {
+        button.disabled = true;
+        try {
+          await api('POST', '/ai/jobs/' + C.seg(job.id) + '/cancel', {json: {}});
+        } catch (exc) {
+          noteFailure(exc);
+          button.disabled = false;
+          button.parentNode && button.parentNode.insertBefore(aiAdviceBox(exc, ''), button);
+          return;
+        }
+        if (ctx.epoch === state.epoch) go(state.route, {replace: true, focus: 'ai-state'});
+      });
+      return button;
+    }
+
+    function discardControl(ctx, d) {
+      const open = h('button', {type: 'button', class: 'btn btn-quiet'}, 'Discard\u2026');
+      const yes = h('button', {type: 'button', class: 'btn btn-danger'}, 'Discard draft');
+      const no = h('button', {type: 'button', class: 'btn btn-quiet'}, 'Keep it');
+      const row = h('div', {class: 'confirm', hidden: true}, h('p', null, 'Discard this draft? Nothing else is removed.'), yes, no);
+      open.addEventListener('click', () => { row.hidden = false; open.hidden = true; yes.focus(); });
+      no.addEventListener('click', () => { row.hidden = true; open.hidden = false; open.focus(); });
+      yes.addEventListener('click', async () => {
+        yes.disabled = true;
+        no.disabled = true;
+        try {
+          await api('DELETE', '/ai/drafts/' + C.seg(d.id));
+        } catch (exc) {
+          noteFailure(exc);
+          yes.disabled = false;
+          no.disabled = false;
+          row.appendChild(aiAdviceBox(exc, ''));
+          return;
+        }
+        if (ctx.epoch === state.epoch) go(state.route, {replace: true, focus: 'ai-state'});
+      });
+      return h('div', {class: 'ix-discard'}, open, row);
+    }
+
+    function generateControl(ctx, d, view, providerId) {
+      const button = h('button', {type: 'button', class: 'btn btn-primary', 'data-focus': 'ai-generate'}, 'Generate source');
+      const out = h('div', {'aria-live': 'polite'});
+      button.addEventListener('click', async () => {
+        button.disabled = true;
+        out.replaceChildren(quietProgress('Starting\u2026'));
+        try {
+          await api('POST', '/ai/drafts/' + C.seg(d.id) + '/generate', {json: {}});
+        } catch (exc) {
+          if (ctx.epoch !== state.epoch) return;
+          noteFailure(exc);
+          button.disabled = false;
+          out.replaceChildren(aiAdviceBox(exc, providerId, [{node: link({view: 'create'}, 'Open Provider & key', {class: 'btn btn-line', 'data-focus-next': 'ai-key|ai-key-replace'}), when: 'key'}]));
+          return;
+        }
+        if (ctx.epoch === state.epoch) go(state.route, {replace: true, focus: 'ai-state'});
+      });
+      return h('div', {class: 'ix-action'}, button, out);
+    }
+
+    function acceptControl(ctx, d, view, sourceJob, providerId, label, latest) {
+      const result = (sourceJob && (sourceJob.result || sourceJob.result_json)) || {};
+      const manifest = result.manifest && typeof result.manifest === 'object' ? result.manifest : {};
+      const prior = (latest && latest.manifest) || {};
+      const title = input({type: 'text', name: 'title', required: true, maxlength: '160', value: String(prior.title || (view && view.title) || '')});
+      const summary = input({type: 'text', name: 'summary', maxlength: '280', value: String(prior.summary || prior.description || (view && view.summary) || '')});
+      const license = input({type: 'text', name: 'license', maxlength: '120', value: String(manifest.license || prior.license || (view && view.license) || 'MIT')});
+      const status = statusLine();
+      const button = h('button', {type: 'submit', class: 'btn btn-primary', 'data-focus': 'ai-accept'}, label || 'Create private draft version');
+      const out = h('div', {'aria-live': 'polite'});
+      const form = h('form', {class: 'form ix-accept'}, field('Title', title), field('Summary', summary), field('Licence', license), button, status.el, out);
+      form.addEventListener('submit', async (event) => {
+        prevent(event);
+        const body = {title: title.value.trim(), summary: summary.value.trim(), license: license.value.trim()};
+        if (!body.title) return status.show('Give the version a title.', 'err');
+        if (!body.license) return status.show('Name a licence.', 'err');
+        button.disabled = true;
+        status.show('Creating\u2026', 'info');
+        out.replaceChildren();
+        try {
+          const answer = await api('POST', '/ai/drafts/' + C.seg(d.id) + '/accept', {json: body});
+          if (!answer || !answer.version || !answer.experiment) throw new C.HubError('bad_response', 'The hub did not return the new version.');
+        } catch (exc) {
+          if (ctx.epoch !== state.epoch) return;
+          noteFailure(exc);
+          status.clear();
+          button.disabled = false;
+          out.replaceChildren(aiAdviceBox(exc, providerId, [{node: h('button', {type: 'button', class: 'btn btn-line', on: {click: () => go(state.route, {replace: true})}}, 'Reload'), when: 'reload'}]));
+          return;
+        }
+        if (ctx.epoch === state.epoch) go(state.route, {replace: true, focus: 'ai-mine'});
+      });
+      return form;
+    }
+
+    /* ---- my experiments -------------------------------------------------- */
+
+    function screenMine(ctx) {
+      const r = ctx.route;
+      if (r.new) return screenMineNew();
+      if (r.id) return screenMineOne(ctx);
+      const section = screenShell('Author', 'My experiments',
+        'Private until you publish a release.');
+      section.appendChild(h('div', {class: 'actions'}, link({view: 'mine', new: '1'}, 'New experiment', {class: 'btn btn-primary'})));
+      const area = region('your experiments');
+      section.appendChild(area.el);
+      (async () => {
+        const got = await screenRequest(ctx.epoch, 'GET', '/experiments', {query: {limit: 100}});
+        if (!got) return;
+        if (!got.ok) return area.fail(got.error, retryCurrent);
+        const items = (got.value && got.value.items) || [];
+        if (!items.length) {
+          return area.fill(emptyState('You have no experiments on this hub yet.',
+            'Create one, then add a version: '
+            + (state.role === 'rig' ? 'package a project registered on this rig.' : 'upload a release archive, or package one from a rig.')));
+        }
+        const table = h('table', {class: 'table'},
+          h('caption', {class: 'visually-hidden'}, 'Your experiments'),
+          h('thead', null, h('tr', null, ...['Experiment', 'Listing', 'Created'].map((t) => h('th', {scope: 'col'}, t)))));
+        const tbody = h('tbody');
+        for (const item of items) {
+          const e = item.experiment || item;
+          tbody.appendChild(h('tr', null,
+            h('td', null, link({view: 'mine', id: e.id}, e.title || 'Untitled')),
+            h('td', null, e.published_version_id ? 'Public' : 'Private'),
+            h('td', null, C.formatDate(e.created_at, false))));
+        }
+        table.appendChild(tbody);
+        area.fill(h('div', {class: 'table-wrap'}, table));
+      })();
+      if (state.role === 'server') section.appendChild(draftsBlock(ctx));
+      return section;
+    }
+
+    /** My experiments: AI drafts not yet accepted or discarded (status,
+     *  open, discard), and accepted ones linked to their experiment. Hidden
+     *  when the hub has no AI authoring or there are none. */
+    function draftsBlock(ctx) {
+      const block = h('section', {class: 'ix-drafts', hidden: true, 'aria-label': 'Drafts'});
+      (async () => {
+        const got = await screenRequest(ctx.epoch, 'GET', '/ai/drafts');
+        if (!got || !got.ok) return;
+        const raw = Array.isArray(got.value) ? got.value : ((got.value && (got.value.items || got.value.drafts)) || []);
+        const items = raw.filter((d) => d && d.id && d.status !== 'discarded')
+          .sort((a, b) => String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || '')));
+        if (!items.length) return;
+        const table = h('table', {class: 'table'},
+          h('caption', {class: 'visually-hidden'}, 'Your AI drafts'),
+          h('thead', null, h('tr', null, ...['Draft', 'Status', 'Updated', ''].map((t) => h('th', {scope: 'col'}, t)))));
+        const tbody = h('tbody');
+        for (const d of items) {
+          const plan = d.plan || d.plan_json || null;
+          const prompt = String(d.prompt || '');
+          const name = String(d.title || (plan && plan.title) || (prompt.length > 70 ? prompt.slice(0, 69) + '\u2026' : prompt) || 'Untitled draft');
+          const accepted = d.status === 'accepted';
+          const actions = h('td', {class: 'ix-draft-actions'},
+            accepted && d.experiment_id ? link({view: 'mine', id: d.experiment_id}, 'Open experiment', {class: 'btn btn-line btn-small'})
+              : link({view: 'create', step: 'plan', draft: d.id}, 'Open', {class: 'btn btn-line btn-small'}));
+          if (!accepted) {
+            const open = h('button', {type: 'button', class: 'btn btn-quiet btn-small'}, 'Discard\u2026');
+            const yes = h('button', {type: 'button', class: 'btn btn-danger btn-small'}, 'Discard draft');
+            const no = h('button', {type: 'button', class: 'btn btn-quiet btn-small'}, 'Keep it');
+            const st = statusLine();
+            const row = h('div', {class: 'confirm', hidden: true}, h('p', null, 'Discard this draft?'), yes, no, st.el);
+            open.addEventListener('click', () => { row.hidden = false; open.hidden = true; yes.focus(); });
+            no.addEventListener('click', () => { row.hidden = true; open.hidden = false; open.focus(); });
+            yes.addEventListener('click', async () => {
+              yes.disabled = true;
+              no.disabled = true;
+              try {
+                await api('DELETE', '/ai/drafts/' + C.seg(d.id));
+              } catch (exc) {
+                noteFailure(exc);
+                yes.disabled = false;
+                no.disabled = false;
+                st.show(exc.message, 'err');
+                return;
+              }
+              state.flash = {text: 'Draft discarded.', tone: 'ok'};
+              if (ctx.epoch === state.epoch) retryCurrent();
+            });
+            actions.append(open, row);
+          }
+          tbody.appendChild(h('tr', {'data-draft': d.id},
+            h('td', {'data-label': 'Draft'}, name),
+            h('td', {'data-label': 'Status'}, C.aiDraftWord(d.status)),
+            h('td', {'data-label': 'Updated'}, C.formatDate(d.updated_at || d.created_at, false)),
+            actions));
+        }
+        table.appendChild(tbody);
+        block.replaceChildren(h('h2', {class: 'block-title'}, 'Drafts'), h('div', {class: 'table-wrap'}, table));
+        block.hidden = false;
+      })();
+      return block;
+    }
+
+    /** The metadata fields an author edits (new and edit share them). */
+    function metadataFields(experiment) {
+      const e = experiment || {};
+      const f = {
+        title: input({type: 'text', name: 'title', required: true, maxlength: '160', value: e.title || ''}),
+        summary: input({type: 'text', name: 'summary', maxlength: '280', value: e.summary || ''}),
+        description: textarea({name: 'description', rows: '6', maxlength: '20000'}, e.description || ''),
+        license: input({type: 'text', name: 'license', maxlength: '120', value: e.license || '', placeholder: 'MIT, CC-BY-4.0, \u2026'}),
+        citations: textarea({name: 'citations', rows: '3'}, Array.isArray(e.citations) ? e.citations.join('\n') : ''),
+        tags: input({type: 'text', name: 'tags', maxlength: '400', value: Array.isArray(e.tags) ? e.tags.join(', ') : ''}),
+      };
+      const nodes = [
+        field('Title', f.title),
+        field('Summary', f.summary, 'One sentence for the catalogue.'),
+        field('Description', f.description, 'Plain text; blank lines separate paragraphs. Scientific Methods belong in the package\u2019s documentation.'),
+        field('Licence', f.license, 'Needed before publishing.'),
+        field('Citations', f.citations, 'One per line. Addresses starting with https:// get a link.'),
+        field('Tags', f.tags, 'Comma-separated.'),
+      ];
+      const read = () => ({
+        title: f.title.value.trim(), summary: f.summary.value.trim(), description: f.description.value,
+        license: f.license.value.trim(), citations: C.parseList(f.citations.value), tags: C.parseTags(f.tags.value),
+      });
+      return {nodes, read};
+    }
+
+    function screenMineNew() {
+      const section = screenShell('Author', 'New experiment', 'It stays private. You add versions and choose what to publish later.');
+      const meta = metadataFields(null);
+      const status = statusLine();
+      const button = h('button', {type: 'submit', class: 'btn btn-primary'}, 'Create experiment');
+      const form = h('form', {class: 'form'}, ...meta.nodes, h('div', {class: 'actions'}, button,
+        link({view: 'mine'}, 'Cancel', {class: 'btn btn-quiet'})), status.el);
+      form.addEventListener('submit', async (event) => {
+        prevent(event);
+        const body = meta.read();
+        if (!body.title) return status.show('Give the experiment a title.', 'err');
+        button.disabled = true;
+        status.show('Creating\u2026', 'info');
+        try {
+          const answer = await api('POST', '/experiments', {json: body});
+          const created = answer && answer.experiment;
+          if (!created || !created.id) throw new C.HubError('bad_response', 'The hub did not return the new experiment.');
+          state.flash = {text: 'Created. Add a first version below.', tone: 'ok'};
+          go({view: 'mine', id: created.id}, {replace: true});
+        } catch (exc) {
+          noteFailure(exc);
+          status.show(exc.message, 'err');
+          button.disabled = false;
+        }
+      });
+      section.appendChild(form);
+      return section;
+    }
+
+    function screenMineOne(ctx) {
+      const r = ctx.route;
+      const section = h('section', {class: 'screen screen-mine'});
+      const flash = flashNode();
+      const area = region('the experiment');
+      if (flash) section.appendChild(flash);
+      section.appendChild(area.el);
+      (async () => {
+        const got = await screenRequest(ctx.epoch, 'GET', '/experiments/' + C.seg(r.id));
+        if (!got) return;
+        if (!got.ok) return area.fail(got.error, retryCurrent);
+        const experiment = (got.value && got.value.experiment) || {};
+        const versions = sortVersions(got.value && got.value.versions);
+        if (!isOwner(experiment)) {
+          return area.fill(h('div', {class: 'screen-head'},
+            h('h1', {class: 'screen-title', tabindex: '-1', 'data-heading': ''}, experiment.title || 'Experiment'),
+            h('p', {class: 'lede'}, 'Only its author can manage this experiment.'),
+            link({view: 'experiment', id: r.id}, 'Open its page', {class: 'btn btn-line'})));
+        }
+        area.fill(
+          h('header', {class: 'screen-head'},
+            h('p', {class: 'eyebrow mono'}, link({view: 'mine'}, 'My experiments'), h('span', {'aria-hidden': 'true'}, ' / '), h('span', null, 'manage')),
+            h('h1', {class: 'screen-title', tabindex: '-1', 'data-heading': ''}, experiment.title || 'Untitled experiment'),
+            h('div', {class: 'chips'},
+              experiment.published_version_id ? h('span', {class: 'chip chip-public'}, 'Public: ' + versionLabel(versions.find((v) => v.id === experiment.published_version_id)))
+                : h('span', {class: 'chip chip-private'}, 'Private'),
+              link({view: 'experiment', id: experiment.id}, 'See its page', {class: 'chip chip-link'}))),
+          h('div', {class: 'mine-grid'},
+            h('div', {class: 'mine-main'},
+              mineVersions(experiment, versions),
+              state.role === 'rig' ? packagePanel(ctx, experiment) : zipPanel(experiment),
+              publishPanel(experiment, versions)),
+            h('div', {class: 'mine-side'}, editPanel(experiment))));
+      })();
+      return section;
+    }
+
+    function reloadMine(id, text) {
+      state.flash = {text, tone: 'ok'};
+      go({view: 'mine', id}, {replace: true});
+    }
+
+    function mineVersions(experiment, versions) {
+      const block = h('section', {class: 'panel'}, h('h2', {class: 'panel-title'}, 'Versions'));
+      if (!versions.length) {
+        block.appendChild(h('p', {class: 'muted'}, 'No versions yet. A version is an immutable archive of the experiment\u2019s source files.'));
+        return block;
+      }
+      block.appendChild(versionsTab({id: experiment.id}, experiment, versions, null));
+      return block;
+    }
+
+    function zipPanel(experiment) {
+      const block = h('section', {class: 'panel'}, h('h2', {class: 'panel-title'}, 'Add a version'),
+        h('p', {class: 'muted'}, 'Upload a release archive made with Alhazen (alhazen-package.json inside). '
+          + 'Its version comes from the manifest and cannot be replaced later. It stays private.'));
+      const file = input({type: 'file', name: 'archive', accept: '.zip,application/zip'});
+      const status = statusLine();
+      const button = h('button', {type: 'submit', class: 'btn btn-primary'}, 'Upload version');
+      const form = h('form', {class: 'form'}, field('Release archive (.zip)', file, 'Up to 256 MiB.'), button, status.el);
+      form.addEventListener('submit', async (event) => {
+        prevent(event);
+        const chosen = file.files && file.files[0];
+        if (!chosen) return status.show('Choose a .zip file first.', 'err');
+        if (chosen.size > MAX_PACKAGE_BYTES) {
+          return status.show('That archive is ' + C.formatBytes(chosen.size) + '; the hub accepts at most ' + C.formatBytes(MAX_PACKAGE_BYTES) + '.', 'err');
+        }
+        button.disabled = true;
+        status.show('Uploading ' + C.formatBytes(chosen.size) + '\u2026 keep this page open.', 'info');
+        try {
+          const answer = await api('POST', '/experiments/' + C.seg(experiment.id) + '/versions',
+            {body: chosen, contentType: 'application/zip', timeoutMs: 30 * 60 * 1000});
+          const v = answer && answer.version;
+          reloadMine(experiment.id, 'Uploaded ' + versionLabel(v) + ' (private). The hub checked every file against its manifest.');
+        } catch (exc) {
+          noteFailure(exc);
+          status.show(exc.message, 'err');
+          button.disabled = false;
+        }
+      });
+      block.appendChild(form);
+      return block;
+    }
+
+    /** Package a project registered on this rig as a new private version:
+     *  pick the project, review the exact file list and metadata, confirm. */
+    function packagePanel(ctx, experiment) {
+      const block = h('section', {class: 'panel'}, h('h2', {class: 'panel-title'}, 'Add a version from this rig'),
+        h('p', {class: 'muted'}, 'Pack a project registered in this rig\u2019s workspace. You see every file before anything leaves the rig; data folders, environments and rig files are left out.'));
+      const area = h('div', {class: 'package'});
+      block.appendChild(area);
+      const status = statusLine();
+      if (!state.local || !state.local.user) {
+        area.appendChild(h('p', {class: 'muted'}, 'Sign in on this rig to package a project.'));
+        return block;
+      }
+      area.appendChild(h('p', {class: 'loading'}, 'Loading the workspace\u2019s projects\u2026'));
+      (async () => {
+        let projects;
+        try {
+          const answer = await api('GET', '/local/projects');
+          projects = ((answer && answer.items) || []).filter((p) => p && !p.archived);
+        } catch (exc) {
+          if (ctx.epoch !== state.epoch) return;
+          noteFailure(exc);
+          return area.replaceChildren(errorBox(exc));
+        }
+        if (ctx.epoch !== state.epoch) return;
+        if (!projects.length) {
+          return area.replaceChildren(h('p', {class: 'muted'}, 'No project is registered in this rig\u2019s workspace.'),
+            h('a', {class: 'btn btn-line', href: '/'}, 'Open the workspace'));
+        }
+        const choice = select([['', 'Choose a project\u2026'], ...projects.map((p) => [p.id, (p.title || p.slug || p.id) + (p.version ? ' (' + p.version + ')' : '')])], '');
+        const previewButton = h('button', {type: 'button', class: 'btn btn-line'}, 'Review files');
+        const review = h('div', {class: 'package-review'});
+        previewButton.addEventListener('click', async () => {
+          if (!choice.value) return status.show('Choose a project.', 'err');
+          previewButton.disabled = true;
+          status.show('Listing the files that would be packed\u2026', 'info');
+          try {
+            const preview = await api('POST', '/local/package-preview', {json: {project_id: choice.value}, timeoutMs: 120000});
+            status.clear();
+            review.replaceChildren(packageReview(experiment, choice.value, preview, status));
+          } catch (exc) {
+            noteFailure(exc);
+            status.show(exc.message, 'err');
+          } finally {
+            previewButton.disabled = false;
+          }
+        });
+        area.replaceChildren(h('div', {class: 'inline-form'}, field('Project', choice), previewButton), review, status.el);
+      })();
+      return block;
+    }
+
+    function packageReview(experiment, projectId, preview, status) {
+      const files = Array.isArray(preview && preview.files) ? preview.files : [];
+      const meta = Object.assign({}, (preview && preview.metadata) || {});
+      if (!meta.title) meta.title = experiment.title || '';
+      if (!meta.license) meta.license = experiment.license || '';
+      if (!meta.description) meta.description = experiment.summary || '';
+      if (!Array.isArray(meta.citations) || !meta.citations.length) meta.citations = experiment.citations || [];
+      const wrap = h('div', {class: 'review'});
+      const boxes = [];
+      const totals = h('p', {class: 'mono small'});
+      const count = () => {
+        let n = 0;
+        let bytes = 0;
+        boxes.forEach(([box, f]) => { if (box.checked) { n += 1; bytes += Number(f.size) || 0; } });
+        totals.textContent = `${n} of ${files.length} files selected \u00b7 ${C.formatBytes(bytes)}`;
+      };
+      const list = h('ul', {class: 'file-list'});
+      /* Files probably not needed to run on a rig (tests, notebooks, CI,
+       * the lock file...): marked, still selected; the author drops them
+       * here if they want (import round decision 6). */
+      const unlikely = new Map((Array.isArray(preview && preview.not_for_rig) ? preview.not_for_rig : [])
+        .map((x) => [x.path, x.reason]));
+      for (const f of files) {
+        const c = checkbox(f.path, {checked: true});
+        c.box.addEventListener('change', count);
+        boxes.push([c.box, f]);
+        list.appendChild(h('li', {class: 'file-row'}, c.el,
+          unlikely.has(f.path) ? h('span', {class: 'chip chip-private file-flag'}, 'probably not for the rig: ' + unlikely.get(f.path)) : null,
+          h('span', {class: 'mono small file-size'}, C.formatBytes(f.size))));
+      }
+      count();
+      wrap.appendChild(h('h3', {class: 'sub-title'}, 'Files to pack'));
+      wrap.appendChild(totals);
+      if (unlikely.size) {
+        const flagged = boxes.filter(([, file]) => unlikely.has(file.path));
+        const toggle = h('button', {type: 'button', class: 'btn btn-quiet'});
+        const label = () => {
+          const kept = flagged.some(([box]) => box.checked);
+          toggle.textContent = kept
+            ? 'Leave out the ' + flagged.length + ' files probably not for the rig'
+            : 'Include them again';
+        };
+        toggle.addEventListener('click', () => {
+          const keep = !flagged.some(([box]) => box.checked);
+          flagged.forEach(([box]) => { box.checked = keep; });
+          count();
+          label();
+        });
+        label();
+        wrap.appendChild(h('div', {class: 'package-flags'},
+          h('p', {class: 'muted small'}, unlikely.size + ' of these files are probably not needed to run the experiment on a rig. '
+            + 'They are included unless you leave them out.'), toggle));
+      }
+      wrap.appendChild(h('div', {class: 'file-scroll'}, list));
+      const excluded = Array.isArray(preview && preview.excluded) ? preview.excluded : [];
+      const excludedCount = Number(preview && preview.excluded_count) || excluded.length;
+      if (excludedCount) {
+        const det = h('details', {class: 'excluded'}, h('summary', null, `${excludedCount} files left out automatically`));
+        const ul = h('ul', {class: 'file-list'});
+        for (const x of excluded.slice(0, 500)) ul.appendChild(h('li', null, h('span', {class: 'mono small'}, x.path), h('span', {class: 'muted small'}, ' \u2014 ' + (x.reason || ''))));
+        det.appendChild(ul);
+        wrap.appendChild(det);
+      }
+      wrap.appendChild(h('h3', {class: 'sub-title'}, 'Manifest'));
+      const f = {
+        name: input({type: 'text', value: meta.name || '', maxlength: '64', spellcheck: 'false'}),
+        version: input({type: 'text', value: meta.version || '', maxlength: '32', spellcheck: 'false'}),
+        title: input({type: 'text', value: meta.title || '', maxlength: '160'}),
+        description: textarea({rows: '3'}, meta.description || ''),
+        license: input({type: 'text', value: meta.license || '', maxlength: '120'}),
+        citations: textarea({rows: '3'}, Array.isArray(meta.citations) ? meta.citations.join('\n') : ''),
+      };
+      const hw = meta.hardware || {};
+      const hwBoxes = {
+        display: checkbox('Needs a stimulus display', {checked: Boolean(hw.display)}),
+        eye_tracker: checkbox('Needs an eye tracker', {checked: Boolean(hw.eye_tracker)}),
+        reward: checkbox('Needs a reward line', {checked: Boolean(hw.reward)}),
+      };
+      const errors = {};
+      const errorEl = (name) => { errors[name] = h('p', {class: 'field-error', hidden: true}); return errors[name]; };
+      wrap.append(
+        h('div', {class: 'field-pair'}, field('Package name', f.name, 'Lower-case slug.', errorEl('name')),
+          field('Version', f.version, preview && preview.protocol_version
+            ? 'Like 1.0.0. Never reused. The protocol (pyproject) version is ' + preview.protocol_version
+              + ': a different release version is recorded beside it, and the data stays under v' + preview.protocol_version + '.'
+            : 'Like 1.0.0. Never reused.', errorEl('version'))),
+        field('Title', f.title, null, errorEl('title')),
+        field('Description', f.description),
+        field('Licence', f.license, null, errorEl('license')),
+        field('Citations', f.citations, 'One per line.'),
+        h('fieldset', {class: 'fieldset'}, h('legend', null, 'Hardware'), hwBoxes.display.el, hwBoxes.eye_tracker.el, hwBoxes.reward.el),
+        spec([
+          ['Entry point', meta.entrypoint, {mono: true}],
+          ['Python', meta.python_min ? '\u2265 ' + meta.python_min : null, {mono: true}],
+          ['alhazen', meta.alhazen_min ? '\u2265 ' + meta.alhazen_min : null, {mono: true}],
+          ['Runs on', C.platformsText(meta)],
+        ]));
+      const confirm = checkbox('I reviewed these files. They contain no participant data, credentials or rig-private settings. '
+        + 'The automatic exclusions only catch known file patterns.');
+      const button = h('button', {type: 'submit', class: 'btn btn-primary'}, 'Pack and upload as a private version');
+      const form = h('form', {class: 'form'}, wrap, confirm.el, button);
+      form.addEventListener('submit', async (event) => {
+        prevent(event);
+        const metadata = Object.assign({}, meta, {
+          name: f.name.value.trim(), version: f.version.value.trim(), title: f.title.value.trim(),
+          description: f.description.value, license: f.license.value.trim(), citations: C.parseList(f.citations.value),
+          hardware: {display: hwBoxes.display.box.checked, eye_tracker: hwBoxes.eye_tracker.box.checked, reward: hwBoxes.reward.box.checked},
+        });
+        const check = C.validatePackageMetadata(metadata);
+        for (const [name, el] of Object.entries(errors)) {
+          el.textContent = check.errors[name] || '';
+          el.hidden = !check.errors[name];
+        }
+        if (!check.ok) return status.show('Correct the manifest fields marked above.', 'err');
+        const chosen = boxes.filter(([box]) => box.checked).map(([, file]) => file.path);
+        if (!chosen.length) return status.show('Select at least one file.', 'err');
+        if (!confirm.box.checked) return status.show('Confirm that you reviewed the files.', 'err');
+        button.disabled = true;
+        status.show('Packing ' + chosen.length + ' files and uploading\u2026 keep this page open.', 'info');
+        try {
+          const answer = await api('POST', '/local/package-upload', {
+            json: {project_id: projectId, experiment_id: experiment.id, metadata, files: chosen, confirmed: true},
+            timeoutMs: 30 * 60 * 1000,
+          });
+          reloadMine(experiment.id, 'Uploaded ' + versionLabel(answer && answer.version) + ' as a private version. Nothing was published.');
+        } catch (exc) {
+          noteFailure(exc);
+          status.show(exc.message, 'err');
+          button.disabled = false;
+        }
+      });
+      return form;
+    }
+
+    function publishPanel(experiment, versions) {
+      const block = h('section', {class: 'panel'}, h('h2', {class: 'panel-title'}, 'Publish'));
+      const status = statusLine();
+      const publishedId = experiment.published_version_id;
+      if (publishedId) {
+        const current = versions.find((v) => v.id === publishedId);
+        const unpublish = h('button', {type: 'button', class: 'btn btn-line'}, 'Unpublish\u2026');
+        const confirmRow = h('div', {class: 'confirm', hidden: true},
+          h('p', null, 'Stop new downloads of ' + versionLabel(current) + '? Copies already on rigs are not affected.'));
+        const yes = h('button', {type: 'button', class: 'btn btn-danger'}, 'Unpublish');
+        const no = h('button', {type: 'button', class: 'btn btn-quiet'}, 'Keep it public');
+        confirmRow.append(yes, no);
+        unpublish.addEventListener('click', () => { confirmRow.hidden = false; unpublish.hidden = true; yes.focus(); });
+        no.addEventListener('click', () => { confirmRow.hidden = true; unpublish.hidden = false; unpublish.focus(); });
+        yes.addEventListener('click', async () => {
+          yes.disabled = true;
+          status.show('Unpublishing\u2026', 'info');
+          try {
+            await api('POST', '/experiments/' + C.seg(experiment.id) + '/unpublish', {json: {}});
+            reloadMine(experiment.id, 'Unpublished. The catalogue no longer lists it and new downloads stop.');
+          } catch (exc) {
+            noteFailure(exc);
+            status.show(exc.message, 'err');
+            yes.disabled = false;
+          }
+        });
+        block.append(h('p', null, 'Public release: ', h('span', {class: 'mono'}, versionLabel(current)),
+          '. The listing shows the details as they were when you published it; edits stay private until you publish again.'),
+        unpublish, confirmRow);
+      }
+      const candidates = versions.filter((v) => v.id !== publishedId);
+      if (!candidates.length) {
+        if (!publishedId) block.appendChild(h('p', {class: 'muted'}, 'Add a version before publishing.'));
+        block.appendChild(status.el);
+        return block;
+      }
+      const which = select(candidates.map((v) => [v.id, versionLabel(v) + ' \u00b7 ' + C.formatDate(v.created_at, false)]), candidates[0].id);
+      const licence = experiment.license || '';
+      const ackLicence = checkbox(licence ? 'Publish it under the licence \u201c' + licence + '\u201d.' : 'Publish it under the stated licence.');
+      const ackData = checkbox('I checked this release\u2019s files: no participant data, credentials or rig-private configuration.');
+      const go1 = h('button', {type: 'submit', class: 'btn btn-primary'}, publishedId ? 'Publish instead\u2026' : 'Publish\u2026');
+      const confirmRow = h('div', {class: 'confirm', hidden: true});
+      const yes = h('button', {type: 'button', class: 'btn btn-primary'}, 'Publish now');
+      const no = h('button', {type: 'button', class: 'btn btn-quiet'}, 'Not yet');
+      const confirmText = h('p');
+      confirmRow.append(confirmText, yes, no);
+      const form = h('form', {class: 'form'},
+        h('p', {class: 'muted'}, 'Anyone can then read its listing and download it, and downloads cannot be recalled. Later versions stay private.'),
+        field('Version to publish', which),
+        licence ? null : h('p', {class: 'note note-warn'}, 'Set a licence in Details first.'),
+        ackLicence.el, ackData.el, go1, confirmRow);
+      form.addEventListener('submit', (event) => {
+        prevent(event);
+        if (!licence) return status.show('Set a licence in Details before publishing.', 'err');
+        if (!ackLicence.box.checked || !ackData.box.checked) return status.show('Tick both confirmations.', 'err');
+        const v = candidates.find((c) => c.id === which.value);
+        confirmText.textContent = 'Publish ' + versionLabel(v) + ' (SHA-256 ' + C.shortHash(v && v.sha256) + '\u2026) publicly?';
+        status.clear();
+        confirmRow.hidden = false;
+        go1.hidden = true;
+        yes.focus();
+      });
+      no.addEventListener('click', () => { confirmRow.hidden = true; go1.hidden = false; go1.focus(); });
+      yes.addEventListener('click', async () => {
+        yes.disabled = true;
+        status.show('Publishing\u2026', 'info');
+        try {
+          await api('POST', '/experiments/' + C.seg(experiment.id) + '/publish',
+            {json: {version_id: which.value, license_ack: true, data_excluded_ack: true}});
+          reloadMine(experiment.id, 'Published. It is listed in the catalogue now.');
+        } catch (exc) {
+          noteFailure(exc);
+          status.show(exc.message, 'err');
+          yes.disabled = false;
+        }
+      });
+      block.append(form, status.el);
+      return block;
+    }
+
+    function editPanel(experiment) {
+      const block = h('section', {class: 'panel'}, h('h2', {class: 'panel-title'}, 'Details'));
+      const meta = metadataFields(experiment);
+      const status = statusLine();
+      const button = h('button', {type: 'submit', class: 'btn btn-line'}, 'Save details');
+      const form = h('form', {class: 'form'}, ...meta.nodes, button, status.el);
+      form.addEventListener('submit', async (event) => {
+        prevent(event);
+        const body = meta.read();
+        if (!body.title) return status.show('The title cannot be empty.', 'err');
+        button.disabled = true;
+        status.show('Saving\u2026', 'info');
+        try {
+          await api('PATCH', '/experiments/' + C.seg(experiment.id), {json: body});
+          status.show(experiment.published_version_id
+            ? 'Saved. The public listing keeps its published details until you publish again.' : 'Saved.', 'ok');
+        } catch (exc) {
+          noteFailure(exc);
+          status.show(exc.message, 'err');
+        } finally {
+          button.disabled = false;
+        }
+      });
+      block.appendChild(form);
+      return block;
+    }
+
+    /* ---- data ---------------------------------------------------------------- */
+
+    function sessionWhen(s) {
+      const m = (s && s.metadata) || {};
+      return C.formatDate(m.started_at || s.created_at);
+    }
+
+    function indexWords(s) {
+      const st = C.indexState(s);
+      return st.status ? st.word.toLowerCase() : '';
+    }
+
+    async function experimentNames() {
+      /* Experiments a session may belong to: your own and your library's.
+       * Only for labels and the filter; a failure leaves ids showing. */
+      const names = new Map();
+      try {
+        const mine = await api('GET', '/experiments', {query: {limit: 100}});
+        for (const item of (mine && mine.items) || []) {
+          const e = item.experiment || item;
+          if (e && e.id) names.set(e.id, e.title || e.id);
+        }
+      } catch (exc) { noteFailure(exc); }
+      try {
+        /* Fresh, not the cached copy: a release pinned elsewhere (another
+         * tab, the rig) must appear in the filter. */
+        for (const item of await libraryItems(true)) {
+          if (item.experiment && item.experiment.id) names.set(item.experiment.id, item.experiment.title || item.experiment.id);
+        }
+      } catch (exc) { noteFailure(exc); }
+      return names;
+    }
+
+    function screenData(ctx) {
+      if (ctx.route.session) return screenSession(ctx);
+      const r = ctx.route;
+      const section = screenShell('Data', 'Your sessions',
+        'Sessions you uploaded. Only you can see them.');
+      const experimentChoice = select([['', 'All experiments']], r.experiment || '', {'data-focus': 'data-exp'});
+      const subject = input({type: 'text', value: r.subject || '', maxlength: '200', autocomplete: 'off', spellcheck: 'false'});
+      const mode = input({type: 'text', value: r.mode || '', maxlength: '200', autocomplete: 'off', list: 'data-modes'});
+      const modes = h('datalist', {id: 'data-modes'}, ...['run', 'test', 'simulate', 'training'].map((m) => h('option', {value: m})));
+      const apply = h('button', {type: 'submit', class: 'btn btn-primary', 'data-focus': 'data-apply'}, 'Filter');
+      const form = h('form', {class: 'filters'}, field('Experiment', experimentChoice), field('Subject code', subject),
+        field('Mode', mode), modes, h('div', {class: 'filters-actions'}, apply,
+          (r.experiment || r.subject || r.mode) ? link({view: 'data'}, 'Clear', {class: 'btn btn-quiet', 'data-focus-next': 'data-apply'}) : null));
+      form.addEventListener('submit', (event) => {
+        prevent(event);
+        go({view: 'data', experiment: experimentChoice.value || undefined, subject: subject.value, mode: mode.value}, {focus: 'data-apply'});
+      });
+      section.appendChild(form);
+      const area = region('your sessions');
+      section.appendChild(area.el);
+      section.appendChild(unfinishedUploads(ctx));
+      const offset = r.offset || 0;
+      (async () => {
+        const [got, names] = await Promise.all([
+          screenRequest(ctx.epoch, 'GET', '/data/sessions', {query: {
+            experiment_id: r.experiment, subject_code: r.subject, mode: r.mode, limit: PAGE, offset}}),
+          experimentNames(),
+        ]);
+        if (!got || ctx.epoch !== state.epoch) return;
+        /* The sessions themselves name their experiment (experiment_title is
+         * the server's authorised label), so an experiment you collected
+         * data for is offered even when it is neither yours nor pinned. */
+        for (const item of (got.ok && got.value && got.value.items) || []) {
+          if (item.experiment_id && !names.has(item.experiment_id)) names.set(item.experiment_id, item.experiment_title || item.experiment_id);
+        }
+        if (r.experiment && !names.has(r.experiment)) names.set(r.experiment, r.experiment);
+        for (const [id, title] of names) {
+          const opt = h('option', {value: id}, title);
+          if (id === r.experiment) opt.selected = true;
+          experimentChoice.appendChild(opt);
+        }
+        if (r.experiment) experimentChoice.value = r.experiment;
+        if (!got.ok) return area.fail(got.error, retryCurrent);
+        const items = (got.value && got.value.items) || [];
+        if (!items.length) {
+          const filtered = r.experiment || r.subject || r.mode;
+          return area.fill(emptyState(filtered ? 'No session matches these filters.' : 'No sessions uploaded yet.',
+            filtered ? null : 'Sessions are recorded on rigs and stay there. To upload one, open the hub page on the rig, choose This rig \u2192 Upload data, preview it and opt in.'));
+        }
+        const table = h('table', {class: 'table'},
+          h('caption', {class: 'visually-hidden'}, 'Uploaded sessions'),
+          h('thead', null, h('tr', null, ...['Started', 'Experiment', 'Subject', 'Mode', 'Rig', 'Status'].map((t) => h('th', {scope: 'col'}, t)))));
+        const tbody = h('tbody');
+        for (const s of items) {
+          const m = s.metadata || {};
+          tbody.appendChild(h('tr', null,
+            h('td', null, link({view: 'data', experiment: r.experiment, subject: r.subject, mode: r.mode, offset: r.offset, session: s.id}, sessionWhen(s) || String(s.id))),
+            h('td', null, s.experiment_title || names.get(s.experiment_id) || String(s.experiment_id || '')),
+            h('td', {class: 'mono'}, m.subject_code || ''),
+            h('td', null, m.mode || ''),
+            h('td', null, m.rig_alias || ''),
+            h('td', null, [s.status, indexWords(s)].filter(Boolean).join(' \u00b7 '))));
+        }
+        table.appendChild(tbody);
+        area.fill(h('div', {class: 'table-wrap'}, table),
+          pager(offset, items.length, got.value.next_offset,
+            (o) => ({view: 'data', experiment: r.experiment, subject: r.subject, mode: r.mode, offset: o}), 'data'));
+      })();
+      return section;
+    }
+
+    /* ---- unfinished uploads ------------------------------------------------ */
+
+    const UNFINISHED_PAGE = 20;
+
+    /** The signed-in account's uploads the hub has not committed (GET
+     *  /sessions: staging or sealing, caller-owned only). They hold quota
+     *  until they finish, expire or are discarded. Discard (POST
+     *  /sessions/{id}/abort) removes only the hub's partial copy; the list is
+     *  always read again from the hub afterwards, never edited locally. */
+    function unfinishedUploads(ctx) {
+      const block = h('section', {class: 'block unfinished', 'aria-label': 'Unfinished uploads'});
+      const area = region('unfinished uploads');
+      const flash = h('p', {class: 'form-status', role: 'status', hidden: true, tabindex: '-1', 'data-focus': 'unfinished-status'});
+      block.append(h('h2', {class: 'block-title'}, 'Unfinished uploads'), flash, area.el);
+      const say = (text, tone) => {
+        flash.className = 'form-status form-status-' + (tone || 'info');
+        flash.setAttribute('role', tone === 'err' ? 'alert' : 'status');
+        flash.textContent = text;
+        flash.hidden = !text;
+      };
+      const load = async (focusKey) => {
+        const got = await screenRequest(ctx.epoch, 'GET', '/sessions', {query: {limit: UNFINISHED_PAGE, offset: 0}});
+        if (!got) return;
+        if (!got.ok) return area.fail(got.error, () => { say(''); load(); });
+        const items = ((got.value && got.value.items) || []).filter((u) => u && u.status !== 'committed');
+        if (!items.length) {
+          area.fill(h('p', {class: 'muted small'}, 'None. Every upload the hub started for this account has finished or been closed.'));
+        } else {
+          area.fill(h('p', {class: 'muted small'}, 'The hub keeps space reserved for each until it finishes, expires or is discarded.'),
+            h('ul', {class: 'unfinished-list'}, items.map((u) => unfinishedRow(ctx, u, say, load))),
+            got.value.next_offset !== null && got.value.next_offset !== undefined
+              ? h('p', {class: 'muted small'}, `Showing the first ${items.length}. Discard or finish some to see the rest.`) : null);
+        }
+        if (focusKey) {
+          state.pendingFocus = focusKey;
+          settleFocus(true);
+        }
+      };
+      load();
+      return block;
+    }
+
+    function unfinishedRow(ctx, u, say, reload) {
+      const st = C.uploadState(u);
+      const m = u.metadata || {};
+      const what = [m.subject_code ? 'Subject ' + m.subject_code : null, m.mode, m.rig_alias, C.formatDate(m.started_at || u.created_at)]
+        .filter(Boolean).join(' \u00b7 ');
+      const row = h('li', {class: 'unfinished-row'},
+        h('div', {class: 'unfinished-main'},
+          h('p', {class: 'unfinished-what'}, what || String(u.id)),
+          h('p', {class: 'muted small'}, st.word + (st.received !== null ? ' \u00b7 ' + C.formatBytes(st.received) + ' of ' + C.formatBytes(st.total) + ' received' : '')
+            + (u.file_count ? ' \u00b7 ' + u.file_count + ' files' : '')),
+          u.error ? h('p', {class: 'note note-warn small'}, typeof u.error === 'object' ? String(u.error.message || u.error.code || '') : String(u.error)) : null,
+          h('p', {class: 'mono small muted'}, 'Upload ' + u.id + (u.updated_at ? ' \u00b7 last change ' + C.formatDate(u.updated_at) : ''))));
+      const actions = h('div', {class: 'unfinished-actions'});
+      row.appendChild(actions);
+      if (!st.canDiscard) {
+        actions.appendChild(h('button', {type: 'button', class: 'btn btn-line btn-small', disabled: true,
+          'aria-describedby': 'why-' + u.id}, 'Discard'));
+        actions.appendChild(h('p', {class: 'muted small', id: 'why-' + u.id}, st.whyNot));
+        return row;
+      }
+      const discard = h('button', {type: 'button', class: 'btn btn-line btn-small', 'data-focus': 'discard-' + u.id}, 'Discard\u2026');
+      const confirmRow = h('div', {class: 'confirm', hidden: true},
+        h('p', null, 'Discard this unfinished upload on the hub? Only the hub\u2019s partial copy is removed, which frees the space it reserves. '
+          + 'The session\u2019s files on the rig stay exactly as they are, and sessions the hub has already received are never removed. '
+          + 'To send it again later, start a new upload from the rig.'));
+      const yes = h('button', {type: 'button', class: 'btn btn-danger'}, 'Discard the partial upload');
+      const no = h('button', {type: 'button', class: 'btn btn-quiet'}, 'Keep it');
+      confirmRow.append(yes, no);
+      actions.append(discard, confirmRow);
+      discard.addEventListener('click', () => { confirmRow.hidden = false; discard.hidden = true; yes.focus(); });
+      no.addEventListener('click', () => { confirmRow.hidden = true; discard.hidden = false; discard.focus(); });
+      yes.addEventListener('click', async () => {
+        yes.disabled = true;
+        no.disabled = true;
+        yes.textContent = 'Discarding\u2026';
+        try {
+          const answer = await api('POST', '/sessions/' + C.seg(u.id) + '/abort', {json: {}});
+          if (ctx.epoch !== state.epoch) return;
+          const status = answer && (answer.status || (answer.session && answer.session.status));
+          say(status === 'aborted' || status === 'expired'
+            ? 'Discarded on the hub. Its reserved space is released; the rig\u2019s files are unchanged.'
+            : 'The hub answered without confirming the discard (status ' + String(status || 'not given') + '). The list below is the hub\u2019s current state.',
+          status === 'aborted' || status === 'expired' ? 'ok' : 'err');
+          reload('unfinished-status');
+        } catch (exc) {
+          if (ctx.epoch !== state.epoch) return;
+          noteFailure(exc);
+          if (exc.status === 409 || exc.status === 410 || exc.kind === 'not_found') {
+            /* It changed on the hub meanwhile (being sealed, committed,
+             * expired or already closed): say so in its words and show the
+             * hub's current list. */
+            say(exc.message, 'err');
+            reload('unfinished-status');
+            return;
+          }
+          say('Not discarded: ' + exc.message, 'err');
+          yes.disabled = false;
+          no.disabled = false;
+          yes.textContent = 'Discard the partial upload';
+        }
+      });
+      return row;
+    }
+
+    function screenSession(ctx) {
+      const r = ctx.route;
+      const back = {view: 'data', experiment: r.experiment, subject: r.subject, mode: r.mode, offset: r.offset};
+      const section = h('section', {class: 'screen screen-session'});
+      const area = region('the session');
+      section.appendChild(area.el);
+      (async () => {
+        const got = await screenRequest(ctx.epoch, 'GET', '/data/sessions/' + C.seg(r.session));
+        if (!got) return;
+        if (!got.ok) return area.fail(got.error, retryCurrent);
+        const answer = got.value || {};
+        const s = answer.session || answer;
+        const m = s.metadata || {};
+        const receipt = answer.receipt || s.receipt || null;
+        const artifacts = answer.artifacts || s.artifacts || [];
+        const sessionId = s.id || r.session;
+        const base = '/data/sessions/' + C.seg(sessionId);
+        const indexBox = h('div', {class: 'index-state'});
+        const exportsBox = h('div', {class: 'sheet-block'});
+        const trials = region('trials');
+        area.fill(
+          h('header', {class: 'screen-head'},
+            h('p', {class: 'eyebrow mono'}, link(back, 'Your sessions'), h('span', {'aria-hidden': 'true'}, ' / '), h('span', null, String(sessionId))),
+            h('h1', {class: 'screen-title', tabindex: '-1', 'data-heading': ''}, 'Session ' + (m.subject_code ? m.subject_code + ' \u00b7 ' : '') + (sessionWhen(s) || '')),
+            h('p', {class: 'lede'}, 'Raw files as the rig recorded them, verified on arrival. Trial rows are derived from them and can be rebuilt.')),
+          h('div', {class: 'exp-grid'},
+            h('div', {class: 'exp-reading'},
+              h('h2', {class: 'block-title'}, 'Trials'),
+              indexBox,
+              trials.el,
+              h('h2', {class: 'block-title'}, 'Files'),
+              artifactTable(base, artifacts)),
+            h('aside', {class: 'sheet'},
+              h('h2', {class: 'sheet-title'}, 'Session'),
+              spec([
+                ['Experiment', s.experiment_title || null],
+                ['Status', s.status],
+                ['Subject', m.subject_code, {mono: true}],
+                ['Mode', m.mode],
+                ['Rig', m.rig_alias],
+                ['Started', C.formatDate(m.started_at)],
+                ['Received', C.formatDate(s.completed_at)],
+                ['Files', s.file_count !== undefined ? s.file_count + ' \u00b7 ' + C.formatBytes(s.total_bytes) : null, {mono: true}],
+                ['Release', s.version_id, {mono: true}],
+                ['Manifest SHA-256', digest(s.manifest_sha256 || (receipt && receipt.manifest_sha256))],
+              ]),
+              h('p', {class: 'muted small'}, receipt && receipt.durability
+                ? 'Receipt: ' + receipt.durability + '. Keep the rig\u2019s originals.'
+                : 'The receipt means the hub\u2019s primary storage verified every file. It is not a backup; keep the rig\u2019s originals.'),
+              exportsBox)));
+        showIndex(ctx, {s, base, sessionId, back, indexBox, exportsBox, trials, columns: answer.columns});
+      })();
+      return section;
+    }
+
+    /** The session's trial index, its exports and its rows, from the state
+     *  the server reports. A failed index offers Rebuild (owner-only POST
+     *  …/reindex, 202); queued and running rebuilds are polled until the
+     *  server says indexed, failed or none. Nothing is shown as ready that
+     *  the server has not said is ready; the files above stay downloadable. */
+    function showIndex(ctx, view) {
+      const {base, indexBox, exportsBox, trials} = view;
+      const st = C.indexState(view.s);
+      indexBox.replaceChildren();
+      exportsBox.replaceChildren(h('h3', {class: 'sub-title'}, 'Export the trial table'));
+      if (st.ready) {
+        exportsBox.appendChild(h('div', {class: 'actions'},
+          h('a', {class: 'btn btn-line', download: '', href: state.api.url(base + '/export', {format: 'csv'})}, 'CSV'),
+          h('a', {class: 'btn btn-line', download: '', href: state.api.url(base + '/export', {format: 'json'})}, 'JSON')));
+        if (st.rows !== null) indexBox.appendChild(h('p', {class: 'muted small'}, st.rows + ' trial rows indexed'));
+        loadTrials(ctx, base, trials, view.back, view.sessionId, view.columns);
+        return;
+      }
+      exportsBox.appendChild(h('p', {class: 'muted small'}, st.status === 'none'
+        ? 'There is no trial table to export; download the original files instead.'
+        : 'Exports become available once the trial index is ready. The original files can be downloaded now.'));
+      if (st.status === 'none') {
+        indexBox.appendChild(h('p', {class: 'muted'}, 'This session has no trial table the hub indexes. Its files are listed below.'));
+        trials.fill();
+        return;
+      }
+      if (st.busy) {
+        indexBox.appendChild(h('p', {class: 'note note-info', role: 'status'}, h('span', {class: 'spinner', 'aria-hidden': 'true'}),
+          st.word + '. Trial rows appear here when the hub finishes; this page checks again on its own.'));
+        trials.fill();
+        pollIndex(ctx, view, POLL_MS);
+        return;
+      }
+      if (st.failed) {
+        const status = statusLine();
+        const button = h('button', {type: 'button', class: 'btn btn-primary', 'data-focus': 'reindex'}, 'Rebuild trial index');
+        indexBox.appendChild(h('div', {class: 'callout callout-warn', role: 'alert'},
+          h('p', {class: 'callout-title'}, 'The trial index could not be built.'),
+          st.error ? h('p', null, st.error) : null,
+          h('p', null, 'The raw files are kept and can be downloaded below. Rebuilding reads them again; it changes no file.'),
+          h('div', {class: 'actions'}, button), status.el));
+        button.addEventListener('click', async () => {
+          button.disabled = true;
+          status.show('Asking the hub to rebuild the index\u2026', 'info');
+          try {
+            const answer = await api('POST', base + '/reindex', {json: {}});
+            if (ctx.epoch !== state.epoch) return;
+            const fresh = (answer && answer.session) || null;
+            view.s = fresh || Object.assign({}, view.s, {index: {status: 'pending', rows: 0, error: null}, index_status: 'pending'});
+            if (answer && answer.columns) view.columns = answer.columns;
+            showIndex(ctx, view);
+          } catch (exc) {
+            if (ctx.epoch !== state.epoch) return;
+            noteFailure(exc);
+            status.show('The rebuild was not started: ' + exc.message, 'err');
+            button.disabled = false;
+          }
+        });
+        trials.fill();
+        return;
+      }
+      indexBox.appendChild(h('p', {class: 'muted'}, st.word + '.'));
+      trials.fill();
+    }
+
+    function pollIndex(ctx, view, delay) {
+      state.polls.push(timers.set(async () => {
+        const got = await screenRequest(ctx.epoch, 'GET', '/data/sessions/' + C.seg(view.sessionId));
+        if (!got) return;
+        if (!got.ok) {
+          view.indexBox.appendChild(h('p', {class: 'form-status form-status-err', role: 'alert'},
+            'Checking the index failed: ' + got.error.message + ' Trying again.'));
+          pollIndex(ctx, view, Math.min(POLL_MAX_MS, delay * 2));
+          return;
+        }
+        const answer = got.value || {};
+        const before = C.indexState(view.s).status;
+        view.s = answer.session || answer;
+        if (answer.columns) view.columns = answer.columns;
+        const now = C.indexState(view.s);
+        if (now.busy && now.status === before) {
+          pollIndex(ctx, view, Math.min(POLL_MAX_MS, delay * 2));
+          return;
+        }
+        showIndex(ctx, view);  // a new state (queued -> rebuilding -> indexed/failed/none) is drawn
+      }, delay));
+    }
+
+    function artifactTable(base, artifacts) {
+      if (!artifacts.length) return h('p', {class: 'muted'}, 'No file list was returned for this session.');
+      const table = h('table', {class: 'table'},
+        h('caption', {class: 'visually-hidden'}, 'Session files'),
+        h('thead', null, h('tr', null, ...['File', 'Size', 'SHA-256'].map((t) => h('th', {scope: 'col'}, t)))));
+      const tbody = h('tbody');
+      for (const a of artifacts) {
+        const path = typeof a === 'string' ? a : a.path;
+        if (!path) continue;
+        tbody.appendChild(h('tr', null,
+          h('td', {class: 'mono'}, h('a', {href: state.api.url(base + '/files', {path}), download: ''}, path)),
+          h('td', {class: 'mono num'}, a.size !== undefined ? C.formatBytes(a.size) : ''),
+          h('td', {class: 'mono', title: String(a.sha256 || '')}, C.shortHash(a.sha256))));
+      }
+      table.appendChild(tbody);
+      return h('div', {class: 'table-wrap'}, table);
+    }
+
+    async function loadTrials(ctx, base, trials, back, sessionId, serverColumns) {
+      const r = ctx.route;
+      const offset = r.toffset || 0;
+      const got = await screenRequest(ctx.epoch, 'GET', base + '/trials', {query: {limit: PAGE, offset}});
+      if (!got) return;
+      if (!got.ok) return trials.fail(got.error, retryCurrent);
+      const rows = (got.value && got.value.items) || [];
+      const index = got.value && got.value.index ? C.indexState({index: got.value.index}) : null;
+      if (index && !index.ready) {
+        /* The index changed since the session was read (a rebuild started). */
+        return trials.fill(h('p', {class: 'muted'}, index.word + (index.error ? ': ' + index.error : '') + '. Reload this page to see its current state.'));
+      }
+      if (!rows.length) {
+        return trials.fill(h('p', {class: 'muted'}, offset ? 'No more trials.' : 'The trial index holds no rows for this session.'));
+      }
+      const declared = (got.value && Array.isArray(got.value.columns) && got.value.columns.length) ? got.value.columns
+        : (Array.isArray(serverColumns) && serverColumns.length ? serverColumns : null);
+      const table = trialTable(rows, declared);
+      const single = [...new Set(rows.map((item) => C.trialRow(item).source).filter(Boolean))];
+      trials.fill(single.length === 1 ? h('p', {class: 'muted small'}, 'From ', h('span', {class: 'mono'}, single[0])) : null,
+        h('div', {class: 'table-wrap table-scroll', tabindex: '0', role: 'region', 'aria-label': 'Trial rows'}, table),
+        pager(offset, rows.length, got.value.next_offset,
+          (o) => Object.assign({}, back, {session: sessionId, toffset: o}), 'trials'));
+    }
+
+    /** A page of derived trial rows as a table. Each item is the server's
+     *  {ordinal, source_path, values}: the declared columns are read from
+     *  `values`; the row's position and (when a session has several trial
+     *  tables) its source file are shown in their own columns. */
+    function trialTable(items, declaredColumns) {
+      const rows = items.map((item) => C.trialRow(item));
+      const columns = declaredColumns ? declaredColumns.slice(0, 40).map(String) : C.trialColumns(rows.map((r) => r.values));
+      const sources = new Set(rows.map((r) => r.source).filter(Boolean));
+      const showSource = sources.size > 1;
+      const head = [h('th', {scope: 'col', class: 'mono num', title: 'Row in the trial index'}, '#')];
+      if (showSource) head.push(h('th', {scope: 'col', class: 'mono'}, 'source'));
+      const table = h('table', {class: 'table table-dense'},
+        h('caption', {class: 'visually-hidden'}, 'Trials' + (sources.size === 1 ? ' from ' + [...sources][0] : '')),
+        h('thead', null, h('tr', null, ...head, ...columns.map((c) => h('th', {scope: 'col', class: 'mono'}, c)))));
+      const tbody = h('tbody');
+      for (const row of rows) {
+        const cells = [h('td', {class: 'mono num muted'}, row.ordinal === null ? '' : String(row.ordinal + 1))];
+        if (showSource) cells.push(h('td', {class: 'mono'}, row.source || ''));
+        for (const c of columns) cells.push(h('td', {class: 'mono'}, C.cellText(row.values[c])));
+        tbody.appendChild(h('tr', null, ...cells));
+      }
+      table.appendChild(tbody);
+      return table;
+    }
+
+    /* ---- this rig ------------------------------------------------------------ */
+
+    function screenRig(ctx) {
+      const r = ctx.route;
+      const tab = r.tab || (state.local && state.local.state === 'not_configured' ? 'connection' : (r.job || r.project ? 'upload' : 'connection'));
+      const section = screenShell('This rig', 'This rig and the hub',
+        'Connect to a hub, install releases you trust, and upload finished sessions when you choose. Running experiments happens in the workspace, as always.');
+      const tabs = h('nav', {class: 'tabs', 'aria-label': 'Rig sections'});
+      for (const [key, label] of [['connection', 'Connection'], ['installed', 'Installed'], ['upload', 'Upload data']]) {
+        tabs.appendChild(link({view: 'rig', tab: key}, label,
+          {class: 'tab', 'aria-current': key === tab ? 'page' : null, 'data-focus': 'rig-tab-' + key, 'data-focus-next': 'rig-tab-' + key}));
+      }
+      section.appendChild(tabs);
+      if (state.local && state.local.run_active) {
+        section.appendChild(h('p', {class: 'note note-warn', role: 'status'},
+          'A session is running on this rig. Installing, packing and transfers wait until it ends so they cannot disturb its timing.'));
+      }
+      if (tab === 'installed') section.appendChild(rigInstalled());
+      else if (tab === 'upload') section.appendChild(rigUpload(ctx));
+      else section.appendChild(rigConnection(ctx));
+      return section;
+    }
+
+    function rigConnection(ctx) {
+      const local = state.local || {};
+      const rig = (state.config && state.config.rig) || {};
+      const block = h('section', {class: 'panel'});
+      const linkState = rigLink();
+      block.appendChild(h('h2', {class: 'panel-title'}, 'Hub connection'));
+      block.appendChild(spec([
+        ['Hub', h('span', null, h('span', {class: 'lamp lamp-' + (linkState.state === 'connected' ? 'ok' : linkState.state === 'unreachable' ? 'err' : 'idle'), 'aria-hidden': 'true'}),
+          h('span', null, local.base_url || 'not connected'))],
+        ['State', linkState.sentence],
+        ['Operator', local.user ? (local.user.display_name || local.user.username) + ' (@' + local.user.username + ')' : 'nobody signed in'],
+        ['Signed in until', local.user && local.expires_at ? C.formatDate(local.expires_at) : null],
+        ['Hub said', state.config && state.config.server_error ? state.config.server_error.message : null],
+      ]));
+      const url = input({type: 'url', name: 'hub', value: local.base_url || '', autocomplete: 'url', spellcheck: 'false',
+        placeholder: 'https://hub.example.org', 'data-focus': 'rig-url'});
+      const status = statusLine();
+      const button = h('button', {type: 'submit', class: 'btn btn-primary'}, local.base_url ? 'Save and check' : 'Connect');
+      const form = h('form', {class: 'form form-narrow'},
+        field('Hub address', url, 'HTTPS, or http:// for a hub on this computer during development. Changing it signs this rig out and pauses its transfers.'),
+        button, status.el);
+      form.addEventListener('submit', async (event) => {
+        prevent(event);
+        const check = C.validateHubUrl(url.value);
+        if (!check.ok) return status.show(check.reason, 'err');
+        button.disabled = true;
+        status.show('Checking ' + check.url + '\u2026', 'info');
+        try {
+          state.local = await api('POST', '/local/connect', {json: check.loopbackHttp
+            ? {url: check.url, allow_http_loopback: true} : {url: check.url}});
+          await refreshRig();
+          state.flash = {text: 'Connected to ' + check.url + '.' + (state.user ? '' : ' Sign in to use it.'), tone: 'ok'};
+          go({view: 'rig', tab: 'connection'}, {replace: true});
+        } catch (exc) {
+          noteFailure(exc);
+          status.show(exc.message, 'err');
+          button.disabled = false;
+        }
+      });
+      block.appendChild(form);
+      if (local.base_url) {
+        const out = h('button', {type: 'button', class: 'btn btn-quiet'}, 'Disconnect\u2026');
+        const confirmRow = h('div', {class: 'confirm', hidden: true},
+          h('p', null, 'Forget this hub? This rig signs out and its transfers pause. Installed experiments and all data on this rig stay.'));
+        const yes = h('button', {type: 'button', class: 'btn btn-danger'}, 'Disconnect');
+        const no = h('button', {type: 'button', class: 'btn btn-quiet'}, 'Cancel');
+        confirmRow.append(yes, no);
+        out.addEventListener('click', () => { confirmRow.hidden = false; out.hidden = true; yes.focus(); });
+        no.addEventListener('click', () => { confirmRow.hidden = true; out.hidden = false; out.focus(); });
+        yes.addEventListener('click', async () => {
+          yes.disabled = true;
+          try {
+            state.local = await api('POST', '/local/disconnect', {json: {}});
+            await refreshRig();
+            state.flash = {text: 'Disconnected. Local experiments and data are unchanged.', tone: 'ok'};
+            go({view: 'rig', tab: 'connection'}, {replace: true});
+          } catch (exc) {
+            noteFailure(exc);
+            status.show(exc.message, 'err');
+            yes.disabled = false;
+          }
+        });
+        block.append(out, confirmRow);
+      }
+      if (local.base_url && !local.user) {
+        block.appendChild(h('p', null, link({view: 'signin', next: currentNext()}, 'Sign in to ' + hostOf(local.base_url), {class: 'btn btn-line'})));
+      }
+      block.appendChild(h('p', {class: 'muted small'},
+        'This page never holds a hub password or token. Signing in stores a time-limited credential in a private file of this rig\u2019s workspace.'));
+      return block;
+    }
+
+    /** Config and status again after a connection change. */
+    async function refreshRig() {
+      try {
+        state.config = await api('GET', '/config');
+      } catch (exc) {
+        noteFailure(exc);
+      }
+      await loadLocal();
+      state.user = state.local && state.local.user ? state.local.user : null;
+      state.library = null;
+      drawChrome();
+    }
+
+    /** An install whose files the rig verified but could not confirm were
+     *  flushed to disk (durable === false: the folder sync is unsupported on
+     *  this drive, e.g. a network share, or failed). A storage fact, not a verdict
+     *  on the code. Null when durable or not reported. */
+    function durabilityNote(record) {
+      if (!record || record.durable !== false) return null;
+      return h('p', {class: 'muted small durability'},
+        'The files are installed and verified, but this computer could not confirm they were written through to disk'
+        + (record.durability_note ? ' (' + String(record.durability_note) + ')' : '')
+        + '. This is about storage, not about the code. After a power loss or crash, check the install again before running it.');
+    }
+
+    function rigInstalled() {
+      const list = (state.local && Array.isArray(state.local.installed)) ? state.local.installed : [];
+      const block = h('section', {class: 'panel'}, h('h2', {class: 'panel-title'}, 'Installed from the hub'));
+      if (!list.length) {
+        block.appendChild(emptyState('Nothing installed from the hub yet.',
+          'Experiments you set up locally are still in the workspace. To add one from the hub, pin it in your library and install it.',
+          link({view: 'library'}, 'Your library', {class: 'btn btn-line'}), h('a', {class: 'btn btn-quiet', href: '/'}, 'Open the workspace')));
+        return block;
+      }
+      const table = h('table', {class: 'table'},
+        h('caption', {class: 'visually-hidden'}, 'Installed releases'),
+        h('thead', null, h('tr', null, ...['Experiment', 'Release', 'State', 'Installed', ''].map((t) => h('th', {scope: 'col'}, t)))));
+      const tbody = h('tbody');
+      for (const i of list) {
+        let word = i.status === 'registered' ? 'Registered' : 'Files only (not registered)';
+        if (i.intact === false) word = 'Files changed since install';
+        if (i.error) word += ': ' + (i.error.message || i.error.code);
+        tbody.appendChild(h('tr', null,
+          h('td', null, link({view: 'experiment', id: i.experiment_id, version: i.version_id}, i.title || i.name || String(i.experiment_id))),
+          h('td', {class: 'mono', title: String(i.sha256 || '')}, versionLabel(i) + ' \u00b7 ' + C.shortHash(i.sha256)),
+          h('td', null, h('span', null, word), durabilityNote(i)),
+          h('td', null, C.formatDate(i.installed_at)),
+          h('td', null, workspaceLink(i, 'Open'))));
+      }
+      table.appendChild(tbody);
+      block.appendChild(h('div', {class: 'table-wrap'}, table));
+      return block;
+    }
+
+    /* Upload: project -> finished session -> preview with consent -> job. */
+    function rigUpload(ctx) {
+      const r = ctx.route;
+      const local = state.local || {};
+      const block = h('section', {class: 'panel'}, h('h2', {class: 'panel-title'}, 'Upload a finished session'));
+      if (r.job) {
+        block.appendChild(jobPanel(ctx, r.job));
+        return block;
+      }
+      if (local.state === 'not_configured') {
+        block.appendChild(h('p', null, link({view: 'rig', tab: 'connection'}, 'Connect this rig to a hub first', {class: 'btn btn-line'})));
+        return block;
+      }
+      if (!local.user) {
+        block.appendChild(h('p', null, link({view: 'signin', next: currentNext()}, 'Sign in to upload', {class: 'btn btn-line'})));
+        return block;
+      }
+      block.appendChild(h('p', {class: 'muted'}, 'Nothing uploads by itself. Choose one session, review exactly what would be sent and to whom, then opt in. The files stay on this rig.'));
+      const jobs = Array.isArray(local.jobs) ? local.jobs : [];
+      if (jobs.length) {
+        const ul = h('ul', {class: 'job-list'});
+        for (const j of jobs.slice(0, 20)) {
+          const js = C.jobState(j);
+          ul.appendChild(h('li', null, link({view: 'rig', tab: 'upload', job: j.id}, j.run_id || j.id),
+            h('span', {class: 'muted small'}, ' \u00b7 ' + js.word + (js.fraction !== null ? ' ' + Math.round(js.fraction * 100) + '%' : ''))));
+        }
+        block.append(h('h3', {class: 'sub-title'}, 'Transfers'), ul);
+      }
+      const area = region('the workspace\u2019s projects');
+      block.appendChild(area.el);
+      (async () => {
+        const got = await screenRequest(ctx.epoch, 'GET', '/local/projects');
+        if (!got) return;
+        if (!got.ok) return area.fail(got.error, retryCurrent);
+        const projects = ((got.value && got.value.items) || []).filter((p) => p && !p.archived);
+        if (!projects.length) return area.fill(h('p', {class: 'muted'}, 'No project is registered in this rig\u2019s workspace.'));
+        const choice = select([['', 'Choose a project\u2026'], ...projects.map((p) => [p.id, p.title || p.slug || p.id])], r.project || '', {'data-focus': 'up-project'});
+        choice.addEventListener('change', () => go({view: 'rig', tab: 'upload', project: choice.value || undefined}, {focus: 'up-project'}));
+        const parts = [field('Project', choice)];
+        const project = projects.find((p) => p.id === r.project);
+        if (project) parts.push(sessionPicker(ctx, project));
+        area.fill(...parts);
+      })();
+      return block;
+    }
+
+    function sessionPicker(ctx, project) {
+      const r = ctx.route;
+      const wrap = h('div', {class: 'sessions'});
+      const area = region('finished sessions');
+      wrap.appendChild(area.el);
+      (async () => {
+        const got = await screenRequest(ctx.epoch, 'GET', '/local/sessions', {query: {project_id: project.id}});
+        if (!got) return;
+        if (!got.ok) return area.fail(got.error, retryCurrent);
+        const items = (got.value && got.value.items) || [];
+        const problems = (got.value && got.value.problems) || [];
+        const nodes = [];
+        if (problems.length) nodes.push(h('ul', {class: 'note note-warn'}, ...problems.slice(0, 10).map((p) => h('li', null, String(p)))));
+        if (!items.length) {
+          nodes.push(h('p', {class: 'muted'}, 'No sessions found in this project\u2019s data folders.'));
+          return area.fill(...nodes);
+        }
+        const table = h('table', {class: 'table'},
+          h('caption', {class: 'visually-hidden'}, 'Sessions on this rig'),
+          h('thead', null, h('tr', null, ...['Session', 'Date', 'Task', 'Mode', 'Folder', 'State', ''].map((t) => h('th', {scope: 'col'}, t)))));
+        const tbody = h('tbody');
+        let chosen = null;
+        for (const s of items) {
+          const selected = s.root_id === r.root && s.run_id === r.run;
+          if (selected) chosen = s;
+          let word = s.complete ? 'finished' : 'incomplete';
+          if (s.active) word = 'running now';
+          if (s.job) word += ' \u00b7 ' + C.jobState(s.job).word;
+          const action = s.complete && !s.active
+            ? link({view: 'rig', tab: 'upload', project: project.id, root: s.root_id, run: s.run_id}, selected ? 'Chosen' : 'Choose',
+              {class: 'btn btn-small ' + (selected ? 'btn-primary' : 'btn-line'), 'aria-current': selected ? 'true' : null,
+                'data-focus': 'up-run-' + s.run_id, 'data-focus-next': 'up-preview'})
+            : null;
+          tbody.appendChild(h('tr', {class: selected ? 'row-current' : null},
+            h('td', {class: 'mono'}, 'sub-' + (s.subject || '?') + ' \u00b7 ses ' + (s.session ?? '?') + ' \u00b7 run ' + (s.run ?? '?')),
+            h('td', null, s.date ? C.formatDate(s.date, false) : ''),
+            h('td', null, s.task || ''),
+            h('td', null, s.mode || ''),
+            h('td', null, s.root_name || s.root_kind || ''),
+            h('td', null, word),
+            h('td', null, action)));
+        }
+        table.appendChild(tbody);
+        nodes.push(h('div', {class: 'table-wrap'}, table));
+        if (chosen) nodes.push(uploadPreview(ctx, project, chosen));
+        area.fill(...nodes);
+      })();
+      return wrap;
+    }
+
+    function uploadPreview(ctx, project, session) {
+      const wrap = h('div', {class: 'consent'});
+      const status = statusLine();
+      const releaseArea = h('div');
+      const previewArea = h('div');
+      wrap.append(h('h3', {class: 'sub-title', tabindex: '-1', 'data-focus': 'up-preview'}, 'Review before uploading'), releaseArea, previewArea, status.el);
+      let release = null;  // {experiment_id, version_id} chosen when the project has no install record
+
+      const runPreview = async () => {
+        previewArea.replaceChildren(h('p', {class: 'loading'}, h('span', {class: 'spinner', 'aria-hidden': 'true'}), 'Listing the session\u2019s files\u2026'));
+        const body = {project_id: project.id, root_id: session.root_id, run_id: session.run_id};
+        if (release) Object.assign(body, {experiment_id: release.experiment_id, version_id: release.version_id});
+        try {
+          const preview = await api('POST', '/local/upload-preview', {json: body, timeoutMs: 120000});
+          if (ctx.epoch !== state.epoch) return;
+          previewArea.replaceChildren(consentForm(ctx, project, session, preview, status, runPreview, release ? release.label : ''));
+        } catch (exc) {
+          if (ctx.epoch !== state.epoch) return;
+          noteFailure(exc);
+          if (exc.kind === 'invalid' && !release) {
+            previewArea.replaceChildren(h('p', {class: 'muted'}, exc.message + ' Choose which release in your library the session should be recorded against.'));
+            releaseArea.replaceChildren(releasePicker((picked) => { release = picked; runPreview(); }));
+            return;
+          }
+          previewArea.replaceChildren(errorBox(exc, runPreview));
+        }
+      };
+      runPreview();
+      return wrap;
+    }
+
+    function releasePicker(onPick) {
+      const wrap = h('div', {class: 'inline-form'});
+      const status = statusLine();
+      libraryItems(false).then((items) => {
+        const usable = items.filter((i) => i.experiment && i.version);
+        if (!usable.length) {
+          wrap.replaceChildren(h('p', {class: 'muted'}, 'Your library is empty. Pin the experiment\u2019s release first.'),
+            link({view: 'catalog'}, 'Open the catalogue', {class: 'btn btn-line'}));
+          return;
+        }
+        const choice = select(usable.map((i) => [i.experiment.id + '|' + i.version.id, (i.experiment.title || i.experiment.id) + ' ' + versionLabel(i.version)]), '');
+        const button = h('button', {type: 'button', class: 'btn btn-line'}, 'Use this release');
+        button.addEventListener('click', () => {
+          const [experiment_id, version_id] = String(choice.value).split('|');
+          const item = usable.find((i) => i.experiment.id === experiment_id && i.version.id === version_id);
+          if (item) onPick({experiment_id, version_id, label: (item.experiment.title || experiment_id) + ' ' + versionLabel(item.version)});
+        });
+        wrap.replaceChildren(field('Record against', choice), button, status.el);
+      }).catch((exc) => { noteFailure(exc); wrap.replaceChildren(errorBox(exc)); });
+      return wrap;
+    }
+
+    /* The consent: who receives it (hub and account), which release it is
+     * recorded against, exactly which files (and their manifest digest),
+     * what personal information they can hold. It names this preview_id;
+     * a change to any of these needs a new preview (rig-contract B2). */
+    function consentForm(ctx, project, session, preview, status, again, pickedLabel) {
+      const p = preview || {};
+      const recipient = p.recipient || {};
+      const user = recipient.user || {};
+      const install = p.install || null;
+      const files = Array.isArray(p.files) ? p.files : [];
+      const totals = C.uploadTotals(files, p.total_bytes);
+      const fileCount = Number(p.file_count) || totals.count;
+      const meta = p.metadata || {};
+      const privacy = p.privacy || {};
+      const releaseName = install ? (install.title || install.name || p.experiment_id) + ' ' + versionLabel(install)
+        : pickedLabel || String(p.experiment_id || '') + ' / ' + String(p.version_id || '');
+      const form = h('form', {class: 'form'});
+      form.appendChild(spec([
+        ['Recipient', h('span', null, h('span', {class: 'mono'}, recipient.base_url || '(unknown hub)'), h('span', null, ' \u00b7 account '),
+          h('strong', null, (user.display_name || user.username || '?') + (user.username ? ' (@' + user.username + ')' : '')))],
+        ['Release', releaseName],
+        ['Release SHA-256', install && install.sha256 ? C.shortHash(install.sha256) + '\u2026' : null, {mono: true}],
+        ['Subject', meta.subject_code, {mono: true}],
+        ['Mode', meta.mode],
+        ['Rig', meta.rig_alias],
+        ['Started', C.formatDate(meta.started_at)],
+        ['Files', `${fileCount} files \u00b7 ${C.formatBytes(totals.bytes)}`, {mono: true}],
+        ['Session manifest SHA-256', digest(p.manifest_digest)],
+      ]));
+      const det = h('details', {class: 'excluded'}, h('summary', null, `Show all ${fileCount} files`));
+      const ul = h('ul', {class: 'file-list'});
+      for (const f of files) ul.appendChild(h('li', {class: 'file-row'}, h('span', {class: 'mono small'}, f.path), h('span', {class: 'mono small file-size'}, C.formatBytes(f.size))));
+      if (files.length < fileCount) ul.appendChild(h('li', {class: 'muted small'}, `${fileCount - files.length} more not listed here; the rig sends exactly the previewed set.`));
+      det.appendChild(ul);
+      form.appendChild(det);
+      const fields = Array.isArray(privacy.fields) ? privacy.fields : [];
+      form.appendChild(h('div', {class: 'callout callout-warn'},
+        h('p', {class: 'callout-title'}, 'What these files can reveal'),
+        privacy.warning ? h('p', null, String(privacy.warning)) : null,
+        h('p', null, 'Session folders can hold rig settings, configuration snapshots, logs and participant information such as subject codes, initials, age and sex.'),
+        fields.length ? h('p', null, 'Recorded fields: ' + fields.join(', ') + '.') : null,
+        h('p', null, 'Only the recipient account can read the upload; the experiment\u2019s author gets no access. Nothing on this rig is deleted.')));
+      const consent = checkbox('Upload this session to ' + (user.username ? '@' + user.username : 'this account') + ' at '
+        + (recipient.base_url ? hostOf(recipient.base_url) : 'this hub') + ', recorded against ' + releaseName + '.');
+      const button = h('button', {type: 'submit', class: 'btn btn-primary'}, 'Upload privately');
+      form.append(consent.el, h('div', {class: 'actions'}, button,
+        h('button', {type: 'button', class: 'btn btn-quiet', on: {click: again}}, 'Preview again')));
+      form.addEventListener('submit', async (event) => {
+        prevent(event);
+        if (!consent.box.checked) return status.show('Tick the box to opt in to this upload.', 'err');
+        button.disabled = true;
+        status.show('Starting the transfer\u2026', 'info');
+        try {
+          const answer = await api('POST', '/local/upload', {json: {
+            project_id: project.id, root_id: session.root_id, run_id: session.run_id,
+            experiment_id: p.experiment_id, version_id: p.version_id, preview_id: p.preview_id, consent: true,
+          }});
+          const job = (answer && answer.job) || answer;
+          if (!job || !job.id) throw new C.HubError('bad_response', 'The rig did not return the transfer it started.');
+          await loadLocal();
+          go({view: 'rig', tab: 'upload', job: job.id});
+        } catch (exc) {
+          noteFailure(exc);
+          if (exc.kind === 'preview_stale') {
+            status.show(exc.message, 'err');
+            again();
+          } else {
+            status.show(exc.message, 'err');
+          }
+          button.disabled = false;
+        }
+      });
+      return form;
+    }
+
+    function jobPanel(ctx, jobId) {
+      const wrap = h('div', {class: 'job'});
+      const head = h('p', {class: 'job-state', role: 'status', 'aria-live': 'polite'}, 'Reading the transfer\u2026');
+      const bar = h('div', {class: 'meter', role: 'progressbar', 'aria-label': 'Upload progress', 'aria-valuemin': '0', 'aria-valuemax': '100'});
+      const fill = h('span', {class: 'meter-fill'});
+      bar.appendChild(fill);
+      const numbers = h('p', {class: 'mono small'});
+      const detail = h('div');
+      const controls = h('div', {class: 'actions'});
+      const status = statusLine();
+      wrap.append(h('p', {class: 'eyebrow mono'}, link({view: 'rig', tab: 'upload'}, 'All transfers'), h('span', {'aria-hidden': 'true'}, ' / '), h('span', null, jobId)),
+        head, bar, numbers, detail, controls, status.el);
+      let delay = POLL_MS;
+      const paint = (job) => {
+        const js = C.jobState(job);
+        head.textContent = js.word + (js.running ? '\u2026' : '');
+        head.className = 'job-state job-' + (js.ok ? 'ok' : js.status === 'failed' || js.status === 'cancelled' ? 'err' : js.status === 'paused' ? 'warn' : 'info');
+        const pct = js.fraction === null ? null : Math.round(js.fraction * 100);
+        if (pct === null) { bar.removeAttribute('aria-valuenow'); fill.className = 'meter-fill meter-unknown'; } else {
+          bar.setAttribute('aria-valuenow', String(pct));
+          fill.className = 'meter-fill meter-p' + Math.min(100, Math.max(0, Math.round(pct / 5) * 5));
+        }
+        const parts = [];
+        if (js.done !== null && js.total !== null) parts.push(C.formatBytes(js.done) + ' of ' + C.formatBytes(js.total));
+        if (job.files_total) parts.push((job.files_done || 0) + ' of ' + job.files_total + ' files');
+        if (job.run_id) parts.push(job.run_id);
+        numbers.textContent = parts.join(' \u00b7 ');
+        detail.replaceChildren();
+        if (js.error) detail.appendChild(h('p', {class: 'note note-' + (js.status === 'paused' ? 'warn' : 'err')}, js.error));
+        if (job.error && ['auth_context_changed', 'signed_out', 'unauthenticated'].includes(job.error.code)) {
+          detail.appendChild(h('p', {class: 'muted small'}, 'It continues only when the account it was approved for is signed in to the same hub.'));
+        }
+        if (js.needsPreview && job.project_id && job.root_id && job.run_id) {
+          detail.appendChild(link({view: 'rig', tab: 'upload', project: job.project_id, root: job.root_id, run: job.run_id},
+            'Preview this session again', {class: 'btn btn-line'}));
+        }
+        if (js.ok) {
+          detail.appendChild(h('p', {class: 'note note-ok'}, 'The hub verified every file and recorded the session. The originals stay on this rig.'));
+          if (job.session_id) detail.appendChild(link({view: 'data', session: job.session_id}, 'Open the uploaded session', {class: 'btn btn-line'}));
+        }
+        controls.replaceChildren();
+        if (js.canResume) controls.appendChild(h('button', {type: 'button', class: 'btn btn-primary', on: {click: () => act('resume')}}, 'Resume'));
+        if (js.canCancel) controls.appendChild(h('button', {type: 'button', class: 'btn btn-quiet', on: {click: () => act('cancel')}}, 'Cancel transfer'));
+        return js;
+      };
+      const poll = async () => {
+        const got = await screenRequest(ctx.epoch, 'GET', '/local/jobs/' + C.seg(jobId));
+        if (!got) return;
+        if (!got.ok) {
+          if (got.error.kind === 'not_found') {
+            head.textContent = 'No such transfer for the signed-in account.';
+            return;
+          }
+          status.show(got.error.message, 'err');
+          delay = Math.min(POLL_MAX_MS, delay * 2);
+        } else {
+          status.clear();
+          delay = POLL_MS;
+          const js = paint((got.value && got.value.job) || got.value || {});
+          if (js.terminal) return;
+        }
+        state.polls.push(timers.set(poll, delay));
+      };
+      const act = async (verb) => {
+        status.show(verb === 'resume' ? 'Resuming\u2026' : 'Cancelling\u2026', 'info');
+        try {
+          const answer = await api('POST', '/local/jobs/' + C.seg(jobId) + '/' + verb, {json: {}});
+          if (ctx.epoch !== state.epoch) return;
+          status.clear();
+          const js = paint((answer && answer.job) || answer || {});
+          if (!js.terminal) {
+            for (const id of state.polls) timers.clear(id);
+            state.polls = [timers.set(poll, POLL_MS)];
+          }
+        } catch (exc) {
+          noteFailure(exc);
+          status.show(exc.message, 'err');
+        }
+      };
+      poll();
+      return wrap;
+    }
+
+    const SCREENS = {
+      home: screenHome, catalog: screenCatalog, experiment: screenExperiment, guide: screenGuide,
+      signin: screenSignin, register: screenRegister, library: screenLibrary, mine: screenMine,
+      data: screenData, rig: screenRig, create: screenCreate,
+    };
+
+    /* Links drawn by the documentation viewer (task links) are plain anchors
+     * to this page; follow them without a reload. */
+    function onMainClick(event) {
+      if (!event || event.defaultPrevented || event.button > 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      let node = event.target;
+      while (node && node.tagName !== 'A') node = node.parentNode;
+      if (!node || node.hasAttribute('download') || node.getAttribute('target')) return;
+      const href = node.getAttribute('href') || '';
+      const path = loc.pathname || '/';
+      if (!href.startsWith(path + '?') && !href.startsWith('?')) return;
+      const search = href.slice(href.indexOf('?'));
+      prevent(event);
+      go(C.parseRoute(search.slice(1)));
+    }
+
+    $('main').addEventListener('click', onMainClick);
+    /* The static brand and footer links: same-page navigation too. */
+    for (const [id, route] of [['brand', {view: 'home'}], ['footer-guide', {view: 'guide'}]]) {
+      const el = doc.getElementById(id);
+      if (!el) continue;
+      el.setAttribute('href', (loc.pathname || '/') + (C.formatRoute(route) || '?'));
+      el.addEventListener('click', (event) => {
+        if (!state.booted || (event && (event.button > 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey))) return;
+        prevent(event);
+        go(route);
+      });
+    }
+    const ready = boot();
+    return {state, ready, go, draw};
+  }
+
+  return {mount};
+})();
+
+if (typeof window !== 'undefined') {
+  window.HubApp = HubApp;
+  window.hubPage = HubApp.mount({
+    document, location, history, window, fetch: window.fetch.bind(window),
+    sessionStorage: window.sessionStorage, localStorage: window.localStorage,
+    setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window),
+    clipboard: navigator.clipboard, scrollTo: window.scrollTo.bind(window),
+  });
+}

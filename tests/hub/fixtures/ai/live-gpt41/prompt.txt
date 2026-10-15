@@ -1,0 +1,1 @@
+A fixation-hold task with a brief peripheral flash on half of the trials, 8 degrees left or right of fixation. Measure whether fixation survives the flash: the rate of fixation breaks on flash trials versus no-flash trials, and the latency of any break. Human participants, eye tracker required, no reward line.
