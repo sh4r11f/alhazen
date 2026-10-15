@@ -61,6 +61,10 @@
        Data pages (several sessions). -->
   <link rel="stylesheet" href="/workspace_upload.css">
   <script src="/workspace_upload.js" defer></script>
+  <!-- Split (2026-10-09): the design layer over every stylesheet above, so
+       it loads last: the collapsible icon rail, the Run page's two panes
+       (settings | instrument) and the type that replaces the mono labels. -->
+  <link rel="stylesheet" href="/workspace_split.css">
 </head>
 <body>
   <!-- Sidebar: logo, the registered experiments (renderState() in
@@ -71,59 +75,17 @@
   <aside class="sidebar">
     <div class="sidebar-inner">
       <a class="brand" href="/" aria-label="Alhazen home">
-        <!-- The logo: an A painted in the Ouchi illusion. The ground is a
-             checkerboard of bold 4:1 bricks laid horizontally; the letter A
-             holds the same bricks turned 90° and shifted, so the letter is
-             defined only by the change in orientation and seems to float
-             and slide over the ground when the eye moves. Colours come from
-             CSS (.logo-*), so it follows the light and dark themes. Drawn
-             at 56 px (.brandmark), where each 4-unit brick is one whole
-             pixel wide and each leg of the A holds about three. -->
-        <svg class="brandmark" viewBox="0 0 56 56" aria-hidden="true" focusable="false">
-          <defs>
-            <!-- The bricks, 4:1. Here 4 units wide: whole pixels at the sidebar's 56 px.
-                 The ground: one tile of two 16×4 bricks, the second offset by
-                 half a tile, so tiles repeat into a checkerboard of horizontal bricks. -->
-            <pattern id="logo-bricks" width="32" height="8" patternUnits="userSpaceOnUse">
-              <rect class="logo-brick" width="16" height="4"/>
-              <rect class="logo-brick" x="16" y="4" width="16" height="4"/>
-            </pattern>
-            <!-- The figure: the same bricks turned upright (4×16) and shifted
-                 by half a brick width both ways, so no edge inside the A lines up
-                 with an edge of the ground's; that mismatch is what makes the letter
-                 seem to float. -->
-            <pattern id="logo-bricks-turned" width="8" height="32"
-                     patternUnits="userSpaceOnUse" patternTransform="translate(2 2)">
-              <rect class="logo-brick" width="4" height="16"/>
-              <rect class="logo-brick" x="4" y="16" width="4" height="16"/>
-            </pattern>
-            <!-- LOGO-START: the same in workspace.html and favicon.svg (a test
-                 compares them; only the brick size above differs). -->
-            <clipPath id="logo-frame"><rect width="56" height="56" rx="8"/></clipPath>
-            <!-- The A: the outline of Nunito's capital A at weight 800 (the page's
-                 own font, fonts/), taken with fontTools and scaled to 50.4 of the
-                 icon's 56 units wide, baseline at 52.5. A path, not text, so it is
-                 the same in every browser and in the favicon, which cannot load the
-                 page's font. Its second subpath is the triangular counter, wound the
-                 other way, so the nonzero rule leaves it open. -->
-            <clipPath id="logo-letter">
-              <path d="M7.63 52.5Q5.66 52.5 4.41 51.59Q3.16 50.67 2.87 49.12Q2.58 47.56 3.45 45.62L21.66 5.85Q22.76 3.43 24.34 2.36Q25.91 1.28 27.97 1.28Q29.98 1.28 31.55 2.36Q33.11 3.43 34.21 5.85L52.47 45.62Q53.41 47.58 53.14 49.16Q52.87 50.74 51.67 51.62Q50.46 52.5 48.57 52.5Q46.18 52.5 44.87 51.38Q43.56 50.25 42.53 47.84L38.3 38L42.71 41.04H13.12L17.52 38L13.34 47.84Q12.26 50.3 11.09 51.4Q9.92 52.5 7.63 52.5ZM27.83 13.59 18.75 35.25 16.81 32.43H39.01L37.13 35.25L27.97 13.59Z"/>
-            </clipPath>
-          </defs>
-          <g clip-path="url(#logo-frame)">
-            <rect class="logo-ground" width="56" height="56"/>
-            <rect width="56" height="56" fill="url(#logo-bricks)"/>
-            <!-- Inside the A: the ground colour over the horizontal bricks, then
-                 the upright ones. No outline, halo or solid fill: the letter is
-                 only the change of brick orientation. -->
-            <g clip-path="url(#logo-letter)">
-              <rect class="logo-ground" width="56" height="56"/>
-              <rect width="56" height="56" fill="url(#logo-bricks-turned)"/>
-            </g>
-          </g>
-          <!-- LOGO-END -->
+        <!-- The Alhazen mark: ink in currentColor, the face in the accent
+             (.mark-ink, .mark-face in workspace.css). -->
+        <svg class="brandmark" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
+          <!-- LOGO-START: the same in workspace.html and favicon.svg (a test
+       compares them). The Penrose "impossible A" (hub/assets/icon.svg): the
+       ink faces, then the accent face. -->
+  <path class="mark-ink" d="M7.83 56.61L11.81 49.72L11.98 49.52L12.21 49.35L12.38 49.28L12.64 49.24L20.6 49.24L16.62 42.35L16.55 42.2L16.51 42.01L16.5 41.82L16.53 41.64L16.62 41.39L26.31 24.61L26.49 24.39L26.73 24.23L26.92 24.16L27.12 24.13L27.41 24.16L27.6 24.23L27.77 24.33L27.92 24.47L28.02 24.61L37.41 40.87L44.77 40.87L27.17 10.39L4.15 50.24ZM55.59 57.61L59.27 51.24L13.24 51.24L9.57 57.61ZM26.59 40.87L30.85 33.5L27.17 27.13L19.23 40.87Z"/>
+  <path class="mark-face" d="M22.91 49.24L59.27 49.24L36.26 9.39L28.9 9.39L47.38 41.39L47.45 41.55L47.49 41.75L47.5 41.95L47.46 42.14L47.34 42.41L47.14 42.64L46.89 42.79L46.7 42.85L46.52 42.87L19.23 42.87Z"/>
+  <!-- LOGO-END -->
         </svg>
-        <span>alhazen<small>Experiment workspace</small></span>
+        <span class="brand-name">Alhazen<small>Experiment workspace</small></span>
       </a>
       <!-- The workspace's home, then every registered experiment, each
            expanding to its pages (renderNav() in workspace.js). Each page is
@@ -154,7 +116,6 @@
         <p class="connection">
           <span class="connection-dot"></span><span id="connection">Connecting…</span>
         </p>
-        <small>Runs on this computer</small>
       </div>
     </div>
   </aside>
@@ -167,7 +128,6 @@
         Workspace <span class="slash">/</span> <span id="breadcrumb">Experiments</span>
         <span id="breadcrumb-view"></span>
       </div>
-      <span class="local-badge">LOCAL WORKSPACE</span>
     </header>
 
     <!-- Every failed request lands here (see error() in workspace.js). -->
@@ -179,22 +139,13 @@
     <section id="home-view" class="home" hidden>
       <div class="home-heading">
         <div>
-          <p class="eyebrow">EXPERIMENTS</p>
-          <h1>Your experiments</h1>
-          <p class="home-sub">Register an Alhazen project, then open it to set up its people and
-            rigs, run it, and look back at its sessions.</p>
+          <h1>Experiments</h1>
         </div>
-        <button class="primary" type="button" id="add-project">＋ Register experiment</button>
+        <button class="primary" type="button" id="add-project">Register experiment</button>
       </div>
       <section id="empty" class="welcome" hidden>
-        <div class="welcome-art" aria-hidden="true">◎</div>
-        <p class="eyebrow">FROM CONFIGURATION TO OBSERVATION</p>
-        <h2>Your experiments,<br>in one place.</h2>
-        <p>
-          Register an Alhazen project to choose a rig, tune parameters,<br>
-          and preview, record or run your experiment.
-        </p>
-        <button class="primary" id="empty-add">＋ Register your first experiment</button>
+        <h2>No experiments registered</h2>
+        <button class="primary" id="empty-add">Register an experiment</button>
       </section>
       <div id="home-list" class="home-list"></div>
     </section>
@@ -214,7 +165,7 @@
         </p>
         <p id="title-error" class="title-error" role="alert" hidden></p>
       </div>
-      <button class="quiet" id="project-settings">Project settings ↗</button>
+      <button class="quiet" id="project-settings">Project settings</button>
     </section>
 
     <!-- The General page of the open experiment: its notes and
@@ -467,9 +418,7 @@
                   Text (YAML or JSON)
                 </button>
               </div>
-              <p id="parameters-help" class="help">
-                Changes apply to this run. Each launch saves a parameter snapshot.
-              </p>
+              <p id="parameters-help" class="help">Changes apply to this run only.</p>
               <input id="parameter-search" type="search" aria-label="Filter parameters"
                      placeholder="Search parameters…">
               <!-- Why the parameter choices could not be read: one sentence,
@@ -494,11 +443,7 @@
                  for a project whose alhazen lists them). -->
             <fieldset id="measurements" class="form-section stage" hidden disabled>
               <h3 class="section-title">Measurements</h3>
-              <p id="measurements-help" class="help">
-                Tick what to measure. They run one after another, in a fixed order, into one
-                report beside the rig file; a measurement that needs a person at the rig
-                pauses and asks there.
-              </p>
+              <p id="measurements-help" class="help">Run in a fixed order into one report.</p>
               <div id="measurement-list"></div>
             </fieldset>
 
@@ -515,7 +460,11 @@
           </form>
         </section>
 
-        <!-- Right column: the selected run's output, then the run history. -->
+        <!-- Right column, the instrument pane (Split): the selected run's
+             output, its upload, then the run history. The pane carries the
+             darker surface down the page; the column inside it stays in
+             the window while the form scrolls. -->
+        <div class="instrument-pane">
         <div class="results-column">
           <!-- Upload to the archive, for the session the selected launch saved, once
                it has finished (workspace_upload.js mountSession; hidden for
@@ -539,7 +488,7 @@
               </div>
               <div class="output-actions">
                 <a id="monitor" target="_blank" rel="noreferrer" hidden>
-                  Open monitor in new tab ↗
+                  Open in new tab
                 </a>
                 <button id="stop" class="danger" hidden>Stop run</button>
               </div>
@@ -549,13 +498,8 @@
                  state's heading and text are rewritten per run situation. -->
             <div id="media-panel">
               <div id="gallery-empty" class="output-empty">
-                <span class="viewfinder" aria-hidden="true">⊙</span>
-                <h3>A closer look at your experiment.</h3>
-                <p>
-                  Preview images and recorded movies appear here.<br>
-                  Choose a mode and start a run to see the results.
-                </p>
-                <span class="empty-tag">IMAGES · MOVIES · CONTACT SHEETS</span>
+                <h3>No run yet</h3>
+                <p></p>
               </div>
               <div id="gallery"></div>
             </div>
@@ -595,6 +539,7 @@
             <div id="history"></div>
           </section>
         </div>
+        </div>
       </div>
     </div>
 
@@ -608,7 +553,6 @@
          session folders in its data folders (workspace_manage.js). -->
     <div id="history-view" class="manage-page" hidden></div>
 
-    <footer>ALHAZEN <span>Vision science, from stimulus to session.</span></footer>
   </main>
 
   <!-- Add an experiment / project settings. The folder is fixed once
@@ -619,16 +563,11 @@
         <h2 id="dialog-title">Add an experiment</h2>
         <button type="button" id="close-dialog" aria-label="Close">×</button>
       </div>
-      <p class="help">Choose a local project containing an Alhazen <code>run.py</code>.
-        Registering never changes the folder.</p>
+      <p class="help">A folder with an Alhazen <code>run.py</code>. It is never changed.</p>
       <label for="project-folder">Project folder</label>
       <input id="project-folder" placeholder="~/projects/amodal-averaging" required>
       <label for="project-python">Python interpreter <span class="optional">optional</span></label>
       <input id="project-python" placeholder="Auto-detect project .venv, then current Python">
-      <p class="help">
-        Use the environment with your experiment’s dependencies and device drivers
-        installed.
-      </p>
       <p id="project-runtime" class="path"></p>
       <!-- Unregistering, confirmed in place: what it does and does not do. -->
       <div id="remove-confirm" class="inline-confirm" hidden>
