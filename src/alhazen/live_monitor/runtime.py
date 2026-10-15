@@ -115,6 +115,7 @@ class LiveMonitorController:
         self._trial: Any = ctx.Queue(maxsize=_TRIAL_VIEWS_QUEUED)
         self._gaze: Any = ctx.Queue(maxsize=1)
         self._gaze_down_reported = False
+        self._trial_full_reported = False
         # --- end Trial view -------------------------------------------------
         self._stop: Any = ctx.Event()
         self._port = port
@@ -286,11 +287,20 @@ class LiveMonitorController:
         try:
             self._trial.put_nowait(json.dumps(view, allow_nan=False))
         except queue.Full:
-            # The child has not taken the last several pictures: the page is
-            # not being served, and the next trial's picture will try again.
-            log.debug(
-                "trial view for trial %s dropped: the channel is full", view.get("trial_index")
-            )
+            # The child has not taken the last several pictures, so the page
+            # is showing an old trial. Said once in the session log (the page
+            # cannot be told: it is the child that stopped), and the next
+            # trial's picture tries again.
+            if not self._trial_full_reported:
+                log.warning(
+                    "live monitor: trial %s's picture not sent, the server has not collected "
+                    "the last %d; the Trial view shows an older trial until it does",
+                    view.get("trial_index"),
+                    _TRIAL_VIEWS_QUEUED,
+                )
+                self._trial_full_reported = True
+            return
+        self._trial_full_reported = False
 
     def publish_gaze(self, samples: list[tuple[int, float, float | None, float | None]]) -> bool:
         """Offer a batch of gaze samples (live_monitor/gaze.py ``GazeSample``).

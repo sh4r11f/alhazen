@@ -161,10 +161,27 @@ class TestDefaultSchematic:
             },
         ]
 
-    def test_a_region_that_cannot_be_drawn_is_left_out_not_fatal(self, caplog):
-        shapes = region_shapes({"bad": CircleRegion((math.nan, 0.0), 10.0)}, SCREEN)
-        assert shapes == ()
-        assert "region 'bad' not drawn" in caplog.text
+    def test_a_region_that_cannot_be_drawn_is_a_bug_in_a_tasks_own_picture(self):
+        with pytest.raises(ValueError, match="region 'bad' cannot be drawn"):
+            region_shapes({"bad": CircleRegion((math.nan, 0.0), 10.0)}, SCREEN)
+
+    def test_the_default_picture_names_a_region_it_cannot_draw_and_goes_on(self, caplog):
+        view = trial_view(
+            schematic=None,
+            stimuli={},
+            regions={
+                "bad": CircleRegion((math.nan, 0.0), 10.0),
+                "ok": CircleRegion((0.0, 0.0), 40.0),
+            },
+            screen=SCREEN,
+            trial_index=1,
+            attempt=1,
+            condition={},
+            t=0.0,
+        )
+        assert [s["name"] for s in view["shapes"]] == ["ok"]
+        assert view["undrawn"] == ["bad (window: circle center x must be finite, got nan)"]
+        assert "region 'bad' cannot be drawn" in caplog.text
 
     def test_only_a_stimulus_that_describes_itself_is_drawn_the_rest_are_named(self):
         shapes, undrawn = stimulus_shapes(
@@ -350,12 +367,14 @@ class TestChannels:
         assert controller.publish_gaze([(1, 0.1, 0.0, 0.0)]) is False
         assert time.perf_counter() - start < 0.5
 
-    def test_publish_trial_never_blocks_and_the_newest_picture_wins(self):
+    def test_publish_trial_never_blocks_and_the_newest_picture_wins(self, caplog):
         controller = LiveMonitorController(auto_open=False)  # not started: nobody collects
         start = time.perf_counter()
         for index in range(1, 20):  # more than the channel holds
             controller.publish_trial({"trial_index": index})
         assert time.perf_counter() - start < 0.5
+        # A full channel is said once, not once per trial.
+        assert caplog.text.count("picture not sent") == 1
         # The child keeps the last one it takes off the channel.
         view = _TrialViewState()
         while True:

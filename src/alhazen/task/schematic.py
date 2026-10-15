@@ -42,24 +42,23 @@ def region_shapes(regions: Mapping[str, CircleRegion], screen: Screen) -> tuple[
 
     Exact: a region is the window the phases judge gaze against, in the same
     centered px, converted with the same ``Screen`` that placed it. A region
-    whose geometry cannot be drawn (a non-finite centre, a zero radius — a
-    task bug the phases may never trip over) is left out and logged, rather
-    than taking the session down for a monitoring picture.
+    whose geometry cannot be drawn (a non-finite centre, a zero radius) raises
+    ``ValueError`` naming it: in a task's own schematic that is a bug in the
+    task. The default picture catches it per region instead (``trial_view``).
     """
-    shapes: list[Circle] = []
-    for name, region in regions.items():
-        try:
-            shapes.append(
-                Circle(
-                    (screen.px2deg(region.center[0]), screen.px2deg(region.center[1])),
-                    screen.px2deg(region.radius),
-                    name=str(name)[:80],
-                    role="region",
-                )
-            )
-        except ValueError as e:
-            log.warning("trial view: region %r not drawn: %s", name, e)
-    return tuple(shapes)
+    return tuple(_region_shape(name, region, screen) for name, region in regions.items())
+
+
+def _region_shape(name: str, region: CircleRegion, screen: Screen) -> Circle:
+    try:
+        return Circle(
+            (screen.px2deg(region.center[0]), screen.px2deg(region.center[1])),
+            screen.px2deg(region.radius),
+            name=str(name)[:80],
+            role="region",
+        )
+    except ValueError as e:
+        raise ValueError(f"region {name!r} cannot be drawn: {e}") from e
 
 
 def stimulus_shapes(
@@ -116,7 +115,17 @@ def trial_view(
         source = "task"
     else:
         drawn, undrawn = stimulus_shapes(stimuli, screen)
-        shapes = drawn + region_shapes(regions, screen)
+        outlines: list[Shape] = []
+        for name, region in regions.items():
+            try:
+                outlines.append(_region_shape(name, region, screen))
+            except ValueError as e:
+                # The default picture is the session's, not the task's: a
+                # region it cannot draw is named on the page, with why, and
+                # in the log, rather than ending the session over a picture.
+                log.warning("trial view: %s", e)
+                undrawn += (f"{name} (window: {e.__cause__})",)
+        shapes = drawn + tuple(outlines)
         source = "default"
     return {
         "trial_index": trial_index,
