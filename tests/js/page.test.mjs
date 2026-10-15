@@ -258,11 +258,10 @@ describe('the eye-tracker panels', () => {
     assert.deepEqual(live_monitor.window.history.replaced, []);
   });
 
-  it('turn the session controls on only while paused', () => {
-    const live_monitor = loadLiveMonitor({ staticState: stateWith([], { status: 'paused' }) });
-    const buttons = live_monitor.document.querySelectorAll('[data-command]');
-    assert.ok(buttons.length > 0);
-    buttons.forEach((button) => assert.equal(button.disabled, false, button.dataset.command));
+  it('draws no session controls in a saved copy, and says they work only live', () => {
+    const live_monitor = loadLiveMonitor({ staticState: stateWith([], { status: 'complete' }) });
+    assert.equal(live_monitor.document.querySelectorAll('[data-command]').length, 0);
+    assert.match(live_monitor.byId('controls').textContent, /only during a session/);
   });
 });
 

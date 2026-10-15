@@ -594,3 +594,69 @@ details.table th { color: var(--muted); font-weight: 600; }
 }
 .stat-label i { text-transform: none; }
 .stat-value { font-family: var(--mono); font-size: 17px; font-variant-numeric: tabular-nums; }
+
+/* ------------------------------------------------------------------ */
+/* Operator controls [workstream B]                                    */
+/* ------------------------------------------------------------------ */
+/* Drawn by renderControls into every [data-controls-host]: the sidebar's,
+ * and any a view puts under itself. One button per command with the key it
+ * stands for at the rig; off buttons stay focusable so a click can say why. */
+.controls[data-controls-host] { display: block; }
+
+.control-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 6px;
+}
+
+button.control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+button.control kbd {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  color: var(--muted);
+  font: 600 11px/1.5 var(--mono);
+}
+button.control[aria-disabled="true"] { opacity: 0.42; cursor: not-allowed; }
+button.control[aria-disabled="true"]:hover { background: var(--surface); }
+button.control.danger[aria-disabled="true"] { color: var(--ink); }
+button.control[data-pending="true"] { opacity: 1; border-style: dashed; color: var(--ink-2); }
+button.control:focus-visible { outline: 2px solid var(--series-1); outline-offset: 1px; }
+
+.quit-confirm {
+  grid-column: 1 / -1;
+  padding: 10px;
+  border: 1px solid var(--critical);
+  border-radius: 6px;
+  background: var(--surface);
+}
+.quit-confirm p { margin: 0 0 8px; font-size: 13px; }
+.quit-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.quit-actions button.control { justify-content: center; }
+
+.control-feedback { margin: 10px 0 0; color: var(--critical); font-size: 12.5px; }
+.control-empty { margin: 0; color: var(--muted); font-size: 12.5px; }
+
+.command-log {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+  font-size: 12.5px;
+}
+.command-log li { display: grid; gap: 1px; padding-left: 9px; border-left: 2px solid var(--rule); }
+.command-log .command-name { color: var(--ink); font-weight: 600; }
+.command-log .command-note { color: var(--muted); overflow-wrap: anywhere; }
+.command-log li[data-result="applied"] { border-left-color: var(--good); }
+.command-log li[data-result="discarded"] { border-left-color: var(--series-2); }
+.command-log li[data-result="refused"],
+.command-log li[data-result="failed"] { border-left-color: var(--critical); }
+.command-log li[data-result="refused"] .command-note,
+.command-log li[data-result="failed"] .command-note { color: var(--critical); }

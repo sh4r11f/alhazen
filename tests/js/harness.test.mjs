@@ -77,14 +77,13 @@ describe('the fake DOM', () => {
 });
 
 describe('loadLiveMonitor', () => {
-  it('builds every element index.html gives an id or a command', () => {
+  it('builds every element index.html gives an id or marks as a controls host', () => {
     const live_monitor = loadLiveMonitor();
     for (const id of ['identity', 'counts', 'status', 'sections', 'notice', 'theme', 'grid']) {
       assert.ok(live_monitor.byId(id), 'no #' + id);
     }
-    const commands = live_monitor.document.querySelectorAll('[data-command]')
-      .map((button) => button.dataset.command);
-    assert.ok(commands.includes('resume') && commands.includes('quit'), String(commands));
+    const hosts = live_monitor.document.querySelectorAll('[data-controls-host]');
+    assert.deepEqual(hosts.map((host) => host.getAttribute('id')), ['controls']);
   });
 
   it('refuses to load the live page without a server to answer it', () => {
