@@ -173,6 +173,17 @@ describe('the trial picture', () => {
       'No gaze sample: a blink, or the eye is lost.');
   });
 
+  it('says paused, with or without a trail, whatever the gaze clock says', () => {
+    const live_monitor = drawn(VIEW, [[1.0, 0, 0], [1.1, 1, 1]]);
+    live_monitor.get("state = { status: 'paused' }");
+    live_monitor.get('paintGaze')();
+    assert.equal(live_monitor.byId('trial-status').textContent,
+      'Paused. The trail is this trial’s, up to the pause.');
+    live_monitor.get('trialView').samples = [];
+    live_monitor.get('paintGaze')();
+    assert.equal(live_monitor.byId('trial-status').textContent, 'Paused.');
+  });
+
   it('draws no gaze from another trial over this trial’s picture', () => {
     const live_monitor = loadLiveMonitor();
     const tv = live_monitor.get('trialView');

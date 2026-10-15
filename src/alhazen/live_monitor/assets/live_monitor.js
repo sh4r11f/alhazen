@@ -3283,12 +3283,16 @@ function paintGaze() {
 function gazeStatus(view, own, current) {
   if (trialView.problem) return trialView.problem;
   if (!view.gaze) return 'No gaze: this rig has no eye tracker.';
+  const status = state ? state.status : 'running';
+  if (status === 'paused' || status === 'calibrating') {
+    /* A pause keyed between trials takes effect on the next trial's first
+     * frame, before anything is drawn: that trial's picture, and no trail. */
+    return own.length ? 'Paused. The trail is this trial’s, up to the pause.' : 'Paused.';
+  }
+  if (status !== 'running') return own.length ? 'The trail is the last one this trial drew.' : '';
   if (!own.length) return 'Waiting for gaze samples…';
-  const stale = performance.now() - gazeArrivedAt > GAZE_STALE_MS;
-  const running = !state || state.status === 'running';
-  if (stale || !running) {
-    return (state && state.status === 'paused' ? 'Paused. ' : 'Between trials. ') +
-      'The trail is the last one this trial drew.';
+  if (performance.now() - gazeArrivedAt > GAZE_STALE_MS) {
+    return 'Between trials. The trail is the last one this trial drew.';
   }
   if (!current) return 'No gaze sample: a blink, or the eye is lost.';
   const rate = gazeRate(own);
