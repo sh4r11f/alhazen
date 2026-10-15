@@ -38,7 +38,10 @@ that quietly lands under Other.
 
 from __future__ import annotations
 
-from typing import Final
+from typing import TYPE_CHECKING, Final
+
+if TYPE_CHECKING:
+    from pydantic.config import JsonDict
 
 # The sections, in the order the Run page shows them. "other" is also where
 # a field goes that nothing declares and no inference rule places.
@@ -50,14 +53,12 @@ SECTIONS: Final = ("stimulus", "timing", "session", "other")
 SECTION_KEY: Final = "x-alhazen-section"
 
 
-def section(name: str) -> dict[str, str]:
+def section(name: str) -> JsonDict:
     """``{"x-alhazen-section": name}``, for a field's or a model's
     ``json_schema_extra``. Raises ValueError for a name that is not one of
     ``SECTIONS``, naming the ones that are."""
     if name not in SECTIONS:
-        raise ValueError(
-            f"unknown parameter section {name!r}: use one of {', '.join(SECTIONS)}"
-        )
+        raise ValueError(f"unknown parameter section {name!r}: use one of {', '.join(SECTIONS)}")
     return {SECTION_KEY: name}
 
 

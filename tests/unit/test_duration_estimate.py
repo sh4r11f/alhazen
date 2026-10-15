@@ -377,9 +377,7 @@ class TestConditionCounts:
             for m in ("static", "moving", "static", "moving")
         ]
         schedule = timing.drain(BlockPlan(sources, rng=rng, breaks=True))
-        counts = {
-            (c.params["motion"], c.params["side"]): n for c, n in schedule.cell_counts or ()
-        }
+        counts = {(c.params["motion"], c.params["side"]): n for c, n in schedule.cell_counts or ()}
         # Each motion level runs in two blocks of 2 per side: 4 of each cell,
         # one cell per (motion, side) whatever block served it.
         assert counts == {(m, s): 4 for m in ("static", "moving") for s in (-1, 1)}
@@ -440,7 +438,11 @@ class TestConditionCounts:
             paradigm=SchedulerConfig(
                 kind="staircase",
                 staircase=StaircaseConfig(
-                    parameter="c", start=1, step=0.1, n_trials=40, n_reversals=8,
+                    parameter="c",
+                    start=1,
+                    step=0.1,
+                    n_trials=40,
+                    n_reversals=8,
                     interleave_by="level",
                 ),
             )

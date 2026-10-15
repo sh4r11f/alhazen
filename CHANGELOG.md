@@ -27,20 +27,47 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ## Unreleased
 
-### Fixed
-- `alhazen.analysis.io.viewpixx.fit_clock` refused two good recordings. It
-  dropped late alignment marks and refitted once, and the refit moved the
-  line by a few hundredths of a millisecond, enough to put a mark that was
-  just inside the tolerance just outside it (a run refused at 0.51 ms over
-  0.50, with a residual sd of 0.03 ms and no step or drift); it now drops
-  and refits until the line settles, each pass only adding to the dropped
-  set and the 5% budget still bounding the total. And it refused any two
-  late marks in a row as a clock that moved; a scheduler busy for a moment
-  delays the two or three stamps written in that moment (`fix_acquired` and
-  `stim_on` of one trial, half a second apart, with the next mark back on
-  the line), so a run of up to three late marks is dropped when the line
-  resumes on both sides, and a longer run, an early mark, or a run at either
-  end of the recording is refused as before.
+### Added
+- `LiveMonitorPanel.series`, for a `grouped_mean` panel: a second factor drawn
+  in the colour rather than along the axis. Each level of `group` is one
+  position on the axis and, at each, one mark per level of `series`, dodged
+  a few pixels apart, with its own *n*; with dots the marks of a series are
+  joined across the axis. That is an interaction plot — two lines that are
+  not parallel — which neither the marginal means nor `cross=True` can show.
+  The legend is titled with the series factor and the table view gains its
+  column. `series` is refused on any other kind, with more than one `group`
+  column, or naming the `group` column itself.
+- A `grouped_mean` panel whose column is 0/1 on every trial draws proportions:
+  a 95% Wilson interval on every group (the standard error of a proportion is
+  zero at 0 of 7 and at 7 of 7, which is certainty about nothing; a single
+  trial gets a wide interval rather than none) and an axis pinned to 0–1, with
+  the legend saying "95% CI (Wilson)". A measured column keeps its
+  "Mean ± s.e.m.".
+- `rig-source.yaml` in every run folder with a rig file: the file as written,
+  byte for byte, comments and all (what `rig.yaml` was). `session.json` names
+  it as `files.rig_source`. `rig-merged.yaml` is still written for a rig that
+  extends a shared one, unchanged, so no file a script looks for disappears.
+  The run layout baseline (`tests/fixtures/contracts.json`) gains the one name.
+- The workspace's run viewer lists `rig-merged.yaml` among a run's text
+  files; before, a run's merged rig could only be opened from disk.
+- **Task parameters in sections on the Run page.** The fields editor groups
+  rows under Stimulus, Timing, Session and Other, each with its count; the
+  search hides emptied headings. A params model declares a field's section
+  with `alhazen.section("stimulus" | "timing" | "session" | "other")` in the
+  field's or a nested model's `json_schema_extra` (`x-alhazen-section`;
+  `alhazen.config.sections`). Undeclared fields are inferred from their
+  top-level name (documented rules, docs/workspace.md), so experiments on an
+  older alhazen render fully inferred. alhazen's `Duration` declares Timing,
+  `SchedulerConfig` and `RewardPolicy` Session, `SubjectParams.subject_kind`
+  Session (additive JSON-schema keys; validation unchanged).
+- **The estimate says how many conditions run and how many trials of each**,
+  beside the total ("72 conditions × 8 trials = 576 trials · 8 blocks";
+  "24 conditions, 8–16 trials each" when unequal; "trials decided by the
+  staircase" with each estimator's bounds for adaptive plans). The counts
+  come from the drained schedule: `PlannedSchedule.cell_counts` (filled by
+  `drain`), `AdaptiveSchedule.estimators` / `per_estimator` / `decided_by`
+  (filled by `adaptive_bounds`), all optional with defaults. The answer's
+  `counts` gain `per_condition`; every uncertainty line is kept.
 
 ### Changed
 - Measure mode writes its report under the rig's data root,
@@ -68,29 +95,20 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   bytes with the rig file should read `rig-source.yaml` instead
   (docs/data.md §2).
 
-### Added
-- `LiveMonitorPanel.series`, for a `grouped_mean` panel: a second factor drawn
-  in the colour rather than along the axis. Each level of `group` is one
-  position on the axis and, at each, one mark per level of `series`, dodged
-  a few pixels apart, with its own *n*; with dots the marks of a series are
-  joined across the axis. That is an interaction plot — two lines that are
-  not parallel — which neither the marginal means nor `cross=True` can show.
-  The legend is titled with the series factor and the table view gains its
-  column. `series` is refused on any other kind, with more than one `group`
-  column, or naming the `group` column itself.
-- A `grouped_mean` panel whose column is 0/1 on every trial draws proportions:
-  a 95% Wilson interval on every group (the standard error of a proportion is
-  zero at 0 of 7 and at 7 of 7, which is certainty about nothing; a single
-  trial gets a wide interval rather than none) and an axis pinned to 0–1, with
-  the legend saying "95% CI (Wilson)". A measured column keeps its
-  "Mean ± s.e.m.".
-- `rig-source.yaml` in every run folder with a rig file: the file as written,
-  byte for byte, comments and all (what `rig.yaml` was). `session.json` names
-  it as `files.rig_source`. `rig-merged.yaml` is still written for a rig that
-  extends a shared one, unchanged, so no file a script looks for disappears.
-  The run layout baseline (`tests/fixtures/contracts.json`) gains the one name.
-- The workspace's run viewer lists `rig-merged.yaml` among a run's text
-  files; before, a run's merged rig could only be opened from disk.
+### Fixed
+- `alhazen.analysis.io.viewpixx.fit_clock` refused two good recordings. It
+  dropped late alignment marks and refitted once, and the refit moved the
+  line by a few hundredths of a millisecond, enough to put a mark that was
+  just inside the tolerance just outside it (a run refused at 0.51 ms over
+  0.50, with a residual sd of 0.03 ms and no step or drift); it now drops
+  and refits until the line settles, each pass only adding to the dropped
+  set and the 5% budget still bounding the total. And it refused any two
+  late marks in a row as a clock that moved; a scheduler busy for a moment
+  delays the two or three stamps written in that moment (`fix_acquired` and
+  `stim_on` of one trial, half a second apart, with the next mark back on
+  the line), so a run of up to three late marks is dropped when the line
+  resumes on both sides, and a longer run, an early mark, or a run at either
+  end of the recording is refused as before.
 
 ## 2.16.0 - 2026-10-13
 

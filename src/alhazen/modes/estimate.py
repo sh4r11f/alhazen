@@ -127,7 +127,9 @@ def planned_conditions(schedule: PlannedSchedule) -> dict[str, Any]:
         by_count[n] = by_count.get(n, 0) + 1
     return {
         "conditions": len(cells),
-        "groups": [{"trials": t, "conditions": by_count[t]} for t in sorted(by_count, reverse=True)],
+        "groups": [
+            {"trials": t, "conditions": by_count[t]} for t in sorted(by_count, reverse=True)
+        ],
         "rows": [
             {"label": _condition_label(c), "trials": n} for c, n in cells[:MAX_CONDITION_ROWS]
         ],
@@ -480,7 +482,7 @@ def condition_text(counts: Mapping[str, Any]) -> str:
         return ""
     if counts.get("kind") == "planned":
         groups = per["groups"]
-        if not groups:
+        if not groups or not n:
             return ""
         if len(groups) == 1:
             return f"{_plural(n, 'condition')} × {_plural(groups[0]['trials'], 'trial')}"

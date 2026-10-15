@@ -298,7 +298,8 @@ def drain(source: Any) -> PlannedSchedule:
         # The cell as the inner scheduler holds it, without the block number
         # a BlockPlan stamps on what it serves.
         inner = source._served[1] if isinstance(source, BlockPlan) and source._served else condition
-        cell = cells.setdefault(repr(sorted(inner.params.items(), key=lambda kv: kv[0])), [inner, 0])
+        key = repr(sorted(inner.params.items(), key=lambda kv: kv[0]))
+        cell = cells.setdefault(key, [inner, 0])
         cell[1] += 1
         source.record(condition, TrialResult(outcome=_COMPLETED, record={}))
     return PlannedSchedule(
