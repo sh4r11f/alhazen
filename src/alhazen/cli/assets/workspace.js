@@ -1938,9 +1938,15 @@ function renderEditor() {
       const row = node('div', 'parameter-row');
       // The search box filters rows on this lower-cased dotted path.
       row.dataset.key = path.join('.').toLowerCase();
-      const lab = node('label', '', key.replaceAll('_', ' '));
+      // A Duration's one value ({ms} or {frames}) is labelled by the
+      // duration it is, its unit beside: "fixation hold (ms)", not "ms"
+      // under "fixation_hold".
+      const unit = prefix.length && (key === 'ms' || key === 'frames');
+      const named = unit ? prefix.at(-1) : key;
+      const group = unit ? prefix.slice(0, -1) : prefix;
+      const lab = node('label', '', named.replaceAll('_', ' ') + (unit ? ` (${key})` : ''));
       lab.htmlFor = `param-${number++}`;
-      if (prefix.length) lab.append(node('small', '', prefix.join(' / ')));
+      if (group.length) lab.append(node('small', '', group.join(' / ')));
       const selection = ParameterChoices.describe(parameterSchema, path, value);
       if (selection) {
         if (selection.multiple) {

@@ -238,3 +238,15 @@ test('declared sections from the task schema place the rows', () => {
     ['session', ['fix_window_dva', 'search.n_init']],
   ]);
 });
+
+test('a duration row is labelled by the duration, its unit beside', () => {
+  const app = load();
+  app.run(`parameterSchema = {}; values = {fixation_hold: {ms: 600}, reward: {on_fault: {pulse_ms: 200}},
+    block: {pause: {frames: 3}}}; renderEditor();`);
+  const labels = app.byId('parameter-fields').querySelectorAll('label').map((l) => l.textContent);
+  assert.ok(labels.includes('fixation hold (ms)'), labels.join(' | '));
+  // A nested duration keeps its enclosing groups in small print.
+  assert.ok(labels.includes('pause (frames)block'), labels.join(' | '));
+  // A plain _ms field is not a Duration: its own name stays.
+  assert.ok(labels.includes('pulse msreward / on_fault'), labels.join(' | '));
+});
