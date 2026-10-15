@@ -177,6 +177,11 @@ class LiveMonitorController:
             self.stop()
             raise SessionError(f"live monitor server failed to start: {result['error']}")
         self.url = f"http://127.0.0.1:{result['port']}/?token={self._token}"
+        # Start the gaze channel's feeder thread now, outside any trial: a
+        # multiprocessing queue starts that thread on its first put, and a
+        # thread start is not work for the middle of a trial's frames. An
+        # empty batch adds no sample.
+        self._gaze.put_nowait([])
         if self._auto_open and not webbrowser.open(self.url, new=1):
             log.warning("could not open live monitor browser; open %s", self.url)
         return self.url

@@ -829,9 +829,19 @@ samples stay with the feed and go with the next one. Past 240 waiting samples
 trail, never the newest point, and never holds up a frame. The feed is wired
 only when the session has both a live monitor and an eye tracker.
 
-**Cost.** Measured on a simulated session (`docs` numbers from
-`examples/saccade_to_target`, PsychoPy window under Xvfb paced at 60 Hz,
-automated gaze on every frame, the live monitor page open): GAZE_COST.
+**Cost.** Measured with `examples/saccade_to_target` on a simulated display
+paced at 120 Hz by real sleeps (8.33 ms frames), the automated participant
+giving a new sample every frame, the live monitor open in Chromium, and the
+feed wired on even trials only, so on and off share the same minutes of a
+shared machine's load. Two such sessions of 120 trials: `GazeFeed.note`
+takes 16 to 17 µs per frame at the median, 111 to 147 µs at the 99th
+percentile (1.3 to 1.8 % of a frame) and 1.1 to 1.6 ms at most, against 14
+and 40 to 51 µs for the frame-input record beside it. Leaving out the first
+four trials, whose drops fell on gaze-on and gaze-off trials alike while the
+page loaded, frame intervals were 0 and 1 dropped of 2,940 frames with the
+feed against 0 and 0 of 2,892 without, 99th percentile 8.44 to 8.54 ms
+against 8.41 to 8.47 ms. The live monitor starts the channel's feeder thread
+when it starts, outside any trial.
 
 ### The camera
 
