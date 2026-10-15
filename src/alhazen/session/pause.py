@@ -162,7 +162,7 @@ def key_label(key: str) -> str:
 COMMAND_LABELS = {
     Command.SKIP_TRIAL: "abandon this trial and go to the next",
     Command.PAUSE: "pause",
-    Command.CALIBRATE: "pause and recalibrate the eye tracker",
+    Command.CALIBRATE: "recalibrate the eye tracker (only while paused)",
     Command.QUIT: "end the session (data so far is saved)",
     Command.MANUAL_REWARD: "deliver one reward now",
     Command.PROMOTE_STAGE: "move the subject up a training stage",

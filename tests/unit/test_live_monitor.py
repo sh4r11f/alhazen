@@ -821,10 +821,12 @@ class TestRunnerIntegration:
         # says exactly that rather than "Paused".
         assert any("result unknown" in m for m in paused), paused
 
-    def test_the_in_trial_calibrate_key_reports_its_verdict_too(self, tmp_path: Path):
-        """The C key mid-trial calibrates before the pause begins; the pause
-        notice the browser then shows is the verdict, not the generic
-        "Paused"."""
+    def test_the_in_trial_calibrate_key_is_refused_and_recorded(self, tmp_path: Path, caplog):
+        """The rig's C key during a trial follows the same rule as the page's
+        Calibrate button: calibration runs only while the task is paused. The
+        trial goes on (no pause, no calibration), and the refusal is in the
+        log and in events.csv as OPERATOR_COMMAND from the keyboard. Until
+        2.17 the key paused and calibrated in one press."""
         clock = FakeClock()
         gaze = GazeSample(gx=SCREEN.width_px / 2, gy=SCREEN.height_px / 2, t=0.0)
         tracker = ScriptedTracker([(0.0, gaze)], clock)
@@ -839,11 +841,24 @@ class TestRunnerIntegration:
             **wired(live_monitor),
         )
 
-        harness.runner.run()
+        with caplog.at_level(logging.WARNING, logger="alhazen.session.runner"):
+            harness.runner.run()
 
-        first_pause = next(s["message"] for s in live_monitor.states if s["status"] == "paused")
-        assert "result unknown" in first_pause, first_pause
-        assert [e.name for e in harness.collector.events].count("CALIBRATION") == 1
+        names = [e.name for e in harness.collector.events]
+        assert "PAUSED" not in names
+        assert "CALIBRATION" not in names
+        assert not any(s["status"] == "paused" for s in live_monitor.states)
+        (refused,) = [e for e in harness.collector.events if e.name == "OPERATOR_COMMAND"]
+        assert refused.payload == {
+            "name": "calibrate",
+            "request_id": None,
+            "source": "keyboard",
+            "result": "refused",
+            "note": "Calibrate works only while the task is paused; pause it first",
+        }
+        assert "calibrate key during a trial refused" in caplog.text
+        assert names.count("TRIAL_END") == 1  # one trial, run to its end
+        assert live_monitor.states[-1]["status"] == "complete"
 
     def test_a_click_on_a_rig_without_a_tracker_says_so(self, tmp_path: Path, caplog):
         """The server accepts Validate whether or not a tracker is wired, so

@@ -54,7 +54,7 @@ import numpy as np
 from alhazen.config.models import DEFAULT_MAX_CONSECUTIVE_DROPOUTS, SessionConfig
 from alhazen.config.reward_calibration import load_reward_calibration
 from alhazen.core.clock import Clock
-from alhazen.core.commands import Command, CommandSource
+from alhazen.core.commands import Command, CommandSource, paused_only_refusal
 from alhazen.core.engine import QuitRequested, TrialEngine, TrialResult
 from alhazen.core.events import Event, EventBus
 from alhazen.core.trial import (
@@ -942,11 +942,31 @@ class SessionRunner:
         return True
 
     def on_session_command(self, command: Any) -> None:
-        """Commands the engine handed on. Today: the training stage keys.
+        """Commands the engine handed on: the training stage keys, and the
+        calibrate key pressed during a trial, which is refused.
 
-        Queued rather than applied: this arrives mid-trial, and the
-        transition happens between trials like every other one.
+        Stage keys are queued rather than applied: this arrives mid-trial, and
+        the transition happens between trials like every other one.
         """
+        if command is Command.CALIBRATE:
+            # The rig's C key during a trial. Calibration runs only while the
+            # task is paused (core/commands.py paused_only_refusal), the same
+            # rule as the live monitor's button; the trial goes on. Logged and
+            # recorded like a refused page command, so events.csv says the
+            # key was pressed and why nothing happened.
+            note = paused_only_refusal("Calibrate")
+            log.warning("calibrate key during a trial refused: %s", note)
+            self._emit_session_event(
+                "OPERATOR_COMMAND",
+                {
+                    "name": "calibrate",
+                    "request_id": None,
+                    "source": "keyboard",
+                    "result": "refused",
+                    "note": note,
+                },
+            )
+            return
         if self._training is None:
             log.info("ignoring %s: this session has no curriculum", command)
             return

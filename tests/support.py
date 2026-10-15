@@ -140,6 +140,7 @@ class EngineHarness:
         reward_requests: Any = None,
         clock: FakeClock | None = None,
         on_frame_input: Callable[[int, int, float, InputFrame], None] | None = None,
+        on_session_command: Callable[[Any], None] | None = None,
     ) -> None:
         # Accepting a clock lets a test run the engine on a TickingClock,
         # which moves between reads as a real one does.
@@ -164,6 +165,7 @@ class EngineHarness:
             overlay=overlay,
             reward_requests=reward_requests,
             on_frame_input=on_frame_input,
+            on_session_command=on_session_command,
         )
 
     def ctx(self, trial_index: int = 1, **kwargs: Any) -> TrialContext:

@@ -270,13 +270,7 @@ class PauseController:
                 )
             due = _ValidationDue(self._eyetracker)
         notice = "Paused — browser controls are enabled."
-        if record.get("pause_action") == "calibrate":
-            # The in-trial calibrate key: a pause that arrives with the
-            # procedure already chosen. Its verdict becomes the pause notice,
-            # so the browser says "calibrated …" or "NOT calibrated …" rather
-            # than only that the session is paused.
-            notice = self._apply_pause_action("calibrate")[1] or notice
-        elif fault is not None:
+        if fault is not None:
             notice = f"{fault} — browser controls are enabled."
         elif rest is not None:
             notice = f"{rest.capitalize()} — resume when the subject is ready."

@@ -111,6 +111,14 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   anywhere. A gamma fit still goes beside the rig file: the rig reads it back.
   Reports already in `configs/measurements/` are not moved; move them by hand
   to `data/measurements/` if they should stay with the rest.
+- **The rig keyboard's C during a trial no longer pauses and calibrates.**
+  Calibration runs only while the task is paused, the same rule as the live
+  monitor's Calibrate button (one command path: `MergedCommands` into the
+  engine). The engine hands the key to the runner, which logs the refusal and
+  records an `OPERATOR_COMMAND` with `source: keyboard`, `result: refused` and
+  `request_id: null`; the trial goes on. Pause with P, then C on the pause
+  menu. `TrialEngine` no longer sets the record's `pause_action`, and
+  `PauseController` no longer reads it.
 - The dashboard takes the Split design: an icon rail that widens on hover, the Run
   page as settings on the left and an instrument pane on the right (the launch
   summary before a run, the live monitor during one, media, console and upload

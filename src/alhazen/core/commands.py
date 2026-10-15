@@ -22,7 +22,10 @@ KeyGetter = Callable[[list[str] | None], list[tuple[str, dict[str, bool]]]]
 class Command(Enum):
     SKIP_TRIAL = auto()  # abort this trial, keep the session going
     PAUSE = auto()  # end the trial as PAUSED; runner opens the pause menu
-    CALIBRATE = auto()  # PAUSE + ask the runner to recalibrate before resuming
+    # Recalibrate the eye tracker. Only while paused (the pause menu's C row):
+    # in a trial the engine refuses it with ``paused_only_refusal`` and the
+    # trial goes on, the same rule the live monitor's Calibrate button has.
+    CALIBRATE = auto()
     QUIT = auto()  # end the whole session (data collected so far is saved)
     MANUAL_REWARD = auto()  # deliver a reward now; does not end the trial
     # Training controls. None of these ends the trial: the runner applies
