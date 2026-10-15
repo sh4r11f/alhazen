@@ -83,7 +83,8 @@ describe('loadLiveMonitor', () => {
       assert.ok(live_monitor.byId(id), 'no #' + id);
     }
     const hosts = live_monitor.document.querySelectorAll('[data-controls-host]');
-    assert.deepEqual(hosts.map((host) => host.getAttribute('id')), ['controls']);
+    // The sidebar's, and the one under the Trial view: both filled by renderControls.
+    assert.deepEqual(hosts.map((host) => host.getAttribute('id')), ['controls', 'trial-controls']);
   });
 
   it('refuses to load the live page without a server to answer it', () => {
