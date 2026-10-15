@@ -3230,15 +3230,28 @@ function drawTrialStage() {
   paintGaze();
 }
 
+/** The one sentence under the picture, or ''. A task that defines no picture
+ *  of its stimuli is shown as its gaze windows alone (nothing is guessed from
+ *  the stimuli), and that is said once, so an empty screen is never read as
+ *  one with nothing on it. A window that could not be drawn is named. */
+function trialNote(view) {
+  if (!view) return '';
+  const parts = [];
+  if (view.source === 'regions') {
+    const windows = (view.shapes || []).some((s) => s.role === 'region');
+    parts.push(windows
+      ? 'This task defines no picture of its stimuli, so only its gaze windows are shown.'
+      : 'This task defines no picture of its stimuli, and this trial has no gaze windows to show.');
+  }
+  const undrawn = view.undrawn || [];
+  if (undrawn.length) parts.push('Gaze window not drawn: ' + undrawn.join(', ') + '.');
+  return parts.join(' ');
+}
+
 function drawTrialLegend(view) {
   const legend = byId('trial-legend');
   legend.replaceChildren();
-  /* A stimulus that cannot describe its own outline is not guessed at; it is
-   * named here instead, so an empty spot is never read as an empty screen. */
-  const undrawn = (view && view.undrawn) || [];
-  byId('trial-undrawn').textContent = undrawn.length
-    ? 'Not drawn, no outline available: ' + undrawn.join(', ') + '.'
-    : '';
+  byId('trial-note').textContent = trialNote(view);
   if (!view) return;
   const roles = new Set((view.shapes || []).map((s) => (s.approximate ? 'approx' : s.role)));
   const items = [];

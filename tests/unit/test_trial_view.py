@@ -31,7 +31,7 @@ from alhazen.display.schematic import (
 from alhazen.live_monitor.gaze import GazeFeed
 from alhazen.live_monitor.runtime import LiveMonitorController, _GazeState, _TrialViewState
 from alhazen.task.plan import TrialPlan
-from alhazen.task.schematic import region_shapes, stimulus_shapes, trial_view
+from alhazen.task.schematic import region_shapes, trial_view
 from support import SCREEN, SessionHarness
 
 # ---------------------------------------------------------------------------
@@ -111,10 +111,13 @@ class TestShapes:
 
 
 class _Describes:
-    """A stimulus that describes its own outline, in dva."""
+    """A stimulus with a ``schematic(screen)`` method: the generic hook the
+    first Trial view read. Nothing reads it now (a task's own picture is the
+    only source of stimulus shapes), which these tests pin."""
 
     def __init__(self, shapes):
         self._shapes = shapes
+        self.asked = 0
 
     def update(self, dt: float) -> None:
         pass
@@ -123,15 +126,8 @@ class _Describes:
         pass
 
     def schematic(self, screen):
+        self.asked += 1
         return self._shapes
-
-
-class _Silent:
-    def update(self, dt: float) -> None:
-        pass
-
-    def draw(self) -> None:
-        pass
 
 
 class TestDefaultSchematic:
@@ -165,10 +161,9 @@ class TestDefaultSchematic:
         with pytest.raises(ValueError, match="region 'bad' cannot be drawn"):
             region_shapes({"bad": CircleRegion((math.nan, 0.0), 10.0)}, SCREEN)
 
-    def test_the_default_picture_names_a_region_it_cannot_draw_and_goes_on(self, caplog):
+    def test_the_regions_only_picture_names_a_region_it_cannot_draw_and_goes_on(self, caplog):
         view = trial_view(
             schematic=None,
-            stimuli={},
             regions={
                 "bad": CircleRegion((math.nan, 0.0), 10.0),
                 "ok": CircleRegion((0.0, 0.0), 40.0),
@@ -183,27 +178,9 @@ class TestDefaultSchematic:
         assert view["undrawn"] == ["bad (window: circle center x must be finite, got nan)"]
         assert "region 'bad' cannot be drawn" in caplog.text
 
-    def test_only_a_stimulus_that_describes_itself_is_drawn_the_rest_are_named(self):
-        shapes, undrawn = stimulus_shapes(
-            {
-                "fixation": _Describes([Circle((0, 0), 0.15)]),
-                "cylinder": _Silent(),
-                "named": _Describes([Circle((1, 0), 0.2, name="own name")]),
-            },
-            SCREEN,
-        )
-        # Unnamed shapes take their stimulus's key; a shape's own name stays.
-        assert [s.name for s in shapes] == ["fixation", "own name"]
-        assert undrawn == ("cylinder",)
-
-    def test_a_malformed_self_description_is_a_bug_raised_at_the_trial(self):
-        with pytest.raises(ValueError, match="stimulus 'broken' schematic"):
-            stimulus_shapes({"broken": _Describes(["not a shape"])}, SCREEN)
-
-    def test_the_payload_carries_screen_size_condition_and_source(self):
+    def test_without_a_task_picture_only_the_regions_are_drawn(self):
         view = trial_view(
             schematic=None,
-            stimuli={"fixation": _Describes([Circle((0, 0), 0.15)]), "figure": _Silent()},
             regions={"fixation": CircleRegion((0.0, 0.0), 80.0)},
             screen=SCREEN,
             trial_index=3,
@@ -212,18 +189,58 @@ class TestDefaultSchematic:
             t=12.5,
         )
         assert view["screen"] == {"width_dva": 48.0, "height_dva": 27.0}
-        assert view["source"] == "default"
-        assert [s["role"] for s in view["shapes"]] == ["stimulus", "region"]
-        assert view["undrawn"] == ["figure"]
+        assert view["source"] == "regions"
+        assert [(s["role"], s["name"]) for s in view["shapes"]] == [("region", "fixation")]
+        # Nothing is said about the stimuli: no list of what was not drawn.
+        assert view["undrawn"] == []
         assert view["condition"] == {"side": "left", "contrast": 0.5, "odd": "(1, 2)"}
         assert (view["trial_index"], view["attempt"], view["t"]) == (3, 2, 12.5)
         json.dumps(view, allow_nan=False)
 
-    def test_a_task_schematic_replaces_the_default_whole(self):
-        own = (Rect((0, 0), (10, 4), name="occluder"),)
+    def test_no_task_picture_and_no_regions_is_an_empty_picture(self):
+        view = trial_view(
+            schematic=None,
+            regions={},
+            screen=SCREEN,
+            trial_index=1,
+            attempt=1,
+            condition={},
+            t=0.0,
+        )
+        assert (view["source"], view["shapes"], view["undrawn"]) == ("regions", [], [])
+
+    def test_a_stimulus_describing_itself_is_not_drawn(self, tmp_path: Path):
+        """The generic stimulus-outline fallback is gone: a stimulus's own
+        ``schematic()`` is never asked, in the payload or in a session."""
+        stimulus = _Describes([Circle((0, 0), 0.15)])
+        monitor = _RecordingMonitor()
+
+        def build(setup):
+            from support import COMPLETED, RunForFrames
+
+            return TrialPlan(
+                phases=[RunForFrames(2, COMPLETED, emit_on_enter="FIX_ON")],
+                stimuli={"fixation": stimulus},
+                regions={"fixation": CircleRegion((0.0, 0.0), 80.0)},
+            )
+
+        harness = SessionHarness(
+            tmp_path,
+            n_trials=1,
+            build_trial=build,
+            live_monitor=monitor,
+            on_pause=lambda m: "resume",
+        )
+        harness.runner.run()
+        (view,) = monitor.trial_views
+        assert view["source"] == "regions"
+        assert all(s["role"] == "region" for s in view["shapes"])
+        assert stimulus.asked == 0
+
+    def test_a_task_picture_is_drawn_as_given_with_the_regions_added(self):
+        own = (Rect((0, 0), (10, 4), name="occluder"), Dots([(1, 1), (2, 2)], 0.1, name="dots"))
         view = trial_view(
             schematic=own,
-            stimuli={"figure": _Silent()},
             regions={"fixation": CircleRegion((0.0, 0.0), 80.0)},
             screen=SCREEN,
             trial_index=1,
@@ -232,22 +249,52 @@ class TestDefaultSchematic:
             t=0.0,
         )
         assert view["source"] == "task"
-        assert [s["name"] for s in view["shapes"]] == ["occluder"]
+        # The task's shapes exactly, in its order, then the windows.
+        assert view["shapes"][:2] == [shape.payload() for shape in own]
+        assert [(s["role"], s["name"]) for s in view["shapes"][2:]] == [("region", "fixation")]
         assert view["undrawn"] == []
 
-    def test_the_fixation_point_describes_its_exact_outline(self):
-        from alhazen.stimuli.fixation import FixationPoint
+    def test_a_task_picture_that_draws_its_windows_gets_exactly_what_it_drew(self):
+        own = (
+            Rect((0, 0), (10, 4), name="occluder"),
+            Circle((5, 0), 1.0, name="target", role="region"),
+        )
+        view = trial_view(
+            schematic=own,
+            regions={
+                "fixation": CircleRegion((0.0, 0.0), 80.0),
+                "target": CircleRegion((200.0, 0.0), 40.0),
+            },
+            screen=SCREEN,
+            trial_index=1,
+            attempt=1,
+            condition={},
+            t=0.0,
+        )
+        assert view["shapes"] == [shape.payload() for shape in own]
+        assert view["undrawn"] == []
 
-        point = FixationPoint.__new__(FixationPoint)  # no window: only geometry is read
-        point._pos = (80.0, -40.0)
-        point._radius_px = 6.0
-        (circle,) = point.schematic(SCREEN)
-        assert circle.payload() == {
-            "kind": "circle",
-            "role": "stimulus",
-            "center": [2.0, -1.0],
-            "radius": 0.15,
-        }
+    def test_region_shapes_in_a_task_picture_match_what_alhazen_would_add(self):
+        regions = {"fixation": CircleRegion((40.0, -80.0), 80.0)}
+        added = trial_view(
+            schematic=(Rect((0, 0), (1, 1)),),
+            regions=regions,
+            screen=SCREEN,
+            trial_index=1,
+            attempt=1,
+            condition={},
+            t=0.0,
+        )["shapes"][1:]
+        own = trial_view(
+            schematic=(Rect((0, 0), (1, 1)), *region_shapes(regions, SCREEN)),
+            regions=regions,
+            screen=SCREEN,
+            trial_index=1,
+            attempt=1,
+            condition={},
+            t=0.0,
+        )["shapes"][1:]
+        assert added == own
 
 
 # ---------------------------------------------------------------------------

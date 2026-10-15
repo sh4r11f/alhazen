@@ -812,7 +812,13 @@ role, at most 5000 points per schematic — and raises `ValueError` naming the
 field, so a malformed picture fails at `build_trial` on trial one.
 
 **Where the picture comes from.** A task can hand over its own, exact picture
-as `TrialPlan.schematic`; it replaces the default whole:
+as `TrialPlan.schematic`, and the page draws exactly those shapes. The plan's
+regions (the windows the phases judge gaze against) are added as dashed
+outlines, converted from centred px with the session's own `Screen`, unless
+the task's picture already carries a shape with role `region`: a task that
+draws its windows itself, with `region_shapes` or its own shapes, gets exactly
+what it drew and nothing is added. The windows are drawn over the stimuli, so
+a dashed outline is never hidden under a filled disc.
 
 ```python
 from alhazen.display.schematic import Circle, Dots, Rect
@@ -829,21 +835,22 @@ def build_trial(self, setup):
             Dots(dot_positions_dva, radius=0.1, name="cylinder"),
             Rect((0.0, 0.0), (26.0, 14.0), name="aperture", role="annotation"),
             Circle((0.0, 0.0), 0.15, name="fixation"),
-            *region_shapes(regions, setup.screen),  # the default's window outlines
+            *region_shapes(regions, setup.screen),  # the windows, drawn by the task
         ],
     )
 ```
 
-Without one, the session draws a default: every stimulus that describes its
-own outline — an optional `schematic(screen)` method returning shapes in dva,
-as alhazen's `FixationPoint` has — then every region of the plan as a dashed
-outline, converted from centred px with the session's own `Screen` (exact:
-the same window the phases judge against). A stimulus with no `schematic()`
-is not guessed at. A renderer's own attributes do not say where its ink is (a
-PsychoPy `ShapeStim`'s `size` is a scale factor, not a size), and a confident
-outline in the wrong place is worse than none. It is simply not drawn. The
-picture is the trial as it starts: a stimulus that moves is drawn where it
-begins, unless its task says otherwise.
+Without one, the page shows **only the regions**, nothing derived from the
+stimuli, and says once: *This task defines no picture of its stimuli, so only
+its gaze windows are shown.* A renderer's own attributes do not say where its
+ink is (a PsychoPy `ShapeStim`'s `size` is a scale factor, not a size), and a
+confident outline in the wrong place is worse than none, so no stimulus is
+guessed at, not even alhazen's own. A region the session cannot draw (a
+non-finite centre, a zero radius) is named under the picture, with why, and
+in the log, rather than ending the session over a picture; inside a task's
+own picture `region_shapes` raises instead, because there it is the task's
+bug. The picture is the trial as it starts: a stimulus that moves is drawn
+where it begins, unless its task says otherwise.
 
 It is computed between trials, from the plan, before the first frame
 (`SessionRunner._publish_trial_view`), and travels as one small JSON on its own
@@ -945,14 +952,18 @@ after `seq` (header `X-Trial-Seq`), or 204 when none came within the wait:
 ```json
 {"trial_index": 12, "attempt": 1, "t": 812.4,
  "screen": {"width_dva": 30.0, "height_dva": 16.9},
- "source": "default",
+ "source": "regions",
  "shapes": [{"kind": "circle", "role": "region", "name": "fixation",
              "center": [0.0, 0.0], "radius": 2.0}],
- "undrawn": ["cylinder"],
+ "undrawn": [],
  "condition": {"side": "left"},
  "gaze": true,
  "camera": {"live": false, "has_frames": false, "reason": "…"}}
 ```
+
+`source` is `task` when the task supplied `TrialPlan.schematic` and `regions`
+when it did not; `undrawn` names a region the session could not draw, with
+why (empty otherwise).
 
 `GET /api/gaze?token=…&after=<seq>&wait_ms=…` answers the samples numbered
 after `seq`, `[trial_index, t, x_dva, y_dva]` with `null` x and y for a gap,

@@ -25,20 +25,21 @@ const pending = () => new Promise(() => {});
  * comparison compares contents and not which realm built the array. */
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
-/* A 40 × 30 dva screen with a fixation point, its window and a target window. */
+/* A task's own picture on a 40 × 30 dva screen: a fixation point, its window,
+ * a target window and an approximate bar. */
 const VIEW = {
   trial_index: 4,
   attempt: 2,
   t: 100,
   screen: { width_dva: 40, height_dva: 30 },
-  source: 'default',
+  source: 'task',
   shapes: [
     { kind: 'circle', role: 'stimulus', name: 'fixation', center: [0, 0], radius: 0.25 },
     { kind: 'circle', role: 'region', name: 'fixation', center: [0, 0], radius: 2 },
     { kind: 'circle', role: 'region', name: 'target', center: [10, -5], radius: 3 },
     { kind: 'rect', role: 'stimulus', name: 'bar', center: [-10, 5], size: [4, 2], angle_deg: 90, approximate: true },
   ],
-  undrawn: ['cylinder'],
+  undrawn: [],
   condition: { side: 'right', contrast: 0.5, hemifield: -1 },
   gaze: true,
   camera: { live: false, has_frames: false, reason: 'The mouse stand-in for an eye tracker has no camera.' },
@@ -144,14 +145,39 @@ describe('the trial picture', () => {
     assert.ok(Math.abs(Math.max(...ys) - Math.min(...ys) - 4 * fit.scale) < 1e-6);
   });
 
-  it('says what the trial is, keys the picture, and names what it could not draw', () => {
+  it('says what the trial is and keys the picture; a task picture needs no note', () => {
     const live_monitor = drawn(VIEW);
     assert.equal(live_monitor.byId('trial-title').textContent, 'Trial 4');
     assert.equal(live_monitor.byId('trial-meta').textContent, 'attempt 2 · side right · contrast 0.5 · hemifield −1');
     const legend = live_monitor.byId('trial-legend').children.map((item) => item.textContent);
     assert.deepEqual(legend, ['Gaze', 'Trail', 'Stimulus', 'Gaze window', 'Approximate outline']);
-    assert.equal(live_monitor.byId('trial-undrawn').textContent,
-      'Not drawn, no outline available: cylinder.');
+    assert.equal(live_monitor.byId('trial-note').textContent, '');
+  });
+
+  it('a task with no picture shows its gaze windows alone and says so once', () => {
+    const regionsOnly = {
+      ...VIEW,
+      source: 'regions',
+      shapes: VIEW.shapes.filter((shape) => shape.role === 'region'),
+    };
+    const live_monitor = drawn(regionsOnly);
+    const stage = live_monitor.byId('trial-stage');
+    assert.equal(stage.querySelectorAll('.trial-shape.role-region').length, 2);
+    assert.equal(stage.querySelectorAll('.trial-shape.role-stimulus').length, 0);
+    const legend = live_monitor.byId('trial-legend').children.map((item) => item.textContent);
+    assert.deepEqual(legend, ['Gaze', 'Trail', 'Gaze window']);
+    assert.equal(live_monitor.byId('trial-note').textContent,
+      'This task defines no picture of its stimuli, so only its gaze windows are shown.');
+  });
+
+  it('a regions-only trial with no windows, and a window that could not be drawn, say so', () => {
+    const empty = drawn({ ...VIEW, source: 'regions', shapes: [] });
+    assert.equal(empty.byId('trial-note').textContent,
+      'This task defines no picture of its stimuli, and this trial has no gaze windows to show.');
+    const bad = drawn({ ...VIEW, source: 'regions', shapes: VIEW.shapes.slice(1, 2), undrawn: ['target (window: radius must be positive)'] });
+    assert.equal(bad.byId('trial-note').textContent,
+      'This task defines no picture of its stimuli, so only its gaze windows are shown. ' +
+      'Gaze window not drawn: target (window: radius must be positive).');
   });
 
   it('draws the trail and the current gaze over the picture', () => {

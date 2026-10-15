@@ -1,23 +1,20 @@
 """The picture of one trial that the live monitor's Trial view draws.
 
-At the start of every trial the session publishes what the subject's screen
-holds, in dva (alhazen.display.schematic): the stimuli, and the regions a gaze
-is judged against. The page draws the eye's position over it, live.
+At the start of every trial the session publishes a picture of the trial in
+dva (alhazen.display.schematic), and the page draws the eye's position over
+it, live. Where the picture comes from:
 
-Where that picture comes from, in order:
-
-1. ``TrialPlan.schematic``, when the task supplies one. The task knows its
-   stimuli exactly — a dot field, an occluder, a path — and its picture
-   replaces the default whole. ``region_shapes`` builds the default's region
-   outlines, for a task that wants them in its own picture.
-2. Otherwise, the default: every stimulus that can describe its own outline
-   (an optional ``schematic(screen)`` method, as alhazen's ``FixationPoint``
-   has), then every region of the plan as an outline. A stimulus with no such
-   method is NOT guessed at: its name is listed as undrawn, and the page says
-   so. Reading a renderer's private attributes would draw a confident outline
-   in the wrong place for every stimulus whose size does not mean what its
-   attribute name suggests (a PsychoPy ShapeStim's ``size`` is a scale, not a
-   size).
+1. ``TrialPlan.schematic``, when the task supplies one: the task knows its
+   stimuli exactly (a dot field, an occluder, a path), and its shapes are
+   drawn as given. The plan's regions, the windows gaze is judged against,
+   are added as outlines unless the task's picture already carries a shape
+   with role ``"region"``: a task that draws its windows itself
+   (``region_shapes``) gets exactly what it drew.
+2. Otherwise, only the regions. Nothing is derived from the stimuli: a
+   generic outline guessed from a renderer's attributes would be a confident
+   picture of the wrong thing (a PsychoPy ShapeStim's ``size`` is a scale,
+   not a size), so a task that supplies no picture is shown as its gaze
+   windows alone, and the page says so once.
 
 Everything is computed between trials, from the plan, before the trial's
 first frame — never inside the frame loop.
@@ -25,13 +22,12 @@ first frame — never inside the frame loop.
 
 from __future__ import annotations
 
-import dataclasses
 import logging
 from collections.abc import Mapping
 from typing import Any
 
 from alhazen.core.trial import CircleRegion
-from alhazen.display.schematic import Circle, Shape, check_shapes
+from alhazen.display.schematic import Circle, Shape
 from alhazen.display.screen import Screen
 
 log = logging.getLogger(__name__)
@@ -61,31 +57,6 @@ def _region_shape(name: str, region: CircleRegion, screen: Screen) -> Circle:
         raise ValueError(f"region {name!r} cannot be drawn: {e}") from e
 
 
-def stimulus_shapes(
-    stimuli: Mapping[str, Any], screen: Screen
-) -> tuple[tuple[Shape, ...], tuple[str, ...]]:
-    """(shapes, undrawn): every stimulus that describes its own outline, named
-    by its key, and the keys of those that do not.
-
-    A stimulus describes itself through an optional ``schematic(screen)``
-    method returning shapes in dva. What it returns is checked like a task's
-    schematic: a malformed outline is a bug in that stimulus, raised here.
-    """
-    shapes: list[Shape] = []
-    undrawn: list[str] = []
-    for name, stimulus in stimuli.items():
-        describe = getattr(stimulus, "schematic", None)
-        if not callable(describe):
-            undrawn.append(str(name))
-            continue
-        own = check_shapes(describe(screen), f"stimulus {name!r} schematic()")
-        shapes.extend(
-            dataclasses.replace(shape, name=str(name)[:80]) if shape.name is None else shape
-            for shape in own
-        )
-    return tuple(shapes), tuple(undrawn)
-
-
 def _json_value(value: object) -> object:
     """A condition value as the page can print it."""
     if value is None or isinstance(value, (bool, int, float, str)):
@@ -96,7 +67,6 @@ def _json_value(value: object) -> object:
 def trial_view(
     *,
     schematic: tuple[Shape, ...] | None,
-    stimuli: Mapping[str, Any],
     regions: Mapping[str, CircleRegion],
     screen: Screen,
     trial_index: int,
@@ -106,27 +76,27 @@ def trial_view(
 ) -> dict[str, Any]:
     """The Trial view's payload for one trial: its picture and what it is.
 
-    ``t`` is the session time it was built at, which is how the page says how
-    old the last camera frame is.
+    ``source`` is ``"task"`` when the task supplied the picture and
+    ``"regions"`` when it did not (the page then says that only the gaze
+    windows are shown). ``undrawn`` names a region that could not be drawn,
+    with why: the regions alhazen adds are the session's picture, not the
+    task's, so a bad one is named on the page and in the log rather than
+    ending the session over a picture. ``t`` is the session time it was built
+    at, which is how the page says how old the last camera frame is.
     """
-    if schematic is not None:
-        shapes: tuple[Shape, ...] = schematic
-        undrawn: tuple[str, ...] = ()
-        source = "task"
-    else:
-        drawn, undrawn = stimulus_shapes(stimuli, screen)
-        outlines: list[Shape] = []
+    own: tuple[Shape, ...] = schematic if schematic is not None else ()
+    windows: list[Shape] = []
+    undrawn: list[str] = []
+    if not any(shape.role == "region" for shape in own):
         for name, region in regions.items():
             try:
-                outlines.append(_region_shape(name, region, screen))
+                windows.append(_region_shape(name, region, screen))
             except ValueError as e:
-                # The default picture is the session's, not the task's: a
-                # region it cannot draw is named on the page, with why, and
-                # in the log, rather than ending the session over a picture.
                 log.warning("trial view: %s", e)
-                undrawn += (f"{name} (window: {e.__cause__})",)
-        shapes = drawn + tuple(outlines)
-        source = "default"
+                undrawn.append(f"{name} (window: {e.__cause__})")
+    # Windows over the task's shapes: the page draws in list order, and a
+    # window is a dashed outline that must stay visible on a filled stimulus.
+    shapes = own + tuple(windows)
     return {
         "trial_index": trial_index,
         "attempt": attempt,
@@ -135,8 +105,8 @@ def trial_view(
             "width_dva": screen.px2deg(screen.width_px),
             "height_dva": screen.px2deg(screen.height_px),
         },
-        "source": source,
+        "source": "task" if schematic is not None else "regions",
         "shapes": [shape.payload() for shape in shapes],
-        "undrawn": list(undrawn),
+        "undrawn": undrawn,
         "condition": {str(k): _json_value(v) for k, v in condition.items()},
     }

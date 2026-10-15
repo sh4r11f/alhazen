@@ -88,9 +88,10 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   restarts each trial, beside a camera box that shows the last real frame from
   a pause or calibration with its age, or the tracker's reason there is none.
   `TrialPlan.schematic` lets a task supply its exact picture in the new shape
-  vocabulary (`alhazen.display.schematic`); without one the regions and any
-  stimulus with a `schematic(screen)` method are drawn (`FixationPoint` has
-  one). The gaze travels at up to 60 Hz on its own non-blocking channel
+  vocabulary (`alhazen.display.schematic`), drawn exactly as given, with the
+  plan's regions added unless the picture carries region shapes itself;
+  without one only the regions (gaze windows) are drawn, nothing derived from
+  the stimuli, and the page says so once. The gaze travels at up to 60 Hz on its own non-blocking channel
   (`/api/gaze`), the picture once per trial (`/api/trial`). Every eye-tracker
   backend states why it gives no camera image during a trial
   (`camera_while_recording`). docs/live_monitor.md, "Trial view".

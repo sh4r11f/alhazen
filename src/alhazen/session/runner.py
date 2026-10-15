@@ -897,7 +897,6 @@ class SessionRunner:
             return
         view = trial_view(
             schematic=tuple(plan.schematic) if plan.schematic is not None else None,
-            stimuli=plan.stimuli,
             regions=plan.regions,
             screen=self._screen,
             trial_index=self._trial_index,

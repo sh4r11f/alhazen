@@ -49,10 +49,12 @@ class TrialPlan:
     from this, so trial records stay uniform across experiments.
 
     ``schematic`` is optional: the trial's picture for the live monitor's
-    Trial view, as shapes in dva (alhazen.display.schematic). Left None, the
-    session draws the regions and every stimulus that can describe its own
-    outline (task/schematic.py). Checked here, so a malformed one fails at
-    ``build_trial`` rather than as a blank picture."""
+    Trial view, as shapes in dva (alhazen.display.schematic), drawn exactly
+    as given; the plan's regions are added as outlines unless the picture
+    carries a shape with role "region" itself. Left None, the session draws
+    only the regions, nothing derived from the stimuli (task/schematic.py).
+    Checked here, so a malformed one fails at ``build_trial`` rather than as
+    a blank picture."""
 
     phases: list[Any]
     stimuli: dict[str, Any] = field(default_factory=dict)
