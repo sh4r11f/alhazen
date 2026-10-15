@@ -88,6 +88,7 @@ from alhazen.paradigms.base import Condition, TrialSource
 from alhazen.session.database import ExperimentDatabase, FrameInputBuffer
 from alhazen.session.eyetracker import PROCEDURE_STATUS, EyeTrackerMonitor, eye_markers
 from alhazen.session.identity import RunIdentity, record_reward_delivered, write_run_identity
+from alhazen.session.operator_commands import Capabilities, OperatorCommands
 from alhazen.session.pause import PauseMenu
 from alhazen.session.pause_control import PauseController
 from alhazen.session.recorder import DataRecorder
@@ -215,6 +216,7 @@ class SessionRunner:
         identity: RunIdentity | None = None,
         recording: RecordingSystem | None = None,
         startup_calibration: StartupCalibration | None = None,
+        operator_commands: OperatorCommands | None = None,
     ) -> None:
         # What the run records about how it was set up: the experiment and
         # version its data is filed under, the mode, the files it started
@@ -363,6 +365,26 @@ class SessionRunner:
         self._frame_inputs = frame_inputs or FrameInputBuffer()
         self._live_monitor = live_monitor
         self._live_monitor_spec = live_monitor_spec or LiveMonitorSpec()
+        # [workstream B] The live monitor's buttons as the session reads them
+        # (session/operator_commands.py): the builder makes one and hands the
+        # same object to the engine's command source, so a click taken during
+        # a trial and one taken while paused are acknowledged in one record.
+        # A runner given a live monitor and none (a test's) makes its own,
+        # which then serves the pauses only.
+        if live_monitor is not None and operator_commands is None:
+            operator_commands = OperatorCommands(live_monitor)
+        self._operator = operator_commands
+        if operator_commands is not None:
+            operator_commands.bind(
+                emit=self._emit_session_event,
+                capabilities=Capabilities(
+                    tracker=eyetracker is not None,
+                    reward=manual_reward is not None,
+                    training=training is not None,
+                    attended=on_pause is not None,
+                ),
+                clock=clock,
+            )
         # The live spike stream and the analysis consuming it. The runner
         # owns their *lifecycle* only — the analysis is driven between
         # trials, and both are released in teardown — exactly as it owns the
@@ -403,6 +425,7 @@ class SessionRunner:
             last_message=lambda: self._live_monitor_message,
             emit_session_event=self._emit_session_event,
             on_session_command=self.on_session_command,
+            operator=self._operator,
         )
         self._live_monitor_revision = 0
         self._live_monitor_message: str | None = None
@@ -1150,6 +1173,8 @@ class SessionRunner:
             # teardown, and a broken view of the data must not end the
             # recording of it.
             on_invalid_panel=self._report_invalid_panel,
+            controls=self._operator.controls(status) if self._operator is not None else None,
+            commands=self._operator.recent() if self._operator is not None else (),
         )
         self._live_monitor_message = message
         self._live_monitor.publish(state)

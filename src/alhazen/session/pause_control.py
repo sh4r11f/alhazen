@@ -49,8 +49,9 @@ from alhazen.core.commands import Command, CommandSource
 from alhazen.devices.eyetracker.procedures import Advance, ValidationResult
 from alhazen.display.backend import DisplayBackend
 from alhazen.errors import RewardUncertainError
-from alhazen.live_monitor.runtime import LiveMonitorController
+from alhazen.live_monitor.runtime import LiveMonitorCommand, LiveMonitorController
 from alhazen.session.eyetracker import EyeTrackerMonitor
+from alhazen.session.operator_commands import OperatorCommands, Result
 from alhazen.session.pause import PauseMenu, build_pause_menu
 
 # The runner's logger, not this module's: these lines were always the
@@ -70,7 +71,7 @@ PAUSE_STAGE_COMMANDS = {
 
 # The pause-menu actions that are eye-tracker procedures, run through the
 # session's EyeTrackerMonitor. Same names as the menu rows (session/pause.py)
-# and the live monitor's buttons (live monitor/runtime.py _ALLOWED_COMMANDS).
+# and the live monitor's buttons (live_monitor/controls.py STATUS_COMMANDS).
 PROCEDURE_ACTIONS = ("calibrate", "validate", "drift_correct")
 
 # While a session is paused, how often the live monitor is republished so a
@@ -157,13 +158,19 @@ class PauseController:
         last_message: Callable[[], str | None],
         emit_session_event: Callable[[str, dict[str, Any]], None],
         on_session_command: Callable[[Command], None],
+        operator: OperatorCommands | None = None,
     ) -> None:
         """``on_pause`` is the blocking keyboard strategy, None for an
         unattended run. ``rest_resume_after_s`` is how long a rest waits for
         somebody before it resumes by itself (SessionRunner validates it).
         ``publish(status, message)`` is the runner's live monitor publisher and
         ``last_message()`` the line it published last; ``emit_session_event``
-        and ``on_session_command`` are the runner's own."""
+        and ``on_session_command`` are the runner's own. ``operator`` is the
+        live monitor's command queue as the session reads it, and must be
+        given with ``live_monitor``: every browser command a pause takes is
+        acknowledged through it."""
+        if live_monitor is not None and operator is None:
+            raise ValueError("a live monitor's pauses need its OperatorCommands to read clicks")
         self._display = display
         self._clock = clock
         self._commands = commands
@@ -179,6 +186,7 @@ class PauseController:
         self._last_message = last_message
         self._emit_session_event = emit_session_event
         self._on_session_command = on_session_command
+        self._operator = operator
 
     def _pause_menu(
         self,
@@ -267,7 +275,7 @@ class PauseController:
             # procedure already chosen. Its verdict becomes the pause notice,
             # so the browser says "calibrated …" or "NOT calibrated …" rather
             # than only that the session is paused.
-            notice = self._apply_pause_action("calibrate") or notice
+            notice = self._apply_pause_action("calibrate")[1] or notice
         elif fault is not None:
             notice = f"{fault} — browser controls are enabled."
         elif rest is not None:
@@ -423,23 +431,35 @@ class PauseController:
         unattended = self._on_pause is None or self._rest_resume_after_s is not None
         return self._run_procedure("validate", advance="auto" if unattended else None)
 
-    def _apply_pause_action(self, action: str) -> str | None:
-        """One non-terminal menu choice; returns the line the live monitor shows
-        for it, or None when the action published its own.
+    def _apply_pause_action(self, action: str) -> tuple[Result, str | None, str]:
+        """One non-terminal menu choice: (what became of it, the line the live
+        monitor shows for it or None when the action published its own, the
+        note its acknowledgement carries).
 
         Anything unrecognised is logged rather than ignored: a key that
         silently does nothing is the fault this menu exists to prevent.
         """
         if action in PROCEDURE_ACTIONS:
-            return self._run_procedure(action)
+            if self._eyetracker is None:
+                line = self._run_procedure(action)  # logs and says so
+                return "refused", line, line
+            line = self._run_procedure(action)
+            return "applied", line, line
         if action == "manual_reward":
-            self._manual_reward_while_paused()
-            return None  # publishes its own outcome, which is more specific
+            # Publishes its own outcome, which is more specific.
+            result, note = self._manual_reward_while_paused()
+            return result, None, note
         if action in PAUSE_STAGE_COMMANDS:
+            if not self._has_training:
+                self._on_session_command(PAUSE_STAGE_COMMANDS[action])  # logs it
+                note = "this session runs no curriculum"
+                return "refused", note, note
             self._on_session_command(PAUSE_STAGE_COMMANDS[action])
-            return f"{action.replace('_', ' ')} requested."
+            line = f"{action.replace('_', ' ')} requested."
+            return "applied", line, line
         log.warning("unhandled pause action %r", action)
-        return f"unhandled action {action!r}."
+        line = f"unhandled action {action!r}."
+        return "refused", line, line
 
     def _run_procedure(self, action: str, advance: Advance | None = None) -> str:
         """One eye-tracker procedure from the pause menu, and its one-line
@@ -592,14 +612,15 @@ class PauseController:
         put it back after replacing it. `due` is the validation the pause's
         resume owes, if any (see `handle`).
         """
-        assert self._live_monitor is not None
-        live_monitor = self._live_monitor
+        assert self._live_monitor is not None and self._operator is not None
+        operator = self._operator
         # Drain and discard whatever is already queued. A command accepted in
         # the milliseconds between the browser seeing "paused" and the runner
         # resuming would otherwise sit in the queue and fire at the NEXT
         # pause — a reward delivered, or a session quit, minutes after the
-        # click that asked for it and with nobody expecting it.
-        stale = live_monitor.poll_commands()
+        # click that asked for it and with nobody expecting it. Each is
+        # acknowledged as discarded, so the page that sent it says so.
+        stale = operator.discard_pending("queued before this pause began; not acted on")
         if stale:
             log.info("discarding %d command(s) queued before this pause", len(stale))
         # The menu goes on the subject display here too. It did not used to,
@@ -629,9 +650,13 @@ class PauseController:
                 for setting_line in monitor.service_live_monitor():
                     self._publish("paused", setting_line)
                     published_at = self._clock.now()
-            actions = [command.name for command in live_monitor.poll_commands()]
+            # Each action with the browser command that asked for it (None
+            # for a key at the rig), so the browser's gets its acknowledgement.
+            actions: list[tuple[str, LiveMonitorCommand | None]] = [
+                (command.name, command) for command in operator.take_for_pause()
+            ]
             actions += [
-                action
+                (action, None)
                 for key in self._commands.poll_raw_keys()
                 if (action := menu.action_for_key(key)) is not None
             ]
@@ -644,11 +669,17 @@ class PauseController:
                     menu = self._pause_menu(fault=fault, rest=rest, due=due)
                 elif self._clock.now() >= deadline:
                     return self._resumed_by_itself(resume_after_s or 0.0, due)
-            for index, action in enumerate(actions):
+            for index, (action, sent) in enumerate(actions):
                 if action == "resume" and not _owes_validation(due):
+                    if sent is not None:
+                        operator.acknowledge(sent, "applied", "resumed")
                     self._publish("running", "Resumed.")
                     return self._resumed()
                 if action == "quit":
+                    if sent is not None:
+                        operator.acknowledge(
+                            sent, "applied", "the session ends; the data so far is saved"
+                        )
                     self._publish("stopping", "Quit requested.")
                     return False
                 # The procedure this action runs, if any: its own name, or,
@@ -660,11 +691,17 @@ class PauseController:
                     assert due is not None  # owed implies a pause that asked for one
                     message = self._validate_before_resuming()
                     if due.passed:
+                        if sent is not None:
+                            operator.acknowledge(sent, "applied", f"{message} — resumed")
                         self._publish("running", f"{message} — resumed.")
                         return self._resumed()
+                    if sent is not None:
+                        operator.acknowledge(sent, "applied", f"{message} — still paused")
                     procedure = "validate"
                 else:
-                    message = self._apply_pause_action(action)
+                    result, message, note = self._apply_pause_action(action)
+                    if sent is not None:
+                        operator.acknowledge(sent, result, note)
                 # Every non-terminal action redraws the menu, because
                 # _apply_pause_action may have put a calibration screen over
                 # it, and a menu that vanishes after one keypress looks like
@@ -687,7 +724,14 @@ class PauseController:
                     # walk. Discard it, and the rest of this batch, before the
                     # buttons come back; the keys a walk polls are already
                     # consumed by the walk itself.
-                    dropped = actions[index + 1 :] + [c.name for c in live_monitor.poll_commands()]
+                    note = f"arrived while {procedure.replace('_', ' ')} ran; not acted on"
+                    rest_of_batch = actions[index + 1 :]
+                    operator.discard(
+                        [command for _, command in rest_of_batch if command is not None], note
+                    )
+                    dropped = [name for name, _ in rest_of_batch] + [
+                        command.name for command in operator.discard_pending(note)
+                    ]
                     # A second Resume in a double-click lands here too, when
                     # the validation the first one ran did not pass: it must
                     # not resume on that result before anyone has read it.
@@ -710,10 +754,12 @@ class PauseController:
                 published_at = self._clock.now()
             self._wait(0.01)
 
-    def _manual_reward_while_paused(self) -> None:
+    def _manual_reward_while_paused(self) -> tuple[Result, str]:
+        """The R row: deliver one reward, publish the outcome, and return it
+        as (result, note) for the acknowledgement of a browser click."""
         if self._manual_reward is None:
             self._publish("paused", "No reward device is configured.")
-            return
+            return "refused", "this session has no reward line"
         try:
             self._manual_reward()
         except Exception as e:
@@ -723,6 +769,7 @@ class PauseController:
                 {"manual": True, "error": str(e), "uncertain": isinstance(e, RewardUncertainError)},
             )
             self._publish("paused", "Manual reward failed — check the pump.")
-            return
+            return "failed", f"the reward failed: {e}"
         self._emit_session_event("REWARD", {"manual": True, **self._manual_reward_payload})
         self._publish("paused", "Manual reward delivered.")
+        return "applied", "one reward delivered"
