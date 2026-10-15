@@ -32,6 +32,17 @@ import types
 from typing import Any
 
 import pytest
+from test_calibration_targets import (  # noqa: F401
+    KEYS,
+    PULSE,
+    SCREEN,
+    FakeWindow,
+    Recorder,
+    fake_visual,
+    named_pictures,
+    walk,
+    walk_sdk,
+)
 
 from alhazen.config.models import CalibrationTargetConfig, EyeTrackerConfig
 from alhazen.core.rng import named_stream
@@ -52,17 +63,6 @@ from alhazen.devices.eyetracker.protocol import GazeSample
 from alhazen.devices.eyetracker.scripted import ScriptedTracker
 from alhazen.session.eyetracker import EyeTrackerMonitor
 from alhazen.testing import FakeClock, FakeDisplay
-from test_calibration_targets import (
-    KEYS,
-    PULSE,
-    SCREEN,
-    FakeWindow,
-    Recorder,
-    fake_visual,
-    named_pictures,  # noqa: F401 - a fixture, used by name
-    walk,
-    walk_sdk,  # noqa: F401 - a fixture, used by name
-)
 
 # Short, so a five-target walk is a few hundred frames.
 FAST = ProcedureTiming(settle_s=0.1, sample_s=0.1, stable_deg=1.0, timeout_s=1.0)
@@ -182,9 +182,9 @@ class TestNothingButTargetsOnTheSubjectsScreen:
     @pytest.mark.parametrize("target", CONFIGS)
     def test_the_trackpixx3_walk_draws_only_its_targets(
         self,
-        walk_sdk,
-        named_pictures,
-        target,  # noqa: F811
+        walk_sdk,  # noqa: F811
+        named_pictures,  # noqa: F811
+        target,
     ):
         result, display = walk(
             walk_sdk, keys=KEYS, rng=named_stream(3, "calibration_target"), **target
@@ -444,7 +444,7 @@ class TestValidationDrawsTheCalibrationTarget:
 
     def test_the_trackpixx3_validation_carries_on_the_calibrations_deck(
         self,
-        walk_sdk,
+        walk_sdk,  # noqa: F811
         named_pictures,  # noqa: F811
     ):
         """One tracker, one deck: the validation after a TRACKPixx3 calibration
