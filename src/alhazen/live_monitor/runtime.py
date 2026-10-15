@@ -829,9 +829,8 @@ def _serve(
                         self._send_bytes(HTTPStatus.NO_CONTENT, b"", "application/json")
                         return
                     seq, payload = record
-                    self._send(
-                        HTTPStatus.OK, f'{{"seq": {seq}, "commands": {payload}}}', "application/json"
-                    )
+                    body = f'{{"seq": {seq}, "commands": {payload}}}'
+                    self._send(HTTPStatus.OK, body, "application/json")
                     return
                 if path == "/api/trial":
                     newest_view = trial_view.wait_after(after, wait_s)
@@ -1066,19 +1065,10 @@ def _serve(
     camera_thread = threading.Thread(target=pump_camera, daemon=True)
     camera_thread.start()
 
-    def pump_acks() -> None:
-        while not stop.is_set():
-            try:
-                payload = acks_in.get(timeout=0.2)
-            except queue.Empty:
-                continue
-            acks.set(payload)
-
-    # [workstream B] Acknowledgements on their own thread, for the camera's
-    # reason: never behind a state snapshot being handed over.
-    ack_thread = threading.Thread(target=pump_acks, daemon=True)
-    ack_thread.start()
-    # --- Trial view: one thread per channel, for the camera's reason ------
+    # The channels added after the camera's ([workstream B] acknowledgements,
+    # the Trial view's picture and gaze) are pumped the camera's way, each on a
+    # thread of its own so nothing waits behind a state snapshot being handed
+    # over; one loop serves them all.
     def pump_slot(slot: Any, take: Callable[[Any], None]) -> None:
         while not stop.is_set():
             try:
@@ -1087,7 +1077,11 @@ def _serve(
                 continue
             take(item)
 
-    for slot, take in ((trial_updates, trial_view.set), (gaze_updates, gaze.add)):
+    for slot, take in (
+        (acks_in, acks.set),
+        (trial_updates, trial_view.set),
+        (gaze_updates, gaze.add),
+    ):
         if slot is not None:
             threading.Thread(target=pump_slot, args=(slot, take), daemon=True).start()
     # --- end Trial view ---------------------------------------------------

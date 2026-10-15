@@ -698,7 +698,17 @@ button.control:focus-visible { outline: 2px solid var(--series-1); outline-offse
   align-items: start;
 }
 @media (max-width: 1000px) {
-  .trial-body { grid-template-columns: minmax(0, 1fr); }
+  .trial-body { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  /* Under the screen the camera is a small box with its note beside it, so
+   * the operator buttons below stay close to the trial they act on (the
+   * dashboard embeds this page in a narrow column). */
+  .trial-camera {
+    display: grid;
+    grid-template-columns: minmax(140px, 220px) minmax(0, 1fr);
+    gap: 14px;
+    align-items: start;
+  }
+  .trial-camera figcaption { margin-top: 0; }
 }
 .trial-body figure { margin: 0; min-width: 0; }
 .trial-body figcaption { margin-top: 8px; color: var(--ink-2); font-size: 13px; min-height: 20px; }
@@ -739,6 +749,11 @@ line.trial-shape { fill: none; }
 
 .trial-controls:empty { display: none; }
 .trial-controls { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--rule); }
+/* At most four buttons a row under the screen (two even rows of the usual
+ * eight) rather than as many as fit, which left Quit alone on a second row. */
+.trial-controls .control-grid {
+  grid-template-columns: repeat(auto-fill, minmax(max(150px, calc((100% - 18px) / 4)), 1fr));
+}
 
 .legend i.trail { width: 16px; height: 2.5px; border-radius: 2px; background: var(--series-2); opacity: 0.7; }
 .legend i.gaze  { width: 9px; height: 9px; border-radius: 50%; background: var(--series-2); }
