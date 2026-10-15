@@ -107,6 +107,14 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   anywhere. A gamma fit still goes beside the rig file: the rig reads it back.
   Reports already in `configs/measurements/` are not moved; move them by hand
   to `data/measurements/` if they should stay with the rest.
+- The dashboard takes the Split design: an icon rail that widens on hover, the Run
+  page as settings on the left and an instrument pane on the right (the launch
+  summary before a run, the live monitor during one, media, console and upload
+  after), Manrope type, the Penrose mark with the wordmark "Alhazen", a warm
+  oxblood palette, and light by default (System and Dark stay one click away and
+  are remembered). The live monitor's chrome, operator buttons and Trial view
+  follow the same language; chart colours are unchanged. Nunito is no longer
+  shipped.
 - A run folder's `rig.yaml` is the complete rig the session was started with:
   the rig file merged over any shared rig it `extends`, with every setting
   written out, the defaults alhazen filled in included. Before, it was the rig
@@ -129,8 +137,6 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   the PsychoPy window.
 - Commands discarded at the start of a pause or after a procedure are
   acknowledged as `discarded` instead of being dropped silently.
-
-
 - The Run page's parameter editor labels a `Duration` row by the duration,
   its unit beside ("fixation hold (ms)"), where it showed "ms" under
   `fixation_hold`. The estimate's counts line reads at body size.
