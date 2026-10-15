@@ -94,7 +94,7 @@ describe('the operator controls', () => {
     await settle();
     assert.equal(posts(live_monitor).length, 0);
     assert.match(live_monitor.byId('controls').querySelector('.control-feedback').textContent,
-      /Validate: Validate is available only while the session is paused/);
+      /^Validate is available only while the session is paused\.$/);
   });
 
   it('send a click once, show it pending, and follow it to its acknowledgement', async () => {

@@ -89,7 +89,7 @@ _TRIAL_NOTES = {
     "pause": "the trial ends here and the session pauses",
     "calibrate": "the trial ends here; the session pauses and calibrates",
     "skip_trial": "the trial is abandoned; its condition is served again",
-    "manual_reward": "one reward delivered now",
+    "manual_reward": "delivering one reward now",
     "quit": "the session ends; the data so far is saved",
     "promote_stage": "stage change requested; applied between trials",
     "demote_stage": "stage change requested; applied between trials",

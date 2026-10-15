@@ -3060,6 +3060,15 @@ function commandLabel(name) {
   return labels[name] || name.replace(/_/g, ' ');
 }
 
+/** "Pause: the session is already paused." — without naming the button
+ *  twice when the reason already starts with its name. */
+function explainControl(name, reason) {
+  const label = commandLabel(name);
+  const text = String(reason || 'not available now');
+  const line = text.startsWith(label) ? text : label + ': ' + text;
+  return line.endsWith('.') ? line : line + '.';
+}
+
 /** Take the session's acknowledgement record: each command this page sent
  *  and the session has now answered stops being pending. */
 function takeAcknowledgements(records) {
@@ -3143,7 +3152,7 @@ function quitConfirmation(parent) {
 function pressControl(name) {
   const controls = (state && state.controls) || {};
   if (![...(controls.available || [])].includes(name)) {
-    controlFeedback = commandLabel(name) + ': ' + ((controls.refused || {})[name] || 'not available now') + '.';
+    controlFeedback = explainControl(name, (controls.refused || {})[name]);
     renderControls();
     return;
   }
@@ -3172,7 +3181,7 @@ async function sendCommand(name) {
       watchAcknowledgements();
     } else {
       pendingCommands.delete(requestId);
-      controlFeedback = commandLabel(name) + ': ' + await response.text() + '.';
+      controlFeedback = explainControl(name, await response.text());
     }
   } catch (error) {
     pendingCommands.delete(requestId);
