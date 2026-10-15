@@ -925,3 +925,21 @@ button.control:focus-visible,
   .sidebar > .side-title:has(+ .controls:not([data-controls-host])) { display: none; }
   #theme { min-height: 34px; padding: 5px 12px; white-space: nowrap; }
 }
+
+
+/* The band, in order: the panel row and the theme button on one line, the
+ * rest (the controls when shown, the notice) under them. */
+@media (max-width: 860px) {
+  .sidebar > * { order: 2; }
+  .sidebar > .sections { order: 0; }
+  .sidebar > .controls:not([data-controls-host]) { order: 1; }
+  #notice:empty { display: none; }
+}
+
+/* A narrow page (the dashboard's column, a phone): the screen picture is
+ * held under half the window's height, so the trial, the gaze and the
+ * buttons under it are in view together; the drawing keeps its aspect and
+ * centres. */
+@media (max-width: 1000px) {
+  .trial-stage-box svg { width: auto; max-width: 100%; max-height: 46vh; margin: 0 auto; }
+}
