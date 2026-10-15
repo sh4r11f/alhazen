@@ -178,15 +178,27 @@ class SessionPaths:
 
     @property
     def rig_copy_path(self) -> Path:
-        """The rig file the session was started with, copied byte for byte."""
+        """The complete rig the session was started with: its file merged
+        over any shared rig it extends, every setting written out, defaults
+        included (session/identity.py, `complete_rig`). Up to alhazen 2.16
+        it was the rig file copied byte for byte, which is now
+        `rig_source_path`."""
         return self.run_dir / "rig.yaml"
 
     @property
+    def rig_source_path(self) -> Path:
+        """The rig file the session was started with, copied byte for byte,
+        comments and all. Absent from runs recorded by alhazen 2.16 or
+        earlier, whose rig.yaml is this copy."""
+        return self.run_dir / "rig-source.yaml"
+
+    @property
     def rig_merged_path(self) -> Path:
-        """The whole rig, for a rig file that ``extends`` a shared one: the
-        file merged over the shared rig, as the session loaded it
-        (session/identity.py, `merged_rig`). Absent for a rig that extends
-        nothing, whose rig.yaml is already the whole rig."""
+        """For a rig file that ``extends`` a shared one: the file merged over
+        the shared rig, only the settings the two files write
+        (session/identity.py, `merged_rig`). rig.yaml has all of it and the
+        defaults too; this is kept because the run layout only gains files
+        outside a major version. Absent for a rig that extends nothing."""
         return self.run_dir / "rig-merged.yaml"
 
     @property

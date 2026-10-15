@@ -278,9 +278,9 @@ real_data: true
 `--rig laptop`, and run.py's default, find the experiment's own laptop before
 the shared one (§3), so nothing else changes. Because the exception is a
 file, it is version-controlled, says why in its own comment, and is part of
-every run it records: the run folder's `rig.yaml` is the file as written, its
-`rig-merged.yaml` the whole rig, and the snapshot's `config.rig` carries
-`real_data: true`. There is deliberately no command-line flag for it: a flag
+every run it records: the run folder's `rig-source.yaml` is the file as
+written, its `rig.yaml` the complete rig, and the snapshot's `config.rig`
+carries `real_data: true`. There is deliberately no command-line flag for it: a flag
 leaves nothing in the repository, has to be typed again at every session, and
 is exactly the kind of thing a person in a hurry types to make an error go
 away.

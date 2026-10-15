@@ -2,8 +2,8 @@
 
 A run folder has always carried ``config_snapshot.yaml``: the merged config,
 the seed, both git trees and the environment. That is the complete record,
-and it is long. Since alhazen 2.0 three more files sit beside it, written by
-the same call at the same moment, so a run folder says how it was set up to
+and it is long. Since alhazen 2.0 more files sit beside it, written by the
+same call at the same moment, so a run folder says how it was set up to
 someone who never opens the snapshot:
 
 - ``session.json`` — a compact identity card (`session_card`): which
@@ -12,19 +12,28 @@ someone who never opens the snapshot:
   started with, which alhazen, and where the run's other files are. JSON
   rather than YAML so any language reads it with its standard library;
   ``schema_version`` so a reader can gate on its shape.
-- ``rig.yaml`` — the rig file the session was started with, byte for byte.
+- ``rig.yaml`` — the complete rig the session was started with
+  (`complete_rig`): the rig file merged over any shared rig it ``extends``,
+  with every setting written out, the defaults alhazen filled in included.
+  Up to alhazen 2.16 it was the rig file byte for byte, which for a file
+  that extends a shared rig named only the experiment's half of the machine,
+  and for any file left every default unsaid.
+- ``rig-source.yaml`` — the rig file as written, byte for byte, comments and
+  all: what rig.yaml was up to 2.16. Absent from runs recorded by 2.16 or
+  earlier.
 - ``rig-merged.yaml`` — for a rig file that ``extends`` one of alhazen's
-  shared rigs, the whole rig: the file merged over the shared one
-  (`merged_rig`). rig.yaml alone is then only half a rig, and the other half
-  lives in whichever alhazen was installed that day; with this beside it the
-  run folder says what the machine was on its own. Not written for a rig
-  that extends nothing, whose rig.yaml is already the whole rig.
+  shared rigs, the file merged over the shared one, only the settings the two
+  files write (`merged_rig`). rig.yaml is now a superset of it; it is still
+  written because the run-folder layout only gains files outside a major
+  version (docs/versioning.md). Not written for a rig that extends nothing.
 - ``params.yaml`` — the params file it was started with, byte for byte, when
   there was one (none when the task ran on its params model's defaults).
 
-The copies are the files as they were, comments and all, not a re-dump of
-the parsed config: what a person wrote is what they will look for. They are
-not the whole story, and the snapshot stays the authority on what RAN — a
+rig-source.yaml and params.yaml are the files as they were, comments and all,
+not a re-dump of the parsed config: what a person wrote is what they will
+look for. rig.yaml is the rig as its files describe the machine, so it loads
+as a rig file of its own (``--rig rig.yaml``) and gives the same rig. None of
+them is the whole story, and the snapshot stays the authority on what RAN — a
 test mode's reduced trial counts, a params hook's changes, a curriculum
 stage's overrides and a mode standing a device down all show up in the
 snapshot's merged values, not in the files that were started from.
@@ -46,18 +55,27 @@ window has opened and the tracker connected.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
+from pydantic import ValidationError
 
 from alhazen.config.experiment import Experiment
-from alhazen.config.models import SessionConfig, age_number, normalize_age, normalize_sex
+from alhazen.config.loader import load_rig
+from alhazen.config.models import (
+    RigConfig,
+    SessionConfig,
+    age_number,
+    normalize_age,
+    normalize_sex,
+)
 from alhazen.config.reward_calibration import load_reward_calibration, ul_per_pulse_on
 from alhazen.config.rigs import rig_mapping
 from alhazen.config.snapshot import build_provenance, write_snapshot
@@ -199,6 +217,11 @@ class RunIdentity:
     - ``rig_merged`` — rig-merged.yaml's bytes (`merged_rig`), made at build
       time from ``rig_file``; None when the rig file extends nothing or there
       is no rig file.
+    - ``rig_complete`` — rig.yaml's bytes (`complete_rig`), made at build
+      time from ``rig_file``. Required whenever ``rig_file`` is given, and
+      refused without one: rig.yaml is written from this, rig-source.yaml
+      from ``rig_file``, and a record with only one of the two would say
+      less about the machine than the run folder promises.
     - ``command`` — the command line the session was started with
       (`recorded_command`), or None for a session built in code, where no
       command line was parsed.
@@ -217,6 +240,7 @@ class RunIdentity:
     rig_file: SourceFile | None = None
     params_file: SourceFile | None = None
     rig_merged: bytes | None = None
+    rig_complete: bytes | None = None
     command: tuple[str, ...] | None = None
     experimenter: Experimenter | None = None
     demographics: SubjectDemographics | None = None
@@ -225,6 +249,19 @@ class RunIdentity:
     # alhazen.modes.simulation.SimulateChoice), or None when every device
     # was the rig's own: the card's ``simulated`` is then null.
     simulated: dict[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        # The two rig records come as a pair: rig.yaml (the complete rig)
+        # and rig-source.yaml (the file as written). A caller that read the
+        # file but never made the complete rig has a bug, refused here
+        # rather than discovered as a run folder missing its rig.yaml.
+        if (self.rig_file is None) != (self.rig_complete is None):
+            raise ValueError(
+                "RunIdentity takes rig_file and rig_complete together: rig_complete is "
+                "complete_rig(rig_file), the run folder's rig.yaml, and rig_file is its "
+                "rig-source.yaml. Got "
+                + ("rig_file without rig_complete" if self.rig_file else "rig_complete alone")
+            )
 
 
 # How the alhazen console command is recorded: by its name, which is what a
@@ -305,6 +342,141 @@ def merged_rig(rig_file: SourceFile | None) -> bytes | None:
     )
     body = yaml.safe_dump(values, sort_keys=False, allow_unicode=True)
     return (header + body).encode("utf-8")
+
+
+def complete_rig(rig_file: SourceFile | None) -> bytes | None:
+    """rig.yaml's contents: the rig file, merged over any shared rig it
+    ``extends``, with every setting written out — the defaults alhazen fills
+    in included — and loadable as a rig file of its own that gives the same
+    rig. None when there is no rig file.
+
+    Called when the session is BUILT, like `merged_rig`, so the files read
+    are the ones the session just loaded; a file that no longer loads raises
+    the ConfigError `load_rig` raises, and the session stops before anything
+    is written.
+
+    **Not every default can be written out.** The rig refuses a setting
+    written where it does nothing (``max_dropped_per_trial`` under a policy
+    other than ``abort_run``, a ``pulse`` on a still calibration target):
+    such a file is a mistake when a person writes it, and alhazen holds its
+    own output to the same rule, so the file loads again. Those defaults are
+    left out, and the header says so. They are, by that rule, the ones that
+    did not apply to this run. `_with_every_default_that_applies` has how.
+    """
+    if rig_file is None:
+        return None
+    rig = load_rig(rig_file.path)
+    values = _with_every_default_that_applies(rig)
+    # File names only, as in `merged_rig`: where the files were on this
+    # machine is session.json's to say, and a full path would carry a home
+    # folder into every copy of the data.
+    merged = rig_mapping(rig_file.path)
+    if merged.extends is not None and merged.base is not None:
+        source = (
+            f"{rig_file.path.name} merged over alhazen's shared rig '{merged.extends}' "
+            f"({merged.base.name})"
+        )
+    else:
+        source = rig_file.path.name
+    header = (
+        "# The complete rig this run was started with, written by alhazen: every\n"
+        "# setting the rig had, defaults included, loadable as a rig file of its own.\n"
+        f"# From: {source}.\n"
+        "# Left out: defaults the rig refuses written out because they do nothing\n"
+        "# under the settings above. The file as written, with its comments, is\n"
+        "# rig-source.yaml. What the session RAN (a mode standing a device down) is\n"
+        "# config_snapshot.yaml's config.rig.\n"
+    )
+    body = yaml.safe_dump(values, sort_keys=False, allow_unicode=True)
+    return (header + body).encode("utf-8")
+
+
+def _with_every_default_that_applies(rig: RigConfig) -> dict[str, Any]:
+    """The rig's settings as plain data, with every default added that the
+    rig accepts written out, in the rig model's own field order.
+
+    How: start from the settings the files wrote (``exclude_unset``), which
+    validate by construction, plus the monitor's name, which `load_rig`
+    fills in from the file's stem and a copy named rig.yaml would otherwise
+    take from its own. Then walk every setting of the full dump in order and
+    add each missing one alone, keeping it only if the rig still validates.
+    A default that is refused is one that does nothing here (see
+    `complete_rig`). Adding a default changes no value, so the result is
+    the same rig; that is checked at the end, and a difference raises rather
+    than writing a rig.yaml that describes a different machine.
+
+    One validation per missing setting, a few dozen on any shipped rig:
+    about 2 ms, once, at build time.
+    """
+    full = rig.model_dump(mode="json")
+    kept = rig.model_dump(mode="json", exclude_unset=True)
+    _put(kept, ("monitor", "name"), rig.monitor.name)
+    for path, value in _settings(full):
+        if _holds(kept, path):
+            continue
+        attempt = copy.deepcopy(kept)
+        _put(attempt, path, value)
+        try:
+            RigConfig.model_validate(attempt)
+        except ValidationError:
+            # Refused written out: a default that does not apply. Left out.
+            continue
+        kept = attempt
+    # The promise rig.yaml makes: loading it gives this rig.
+    if RigConfig.model_validate(kept).model_dump() != rig.model_dump():
+        raise ConfigError(
+            "alhazen could not write the complete rig: the settings it collected load as "
+            "a different rig from the one the session loaded. This is a bug in alhazen "
+            "(session/identity.py, _with_every_default_that_applies); report it with the rig "
+            "file"
+        )
+    return _ordered_like(full, kept)
+
+
+def _settings(
+    tree: dict[str, Any], prefix: tuple[str, ...] = ()
+) -> Iterator[tuple[tuple[str, ...], Any]]:
+    """Every setting in a nested mapping, as (path of keys, value), in order.
+    A non-empty mapping is a section, walked into; anything else (a number,
+    a list, None, an empty mapping) is one setting."""
+    for key, value in tree.items():
+        if isinstance(value, dict) and value:
+            yield from _settings(value, (*prefix, key))
+        else:
+            yield (*prefix, key), value
+
+
+def _holds(tree: dict[str, Any], path: tuple[str, ...]) -> bool:
+    """Whether ``tree`` has a value at ``path``."""
+    node: Any = tree
+    for key in path:
+        if not isinstance(node, dict) or key not in node:
+            return False
+        node = node[key]
+    return True
+
+
+def _put(tree: dict[str, Any], path: tuple[str, ...], value: Any) -> None:
+    """Set ``value`` at ``path`` in ``tree``, making the sections on the way."""
+    node = tree
+    for key in path[:-1]:
+        node = node.setdefault(key, {})
+    node[path[-1]] = value
+
+
+def _ordered_like(model: dict[str, Any], tree: dict[str, Any]) -> dict[str, Any]:
+    """``tree``'s keys in ``model``'s order, section by section, so rig.yaml
+    reads in the order the rig model (and the docs) list its settings rather
+    than in the order they were added."""
+    return {
+        key: (
+            _ordered_like(model[key], tree[key])
+            if isinstance(tree[key], dict) and isinstance(model[key], dict)
+            else tree[key]
+        )
+        for key in model
+        if key in tree
+    }
 
 
 def reward_record(
@@ -492,7 +664,13 @@ def session_card(
         "files": {
             "snapshot": relative(paths.snapshot_path),
             "manifest": relative(paths.manifest_path),
+            # rig.yaml is the complete rig; rig_source, the file as written
+            # (added after 2.16 without a schema bump: a new key, which a
+            # reader of schema 1 ignores).
             "rig": relative(paths.rig_copy_path) if identity.rig_file is not None else None,
+            "rig_source": (
+                relative(paths.rig_source_path) if identity.rig_file is not None else None
+            ),
             "rig_merged": (
                 relative(paths.rig_merged_path) if identity.rig_merged is not None else None
             ),
@@ -513,8 +691,9 @@ def write_run_identity(
     identity: RunIdentity,
     experiment_dir: Path | None = None,
 ) -> None:
-    """Write rig.yaml, rig-merged.yaml, params.yaml, session.json and
-    config_snapshot.yaml — all of those the session has, or none.
+    """Write rig.yaml, rig-source.yaml, rig-merged.yaml, params.yaml,
+    session.json and config_snapshot.yaml — all of those the session has, or
+    none.
 
     The snapshot goes last, so its presence — what the runner and `load_run`
     take to mean "this folder is a run" — implies the other three. A failure
@@ -535,8 +714,12 @@ def write_run_identity(
         return path
 
     try:
+        # rig.yaml is the complete rig; the file as written goes beside it.
+        # RunIdentity guarantees the two are given together.
+        if identity.rig_complete is not None:
+            ours(paths.rig_copy_path).write_bytes(identity.rig_complete)
         if identity.rig_file is not None:
-            ours(paths.rig_copy_path).write_bytes(identity.rig_file.content)
+            ours(paths.rig_source_path).write_bytes(identity.rig_file.content)
         if identity.rig_merged is not None:
             ours(paths.rig_merged_path).write_bytes(identity.rig_merged)
         if identity.params_file is not None:
