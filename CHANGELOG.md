@@ -48,6 +48,8 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   it as `files.rig_source`. `rig-merged.yaml` is still written for a rig that
   extends a shared one, unchanged, so no file a script looks for disappears.
   The run layout baseline (`tests/fixtures/contracts.json`) gains the one name.
+- The workspace's run viewer lists `rig-merged.yaml` among a run's text
+  files; before, a run's merged rig could only be opened from disk.
 
 ## 2.16.0 - 2026-10-13
 

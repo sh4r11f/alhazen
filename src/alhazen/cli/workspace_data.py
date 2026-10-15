@@ -78,6 +78,7 @@ TEXT_RECORDS = (
     "config_snapshot.yaml",
     "rig.yaml",
     "rig-source.yaml",
+    "rig-merged.yaml",
     "params.yaml",
     "report.yaml",
     "manifest.yaml",

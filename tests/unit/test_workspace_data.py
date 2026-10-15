@@ -316,6 +316,24 @@ class TestRunDetail:
         assert detail["images"] == ["figures/psychometric.png"]
         assert detail["page"] == "figures/live_monitor.html"
 
+    def test_all_three_rig_records_are_offered_as_text(self, view, workspace, project):
+        # A run with a rig that extends a shared one has rig.yaml (complete),
+        # rig-source.yaml (as written) and rig-merged.yaml (the two files
+        # merged); the viewer offers each, in the order a reader wants them.
+        key, roots = ids(view, workspace)
+        run_id = "v1.2.0/sub-01/ses-001/run-01_task-demo"
+        folder = project / "data" / run_id
+        for name in ("rig.yaml", "rig-source.yaml", "rig-merged.yaml"):
+            (folder / name).write_text("x: 1\n", encoding="utf-8")
+
+        texts = view.run(key, roots["data"], run_id)["texts"]
+
+        assert [t for t in texts if t.startswith("rig")] == [
+            "rig.yaml",
+            "rig-source.yaml",
+            "rig-merged.yaml",
+        ]
+
     def test_a_pre_2_0_run_offers_its_old_monitor_page(self, view, workspace, project):
         key, roots = ids(view, workspace)
         run_id = "sub-old/ses-001/run-01_task-demo"
