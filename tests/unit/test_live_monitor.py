@@ -1738,6 +1738,15 @@ class TestOffButtonsAndThePanelBand:
         ][-1]
         assert body and all(off.get(prop) == value for prop, value in body.items()), (body, off)
 
+    def test_labels_on_the_trial_picture_are_filled_text(self):
+        """A label is an annotation by default, and the annotation rule's
+        fill: none and stroke once drew it as hollow outlined letters."""
+        rules = dict(self._rules())
+        label = rules[".trial-stage-box text.trial-shape"]
+        assert label["fill"] == "var(--ink-2)" and label["stroke"] == "none", label
+        # Scoped to the stage, (0,2,1), so it outranks the role rules' (0,2,0).
+        assert "fill" in rules[".trial-shape.role-annotation"]
+
     def test_the_narrow_band_wraps_its_panel_row(self):
         """Under 860 px the panel row wraps rather than scrolling sideways."""
         sections = [body for selector, body in self._rules() if selector == ".sections"]
