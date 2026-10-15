@@ -155,6 +155,8 @@ describe('the trial picture', () => {
 
   it('hides the point during a blink and says so', () => {
     const live_monitor = drawn(VIEW, [[1.0, 0, 0], [1.1, null, null]]);
+    live_monitor.get("state = { status: 'running' }");
+    live_monitor.get('paintGaze')();
     const layer = live_monitor.byId('trial-stage').querySelector('g.trial-gaze-layer');
     assert.equal(layer.querySelector('circle'), null);
     assert.equal(live_monitor.byId('trial-status').textContent,
