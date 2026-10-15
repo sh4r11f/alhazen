@@ -51,6 +51,37 @@
   </nav>
 
   <main>
+    <!-- Trial view: the running trial's screen in degrees, with the eye's
+         position over it (live_monitor.js, "Trial view"). The live page only;
+         the copy saved in figures/ has no trial running. -->
+    <section id="trial-view" class="trial-view" hidden>
+      <div class="trial-head">
+        <h2 id="trial-title">Trial</h2>
+        <span id="trial-meta"></span>
+        <label class="trial-trail">Trail
+          <select id="trial-trail">
+            <option value="0.5">0.5 s</option>
+            <option value="1">1 s</option>
+            <option value="2">2 s</option>
+            <option value="0">Whole trial</option>
+          </select>
+        </label>
+      </div>
+      <div class="trial-body">
+        <figure class="trial-stage">
+          <div id="trial-stage" class="trial-stage-box"></div>
+          <div id="trial-legend" class="legend"></div>
+          <figcaption id="trial-status"></figcaption>
+        </figure>
+        <figure class="trial-camera">
+          <div id="trial-camera" class="trial-camera-box"></div>
+          <figcaption id="trial-camera-note"></figcaption>
+        </figure>
+      </div>
+      <!-- The task's controls (resume, pause, calibrate, …) are rendered here
+           by the operator-command block, the same buttons as the sidebar's. -->
+      <div class="trial-controls" data-controls-host></div>
+    </section>
     <div id="grid" class="grid"></div>
   </main>
 </div>

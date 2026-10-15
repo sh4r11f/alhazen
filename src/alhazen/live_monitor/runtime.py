@@ -109,11 +109,10 @@ class LiveMonitorController:
         self._settings: Any = ctx.Queue(maxsize=64)
         self._ready: Any = ctx.Queue(maxsize=1)
         # --- Trial view (live_monitor/gaze.py, task/schematic.py) ----------
-        # Two more one-slot channels: the picture of the trial that is about
-        # to run, published once at its start, and batches of gaze samples
-        # while it runs. Neither waits for the child (publish_trial,
-        # publish_gaze).
-        self._trial: Any = ctx.Queue(maxsize=1)
+        # Two more channels: the picture of the trial that is about to run,
+        # published once at its start, and batches of gaze samples while it
+        # runs. Neither waits for the child (publish_trial, publish_gaze).
+        self._trial: Any = ctx.Queue(maxsize=_TRIAL_VIEWS_QUEUED)
         self._gaze: Any = ctx.Queue(maxsize=1)
         self._gaze_down_reported = False
         # --- end Trial view -------------------------------------------------
@@ -272,16 +271,26 @@ class LiveMonitorController:
     # --- Trial view ------------------------------------------------------
 
     def publish_trial(self, view: dict[str, Any]) -> None:
-        """Replace any unread trial picture with this one.
+        """Hand the server the picture of the trial about to run.
 
         Called once per trial, before its first frame (session/runner.py).
-        Like publish(), it never blocks: a picture the child has not taken
-        yet is replaced, because only the trial about to run is worth
-        drawing.
+        Like publish(), it never blocks. Not a replace-in-one-slot like the
+        camera's: a multiprocessing queue cannot take back an item its feeder
+        thread has not yet written, so a replace could lose the NEWEST
+        picture. The channel holds a few instead, the child keeps the last
+        one it takes off, and a full channel (a child that stopped taking
+        them) drops the picture being offered.
         """
         if self._process is not None and not self._process.is_alive():
             return
-        _replace_in_slot(self._trial, json.dumps(view, allow_nan=False), "trial view")
+        try:
+            self._trial.put_nowait(json.dumps(view, allow_nan=False))
+        except queue.Full:
+            # The child has not taken the last several pictures: the page is
+            # not being served, and the next trial's picture will try again.
+            log.debug(
+                "trial view for trial %s dropped: the channel is full", view.get("trial_index")
+            )
 
     def publish_gaze(self, samples: list[tuple[int, float, float | None, float | None]]) -> bool:
         """Offer a batch of gaze samples (live_monitor/gaze.py ``GazeSample``).
@@ -417,21 +426,9 @@ class _CameraState:
 
 # --- Trial view (child side) --------------------------------------------
 
-
-def _replace_in_slot(slot: Any, item: Any, what: str) -> None:
-    """Put ``item`` in a one-slot queue, replacing what the child has not
-    taken yet. Never blocks."""
-    try:
-        slot.put_nowait(item)
-        return
-    except queue.Full:
-        pass
-    with suppress(queue.Empty):
-        slot.get_nowait()
-    try:
-        slot.put_nowait(item)
-    except queue.Full:
-        log.debug("%s dropped: the slot refilled while it was being replaced", what)
+# How many trial pictures wait for the child: far more than trials can start
+# between two of its reads (it takes them as they come, on its own thread).
+_TRIAL_VIEWS_QUEUED = 8
 
 
 class _TrialViewState:

@@ -64,6 +64,9 @@ async function livePage({ states, camera = [], tracker }) {
       }
       if (url.startsWith('/api/camera')) return cameraQueue.length ? cameraQueue.shift() : pending();
       if (url.startsWith('/api/tracker')) return tracker(url, init);
+      // The Trial view's two long polls (trial picture, gaze): left waiting,
+      // as an idle session leaves them; trial_view.test.mjs drives them.
+      if (url.startsWith('/api/trial') || url.startsWith('/api/gaze')) return pending();
       throw new Error('unexpected fetch ' + url);
     },
   });
