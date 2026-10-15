@@ -40,7 +40,12 @@ from typing import Any, Literal, Protocol
 
 from alhazen.core.clock import Clock
 from alhazen.core.commands import DEFAULT_KEYMAP, Command
-from alhazen.live_monitor.controls import LABELS, STATUS_COMMANDS, status_refusal
+from alhazen.live_monitor.controls import (
+    KNOWN_COMMANDS,
+    LABELS,
+    STATUS_COMMANDS,
+    status_refusal,
+)
 from alhazen.live_monitor.runtime import LiveMonitorCommand
 from alhazen.session.pause import QUIT_ROW_KEY, RESUME_ROW_KEY, build_pause_menu, key_label
 
@@ -72,7 +77,6 @@ ORDER = (
 # A command accepted while a trial ran, as the engine's command.
 TRIAL_COMMANDS = {
     "pause": Command.PAUSE,
-    "calibrate": Command.CALIBRATE,
     "skip_trial": Command.SKIP_TRIAL,
     "manual_reward": Command.MANUAL_REWARD,
     "quit": Command.QUIT,
@@ -87,7 +91,6 @@ TRIAL_COMMANDS = {
 # it.
 _TRIAL_NOTES = {
     "pause": "the trial ends here and the session pauses",
-    "calibrate": "the trial ends here; the session pauses and calibrates",
     "skip_trial": "the trial is abandoned; its condition is served again",
     "manual_reward": "delivering one reward now",
     "quit": "the session ends; the data so far is saved",
@@ -254,7 +257,16 @@ class OperatorCommands:
                     "by the time it arrived",
                 )
                 continue
-            refusal = capability_refusal(command.name, self._caps)
+            # The status rule first, then what this session has: the server
+            # checked the same table, so a command it passed that a trial
+            # cannot take (an eye-tracker procedure, which runs only while
+            # paused) reaches here only from a server older than the table,
+            # and is refused with the same reason, never acted on.
+            refusal = (
+                status_refusal(command.name, "running")
+                if command.name in KNOWN_COMMANDS
+                else f"unknown command {command.name!r}"
+            ) or capability_refusal(command.name, self._caps)
             if refusal is not None:
                 self.acknowledge(command, "refused", refusal)
                 continue
@@ -272,6 +284,16 @@ class OperatorCommands:
         while self._pending:
             command = self._pending.popleft()
             if command.status == "paused":
+                refusal = (
+                    status_refusal(command.name, "paused")
+                    if command.name in KNOWN_COMMANDS
+                    else None  # the menu logs and refuses an unknown action itself
+                )
+                if refusal is not None:
+                    # Passed by a server older than the table (see
+                    # take_for_trial): refused, never handed to the menu.
+                    self.acknowledge(command, "refused", refusal)
+                    continue
                 taken.append(command)
             else:
                 self.acknowledge(

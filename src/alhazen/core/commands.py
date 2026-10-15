@@ -51,6 +51,13 @@ DEFAULT_KEYMAP: dict[str, Command] = {
 }
 
 
+def paused_only_refusal(label: str) -> str:
+    """Why an eye-tracker procedure (calibrate, validate, drift correct) is
+    refused while a trial runs: the one sentence the live monitor's page and
+    the session's log both show, for a button or the rig's key."""
+    return f"{label} works only while the task is paused; pause it first"
+
+
 class CommandSource(Protocol):
     def poll(self) -> list[Command]:
         """Commands issued since the last poll, oldest first."""

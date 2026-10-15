@@ -92,6 +92,20 @@ class TestTheAllowSets:
                 refusal = status_refusal(name, status)
                 assert (refusal is None) == (status in allowed), (name, status, refusal)
 
+    def test_the_eye_tracker_procedures_are_paused_only_and_say_so(self):
+        """The user's rule (2026-10-14), the same on every rig: Calibrate,
+        Validate and Drift correct only while the task is paused; every other
+        command also works during a running trial."""
+        from alhazen.live_monitor.controls import PROCEDURE_COMMANDS
+
+        assert {"calibrate", "validate", "drift_correct"} == PROCEDURE_COMMANDS
+        assert not PROCEDURE_COMMANDS & STATUS_COMMANDS["running"]
+        assert STATUS_COMMANDS["paused"] >= PROCEDURE_COMMANDS
+        assert {"pause", "skip_trial", "manual_reward", "quit"} <= STATUS_COMMANDS["running"]
+        assert status_refusal("calibrate", "running") == (
+            "Calibrate works only while the task is paused; pause it first"
+        )
+
     def test_an_unknown_name_is_a_bug_not_a_refusal(self):
         with pytest.raises(ValueError, match="unknown operator command"):
             status_refusal("recalibrate", "paused")
@@ -113,12 +127,20 @@ class TestControls:
         ]
         assert controls["available"] == [
             "pause",
-            "calibrate",
             "manual_reward",
             "skip_trial",
             "quit",
         ]
-        assert set(controls["refused"]) == {"resume", "validate", "drift_correct"}
+        # The eye-tracker procedures are paused-only on every rig.
+        assert set(controls["refused"]) == {"resume", "calibrate", "validate", "drift_correct"}
+        for name, label in (
+            ("calibrate", "Calibrate"),
+            ("validate", "Validate"),
+            ("drift_correct", "Drift correct"),
+        ):
+            assert controls["refused"][name] == (
+                f"{label} works only while the task is paused; pause it first"
+            )
         assert controls["keys"] == {
             "pause": "P",
             "resume": "SPACE",
@@ -129,6 +151,20 @@ class TestControls:
             "skip_trial": "ESC",
             "quit": "CTRL-C",
         }
+
+    def test_the_page_tests_draw_from_what_the_session_publishes(self):
+        """The JS button tests read tests/fixtures/live_monitor_controls.json;
+        it must be the session's own output, or they test a different table."""
+        import json
+
+        fixture = json.loads(
+            (Path(__file__).parents[1] / "fixtures" / "live_monitor_controls.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        operator, _ = bound(ScriptedQueue())
+        assert fixture["running"] == operator.controls("running")
+        assert fixture["paused"] == operator.controls("paused")
 
     def test_paused_lists_the_pause_menu_and_quit_is_q(self):
         operator, _ = bound(ScriptedQueue())
@@ -202,6 +238,34 @@ class TestTakingCommands:
         assert operator.take_for_trial() is None
         assert events[0][1]["result"] == "refused"
         assert events[0][1]["note"] == "this session has no reward line"
+
+    def test_a_procedure_that_reaches_a_trial_is_refused_never_acted_on(self):
+        """The server refuses Calibrate/Validate/Drift correct while a trial
+        runs. One that reaches the session stamped "running" anyway (a server
+        older than the table) is acknowledged refused with the reason, logged
+        as OPERATOR_COMMAND, and the command behind it is still taken."""
+        queue = ScriptedQueue(
+            [[("calibrate", "running"), ("validate", "running"), ("pause", "running")]]
+        )
+        operator, events = bound(queue)
+        assert operator.take_for_trial() is Command.PAUSE
+        assert [(p["name"], p["result"], p["note"]) for _, p in events] == [
+            (
+                "calibrate",
+                "refused",
+                "Calibrate works only while the task is paused; pause it first",
+            ),
+            ("validate", "refused", "Validate works only while the task is paused; pause it first"),
+            ("pause", "applied", "the trial ends here and the session pauses"),
+        ]
+        assert all(name == "OPERATOR_COMMAND" for name, _ in events)
+        assert [r["result"] for r in queue.ack_records[-1]] == ["refused", "refused", "applied"]
+
+    def test_a_command_the_pause_cannot_take_is_refused_not_handed_on(self):
+        queue = ScriptedQueue([[("skip_trial", "paused"), ("calibrate", "paused")]])
+        operator, events = bound(queue)
+        assert [c.name for c in operator.take_for_pause()] == ["calibrate"]
+        assert [(p["name"], p["result"]) for _, p in events] == [("skip_trial", "refused")]
 
     def test_the_pause_takes_only_what_was_sent_to_a_pause(self):
         queue = ScriptedQueue([[("manual_reward", "running"), ("resume", "paused")]])
@@ -314,6 +378,22 @@ class TestThroughASession:
         assert [c["name"] for c in queue.states[-1]["commands"]] == ["pause", "resume"]
         paused_state = next(s for s in queue.states if s["status"] == "paused")
         assert "resume" in paused_state["controls"]["available"]
+
+    def test_calibrate_from_the_page_during_a_trial_neither_pauses_nor_calibrates(
+        self, tmp_path: Path
+    ):
+        queue = ScriptedQueue([[("calibrate", "running")]])
+        harness = SessionHarness(
+            tmp_path,
+            n_trials=1,
+            live_monitor=queue,
+            on_pause=lambda menu: "resume",
+            merge_live_monitor=True,
+        )
+        harness.runner.run()
+        assert "PAUSED" not in _names(harness)
+        assert _acks(harness) == [("calibrate", "refused")]
+        assert [row["trial_index"] for row in harness.recorder.trials] == [1]
 
     def test_skip_from_the_page_abandons_the_trial(self, tmp_path: Path):
         queue = ScriptedQueue([[("skip_trial", "running")]])

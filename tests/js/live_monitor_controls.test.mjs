@@ -6,26 +6,18 @@
  */
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 
 import { SAVED_STATE, loadLiveMonitor, settle } from './load_live_monitor.mjs';
 
-/* The controls block a running session publishes (session/operator_commands.py). */
-const RUNNING_CONTROLS = {
-  shown: ['pause', 'resume', 'calibrate', 'validate', 'drift_correct', 'manual_reward',
-    'skip_trial', 'quit'],
-  available: ['pause', 'calibrate', 'manual_reward', 'skip_trial', 'quit'],
-  refused: {
-    resume: 'Resume is available only while the session is paused',
-    validate: 'Validate is available only while the session is paused',
-    drift_correct: 'Drift correct is available only while the session is paused',
-  },
-  keys: { pause: 'P', resume: 'SPACE', calibrate: 'C', validate: 'V', drift_correct: 'D',
-    manual_reward: 'R', skip_trial: 'ESC', quit: 'CTRL-C' },
-  labels: { pause: 'Pause', resume: 'Resume', calibrate: 'Calibrate', validate: 'Validate',
-    drift_correct: 'Drift correct', manual_reward: 'Reward', skip_trial: 'Skip trial',
-    quit: 'Quit' },
-};
+/* The controls blocks a session publishes, read from the fixture the Python
+ * suite checks against session/operator_commands.py, so the buttons are tested
+ * on the session's own table. */
+const CONTROLS = JSON.parse(readFileSync(
+  new URL('../fixtures/live_monitor_controls.json', import.meta.url), 'utf8'));
+const RUNNING_CONTROLS = CONTROLS.running;
+const PAUSED_CONTROLS = CONTROLS.paused;
 
 const running = (extra) => ({
   ...SAVED_STATE, revision: 1, status: 'running', controls: RUNNING_CONTROLS, commands: [],
@@ -82,6 +74,34 @@ describe('the operator controls', () => {
     assert.equal(button(sidebar, 'resume').title, RUNNING_CONTROLS.refused.resume);
   });
 
+  it('keep Calibrate, Validate and Drift correct off during a trial, in every host, and on while paused', async () => {
+    const procedures = ['calibrate', 'validate', 'drift_correct'];
+    const others = ['pause', 'manual_reward', 'skip_trial', 'quit'];
+    const live_monitor = await livePage({ state: running(), command: () => response({ status: 202 }) });
+    const trialHost = live_monitor.byId('trial-controls');
+    for (const host of [live_monitor.byId('controls'), trialHost]) {
+      procedures.forEach((name) => {
+        assert.equal(button(host, name).getAttribute('aria-disabled'), 'true', name);
+        assert.equal(button(host, name).title, RUNNING_CONTROLS.refused[name]);
+        assert.match(button(host, name).title, /works only while the task is paused/);
+      });
+      others.forEach((name) => assert.equal(button(host, name).getAttribute('aria-disabled'), 'false', name));
+    }
+    button(trialHost, 'calibrate').onclick();
+    await settle();
+    assert.equal(posts(live_monitor).length, 0, 'an off button sends nothing');
+    assert.equal(trialHost.querySelector('.control-feedback').textContent,
+      'Calibrate works only while the task is paused; pause it first.');
+
+    const paused = await livePage({
+      state: running({ status: 'paused', controls: PAUSED_CONTROLS }),
+      command: () => response({ status: 202 }),
+    });
+    for (const host of [paused.byId('controls'), paused.byId('trial-controls')]) {
+      procedures.forEach((name) => assert.equal(button(host, name).getAttribute('aria-disabled'), 'false', name));
+    }
+  });
+
   it('fill every controls host on the page, not only the sidebar', async () => {
     const live_monitor = await livePage({ state: running(), command: () => response({ status: 202 }) });
     const host = live_monitor.document.createElement('div');
@@ -97,7 +117,7 @@ describe('the operator controls', () => {
     await settle();
     assert.equal(posts(live_monitor).length, 0);
     assert.match(live_monitor.byId('controls').querySelector('.control-feedback').textContent,
-      /^Validate is available only while the session is paused\.$/);
+      /^Validate works only while the task is paused; pause it first\.$/);
   });
 
   it('send a click once, show it pending, and follow it to its acknowledgement', async () => {

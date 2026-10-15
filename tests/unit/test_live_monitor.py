@@ -117,11 +117,12 @@ class TestSpecification:
 class TestRuntime:
     def test_server_passes_each_command_only_in_its_status_and_deduplicates(self):
         """The server's allow-sets (live_monitor/controls.py): while a trial
-        runs it passes what the engine acts on (pause, calibrate, skip, a
-        reward, quit), while paused what the pause menu offers, during a
-        procedure nothing; each refusal is a 409 with its reason. Until 2.17
-        it passed nothing at all unless the session was paused, so nothing
-        could pause it from the page."""
+        runs it passes what the engine acts on (pause, skip, a reward, quit),
+        while paused what the pause menu offers (incl. the three eye-tracker
+        procedures, which are paused-only on every rig), during a procedure
+        nothing; each refusal is a 409 with its reason. Until 2.17 it passed
+        nothing at all unless the session was paused, so nothing could pause
+        it from the page."""
         controller = LiveMonitorController(auto_open=False)
         url = controller.start()
         token = url.partition("token=")[2]
@@ -135,10 +136,11 @@ class TestRuntime:
             assert self._post(root, token, "pause", "p1") == 202
             assert self._post(root, token, "skip_trial", "s1") == 202
             assert self._post(root, token, "manual_reward", "r1") == 202
-            with pytest.raises(urllib.error.HTTPError) as refused:
-                self._post(root, token, "validate", "v0")
-            assert refused.value.code == 409
-            assert "only while the session is paused" in refused.value.read().decode()
+            for name in ("calibrate", "validate", "drift_correct"):
+                with pytest.raises(urllib.error.HTTPError) as refused:
+                    self._post(root, token, name, name + "0")
+                assert refused.value.code == 409
+                assert "works only while the task is paused" in refused.value.read().decode()
 
             controller.publish(_state(2, "paused"))
             self._wait_for_revision(root, token, 2)

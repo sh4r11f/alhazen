@@ -51,9 +51,12 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 - The workspace's run viewer lists `rig-merged.yaml` among a run's text
   files; before, a run's merged rig could only be opened from disk.
 - The live monitor's Session buttons command a running task, not only a
-  paused one: Pause, Calibrate (pause, then calibrate), Skip trial, Reward and
-  Quit act during a trial; Resume, Calibrate, Validate, Drift correct, Reward
-  and Quit while paused; the stage keys in both when a curriculum runs. Each
+  paused one: Pause, Skip trial, Reward and Quit act during a trial; Resume,
+  Calibrate, Validate, Drift correct, Reward and Quit while paused; the stage
+  keys in both when a curriculum runs. The three eye-tracker procedures work
+  only while the task is paused, on every rig: during a trial they are off,
+  saying "… works only while the task is paused; pause it first", and the
+  server refuses them with a 409 and that reason. Each
   button shows its key at the rig, is on only when the session will act on it
   (a dimmed one says why), and reads "sent" until the task acknowledges it.
   Quit asks first, in the page (no browser dialog). A click reaches a running
