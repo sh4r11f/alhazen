@@ -824,9 +824,12 @@ Each also takes `name=` (shown on hover), `role=` and `approximate=`. The
 role says how it is drawn: `stimulus` (on the subject's screen, filled),
 `region` (a window a gaze is judged against, a dashed outline, never filled:
 nothing is on the screen there) or `annotation` (the operator's mark, on no
-screen). `approximate=True` draws the outline dotted and puts *Approximate
+screen; a thin solid outline, keyed *Outline or path* in the legend; a label
+needs no key). `approximate=True` draws the outline dotted and puts *Approximate
 outline* in the legend: a bounding shape, or the place a moving stimulus
-starts from, is never passed off as exact. A shape checks itself when it is
+starts from, is never passed off as exact. The hover shows `name` exactly as
+given; `region_shapes` names each window after its key, `fixation` ->
+*Fixation window*. A shape checks itself when it is
 built — finite numbers, positive sizes, at least three polygon points, a known
 role, at most 5000 points per schematic — and raises `ValueError` naming the
 field, so a malformed picture fails at `build_trial` on trial one.

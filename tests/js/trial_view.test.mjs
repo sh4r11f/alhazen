@@ -35,8 +35,8 @@ const VIEW = {
   source: 'task',
   shapes: [
     { kind: 'circle', role: 'stimulus', name: 'fixation', center: [0, 0], radius: 0.25 },
-    { kind: 'circle', role: 'region', name: 'fixation', center: [0, 0], radius: 2 },
-    { kind: 'circle', role: 'region', name: 'target', center: [10, -5], radius: 3 },
+    { kind: 'circle', role: 'region', name: 'Fixation window', center: [0, 0], radius: 2 },
+    { kind: 'circle', role: 'region', name: 'Target window', center: [10, -5], radius: 3 },
     { kind: 'rect', role: 'stimulus', name: 'bar', center: [-10, 5], size: [4, 2], angle_deg: 90, approximate: true },
   ],
   undrawn: [],
@@ -152,6 +152,32 @@ describe('the trial picture', () => {
     const legend = live_monitor.byId('trial-legend').children.map((item) => item.textContent);
     assert.deepEqual(legend, ['Gaze', 'Trail', 'Stimulus', 'Gaze window', 'Approximate outline']);
     assert.equal(live_monitor.byId('trial-note').textContent, '');
+  });
+
+  it('names each shape on hover exactly as the task gave it', () => {
+    const feedback = { kind: 'polygon', role: 'region', name: 'feedback', points: [[0, 0], [4, 0], [0, 4]] };
+    const live_monitor = drawn({ ...VIEW, shapes: [...VIEW.shapes, feedback] });
+    const titles = live_monitor.byId('trial-stage').querySelector('svg').querySelectorAll('title')
+      .map((title) => title.textContent);
+    // alhazen names its own windows "… window"; a task's region keeps its own name.
+    assert.deepEqual(titles.sort(), ['Fixation window', 'Target window', 'bar (approximate)', 'feedback', 'fixation'].sort());
+  });
+
+  it('keys outlines and paths drawn as annotation; words on the picture need no key', () => {
+    const annotations = [
+      { kind: 'polygon', role: 'annotation', name: 'surface (hidden)', points: [[0, 0], [2, 0], [0, 2]] },
+      { kind: 'line', role: 'annotation', name: 'path', start: [0, 0], end: [3, 0] },
+      { kind: 'label', role: 'annotation', name: 'motion', at: [0, 5], text: 'strip slides' },
+    ];
+    let live_monitor = drawn({ ...VIEW, shapes: [...VIEW.shapes, ...annotations] });
+    let items = live_monitor.byId('trial-legend').children;
+    assert.deepEqual(items.map((item) => item.textContent),
+      ['Gaze', 'Trail', 'Stimulus', 'Outline or path', 'Gaze window', 'Approximate outline']);
+    // The swatch is styled like the drawn annotation (a thin solid outline).
+    assert.equal(items[3].children[0].getAttribute('class'), 'annotation');
+    live_monitor = drawn({ ...VIEW, shapes: [...VIEW.shapes, annotations[2]] });
+    items = live_monitor.byId('trial-legend').children;
+    assert.ok(!items.map((item) => item.textContent).includes('Outline or path'), 'a label alone has no key');
   });
 
   it('a task with no picture shows its gaze windows alone and says so once', () => {

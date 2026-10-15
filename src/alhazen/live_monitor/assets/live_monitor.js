@@ -3160,8 +3160,8 @@ function drawTrialShape(parent, fit, shape) {
   if (element && shape.name) {
     /* The name on hover: a label on every shape would crowd the picture. */
     const title = svgEl('title', {}, element);
-    title.textContent = shape.name + (shape.role === 'region' ? ' window' : '') +
-      (shape.approximate ? ' (approximate)' : '');
+    /* The name as the task gave it (alhazen names its own windows "… window"). */
+    title.textContent = shape.name + (shape.approximate ? ' (approximate)' : '');
   }
 }
 
@@ -3253,10 +3253,13 @@ function drawTrialLegend(view) {
   legend.replaceChildren();
   byId('trial-note').textContent = trialNote(view);
   if (!view) return;
-  const roles = new Set((view.shapes || []).map((s) => (s.approximate ? 'approx' : s.role)));
+  /* A label is words on the picture, not a mark: it needs no legend entry. */
+  const marks = (view.shapes || []).filter((s) => s.kind !== 'label');
+  const roles = new Set(marks.map((s) => (s.approximate ? 'approx' : s.role)));
   const items = [];
   if (view.gaze) items.push(['gaze', 'Gaze'], ['trail', 'Trail']);
   if (roles.has('stimulus')) items.push(['stimulus', 'Stimulus']);
+  if (roles.has('annotation')) items.push(['annotation', 'Outline or path']);
   if (roles.has('region')) items.push(['window', 'Gaze window']);
   if (roles.has('approx')) items.push(['approx', 'Approximate outline']);
   items.forEach(([cls, text]) => {

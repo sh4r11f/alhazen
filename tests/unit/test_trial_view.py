@@ -31,7 +31,7 @@ from alhazen.display.schematic import (
 from alhazen.live_monitor.gaze import GazeFeed
 from alhazen.live_monitor.runtime import LiveMonitorController, _GazeState, _TrialViewState
 from alhazen.task.plan import TrialPlan
-from alhazen.task.schematic import region_shapes, trial_view
+from alhazen.task.schematic import region_shapes, region_title, trial_view
 from support import SCREEN, SessionHarness
 
 # ---------------------------------------------------------------------------
@@ -144,18 +144,25 @@ class TestDefaultSchematic:
             {
                 "kind": "circle",
                 "role": "region",
-                "name": "fixation",
+                "name": "Fixation window",
                 "center": [0.0, 0.0],
                 "radius": 2.0,
             },
             {
                 "kind": "circle",
                 "role": "region",
-                "name": "target",
+                "name": "Target window",
                 "center": [8.0, -1.0],
                 "radius": 3.0,
             },
         ]
+
+    def test_a_region_is_named_after_its_key_as_a_window(self):
+        assert region_title("fixation") == "Fixation window"
+        assert region_title("target_far") == "Target far window"
+        # A key that already says window is not given a second one.
+        assert region_title("fixation_window") == "Fixation window"
+        assert region_title("x" * 200) == ("X" + "x" * 199)[:80]
 
     def test_a_region_that_cannot_be_drawn_is_a_bug_in_a_tasks_own_picture(self):
         with pytest.raises(ValueError, match="region 'bad' cannot be drawn"):
@@ -174,7 +181,7 @@ class TestDefaultSchematic:
             condition={},
             t=0.0,
         )
-        assert [s["name"] for s in view["shapes"]] == ["ok"]
+        assert [s["name"] for s in view["shapes"]] == ["Ok window"]
         assert view["undrawn"] == ["bad (window: circle center x must be finite, got nan)"]
         assert "region 'bad' cannot be drawn" in caplog.text
 
@@ -190,7 +197,7 @@ class TestDefaultSchematic:
         )
         assert view["screen"] == {"width_dva": 48.0, "height_dva": 27.0}
         assert view["source"] == "regions"
-        assert [(s["role"], s["name"]) for s in view["shapes"]] == [("region", "fixation")]
+        assert [(s["role"], s["name"]) for s in view["shapes"]] == [("region", "Fixation window")]
         # Nothing is said about the stimuli: no list of what was not drawn.
         assert view["undrawn"] == []
         assert view["condition"] == {"side": "left", "contrast": 0.5, "odd": "(1, 2)"}
@@ -251,7 +258,8 @@ class TestDefaultSchematic:
         assert view["source"] == "task"
         # The task's shapes exactly, in its order, then the windows.
         assert view["shapes"][:2] == [shape.payload() for shape in own]
-        assert [(s["role"], s["name"]) for s in view["shapes"][2:]] == [("region", "fixation")]
+        windows = [(s["role"], s["name"]) for s in view["shapes"][2:]]
+        assert windows == [("region", "Fixation window")]
         assert view["undrawn"] == []
 
     def test_a_task_picture_that_draws_its_windows_gets_exactly_what_it_drew(self):

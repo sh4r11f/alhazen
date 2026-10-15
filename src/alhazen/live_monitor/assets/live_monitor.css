@@ -758,6 +758,7 @@ line.trial-shape { fill: none; }
 .legend i.trail { width: 16px; height: 2.5px; border-radius: 2px; background: var(--series-2); opacity: 0.7; }
 .legend i.gaze  { width: 9px; height: 9px; border-radius: 50%; background: var(--series-2); }
 .legend i.window { width: 14px; height: 10px; border: 1.25px dashed var(--ink-2); border-radius: 50%; }
+.legend i.annotation { width: 14px; height: 10px; border: 1px solid var(--muted); border-radius: 2px; }
 .legend i.stimulus { width: 9px; height: 9px; border-radius: 50%; background: var(--ink); opacity: 0.78; }
 .legend i.approx { width: 12px; height: 10px; border: 1.25px dotted var(--ink); }
 

@@ -95,7 +95,10 @@ it to the new version. `scripts/release_check.py` enforces all of that.
   vocabulary (`alhazen.display.schematic`), drawn exactly as given, with the
   plan's regions added unless the picture carries region shapes itself;
   without one only the regions (gaze windows) are drawn, nothing derived from
-  the stimuli, and the page says so once. The gaze travels at up to 60 Hz on its own non-blocking channel
+  the stimuli, and the page says so once. A shape's name shows on hover
+  exactly as given (`region_shapes` names each window after its key:
+  *Fixation window*); the legend keys stimuli, outlines and paths
+  (role `annotation`), gaze windows and approximate outlines. The gaze travels at up to 60 Hz on its own non-blocking channel
   (`/api/gaze`), the picture once per trial (`/api/trial`). Every eye-tracker
   backend states why it gives no camera image during a trial
   (`camera_while_recording`). docs/live_monitor.md, "Trial view".

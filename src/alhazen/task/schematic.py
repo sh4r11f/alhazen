@@ -34,7 +34,11 @@ log = logging.getLogger(__name__)
 
 
 def region_shapes(regions: Mapping[str, CircleRegion], screen: Screen) -> tuple[Circle, ...]:
-    """Each region as an outline, in dva, named by its key.
+    """Each region as an outline, in dva, named after its key as a window.
+
+    The key ``fixation`` is named "Fixation window" (underscores read as
+    spaces; a key that already ends in "window" is not given a second one),
+    and the page shows a shape's name exactly as given.
 
     Exact: a region is the window the phases judge gaze against, in the same
     centered px, converted with the same ``Screen`` that placed it. A region
@@ -45,12 +49,22 @@ def region_shapes(regions: Mapping[str, CircleRegion], screen: Screen) -> tuple[
     return tuple(_region_shape(name, region, screen) for name, region in regions.items())
 
 
+def region_title(key: object) -> str:
+    """A region's key as the name its outline carries: ``fixation`` ->
+    "Fixation window", ``target_far`` -> "Target far window"."""
+    words = " ".join(str(key).replace("_", " ").split())
+    title = words[:1].upper() + words[1:]
+    if not title.lower().endswith("window"):
+        title = f"{title} window".strip()
+    return title[:80]
+
+
 def _region_shape(name: str, region: CircleRegion, screen: Screen) -> Circle:
     try:
         return Circle(
             (screen.px2deg(region.center[0]), screen.px2deg(region.center[1])),
             screen.px2deg(region.radius),
-            name=str(name)[:80],
+            name=region_title(name),
             role="region",
         )
     except ValueError as e:
