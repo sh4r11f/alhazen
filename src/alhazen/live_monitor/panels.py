@@ -843,7 +843,12 @@ def _grouped_mean(panel: LiveMonitorPanel, rows: list[dict[str, Any]]) -> dict[s
         if not _num(row.get(field)):
             continue
         if crossed or series_field is not None:
-            factors = fields if crossed else (fields[0], series_field)
+            factors: tuple[str, ...]
+            if crossed:
+                factors = fields
+            else:
+                assert series_field is not None  # the branch condition
+                factors = (fields[0], series_field)
             levels = [row.get(factor) for factor in factors]
             # A trial missing any one factor belongs to no cell.
             if any(level is None for level in levels):
