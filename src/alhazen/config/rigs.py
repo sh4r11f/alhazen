@@ -553,9 +553,9 @@ def _refuse_empty_mappings(
 
 
 def local_rig_file(ref: RigRef, experiment_root: ExperimentRoot) -> Path:
-    """The file that what is measured on this rig's machine is kept beside:
-    a gamma fit (``<stem>_gamma.yaml``), measure mode's reports
-    (``measurements/``).
+    """The file that a calibration of this rig's machine is kept beside: a
+    gamma fit (``<stem>_gamma.yaml``). (Measure mode's reports are data, and
+    go under the rig's ``data_root`` instead: ``cli.main._measurement_path``.)
 
     For an experiment rig, its own file, as always. A shared rig's file is
     inside alhazen's installation, which a reinstall replaces and a user may

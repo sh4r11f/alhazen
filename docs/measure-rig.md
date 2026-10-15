@@ -3,8 +3,12 @@
 `--mode measure` checks what a rig claims about itself. Choose the
 measurements (`--measure KEY`, repeatable, or the checkboxes the experiment
 workspace shows for Measure rig); they run one after another in a fixed order
-and write **one** report beside the rig file:
-`<rig dir>/measurements/<rig>_<YYYYmmddTHHMMSS>.json`, never over an earlier one.
+and write **one** report under the rig's data root:
+`<data_root>/measurements/rig-<name>_<YYYYmmddTHHMMSS>.json`, never over an
+earlier one. A measurement is data — a reading of the machine as it was that
+day — so it is kept with the data, beside the calibration ledger, and out of
+the repository with it (until 2.17 it went beside the rig file, in
+`configs/measurements/`).
 
 ```text
 python run.py --task <any task> --mode measure --rig lab \

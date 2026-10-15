@@ -1333,7 +1333,7 @@ class TestCommandLine:
         listed = json.loads(capsys.readouterr().out)
         assert listed[0]["key"] == "monitor.refresh"
 
-    def test_a_selection_runs_and_writes_its_report_beside_the_rig(
+    def test_a_selection_runs_and_writes_its_report_under_the_data_root(
         self, tmp_path, monkeypatch, capsys
     ):
         from alhazen.cli.main import main
@@ -1367,7 +1367,7 @@ class TestCommandLine:
         assert "live monitor:" not in out
         # One passed, one unavailable: not a clean bill of health.
         assert code == 1
-        reports = list((tmp_path / "measurements").glob("rig-bench_*.json"))
+        reports = list((tmp_path / "data" / "measurements").glob("rig-bench_*.json"))
         saved = json.loads(reports[0].read_text())
         assert [j["state"] for j in saved["jobs"]] == ["passed", "unavailable"]
         assert json.loads(status.read_text())["report"] == str(reports[0])
