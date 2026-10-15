@@ -21,6 +21,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
+from alhazen.config.sections import section
 from alhazen.errors import ConfigError
 
 
@@ -77,7 +78,11 @@ class Duration(Model):
     whole frame, half a frame up (``whole_frames``), when frame counts are
     needed. Both resolutions require the display's *measured* refresh rate,
     so they happen at session build time, not at config load time.
+
+    Every duration is shown under Timing on the Run page (``section``).
     """
+
+    model_config = ConfigDict(json_schema_extra=section("timing"))
 
     ms: float | None = None
     frames: int | None = None

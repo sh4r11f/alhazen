@@ -46,7 +46,7 @@ The names an experiment imports directly.
         FrameQAError, InputFrame, Model, MonitorConfig, Outcome, outcomes, OutcomeSet,
         Phase, PhaseAction, PhotodiodeConfig, QuitRequested, Ramp, RewardError,
         RewardHwConfig, RewardPolicy, RewardPulses, RewardRequestError, RigConfig,
-        SchedulerConfig, Screen, SessionConfig, SessionError, SessionInfo,
+        SchedulerConfig, Screen, section, SessionConfig, SessionError, SessionInfo,
         SessionRunner, SimpleSequence, Stage, StageCriteria, SubjectKind, SubjectParams,
         SyncError, SyncHwConfig,
         Task, TrackerError, TrialContext, TrialEngine, TrialPlan, TrialResult,
@@ -253,6 +253,10 @@ see docs/design/training-mode.md.
         DisplayConfig, LiveMonitorConfig, DatabaseConfig, SELF_DRIVEN_CALIBRATION_TYPES,
         EyeTrackerConfig, RewardHwConfig, SyncHwConfig, RewardPulses, RecordingConfig,
         SpikeSourceConfig, DevicesConfig, RigConfig, SessionInfo, SessionConfig]
+
+::: alhazen.config.sections
+    options:
+      members: [SECTIONS, SECTION_KEY, section]
 
 ::: alhazen.config.loader
     options:

@@ -956,6 +956,36 @@ input[type=checkbox] {
   grid-template-columns: 1fr;
 }
 
+/* The editor's headings (Stimulus, Timing, Session, Other): a plain label
+ * and its row count, held at the top of the scrolling list while its rows
+ * pass under it, so a reader deep in Timing still sees where they are. */
+.parameter-section + .parameter-section {
+  margin-top: 18px;
+}
+
+.parameter-section-title {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+  padding: 8px 0 7px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--ink);
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.parameter-section-count {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
 .parameter-group {
   font-size: 13px;
   font-weight: 600;
