@@ -317,3 +317,16 @@ test('an answer from an older alhazen, without per-condition counts, keeps the t
   assert.equal(view.counts, '576 trials · 6 blocks');
   assert.ok(!view.details.some((d) => d.heading === 'Conditions'));
 });
+
+test('the mounted line keeps each part after the first unbroken', async () => {
+  const DE = load();
+  const t = setup(DE, MAIN);
+  t.ctl.update();
+  t.timers.fire();
+  t.asked[0].resolve({...ANSWER, counts: PLANNED});
+  await flush();
+  const counts = t.container.querySelector('.duration-counts');
+  assert.equal(counts.textContent, '72 conditions × 8 trials = 576 trials · 8 blocks');
+  const parts = counts.querySelectorAll('.duration-part').map((s) => s.textContent);
+  assert.deepEqual(parts, ['8 blocks']);
+});

@@ -235,7 +235,12 @@ const DurationEstimate = (() => {
     function paint(view) {
       root.dataset.state = view.state;
       value.textContent = view.value;
-      counts.textContent = view.counts;
+      // " · "-separated parts; each after the first ("8 blocks") stays on
+      // one line, so a narrow column breaks between parts, not inside one.
+      counts.replaceChildren(...String(view.counts || '').split(' · ').flatMap((part, i) => {
+        const span = node('span', i ? 'duration-part' : '', part);
+        return i ? [node('span', '', ' · '), span] : [span];
+      }));
       counts.hidden = !view.counts;
       plus.textContent = view.plus;
       plus.hidden = !view.plus;

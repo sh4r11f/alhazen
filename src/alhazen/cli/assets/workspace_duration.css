@@ -86,6 +86,10 @@
   color: var(--ink);
 }
 
+.duration-counts .duration-part {
+  white-space: nowrap;
+}
+
 .duration-plus {
   margin: 2px 0 0;
   font: 600 13px/1.4 var(--sans);
