@@ -39,7 +39,7 @@ const VIEW = {
     { kind: 'rect', role: 'stimulus', name: 'bar', center: [-10, 5], size: [4, 2], angle_deg: 90, approximate: true },
   ],
   undrawn: ['cylinder'],
-  condition: { side: 'right', contrast: 0.5 },
+  condition: { side: 'right', contrast: 0.5, hemifield: -1 },
   gaze: true,
   camera: { live: false, has_frames: false, reason: 'The mouse stand-in for an eye tracker has no camera.' },
 };
@@ -147,7 +147,7 @@ describe('the trial picture', () => {
   it('says what the trial is, keys the picture, and names what it could not draw', () => {
     const live_monitor = drawn(VIEW);
     assert.equal(live_monitor.byId('trial-title').textContent, 'Trial 4');
-    assert.equal(live_monitor.byId('trial-meta').textContent, 'attempt 2 · side right · contrast 0.5');
+    assert.equal(live_monitor.byId('trial-meta').textContent, 'attempt 2 · side right · contrast 0.5 · hemifield −1');
     const legend = live_monitor.byId('trial-legend').children.map((item) => item.textContent);
     assert.deepEqual(legend, ['Gaze', 'Trail', 'Stimulus', 'Gaze window', 'Approximate outline']);
     assert.equal(live_monitor.byId('trial-undrawn').textContent,

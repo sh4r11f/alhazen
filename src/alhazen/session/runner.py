@@ -861,7 +861,7 @@ class SessionRunner:
         """Send the live monitor's Trial view the picture of the trial about to
         run (task/schematic.py), before its first frame.
 
-        One small JSON on its own one-slot channel, never a state publish:
+        One small JSON on its own channel, never a state publish:
         between trials, where the session already spends its bookkeeping
         time. Its gaze follows frame by frame (live_monitor/gaze.py, wired in
         session/builder.py).

@@ -3118,8 +3118,11 @@ function drawTrialHead(view) {
   byId('trial-meta').textContent = parts.join(' · ');
 }
 
+/** A condition's value as the head prints it: a whole number as one (a
+ *  factor level such as hemifield −1 or 1, not 1.00), anything else as the
+ *  panels print numbers. */
 function fmtCondition(value) {
-  if (typeof value === 'number') return minus(fmt(value));
+  if (typeof value === 'number') return minus(Number.isInteger(value) ? String(value) : fmt(value));
   return String(value);
 }
 
