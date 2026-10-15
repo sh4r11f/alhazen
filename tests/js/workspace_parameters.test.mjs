@@ -86,3 +86,155 @@ test('keyboard strings use dropdowns and numeric arrays retain their numeric edi
   assert.ok(app.byId('param-0').children.some(o=>o.value==='return'));
   assert.equal(app.byId('param-1').localName,'textarea');
 });
+
+/* ---- Sections: Stimulus, Timing, Session, Other (ParameterSections) ---- */
+
+const realNames = JSON.parse(readFileSync(
+  new URL('./fixtures/param_sections_real_names.json', import.meta.url), 'utf8'));
+
+function sections() {
+  const context = vm.createContext({console});
+  vm.runInContext(readFileSync(new URL('workspace_parameters.js', assets), 'utf8')
+    + ';globalThis.PS = ParameterSections;', context);
+  return context.PS;
+}
+
+test('inference places the four experiments\u2019 real field names (no schema declarations)', () => {
+  const PS = sections();
+  for (const [repo, names] of Object.entries(realNames)) {
+    for (const [dotted, expected] of Object.entries(names)) {
+      const got = PS.of({}, dotted.split('.'));
+      assert.equal(got.section, expected, `${repo}: ${dotted}`);
+      assert.equal(got.how, 'inferred');
+    }
+  }
+});
+
+test('a rate is not a time: _dva_s and _rev_s are the stimulus, _s alone is timing', () => {
+  const PS = sections();
+  assert.equal(PS.infer(['speed_dva_s']).section, 'stimulus');
+  assert.equal(PS.infer(['pursuit_speed_rev_s']).section, 'stimulus');
+  assert.equal(PS.infer(['onset_jitter_s']).section, 'timing');
+  // A one-word name `s` is no unit.
+  assert.equal(PS.infer(['s']).section, 'other');
+});
+
+test('a group stays under one heading, judged by its own name', () => {
+  const PS = sections();
+  // The leaf alone would be timing; the group is the reward, a session matter.
+  assert.equal(PS.infer(['reward', 'by_outcome', 'CORRECT', 'pulse_ms']).section, 'session');
+  assert.equal(PS.infer(['paradigm', 'blocks', 'validate_after_break']).section, 'session');
+});
+
+const declaredSchema = {
+  properties: {
+    // The field's own declaration.
+    hemifields: {type: 'array', 'x-alhazen-section': 'stimulus'},
+    // A Duration: its model declares Timing (as alhazen's does), and an
+    // optional field wraps it in anyOf.
+    iti: {anyOf: [{$ref: '#/$defs/Duration'}, {type: 'null'}]},
+    // The field's own declaration beats its model's.
+    lapse_rt: {$ref: '#/$defs/Duration', 'x-alhazen-section': 'other'},
+    // A nested model declaring for its fields; one field overrides it.
+    search: {$ref: '#/$defs/Search'},
+    // A dict of models: the model under additionalProperties declares.
+    candidates: {type: 'object', additionalProperties: {$ref: '#/$defs/Candidate'}},
+    // A name a newer alhazen might write: read as no declaration.
+    window_dva: {type: 'number', 'x-alhazen-section': 'response'},
+    // Declared wrong by inference's lights: the declaration still wins.
+    fix_window_dva: {type: 'number', 'x-alhazen-section': 'session'},
+  },
+  $defs: {
+    Duration: {'x-alhazen-section': 'timing', properties: {ms: {}, frames: {}}},
+    Search: {'x-alhazen-section': 'session', properties: {
+      n_init: {type: 'integer'},
+      speed_dva_s: {type: 'number', 'x-alhazen-section': 'stimulus'},
+    }},
+    Candidate: {'x-alhazen-section': 'stimulus', properties: {speed: {}, envelope: {}}},
+  },
+};
+
+test('declarations win: the field\u2019s own, then the nearest enclosing field or model', () => {
+  const PS = sections();
+  const of = (dotted) => PS.of(declaredSchema, dotted.split('.'));
+  assert.deepEqual({...of('hemifields')}, {section: 'stimulus', how: 'declared'});
+  assert.deepEqual({...of('iti.ms')}, {section: 'timing', how: 'inherited'});
+  assert.deepEqual({...of('lapse_rt.ms')}, {section: 'other', how: 'inherited'});
+  assert.deepEqual({...of('search.n_init')}, {section: 'session', how: 'inherited'});
+  assert.deepEqual({...of('search.speed_dva_s')}, {section: 'stimulus', how: 'declared'});
+  assert.deepEqual({...of('candidates.incumbent.envelope')}, {section: 'stimulus', how: 'inherited'});
+  assert.deepEqual({...of('fix_window_dva')}, {section: 'session', how: 'declared'});
+  // An unknown name is no declaration: inference decides (a window is Other).
+  const unknown = of('window_dva');
+  assert.equal(unknown.section, 'other');
+  assert.equal(unknown.how, 'inferred');
+  // A field the schema does not know (a file with an extra key) is inferred.
+  assert.equal(of('extra_size_dva').section, 'stimulus');
+});
+
+function editorRows(app) {
+  const host = app.byId('parameter-fields');
+  return host.children.map((section) => ({
+    section: section.dataset.section,
+    hidden: !!section.hidden,
+    heading: section.children[0].textContent,
+    keys: section.children.slice(1).filter((r) => !r.hidden).map((r) => r.dataset.key),
+  }));
+}
+
+test('the editor groups rows under Stimulus, Timing, Session, Other in that order, each with its count', () => {
+  const app = load();
+  const values = {
+    fix_window_dva: 2, iti: {ms: 500}, eccentricity_dva: 10, subject_kind: 'human',
+    paradigm: {kind: 'constant', n_per_condition: 8}, dot_color: [1, 1, 1],
+  };
+  app.run(`parameterSchema = {}; values = ${JSON.stringify(values)}; renderEditor();`);
+  assert.deepEqual(editorRows(app), [
+    {section: 'stimulus', hidden: false, heading: 'Stimulus2', keys: ['eccentricity_dva', 'dot_color']},
+    {section: 'timing', hidden: false, heading: 'Timing1', keys: ['iti.ms']},
+    {section: 'session', hidden: false, heading: 'Session3',
+      keys: ['subject_kind', 'paradigm.kind', 'paradigm.n_per_condition']},
+    {section: 'other', hidden: false, heading: 'Other1', keys: ['fix_window_dva']},
+  ]);
+  // Controls keep the file's numbering, wherever their row went: param-0 is
+  // the file's first value, now under Other; each label still names it.
+  assert.equal(String(app.byId('param-0').value), '2');
+  const label = app.byId('parameter-fields').querySelectorAll('label')
+    .find((l) => l.htmlFor === 'param-0');
+  assert.match(label.textContent, /fix window dva/);
+});
+
+test('a heading with no rows is left out, and an all-Other file shows only Other', () => {
+  const app = load();
+  app.run(`parameterSchema = {}; values = {g: 0.03, gammas: [0.5, 1]}; renderEditor();`);
+  assert.deepEqual(editorRows(app).map((s) => s.section), ['other']);
+});
+
+test('search filters rows, hides emptied headings and counts what is shown', () => {
+  const app = load();
+  const values = {eccentricity_dva: 10, dot_size_dva: 0.2, iti: {ms: 500}, n_repeats: 4};
+  app.run(`parameterSchema = {}; values = ${JSON.stringify(values)}; renderEditor();`);
+  app.byId('parameter-search').value = 'dot';
+  app.run('filterParameters()');
+  const shown = editorRows(app);
+  assert.deepEqual(shown.map((s) => [s.section, s.hidden, s.keys]), [
+    ['stimulus', false, ['dot_size_dva']],
+    ['timing', true, []],
+    ['session', true, []],
+  ]);
+  assert.equal(shown[0].heading, 'Stimulus1');
+  app.byId('parameter-search').value = '';
+  app.run('filterParameters()');
+  assert.deepEqual(editorRows(app).map((s) => [s.hidden, s.heading]),
+    [[false, 'Stimulus2'], [false, 'Timing1'], [false, 'Session1']]);
+});
+
+test('declared sections from the task schema place the rows', () => {
+  const app = load();
+  app.run(`parameterSchema = ${JSON.stringify(declaredSchema)};
+    values = {fix_window_dva: 2, hemifields: ['left'], search: {n_init: 4}}; renderEditor();`);
+  assert.deepEqual(editorRows(app).map((s) => [s.section, s.keys]), [
+    ['stimulus', ['hemifields']],
+    ['session', ['fix_window_dva', 'search.n_init']],
+  ]);
+});
