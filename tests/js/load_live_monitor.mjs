@@ -6,7 +6,7 @@
  * scope (a node:vm context). Everything it declares at top level — functions,
  * `const`s, `let`s — is then reachable by name through `get()`.
  *
- *     index.html ──ids, data-command buttons──▶ fake page (fake_dom.mjs)
+ *     index.html ──ids, controls hosts─────────▶ fake page (fake_dom.mjs)
  *     live_monitor.css ──:root colours──────────▶ getComputedStyle
  *     STATIC_STATE + live_monitor.js ─runs in──▶ vm context ─get(name)─▶ test
  *
@@ -51,17 +51,18 @@ export function settle() {
 }
 
 /* The page's elements the script looks up: everything in index.html with an
- * id, and the command buttons. Created flat under <body> — the script never
- * walks the page's nesting — and read from the real file so a renamed id
- * breaks the tests instead of drifting from them. */
+ * id, and every controls host (the script draws the command buttons into
+ * those). Created flat under <body> — the script never walks the page's
+ * nesting — and read from the real file so a renamed id breaks the tests
+ * instead of drifting from them. */
 function buildPage(document) {
   for (const [, tag, attributes] of PAGE_HTML.matchAll(/<([a-z][\w-]*)\b([^>]*)>/g)) {
     const id = /\bid="([^"]+)"/.exec(attributes);
-    const command = /\bdata-command="([^"]+)"/.exec(attributes);
-    if (!id && !command) continue;
+    const host = /\bdata-controls-host\b/.test(attributes);
+    if (!id && !host) continue;
     const element = document.createElement(tag);
     if (id) element.setAttribute('id', id[1]);
-    if (command) element.setAttribute('data-command', command[1]);
+    if (host) element.setAttribute('data-controls-host', '');
     document.body.appendChild(element);
   }
 }

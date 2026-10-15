@@ -21,6 +21,7 @@
     "DRIFT_CORRECTION",
     "FEEDBACK",
     "NO_REWARD",
+    "OPERATOR_COMMAND",
     "PAUSED",
     "RESUMED",
     "REWARD",

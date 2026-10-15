@@ -2912,19 +2912,11 @@ function render() {
   byId('counts').textContent = (state.n_trials || 0).toLocaleString() + ' trials · ' +
     (state.n_events || 0).toLocaleString() + ' events';
 
-  const paused = state.status === 'paused';
-  document.querySelectorAll('[data-command]').forEach((button) => { button.disabled = !paused; });
-  /* While an eye-tracker procedure runs ("calibrating") the session publishes
-   * its progress as the message — which target it is on, whether it is
-   * waiting for SPACE — and the buttons stay inert, because the server only
-   * takes a command while paused and a second procedure mid-procedure would
-   * be wrong anyway. */
-  const calibrating = state.status === 'calibrating';
-  byId('notice').textContent = paused
-    ? (state.message || 'Paused — controls are enabled.')
-    : calibrating
-      ? (state.message || 'Eye-tracker procedure running — controls return when it ends.')
-      : 'Press P on the experimenter keyboard to pause.';
+  /* The session's line for what it is doing: the pause's notice, or, while
+   * an eye-tracker procedure runs ("calibrating"), its progress — which
+   * target it is on, whether it is waiting for SPACE. The buttons follow the
+   * session's own list of what it accepts (renderControls, below). */
+  byId('notice').textContent = state.message || '';
 
   /* Which table views the reader had open, so a new trial does not close
    * one they were reading. */
@@ -2965,6 +2957,11 @@ function render() {
       input.focus();
     }
   }
+
+  /* The operator controls, after the panels: a host may live inside a panel
+   * (the trial view's), and has to exist before it can be filled. */
+  takeAcknowledgements(state.commands || []);
+  renderControls();
 
   /* After painting, not before: the panels have their real heights only once
    * they are drawn, and restoring against a half-laid-out document would
@@ -3030,22 +3027,209 @@ if (pageParams.has('token')) {
   history.replaceState(history.state, '', location.pathname + (rest ? '?' + rest : '') + location.hash);
 }
 
-async function command(name) {
-  if (name === 'quit' && !confirm('Quit this session?')) return;
+/* ------------------------------------------------------------------ */
+/* Operator controls [workstream B]                                    */
+/* ------------------------------------------------------------------ */
+
+/* One owner for every command button on the page: renderControls draws them
+ * into each element marked [data-controls-host] — the sidebar's, and any a
+ * view puts under itself — from the session's `controls` block (what it
+ * shows, what it accepts now, the key each stands for at the rig, why each
+ * other one is off). A click is sent once, with a request id; the button
+ * then reads "sent" until the session acknowledges that id (state.commands,
+ * or at once on /api/commands) as applied, refused, failed or discarded. */
+
+/** Commands sent and not yet acknowledged: request id -> command name. */
+const pendingCommands = new Map();
+/** The session's newest acknowledgements, oldest first. */
+let acknowledgements = [];
+/** The last acknowledgement record number read from /api/commands. */
+let acknowledgementSeq = 0;
+let watchingAcknowledgements = false;
+/** A line under the buttons for what the page itself refused or failed to
+ *  send: a click on a button that is off, a 409 from the server. */
+let controlFeedback = '';
+/** Quit asks first, in the page: true while its confirmation is showing. */
+let confirmingQuit = false;
+/** How many acknowledgements each host lists, newest first. */
+const ACKNOWLEDGEMENTS_SHOWN = 3;
+/** How many the page remembers: the session's own record length. */
+const ACKNOWLEDGEMENT_MEMORY = 20;
+const TERMINAL_STATUSES = ['complete', 'failed', 'cancelled', 'stopping'];
+
+function commandLabel(name) {
+  const labels = (state && state.controls && state.controls.labels) || {};
+  return labels[name] || name.replace(/_/g, ' ');
+}
+
+/** "Pause: the session is already paused." — without naming the button
+ *  twice when the reason already starts with its name. */
+function explainControl(name, reason) {
+  const label = commandLabel(name);
+  const text = String(reason || 'not available now');
+  const line = text.startsWith(label) ? text : label + ': ' + text;
+  return line.endsWith('.') ? line : line + '.';
+}
+
+/** Take the session's acknowledgement record: each command this page sent
+ *  and the session has now answered stops being pending. Merged, never
+ *  replaced: the record arrives two ways (a state publish, the
+ *  acknowledgement channel), and a state published a moment before an
+ *  acknowledgement can be read after it — replacing would drop the newer one. */
+function takeAcknowledgements(records) {
+  if (!Array.isArray(records)) return;
+  const merged = new Map(acknowledgements.map((record) => [record.request_id, record]));
+  records.forEach((record) => {
+    merged.set(record.request_id, record);
+    pendingCommands.delete(record.request_id);
+  });
+  acknowledgements = [...merged.values()]
+    .sort((a, b) => (Number(a.t) || 0) - (Number(b.t) || 0))
+    .slice(-ACKNOWLEDGEMENT_MEMORY);
+  /* A session that has ended will take nothing more: what is still waiting
+   * was never taken, and says so rather than staying "sent" for ever. */
+  if (state && TERMINAL_STATUSES.includes(state.status) && pendingCommands.size) {
+    controlFeedback = 'The session ended before it took: ' +
+      [...pendingCommands.values()].map(commandLabel).join(', ') + '.';
+    pendingCommands.clear();
+  }
+}
+
+function renderControls() {
+  document.querySelectorAll('[data-controls-host]').forEach(fillControlsHost);
+}
+
+function fillControlsHost(host) {
+  host.replaceChildren();
+  const controls = state && state.controls;
+  if (!controls) {
+    /* A saved copy, or a session that has not said yet: no buttons. */
+    if (STATIC_STATE !== null) htmlEl('p', 'control-empty', 'Controls work only during a session.', host);
+    return;
+  }
+  const available = new Set(controls.available || []);
+  const sending = new Set(pendingCommands.values());
+  const grid = htmlEl('div', 'control-grid', null, host);
+  (controls.shown || []).forEach((name) => {
+    if (name === 'quit' && confirmingQuit) {
+      quitConfirmation(grid);
+      return;
+    }
+    const button = htmlEl('button', 'control' + (name === 'quit' ? ' danger' : ''), null, grid);
+    button.type = 'button';
+    button.dataset.command = name;
+    htmlEl('span', 'control-label', commandLabel(name), button);
+    const key = (controls.keys || {})[name];
+    if (key) htmlEl('kbd', null, key, button);
+    const off = !available.has(name);
+    button.setAttribute('aria-disabled', String(off || sending.has(name)));
+    if (off) button.title = (controls.refused || {})[name] || '';
+    if (sending.has(name)) button.dataset.pending = 'true';
+    button.onclick = () => pressControl(name);
+  });
+  if (controlFeedback) htmlEl('p', 'control-feedback', controlFeedback, host);
+  const log = htmlEl('ol', 'command-log', null, host);
+  pendingCommands.forEach((name) => {
+    const item = htmlEl('li', null, null, log);
+    item.dataset.result = 'pending';
+    htmlEl('span', 'command-name', commandLabel(name), item);
+    htmlEl('span', 'command-note', 'sent, waiting for the task', item);
+  });
+  acknowledgements.slice(-ACKNOWLEDGEMENTS_SHOWN).reverse().forEach((record) => {
+    const item = htmlEl('li', null, null, log);
+    item.dataset.result = record.result;
+    htmlEl('span', 'command-name', commandLabel(record.name), item);
+    htmlEl('span', 'command-note', record.result + ' · ' + record.note, item);
+  });
+  if (!log.children.length) log.remove();
+}
+
+/** Quit's in-page confirmation, in Quit's place. */
+function quitConfirmation(parent) {
+  const box = htmlEl('div', 'quit-confirm', null, parent);
+  box.setAttribute('role', 'group');
+  htmlEl('p', null, 'End the session? The data so far is saved.', box);
+  const row = htmlEl('div', 'quit-actions', null, box);
+  const yes = htmlEl('button', 'control danger', 'End session', row);
+  yes.type = 'button';
+  yes.dataset.confirm = 'quit';
+  yes.onclick = () => { confirmingQuit = false; sendCommand('quit'); };
+  const no = htmlEl('button', 'control', 'Cancel', row);
+  no.type = 'button';
+  no.dataset.confirm = 'cancel';
+  no.onclick = () => { confirmingQuit = false; renderControls(); };
+}
+
+function pressControl(name) {
+  const controls = (state && state.controls) || {};
+  if (![...(controls.available || [])].includes(name)) {
+    controlFeedback = explainControl(name, (controls.refused || {})[name]);
+    renderControls();
+    return;
+  }
+  if ([...pendingCommands.values()].includes(name)) return;
+  if (name === 'quit') {
+    confirmingQuit = true;
+    controlFeedback = '';
+    renderControls();
+    return;
+  }
+  sendCommand(name);
+}
+
+async function sendCommand(name) {
+  const requestId = crypto.randomUUID();
+  pendingCommands.set(requestId, name);
+  controlFeedback = '';
+  renderControls();
   try {
     const response = await fetch('/api/command', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Alhazen-Token': token },
-      body: JSON.stringify({ name: name, request_id: crypto.randomUUID() }),
+      body: JSON.stringify({ name: name, request_id: requestId }),
     });
-    byId('notice').textContent = response.ok ? 'Command accepted.' : await response.text();
+    if (response.ok) {
+      watchAcknowledgements();
+    } else {
+      pendingCommands.delete(requestId);
+      controlFeedback = explainControl(name, await response.text());
+    }
   } catch (error) {
-    byId('notice').textContent = 'Command failed: ' + error;
+    pendingCommands.delete(requestId);
+    controlFeedback = commandLabel(name) + ' was not sent: ' + error.message;
+  }
+  renderControls();
+}
+
+/** Ask for acknowledgements while any command is waiting for one: a Reward
+ *  clicked mid-trial is acknowledged long before the trial's state publish. */
+async function watchAcknowledgements() {
+  if (watchingAcknowledgements) return;
+  watchingAcknowledgements = true;
+  try {
+    while (pendingCommands.size) {
+      let retryMs = 0;
+      try {
+        const response = await fetch('/api/commands?token=' + encodeURIComponent(token) +
+          '&after=' + acknowledgementSeq + '&wait_ms=2000');
+        if (response.status === 200) {
+          const record = await response.json();
+          acknowledgementSeq = record.seq;
+          takeAcknowledgements(record.commands);
+          renderControls();
+        } else if (response.status !== 204) {
+          throw new Error('the server answered ' + response.status);
+        }
+      } catch (error) {
+        console.error('acknowledgements failed', error);
+        retryMs = 1000;
+      }
+      if (retryMs) await new Promise((resolve) => setTimeout(resolve, retryMs));
+    }
+  } finally {
+    watchingAcknowledgements = false;
   }
 }
-document.querySelectorAll('[data-command]').forEach((button) => {
-  button.onclick = () => command(button.dataset.command);
-});
 
 async function poll() {
   try {

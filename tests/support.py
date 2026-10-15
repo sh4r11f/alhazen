@@ -282,8 +282,15 @@ class SessionHarness:
         display: FakeDisplay | None = None,
         live: Any = None,
         task_params: dict[str, Any] | None = None,
+        merge_live_monitor: bool = False,
     ) -> None:
-        """``on_pause`` is the pause strategy, and wins over ``use_pause_menu``.
+        """``merge_live_monitor`` wires the live monitor's buttons into the
+        running trials as build_session does: an OperatorCommands over
+        ``live_monitor``, merged into the engine's command source and handed
+        to the runner (``self.operator``). Off, the live monitor serves the
+        pauses only, as every test written before 2.17 expects.
+
+        ``on_pause`` is the pause strategy, and wins over ``use_pause_menu``.
         ``eyetracker`` replaces the monitor the harness builds from ``tracker``
         (a stub standing in for EyeTrackerMonitor); ``eyetracker_config`` is
         the rig's eye-tracker config that monitor is built with (by default a
@@ -350,6 +357,15 @@ class SessionHarness:
         self.bus.subscribe(self.collector)
         self.schema = EventSchema(declared_events)
         self.commands = commands or ScriptedCommands()
+        self.operator = None
+        if merge_live_monitor:
+            from alhazen.core.commands import MergedCommands
+            from alhazen.session.operator_commands import OperatorCommands
+
+            if live_monitor is None:
+                raise ValueError("merge_live_monitor needs a live_monitor")
+            self.operator = OperatorCommands(live_monitor)
+            self.commands = MergedCommands(self.commands, self.operator.take_for_trial)
         # One monitor, handed to both the engine and the runner, as the
         # builder does: the engine marks the trials, the runner reads its
         # verdicts (the failure streak's display heading) and saves it.
@@ -466,4 +482,5 @@ class SessionHarness:
             max_consecutive_dropouts=max_consecutive_dropouts,
             rest_resume_after_s=rest_resume_after_s,
             identity=identity if identity is not None else RunIdentity(experiment=TEST_EXPERIMENT),
+            operator_commands=self.operator,
         )

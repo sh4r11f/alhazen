@@ -41,7 +41,7 @@ from alhazen.config.models import (
 )
 from alhazen.config.reward_calibration import load_reward_calibration, ul_per_pulse_on
 from alhazen.core.clock import Clock, MonotonicClock
-from alhazen.core.commands import CommandSource, KeyboardCommands, NullCommands
+from alhazen.core.commands import CommandSource, KeyboardCommands, MergedCommands, NullCommands
 from alhazen.core.engine import TrialEngine
 from alhazen.core.events import EventBus, EventSchema
 from alhazen.core.rng import named_stream, resolve_seed, spawn_streams
@@ -80,6 +80,7 @@ from alhazen.session.identity import (
     recorded_command,
     source_file,
 )
+from alhazen.session.operator_commands import OperatorCommands
 from alhazen.session.pause import PauseMenu, run_pause_menu
 from alhazen.session.recorder import DataRecorder
 from alhazen.session.runner import SessionRunner
@@ -747,6 +748,20 @@ def build_session(
                     time.sleep,
                 )
 
+        # [workstream B] The live monitor's buttons reach a running trial
+        # through the engine's own command source: the keyboard (or nobody,
+        # unattended) merged with the page's queue, one command per frame
+        # (core/commands.py MergedCommands). The same OperatorCommands goes to
+        # the runner, which reads the page while paused and acknowledges
+        # every command in one record (session/operator_commands.py).
+        operator_commands = (
+            OperatorCommands(live_monitor_controller)
+            if live_monitor_controller is not None
+            else None
+        )
+        if operator_commands is not None:
+            commands = MergedCommands(commands, operator_commands.take_for_trial)
+
         # Registered before open(): closing a display that never opened does
         # nothing, and PsychoPy's open() creates the window before it checks
         # the framebuffer against the rig config, so a refusal there leaves a
@@ -1169,6 +1184,7 @@ def build_session(
             identity=identity,
             recording=recording,
             startup_calibration=startup_calibration,
+            operator_commands=operator_commands,
         )
         # Built. Every release registered above now belongs to the runner's
         # teardown, so they are dropped here without running.
