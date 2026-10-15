@@ -1332,7 +1332,7 @@ def _measure_selected(args: argparse.Namespace, rig: Any, beside: Path) -> int:
             file=sys.stderr,
         )
         return 2
-    destination = _measurement_path(beside)
+    destination = beside
     # One clock for the run: the tracker stamps its camera frames and its
     # calibration with it, and the live monitor reads those times.
     clock = MonotonicClock()
@@ -1408,18 +1408,12 @@ def _measure_live_view(
 
 
 def _measure_rig(args: argparse.Namespace, rig: Any, root: Callable[[], Path]) -> int:
-    """Measure the rig and write the report beside its config."""
+    """Measure the rig and write the report under its data root."""
     from alhazen.modes.measure import run_measurements
 
-    # Where the report will go, settled BEFORE anything is measured: for a
-    # shared rig that is the experiment's configs/ folder (local_rig_file),
-    # and finding there is none after the experimenter has sat through every
-    # measurement would waste all of them.
-    try:
-        beside = local_rig_file(args.rig_ref, root)
-    except ConfigError as e:
-        print(f"CANNOT MEASURE: {e}", file=sys.stderr)
-        return 1
+    # Where the report will go, settled BEFORE anything is measured: the
+    # rig's data root, which every rig names (_measurement_path).
+    beside = _measurement_path(rig, args.rig_ref.name)
     if getattr(args, "measure", None):
         if args.skip or args.presses is not None:
             print(
@@ -1454,30 +1448,38 @@ def _measure_rig(args: argparse.Namespace, rig: Any, root: Callable[[], Path]) -
         print(f"CANNOT MEASURE: {e}", file=sys.stderr)
         return 1
     print(report.render())
-    written = report.save(_measurement_path(beside))
+    written = report.save(beside)
     print(f"written: {written}")
     # Non-zero when something disagrees with the config, so this is usable in
     # a pre-session script that must not carry on past a bad rig.
     return 0 if report.ok else 1
 
 
-def _measurement_path(rig_path: str | Path) -> Path:
-    """Where one measurement run is written: beside the rig config it measured.
+def _measurement_path(rig: Any, rig_name: str) -> Path:
+    """Where one measurement run is written: under the rig's data root,
+    ``<data_root>/measurements/rig-<name>_<stamp>.json``.
 
-    Beside the CONFIG rather than beside the data, because these describe the
-    machine and not any subject — they stay relevant across the reinstall that
-    eventually clears the data, and they belong with the file whose claims
-    they are checking. For one of alhazen's shared rigs, whose file is inside
-    alhazen's installation, ``rig_path`` is where the experiment's own file of
-    that name would be (``alhazen.config.rigs.local_rig_file``).
+    A measurement is data — a reading taken on a day, of a machine as it was
+    that day — and it is kept with the data: beside the calibration ledger
+    (``<data_root>/calibrations/``), under the folder every experiment's
+    ``.gitignore`` already keeps out of its repository. It used to go beside
+    the rig CONFIG, in ``configs/measurements/``, on the argument that it
+    describes the machine rather than a subject; the owner's decision
+    (2026-10-14) is that measurements are data and are treated as such, and
+    the reports showed up in ``git status`` of every experiment as files
+    nobody meant to commit. A gamma fit or a reward calibration is different:
+    those are read back as part of the rig, and stay beside its file.
 
-    Stamped with the time, and never overwritten: a rig that has drifted is
-    only visible by comparing two of these, so the second one must not replace
-    the first.
+    The name is the rig's, ``rig-<name>``, whether its file is the
+    experiment's own or one of alhazen's shared ones, so a shared rig's
+    reports need no experiment ``configs/`` folder to land in. Stamped with
+    the time, and never overwritten: a rig that has drifted is only visible
+    by comparing two of these, so the second one must not replace the first.
     """
-    rig = Path(rig_path)
     stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
-    return rig.parent / "measurements" / f"{rig.stem}_{stamp}.json"
+    # Absolute, as the path beside the rig file was: the status file the
+    # workspace reads names this path, from wherever the workspace runs.
+    return Path(rig.data_root).resolve() / "measurements" / f"rig-{rig_name}_{stamp}.json"
 
 
 def _demo_task(args: argparse.Namespace, rig: Any, task: Any, params: Any) -> int:

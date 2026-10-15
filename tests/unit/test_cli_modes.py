@@ -56,8 +56,10 @@ class TestWhatEachModeAsksFor:
 
         assert main(["run", "--mode", "measure", "--rig", str(rig)]) == 0
         assert seen["rig_path"] == str(rig)
-        # And the report landed beside the rig config, not beside the data.
-        assert (tmp_path / "measurements").is_dir()
+        # And the report landed under the rig's data root, named after the
+        # rig: a measurement is data (2026-10-14), not configuration.
+        assert list((tmp_path / "data" / "measurements").glob("rig-rig_*.json"))
+        assert not (tmp_path / "measurements").exists()
 
     @pytest.mark.parametrize("mode", ["run", "test", "simulate", "demo", "movie"])
     def test_every_other_mode_needs_a_task(self, tmp_path, mode, capsys):

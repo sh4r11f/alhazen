@@ -353,15 +353,21 @@ always has, and beside it the rig's `rig_name` and its `rig_source`
 (`experiment` or `alhazen`). The snapshot's `config.rig` is the merged rig, so
 a session that ran on an extending rig is fully described without either file.
 
-## 8. Measurements of a shared rig
+## 8. Calibrations and measurements of a shared rig
 
-`alhazen calibrate gamma` keeps its fit beside the rig's file, and measure mode
-keeps its reports in `measurements/` beside it. A shared rig's file is inside
-alhazen's installation, which a reinstall replaces, so for one of those they
-are kept where the experiment's own file of that name would be —
-`configs/rig-lab_gamma.yaml`, `configs/measurements/` — and found there again
-by the shared rig, and by an experiment rig of that name if one is added later.
-Run from a folder with no `configs/`, both refuse before measuring anything.
+`alhazen calibrate gamma` keeps its fit beside the rig's file, because the
+rig reads it back as part of itself. A shared rig's file is inside alhazen's
+installation, which a reinstall replaces, so for one of those the fit is kept
+where the experiment's own file of that name would be —
+`configs/rig-lab_gamma.yaml` — and found there again by the shared rig, and
+by an experiment rig of that name if one is added later. Run from a folder
+with no `configs/`, it refuses before fitting anything.
+
+Measure mode's reports are data, not configuration: a reading of the machine
+as it was that day. They go under the rig's data root,
+`<data_root>/measurements/rig-<name>_<stamp>.json`, shared rig or not, beside
+the calibration ledger and out of the repository with the rest of the data
+([measure-rig.md](measure-rig.md)).
 
 ## 9. Moving an experiment onto the shared rigs
 

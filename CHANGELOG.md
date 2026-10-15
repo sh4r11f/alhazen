@@ -28,6 +28,17 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 ## Unreleased
 
 ### Changed
+- Measure mode writes its report under the rig's data root,
+  `<data_root>/measurements/rig-<name>_<stamp>.json`, for every rig, shared
+  or the experiment's own. A measurement is data — a reading of the machine
+  as it was that day — and is kept with the data, beside the calibration
+  ledger and out of the repository with it; before, it went beside the rig
+  file, in `configs/measurements/`, and showed in every experiment's
+  `git status` as files nobody meant to commit. Measure mode no longer needs
+  an experiment `configs/` folder, so a shared rig can be measured from
+  anywhere. A gamma fit still goes beside the rig file: the rig reads it back.
+  Reports already in `configs/measurements/` are not moved; move them by hand
+  to `data/measurements/` if they should stay with the rest.
 - A run folder's `rig.yaml` is the complete rig the session was started with:
   the rig file merged over any shared rig it `extends`, with every setting
   written out, the defaults alhazen filled in included. Before, it was the rig

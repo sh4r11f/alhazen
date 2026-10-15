@@ -701,9 +701,15 @@ class TestTheCommandLine:
             text = " ".join(capsys.readouterr().out.split())
             assert "a name, such as lab" in text, command
 
-    def test_measure_mode_keeps_a_shared_rigs_report_in_the_experiment(
+    def test_measure_mode_keeps_a_shared_rigs_report_under_its_data_root(
         self, experiment, capsys, monkeypatch
     ):
+        """A measurement is data: it goes under the rig's data root, named
+        after the rig, beside the calibration ledger — never into alhazen's
+        installation, and not into the experiment's configs/ either (where it
+        showed up in every experiment's `git status` as a file nobody meant
+        to commit). The shared mac's data root is `data`, relative to where
+        the command runs, like every rig's."""
         from alhazen.modes import measure
 
         measured = []
@@ -716,22 +722,24 @@ class TestTheCommandLine:
         monkeypatch.chdir(experiment)
         assert main(["run", "--mode", "measure", "--rig", "mac"]) == 0
         assert measured == [str(SHARED_RIG_DIR / "rig-mac.yaml")]
-        assert list((experiment / "configs" / "measurements").glob("rig-mac_*.json"))
+        assert list((experiment / "data" / "measurements").glob("rig-mac_*.json"))
+        assert not (experiment / "configs" / "measurements").exists()
         assert not (SHARED_RIG_DIR / "measurements").exists()
 
-    def test_measure_mode_refuses_a_shared_rig_with_nowhere_to_keep_it_before_measuring(
-        self, tmp_path, capsys, monkeypatch
-    ):
+    def test_measure_mode_needs_no_experiment_folder(self, tmp_path, capsys, monkeypatch):
+        """Measure mode is about the machine: run from anywhere, a shared
+        rig's report lands under that rig's data root from there. It used to
+        refuse without an experiment configs/ folder to keep the report in."""
         from alhazen.modes import measure
 
         monkeypatch.setattr(
             measure,
             "run_measurements",
-            lambda *a, **k: pytest.fail("measured with nowhere to keep the report"),
+            lambda rig, rig_path, **k: measure.MeasurementReport(rig_path=rig_path),
         )
         monkeypatch.chdir(tmp_path)
-        assert main(["run", "--mode", "measure", "--rig", "mac"]) == 1
-        assert "CANNOT MEASURE" in capsys.readouterr().err
+        assert main(["run", "--mode", "measure", "--rig", "mac"]) == 0
+        assert list((tmp_path / "data" / "measurements").glob("rig-mac_*.json"))
 
     def test_calibrate_gamma_keeps_a_shared_rigs_fit_in_the_experiment(
         self, experiment, capsys, monkeypatch
