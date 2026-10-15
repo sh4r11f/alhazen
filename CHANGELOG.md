@@ -27,6 +27,21 @@ it to the new version. `scripts/release_check.py` enforces all of that.
 
 ## Unreleased
 
+### Fixed
+- `alhazen.analysis.io.viewpixx.fit_clock` refused two good recordings. It
+  dropped late alignment marks and refitted once, and the refit moved the
+  line by a few hundredths of a millisecond, enough to put a mark that was
+  just inside the tolerance just outside it (a run refused at 0.51 ms over
+  0.50, with a residual sd of 0.03 ms and no step or drift); it now drops
+  and refits until the line settles, each pass only adding to the dropped
+  set and the 5% budget still bounding the total. And it refused any two
+  late marks in a row as a clock that moved; a scheduler busy for a moment
+  delays the two or three stamps written in that moment (`fix_acquired` and
+  `stim_on` of one trial, half a second apart, with the next mark back on
+  the line), so a run of up to three late marks is dropped when the line
+  resumes on both sides, and a longer run, an early mark, or a run at either
+  end of the recording is refused as before.
+
 ### Changed
 - Measure mode writes its report under the rig's data root,
   `<data_root>/measurements/rig-<name>_<stamp>.json`, for every rig, shared
