@@ -103,6 +103,16 @@ class EyeLinkTracker:
     sequence and nothing more.
     """
 
+    # What the live monitor's Trial view says in place of a live camera image
+    # (session/eyetracker.py EyeTrackerMonitor.trial_camera). The EyeLink
+    # sends its camera image over the link only in camera setup (pylink's
+    # EyeLinkCustomDisplay image callbacks); while it records, the eye image is
+    # on the Host PC's display alone. docs/live_monitor.md, "Trial view".
+    camera_while_recording = (
+        "The EyeLink sends its camera image only during camera setup, never while it "
+        "records. During a trial the eye image is on the Host PC's own display."
+    )
+
     def __init__(
         self,
         cfg: EyeTrackerConfig,

@@ -28,6 +28,9 @@ class MouseSimTracker:
     gaze to *disappear* (the blink rule) use ScriptedTracker instead.
     """
 
+    # The live monitor's Trial view says this in place of a camera image.
+    camera_while_recording = "The mouse stand-in for an eye tracker has no camera."
+
     def __init__(self, display: DisplayBackend, screen: Screen, clock: Clock) -> None:
         # psychopy is imported inside __init__, not at module top, so that
         # importing this module stays safe on a machine with no renderer.

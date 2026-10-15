@@ -64,6 +64,7 @@ from alhazen.display.psychopy_backend import PsychoPyDisplay
 from alhazen.display.screen import Screen
 from alhazen.display.simulated import SimulatedDisplay
 from alhazen.errors import ConfigError
+from alhazen.live_monitor.gaze import GazeFeed
 from alhazen.live_monitor.runtime import LiveMonitorController
 from alhazen.live_monitor.spec import LiveMonitorSpec
 from alhazen.paradigms.base import TrialSource
@@ -157,6 +158,20 @@ def make_input_provider(
         )
 
     return provide
+
+
+# The engine's per-frame input hook: (trial_index, frame_index, flip time, inputs).
+FrameInputHook = Callable[[int, int, float, InputFrame], None]
+
+
+def _also_feeding(note: FrameInputHook, feed: GazeFeed) -> FrameInputHook:
+    """``note`` first — the record of the frame — then the Trial view's gaze."""
+
+    def on_frame_input(trial_index: int, frame: int, t: float, inputs: InputFrame) -> None:
+        note(trial_index, frame, t, inputs)
+        feed.note(trial_index, frame, t, inputs)
+
+    return on_frame_input
 
 
 def make_gaze_input_provider(tracker: EyeTracker, screen: Screen) -> Callable[[], InputFrame]:
@@ -1030,6 +1045,14 @@ def build_session(
             frame_qa = frame_qa.model_copy(update={"policy": "log"})
         frame_monitor = FrameMonitor(frame_qa, refresh_hz)
         frame_inputs = FrameInputBuffer()
+        # Every frame's inputs go to the frame-input buffer, and — when there
+        # is a live monitor and a tracker to read — its gaze to the Trial
+        # view too (live_monitor/gaze.py: decimated, batched, never blocking).
+        on_frame_input: FrameInputHook = frame_inputs.note
+        if live_monitor_controller is not None and tracker is not None:
+            on_frame_input = _also_feeding(
+                on_frame_input, GazeFeed(live_monitor_controller.publish_gaze, screen.px_per_deg)
+            )
 
         overlay: Callable[[TrialContext], None] | None = None
         if photodiode_cfg is not None:
@@ -1083,7 +1106,7 @@ def build_session(
             # is built below: the engine only ever calls this while the runner is
             # running, by which time the name is bound.
             on_session_command=(lambda command: runner.on_session_command(command)),
-            on_frame_input=frame_inputs.note,
+            on_frame_input=on_frame_input,
             reward_requests=queued_reward,
         )
 
